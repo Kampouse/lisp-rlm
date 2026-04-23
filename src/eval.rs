@@ -81,7 +81,11 @@ pub fn lisp_to_json(val: &LispVal) -> serde_json::Value {
 // Evaluator
 // ---------------------------------------------------------------------------
 
-pub fn lisp_eval(expr: &LispVal, env: &mut Env, gas: &mut u64) -> Result<LispVal, String> {
+pub fn lisp_eval(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
+    stacker::maybe_grow(64 * 1024, 2 * 1024 * 1024, || lisp_eval_inner(expr, env))
+}
+
+fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
     let mut current_expr: LispVal = expr.clone();
     '_trampoline: loop {
         match &current_expr {
@@ -113,14 +117,14 @@ pub fn lisp_eval(expr: &LispVal, env: &mut Env, gas: &mut u64) -> Result<LispVal
                                 _ => return Err("define: need symbol".into()),
                             };
                             let val = match list.get(2) {
-                                Some(v) => lisp_eval(v, env, gas)?,
+                                Some(v) => lisp_eval(v, env)?,
                                 None => LispVal::Nil,
                             };
                             env.push(var, val);
                             return Ok(LispVal::Nil);
                         }
                         "if" => {
-                            let cond = lisp_eval(list.get(1).ok_or("if: need cond")?, env, gas)?;
+                            let cond = lisp_eval(list.get(1).ok_or("if: need cond")?, env)?;
                             current_expr = if is_truthy(&cond) {
                                 list.get(2).ok_or("if: need then")?.clone()
                             } else {
@@ -139,7 +143,7 @@ pub fn lisp_eval(expr: &LispVal, env: &mut Env, gas: &mut u64) -> Result<LispVal
                                             break;
                                         }
                                     }
-                                    let test = lisp_eval(&parts[0], env, gas)?;
+                                    let test = lisp_eval(&parts[0], env)?;
                                     if is_truthy(&test) {
                                         found = Some(parts.get(1).cloned().unwrap_or(test));
                                         break;
@@ -161,13 +165,13 @@ pub fn lisp_eval(expr: &LispVal, env: &mut Env, gas: &mut u64) -> Result<LispVal
                                 if let LispVal::List(pair) = b {
                                     if pair.len() == 2 {
                                         if let LispVal::Sym(name) = &pair[0] {
-                                            let val = lisp_eval(&pair[1], env, gas)?;
+                                            let val = lisp_eval(&pair[1], env)?;
                                             env.push(name.clone(), val);
                                         }
                                     }
                                 }
                             }
-                            let result = list.get(2).map(|e| lisp_eval(e, env, gas)).unwrap_or(Ok(LispVal::Nil));
+                            let result = list.get(2).map(|e| lisp_eval(e, env)).unwrap_or(Ok(LispVal::Nil));
                             env.truncate(base_len);
                             return result;
                         }
@@ -185,7 +189,7 @@ pub fn lisp_eval(expr: &LispVal, env: &mut Env, gas: &mut u64) -> Result<LispVal
                             let exprs = &list[1..];
                             if exprs.is_empty() { return Ok(LispVal::Nil); }
                             for e in &exprs[..exprs.len() - 1] {
-                                lisp_eval(e, env, gas)?;
+                                lisp_eval(e, env)?;
                             }
                             current_expr = exprs.last().unwrap().clone();
                             continue '_trampoline;
@@ -194,7 +198,7 @@ pub fn lisp_eval(expr: &LispVal, env: &mut Env, gas: &mut u64) -> Result<LispVal
                             if list.len() == 1 { return Ok(LispVal::Bool(true)); }
                             let exprs = &list[1..];
                             for e in &exprs[..exprs.len() - 1] {
-                                let r = lisp_eval(e, env, gas)?;
+                                let r = lisp_eval(e, env)?;
                                 if !is_truthy(&r) { return Ok(r); }
                             }
                             current_expr = exprs.last().unwrap().clone();
@@ -204,19 +208,19 @@ pub fn lisp_eval(expr: &LispVal, env: &mut Env, gas: &mut u64) -> Result<LispVal
                             if list.len() == 1 { return Ok(LispVal::Bool(false)); }
                             let exprs = &list[1..];
                             for e in &exprs[..exprs.len() - 1] {
-                                let r = lisp_eval(e, env, gas)?;
+                                let r = lisp_eval(e, env)?;
                                 if is_truthy(&r) { return Ok(r); }
                             }
                             current_expr = exprs.last().unwrap().clone();
                             continue '_trampoline;
                         }
                         "not" => {
-                            let v = lisp_eval(list.get(1).ok_or("not: need arg")?, env, gas)?;
+                            let v = lisp_eval(list.get(1).ok_or("not: need arg")?, env)?;
                             return Ok(LispVal::Bool(!is_truthy(&v)));
                         }
                         "try" => {
                             let expr_to_try = list.get(1).ok_or("try: need expression")?;
-                            let res = match lisp_eval(expr_to_try, env, gas) {
+                            let res = match lisp_eval(expr_to_try, env) {
                                 Ok(val) => return Ok(val),
                                 Err(err_msg) => {
                                     let catch_clause = list.get(2).ok_or("try: need catch clause")?;
@@ -232,7 +236,7 @@ pub fn lisp_eval(expr: &LispVal, env: &mut Env, gas: &mut u64) -> Result<LispVal
                                         let base_len = env.len() - 1;
                                         let mut r = LispVal::Nil;
                                         for body_expr in &clause[2..] {
-                                            r = lisp_eval(body_expr, env, gas)?;
+                                            r = lisp_eval(body_expr, env)?;
                                         }
                                         env.truncate(base_len);
                                         r
@@ -244,7 +248,7 @@ pub fn lisp_eval(expr: &LispVal, env: &mut Env, gas: &mut u64) -> Result<LispVal
                             return Ok(res);
                         }
                         "match" => {
-                            let val = lisp_eval(list.get(1).ok_or("match: need expr")?, env, gas)?;
+                            let val = lisp_eval(list.get(1).ok_or("match: need expr")?, env)?;
                             let mut matched: Option<(Vec<(String, LispVal)>, LispVal)> = None;
                             for clause in &list[2..] {
                                 if let LispVal::List(parts) = clause {
@@ -262,7 +266,7 @@ pub fn lisp_eval(expr: &LispVal, env: &mut Env, gas: &mut u64) -> Result<LispVal
                                     for (name, v) in bindings {
                                         env.push(name, v);
                                     }
-                                    let result = lisp_eval(&body, env, gas);
+                                    let result = lisp_eval(&body, env);
                                     env.truncate(base_len);
                                     return result;
                                 }
@@ -284,7 +288,7 @@ pub fn lisp_eval(expr: &LispVal, env: &mut Env, gas: &mut u64) -> Result<LispVal
                                         if pair.len() == 2 {
                                             if let LispVal::Sym(name) = &pair[0] {
                                                 binding_names.push(name.clone());
-                                                binding_vals.push(lisp_eval(&pair[1], env, gas)?);
+                                                binding_vals.push(lisp_eval(&pair[1], env)?);
                                             }
                                         }
                                     }
@@ -297,7 +301,7 @@ pub fn lisp_eval(expr: &LispVal, env: &mut Env, gas: &mut u64) -> Result<LispVal
                                 while i < bindings.len() {
                                     if let LispVal::Sym(name) = &bindings[i] {
                                         binding_names.push(name.clone());
-                                        binding_vals.push(lisp_eval(&bindings[i + 1], env, gas)?);
+                                        binding_vals.push(lisp_eval(&bindings[i + 1], env)?);
                                     } else {
                                         return Err(format!("loop: binding name must be sym, got {}", bindings[i]));
                                     }
@@ -309,7 +313,7 @@ pub fn lisp_eval(expr: &LispVal, env: &mut Env, gas: &mut u64) -> Result<LispVal
                                 for (i, name) in binding_names.iter().enumerate() {
                                     env.push(name.clone(), binding_vals[i].clone());
                                 }
-                                let result = lisp_eval(body, env, gas);
+                                let result = lisp_eval(body, env);
                                 env.truncate(base_len);
                                 match result? {
                                     LispVal::Recur(new_vals) => {
@@ -326,7 +330,7 @@ pub fn lisp_eval(expr: &LispVal, env: &mut Env, gas: &mut u64) -> Result<LispVal
                         "recur" => {
                             let vals: Vec<LispVal> = list[1..]
                                 .iter()
-                                .map(|a| lisp_eval(a, env, gas))
+                                .map(|a| lisp_eval(a, env))
                                 .collect::<Result<_, _>>()?;
                             return Ok(LispVal::Recur(vals));
                         }
@@ -349,7 +353,7 @@ pub fn lisp_eval(expr: &LispVal, env: &mut Env, gas: &mut u64) -> Result<LispVal
                                     let mut module_env = Env::new();
                                     let module_exprs = parse_all(code)?;
                                     for expr in &module_exprs {
-                                        lisp_eval(expr, &mut module_env, gas)?;
+                                        lisp_eval(expr, &mut module_env)?;
                                     }
                                     for (k, v) in module_env.into_bindings() {
                                         env.push(format!("{}/{}", pfx, k), v);
@@ -357,7 +361,7 @@ pub fn lisp_eval(expr: &LispVal, env: &mut Env, gas: &mut u64) -> Result<LispVal
                                 } else {
                                     let module_exprs = parse_all(code)?;
                                     for expr in &module_exprs {
-                                        lisp_eval(expr, env, gas)?;
+                                        lisp_eval(expr, env)?;
                                     }
                                 }
                                 env.push(marker, LispVal::Bool(true));
@@ -365,10 +369,10 @@ pub fn lisp_eval(expr: &LispVal, env: &mut Env, gas: &mut u64) -> Result<LispVal
                             }
                             return Err(format!("require: unknown module '{}'", module_name));
                         }
-                        _ => return dispatch_call(list, env, gas),
+                        _ => return dispatch_call(list, env),
                     }
                 } else {
-                    return dispatch_call(list, env, gas);
+                    return dispatch_call(list, env);
                 }
             }
         }
@@ -386,7 +390,6 @@ pub fn apply_lambda(
     closed_env: &Vec<(String, LispVal)>,
     args: &[LispVal],
     caller_env: &mut Env,
-    gas: &mut u64,
 ) -> Result<LispVal, String> {
     let base_len = caller_env.len();
     for (k, v) in closed_env {
@@ -399,7 +402,7 @@ pub fn apply_lambda(
         let rest_args: Vec<LispVal> = args.get(params.len()..).unwrap_or(&[]).to_vec();
         caller_env.push(rest_name.clone(), LispVal::List(rest_args));
     }
-    let result = lisp_eval(body, caller_env, gas);
+    let result = lisp_eval(body, caller_env);
     caller_env.truncate(base_len);
     result
 }
@@ -408,11 +411,11 @@ pub fn apply_lambda(
 // Function dispatch
 // ---------------------------------------------------------------------------
 
-fn dispatch_call(list: &[LispVal], env: &mut Env, gas: &mut u64) -> Result<LispVal, String> {
+fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
     let head = &list[0];
     let args: Vec<LispVal> = list[1..]
         .iter()
-        .map(|a| lisp_eval(a, env, gas))
+        .map(|a| lisp_eval(a, env))
         .collect::<Result<_, _>>()?;
 
     if let LispVal::Sym(name) = head {
@@ -707,7 +710,7 @@ fn dispatch_call(list: &[LispVal], env: &mut Env, gas: &mut u64) -> Result<LispV
                 Ok(json_to_lisp(cur.clone()))
             }
             "json-build" => {
-                let val = if args.len() == 1 { lisp_eval(&args[0], env, gas)? } else { args[0].clone() };
+                let val = if args.len() == 1 { lisp_eval(&args[0], env)? } else { args[0].clone() };
                 let j = lisp_to_json(&val);
                 Ok(LispVal::Str(j.to_string()))
             }
@@ -773,7 +776,7 @@ fn dispatch_call(list: &[LispVal], env: &mut Env, gas: &mut u64) -> Result<LispV
                 };
                 let mut result = Vec::with_capacity(lst.len());
                 for elem in &lst {
-                    result.push(call_val(func, &[elem.clone()], env, gas)?);
+                    result.push(call_val(func, &[elem.clone()], env)?);
                 }
                 Ok(LispVal::List(result))
             }
@@ -787,7 +790,7 @@ fn dispatch_call(list: &[LispVal], env: &mut Env, gas: &mut u64) -> Result<LispV
                 };
                 let mut result = Vec::new();
                 for elem in &lst {
-                    if is_truthy(&call_val(func, &[elem.clone()], env, gas)?) {
+                    if is_truthy(&call_val(func, &[elem.clone()], env)?) {
                         result.push(elem.clone());
                     }
                 }
@@ -803,7 +806,7 @@ fn dispatch_call(list: &[LispVal], env: &mut Env, gas: &mut u64) -> Result<LispV
                     None => return Err("reduce: need (f init list)".into()),
                 };
                 for elem in &lst {
-                    acc = call_val(func, &[acc.clone(), elem.clone()], env, gas)?;
+                    acc = call_val(func, &[acc.clone(), elem.clone()], env)?;
                 }
                 Ok(acc)
             }
@@ -816,7 +819,7 @@ fn dispatch_call(list: &[LispVal], env: &mut Env, gas: &mut u64) -> Result<LispV
                     None => return Err("find: need (pred list)".into()),
                 };
                 for elem in &lst {
-                    if is_truthy(&call_val(func, &[elem.clone()], env, gas)?) {
+                    if is_truthy(&call_val(func, &[elem.clone()], env)?) {
                         return Ok(elem.clone());
                     }
                 }
@@ -831,7 +834,7 @@ fn dispatch_call(list: &[LispVal], env: &mut Env, gas: &mut u64) -> Result<LispV
                     None => return Err("some: need (pred list)".into()),
                 };
                 for elem in &lst {
-                    if is_truthy(&call_val(func, &[elem.clone()], env, gas)?) {
+                    if is_truthy(&call_val(func, &[elem.clone()], env)?) {
                         return Ok(LispVal::Bool(true));
                     }
                 }
@@ -846,7 +849,7 @@ fn dispatch_call(list: &[LispVal], env: &mut Env, gas: &mut u64) -> Result<LispV
                     None => return Err("every: need (pred list)".into()),
                 };
                 for elem in &lst {
-                    if !is_truthy(&call_val(func, &[elem.clone()], env, gas)?) {
+                    if !is_truthy(&call_val(func, &[elem.clone()], env)?) {
                         return Ok(LispVal::Bool(false));
                     }
                 }
@@ -998,33 +1001,33 @@ fn dispatch_call(list: &[LispVal], env: &mut Env, gas: &mut u64) -> Result<LispV
                 let func = env.iter().rev().find(|(k, _)| k == name)
                     .map(|(_, v)| v.clone())
                     .ok_or_else(|| format!("undefined: {}", name))?;
-                call_val(&func, &args, env, gas)
+                call_val(&func, &args, env)
             }
         }
     } else if let LispVal::Lambda { params, rest_param, body, closed_env } = head {
-        apply_lambda(params, &rest_param, body, closed_env, &args, env, gas)
+        apply_lambda(params, &rest_param, body, closed_env, &args, env)
     } else if let LispVal::List(ll) = head {
         if ll.len() < 3 { return Err("inline lambda too short".into()); }
         let (params, rest_param) = parse_params(&ll[1])?;
-        apply_lambda(&params, &rest_param, &ll[2], &vec![], &args, env, gas)
+        apply_lambda(&params, &rest_param, &ll[2], &vec![], &args, env)
     } else {
         Err("not callable".into())
     }
 }
 
-fn call_val(func: &LispVal, args: &[LispVal], env: &mut Env, gas: &mut u64) -> Result<LispVal, String> {
+fn call_val(func: &LispVal, args: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
     match func {
         LispVal::Lambda { params, rest_param, body, closed_env } => {
-            apply_lambda(params, rest_param, body, closed_env, args, env, gas)
+            apply_lambda(params, rest_param, body, closed_env, args, env)
         }
         LispVal::List(ll) if ll.len() >= 3 => {
             let (params, rest_param) = parse_params(&ll[1])?;
-            apply_lambda(&params, &rest_param, &ll[2], &vec![], args, env, gas)
+            apply_lambda(&params, &rest_param, &ll[2], &vec![], args, env)
         }
         LispVal::Sym(_) => {
             let mut call = vec![func.clone()];
             call.extend(args.iter().cloned());
-            dispatch_call(&call, env, gas)
+            dispatch_call(&call, env)
         }
         _ => Err(format!("not callable: {}", func)),
     }

@@ -1,16 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
 
-pub const DEFAULT_EVAL_GAS_LIMIT: u64 = 1_000_000;
-
-#[inline]
-pub fn check_gas(gas: &mut u64) -> Result<(), String> {
-    if *gas == 0 {
-        return Err("out of gas".into());
-    }
-    *gas -= 1;
-    Ok(())
-}
-
 const MATH_STDLIB: &str = r#"
 (define abs (lambda (x) (if (< x 0) (- 0 x) x)))
 (define min (lambda (a b) (if (< a b) a b)))
