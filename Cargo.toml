@@ -1,0 +1,17 @@
+[package]
+name = "lisp-rlm"
+version = "0.1.0"
+edition = "2021"
+description = "Recursive Language Model runtime in Lisp"
+
+[[bin]]
+name = "rlm"
+path = "src/bin/rlm.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json"] }
+clap = { version = "4", features = ["derive"] }
+rustyline = "14"
