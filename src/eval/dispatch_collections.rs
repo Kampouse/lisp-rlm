@@ -1,11 +1,12 @@
 //! Collection builtins: list, car, cdr, cons, len, append, nth, range, reverse, sort, zip, empty?
 //! Also includes map, filter, reduce, find, some, every (higher-order).
+//!
+//! par-map and par-filter propagate the LLM provider into cloned envs.
 
 use crate::helpers::*;
 use crate::types::{Env, LispVal};
 
 /// Helper: call a function value with given args in the given env.
-/// We delegate to `super::call_val`.
 fn call_val(func: &LispVal, args: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
     super::call_val(func, args, env)
 }
@@ -13,11 +14,11 @@ fn call_val(func: &LispVal, args: &[LispVal], env: &mut Env) -> Result<LispVal, 
 pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<LispVal>, String> {
     match name {
         "list" => Ok(Some(LispVal::List(args.to_vec()))),
-        "car" => match args.get(0) {
+        "car" => match args.first() {
             Some(LispVal::List(l)) if !l.is_empty() => Ok(Some(l[0].clone())),
             _ => Ok(Some(LispVal::Nil)),
         },
-        "cdr" => match args.get(0) {
+        "cdr" => match args.first() {
             Some(LispVal::List(l)) if l.len() > 1 => Ok(Some(LispVal::List(l[1..].to_vec()))),
             Some(LispVal::List(_)) => Ok(Some(LispVal::List(vec![]))),
             _ => Ok(Some(LispVal::Nil)),
@@ -30,9 +31,9 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
             }
             _ => Ok(Some(LispVal::List(args.to_vec()))),
         },
-        "len" => match args.get(0) {
+        "len" => match args.first() {
             Some(LispVal::List(l)) => Ok(Some(LispVal::Num(l.len() as i64))),
-            Some(LispVal::Str(s)) => Ok(Some(LispVal::Num(s.len() as i64))),
+            Some(LispVal::Str(s)) => Ok(Some(LispVal::Num(s.chars().count() as i64))),
             Some(LispVal::Nil) => Ok(Some(LispVal::Num(0))),
             _ => Err("len: need list or string".into()),
         },
@@ -48,8 +49,12 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
             Ok(Some(LispVal::List(r)))
         }
         "nth" => {
-            let list_val = args.get(0).ok_or("nth: need list and index")?;
-            let i = as_num(args.get(1).ok_or("nth: need index")?)? as usize;
+            let list_val = args.first().ok_or("nth: need list and index")?;
+            let idx_raw = as_num(args.get(1).ok_or("nth: need index")?)?;
+            if idx_raw < 0 {
+                return Err(format!("nth: negative index {}", idx_raw));
+            }
+            let i = idx_raw as usize;
             match list_val {
                 LispVal::List(l) => l
                     .get(i)
@@ -59,12 +64,16 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
                 _ => Err("nth: first arg must be a list".into()),
             }
         }
-        "empty?" => Ok(Some(LispVal::Bool(
-            matches!(&args[0], LispVal::Nil)
-                || matches!(&args[0], LispVal::List(ref v) if v.is_empty()),
-        ))),
+        "empty?" => match args.first() {
+            Some(LispVal::Nil) => Ok(Some(LispVal::Bool(true))),
+            Some(LispVal::List(ref v)) if v.is_empty() => {
+                Ok(Some(LispVal::Bool(true)))
+            }
+            Some(_) => Ok(Some(LispVal::Bool(false))),
+            None => Err("empty?: need 1 argument".into()),
+        },
         "range" => {
-            let start = as_num(args.get(0).ok_or("range: need 2 args")?)?;
+            let start = as_num(args.first().ok_or("range: need 2 args")?)?;
             let end = as_num(args.get(1).ok_or("range: need 2 args")?)?;
             if start >= end {
                 return Ok(Some(LispVal::List(vec![])));
@@ -73,37 +82,40 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
                 (start..end).map(LispVal::Num).collect(),
             )))
         }
-        "reverse" => match &args[0] {
-            LispVal::List(l) => Ok(Some(LispVal::List(l.iter().rev().cloned().collect()))),
-            LispVal::Nil => Ok(Some(LispVal::List(vec![]))),
-            other => Err(format!("reverse: expected list, got {}", other)),
+        "reverse" => match args.first() {
+            Some(LispVal::List(l)) => Ok(Some(LispVal::List(l.iter().rev().cloned().collect()))),
+            Some(LispVal::Nil) => Ok(Some(LispVal::List(vec![]))),
+            Some(other) => Err(format!("reverse: expected list, got {}", other)),
+            None => Err("reverse: need 1 argument".into()),
         },
         "sort" => {
-            let mut vals = match &args[0] {
-                LispVal::List(l) => l.clone(),
-                LispVal::Nil => vec![],
-                other => return Err(format!("sort: expected list, got {}", other)),
+            let mut vals = match args.first() {
+                Some(LispVal::List(l)) => l.clone(),
+                Some(LispVal::Nil) => vec![],
+                Some(other) => return Err(format!("sort: expected list, got {}", other)),
+                None => return Err("sort: need 1 argument".into()),
             };
             vals.sort_by(|a, b| {
                 let fa = match a {
                     LispVal::Num(n) => *n as f64,
                     LispVal::Float(f) => *f,
-                    _ => 0.0,
+                    _ => return std::cmp::Ordering::Equal,
                 };
                 let fb = match b {
                     LispVal::Num(n) => *n as f64,
                     LispVal::Float(f) => *f,
-                    _ => 0.0,
+                    _ => return std::cmp::Ordering::Equal,
                 };
                 fa.partial_cmp(&fb).unwrap_or(std::cmp::Ordering::Equal)
             });
             Ok(Some(LispVal::List(vals)))
         }
         "zip" => {
-            let a = match &args[0] {
-                LispVal::List(l) => l.clone(),
-                LispVal::Nil => vec![],
-                other => return Err(format!("zip: expected list, got {}", other)),
+            let a = match args.first() {
+                Some(LispVal::List(l)) => l.clone(),
+                Some(LispVal::Nil) => vec![],
+                Some(other) => return Err(format!("zip: expected list, got {}", other)),
+                None => return Err("zip: need 2 args".into()),
             };
             let b = match args.get(1) {
                 Some(LispVal::List(l)) => l.clone(),
@@ -121,7 +133,7 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
 
         // Higher-order collection operations
         "map" => {
-            let func = args.get(0).ok_or("map: need (f list)")?;
+            let func = args.first().ok_or("map: need (f list)")?;
             let lst = match args.get(1) {
                 Some(LispVal::List(l)) => l.clone(),
                 Some(LispVal::Nil) => return Ok(Some(LispVal::List(vec![]))),
@@ -166,7 +178,7 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
             Ok(Some(LispVal::List(result)))
         }
         "filter" => {
-            let func = args.get(0).ok_or("filter: need (pred list)")?;
+            let func = args.first().ok_or("filter: need (pred list)")?;
             let lst = match args.get(1) {
                 Some(LispVal::List(l)) => l.clone(),
                 Some(LispVal::Nil) => return Ok(Some(LispVal::List(vec![]))),
@@ -216,7 +228,7 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
             Ok(Some(LispVal::List(result)))
         }
         "reduce" => {
-            let func = args.get(0).ok_or("reduce: need (f init list)")?;
+            let func = args.first().ok_or("reduce: need (f init list)")?;
             let mut acc = args.get(1).ok_or("reduce: need (f init list)")?.clone();
             let lst = match args.get(2) {
                 Some(LispVal::List(l)) => l.clone(),
@@ -224,23 +236,21 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
                 Some(other) => return Err(format!("reduce: expected list, got {}", other)),
                 None => return Err("reduce: need (f init list)".into()),
             };
-            let acc_str = acc.to_string();
-            for elem in &lst {
+            for (i, elem) in lst.iter().enumerate() {
                 let prev_acc = acc.clone();
                 acc = call_val(func, &[prev_acc.clone(), elem.clone()], env)?;
-                let new_acc_str = acc.to_string();
-                if new_acc_str == prev_acc.to_string() && !lst.is_empty() {
+                // Only warn on last iteration — accumulator didn't change through entire reduce
+                if i == lst.len() - 1 && acc.to_string() == prev_acc.to_string() && lst.len() > 1 {
                     eprintln!(
-                        "[WARN] reduce: accumulator unchanged after processing element. \
-                        Your function may be ignoring the current element. \
-                        Consider using (str-join sep lst) for string joining."
+                        "[WARN] reduce: accumulator unchanged after full pass. \
+                         Your function may be ignoring the current element."
                     );
                 }
             }
             Ok(Some(acc))
         }
         "find" => {
-            let func = args.get(0).ok_or("find: need (pred list)")?;
+            let func = args.first().ok_or("find: need (pred list)")?;
             let lst = match args.get(1) {
                 Some(LispVal::List(l)) => l.clone(),
                 Some(LispVal::Nil) => return Ok(Some(LispVal::Nil)),
@@ -255,7 +265,7 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
             Ok(Some(LispVal::Nil))
         }
         "some" => {
-            let func = args.get(0).ok_or("some: need (pred list)")?;
+            let func = args.first().ok_or("some: need (pred list)")?;
             let lst = match args.get(1) {
                 Some(LispVal::List(l)) => l.clone(),
                 Some(LispVal::Nil) => return Ok(Some(LispVal::Bool(false))),
@@ -270,7 +280,7 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
             Ok(Some(LispVal::Bool(false)))
         }
         "every" => {
-            let func = args.get(0).ok_or("every: need (pred list)")?;
+            let func = args.first().ok_or("every: need (pred list)")?;
             let lst = match args.get(1) {
                 Some(LispVal::List(l)) => l.clone(),
                 Some(LispVal::Nil) => return Ok(Some(LispVal::Bool(true))),
@@ -285,7 +295,7 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
             Ok(Some(LispVal::Bool(true)))
         }
         "par-map" => {
-            let func = args.get(0).ok_or("par-map: need (f list)")?;
+            let func = args.first().ok_or("par-map: need (f list)")?;
             let lst = match args.get(1) {
                 Some(LispVal::List(l)) => l.clone(),
                 Some(LispVal::Nil) => return Ok(Some(LispVal::List(vec![]))),
@@ -298,16 +308,19 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
 
             use std::sync::Arc;
             let func = Arc::new(func.clone());
+            let provider = env.llm_provider.as_ref().map(|p| p.box_clone());
             let rt = &crate::eval::llm_provider::SHARED_RUNTIME;
 
             let results: Result<Vec<LispVal>, String> = rt.block_on(async {
                 let mut tasks = Vec::with_capacity(lst.len());
                 for elem in lst {
                     let f = Arc::clone(&func);
-                    // Each task needs its own env clone since Env is not Sync
                     let mut task_env = env.clone();
+                    // Propagate the LLM provider into the cloned env
+                    if let Some(ref p) = provider {
+                        task_env.llm_provider = Some(p.box_clone());
+                    }
                     tasks.push(tokio::spawn(async move {
-                        // Small async yield to allow concurrency, then do CPU work
                         tokio::task::yield_now().await;
                         super::call_val(&f, &[elem], &mut task_env)
                     }));
@@ -325,7 +338,7 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
             Ok(Some(LispVal::List(results?)))
         }
         "par-filter" => {
-            let func = args.get(0).ok_or("par-filter: need (pred list)")?;
+            let func = args.first().ok_or("par-filter: need (pred list)")?;
             let lst = match args.get(1) {
                 Some(LispVal::List(l)) => l.clone(),
                 Some(LispVal::Nil) => return Ok(Some(LispVal::List(vec![]))),
@@ -338,6 +351,7 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
 
             use std::sync::Arc;
             let func = Arc::new(func.clone());
+            let provider = env.llm_provider.as_ref().map(|p| p.box_clone());
             let rt = &crate::eval::llm_provider::SHARED_RUNTIME;
 
             let results: Result<Vec<LispVal>, String> = rt.block_on(async {
@@ -345,6 +359,9 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
                 for elem in &lst {
                     let f = Arc::clone(&func);
                     let mut task_env = env.clone();
+                    if let Some(ref p) = provider {
+                        task_env.llm_provider = Some(p.box_clone());
+                    }
                     let e = elem.clone();
                     tasks.push(tokio::spawn(async move {
                         tokio::task::yield_now().await;

@@ -291,11 +291,19 @@ fn parse(tokens: &[Token], pos: &mut usize) -> Result<Spanned<LispVal>, String> 
         "nil" => Ok(Spanned::new(LispVal::Nil, line, col)),
         "true" => Ok(Spanned::new(LispVal::Bool(true), line, col)),
         "false" => Ok(Spanned::new(LispVal::Bool(false), line, col)),
-        s if s.starts_with('"') => Ok(Spanned::new(
-            LispVal::Str(s[1..s.len() - 1].to_string()),
-            line,
-            col,
-        )),
+        s if s.starts_with('"') => {
+            let inner = if s.len() >= 2 {
+                &s[1..s.len() - 1]
+            } else {
+                ""
+            };
+            let processed = inner
+                .replace("\\n", "\n")
+                .replace("\\t", "\t")
+                .replace("\\\\", "\\")
+                .replace("\\\"", "\"");
+            Ok(Spanned::new(LispVal::Str(processed), line, col))
+        }
         s => {
             if let Ok(n) = s.parse::<i64>() {
                 Ok(Spanned::new(LispVal::Num(n), line, col))

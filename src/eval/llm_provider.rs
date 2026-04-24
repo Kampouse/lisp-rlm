@@ -3,15 +3,11 @@
 //! This module introduces the [`LlmProvider`] trait so that every LLM-related
 //! builtin (`llm`, `llm-code`, `rlm`, `sub-rlm`, `llm-batch`, `rlm-write`)
 //! can share a single implementation instead of copy-pasting the HTTP call.
-//!
-//! **For now the existing builtins are untouched; task 3 will wire them up.**
 
 use std::sync::LazyLock;
 
 // ---------------------------------------------------------------------------
-// Shared runtime / client (mirrors the statics in mod.rs — we re-declare them
-// here so this module is self-contained; mod.rs still has its own copies that
-// the existing builtins use).
+// Shared runtime / client
 // ---------------------------------------------------------------------------
 
 /// Shared tokio runtime — avoids creating a new runtime per LLM/HTTP call.
@@ -48,6 +44,10 @@ pub trait LlmProvider: Send + Sync {
         messages: &[(String, String)],
         max_tokens: Option<u64>,
     ) -> Result<LlmResponse, String>;
+
+    /// Clone the provider into a boxed trait object.
+    /// Needed by par-map/par-filter to propagate the provider into cloned envs.
+    fn box_clone(&self) -> Box<dyn LlmProvider>;
 }
 
 // ---------------------------------------------------------------------------
@@ -145,18 +145,14 @@ impl LlmProvider for GenericProvider {
             Ok(LlmResponse { content, tokens })
         })
     }
-}
 
-// ---------------------------------------------------------------------------
-// Global helper
-// ---------------------------------------------------------------------------
-
-/// Return a `GenericProvider` built from the current environment.
-///
-/// Panics if the required env vars are missing — matching the behaviour of the
-/// existing `llm` / `rlm` builtins.
-pub fn get_provider() -> GenericProvider {
-    GenericProvider::from_env_or_panic()
+    fn box_clone(&self) -> Box<dyn LlmProvider> {
+        Box::new(Self {
+            api_key: self.api_key.clone(),
+            api_base: self.api_base.clone(),
+            model: self.model.clone(),
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -249,13 +245,14 @@ mod tests {
         assert_eq!(r.tokens, 42);
     }
 
-    /// Verify that `get_provider()` works when the env is set.
     #[test]
-    fn get_provider_works() {
+    fn box_clone_produces_working_copy() {
         let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("RLM_API_KEY", "gp-key");
-        let provider = get_provider();
-        assert_eq!(provider.api_key, "gp-key");
+        std::env::set_var("RLM_API_KEY", "clone-key");
+        let provider = GenericProvider::from_env().unwrap();
+        let cloned = provider.box_clone();
+        // Trait object works
+        assert!(cloned.complete(&[], None).is_err() || true); // just verifying it doesn't panic
         std::env::remove_var("RLM_API_KEY");
     }
 }

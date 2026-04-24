@@ -11,7 +11,9 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             let url = as_str(&args[0])?;
             let rt = &SHARED_RUNTIME;
             let body = rt.block_on(async {
-                reqwest::get(&url)
+                SHARED_CLIENT
+                    .get(url)
+                    .send()
                     .await
                     .map_err(|e| format!("http-get: {}", e))?
                     .text()
@@ -25,9 +27,8 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             let body_str = as_str(args.get(1).ok_or("http-post: need body")?)?;
             let rt = &SHARED_RUNTIME;
             let body = rt.block_on(async {
-                let client = &SHARED_CLIENT;
-                client
-                    .post(&url)
+                SHARED_CLIENT
+                    .post(url)
                     .header("Content-Type", "application/json")
                     .body(body_str)
                     .send()
@@ -43,7 +44,9 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             let url = as_str(&args[0])?;
             let rt = &SHARED_RUNTIME;
             let body = rt.block_on(async {
-                reqwest::get(&url)
+                SHARED_CLIENT
+                    .get(url)
+                    .send()
                     .await
                     .map_err(|e| format!("http-get-json: {}", e))?
                     .text()

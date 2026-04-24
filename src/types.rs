@@ -142,12 +142,16 @@ impl Env {
         }
     }
 
-    /// Insert or overwrite a binding, shadowing any previous binding with the
-    /// same name.
+    /// Insert or overwrite a binding.  When the name already exists, the old
+    /// entry is updated in place so the binding vector does not grow monotonically.
     pub fn push(&mut self, name: String, val: LispVal) {
-        let idx = self.bindings.len();
-        self.bindings.push((name.clone(), val));
-        self.index.insert(name, idx);
+        if let Some(&idx) = self.index.get(&name) {
+            self.bindings[idx].1 = val;
+        } else {
+            let idx = self.bindings.len();
+            self.bindings.push((name.clone(), val));
+            self.index.insert(name, idx);
+        }
     }
 
     /// Look up a binding by name, returning `None` if not found.

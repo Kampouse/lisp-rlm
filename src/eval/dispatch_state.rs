@@ -8,26 +8,26 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
         // --- Debug / print ---
         "error" => {
             let msg = args
-                .get(0)
+                .first()
                 .map(|v| format!("{}", v))
                 .unwrap_or_else(|| "error".to_string());
             Err(msg)
         }
         "debug" | "near/log-debug" => {
             let msg = args
-                .get(0)
+                .first()
                 .map(|v| format!("{}", v))
                 .unwrap_or_else(|| "debug".to_string());
             eprintln!("[DEBUG] {}", msg);
             Ok(Some(LispVal::Nil))
         }
         "trace" => {
-            let val = args.get(0).cloned().unwrap_or(LispVal::Nil);
+            let val = args.first().cloned().unwrap_or(LispVal::Nil);
             eprintln!("[TRACE] {}", val);
             Ok(Some(val))
         }
         "inspect" => {
-            let val = args.get(0).cloned().unwrap_or(LispVal::Nil);
+            let val = args.first().cloned().unwrap_or(LispVal::Nil);
             let type_str = match &val {
                 LispVal::Nil => "nil",
                 LispVal::Bool(_) => "boolean",
@@ -146,33 +146,33 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
             Ok(Some(LispVal::Bool(true)))
         }
         "rollback-to" => {
-            let idx = as_num(args.get(0).ok_or("rollback-to: need index")?)? as usize;
-            let snap = env
-                .snapshots
-                .get(idx)
-                .ok_or_else(|| format!("rollback-to: no snapshot at index {}", idx))?
-                .clone();
+            let idx = as_num(args.first().ok_or("rollback-to: need index")?)? as usize;
+            if idx >= env.snapshots.len() {
+                return Err(format!("rollback-to: no snapshot at index {}", idx));
+            }
+            // Remove the snapshot from the stack (and all above it)
+            let snap = env.snapshots.remove(idx);
             env.restore_snapshot(snap);
             Ok(Some(LispVal::Bool(true)))
         }
 
         // --- File I/O ---
-        "file/read" => {
+        "file/read" | "read-file" => {
             let path = as_str(&args[0])?;
             match std::fs::read_to_string(&path) {
                 Ok(s) => Ok(Some(LispVal::Str(s))),
-                Err(e) => Err(format!("file/read: {}", e)),
+                Err(e) => Err(format!("{}: {}", name, e)),
             }
         }
         "file/write" => {
             let path = as_str(&args[0])?;
             let content = as_str(&args[1])?;
-            match std::fs::write(&path, &content) {
+            match std::fs::write(&path, content) {
                 Ok(()) => Ok(Some(LispVal::Bool(true))),
                 Err(e) => Err(format!("file/write: {}", e)),
             }
         }
-        "file/exists?" => {
+        "file/exists?" | "file-exists?" => {
             let path = as_str(&args[0])?;
             Ok(Some(LispVal::Bool(std::path::Path::new(&path).exists())))
         }
@@ -190,22 +190,12 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
             }
         }
         "write-file" => {
+            // write-file is an alias for file/write — same behavior (raw content, no escaping)
             let path = as_str(&args[0])?;
             let content = as_str(&args[1])?;
-            let content = content
-                .replace("\\n", "\n")
-                .replace("\\t", "\t")
-                .replace("\\\"", "\"");
-            match std::fs::write(&path, &content) {
+            match std::fs::write(&path, content) {
                 Ok(()) => Ok(Some(LispVal::Bool(true))),
                 Err(e) => Err(format!("write-file: {}", e)),
-            }
-        }
-        "read-file" => {
-            let path = as_str(&args[0])?;
-            match std::fs::read_to_string(&path) {
-                Ok(s) => Ok(Some(LispVal::Str(s))),
-                Err(e) => Err(format!("read-file: {}", e)),
             }
         }
         "load-file" => {
@@ -230,10 +220,6 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
             f.write_all(content.as_bytes())
                 .map_err(|e| format!("append-file: {}", e))?;
             Ok(Some(LispVal::Bool(true)))
-        }
-        "file-exists?" => {
-            let path = as_str(&args[0])?;
-            Ok(Some(LispVal::Bool(std::path::Path::new(&path).exists())))
         }
 
         // --- Shell ---

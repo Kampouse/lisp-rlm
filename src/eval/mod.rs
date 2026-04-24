@@ -47,12 +47,10 @@ pub fn json_to_lisp(val: serde_json::Value) -> LispVal {
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
                 LispVal::Num(i)
-            } else if let Some(f) = n.as_f64() {
-                LispVal::Float(f)
-            } else if let Some(u) = n.as_u64() {
-                LispVal::Num(u as i64)
             } else {
-                LispVal::Num(0)
+                // as_f64() always succeeds for JSON numbers, but use it as fallback
+                // for values that don't fit in i64 (e.g. large u64)
+                LispVal::Float(n.as_f64().unwrap_or(0.0))
             }
         }
         serde_json::Value::String(s) => LispVal::Str(s),
@@ -294,6 +292,47 @@ fn rlm_fractal(
     let max_retries: usize = 3;
     let do_verify = std::env::var("RLM_VERIFY").unwrap_or_default() == "1";
 
+    // Global token/call budget to prevent unbounded LLM API calls in deep decomposition trees
+    let token_budget: usize = std::env::var("RLM_TOKEN_BUDGET")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(500_000);
+    let call_budget: usize = std::env::var("RLM_CALL_BUDGET")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(100);
+
+    if env.tokens_used >= token_budget {
+        eprintln!(
+            "[rlm depth={}] ⚠ token budget exceeded ({}/{}), returning best effort",
+            depth, env.tokens_used, token_budget
+        );
+        let best = env
+            .rlm_state
+            .get("result")
+            .cloned()
+            .unwrap_or(LispVal::Str(format!(
+                "Token budget exceeded ({} tokens used)",
+                env.tokens_used
+            )));
+        return Ok(best);
+    }
+    if env.llm_calls >= call_budget {
+        eprintln!(
+            "[rlm depth={}] ⚠ call budget exceeded ({}/{}), returning best effort",
+            depth, env.llm_calls, call_budget
+        );
+        let best = env
+            .rlm_state
+            .get("result")
+            .cloned()
+            .unwrap_or(LispVal::Str(format!(
+                "Call budget exceeded ({} calls used)",
+                env.llm_calls
+            )));
+        return Ok(best);
+    }
+
     // Clear stale RLM state from parent/sibling — each node starts clean
     let saved_state = env.rlm_state.clone();
     env.rlm_state.clear();
@@ -447,12 +486,16 @@ fn rlm_try_solve(task: &str, env: &mut Env, max_retries: usize) -> RlmNode {
             "user".to_string(),
             format!(
                 "Your task: {}\n\n\
-                 Write Lisp code to solve this. You MUST:\n\
+                 CRITICAL: Return ONLY Lisp code. NO English text, NO explanations, NO markdown.\n\
+                 Every line must be valid Lisp (start with ( or be a comment).\n\
+                 \n\
+                 Steps:\n\
                  1. Compute the result\n\
                  2. Verify it with (assert <condition>) — e.g. (assert (= result expected)), (assert (> len 0))\n\
                  3. Return it with (final <value>)\n\
+                 \n\
                  Without (assert ...), your answer is UNVERIFIED and will be rejected.\n\
-                 You have access to: llm, read-file, write-file, str-*, json-*, http-*, show-vars, rlm-set, rlm-get, assert.\n\
+                 Available: llm, read-file, write-file, str-*, json-*, http-*, show-vars, rlm-set, rlm-get, assert, filter, map, reduce, loop, nth, len.\n\
                  Available state: {}",
                 task,
                 rlm_state_summary(env)
@@ -461,6 +504,9 @@ fn rlm_try_solve(task: &str, env: &mut Env, max_retries: usize) -> RlmNode {
     ];
 
     for attempt in 0..=max_retries {
+        // Clear stale AssertPassed from previous iteration so each attempt starts clean
+        env.rlm_state.remove("AssertPassed");
+
         // Call LLM
         let resp = match env.llm_provider.as_ref().unwrap().complete(&messages, Some(8192)) {
             Ok(r) => r,
@@ -481,7 +527,7 @@ fn rlm_try_solve(task: &str, env: &mut Env, max_retries: usize) -> RlmNode {
                 if attempt < max_retries {
                     messages.push((
                         "user".to_string(),
-                        format!("Parse error: {}. Return valid Lisp.", truncate_str(&e, 200)),
+                        format!("Parse error: {}. Return ONLY valid Lisp code, no English text, no markdown.", truncate_str(&e, 200)),
                     ));
                     continue;
                 }
@@ -512,7 +558,7 @@ fn rlm_try_solve(task: &str, env: &mut Env, max_retries: usize) -> RlmNode {
                 messages.push((
                     "user".to_string(),
                     format!(
-                        "Runtime error (retry {}/{}): {}. Fix and retry.",
+                        "Runtime error (retry {}/{}): {}. Return ONLY Lisp code, no English.",
                         attempt + 1,
                         max_retries,
                         truncate_str(&err_msg, 200)
@@ -564,8 +610,8 @@ fn rlm_try_solve(task: &str, env: &mut Env, max_retries: usize) -> RlmNode {
             messages.push((
                 "user".to_string(),
                 format!(
-                    "Code ran but didn't call (final ...). Result: {}. \
-                     Either continue working or call (final \"answer\") to finish.",
+                    "Code ran but no (assert ...) and (final ...). Result: {}. \
+                     Return ONLY Lisp code: add (assert ...) then (final <value>).",
                     result_preview
                 ),
             ));
@@ -885,10 +931,19 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
                                     }
                                 }
                             }
-                            let result = list
-                                .get(2)
-                                .map(|e| lisp_eval(e, env))
-                                .unwrap_or(Ok(LispVal::Nil));
+                            // Evaluate ALL body forms (list[2..]), return the last one
+                            // Use a closure so env.truncate always runs even on error
+                            let body_exprs = &list[2..];
+                            let result: Result<LispVal, String> = (|| {
+                                if body_exprs.is_empty() {
+                                    return Ok(LispVal::Nil);
+                                }
+                                let mut r = LispVal::Nil;
+                                for e in body_exprs {
+                                    r = lisp_eval(e, env)?;
+                                }
+                                Ok(r)
+                            })();
                             env.truncate(base_len);
                             return result;
                         }
@@ -989,14 +1044,17 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
                                                 )
                                             }
                                         };
-                                        env.push(error_var, LispVal::Str(err_msg));
-                                        let base_len = env.len() - 1;
-                                        let mut r = LispVal::Nil;
-                                        for body_expr in &clause[2..] {
-                                            r = lisp_eval(body_expr, env)?;
-                                        }
+                                        env.push(error_var.clone(), LispVal::Str(err_msg));
+                                        let base_len = env.len();
+                                        let catch_result = (|| {
+                                            let mut r = LispVal::Nil;
+                                            for body_expr in &clause[2..] {
+                                                r = lisp_eval(body_expr, env)?;
+                                            }
+                                            Ok(r)
+                                        })();
                                         env.truncate(base_len);
-                                        r
+                                        catch_result?
                                     } else {
                                         return Err("try: catch clause must be a list".into());
                                     }
@@ -1496,31 +1554,6 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                 }
                 Ok(LispVal::Str(entries.join("\n")))
             }
-            "str-chunk" => {
-                let s = as_str(&args[0])?;
-                let n = as_num(args.get(1).ok_or("str-chunk: need n")?)? as usize;
-                if n == 0 {
-                    return Err("str-chunk: n must be > 0".into());
-                }
-                let chars: Vec<char> = s.chars().collect();
-                let total = chars.len();
-                let chunk_size = (total + n - 1) / n; // ceil division
-                if chunk_size == 0 {
-                    return Ok(LispVal::List(vec![
-                        LispVal::Str(String::new());
-                        n.min(total + 1)
-                    ]));
-                }
-                let mut chunks: Vec<LispVal> = Vec::new();
-                let mut i = 0;
-                while i < total {
-                    let end = (i + chunk_size).min(total);
-                    let chunk: String = chars[i..end].iter().collect();
-                    chunks.push(LispVal::Str(chunk));
-                    i += chunk_size;
-                }
-                Ok(LispVal::List(chunks))
-            }
             "llm-batch" => {
                 let prompts = match &args[0] {
                     LispVal::List(l) => l.clone(),
@@ -1685,14 +1718,11 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
                         .complete(&fix_messages, Some(8192))?;
                     env.tokens_used += fix_resp.tokens;
                     env.llm_calls += 1;
-                    if let Some(fixed) = Some(strip_markdown_fences(&fix_resp.content)) {
-                        if crate::parser::parse_all(&fixed).is_ok() {
-                            fixed
-                        } else {
-                            code
-                        }
+                    let fixed = strip_markdown_fences(&fix_resp.content);
+                    if crate::parser::parse_all(&fixed).is_ok() {
+                        fixed
                     } else {
-                        code.clone()
+                        code
                     }
                 } else {
                     code.clone()
