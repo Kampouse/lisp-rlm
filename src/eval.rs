@@ -1974,8 +1974,11 @@ Check empty list with (= (len lst) 0). Convert numbers with (to-string n).
 DO NOT wrap code in markdown fences. DO NOT add explanations."#;
 
                 let rt = tokio::runtime::Runtime::new().map_err(|e| format!("rlm-write: {}", e))?;
-                let code = rt.block_on(async {
+                let (code, calls): (String, usize) = rt.block_on(async {
                     let client = reqwest::Client::new();
+                    let mut calls: usize = 0;
+
+                    // Initial generation
                     let body = serde_json::json!({
                         "model": model,
                         "messages": [
@@ -1990,13 +1993,61 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
                         .send().await.map_err(|e| format!("rlm-write: {}", e))?;
                     let text = resp.text().await.map_err(|e| format!("rlm-write: {}", e))?;
                     let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("rlm-write: {}", e))?;
-                    v["choices"][0]["message"]["content"].as_str()
+                    let raw = v["choices"][0]["message"]["content"].as_str()
                         .map(|s| s.to_string())
-                        .ok_or_else(|| format!("rlm-write: unexpected response"))
+                        .ok_or_else(|| format!("rlm-write: unexpected response"))?;
+                    calls += 1;
+                    let code = strip_markdown_fences(&raw);
+
+                    // Verify parse, retry once if broken
+                    let final_code = if crate::parser::parse_all(&code).is_err() {
+                        let fix = format!("The previous code had a parse error. Write it again, fixed. Return ONLY valid raw Lisp code, no markdown, no explanations.");
+                        let body2 = serde_json::json!({
+                            "model": model,
+                            "messages": [
+                                {"role": "system", "content": sys},
+                                {"role": "assistant", "content": &code},
+                                {"role": "user", "content": fix}
+                            ],
+                            "max_tokens": 8192
+                        });
+                        let resp2 = client.post(format!("{}/chat/completions", api_base))
+                            .header("Authorization", format!("Bearer {}", api_key))
+                            .json(&body2)
+                            .send().await.map_err(|e| format!("rlm-write retry: {}", e))?;
+                        let text2 = resp2.text().await.map_err(|e| format!("rlm-write retry: {}", e))?;
+                        let v2: serde_json::Value = serde_json::from_str(&text2).map_err(|e| format!("rlm-write retry: {}", e))?;
+                        calls += 1;
+                        if let Some(fixed) = v2["choices"][0]["message"]["content"].as_str() {
+                            let fixed = strip_markdown_fences(fixed);
+                            if crate::parser::parse_all(&fixed).is_ok() { fixed } else { code }
+                        } else { code }
+                    } else { code };
+
+                    // Strip trailing write-file calls (rlm-write saves automatically)
+                    let final_code = final_code.trim_end().to_string();
+                    let final_code = if final_code.ends_with(")") {
+                        // Remove last top-level (write-file ...) if present
+                        let trimmed = final_code.trim_end();
+                        if trimmed.rfind("(write-file").map(|i| {
+                            // Check it's a top-level form (count parens before it)
+                            let before = &trimmed[..i];
+                            let open = before.chars().filter(|c| *c == '(').count();
+                            let close = before.chars().filter(|c| *c == ')').count();
+                            open == close // top-level if parens are balanced before it
+                        }).unwrap_or(false) {
+                            trimmed[..trimmed.rfind("(write-file").unwrap()].trim_end().to_string()
+                        } else {
+                            final_code
+                        }
+                    } else {
+                        final_code
+                    };
+
+                    Ok::<(String, usize), String>((final_code, calls))
                 })?;
 
-                env.llm_calls += 1;
-                let code = strip_markdown_fences(&code);
+                env.llm_calls += calls;
 
                 // Save to file if path provided
                 if let Some(ref path) = save_path {
