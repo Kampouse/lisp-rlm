@@ -1,4 +1,3 @@
-
 use crate::types::LispVal;
 
 // ---------------------------------------------------------------------------
@@ -38,7 +37,6 @@ fn tokenize(input: &str) -> Vec<String> {
             while i < len && chars[i] != '\n' {
                 i += 1;
             }
-            // skip the newline itself
             if i < len {
                 i += 1;
             }
@@ -56,6 +54,30 @@ fn tokenize(input: &str) -> Vec<String> {
                 }
                 i += 1;
             }
+        } else if ch == '`' {
+            // Quasiquote — tokenize as special token
+            if !cur.is_empty() {
+                tokens.push(cur.clone());
+                cur.clear();
+            }
+            tokens.push("#quasiquote".to_string());
+            i += 1;
+        } else if ch == ',' && i + 1 < len && chars[i + 1] == '@' {
+            // Splicing unquote ,@
+            if !cur.is_empty() {
+                tokens.push(cur.clone());
+                cur.clear();
+            }
+            tokens.push("#unquote-splicing".to_string());
+            i += 2;
+        } else if ch == ',' {
+            // Unquote ,
+            if !cur.is_empty() {
+                tokens.push(cur.clone());
+                cur.clear();
+            }
+            tokens.push("#unquote".to_string());
+            i += 1;
         } else if ch == '(' || ch == ')' {
             if !cur.is_empty() {
                 tokens.push(cur.clone());
@@ -100,6 +122,30 @@ fn parse(tokens: &[String], pos: &mut usize) -> Result<LispVal, String> {
             Ok(LispVal::List(list))
         }
         ")" => Err("unexpected )".into()),
+        "#quasiquote" => {
+            // (` form) => (quasiquote form)
+            let inner = parse(tokens, pos)?;
+            Ok(LispVal::List(vec![
+                LispVal::Sym("quasiquote".into()),
+                inner,
+            ]))
+        }
+        "#unquote" => {
+            // (, form) => (unquote form)
+            let inner = parse(tokens, pos)?;
+            Ok(LispVal::List(vec![
+                LispVal::Sym("unquote".into()),
+                inner,
+            ]))
+        }
+        "#unquote-splicing" => {
+            // (,@ form) => (unquote-splicing form)
+            let inner = parse(tokens, pos)?;
+            Ok(LispVal::List(vec![
+                LispVal::Sym("unquote-splicing".into()),
+                inner,
+            ]))
+        }
         "nil" => Ok(LispVal::Nil),
         "true" => Ok(LispVal::Bool(true)),
         "false" => Ok(LispVal::Bool(false)),

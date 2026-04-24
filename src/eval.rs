@@ -95,6 +95,7 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
             | LispVal::Float(_)
             | LispVal::Str(_)
             | LispVal::Lambda { .. }
+            | LispVal::Macro { .. }
             | LispVal::Map(_) => return Ok(current_expr.clone()),
             LispVal::Recur(_) => return Err("recur outside loop".into()),
             LispVal::Sym(name) => {
@@ -111,6 +112,11 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
                 if let LispVal::Sym(name) = &list[0] {
                     match name.as_str() {
                         "quote" => return Ok(list.get(1).cloned().unwrap_or(LispVal::Nil)),
+                        "quasiquote" => {
+                            let expanded = expand_quasiquote(list.get(1).ok_or("quasiquote: need form")?)?;
+                            current_expr = expanded;
+                            continue '_trampoline;
+                        }
                         "define" => {
                             let var = match list.get(1) {
                                 Some(LispVal::Sym(s)) => s.clone(),
@@ -184,6 +190,21 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
                                 body: Box::new(body.clone()),
                                 closed_env: Box::new(env.clone().into_bindings()),
                             });
+                        }
+                        "defmacro" => {
+                            let macro_name = match list.get(1) {
+                                Some(LispVal::Sym(s)) => s.clone(),
+                                _ => return Err("defmacro: first arg must be symbol".into()),
+                            };
+                            let (params, rest_param) = parse_params(list.get(2).ok_or("defmacro: need params")?)?;
+                            let body = list.get(3).ok_or("defmacro: need body")?;
+                            env.push(macro_name, LispVal::Macro {
+                                params,
+                                rest_param,
+                                body: Box::new(body.clone()),
+                                closed_env: Box::new(env.clone().into_bindings()),
+                            });
+                            return Ok(LispVal::Nil);
                         }
                         "progn" | "begin" => {
                             let exprs = &list[1..];
@@ -413,7 +434,20 @@ pub fn apply_lambda(
 
 fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
     let head = &list[0];
-    let args: Vec<LispVal> = list[1..]
+    let raw_args: Vec<LispVal> = list[1..].to_vec();
+
+    // Check if head resolves to a Macro — macros get unevaluated args
+    if let LispVal::Sym(name) = head {
+        if let Some((_, func)) = env.iter().rev().find(|(k, _)| k == name) {
+            if matches!(func, LispVal::Macro { .. }) {
+                let func_clone = func.clone();
+                return call_val(&func_clone, &raw_args, env);
+            }
+        }
+    }
+
+    // Normal path: evaluate args
+    let args: Vec<LispVal> = raw_args
         .iter()
         .map(|a| lisp_eval(a, env))
         .collect::<Result<_, _>>()?;
@@ -594,13 +628,15 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                 LispVal::Str(_) => "string",
                 LispVal::List(_) => "list",
                 LispVal::Map(_) => "map",
-                LispVal::Lambda { .. } => "lambda",
-                LispVal::Sym(_) => "symbol",
-                _ => "unknown",
+                    LispVal::Lambda { .. } => "lambda",
+                    LispVal::Macro { .. } => "macro",
+                    LispVal::Sym(_) => "symbol",
+                    _ => "unknown",
             }.to_string())),
             "bool?" => Ok(LispVal::Bool(matches!(&args[0], LispVal::Bool(_)))),
             "string?" => Ok(LispVal::Bool(matches!(&args[0], LispVal::Str(_)))),
             "map?" => Ok(LispVal::Bool(matches!(&args[0], LispVal::Map(_)))),
+            "macro?" => Ok(LispVal::Bool(matches!(&args[0], LispVal::Macro { .. }))),
             "error" => {
                 let msg = args.get(0).map(|v| format!("{}", v)).unwrap_or_else(|| "error".to_string());
                 Err(msg)
@@ -1020,6 +1056,11 @@ fn call_val(func: &LispVal, args: &[LispVal], env: &mut Env) -> Result<LispVal, 
         LispVal::Lambda { params, rest_param, body, closed_env } => {
             apply_lambda(params, rest_param, body, closed_env, args, env)
         }
+        LispVal::Macro { params, rest_param, body, closed_env } => {
+            // Macros receive UNEVALUATED args, return code to be evaluated
+            let expanded = apply_lambda(params, rest_param, body, closed_env, args, env)?;
+            lisp_eval(&expanded, env)
+        }
         LispVal::List(ll) if ll.len() >= 3 => {
             let (params, rest_param) = parse_params(&ll[1])?;
             apply_lambda(&params, &rest_param, &ll[2], &vec![], args, env)
@@ -1166,5 +1207,84 @@ fn keccakf(state: &mut [u64; 25]) {
 
         // ι
         state[0] ^= rc[round];
+    }
+}
+
+fn expand_quasiquote(form: &LispVal) -> Result<LispVal, String> {
+    match form {
+        LispVal::List(items) => {
+            // Check for (unquote x)
+            if items.len() == 2 {
+                if let LispVal::Sym(s) = &items[0] {
+                    if s == "unquote" {
+                        return Ok(items[1].clone());
+                    }
+                }
+            }
+
+            // Check if any element uses unquote-splicing
+            let has_splice = items.iter().any(|item| {
+                if let LispVal::List(splice_items) = item {
+                    splice_items.len() == 2
+                        && matches!(&splice_items[0], LispVal::Sym(s) if s == "unquote-splicing")
+                } else {
+                    false
+                }
+            });
+
+            if has_splice {
+                // Build (append seg1 seg2 ...) where each segment is either
+                // (list expanded_elem ...) for non-splice elements
+                // or the spliced expr directly for (unquote-splicing x)
+                let mut segments: Vec<LispVal> = Vec::new();
+                let mut current_list: Vec<LispVal> = vec![LispVal::Sym("list".to_string())];
+
+                for item in items {
+                    if let LispVal::List(splice_items) = item {
+                        if splice_items.len() == 2 {
+                            if let LispVal::Sym(s) = &splice_items[0] {
+                                if s == "unquote-splicing" {
+                                    // Flush current list segment
+                                    if current_list.len() > 1 {
+                                        segments.push(LispVal::List(current_list.clone()));
+                                    }
+                                    current_list = vec![LispVal::Sym("list".to_string())];
+                                    // Add spliced expression directly
+                                    segments.push(splice_items[1].clone());
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                    current_list.push(expand_quasiquote(item)?);
+                }
+                // Flush remaining items
+                if current_list.len() > 1 {
+                    segments.push(LispVal::List(current_list));
+                }
+
+                if segments.is_empty() {
+                    Ok(LispVal::List(vec![LispVal::Sym("list".to_string())]))
+                } else if segments.len() == 1 {
+                    Ok(segments.into_iter().next().unwrap())
+                } else {
+                    let mut append_form = vec![LispVal::Sym("append".to_string())];
+                    append_form.extend(segments);
+                    Ok(LispVal::List(append_form))
+                }
+            } else {
+                // No splicing — simple list construction
+                let mut result_items = vec![LispVal::Sym("list".to_string())];
+                for item in items {
+                    result_items.push(expand_quasiquote(item)?);
+                }
+                Ok(LispVal::List(result_items))
+            }
+        }
+        LispVal::Sym(_) => Ok(LispVal::List(vec![
+            LispVal::Sym("quote".to_string()),
+            form.clone(),
+        ])),
+        _ => Ok(form.clone()),
     }
 }

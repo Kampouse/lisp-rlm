@@ -163,6 +163,12 @@ pub enum LispVal {
         body: Box<LispVal>,
         closed_env: Box<Vec<(String, LispVal)>>,
     },
+    Macro {
+        params: Vec<String>,
+        rest_param: Option<String>,
+        body: Box<LispVal>,
+        closed_env: Box<Vec<(String, LispVal)>>,
+    },
     Recur(Vec<LispVal>),
     Map(BTreeMap<String, LispVal>),
 }
@@ -187,6 +193,9 @@ impl std::fmt::Display for LispVal {
             }
             LispVal::Lambda { params, .. } => {
                 write!(f, "#<lambda ({})>", params.join(" "))
+            }
+            LispVal::Macro { params, .. } => {
+                write!(f, "#<macro ({})>", params.join(" "))
             }
             LispVal::Recur(vals) => {
                 let parts: Vec<String> = vals.iter().map(|v| v.to_string()).collect();
