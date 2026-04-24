@@ -1473,7 +1473,7 @@ Available builtins:
                         let body = serde_json::json!({
                             "model": model,
                             "messages": messages,
-                            "max_tokens": 4096
+                            "max_tokens": 8192
                         });
                         let resp = client.post(format!("{}/chat/completions", api_base))
                             .header("Authorization", format!("Bearer {}", api_key))
@@ -1577,7 +1577,7 @@ Available builtins:
                                 let body = serde_json::json!({
                                     "model": model,
                                     "messages": messages,
-                                    "max_tokens": 4096
+                                    "max_tokens": 8192
                                 });
                                 let resp = client.post(format!("{}/chat/completions", api_base))
                                     .header("Authorization", format!("Bearer {}", api_key))
@@ -1654,7 +1654,7 @@ Available builtins:
                             let body = serde_json::json!({
                                 "model": model,
                                 "messages": messages,
-                                "max_tokens": 4096
+                                "max_tokens": 8192
                             });
                             let resp = client.post(format!("{}/chat/completions", api_base))
                                 .header("Authorization", format!("Bearer {}", api_key))
@@ -1737,6 +1737,7 @@ Available builtins:
 RULES:
 - Return ONLY raw Lisp code. No write-file wrapper, no explanations, no markdown fences.
 - The code will be saved to a file automatically and then loaded/executed.
+- DO NOT redefine these builtins: llm llm-code rlm rlm-write load-file read-file write-file snapshot rollback. Use them as-is.
 - Use ONLY these builtins (do NOT use null?, set!, load, or any not listed):
 
 Functions: define def let lambda if cond begin loop recur
@@ -1747,9 +1748,13 @@ Arithmetic: + - * / mod
 Comparison: = < > >= <= not
 Logic: and or
 Types: to-string to-int to-float number? string? list? empty? nil? bool?
+LLM: llm llm-code
+State: rlm-set rlm-get
 Error: try catch error
 Check empty list with (= (len lst) 0), NOT null?
-Convert numbers to strings with (to-string n)"#;
+Convert numbers to strings with (to-string n)
+Use (llm-code "prompt") to call the LLM and get executable Lisp code back
+Use (llm "prompt") to call the LLM and get a text response"#;
 
                 let rt = tokio::runtime::Runtime::new().map_err(|e| format!("rlm-write: {}", e))?;
                 let code = rt.block_on(async {
@@ -1760,7 +1765,7 @@ Convert numbers to strings with (to-string n)"#;
                             {"role": "system", "content": sys},
                             {"role": "user", "content": task}
                         ],
-                        "max_tokens": 4096
+                        "max_tokens": 8192
                     });
                     let resp = client.post(format!("{}/chat/completions", api_base))
                         .header("Authorization", format!("Bearer {}", api_key))
