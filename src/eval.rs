@@ -802,10 +802,12 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                 Ok(LispVal::List(r))
             }
             "nth" => {
-                let i = as_num(args.get(0).ok_or("nth: need index")?)? as usize;
-                match args.get(1) {
-                    Some(LispVal::List(l)) => l.get(i).cloned().ok_or("index out of range".into()),
-                    _ => Err("nth: need list".into()),
+                // Standard Lisp order: (nth list index)
+                let list_val = args.get(0).ok_or("nth: need list and index")?;
+                let i = as_num(args.get(1).ok_or("nth: need index")?)? as usize;
+                match list_val {
+                    LispVal::List(l) => l.get(i).cloned().ok_or("nth: index out of range".into()),
+                    _ => Err("nth: first arg must be a list".into()),
                 }
             }
             "str-concat" => {
