@@ -810,6 +810,30 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                     Some(other) => return Err(format!("map: expected list, got {}", other)),
                     None => return Err("map: need (f list)".into()),
                 };
+                // Fast path: compile single-param lambda to bytecode
+                if let LispVal::Lambda { params, rest_param: None, body, closed_env } = func {
+                    if params.len() == 1 {
+                        if let Some(cl) = crate::bytecode::try_compile_lambda(
+                            params, body, closed_env, env,
+                        ) {
+                            if lst.is_empty() {
+                                return Ok(LispVal::List(vec![]));
+                            }
+                            // Try first element — if bytecode can't handle it (macro,
+                            // user fn, etc), fall back gracefully
+                            if let Ok(first_result) = crate::bytecode::run_compiled_lambda(&cl, &[lst[0].clone()]) {
+                                let mut result = Vec::with_capacity(lst.len());
+                                result.push(first_result);
+                                for elem in &lst[1..] {
+                                    result.push(crate::bytecode::run_compiled_lambda(&cl, &[elem.clone()])?);
+                                }
+                                return Ok(LispVal::List(result));
+                            }
+                            // First element failed — fall through to eval path
+                        }
+                    }
+                }
+                // Fallback: full eval per element
                 let mut result = Vec::with_capacity(lst.len());
                 for elem in &lst {
                     result.push(call_val(func, &[elem.clone()], env)?);
@@ -824,6 +848,35 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                     Some(other) => return Err(format!("filter: expected list, got {}", other)),
                     None => return Err("filter: need (pred list)".into()),
                 };
+                // Fast path: compile single-param lambda to bytecode
+                if let LispVal::Lambda { params, rest_param: None, body, closed_env } = func {
+                    if params.len() == 1 {
+                        if let Some(cl) =
+                            crate::bytecode::try_compile_lambda(params, body, closed_env, env)
+                        {
+                            if lst.is_empty() {
+                                return Ok(LispVal::List(vec![]));
+                            }
+                            // Try first element — if bytecode can't handle it, fall back
+                            if let Ok(first_result) =
+                                crate::bytecode::run_compiled_lambda(&cl, &[lst[0].clone()])
+                            {
+                                let mut result = Vec::new();
+                                if is_truthy(&first_result) {
+                                    result.push(lst[0].clone());
+                                }
+                                for elem in &lst[1..] {
+                                    if is_truthy(&crate::bytecode::run_compiled_lambda(&cl, &[elem.clone()])?) {
+                                        result.push(elem.clone());
+                                    }
+                                }
+                                return Ok(LispVal::List(result));
+                            }
+                            // First element failed — fall through to eval path
+                        }
+                    }
+                }
+                // Fallback: full eval per element
                 let mut result = Vec::new();
                 for elem in &lst {
                     if is_truthy(&call_val(func, &[elem.clone()], env)?) {

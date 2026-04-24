@@ -1199,7 +1199,10 @@ pub fn eval_builtin(name: &str, args: &[LispVal]) -> Result<LispVal, String> {
             _ => Ok(LispVal::Nil),
         },
         "str-concat" => {
-            let s: String = args.iter().map(|a| format!("{}", a)).collect();
+            let s: String = args.iter().map(|a| match a {
+                LispVal::Str(st) => st.clone(),
+                _ => format!("{}", a),
+            }).collect();
             Ok(LispVal::Str(s))
         },
         "str-length" => match args.get(0) {
