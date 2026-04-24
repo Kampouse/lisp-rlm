@@ -96,7 +96,7 @@ fn test_loop_reverse_list() {
             (loop (remaining lst acc (list))
               (if (nil? remaining)
                 acc
-                (recur (cdr remaining) (cons (nth 0 remaining) acc))))))
+                (recur (cdr remaining) (cons (nth remaining 0) acc))))))
         (reverse-list (list 1 2 3 4 5))
     "#
         ),

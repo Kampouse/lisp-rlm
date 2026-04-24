@@ -322,7 +322,7 @@ fn test_list_ops() {
     assert_eq!(eval_str("(car (list 1 2 3))"), "1");
     assert_eq!(eval_str("(cdr (list 1 2 3))"), "(2 3)");
     assert_eq!(eval_str("(len (list 1 2 3))"), "3");
-    assert_eq!(eval_str("(nth 1 (list 10 20 30))"), "20");
+    assert_eq!(eval_str("(nth (list 10 20 30) 1)"), "20");
     assert_eq!(eval_str("(cons 0 (list 1 2))"), "(0 1 2)");
     assert_eq!(eval_str("(append (list 1 2) (list 3 4))"), "(1 2 3 4)");
 }
@@ -533,15 +533,15 @@ fn test_nested_arithmetic() {
 }
 #[test]
 fn test_nth_first() {
-    assert_eq!(eval_str("(nth 0 (list 10 20 30))"), "10");
+    assert_eq!(eval_str("(nth (list 10 20 30) 0)"), "10");
 }
 #[test]
 fn test_nth_last() {
-    assert_eq!(eval_str("(nth 2 (list 10 20 30))"), "30");
+    assert_eq!(eval_str("(nth (list 10 20 30) 2)"), "30");
 }
 #[test]
 fn test_nth_out_of_bounds() {
-    let result = eval_str("(nth 5 (list 1 2 3))");
+    let result = eval_str("(nth (list 1 2 3) 5)");
     assert!(
         result.contains("ERROR") || result == "nil",
         "out of bounds: {}",
