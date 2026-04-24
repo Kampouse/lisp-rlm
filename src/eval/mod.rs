@@ -302,10 +302,10 @@ fn rlm_fractal(
     let solve_result = rlm_try_solve(&task, env, max_retries);
 
     match solve_result {
-        RlmNode::Solved(result) => {
-            // BLACK node — solved directly
+        RlmNode::Black(result) => {
+            // Generation (RED) → Execution succeeded → BLACK
             eprintln!(
-                "[rlm depth={}] ✓ SOLVED directly (black node)",
+                "[rlm depth={}] ■ BLACK: generation verified, result confirmed",
                 depth
             );
             // Optional verification
@@ -322,9 +322,10 @@ fn rlm_fractal(
                 return Ok(result);
             }
         }
-        RlmNode::Failed(reason) => {
+        RlmNode::Red(reason) => {
+            // Generation (RED) → Execution failed → stays RED → must split
             eprintln!(
-                "[rlm depth={}] ✗ FAILED: {} (red node)",
+                "[rlm depth={}] ■ RED: generation unverified — {}",
                 depth, reason
             );
         }
@@ -427,9 +428,11 @@ fn rlm_fractal(
 }
 
 /// Result of a single try-solve attempt
+/// RED = generation (LLM produced output, needs verification)
+/// BLACK = success (output verified via execution)
 enum RlmNode {
-    Solved(LispVal),
-    Failed(String),
+    Black(LispVal),   // Generated (RED) → Executed → Success → BLACK
+    Red(String),      // Generated (RED) → Execution failed → stays RED → trigger split
 }
 
 /// Try to solve a task in one shot: generate Lisp code, eval it, check for (final ...)
@@ -457,7 +460,7 @@ fn rlm_try_solve(task: &str, env: &mut Env, max_retries: usize) -> RlmNode {
         // Call LLM
         let resp = match env.llm_provider.as_ref().unwrap().complete(&messages, Some(8192)) {
             Ok(r) => r,
-            Err(e) => return RlmNode::Failed(format!("LLM error: {}", e)),
+            Err(e) => return RlmNode::Red(format!("LLM error: {}", e)),
         };
         env.tokens_used += resp.tokens;
         env.llm_calls += 1;
@@ -478,7 +481,7 @@ fn rlm_try_solve(task: &str, env: &mut Env, max_retries: usize) -> RlmNode {
                     ));
                     continue;
                 }
-                return RlmNode::Failed(format!("Parse error after {} retries: {}", max_retries, e));
+                return RlmNode::Red(format!("Parse error after {} retries: {}", max_retries, e));
             }
         };
 
@@ -513,7 +516,7 @@ fn rlm_try_solve(task: &str, env: &mut Env, max_retries: usize) -> RlmNode {
                 ));
                 continue;
             }
-            return RlmNode::Failed(format!("Runtime error: {}", err_msg));
+            return RlmNode::Red(format!("Runtime error: {}", err_msg));
         }
 
         // Check if (final ...) was called
@@ -525,9 +528,9 @@ fn rlm_try_solve(task: &str, env: &mut Env, max_retries: usize) -> RlmNode {
 
         if is_final {
             if let Some(r) = env.rlm_state.get("result") {
-                return RlmNode::Solved(r.clone());
+                return RlmNode::Black(r.clone());
             }
-            return RlmNode::Solved(result);
+            return RlmNode::Black(result);
         }
 
         // Code ran but didn't call (final ...) — not done yet
@@ -545,10 +548,10 @@ fn rlm_try_solve(task: &str, env: &mut Env, max_retries: usize) -> RlmNode {
         }
 
         // Used all retries without final — treat as fail (trigger split)
-        return RlmNode::Failed("Did not produce (final ...) after all retries".to_string());
+        return RlmNode::Red("Did not produce (final ...) after all retries".to_string());
     }
 
-    RlmNode::Failed("Exhausted all retries".to_string())
+    RlmNode::Red("Exhausted all retries".to_string())
 }
 
 /// Decompose a failed task into exactly 2 subtasks
