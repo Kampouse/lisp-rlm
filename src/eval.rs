@@ -1953,7 +1953,23 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                 let model = std::env::var("RLM_MODEL")
                     .unwrap_or_else(|_| "glm-5.1".to_string());
 
-                let sys = RLM_SYSTEM_PROMPT;
+                let sys = r#"You are a Lisp code generator. Return ONLY raw Lisp code — no markdown fences, no explanations, no backticks, no non-Lisp text.
+
+Available builtins:
+- Functions: define def let lambda if cond begin loop recur set!
+- IO: print println read-file write-file append-file load-file
+- Strings: str-concat str-split str-length str-substring str-trim str-contains str-chunk
+- Lists: list cons car cdr nth len append reverse map filter reduce sort range
+- Arithmetic: + - * / mod
+- Comparison: = < > >= <= not and or
+- Types: to-string to-int to-float number? string? list? empty? nil?
+- LLM: llm llm-batch sub-rlm
+- State: rlm-set rlm-get
+- Agent: show-vars show-context final final-var snapshot rollback
+- Error: try catch error
+
+Check empty list with (= (len lst) 0). Convert numbers with (to-string n).
+DO NOT wrap code in markdown fences. DO NOT add explanations."#;
 
                 let rt = tokio::runtime::Runtime::new().map_err(|e| format!("rlm-write: {}", e))?;
                 let code = rt.block_on(async {
