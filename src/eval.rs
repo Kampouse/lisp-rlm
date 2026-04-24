@@ -639,6 +639,7 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
             },
             "cdr" => match args.get(0) {
                 Some(LispVal::List(l)) if l.len() > 1 => Ok(LispVal::List(l[1..].to_vec())),
+                Some(LispVal::List(_)) => Ok(LispVal::List(vec![])),  // empty tail → ()
                 _ => Ok(LispVal::Nil),
             },
             "cons" => match args.get(1) {
@@ -652,6 +653,7 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
             "len" => match args.get(0) {
                 Some(LispVal::List(l)) => Ok(LispVal::Num(l.len() as i64)),
                 Some(LispVal::Str(s)) => Ok(LispVal::Num(s.len() as i64)),
+                Some(LispVal::Nil) => Ok(LispVal::Num(0)),
                 _ => Err("len: need list or string".into()),
             },
             "append" => {
