@@ -1198,6 +1198,8 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
             "write-file" => {
                 let path = as_str(&args[0])?;
                 let content = as_str(&args[1])?;
+                // Unescape common sequences
+                let content = content.replace("\\n", "\n").replace("\\t", "\t").replace("\\\"", "\"");
                 match std::fs::write(&path, &content) {
                     Ok(()) => Ok(LispVal::Bool(true)),
                     Err(e) => Err(format!("write-file: {}", e)),
@@ -1713,6 +1715,73 @@ Available builtins:
             // --- Token tracking ---
             "rlm-tokens" => Ok(LispVal::Num(env.tokens_used as i64)),
             "rlm-calls" => Ok(LispVal::Num(env.llm_calls as i64)),
+            "rlm-write" => {
+                // Like (rlm "task") but returns the generated code as a string
+                // Also saves to file if path is provided as second arg
+                let task = as_str(&args[0])?;
+                let save_path = args.get(1).map(|v| as_str(v)).transpose()?;
+
+                let api_key = std::env::var("RLM_API_KEY")
+                    .or_else(|_| std::env::var("OPENAI_API_KEY"))
+                    .or_else(|_| std::env::var("GLM_API_KEY"))
+                    .map_err(|_| "rlm-write: set API key env var")?;
+                let api_base = std::env::var("RLM_API_BASE")
+                    .unwrap_or_else(|_| "https://api.z.ai/api/coding/paas/v4".to_string());
+                let model = std::env::var("RLM_MODEL")
+                    .unwrap_or_else(|_| "glm-5.1".to_string());
+
+                let sys = r#"You are a Lisp programmer for the lisp-rlm runtime. Given a task, write a COMPLETE, self-contained Lisp program. 
+
+RULES:
+- Return ONLY raw Lisp code. No write-file wrapper, no explanations, no markdown fences.
+- The code will be saved to a file automatically and then loaded/executed.
+- Use ONLY these builtins (do NOT use null?, set!, load, or any not listed):
+
+Functions: define def let lambda if cond begin loop recur
+IO: print println read-file write-file append-file file-exists?
+Strings: str-split str-concat str-length str-substring str-trim str-contains str-upcase str-downcase
+Lists: list cons car cdr nth len append reverse map filter reduce sort range
+Arithmetic: + - * / mod
+Comparison: = < > >= <= not
+Logic: and or
+Types: to-string to-int to-float number? string? list? empty? nil? bool?
+Error: try catch error
+Check empty list with (= (len lst) 0), NOT null?
+Convert numbers to strings with (to-string n)"#;
+
+                let rt = tokio::runtime::Runtime::new().map_err(|e| format!("rlm-write: {}", e))?;
+                let code = rt.block_on(async {
+                    let client = reqwest::Client::new();
+                    let body = serde_json::json!({
+                        "model": model,
+                        "messages": [
+                            {"role": "system", "content": sys},
+                            {"role": "user", "content": task}
+                        ],
+                        "max_tokens": 4096
+                    });
+                    let resp = client.post(format!("{}/chat/completions", api_base))
+                        .header("Authorization", format!("Bearer {}", api_key))
+                        .json(&body)
+                        .send().await.map_err(|e| format!("rlm-write: {}", e))?;
+                    let text = resp.text().await.map_err(|e| format!("rlm-write: {}", e))?;
+                    let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("rlm-write: {}", e))?;
+                    v["choices"][0]["message"]["content"].as_str()
+                        .map(|s| s.to_string())
+                        .ok_or_else(|| format!("rlm-write: unexpected response"))
+                })?;
+
+                env.llm_calls += 1;
+                let code = strip_markdown_fences(&code);
+
+                // Save to file if path provided
+                if let Some(ref path) = save_path {
+                    let unescaped = code.replace("\\n", "\n").replace("\\t", "\t");
+                    std::fs::write(path, &unescaped).map_err(|e| format!("rlm-write: {}", e))?;
+                }
+
+                Ok(LispVal::Str(code))
+            }
             // --- Env ---
             "env/get" => {
                 let key = as_str(&args[0])?;
