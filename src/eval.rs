@@ -1209,7 +1209,10 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                     let client = reqwest::Client::new();
                     let body = serde_json::json!({
                         "model": model,
-                        "messages": [{"role": "user", "content": prompt}],
+                        "messages": [
+                            {"role": "system", "content": "You are a helpful assistant with access to a Lisp runtime called lisp-rlm. You can reason about problems and suggest Lisp code using the available builtins: + - * / mod = < > <= >= not and or list cons car cdr nth len append reverse map filter reduce sort range zip find some every nil? list? number? string? bool? map? type? empty? str-concat str-contains str-split str-trim str-upcase str-downcase str-length str-substring str-index-of str-starts-with str-ends-with print println read-file write-file append-file file-exists? shell http-get http-post http-get-json from-json to-json sha256 keccak256 to-int to-float to-string define def let lambda if cond match quote quasiquote loop recur begin progn defmacro require try catch error"},
+                            {"role": "user", "content": prompt}
+                        ],
                         "max_tokens": 2048
                     });
                     let resp = client.post(format!("{}/chat/completions", api_base))
@@ -1238,13 +1241,30 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                 let model = std::env::var("RLM_MODEL")
                     .unwrap_or_else(|_| "glm-5.1".to_string());
 
+                let builtin_ref = r#"You are a Lisp code generator for lisp-rlm. Return ONLY valid Lisp expressions. No explanations, no markdown fences.
+
+Available builtins:
+- Arithmetic: + - * / mod
+- Comparison: = < > <= >= not
+- Logic: and or
+- Lists: list cons car cdr nth len append reverse map filter reduce sort range zip find some every
+- Predicates: nil? list? number? string? bool? map? macro? type? empty?
+- Strings: str-concat str-contains str-split str-trim str-upcase str-downcase str-length str-substring str-index-of str-starts-with str-ends-with
+- IO: print println read-file write-file append-file file-exists? shell
+- HTTP: http-get http-post http-get-json
+- JSON: from-json to-json json-parse json-get json-get-in json-build
+- LLM: llm llm-code
+- Crypto: sha256 keccak256
+- Types: to-int to-float to-string to-num
+- Special forms: define def let lambda if cond match quote quasiquote unquote unquote-splicing loop recur begin progn defmacro require try catch error"#;
+
                 let rt = tokio::runtime::Runtime::new().map_err(|e| format!("llm-code: {}", e))?;
                 let code_str = rt.block_on(async {
                     let client = reqwest::Client::new();
                     let body = serde_json::json!({
                         "model": model,
                         "messages": [
-                            {"role": "system", "content": "You are a Lisp code generator. Return ONLY valid Lisp expressions. No explanations, no markdown."},
+                            {"role": "system", "content": builtin_ref},
                             {"role": "user", "content": prompt}
                         ],
                         "max_tokens": 2048
