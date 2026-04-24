@@ -644,6 +644,13 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
             }
             "str-contains" => Ok(LispVal::Bool(as_str(&args[0])?.contains(&as_str(&args[1])?))),
             "to-string" => Ok(LispVal::Str(args[0].to_string())),
+            "read" => {
+                let s = as_str(&args[0])?;
+                match crate::parser::parse_all(&s) {
+                    Ok(exprs) => exprs.into_iter().next().ok_or_else(|| "read: empty input".to_string()),
+                    Err(e) => Err(format!("read: parse error: {}", e)),
+                }
+            }
             "str-length" => {
                 let s = as_str(&args[0])?;
                 Ok(LispVal::Num(s.chars().count() as i64))

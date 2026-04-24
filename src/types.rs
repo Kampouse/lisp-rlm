@@ -104,7 +104,7 @@ pub struct Env {
 impl Env {
     /// Create a new empty environment with [`DEFAULT_EVAL_BUDGET`].
     pub fn new() -> Self {
-        Env {
+        let mut env = Env {
             bindings: Vec::new(),
             index: HashMap::new(),
             eval_count: 0,
@@ -114,7 +114,12 @@ impl Env {
             tokens_used: 0,
             llm_calls: 0,
             rlm_depth: 0,
-        }
+        };
+        // Common aliases
+        env.push("t".to_string(), LispVal::Bool(true));
+        env.push("true".to_string(), LispVal::Bool(true));
+        env.push("false".to_string(), LispVal::Bool(false));
+        env
     }
 
     /// Create an environment pre-populated with the given bindings.
