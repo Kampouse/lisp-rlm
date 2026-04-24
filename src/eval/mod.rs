@@ -266,6 +266,441 @@ pub fn lisp_eval(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
     stacker::maybe_grow(64 * 1024, 2 * 1024 * 1024, || lisp_eval_inner(expr, env))
 }
 
+// ---------------------------------------------------------------------------
+// Fractal RLM: try-solve → fail → binary split → recurse
+// ---------------------------------------------------------------------------
+//
+// Each node:
+//   1. TRY to solve the task in one LLM call (generate + eval Lisp code)
+//   2. If solved (code runs + sets (final ...)) → BLACK node, return result
+//   3. If failed (parse/eval error, or didn't call final) → RED node, decompose:
+//      a. Ask LLM to split task into exactly 2 subtasks
+//      b. Recurse on each (DFS: left first)
+//      c. Synthesize children's results into final answer
+//
+// Properties:
+//   - O(1) context per node (fresh messages, no history inheritance)
+//   - O(log n) depth via max_depth guard
+//   - "No two reds in a row": children always try-solve first
+//   - Token budget per node prevents runaway
+// ---------------------------------------------------------------------------
+
+fn rlm_fractal(
+    task: String,
+    env: &mut Env,
+    depth: usize,
+    max_depth: usize,
+) -> Result<LispVal, String> {
+    let max_retries: usize = 3;
+    let do_verify = std::env::var("RLM_VERIFY").unwrap_or_default() == "1";
+
+    // --- Phase 1: TRY to solve in one shot ---
+    let solve_result = rlm_try_solve(&task, env, max_retries);
+
+    match solve_result {
+        RlmNode::Solved(result) => {
+            // BLACK node — solved directly
+            eprintln!(
+                "[rlm depth={}] ✓ SOLVED directly (black node)",
+                depth
+            );
+            // Optional verification
+            if do_verify {
+                if let Some(verified) = rlm_verify(&task, &result, env)? {
+                    return Ok(verified);
+                }
+                // Verification failed — fall through to split
+            } else {
+                return Ok(result);
+            }
+        }
+        RlmNode::Failed(reason) => {
+            eprintln!(
+                "[rlm depth={}] ✗ FAILED: {} (red node)",
+                depth, reason
+            );
+        }
+    }
+
+    // --- Phase 2: Can we split further? ---
+    if depth >= max_depth {
+        eprintln!(
+            "[rlm depth={}] ⚠ max depth reached, returning best effort",
+            depth
+        );
+        // Return whatever we have in state
+        let best = env
+            .rlm_state
+            .get("result")
+            .cloned()
+            .unwrap_or(LispVal::Str(format!(
+                "Could not solve after {} levels of decomposition",
+                depth
+            )));
+        return Ok(best);
+    }
+
+    // --- Phase 3: DECOMPOSE into 2 subtasks ---
+    eprintln!("[rlm depth={}] ⟳ SPLITTING into 2 subtasks...", depth);
+
+    let halves = rlm_decompose(&task, env)?;
+
+    if halves.is_empty() {
+        // Decomposition failed — best effort
+        let best = env
+            .rlm_state
+            .get("result")
+            .cloned()
+            .unwrap_or(LispVal::Str("Decomposition failed".to_string()));
+        return Ok(best);
+    }
+
+    // --- Phase 4: DFS — recurse on left, then right ---
+    let mut child_results: Vec<LispVal> = Vec::new();
+
+    for (i, subtask) in halves.iter().enumerate() {
+        eprintln!(
+            "[rlm depth={}] → child {}/{}: {}",
+            depth,
+            i + 1,
+            halves.len(),
+            truncate_str(subtask, 80)
+        );
+        let child_result = rlm_fractal(subtask.clone(), env, depth + 1, max_depth);
+        match child_result {
+            Ok(v) => child_results.push(v),
+            Err(e) => {
+                eprintln!(
+                    "[rlm depth={}] child {}/{} error: {}",
+                    depth,
+                    i + 1,
+                    halves.len(),
+                    e
+                );
+                child_results.push(LispVal::Str(format!("error: {}", e)));
+            }
+        }
+    }
+
+    // --- Phase 5: SYNTHESIZE ---
+    eprintln!(
+        "[rlm depth={}] ★ SYNTHESIZING {} child results",
+        depth,
+        child_results.len()
+    );
+
+    let combined = rlm_synthesize(&task, &child_results, env)?;
+
+    // Optional verification of synthesized result
+    if do_verify {
+        if let Some(verified) = rlm_verify(&task, &combined, env)? {
+            return Ok(verified);
+        }
+    }
+
+    Ok(combined)
+}
+
+/// Result of a single try-solve attempt
+enum RlmNode {
+    Solved(LispVal),
+    Failed(String),
+}
+
+/// Try to solve a task in one shot: generate Lisp code, eval it, check for (final ...)
+fn rlm_try_solve(task: &str, env: &mut Env, max_retries: usize) -> RlmNode {
+    let sys_prompt = std::env::var("RLM_SYSTEM_PROMPT")
+        .unwrap_or_else(|_| RLM_SYSTEM_PROMPT.to_string());
+
+    // Fresh context — no history from parent or siblings
+    let mut messages: Vec<(String, String)> = vec![
+        ("system".to_string(), sys_prompt),
+        (
+            "user".to_string(),
+            format!(
+                "Your task: {}\n\n\
+                 Write Lisp code to solve this. End with (final \"your answer\") when done.\n\
+                 You have access to: llm, read-file, write-file, str-*, json-*, http-*, show-vars, rlm-set, rlm-get.\n\
+                 Available state: {}",
+                task,
+                rlm_state_summary(env)
+            ),
+        ),
+    ];
+
+    for attempt in 0..=max_retries {
+        // Call LLM
+        let resp = match env.llm_provider.as_ref().unwrap().complete(&messages, Some(8192)) {
+            Ok(r) => r,
+            Err(e) => return RlmNode::Failed(format!("LLM error: {}", e)),
+        };
+        env.tokens_used += resp.tokens;
+        env.llm_calls += 1;
+
+        let code_str = strip_markdown_fences(&resp.content);
+        messages.push(("assistant".to_string(), truncate_str(&resp.content, 500)));
+
+        eprintln!("[rlm try {}] code:\n{}", attempt, truncate_str(&code_str, 300));
+
+        // Parse
+        let exprs = match parse_all(&code_str) {
+            Ok(e) => e,
+            Err(e) => {
+                if attempt < max_retries {
+                    messages.push((
+                        "user".to_string(),
+                        format!("Parse error: {}. Return valid Lisp.", truncate_str(&e, 200)),
+                    ));
+                    continue;
+                }
+                return RlmNode::Failed(format!("Parse error after {} retries: {}", max_retries, e));
+            }
+        };
+
+        // Eval with snapshot rollback
+        let snap = env.take_snapshot();
+        let mut eval_ok = true;
+        let mut err_msg = String::new();
+        let mut result = LispVal::Nil;
+
+        for expr in &exprs {
+            match lisp_eval(expr, env) {
+                Ok(v) => result = v,
+                Err(e) => {
+                    env.restore_snapshot(snap);
+                    err_msg = e;
+                    eval_ok = false;
+                    break;
+                }
+            }
+        }
+
+        if !eval_ok {
+            if attempt < max_retries {
+                messages.push((
+                    "user".to_string(),
+                    format!(
+                        "Runtime error (retry {}/{}): {}. Fix and retry.",
+                        attempt + 1,
+                        max_retries,
+                        truncate_str(&err_msg, 200)
+                    ),
+                ));
+                continue;
+            }
+            return RlmNode::Failed(format!("Runtime error: {}", err_msg));
+        }
+
+        // Check if (final ...) was called
+        let is_final = env
+            .rlm_state
+            .get("Final")
+            .map(|v| is_truthy(v))
+            .unwrap_or(false);
+
+        if is_final {
+            if let Some(r) = env.rlm_state.get("result") {
+                return RlmNode::Solved(r.clone());
+            }
+            return RlmNode::Solved(result);
+        }
+
+        // Code ran but didn't call (final ...) — not done yet
+        if attempt < max_retries {
+            let result_preview = truncate_str(&result.to_string(), 200);
+            messages.push((
+                "user".to_string(),
+                format!(
+                    "Code ran but didn't call (final ...). Result: {}. \
+                     Either continue working or call (final \"answer\") to finish.",
+                    result_preview
+                ),
+            ));
+            continue;
+        }
+
+        // Used all retries without final — treat as fail (trigger split)
+        return RlmNode::Failed("Did not produce (final ...) after all retries".to_string());
+    }
+
+    RlmNode::Failed("Exhausted all retries".to_string())
+}
+
+/// Decompose a failed task into exactly 2 subtasks
+fn rlm_decompose(task: &str, env: &mut Env) -> Result<Vec<String>, String> {
+    let decompose_prompt = format!(
+        "You need to split this task into exactly 2 independent subtasks.\n\
+         Each subtask should be solvable in one shot by writing Lisp code.\n\
+         Return ONLY a JSON array of exactly 2 strings, nothing else.\n\
+         Example: [\"subtask one description\", \"subtask two description\"]\n\n\
+         Task: {}",
+        task
+    );
+
+    let messages = vec![
+        (
+            "system".to_string(),
+            "You decompose tasks. Return ONLY a JSON array of exactly 2 strings. No explanation."
+                .to_string(),
+        ),
+        ("user".to_string(), decompose_prompt),
+    ];
+
+    let resp = env
+        .llm_provider
+        .as_ref()
+        .unwrap()
+        .complete(&messages, Some(1024))?;
+    env.tokens_used += resp.tokens;
+    env.llm_calls += 1;
+
+    // Parse the JSON array
+    let content = resp.content.trim();
+
+    // Try to find a JSON array in the response
+    let json_str = if content.starts_with('[') {
+        content.to_string()
+    } else if let Some(start) = content.find('[') {
+        if let Some(end) = content.rfind(']') {
+            content[start..=end].to_string()
+        } else {
+            return Ok(vec![]);
+        }
+    } else {
+        return Ok(vec![]);
+    };
+
+    // Simple JSON array parsing — split by comma, strip quotes
+    let inner = json_str
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+    let subtasks: Vec<String> = inner
+        .split("\",")
+        .map(|s| s.trim().trim_matches('"').trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if subtasks.len() < 2 {
+        return Ok(vec![]);
+    }
+
+    // Take exactly 2
+    Ok(vec![subtasks[0].clone(), subtasks[1].clone()])
+}
+
+/// Synthesize child results into a final answer
+fn rlm_synthesize(
+    task: &str,
+    child_results: &[LispVal],
+    env: &mut Env,
+) -> Result<LispVal, String> {
+    let child_summaries: Vec<String> = child_results
+        .iter()
+        .enumerate()
+        .map(|(i, v)| format!("Child {}: {}", i + 1, truncate_str(&v.to_string(), 500)))
+        .collect();
+
+    let synth_prompt = format!(
+        "You had this task: {}\n\n\
+         You split it into subtasks and got these results:\n{}\n\n\
+         Synthesize these into a single final answer. Write Lisp code that \
+         returns the combined result via (final \"answer\").",
+        task,
+        child_summaries.join("\n")
+    );
+
+    // One-shot synthesis — fresh context
+    let messages = vec![
+        (
+            "system".to_string(),
+            "You combine subtask results into a final answer. Return Lisp code ending with (final ...).".to_string(),
+        ),
+        ("user".to_string(), synth_prompt),
+    ];
+
+    let resp = env
+        .llm_provider
+        .as_ref()
+        .unwrap()
+        .complete(&messages, Some(4096))?;
+    env.tokens_used += resp.tokens;
+    env.llm_calls += 1;
+
+    let code_str = strip_markdown_fences(&resp.content);
+
+    let exprs = parse_all(&code_str).map_err(|e| format!("Synthesis parse error: {}", e))?;
+
+    let snap = env.take_snapshot();
+    let mut result = LispVal::Nil;
+    for expr in &exprs {
+        match lisp_eval(expr, env) {
+            Ok(v) => result = v,
+            Err(e) => {
+                env.restore_snapshot(snap);
+                // Fallback: join child results as string
+                let combined = child_results
+                    .iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                return Ok(LispVal::Str(combined));
+            }
+        }
+    }
+
+    // Check if synthesis set a final result
+    if let Some(r) = env.rlm_state.get("result") {
+        Ok(r.clone())
+    } else {
+        Ok(result)
+    }
+}
+
+/// Verify a result — returns Some(verified_result) if OK, None if failed verification
+fn rlm_verify(task: &str, result: &LispVal, env: &mut Env) -> Result<Option<LispVal>, String> {
+    let verify_prompt = format!(
+        "Given the task: {}\nAnd the result: {}\n\nIs this correct? Answer YES or NO and explain briefly.",
+        task,
+        truncate_str(&result.to_string(), 300)
+    );
+
+    let messages = vec![
+        (
+            "system".to_string(),
+            "You are a verification assistant. Answer YES or NO.".to_string(),
+        ),
+        ("user".to_string(), verify_prompt),
+    ];
+
+    let resp = env
+        .llm_provider
+        .as_ref()
+        .unwrap()
+        .complete(&messages, Some(512))?;
+    env.tokens_used += resp.tokens;
+    env.llm_calls += 1;
+
+    if resp.content.to_uppercase().starts_with("NO") {
+        eprintln!("[rlm verify] FAILED: {}", truncate_str(&resp.content, 200));
+        Ok(None) // Verification failed — caller can split
+    } else {
+        Ok(Some(result.clone()))
+    }
+}
+
+/// Compact summary of rlm_state for context injection
+fn rlm_state_summary(env: &Env) -> String {
+    if env.rlm_state.is_empty() {
+        return "(empty)".to_string();
+    }
+    let entries: Vec<String> = env
+        .rlm_state
+        .iter()
+        .map(|(k, v)| format!("{} = {}", k, truncate_str(&v.to_string(), 60)))
+        .collect();
+    truncate_str(&entries.join(", "), 300).to_string()
+}
+
 fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
     let mut current_expr: LispVal = expr.clone();
     '_trampoline: loop {
@@ -932,328 +1367,31 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                 Ok(result)
             }
 
-            // --- RLM agent loop ---
+
+            // --- Fractal RLM: try-solve → fail → binary split → recurse ---
+            // Self-similar at every scale. O(1) context per node. O(log n) depth.
+            // Red-black inspired: "no two reds in a row" = must try-solve before splitting again
             "rlm" => {
                 let task = as_str(&args[0])?;
-
-                // Use the rich system prompt aligned with MIT paper
-                let sys_prompt = std::env::var("RLM_SYSTEM_PROMPT")
-                    .unwrap_or_else(|_| RLM_SYSTEM_PROMPT.to_string());
-                let max_iterations: usize = std::env::var("RLM_MAX_ITERATIONS")
+                let max_depth: usize = std::env::var("RLM_MAX_DEPTH")
                     .ok()
                     .and_then(|s| s.parse().ok())
-                    .unwrap_or(10);
-                let do_verify = std::env::var("RLM_VERIFY").unwrap_or_default() == "1";
-
-                let mut messages: Vec<(String, String)> = vec![
-                    ("system".to_string(), sys_prompt),
-                    ("user".to_string(), format!("Your task: {}\n\nUse the REPL to explore context, plan, and solve. Call (show-context) and (show-vars) to understand your environment.", task)),
-                ];
-
-                // --- Planning step: determine ACTION vs CODE mode ---
-                let mut action_mode = false;
-                {
-                    let plan_prompt = format!(
-                        "Given this task, choose your approach: ACTION or CODE.\n\n\
-                         ACTION means you'll execute single Lisp expressions directly (like reading files, calling llm, processing strings). Best for: summarization, analysis, one-shot tasks.\n\
-                         CODE means you'll write a multi-step Lisp program with defines, loops, and logic. Best for: computation, data processing, multi-step algorithms.\n\n\
-                         Reply with just ACTION or CODE and a brief one-line plan.\n\nTask: {}",
-                        task
-                    );
-                    let plan_messages = vec![
-                        ("system".to_string(), "Reply with just ACTION or CODE followed by a brief plan. One line only.".to_string()),
-                        ("user".to_string(), plan_prompt),
-                    ];
-                    let plan_resp = env
-                        .llm_provider
-                        .as_ref()
-                        .unwrap()
-                        .complete(&plan_messages, Some(256))?;
-                    env.tokens_used += plan_resp.tokens;
-                    env.llm_calls += 1;
-                    let plan_upper = plan_resp.content.to_uppercase();
-                    action_mode = plan_upper.contains("ACTION") && !plan_upper.contains("CODE");
-                    eprintln!(
-                        "[rlm] mode: {} — {}",
-                        if action_mode { "ACTION" } else { "CODE" },
-                        plan_resp.content.trim()
-                    );
-                }
-
-                let mut final_result = LispVal::Nil;
-                let max_retries: usize = 3;
-                let saved_iteration = env.rlm_iteration;
-
-                for iter in 0..max_iterations {
-                    env.rlm_iteration = saved_iteration + iter;
-
-                    // Iteration-specific prompt (paper's key insight)
-                    let iter_prompt = if action_mode {
-                        if iter == 0 {
-                            "You are in ACTION mode. Return a SINGLE Lisp expression to evaluate. No definitions, no multi-step programs — just one expression like (read-file ...), (llm ...), (str-chunk ...), etc. Explore the context first. End with (final \"answer\") when done.".to_string()
-                        } else {
-                            let last_result_preview = match env.rlm_state.get("last_result") {
-                                Some(v) => truncate_str(&v.to_string(), 200),
-                                None => "none yet".to_string(),
-                            };
-                            format!("ACTION mode, iteration {}. Last result: {}. Return your NEXT single Lisp expression. Use (final \"answer\") or (final-var name) when done.", iter, last_result_preview)
-                        }
-                    } else if iter == 0 {
-                        "You have not interacted with the context yet. Your next action should be to look through it and plan your approach. Don't provide a final answer yet.".to_string()
-                    } else {
-                        "The history above is your previous interactions. Continue using the REPL to solve the task.".to_string()
-                    };
-                    messages.push(("user".to_string(), iter_prompt));
-
-                    // Snapshot env
-                    let snap = env.take_snapshot();
-
-                    // Call LLM via provider — scope the borrow
-                    let (resp_text, tokens) = {
-                        let resp = env
-                            .llm_provider
-                            .as_ref()
-                            .unwrap()
-                            .complete(&messages, Some(8192))?;
-                        (resp.content, resp.tokens)
-                    };
-                    env.tokens_used += tokens;
-                    env.llm_calls += 1;
-
-                    // Strip markdown fences
-                    let code_str = strip_markdown_fences(&resp_text);
-
-                    // Append assistant message (truncated for context window management)
-                    messages.push(("assistant".to_string(), truncate_str(&resp_text, 500)));
-
-                    eprintln!("[rlm iter {}] code:\n{}", iter, code_str);
-
-                    // Try to parse with better error recovery
-                    let exprs = match parse_all(&code_str) {
-                        Ok(e) => e,
-                        Err(parse_err) => {
-                            // Try extracting first valid expression
-                            if let Some(first_expr) = extract_first_valid_expr(&code_str) {
-                                vec![first_expr]
-                            } else {
-                                messages.push(("user".to_string(), format!("Parse error at: {}. Please fix and return valid Lisp code.", parse_err)));
-                                continue;
-                            }
-                        }
-                    };
-
-                    // Try to eval with retry logic
-                    let mut result = LispVal::Nil;
-                    let mut eval_ok = false;
-
-                    for retry in 0..max_retries {
-                        let snap_inner = env.take_snapshot();
-                        let mut failed = false;
-                        let mut err_msg = String::new();
-
-                        // Try executing all expressions at once
-                        for expr in &exprs {
-                            match lisp_eval(expr, env) {
-                                Ok(v) => result = v,
-                                Err(e) => {
-                                    err_msg = e;
-                                    env.restore_snapshot(snap_inner.clone());
-                                    failed = true;
-                                    break;
-                                }
-                            }
-                        }
-
-                        if !failed {
-                            eval_ok = true;
-                            break;
-                        }
-
-                        // If multi-expr failed, try one by one
-                        if exprs.len() > 1 {
-                            env.restore_snapshot(snap_inner.clone());
-                            let mut individual_ok = true;
-                            let mut individual_result = LispVal::Nil;
-                            for (j, sub_expr) in exprs.iter().enumerate() {
-                                match lisp_eval(sub_expr, env) {
-                                    Ok(v) => individual_result = v,
-                                    Err(se) => {
-                                        env.restore_snapshot(snap_inner.clone());
-                                        err_msg = format!(
-                                            "Expr {}/{} failed: {}",
-                                            j + 1,
-                                            exprs.len(),
-                                            se
-                                        );
-                                        individual_ok = false;
-                                        break;
-                                    }
-                                }
-                            }
-                            if individual_ok {
-                                result = individual_result;
-                                eval_ok = true;
-                                break;
-                            }
-                        }
-
-                        // Ask LLM to retry — scope the provider borrow
-                        if retry + 1 < max_retries {
-                            let err_truncated = truncate_str(&err_msg, 200);
-                            messages.push((
-                                "user".to_string(),
-                                format!(
-                                    "Error (retry {}/{}): {}. Try again.",
-                                    retry + 1,
-                                    max_retries,
-                                    err_truncated
-                                ),
-                            ));
-                            let (retry_text, retry_tokens) = {
-                                let retry_resp = env
-                                    .llm_provider
-                                    .as_ref()
-                                    .unwrap()
-                                    .complete(&messages, Some(8192))?;
-                                (retry_resp.content, retry_resp.tokens)
-                            };
-                            env.tokens_used += retry_tokens;
-                            env.llm_calls += 1;
-                            messages
-                                .push(("assistant".to_string(), truncate_str(&retry_text, 500)));
-                            let _retry_code = strip_markdown_fences(&retry_text);
-                            break;
-                        }
-                    }
-
-                    if !eval_ok {
-                        continue;
-                    }
-
-                    eprintln!(
-                        "[rlm iter {}] result: {}",
-                        iter,
-                        truncate_str(&result.to_string(), 200)
-                    );
-                    final_result = result.clone();
-                    env.rlm_state.insert("last_result".to_string(), result);
-
-                    // Check if code set Final=true via (final ...) or (final-var ...)
-                    let is_final = env
-                        .rlm_state
-                        .get("Final")
-                        .map(|v| is_truthy(v))
-                        .unwrap_or(false);
-                    if is_final {
-                        if let Some(r) = env.rlm_state.get("result") {
-                            final_result = r.clone();
-                        }
-                        break;
-                    }
-
-                    // Metadata-only stdout truncation (paper's key insight)
-                    let result_str = final_result.to_string();
-                    let result_type = match &final_result {
-                        LispVal::Nil => "nil",
-                        LispVal::Bool(_) => "bool",
-                        LispVal::Num(_) => "int",
-                        LispVal::Float(_) => "float",
-                        LispVal::Str(_) => "string",
-                        LispVal::List(l) => &format!("list[{}]", l.len()),
-                        LispVal::Map(m) => &format!("map[{}]", m.len()),
-                        _ => "other",
-                    };
-                    let output_meta = format!(
-                        "[Output: type={}, len={}, preview=\"{}\"]",
-                        result_type,
-                        result_str.len(),
-                        truncate_str(&result_str, 100)
-                    );
-                    messages.push(("user".to_string(), output_meta));
-
-                    continue;
-                }
-
-                // Self-verification step — scope provider borrow
-                if do_verify {
-                    let result_str = final_result.to_string();
-                    let verify_prompt = format!(
-                        "Given the task: {}\nAnd the result: {}\n\nIs this correct? Answer YES or NO and explain briefly.",
-                        task, truncate_str(&result_str, 300)
-                    );
-                    let verify_messages = vec![
-                        (
-                            "system".to_string(),
-                            "You are a verification assistant. Answer YES or NO.".to_string(),
-                        ),
-                        ("user".to_string(), verify_prompt),
-                    ];
-                    let (verdict, vtokens) = {
-                        let verify_resp = env
-                            .llm_provider
-                            .as_ref()
-                            .unwrap()
-                            .complete(&verify_messages, Some(512))?;
-                        (verify_resp.content, verify_resp.tokens)
-                    };
-                    env.tokens_used += vtokens;
-                    env.llm_calls += 1;
-
-                    if verdict.to_uppercase().starts_with("NO") {
-                        eprintln!("[rlm verify] FAILED: {}", truncate_str(&verdict, 200));
-                        messages.push((
-                            "user".to_string(),
-                            format!("Verification failed: {}. Please fix.", verdict),
-                        ));
-                        let snap = env.take_snapshot();
-                        let (fix_text, fix_tokens) = {
-                            let fix_resp = env
-                                .llm_provider
-                                .as_ref()
-                                .unwrap()
-                                .complete(&messages, Some(8192))?;
-                            (fix_resp.content, fix_resp.tokens)
-                        };
-                        env.tokens_used += fix_tokens;
-                        env.llm_calls += 1;
-                        let fix_code = strip_markdown_fences(&fix_text);
-                        if let Ok(fix_exprs) = parse_all(&fix_code) {
-                            let mut fix_result = LispVal::Nil;
-                            let mut fix_ok = true;
-                            for expr in &fix_exprs {
-                                match lisp_eval(expr, env) {
-                                    Ok(v) => fix_result = v,
-                                    Err(_) => {
-                                        env.restore_snapshot(snap);
-                                        fix_ok = false;
-                                        break;
-                                    }
-                                }
-                            }
-                            if fix_ok {
-                                final_result = fix_result;
-                            }
-                        }
-                    }
-                }
-
-                Ok(final_result)
+                    .unwrap_or(6);
+                rlm_fractal(task, env, 0, max_depth)
             }
 
-            // --- Sub-RLM ---
+            // --- Sub-RLM: delegates to the same fractal loop ---
             "sub-rlm" => {
                 let sub_task = as_str(&args[0])?;
                 if env.rlm_depth >= 5 {
                     return Err("sub-rlm: max depth (5) exceeded".into());
                 }
                 env.rlm_depth += 1;
-                let result = lisp_eval(
-                    &LispVal::List(vec![
-                        LispVal::Sym("rlm".to_string()),
-                        LispVal::Str(sub_task),
-                    ]),
-                    env,
-                );
+                let max_depth: usize = std::env::var("RLM_MAX_DEPTH")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(6);
+                let result = rlm_fractal(sub_task, env, 0, max_depth);
                 env.rlm_depth -= 1;
                 match &result {
                     Ok(v) => Ok(LispVal::Str(v.to_string())),
