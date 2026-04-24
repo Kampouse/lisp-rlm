@@ -8,7 +8,10 @@ use crate::types::{get_stdlib_code, Env, LispVal};
 
 pub mod crypto;
 pub mod helpers;
+pub mod llm_provider;
 pub mod quasiquote;
+
+pub use llm_provider::*;
 
 use crypto::{builtin_sha256, builtin_keccak256};
 use helpers::{truncate_str, strip_markdown_fences, extract_first_valid_expr};
