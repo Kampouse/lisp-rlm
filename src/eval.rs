@@ -1955,22 +1955,56 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                 let model = std::env::var("RLM_MODEL")
                     .unwrap_or_else(|_| "glm-5.1".to_string());
 
-                let sys = r#"You are a Lisp code generator. Return ONLY raw Lisp code — no markdown fences, no explanations, no backticks, no non-Lisp text.
+                let sys = r#"You are a Lisp code generator for lisp-rlm. Return ONLY raw Lisp code — no markdown fences, no explanations, no backticks, no non-Lisp text.
 
-Available builtins:
-- Functions: define def let lambda if cond begin loop recur set!
-- IO: print println read-file write-file append-file load-file
-- Strings: str-concat str-split str-length str-substring str-trim str-contains str-chunk
-- Lists: list cons car cdr nth len append reverse map filter reduce sort range
-- Arithmetic: + - * / mod
-- Comparison: = < > >= <= not and or
-- Types: to-string to-int to-float number? string? list? empty? nil?
-- LLM: llm llm-batch sub-rlm
-- State: rlm-set rlm-get
-- Agent: show-vars show-context final final-var snapshot rollback
-- Error: try catch error
+SYNTAX RULES:
+- Use \n for newlines inside strings, NOT literal line breaks: (str-concat "line1\n" "line2")
+- Check empty list with (= (len lst) 0), NOT null?
+- Define functions with (define (name args) body) or (define name (lambda (args) body))
+- Use (set! var val) to update existing variables
+- Use (loop () ... (recur)) for iteration — no named-let with variables
+- Comments start with ;;
+- NO write-file wrappers — the code will be saved automatically
 
-Check empty list with (= (len lst) 0). Convert numbers with (to-string n).
+WORKING EXAMPLES:
+
+;; Define and call a function:
+(define (add a b) (+ a b))
+(println (to-string (add 3 4)))
+
+;; Process a list:
+(define (sum-list lst)
+  (if (= (len lst) 0) 0
+    (+ (car lst) (sum-list (cdr lst)))))
+(println (to-string (sum-list (list 1 2 3 4 5))))
+
+;; Read file, split, process:
+(define content (read-file "/tmp/data.txt"))
+(define lines (str-split content "\n"))
+(define (count-words line) (len (str-split line " ")))
+(define word-counts (map count-words lines))
+(println (str-concat "Total words: " (to-string (reduce + 0 word-counts))))
+
+;; Chunk and batch process:
+(define text (read-file "/tmp/paper.txt"))
+(define chunks (str-chunk text 5))
+(define prompts (map (lambda (c) (str-concat "Summarize:\n" c)) chunks))
+(define summaries (llm-batch prompts))
+(define combined (reduce (lambda (a b) (str-concat a "\n" b)) "" summaries))
+(define answer (llm (str-concat "Synthesize:\n" combined)))
+(final answer)
+
+AVAILABLE BUILTINS:
+define def let lambda if cond begin loop recur set!
+print println read-file write-file append-file load-file
+str-concat str-split str-length str-substring str-trim str-contains str-chunk
+list cons car cdr nth len append reverse map filter reduce sort range
++ - * / mod = < > >= <= not and or
+to-string to-int to-float number? string? list? empty? nil? bool?
+llm llm-batch sub-rlm rlm-set rlm-get
+show-vars show-context final final-var snapshot rollback
+try catch error
+
 DO NOT wrap code in markdown fences. DO NOT add explanations."#;
 
                 let rt = tokio::runtime::Runtime::new().map_err(|e| format!("rlm-write: {}", e))?;
