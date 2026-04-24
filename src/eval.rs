@@ -180,16 +180,37 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
                             continue '_trampoline;
                         }
                         "define" => {
-                            let var = match list.get(1) {
-                                Some(LispVal::Sym(s)) => s.clone(),
+                            match list.get(1) {
+                                // (define (name args...) body) sugar → (define name (lambda (args...) body))
+                                Some(LispVal::List(inner)) if !inner.is_empty() => {
+                                    if let Some(LispVal::Sym(name)) = inner.get(0) {
+                                        let params: Vec<String> = inner[1..].iter().map(|v| match v {
+                                            LispVal::Sym(s) => s.clone(),
+                                            _ => "_".to_string(),
+                                        }).collect();
+                                        let body = list.get(2).cloned().unwrap_or(LispVal::Nil);
+                                        let lam = LispVal::Lambda {
+                                            params,
+                                            rest_param: None,
+                                            body: Box::new(body),
+                                            closed_env: Box::new(env.clone().into_bindings()),
+                                        };
+                                        env.push(name.clone(), lam);
+                                        return Ok(LispVal::Nil);
+                                    }
+                                    return Err("define: need symbol in head position".into());
+                                }
+                                // (define symbol value)
+                                Some(LispVal::Sym(s)) => {
+                                    let val = match list.get(2) {
+                                        Some(v) => lisp_eval(v, env)?,
+                                        None => LispVal::Nil,
+                                    };
+                                    env.push(s.clone(), val);
+                                    return Ok(LispVal::Nil);
+                                }
                                 _ => return Err("define: need symbol".into()),
-                            };
-                            let val = match list.get(2) {
-                                Some(v) => lisp_eval(v, env)?,
-                                None => LispVal::Nil,
-                            };
-                            env.push(var, val);
-                            return Ok(LispVal::Nil);
+                            }
                         }
                         "if" => {
                             let cond = lisp_eval(list.get(1).ok_or("if: need cond")?, env)?;
@@ -1282,6 +1303,13 @@ Available builtins:
                         .map(|s| s.to_string())
                         .ok_or_else(|| format!("llm-code: unexpected response: {}", text))
                 })?;
+
+                // Strip markdown fences if present
+                let code_str = code_str.trim()
+                    .trim_start_matches("```lisp").trim_start_matches("```")
+                    .trim_end_matches("```")
+                    .trim()
+                    .to_string();
 
                 // Parse and eval the LLM-generated Lisp code
                 let exprs = parse_all(&code_str)?;
