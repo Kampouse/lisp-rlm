@@ -28,6 +28,7 @@ pub fn is_builtin_name(name: &str) -> bool {
             | "str-length"
             | "str-substring"
             | "str-split"
+            | "str-split-exact"
             | "str-trim"
             | "str-index-of"
             | "str-upcase"

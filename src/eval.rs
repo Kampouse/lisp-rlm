@@ -661,6 +661,33 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
             "str-split" => {
                 let s = as_str(&args[0])?;
                 let delim = as_str(args.get(1).ok_or("str-split: need delimiter")?)?;
+                // If delim is a single char, use exact split; if multi-char, split on any char in delim (char set mode)
+                let parts: Vec<LispVal> = if delim.len() == 1 {
+                    s.split(delim.chars().next().unwrap()).filter(|p| !p.is_empty()).map(|p| LispVal::Str(p.to_string())).collect()
+                } else {
+                    // Treat multi-char delimiter as a character set — split on any char in it
+                    let char_set: Vec<char> = delim.chars().collect();
+                    let mut parts = Vec::new();
+                    let mut current = String::new();
+                    for ch in s.chars() {
+                        if char_set.contains(&ch) {
+                            if !current.is_empty() {
+                                parts.push(LispVal::Str(std::mem::take(&mut current)));
+                            }
+                        } else {
+                            current.push(ch);
+                        }
+                    }
+                    if !current.is_empty() {
+                        parts.push(LispVal::Str(current));
+                    }
+                    parts
+                };
+                Ok(LispVal::List(parts))
+            }
+            "str-split-exact" => {
+                let s = as_str(&args[0])?;
+                let delim = as_str(args.get(1).ok_or("str-split-exact: need delimiter")?)?;
                 let parts: Vec<LispVal> = s.split(&delim).map(|p| LispVal::Str(p.to_string())).collect();
                 Ok(LispVal::List(parts))
             }
@@ -1231,7 +1258,7 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                     let body = serde_json::json!({
                         "model": model,
                         "messages": [
-                            {"role": "system", "content": "You are a helpful assistant with access to a Lisp runtime called lisp-rlm. You can reason about problems and suggest Lisp code using the available builtins: + - * / mod = < > <= >= not and or list cons car cdr nth len append reverse map filter reduce sort range zip find some every nil? list? number? string? bool? map? type? empty? str-concat str-contains str-split str-trim str-upcase str-downcase str-length str-substring str-index-of str-starts-with str-ends-with print println read-file write-file append-file file-exists? shell http-get http-post http-get-json from-json to-json sha256 keccak256 to-int to-float to-string define def let lambda if cond match quote quasiquote loop recur begin progn defmacro require try catch error"},
+                            {"role": "system", "content": "You are a helpful assistant with access to a Lisp runtime called lisp-rlm. You can reason about problems and suggest Lisp code using the available builtins: + - * / mod = < > <= >= not and or list cons car cdr nth len append reverse map filter reduce sort range zip find some every nil? list? number? string? bool? map? type? empty? str-concat str-contains str-split (multi-char delim = char-set split) str-split-exact (exact string split) str-trim str-upcase str-downcase str-length str-substring str-index-of str-starts-with str-ends-with print println read-file write-file append-file file-exists? shell http-get http-post http-get-json from-json to-json sha256 keccak256 to-int to-float to-string define def let lambda if cond match quote quasiquote loop recur begin progn defmacro require try catch error"},
                             {"role": "user", "content": prompt}
                         ],
                         "max_tokens": 2048
@@ -1270,7 +1297,7 @@ Available builtins:
 - Logic: and or
 - Lists: list cons car cdr nth len append reverse map filter reduce sort range zip find some every
 - Predicates: nil? list? number? string? bool? map? macro? type? empty?
-- Strings: str-concat str-contains str-split str-trim str-upcase str-downcase str-length str-substring str-index-of str-starts-with str-ends-with
+- Strings: str-concat str-contains str-split (multi-char delim = char-set split) str-split-exact (exact string split) str-trim str-upcase str-downcase str-length str-substring str-index-of str-starts-with str-ends-with
 - IO: print println read-file write-file append-file file-exists? shell
 - HTTP: http-get http-post http-get-json
 - JSON: from-json to-json json-parse json-get json-get-in json-build
@@ -1341,7 +1368,7 @@ Available builtins:
 - Logic: and or
 - Lists: list cons car cdr nth len append reverse map filter reduce sort range zip find some every
 - Predicates: nil? list? number? string? bool? map? macro? type? empty?
-- Strings: str-concat str-contains str-split str-trim str-upcase str-downcase str-length str-substring str-index-of str-starts-with str-ends-with
+- Strings: str-concat str-contains str-split (multi-char delim = char-set split) str-split-exact (exact string split) str-trim str-upcase str-downcase str-length str-substring str-index-of str-starts-with str-ends-with
 - IO: print println read-file write-file append-file file-exists? shell
 - HTTP: http-get http-post http-get-json
 - JSON: from-json to-json json-parse json-get json-get-in json-build
@@ -1396,6 +1423,9 @@ Available builtins:
 
                     // Append assistant message
                     messages.push(serde_json::json!({"role": "assistant", "content": resp_text}));
+
+                    // DEBUG: print what the LLM generated
+                    eprintln!("[rlm iter] code:\n{}", code_str);
 
                     // Try to parse
                     let exprs = match parse_all(&code_str) {
