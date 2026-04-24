@@ -77,6 +77,16 @@ pub fn is_builtin_name(name: &str) -> bool {
             | "rlm/format-prompt"
             | "rlm/trace"
             | "rlm/config"
+            | "write-file"
+            | "read-file"
+            | "append-file"
+            | "file-exists?"
+            | "shell"
+            | "http-get"
+            | "http-post"
+            | "http-get-json"
+            | "llm"
+            | "llm-code"
     )
 }
 

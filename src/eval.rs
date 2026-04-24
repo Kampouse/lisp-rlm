@@ -1098,6 +1098,178 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                 }
             }
 
+            // --- File I/O (convenience aliases) ---
+            "write-file" => {
+                let path = as_str(&args[0])?;
+                let content = as_str(&args[1])?;
+                match std::fs::write(&path, &content) {
+                    Ok(()) => Ok(LispVal::Bool(true)),
+                    Err(e) => Err(format!("write-file: {}", e)),
+                }
+            }
+            "read-file" => {
+                let path = as_str(&args[0])?;
+                match std::fs::read_to_string(&path) {
+                    Ok(s) => Ok(LispVal::Str(s)),
+                    Err(e) => Err(format!("read-file: {}", e)),
+                }
+            }
+            "append-file" => {
+                let path = as_str(&args[0])?;
+                let content = as_str(&args[1])?;
+                use std::io::Write;
+                let mut f = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                    .map_err(|e| format!("append-file: {}", e))?;
+                f.write_all(content.as_bytes())
+                    .map_err(|e| format!("append-file: {}", e))?;
+                Ok(LispVal::Bool(true))
+            }
+            "file-exists?" => {
+                let path = as_str(&args[0])?;
+                Ok(LispVal::Bool(std::path::Path::new(&path).exists()))
+            }
+            "shell" => {
+                let cmd = as_str(&args[0])?;
+                let allow = std::env::var("RLM_ALLOW_SHELL").unwrap_or_default();
+                if allow != "1" && allow != "true" {
+                    return Err("shell: blocked unless RLM_ALLOW_SHELL=1 is set".into());
+                }
+                let output = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(&cmd)
+                    .output()
+                    .map_err(|e| format!("shell: {}", e))?;
+                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    return Err(format!("shell: exit {:?}: {}{}", output.status.code(), stdout, stderr));
+                }
+                Ok(LispVal::Str(stdout))
+            }
+
+            // --- HTTP builtins ---
+            "http-get" => {
+                let url = as_str(&args[0])?;
+                let rt = tokio::runtime::Runtime::new().map_err(|e| format!("http-get: {}", e))?;
+                let body = rt.block_on(async {
+                    reqwest::get(&url).await
+                        .map_err(|e| format!("http-get: {}", e))?
+                        .text().await
+                        .map_err(|e| format!("http-get: {}", e))
+                })?;
+                Ok(LispVal::Str(body))
+            }
+            "http-post" => {
+                let url = as_str(&args[0])?;
+                let body_str = as_str(args.get(1).ok_or("http-post: need body")?)?;
+                let rt = tokio::runtime::Runtime::new().map_err(|e| format!("http-post: {}", e))?;
+                let body = rt.block_on(async {
+                    let client = reqwest::Client::new();
+                    client.post(&url)
+                        .header("Content-Type", "application/json")
+                        .body(body_str)
+                        .send().await
+                        .map_err(|e| format!("http-post: {}", e))?
+                        .text().await
+                        .map_err(|e| format!("http-post: {}", e))
+                })?;
+                Ok(LispVal::Str(body))
+            }
+            "http-get-json" => {
+                let url = as_str(&args[0])?;
+                let rt = tokio::runtime::Runtime::new().map_err(|e| format!("http-get-json: {}", e))?;
+                let body = rt.block_on(async {
+                    reqwest::get(&url).await
+                        .map_err(|e| format!("http-get-json: {}", e))?
+                        .text().await
+                        .map_err(|e| format!("http-get-json: {}", e))
+                })?;
+                let v: serde_json::Value = serde_json::from_str(&body)
+                    .map_err(|e| format!("http-get-json: parse error: {}", e))?;
+                Ok(json_to_lisp(v))
+            }
+
+            // --- LLM builtins ---
+            "llm" => {
+                let prompt = as_str(&args[0])?;
+                let api_key = std::env::var("RLM_API_KEY")
+                    .or_else(|_| std::env::var("OPENAI_API_KEY"))
+                    .map_err(|_| "llm: set RLM_API_KEY or OPENAI_API_KEY")?;
+                let api_base = std::env::var("RLM_API_BASE")
+                    .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+                let model = std::env::var("RLM_MODEL")
+                    .unwrap_or_else(|_| "gpt-4o-mini".to_string());
+
+                let rt = tokio::runtime::Runtime::new().map_err(|e| format!("llm: {}", e))?;
+                let resp = rt.block_on(async {
+                    let client = reqwest::Client::new();
+                    let body = serde_json::json!({
+                        "model": model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "max_tokens": 2048
+                    });
+                    let resp = client.post(format!("{}/chat/completions", api_base))
+                        .header("Authorization", format!("Bearer {}", api_key))
+                        .json(&body)
+                        .send().await
+                        .map_err(|e| format!("llm: request failed: {}", e))?;
+                    let text = resp.text().await
+                        .map_err(|e| format!("llm: read body failed: {}", e))?;
+                    let v: serde_json::Value = serde_json::from_str(&text)
+                        .map_err(|e| format!("llm: json parse error: {}", e))?;
+                    v["choices"][0]["message"]["content"].as_str()
+                        .map(|s| s.to_string())
+                        .ok_or_else(|| format!("llm: unexpected response: {}", text))
+                })?;
+                Ok(LispVal::Str(resp))
+            }
+            "llm-code" => {
+                let prompt = as_str(&args[0])?;
+                let api_key = std::env::var("RLM_API_KEY")
+                    .or_else(|_| std::env::var("OPENAI_API_KEY"))
+                    .map_err(|_| "llm-code: set RLM_API_KEY or OPENAI_API_KEY")?;
+                let api_base = std::env::var("RLM_API_BASE")
+                    .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+                let model = std::env::var("RLM_MODEL")
+                    .unwrap_or_else(|_| "gpt-4o-mini".to_string());
+
+                let rt = tokio::runtime::Runtime::new().map_err(|e| format!("llm-code: {}", e))?;
+                let code_str = rt.block_on(async {
+                    let client = reqwest::Client::new();
+                    let body = serde_json::json!({
+                        "model": model,
+                        "messages": [
+                            {"role": "system", "content": "You are a Lisp code generator. Return ONLY valid Lisp expressions. No explanations, no markdown."},
+                            {"role": "user", "content": prompt}
+                        ],
+                        "max_tokens": 2048
+                    });
+                    let resp = client.post(format!("{}/chat/completions", api_base))
+                        .header("Authorization", format!("Bearer {}", api_key))
+                        .json(&body)
+                        .send().await
+                        .map_err(|e| format!("llm-code: request failed: {}", e))?;
+                    let text = resp.text().await
+                        .map_err(|e| format!("llm-code: read body failed: {}", e))?;
+                    let v: serde_json::Value = serde_json::from_str(&text)
+                        .map_err(|e| format!("llm-code: json parse error: {}", e))?;
+                    v["choices"][0]["message"]["content"].as_str()
+                        .map(|s| s.to_string())
+                        .ok_or_else(|| format!("llm-code: unexpected response: {}", text))
+                })?;
+
+                // Parse and eval the LLM-generated Lisp code
+                let exprs = parse_all(&code_str)?;
+                let mut result = LispVal::Nil;
+                for expr in &exprs {
+                    result = lisp_eval(expr, env)?;
+                }
+                Ok(result)
+            }
+
             // --- Env ---
             "env/get" => {
                 let key = as_str(&args[0])?;
@@ -1417,5 +1589,133 @@ fn expand_quasiquote(form: &LispVal) -> Result<LispVal, String> {
             form.clone(),
         ])),
         _ => Ok(form.clone()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::parse_all;
+    use std::io::Write;
+
+    fn eval_str(code: &str) -> Result<LispVal, String> {
+        let exprs = parse_all(code).expect("parse failed");
+        let mut env = Env::new();
+        let mut result = LispVal::Nil;
+        for expr in &exprs {
+            result = lisp_eval(expr, &mut env)?;
+        }
+        Ok(result)
+    }
+
+    // --- Phase 1: File I/O ---
+
+    #[test]
+    fn test_write_and_read_file() {
+        let path = "/tmp/lisp_rlm_test_io.txt";
+        let _ = std::fs::remove_file(path);
+        let r = eval_str(&format!(r#"(write-file "{}" "hello world")"#, path));
+        assert!(r.is_ok());
+        assert_eq!(r.unwrap(), LispVal::Bool(true));
+        let r = eval_str(&format!(r#"(read-file "{}")"#, path));
+        assert_eq!(r.unwrap(), LispVal::Str("hello world".to_string()));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_append_file() {
+        let path = "/tmp/lisp_rlm_test_append.txt";
+        let _ = std::fs::remove_file(path);
+        eval_str(&format!(r#"(write-file "{}" "abc")"#, path)).unwrap();
+        eval_str(&format!(r#"(append-file "{}" "def")"#, path)).unwrap();
+        let r = eval_str(&format!(r#"(read-file "{}")"#, path));
+        assert_eq!(r.unwrap(), LispVal::Str("abcdef".to_string()));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_file_exists() {
+        let path = "/tmp/lisp_rlm_test_exists.txt";
+        let _ = std::fs::remove_file(path);
+        let r = eval_str(&format!(r#"(file-exists? "{}")"#, path));
+        assert_eq!(r.unwrap(), LispVal::Bool(false));
+        std::fs::write(path, "x").unwrap();
+        let r = eval_str(&format!(r#"(file-exists? "{}")"#, path));
+        assert_eq!(r.unwrap(), LispVal::Bool(true));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_shell_blocked_and_allowed() {
+        // Test blocked
+        std::env::remove_var("RLM_ALLOW_SHELL");
+        let r = eval_str(r#"(shell "echo hi")"#);
+        assert!(r.is_err(), "expected shell to be blocked, got {:?}", r);
+        assert!(r.unwrap_err().contains("blocked"));
+
+        // Test allowed
+        std::env::set_var("RLM_ALLOW_SHELL", "1");
+        let r = eval_str(r#"(shell "echo hello")"#);
+        std::env::remove_var("RLM_ALLOW_SHELL");
+        assert!(r.is_ok());
+        let s = match r.unwrap() { LispVal::Str(s) => s, _ => panic!("expected string") };
+        assert_eq!(s.trim(), "hello");
+    }
+
+    #[test]
+    fn test_read_file_not_found() {
+        let r = eval_str(r#"(read-file "/tmp/lisp_rlm_nonexistent_12345.txt")"#);
+        assert!(r.is_err());
+    }
+
+    // --- Phase 2: HTTP builtins ---
+    // These are integration tests that require network access.
+
+    #[test]
+    fn test_http_get() {
+        let r = eval_str(r#"(http-get "https://httpbin.org/get")"#);
+        assert!(r.is_ok(), "http-get failed: {:?}", r);
+        let body = match r.unwrap() { LispVal::Str(s) => s, _ => panic!("expected string") };
+        assert!(body.contains("httpbin.org"));
+    }
+
+    #[test]
+    fn test_http_post() {
+        let r = eval_str(r#"(http-post "https://httpbin.org/post" (to-json (dict "hello" "world")))"#);
+        assert!(r.is_ok(), "http-post failed: {:?}", r);
+        let body = match r.unwrap() { LispVal::Str(s) => s, _ => panic!("expected string") };
+        assert!(body.contains("hello"));
+    }
+
+    #[test]
+    fn test_http_get_json() {
+        let r = eval_str(r#"(http-get-json "https://httpbin.org/json")"#);
+        assert!(r.is_ok(), "http-get-json failed: {:?}", r);
+        // Should return a LispVal::Map (parsed JSON)
+        match r.unwrap() {
+            LispVal::Map(_) => {},
+            other => panic!("expected map, got {}", other),
+        }
+    }
+
+    // --- Phase 3: LLM builtins ---
+    // These tests check error handling without an API key set.
+
+    #[test]
+    fn test_llm_no_api_key() {
+        std::env::remove_var("RLM_API_KEY");
+        std::env::remove_var("OPENAI_API_KEY");
+        let r = eval_str(r#"(llm "hello")"#);
+        assert!(r.is_err());
+        assert!(r.unwrap_err().contains("API_KEY"));
+    }
+
+    #[test]
+    fn test_llm_code_no_api_key() {
+        std::env::remove_var("RLM_API_KEY");
+        std::env::remove_var("OPENAI_API_KEY");
+        let r = eval_str(r#"(llm-code "compute 2+2")"#);
+        assert!(r.is_err());
+        assert!(r.unwrap_err().contains("API_KEY"));
     }
 }
