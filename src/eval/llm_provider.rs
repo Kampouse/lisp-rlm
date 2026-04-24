@@ -15,12 +15,12 @@ use std::sync::LazyLock;
 // ---------------------------------------------------------------------------
 
 /// Shared tokio runtime — avoids creating a new runtime per LLM/HTTP call.
-static PROVIDER_RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
+pub static SHARED_RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
     tokio::runtime::Runtime::new().expect("failed to create tokio runtime")
 });
 
 /// Shared reqwest client with a 60 s timeout.
-static PROVIDER_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+pub static SHARED_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(60))
         .build()
@@ -95,7 +95,7 @@ impl LlmProvider for GenericProvider {
         messages: &[(String, String)],
         max_tokens: Option<u64>,
     ) -> Result<LlmResponse, String> {
-        let rt = &PROVIDER_RUNTIME;
+        let rt = &SHARED_RUNTIME;
 
         let json_messages: Vec<serde_json::Value> = messages
             .iter()
@@ -111,7 +111,7 @@ impl LlmProvider for GenericProvider {
         let model = self.model.clone();
 
         rt.block_on(async move {
-            let client = &PROVIDER_CLIENT;
+            let client = &SHARED_CLIENT;
 
             let body = serde_json::json!({
                 "model": model,

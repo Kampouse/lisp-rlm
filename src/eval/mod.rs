@@ -7,28 +7,25 @@ use crate::parser::parse_all;
 use crate::types::{get_stdlib_code, Env, LispVal};
 
 pub mod crypto;
+pub mod errors;
 pub mod helpers;
 pub mod llm_provider;
 pub mod quasiquote;
+
+// Domain-specific dispatch modules (v0.2 god-function split)
+pub mod dispatch_arithmetic;
+pub mod dispatch_collections;
+pub mod dispatch_http;
+pub mod dispatch_json;
+pub mod dispatch_predicates;
+pub mod dispatch_state;
+pub mod dispatch_strings;
 
 pub use llm_provider::*;
 
 use crypto::{builtin_sha256, builtin_keccak256};
 use helpers::{truncate_str, strip_markdown_fences, extract_first_valid_expr};
 use quasiquote::expand_quasiquote;
-
-/// Shared tokio runtime — avoids creating a new runtime per LLM/HTTP call.
-static SHARED_RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
-    tokio::runtime::Runtime::new().expect("failed to create tokio runtime")
-});
-
-/// Shared reqwest client with a 60s timeout — reused across all HTTP/LLM calls.
-static SHARED_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
-    reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .expect("failed to create reqwest client")
-});
 
 // ---------------------------------------------------------------------------
 // JSON conversion
@@ -568,30 +565,77 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
                                 None => None,
                                 _ => return Err("require: prefix must be string".into()),
                             };
-                            let marker = format!("__stdlib_{}__{}", module_name, prefix.unwrap_or(""));
+                            let marker = format!("__loaded_{}__{}", module_name, prefix.unwrap_or(""));
                             if env.contains(&marker) {
                                 return Ok(LispVal::Nil);
                             }
-                            if let Some(code) = get_stdlib_code(module_name) {
-                                if let Some(pfx) = prefix {
-                                    let mut module_env = Env::new();
-                                    let module_exprs = parse_all(code)?;
-                                    for expr in &module_exprs {
-                                        lisp_eval(expr, &mut module_env)?;
-                                    }
-                                    for (k, v) in module_env.into_bindings() {
-                                        env.push(format!("{}/{}", pfx, k), v);
-                                    }
+                            // Try stdlib first, then file path
+                            let code: String = if let Some(stdlib_code) = get_stdlib_code(module_name) {
+                                stdlib_code.to_string()
+                            } else {
+                                // File-based loading: resolve relative to RLM_MODULE_PATH or cwd
+                                let path = if module_name.starts_with('/') || module_name.starts_with("./") || module_name.starts_with("../") {
+                                    module_name.to_string()
                                 } else {
-                                    let module_exprs = parse_all(code)?;
-                                    for expr in &module_exprs {
-                                        lisp_eval(expr, env)?;
-                                    }
+                                    let base = std::env::var("RLM_MODULE_PATH").unwrap_or_else(|_| ".".to_string());
+                                    format!("{}/{}.lisp", base, module_name)
+                                };
+                                std::fs::read_to_string(&path)
+                                    .map_err(|e| format!("require: cannot load '{}': {}", path, e))?
+                            };
+                            if let Some(pfx) = prefix {
+                                let mut module_env = Env::new();
+                                let module_exprs = parse_all(&code)?;
+                                for expr in &module_exprs {
+                                    lisp_eval(expr, &mut module_env)?;
                                 }
-                                env.push(marker, LispVal::Bool(true));
-                                return Ok(LispVal::Nil);
+                                // If module defines __exports__, only import those; otherwise import all
+                                let exports: Option<Vec<String>> = module_env.get("__exports__").and_then(|v| match v {
+                                    LispVal::List(items) => Some(items.iter().filter_map(|i| match i {
+                                        LispVal::Str(s) => Some(s.clone()),
+                                        LispVal::Sym(s) => Some(s.clone()),
+                                        _ => None,
+                                    }).collect()),
+                                    _ => None,
+                                });
+                                let bindings = module_env.into_bindings();
+                                for (k, v) in &bindings {
+                                    if k.starts_with("__") { continue; } // skip internals
+                                    if let Some(ref exp) = exports {
+                                        if !exp.contains(&k) { continue; }
+                                    }
+                                    env.push(format!("{}/{}", pfx, k), v.clone());
+                                }
+                            } else {
+                                let module_exprs = parse_all(&code)?;
+                                for expr in &module_exprs {
+                                    lisp_eval(expr, env)?;
+                                }
                             }
-                            return Err(format!("require: unknown module '{}'", module_name));
+                            env.push(marker, LispVal::Bool(true));
+                            return Ok(LispVal::Nil);
+                        }
+                        "export" => {
+                            // (export sym1 sym2 ...) or (export "sym1" "sym2" ...)
+                            let names: Vec<String> = list[1..].iter().map(|a| match a {
+                                LispVal::Sym(s) => s.clone(),
+                                LispVal::Str(s) => s.clone(),
+                                other => format!("{}", other),
+                            }).collect();
+                            let existing = env.get("__exports__").cloned();
+                            let merged = match existing {
+                                Some(LispVal::List(mut items)) => {
+                                    for n in &names {
+                                        if !items.iter().any(|i| match i { LispVal::Str(s) => s == n, LispVal::Sym(s) => s == n, _ => false }) {
+                                            items.push(LispVal::Str(n.clone()));
+                                        }
+                                    }
+                                    LispVal::List(items)
+                                }
+                                _ => LispVal::List(names.into_iter().map(LispVal::Str).collect()),
+                            };
+                            env.push("__exports__".to_string(), merged);
+                            return Ok(LispVal::Bool(true));
                         }
                         "final" => {
                             let val = lisp_eval(list.get(1).ok_or("final: need value")?, env)?;
@@ -723,829 +767,68 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
         .collect::<Result<_, _>>()?;
 
     if let LispVal::Sym(name) = head {
+        // ── Dispatch chain: delegate to domain modules ──
+        if let Some(result) = dispatch_arithmetic::handle(name, &args)? {
+            return Ok(result);
+        }
+        if let Some(result) = dispatch_collections::handle(name, &args, env)? {
+            return Ok(result);
+        }
+        if let Some(result) = dispatch_strings::handle(name, &args)? {
+            return Ok(result);
+        }
+        if let Some(result) = dispatch_predicates::handle(name, &args)? {
+            return Ok(result);
+        }
+        if let Some(result) = dispatch_json::handle(name, &args)? {
+            return Ok(result);
+        }
+        if let Some(result) = dispatch_http::handle(name, &args)? {
+            return Ok(result);
+        }
+        if let Some(result) = dispatch_state::handle(name, &args, env)? {
+            return Ok(result);
+        }
+
+        // ── Inline builtins: crypto + LLM/RLM ──
         match name.as_str() {
-            "+" => do_arith(&args, |a, b| a + b, |a, b| a + b),
-            "-" => do_arith(&args, |a, b| a - b, |a, b| a - b),
-            "*" => do_arith(&args, |a, b| a * b, |a, b| a * b),
-            "/" => {
-                if any_float(&args) {
-                    let b = as_float(args.get(1).ok_or("/ needs 2 args")?)?;
-                    if b == 0.0 { return Err("div by zero".into()); }
-                    Ok(LispVal::Float(as_float(&args[0])? / b))
-                } else {
-                    let b = as_num(args.get(1).ok_or("/ needs 2 args")?)?;
-                    if b == 0 { return Err("div by zero".into()); }
-                    Ok(LispVal::Num(as_num(&args[0])? / b))
-                }
-            }
-            "mod" => do_arith(&args, |a, b| i64::rem_euclid(a, b), |a, b| a % b),
-            "=" | "==" => {
-                if any_float(&args) {
-                    Ok(LispVal::Bool(as_float(&args[0])? == as_float(&args[1])?))
-                } else {
-                    Ok(LispVal::Bool(args.get(0) == args.get(1)))
-                }
-            }
-            "!=" | "/=" => {
-                if any_float(&args) {
-                    Ok(LispVal::Bool(as_float(&args[0])? != as_float(&args[1])?))
-                } else {
-                    Ok(LispVal::Bool(args.get(0) != args.get(1)))
-                }
-            }
-            "<" => {
-                if any_float(&args) { Ok(LispVal::Bool(as_float(&args[0])? < as_float(&args[1])?)) }
-                else { Ok(LispVal::Bool(as_num(&args[0])? < as_num(&args[1])?)) }
-            }
-            ">" => {
-                if any_float(&args) { Ok(LispVal::Bool(as_float(&args[0])? > as_float(&args[1])?)) }
-                else { Ok(LispVal::Bool(as_num(&args[0])? > as_num(&args[1])?)) }
-            }
-            "<=" => {
-                if any_float(&args) { Ok(LispVal::Bool(as_float(&args[0])? <= as_float(&args[1])?)) }
-                else { Ok(LispVal::Bool(as_num(&args[0])? <= as_num(&args[1])?)) }
-            }
-            ">=" => {
-                if any_float(&args) { Ok(LispVal::Bool(as_float(&args[0])? >= as_float(&args[1])?)) }
-                else { Ok(LispVal::Bool(as_num(&args[0])? >= as_num(&args[1])?)) }
-            }
-            "list" => Ok(LispVal::List(args)),
-            "car" => match args.get(0) {
-                Some(LispVal::List(l)) if !l.is_empty() => Ok(l[0].clone()),
-                _ => Ok(LispVal::Nil),
-            },
-            "cdr" => match args.get(0) {
-                Some(LispVal::List(l)) if l.len() > 1 => Ok(LispVal::List(l[1..].to_vec())),
-                Some(LispVal::List(_)) => Ok(LispVal::List(vec![])),  // empty tail → ()
-                _ => Ok(LispVal::Nil),
-            },
-            "cons" => match args.get(1) {
-                Some(LispVal::List(l)) => {
-                    let mut n = vec![args[0].clone()];
-                    n.extend(l.iter().cloned());
-                    Ok(LispVal::List(n))
-                }
-                _ => Ok(LispVal::List(args)),
-            },
-            "len" => match args.get(0) {
-                Some(LispVal::List(l)) => Ok(LispVal::Num(l.len() as i64)),
-                Some(LispVal::Str(s)) => Ok(LispVal::Num(s.len() as i64)),
-                Some(LispVal::Nil) => Ok(LispVal::Num(0)),
-                _ => Err("len: need list or string".into()),
-            },
-            "append" => {
-                let mut r = Vec::new();
-                for a in &args {
-                    if let LispVal::List(l) = a { r.extend(l.iter().cloned()); }
-                    else { r.push(a.clone()); }
-                }
-                Ok(LispVal::List(r))
-            }
-            "nth" => {
-                // Standard Lisp order: (nth list index)
-                let list_val = args.get(0).ok_or("nth: need list and index")?;
-                let i = as_num(args.get(1).ok_or("nth: need index")?)? as usize;
-                match list_val {
-                    LispVal::List(l) => l.get(i).cloned().ok_or("nth: index out of range".into()),
-                    _ => Err("nth: first arg must be a list".into()),
-                }
-            }
-            "str-concat" => {
-                let parts: Vec<String> = args.iter().map(|a| match a {
-                    LispVal::Str(s) => s.clone(),
-                    _ => a.to_string(),
-                }).collect();
-                Ok(LispVal::Str(parts.join("")))
-            }
-            "str-contains" => Ok(LispVal::Bool(as_str(&args[0])?.contains(&as_str(&args[1])?))),
-            "to-string" => Ok(LispVal::Str(args[0].to_string())),
-            "read" => {
-                let s = as_str(&args[0])?;
-                match crate::parser::parse_all(&s) {
-                    Ok(exprs) => exprs.into_iter().next().ok_or_else(|| "read: empty input".to_string()),
-                    Err(e) => Err(format!("read: parse error: {}", e)),
-                }
-            }
-            "read-all" => {
-                let s = as_str(&args[0])?;
-                match crate::parser::parse_all(&s) {
-                    Ok(exprs) => Ok(LispVal::List(exprs)),
-                    Err(e) => Err(format!("read-all: parse error: {}", e)),
-                }
-            }
-            "str-length" => {
-                let s = as_str(&args[0])?;
-                Ok(LispVal::Num(s.chars().count() as i64))
-            }
-            "str-substring" => {
-                let s = as_str(&args[0])?;
-                let start = as_num(args.get(1).ok_or("str-substring: need start")?)? as usize;
-                let end = as_num(args.get(2).ok_or("str-substring: need end")?)? as usize;
-                let chars: Vec<char> = s.chars().collect();
-                if start > end || end > chars.len() {
-                    return Err(format!("str-substring: indices out of range ({}..{} for len {})", start, end, chars.len()));
-                }
-                Ok(LispVal::Str(chars[start..end].iter().collect()))
-            }
-            "str-split" => {
-                let s = as_str(&args[0])?;
-                let delim = as_str(args.get(1).ok_or("str-split: need delimiter")?)?;
-                // If delim is a single char, use exact split; if multi-char, split on any char in delim (char set mode)
-                let parts: Vec<LispVal> = if delim.len() == 1 {
-                    s.split(delim.chars().next().unwrap()).filter(|p| !p.is_empty()).map(|p| LispVal::Str(p.to_string())).collect()
-                } else {
-                    // Treat multi-char delimiter as a character set — split on any char in it
-                    let char_set: Vec<char> = delim.chars().collect();
-                    let mut parts = Vec::new();
-                    let mut current = String::new();
-                    for ch in s.chars() {
-                        if char_set.contains(&ch) {
-                            if !current.is_empty() {
-                                parts.push(LispVal::Str(std::mem::take(&mut current)));
-                            }
-                        } else {
-                            current.push(ch);
-                        }
-                    }
-                    if !current.is_empty() {
-                        parts.push(LispVal::Str(current));
-                    }
-                    parts
-                };
-                Ok(LispVal::List(parts))
-            }
-            "str-split-exact" => {
-                let s = as_str(&args[0])?;
-                let delim = as_str(args.get(1).ok_or("str-split-exact: need delimiter")?)?;
-                let parts: Vec<LispVal> = s.split(&delim).map(|p| LispVal::Str(p.to_string())).collect();
-                Ok(LispVal::List(parts))
-            }
-            "str-trim" => {
-                let s = as_str(&args[0])?;
-                Ok(LispVal::Str(s.trim().to_string()))
-            }
-            "str-index-of" => {
-                let haystack = as_str(&args[0])?;
-                let needle = as_str(args.get(1).ok_or("str-index-of: need needle")?)?;
-                let idx = haystack.find(&needle).map(|i| i as i64).unwrap_or(-1);
-                Ok(LispVal::Num(idx))
-            }
-            "str-upcase" => Ok(LispVal::Str(as_str(&args[0])?.to_uppercase())),
-            "str-downcase" => Ok(LispVal::Str(as_str(&args[0])?.to_lowercase())),
-            "str-starts-with" => {
-                let s = as_str(&args[0])?;
-                let prefix = as_str(args.get(1).ok_or("str-starts-with: need prefix")?)?;
-                Ok(LispVal::Bool(s.starts_with(&prefix)))
-            }
-            "str-ends-with" => {
-                let s = as_str(&args[0])?;
-                let suffix = as_str(args.get(1).ok_or("str-ends-with: need suffix")?)?;
-                Ok(LispVal::Bool(s.ends_with(&suffix)))
-            }
-            "str=" => {
-                let a = as_str(args.get(0).ok_or("str=: need 2 args")?)?;
-                let b = as_str(args.get(1).ok_or("str=: need 2 args")?)?;
-                Ok(LispVal::Bool(a == b))
-            }
-            "str!=" => {
-                let a = as_str(args.get(0).ok_or("str!=: need 2 args")?)?;
-                let b = as_str(args.get(1).ok_or("str!=: need 2 args")?)?;
-                Ok(LispVal::Bool(a != b))
-            }
-            "nil?" => Ok(LispVal::Bool(
-                matches!(&args[0], LispVal::Nil) || matches!(&args[0], LispVal::List(ref v) if v.is_empty()),
-            )),
-            "list?" => Ok(LispVal::Bool(matches!(&args[0], LispVal::List(_)))),
-            "number?" => Ok(LispVal::Bool(matches!(&args[0], LispVal::Num(_) | LispVal::Float(_)))),
-            "to-float" => match &args[0] {
-                LispVal::Float(f) => Ok(LispVal::Float(*f)),
-                LispVal::Num(n) => Ok(LispVal::Float(*n as f64)),
-                LispVal::Str(s) => s.parse::<f64>().map(LispVal::Float).map_err(|_| format!("to-float: cannot parse '{}'", s)),
-                other => Err(format!("to-float: expected number, got {}", other)),
-            },
-            "to-int" => match &args[0] {
-                LispVal::Num(n) => Ok(LispVal::Num(*n)),
-                LispVal::Float(f) => Ok(LispVal::Num(*f as i64)),
-                LispVal::Str(s) => s.parse::<i64>().map(LispVal::Num).map_err(|_| format!("to-int: cannot parse '{}'", s)),
-                other => Err(format!("to-int: expected number, got {}", other)),
-            },
-            "to-num" => match &args[0] {
-                LispVal::Num(n) => Ok(LispVal::Num(*n)),
-                LispVal::Float(f) => Ok(LispVal::Num(*f as i64)),
-                LispVal::Str(s) => s.parse::<i64>().map(LispVal::Num).map_err(|_| format!("to-num: cannot parse '{}'", s)),
-                other => Err(format!("to-num: expected number, got {}", other)),
-            },
-            "type?" => Ok(LispVal::Str(match &args[0] {
-                LispVal::Nil => "nil",
-                LispVal::Bool(_) => "boolean",
-                LispVal::Num(_) => "number",
-                LispVal::Float(_) => "number",
-                LispVal::Str(_) => "string",
-                LispVal::List(_) => "list",
-                LispVal::Map(_) => "map",
-                    LispVal::Lambda { .. } => "lambda",
-                    LispVal::Macro { .. } => "macro",
-                    LispVal::Sym(_) => "symbol",
-                    _ => "unknown",
-            }.to_string())),
-            "bool?" => Ok(LispVal::Bool(matches!(&args[0], LispVal::Bool(_)))),
-            "string?" => Ok(LispVal::Bool(matches!(&args[0], LispVal::Str(_)))),
-            "map?" => Ok(LispVal::Bool(matches!(&args[0], LispVal::Map(_)))),
-            "macro?" => Ok(LispVal::Bool(matches!(&args[0], LispVal::Macro { .. }))),
-            "error" => {
-                let msg = args.get(0).map(|v| format!("{}", v)).unwrap_or_else(|| "error".to_string());
-                Err(msg)
-            }
-            "debug" | "near/log-debug" => {
-                let msg = args.get(0).map(|v| format!("{}", v)).unwrap_or_else(|| "debug".to_string());
-                eprintln!("[DEBUG] {}", msg);
-                Ok(LispVal::Nil)
-            }
-            "trace" => {
-                let val = args.get(0).cloned().unwrap_or(LispVal::Nil);
-                eprintln!("[TRACE] {}", val);
-                Ok(val)
-            }
-            "inspect" => {
-                let val = args.get(0).cloned().unwrap_or(LispVal::Nil);
-                let type_str = match &val {
-                    LispVal::Nil => "nil",
-                    LispVal::Bool(_) => "boolean",
-                    LispVal::Num(_) => "integer",
-                    LispVal::Float(_) => "float",
-                    LispVal::Str(_) => "string",
-                    LispVal::List(items) => return Ok(LispVal::Str(format!("list[{}]: {}", items.len(), val))),
-                    LispVal::Map(m) => return Ok(LispVal::Str(format!("map{{{} keys}}: {}", m.len(), val))),
-                    LispVal::Lambda { params, .. } => return Ok(LispVal::Str(format!("lambda({}): <function>", params.len()))),
-                    LispVal::Sym(s) => return Ok(LispVal::Str(format!("symbol: {}", s))),
-                    _ => "unknown",
-                };
-                Ok(LispVal::Str(format!("{}: {}", type_str, val)))
-            }
-
-            // --- Dict / Map builtins ---
-            "dict" => {
-                let mut m = BTreeMap::new();
-                let mut i = 0;
-                while i + 1 < args.len() {
-                    let key = as_str(&args[i]).map_err(|_| "dict: keys must be strings")?;
-                    m.insert(key, args[i + 1].clone());
-                    i += 2;
-                }
-                Ok(LispVal::Map(m))
-            }
-            "dict/get" => {
-                let m = match &args[0] { LispVal::Map(m) => m, _ => return Err("dict/get: expected map".into()) };
-                let key = as_str(&args[1]).map_err(|_| "dict/get: key must be string")?;
-                Ok(m.get(&key).cloned().unwrap_or(LispVal::Nil))
-            }
-            "dict/set" => {
-                let mut m = match &args[0] { LispVal::Map(m) => m.clone(), _ => return Err("dict/set: expected map".into()) };
-                let key = as_str(&args[1]).map_err(|_| "dict/set: key must be string")?;
-                m.insert(key, args.get(2).cloned().unwrap_or(LispVal::Nil));
-                Ok(LispVal::Map(m))
-            }
-            "dict/has?" => {
-                let m = match &args[0] { LispVal::Map(m) => m, _ => return Err("dict/has?: expected map".into()) };
-                let key = as_str(&args[1]).map_err(|_| "dict/has?: key must be string")?;
-                Ok(LispVal::Bool(m.contains_key(&key)))
-            }
-            "dict/keys" => {
-                let m = match &args[0] { LispVal::Map(m) => m, _ => return Err("dict/keys: expected map".into()) };
-                Ok(LispVal::List(m.keys().map(|k| LispVal::Str(k.clone())).collect()))
-            }
-            "dict/vals" => {
-                let m = match &args[0] { LispVal::Map(m) => m, _ => return Err("dict/vals: expected map".into()) };
-                Ok(LispVal::List(m.values().cloned().collect()))
-            }
-            "dict/remove" => {
-                let mut m = match &args[0] { LispVal::Map(m) => m.clone(), _ => return Err("dict/remove: expected map".into()) };
-                let key = as_str(&args[1]).map_err(|_| "dict/remove: key must be string")?;
-                m.remove(&key);
-                Ok(LispVal::Map(m))
-            }
-            "dict/merge" => {
-                let mut m = match &args[0] { LispVal::Map(m) => m.clone(), _ => return Err("dict/merge: first arg must be map".into()) };
-                match &args[1] {
-                    LispVal::Map(m2) => { for (k, v) in m2 { m.insert(k.clone(), v.clone()); } }
-                    _ => return Err("dict/merge: second arg must be map".into()),
-                }
-                Ok(LispVal::Map(m))
-            }
-
-            // --- JSON ---
-            "json-parse" | "from-json" => {
-                let s = as_str(&args[0])?;
-                match serde_json::from_str::<serde_json::Value>(&s) {
-                    Ok(v) => Ok(json_to_lisp(v)),
-                    Err(e) => Err(format!("json-parse: {}", e)),
-                }
-            }
-            "json-get" => {
-                let s = as_str(&args[0])?;
-                let key = as_str(&args[1])?;
-                let v: serde_json::Value = serde_json::from_str(&s).map_err(|e| format!("json-get: parse error: {}", e))?;
-                match v.get(&key) {
-                    Some(val) => Ok(json_to_lisp(val.clone())),
-                    None => Ok(LispVal::Nil),
-                }
-            }
-            "json-get-in" => {
-                let s = as_str(&args[0])?;
-                let v: serde_json::Value = serde_json::from_str(&s).map_err(|e| format!("json-get-in: parse error: {}", e))?;
-                let mut cur = &v;
-                for arg in &args[1..] {
-                    let key = as_str(arg)?;
-                    cur = cur.get(&key).unwrap_or(&serde_json::Value::Null);
-                }
-                Ok(json_to_lisp(cur.clone()))
-            }
-            "json-build" => {
-                let j = lisp_to_json(&args[0]);
-                Ok(LispVal::Str(j.to_string()))
-            }
-            "to-json" => {
-                let json_val = lisp_to_json(&args[0]);
-                serde_json::to_string(&json_val).map(LispVal::Str).map_err(|e| format!("to-json: {}", e))
-            }
-
-            // --- Crypto (standalone using sha2/keccak crates or stubs) ---
-            "sha256" => {
+"sha256" => {
                 builtin_sha256(&args)
             }
             "keccak256" => {
                 builtin_keccak256(&args)
             }
 
-            // --- List stdlib native builtins ---
-            "empty?" => Ok(LispVal::Bool(
-                matches!(&args[0], LispVal::Nil) || matches!(&args[0], LispVal::List(ref v) if v.is_empty()),
-            )),
-            "range" => {
-                let start = as_num(args.get(0).ok_or("range: need 2 args")?)?;
-                let end = as_num(args.get(1).ok_or("range: need 2 args")?)?;
-                if start >= end { return Ok(LispVal::List(vec![])); }
-                Ok(LispVal::List((start..end).map(LispVal::Num).collect()))
-            }
-            "reverse" => match &args[0] {
-                LispVal::List(l) => Ok(LispVal::List(l.iter().rev().cloned().collect())),
-                LispVal::Nil => Ok(LispVal::List(vec![])),
-                other => Err(format!("reverse: expected list, got {}", other)),
-            },
-            "sort" => {
-                let mut vals = match &args[0] {
-                    LispVal::List(l) => l.clone(),
-                    LispVal::Nil => vec![],
-                    other => return Err(format!("sort: expected list, got {}", other)),
-                };
-                vals.sort_by(|a, b| {
-                    let fa = match a { LispVal::Num(n) => *n as f64, LispVal::Float(f) => *f, _ => 0.0 };
-                    let fb = match b { LispVal::Num(n) => *n as f64, LispVal::Float(f) => *f, _ => 0.0 };
-                    fa.partial_cmp(&fb).unwrap_or(std::cmp::Ordering::Equal)
-                });
-                Ok(LispVal::List(vals))
-            }
-            "zip" => {
-                let a = match &args[0] { LispVal::List(l) => l.clone(), LispVal::Nil => vec![], other => return Err(format!("zip: expected list, got {}", other)) };
-                let b = match args.get(1) { Some(LispVal::List(l)) => l.clone(), Some(LispVal::Nil) => vec![], Some(other) => return Err(format!("zip: expected list, got {}", other)), None => return Err("zip: need 2 args".into()) };
-                Ok(LispVal::List(a.iter().zip(b.iter()).map(|(x, y)| LispVal::List(vec![x.clone(), y.clone()])).collect()))
-            }
-            "map" => {
-                let func = args.get(0).ok_or("map: need (f list)")?;
-                let lst = match args.get(1) {
-                    Some(LispVal::List(l)) => l.clone(),
-                    Some(LispVal::Nil) => return Ok(LispVal::List(vec![])),
-                    Some(other) => return Err(format!("map: expected list, got {}", other)),
-                    None => return Err("map: need (f list)".into()),
-                };
-                // Fast path: compile single-param lambda to bytecode
-                if let LispVal::Lambda { params, rest_param: None, body, closed_env } = func {
-                    if params.len() == 1 {
-                        if let Some(cl) = crate::bytecode::try_compile_lambda(
-                            params, body, closed_env, env,
-                        ) {
-                            if lst.is_empty() {
-                                return Ok(LispVal::List(vec![]));
-                            }
-                            // Try first element — if bytecode can't handle it (macro,
-                            // user fn, etc), fall back gracefully
-                            if let Ok(first_result) = crate::bytecode::run_compiled_lambda(&cl, &[lst[0].clone()]) {
-                                let mut result = Vec::with_capacity(lst.len());
-                                result.push(first_result);
-                                for elem in &lst[1..] {
-                                    result.push(crate::bytecode::run_compiled_lambda(&cl, &[elem.clone()])?);
-                                }
-                                return Ok(LispVal::List(result));
-                            }
-                            // First element failed — fall through to eval path
-                        }
-                    }
-                }
-                // Fallback: full eval per element
-                let mut result = Vec::with_capacity(lst.len());
-                for elem in &lst {
-                    result.push(call_val(func, &[elem.clone()], env)?);
-                }
-                Ok(LispVal::List(result))
-            }
-            "filter" => {
-                let func = args.get(0).ok_or("filter: need (pred list)")?;
-                let lst = match args.get(1) {
-                    Some(LispVal::List(l)) => l.clone(),
-                    Some(LispVal::Nil) => return Ok(LispVal::List(vec![])),
-                    Some(other) => return Err(format!("filter: expected list, got {}", other)),
-                    None => return Err("filter: need (pred list)".into()),
-                };
-                // Fast path: compile single-param lambda to bytecode
-                if let LispVal::Lambda { params, rest_param: None, body, closed_env } = func {
-                    if params.len() == 1 {
-                        if let Some(cl) =
-                            crate::bytecode::try_compile_lambda(params, body, closed_env, env)
-                        {
-                            if lst.is_empty() {
-                                return Ok(LispVal::List(vec![]));
-                            }
-                            // Try first element — if bytecode can't handle it, fall back
-                            if let Ok(first_result) =
-                                crate::bytecode::run_compiled_lambda(&cl, &[lst[0].clone()])
-                            {
-                                let mut result = Vec::new();
-                                if is_truthy(&first_result) {
-                                    result.push(lst[0].clone());
-                                }
-                                for elem in &lst[1..] {
-                                    if is_truthy(&crate::bytecode::run_compiled_lambda(&cl, &[elem.clone()])?) {
-                                        result.push(elem.clone());
-                                    }
-                                }
-                                return Ok(LispVal::List(result));
-                            }
-                            // First element failed — fall through to eval path
-                        }
-                    }
-                }
-                // Fallback: full eval per element
-                let mut result = Vec::new();
-                for elem in &lst {
-                    if is_truthy(&call_val(func, &[elem.clone()], env)?) {
-                        result.push(elem.clone());
-                    }
-                }
-                Ok(LispVal::List(result))
-            }
-            "reduce" => {
-                let func = args.get(0).ok_or("reduce: need (f init list)")?;
-                let mut acc = args.get(1).ok_or("reduce: need (f init list)")?.clone();
-                let lst = match args.get(2) {
-                    Some(LispVal::List(l)) => l.clone(),
-                    Some(LispVal::Nil) => return Ok(acc),
-                    Some(other) => return Err(format!("reduce: expected list, got {}", other)),
-                    None => return Err("reduce: need (f init list)".into()),
-                };
-                let acc_str = acc.to_string();
-                for elem in &lst {
-                    let prev_acc = acc.clone();
-                    acc = call_val(func, &[prev_acc.clone(), elem.clone()], env)?;
-                    // Warn if accumulator doesn't incorporate the current element
-                    let new_acc_str = acc.to_string();
-                    if new_acc_str == prev_acc.to_string() && !lst.is_empty() {
-                        eprintln!("[WARN] reduce: accumulator unchanged after processing element. \
-                            Your function may be ignoring the current element. \
-                            Consider using (str-join sep lst) for string joining.");
-                    }
-                }
-                Ok(acc)
-            }
-            "str-join" => {
-                let sep = as_str(args.get(0).ok_or("str-join: need (separator list)")?)?;
-                let lst = match args.get(1) {
-                    Some(LispVal::List(l)) => l,
-                    Some(LispVal::Nil) => return Ok(LispVal::Str(String::new())),
-                    Some(other) => return Err(format!("str-join: expected list, got {}", other)),
-                    None => return Err("str-join: need (separator list)".into()),
-                };
-                let parts: Vec<String> = lst.iter().map(|v| match v {
-                    LispVal::Str(s) => s.clone(),
-                    _ => v.to_string(),
-                }).collect();
-                Ok(LispVal::Str(parts.join(&sep)))
-            }
-            "find" => {
-                let func = args.get(0).ok_or("find: need (pred list)")?;
-                let lst = match args.get(1) {
-                    Some(LispVal::List(l)) => l.clone(),
-                    Some(LispVal::Nil) => return Ok(LispVal::Nil),
-                    Some(other) => return Err(format!("find: expected list, got {}", other)),
-                    None => return Err("find: need (pred list)".into()),
-                };
-                for elem in &lst {
-                    if is_truthy(&call_val(func, &[elem.clone()], env)?) {
-                        return Ok(elem.clone());
-                    }
-                }
-                Ok(LispVal::Nil)
-            }
-            "some" => {
-                let func = args.get(0).ok_or("some: need (pred list)")?;
-                let lst = match args.get(1) {
-                    Some(LispVal::List(l)) => l.clone(),
-                    Some(LispVal::Nil) => return Ok(LispVal::Bool(false)),
-                    Some(other) => return Err(format!("some: expected list, got {}", other)),
-                    None => return Err("some: need (pred list)".into()),
-                };
-                for elem in &lst {
-                    if is_truthy(&call_val(func, &[elem.clone()], env)?) {
-                        return Ok(LispVal::Bool(true));
-                    }
-                }
-                Ok(LispVal::Bool(false))
-            }
-            "every" => {
-                let func = args.get(0).ok_or("every: need (pred list)")?;
-                let lst = match args.get(1) {
-                    Some(LispVal::List(l)) => l.clone(),
-                    Some(LispVal::Nil) => return Ok(LispVal::Bool(true)),
-                    Some(other) => return Err(format!("every: expected list, got {}", other)),
-                    None => return Err("every: need (pred list)".into()),
-                };
-                for elem in &lst {
-                    if !is_truthy(&call_val(func, &[elem.clone()], env)?) {
-                        return Ok(LispVal::Bool(false));
-                    }
-                }
-                Ok(LispVal::Bool(true))
-            }
-
-            "fmt" => {
-                let template = match &args[0] {
-                    LispVal::Str(s) => s.clone(),
-                    _ => return Err("fmt: need template string".into()),
-                };
-                let data = &args[1];
-                let mut result = String::new();
-                let chars: Vec<char> = template.chars().collect();
-                let mut i = 0;
-                while i < chars.len() {
-                    if chars[i] == '{' {
-                        let mut key = String::new();
-                        i += 1;
-                        while i < chars.len() && chars[i] != '}' {
-                            key.push(chars[i]);
-                            i += 1;
-                        }
-                        if i < chars.len() { i += 1; }
-                        let mut found = false;
-                        if let LispVal::Map(map) = data {
-                            if let Some(val) = map.get(&key) {
-                                match val {
-                                    LispVal::Str(s) => result.push_str(s),
-                                    _ => result.push_str(&val.to_string()),
-                                }
-                                found = true;
-                            }
-                        }
-                        if !found {
-                            result.push('{');
-                            result.push_str(&key);
-                            result.push('}');
-                        }
-                    } else {
-                        result.push(chars[i]);
-                        i += 1;
-                    }
-                }
-                Ok(LispVal::Str(result))
-            }
-
-            // --- File I/O ---
-            "file/read" => {
-                let path = as_str(&args[0])?;
-                match std::fs::read_to_string(&path) {
-                    Ok(s) => Ok(LispVal::Str(s)),
-                    Err(e) => Err(format!("file/read: {}", e)),
-                }
-            }
-            "file/write" => {
-                let path = as_str(&args[0])?;
-                let content = as_str(&args[1])?;
-                match std::fs::write(&path, &content) {
-                    Ok(()) => Ok(LispVal::Bool(true)),
-                    Err(e) => Err(format!("file/write: {}", e)),
-                }
-            }
-            "file/exists?" => {
-                let path = as_str(&args[0])?;
-                Ok(LispVal::Bool(std::path::Path::new(&path).exists()))
-            }
-            "file/list" => {
-                let path = as_str(&args[0])?;
-                match std::fs::read_dir(&path) {
-                    Ok(entries) => {
-                        let names: Vec<LispVal> = entries
-                            .filter_map(|e| e.ok())
-                            .map(|e| LispVal::Str(e.file_name().to_string_lossy().to_string()))
-                            .collect();
-                        Ok(LispVal::List(names))
-                    }
-                    Err(e) => Err(format!("file/list: {}", e)),
-                }
-            }
-
-            // --- File I/O (convenience aliases) ---
-            "write-file" => {
-                let path = as_str(&args[0])?;
-                let content = as_str(&args[1])?;
-                // Unescape common sequences
-                let content = content.replace("\\n", "\n").replace("\\t", "\t").replace("\\\"", "\"");
-                match std::fs::write(&path, &content) {
-                    Ok(()) => Ok(LispVal::Bool(true)),
-                    Err(e) => Err(format!("write-file: {}", e)),
-                }
-            }
-            "read-file" => {
-                let path = as_str(&args[0])?;
-                match std::fs::read_to_string(&path) {
-                    Ok(s) => Ok(LispVal::Str(s)),
-                    Err(e) => Err(format!("read-file: {}", e)),
-                }
-            }
-            "load-file" => {
-                let path = as_str(&args[0])?;
-                let code = std::fs::read_to_string(&path)
-                    .map_err(|e| format!("load-file: {}", e))?;
-                let exprs = parse_all(&code)?;
-                let mut result = LispVal::Nil;
-                for expr in &exprs {
-                    result = lisp_eval(expr, env)?;
-                }
-                Ok(result)
-            }
-            "append-file" => {
-                let path = as_str(&args[0])?;
-                let content = as_str(&args[1])?;
-                use std::io::Write;
-                let mut f = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&path)
-                    .map_err(|e| format!("append-file: {}", e))?;
-                f.write_all(content.as_bytes())
-                    .map_err(|e| format!("append-file: {}", e))?;
-                Ok(LispVal::Bool(true))
-            }
-            "file-exists?" => {
-                let path = as_str(&args[0])?;
-                Ok(LispVal::Bool(std::path::Path::new(&path).exists()))
-            }
-            "shell" => {
-                let cmd = as_str(&args[0])?;
-                let allow = std::env::var("RLM_ALLOW_SHELL").unwrap_or_default();
-                if allow != "1" && allow != "true" {
-                    return Err("shell: blocked unless RLM_ALLOW_SHELL=1 is set".into());
-                }
-                let output = std::process::Command::new("sh")
-                    .arg("-c")
-                    .arg(&cmd)
-                    .output()
-                    .map_err(|e| format!("shell: {}", e))?;
-                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    return Err(format!("shell: exit {:?}: {}{}", output.status.code(), stdout, stderr));
-                }
-                Ok(LispVal::Str(stdout))
-            }
-
-            // --- HTTP builtins ---
-            "http-get" => {
-                let url = as_str(&args[0])?;
-                let rt = &SHARED_RUNTIME;
-                let body = rt.block_on(async {
-                    reqwest::get(&url).await
-                        .map_err(|e| format!("http-get: {}", e))?
-                        .text().await
-                        .map_err(|e| format!("http-get: {}", e))
-                })?;
-                Ok(LispVal::Str(body))
-            }
-            "http-post" => {
-                let url = as_str(&args[0])?;
-                let body_str = as_str(args.get(1).ok_or("http-post: need body")?)?;
-                let rt = &SHARED_RUNTIME;
-                let body = rt.block_on(async {
-                    let client = &SHARED_CLIENT;
-                    client.post(&url)
-                        .header("Content-Type", "application/json")
-                        .body(body_str)
-                        .send().await
-                        .map_err(|e| format!("http-post: {}", e))?
-                        .text().await
-                        .map_err(|e| format!("http-post: {}", e))
-                })?;
-                Ok(LispVal::Str(body))
-            }
-            "http-get-json" => {
-                let url = as_str(&args[0])?;
-                let rt = &SHARED_RUNTIME;
-                let body = rt.block_on(async {
-                    reqwest::get(&url).await
-                        .map_err(|e| format!("http-get-json: {}", e))?
-                        .text().await
-                        .map_err(|e| format!("http-get-json: {}", e))
-                })?;
-                let v: serde_json::Value = serde_json::from_str(&body)
-                    .map_err(|e| format!("http-get-json: parse error: {}", e))?;
-                Ok(json_to_lisp(v))
-            }
-
-            // --- LLM builtins ---
+// --- LLM builtins ---
 
             // --- LLM builtins ---
             "llm" => {
                 let prompt = as_str(&args[0])?;
-                let api_key = std::env::var("RLM_API_KEY")
-                    .or_else(|_| std::env::var("OPENAI_API_KEY"))
-                    .or_else(|_| std::env::var("GLM_API_KEY"))
-                    .map_err(|_| "llm: set RLM_API_KEY, OPENAI_API_KEY, or GLM_API_KEY")?;
-                let api_base = std::env::var("RLM_API_BASE")
-                    .unwrap_or_else(|_| "https://api.z.ai/api/coding/paas/v4".to_string());
-                let model = std::env::var("RLM_MODEL")
-                    .unwrap_or_else(|_| "glm-5.1".to_string());
-
-                let rt = &SHARED_RUNTIME;
-                let (resp, tokens) = rt.block_on(async {
-                    let client = &SHARED_CLIENT;
-                    let body = serde_json::json!({
-                        "model": model,
-                        "messages": [
-                            {"role": "system", "content": "You are a helpful assistant with access to a Lisp runtime called lisp-rlm."},
-                            {"role": "user", "content": prompt}
-                        ],
-                        "max_tokens": 2048
-                    });
-                    let resp = client.post(format!("{}/chat/completions", api_base))
-                        .header("Authorization", format!("Bearer {}", api_key))
-                        .json(&body)
-                        .send().await
-                        .map_err(|e| format!("llm: request failed: {}", e))?;
-                    let text = resp.text().await
-                        .map_err(|e| format!("llm: read body failed: {}", e))?;
-                    let v: serde_json::Value = serde_json::from_str(&text)
-                        .map_err(|e| format!("llm: json parse error: {}", e))?;
-                    let tokens = v["usage"]["total_tokens"].as_u64().unwrap_or(0) as usize;
-                    let content = v["choices"][0]["message"]["content"].as_str()
-                        .map(|s| s.to_string())
-                        .ok_or_else(|| format!("llm: unexpected response: {}", text))?;
-                    Ok::<_, String>((content, tokens))
-                })?;
-                env.tokens_used += tokens;
+                let messages = vec![
+                    ("system".to_string(), "You are a helpful assistant with access to a Lisp runtime called lisp-rlm.".to_string()),
+                    ("user".to_string(), prompt),
+                ];
+                let resp = env.llm_provider.as_ref()
+                    .ok_or("llm: no LLM provider configured")?
+                    .complete(&messages, Some(2048))?;
+                env.tokens_used += resp.tokens;
                 env.llm_calls += 1;
-                Ok(LispVal::Str(resp))
+                Ok(LispVal::Str(resp.content))
             }
             "llm-code" => {
                 let prompt = as_str(&args[0])?;
-                let api_key = std::env::var("RLM_API_KEY")
-                    .or_else(|_| std::env::var("OPENAI_API_KEY"))
-                    .or_else(|_| std::env::var("GLM_API_KEY"))
-                    .map_err(|_| "llm-code: set RLM_API_KEY, OPENAI_API_KEY, or GLM_API_KEY")?;
-                let api_base = std::env::var("RLM_API_BASE")
-                    .unwrap_or_else(|_| "https://api.z.ai/api/coding/paas/v4".to_string());
-                let model = std::env::var("RLM_MODEL")
-                    .unwrap_or_else(|_| "glm-5.1".to_string());
+                let messages = vec![
+                    ("system".to_string(), RLM_SYSTEM_PROMPT.to_string()),
+                    ("user".to_string(), prompt),
+                ];
+                let resp = env.llm_provider.as_ref()
+                    .ok_or("llm-code: no LLM provider configured")?
+                    .complete(&messages, Some(2048))?;
 
-                let builtin_ref = RLM_SYSTEM_PROMPT;
-
-                let rt = &SHARED_RUNTIME;
-                let (raw_code, tokens) = rt.block_on(async {
-                    let client = &SHARED_CLIENT;
-                    let body = serde_json::json!({
-                        "model": model,
-                        "messages": [
-                            {"role": "system", "content": builtin_ref},
-                            {"role": "user", "content": prompt}
-                        ],
-                        "max_tokens": 2048
-                    });
-                    let resp = client.post(format!("{}/chat/completions", api_base))
-                        .header("Authorization", format!("Bearer {}", api_key))
-                        .json(&body)
-                        .send().await
-                        .map_err(|e| format!("llm-code: request failed: {}", e))?;
-                    let text = resp.text().await
-                        .map_err(|e| format!("llm-code: read body failed: {}", e))?;
-                    let v: serde_json::Value = serde_json::from_str(&text)
-                        .map_err(|e| format!("llm-code: json parse error: {}", e))?;
-                    let tokens = v["usage"]["total_tokens"].as_u64().unwrap_or(0) as usize;
-                    let content = v["choices"][0]["message"]["content"].as_str()
-                        .map(|s| s.to_string())
-                        .ok_or_else(|| format!("llm-code: unexpected response: {}", text))?;
-                    Ok::<_, String>((content, tokens))
-                })?;
-
-                env.tokens_used += tokens;
+                env.tokens_used += resp.tokens;
                 env.llm_calls += 1;
 
-                let code_str = strip_markdown_fences(&raw_code);
+                let code_str = strip_markdown_fences(&resp.content);
 
                 // Parse and eval the LLM-generated Lisp code
                 let exprs = parse_all(&code_str)?;
@@ -1560,24 +843,15 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
             "rlm" => {
                 let task = as_str(&args[0])?;
 
-                let api_key = std::env::var("RLM_API_KEY")
-                    .or_else(|_| std::env::var("OPENAI_API_KEY"))
-                    .or_else(|_| std::env::var("GLM_API_KEY"))
-                    .map_err(|_| "rlm: set RLM_API_KEY, OPENAI_API_KEY, or GLM_API_KEY")?;
-                let api_base = std::env::var("RLM_API_BASE")
-                    .unwrap_or_else(|_| "https://api.z.ai/api/coding/paas/v4".to_string());
-                let model = std::env::var("RLM_MODEL")
-                    .unwrap_or_else(|_| "glm-5.1".to_string());
-
                 // Use the rich system prompt aligned with MIT paper
                 let sys_prompt = std::env::var("RLM_SYSTEM_PROMPT").unwrap_or_else(|_| RLM_SYSTEM_PROMPT.to_string());
                 let max_iterations: usize = std::env::var("RLM_MAX_ITERATIONS")
                     .ok().and_then(|s| s.parse().ok()).unwrap_or(10);
                 let do_verify = std::env::var("RLM_VERIFY").unwrap_or_default() == "1";
 
-                let mut messages = vec![
-                    serde_json::json!({"role": "system", "content": sys_prompt}),
-                    serde_json::json!({"role": "user", "content": format!("Your task: {}\n\nUse the REPL to explore context, plan, and solve. Call (show-context) and (show-vars) to understand your environment.", task)}),
+                let mut messages: Vec<(String, String)> = vec![
+                    ("system".to_string(), sys_prompt),
+                    ("user".to_string(), format!("Your task: {}\n\nUse the REPL to explore context, plan, and solve. Call (show-context) and (show-vars) to understand your environment.", task)),
                 ];
 
                 // --- Planning step: determine ACTION vs CODE mode ---
@@ -1590,33 +864,16 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                          Reply with just ACTION or CODE and a brief one-line plan.\n\nTask: {}",
                         task
                     );
-                    let rt = &SHARED_RUNTIME;
-                    let (plan_resp, plan_tokens) = rt.block_on(async {
-                        let client = &SHARED_CLIENT;
-                        let body = serde_json::json!({
-                            "model": model,
-                            "messages": [
-                                {"role": "system", "content": "Reply with just ACTION or CODE followed by a brief plan. One line only."},
-                                {"role": "user", "content": plan_prompt}
-                            ],
-                            "max_tokens": 256
-                        });
-                        let resp = client.post(format!("{}/chat/completions", api_base))
-                            .header("Authorization", format!("Bearer {}", api_key))
-                            .json(&body)
-                            .send().await.map_err(|e| format!("rlm plan: {}", e))?;
-                        let text = resp.text().await.map_err(|e| format!("rlm plan: {}", e))?;
-                        let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("rlm plan: {}", e))?;
-                        let tokens = v["usage"]["total_tokens"].as_u64().unwrap_or(0) as usize;
-                        let content = v["choices"][0]["message"]["content"].as_str()
-                            .map(|s| s.to_string()).ok_or_else(|| "rlm plan: no content".to_string())?;
-                        Ok::<_, String>((content, tokens))
-                    })?;
-                    env.tokens_used += plan_tokens;
+                    let plan_messages = vec![
+                        ("system".to_string(), "Reply with just ACTION or CODE followed by a brief plan. One line only.".to_string()),
+                        ("user".to_string(), plan_prompt),
+                    ];
+                    let plan_resp = env.llm_provider.as_ref().unwrap().complete(&plan_messages, Some(256))?;
+                    env.tokens_used += plan_resp.tokens;
                     env.llm_calls += 1;
-                    let plan_upper = plan_resp.to_uppercase();
+                    let plan_upper = plan_resp.content.to_uppercase();
                     action_mode = plan_upper.contains("ACTION") && !plan_upper.contains("CODE");
-                    eprintln!("[rlm] mode: {} — {}", if action_mode { "ACTION" } else { "CODE" }, plan_resp.trim());
+                    eprintln!("[rlm] mode: {} — {}", if action_mode { "ACTION" } else { "CODE" }, plan_resp.content.trim());
                 }
 
                 let mut final_result = LispVal::Nil;
@@ -1642,36 +899,16 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                     } else {
                         "The history above is your previous interactions. Continue using the REPL to solve the task.".to_string()
                     };
-                    messages.push(serde_json::json!({"role": "user", "content": iter_prompt}));
+                    messages.push(("user".to_string(), iter_prompt));
 
                     // Snapshot env
                     let snap = env.take_snapshot();
 
-                    // Call LLM
-                    let rt = &SHARED_RUNTIME;
-                    let (resp_text, tokens) = rt.block_on(async {
-                        let client = &SHARED_CLIENT;
-                        let body = serde_json::json!({
-                            "model": model,
-                            "messages": messages,
-                            "max_tokens": 8192
-                        });
-                        let resp = client.post(format!("{}/chat/completions", api_base))
-                            .header("Authorization", format!("Bearer {}", api_key))
-                            .json(&body)
-                            .send().await
-                            .map_err(|e| format!("rlm: request failed: {}", e))?;
-                        let text = resp.text().await
-                            .map_err(|e| format!("rlm: read body failed: {}", e))?;
-                        let v: serde_json::Value = serde_json::from_str(&text)
-                            .map_err(|e| format!("rlm: json parse error: {}", e))?;
-                        let tokens = v["usage"]["total_tokens"].as_u64().unwrap_or(0) as usize;
-                        let content = v["choices"][0]["message"]["content"].as_str()
-                            .map(|s| s.to_string())
-                            .ok_or_else(|| format!("rlm: unexpected response: {}", text))?;
-                        Ok::<_, String>((content, tokens))
-                    })?;
-
+                    // Call LLM via provider — scope the borrow
+                    let (resp_text, tokens) = {
+                        let resp = env.llm_provider.as_ref().unwrap().complete(&messages, Some(8192))?;
+                        (resp.content, resp.tokens)
+                    };
                     env.tokens_used += tokens;
                     env.llm_calls += 1;
 
@@ -1679,7 +916,7 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                     let code_str = strip_markdown_fences(&resp_text);
 
                     // Append assistant message (truncated for context window management)
-                    messages.push(serde_json::json!({"role": "assistant", "content": truncate_str(&resp_text, 500)}));
+                    messages.push(("assistant".to_string(), truncate_str(&resp_text, 500)));
 
                     eprintln!("[rlm iter {}] code:\n{}", iter, code_str);
 
@@ -1691,7 +928,7 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                             if let Some(first_expr) = extract_first_valid_expr(&code_str) {
                                 vec![first_expr]
                             } else {
-                                messages.push(serde_json::json!({"role": "user", "content": format!("Parse error at: {}. Please fix and return valid Lisp code.", parse_err)}));
+                                messages.push(("user".to_string(), format!("Parse error at: {}. Please fix and return valid Lisp code.", parse_err)));
                                 continue;
                             }
                         }
@@ -1747,49 +984,28 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                             }
                         }
 
-                        // Ask LLM to retry
+                        // Ask LLM to retry — scope the provider borrow
                         if retry + 1 < max_retries {
                             let err_truncated = truncate_str(&err_msg, 200);
-                            messages.push(serde_json::json!({"role": "user", "content": format!("Error (retry {}/{}): {}. Try again.", retry + 1, max_retries, err_truncated)}));
-                            // Get new code from LLM
-                            let rt2 = &SHARED_RUNTIME;
-                            let (retry_text, retry_tokens) = rt2.block_on(async {
-                                let client = &SHARED_CLIENT;
-                                let body = serde_json::json!({
-                                    "model": model,
-                                    "messages": messages,
-                                    "max_tokens": 8192
-                                });
-                                let resp = client.post(format!("{}/chat/completions", api_base))
-                                    .header("Authorization", format!("Bearer {}", api_key))
-                                    .json(&body)
-                                    .send().await.map_err(|e| format!("rlm: {}", e))?;
-                                let text = resp.text().await.map_err(|e| format!("rlm: {}", e))?;
-                                let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("rlm: {}", e))?;
-                                let tokens = v["usage"]["total_tokens"].as_u64().unwrap_or(0) as usize;
-                                let content = v["choices"][0]["message"]["content"].as_str()
-                                    .map(|s| s.to_string()).ok_or_else(|| "rlm: unexpected".to_string())?;
-                                Ok::<_, String>((content, tokens))
-                            })?;
+                            messages.push(("user".to_string(), format!("Error (retry {}/{}): {}. Try again.", retry + 1, max_retries, err_truncated)));
+                            let (retry_text, retry_tokens) = {
+                                let retry_resp = env.llm_provider.as_ref().unwrap().complete(&messages, Some(8192))?;
+                                (retry_resp.content, retry_resp.tokens)
+                            };
                             env.tokens_used += retry_tokens;
                             env.llm_calls += 1;
-                            messages.push(serde_json::json!({"role": "assistant", "content": truncate_str(&retry_text, 500)}));
-                            let retry_code = strip_markdown_fences(&retry_text);
-                            // Re-parse for next retry iteration
-                            // We'll just loop and re-use the original exprs vec... 
-                            // Actually let's break to outer loop since this gets complex
+                            messages.push(("assistant".to_string(), truncate_str(&retry_text, 500)));
+                            let _retry_code = strip_markdown_fences(&retry_text);
                             break;
                         }
                     }
 
                     if !eval_ok {
-                        // Move to next iteration — LLM will see the error in messages
                         continue;
                     }
 
                     eprintln!("[rlm iter {}] result: {}", iter, truncate_str(&result.to_string(), 200));
                     final_result = result.clone();
-                    // Store last_result for ACTION mode context
                     env.rlm_state.insert("last_result".to_string(), result);
 
                     // Check if code set Final=true via (final ...) or (final-var ...)
@@ -1804,7 +1020,6 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                     }
 
                     // Metadata-only stdout truncation (paper's key insight)
-                    // Instead of appending full result, append only metadata
                     let result_str = final_result.to_string();
                     let result_type = match &final_result {
                         LispVal::Nil => "nil",
@@ -1822,68 +1037,37 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                         result_str.len(),
                         truncate_str(&result_str, 100)
                     );
-                    messages.push(serde_json::json!({"role": "user", "content": output_meta}));
+                    messages.push(("user".to_string(), output_meta));
 
-                    // Continue to next iteration if not final
                     continue;
                 }
 
-                // Self-verification step
+                // Self-verification step — scope provider borrow
                 if do_verify {
                     let result_str = final_result.to_string();
                     let verify_prompt = format!(
                         "Given the task: {}\nAnd the result: {}\n\nIs this correct? Answer YES or NO and explain briefly.",
                         task, truncate_str(&result_str, 300)
                     );
-                    let rt = &SHARED_RUNTIME;
-                    let (verdict, vtokens) = rt.block_on(async {
-                        let client = &SHARED_CLIENT;
-                        let body = serde_json::json!({
-                            "model": model,
-                            "messages": [
-                                {"role": "system", "content": "You are a verification assistant. Answer YES or NO."},
-                                {"role": "user", "content": verify_prompt}
-                            ],
-                            "max_tokens": 512
-                        });
-                        let resp = client.post(format!("{}/chat/completions", api_base))
-                            .header("Authorization", format!("Bearer {}", api_key))
-                            .json(&body)
-                            .send().await.map_err(|e| format!("rlm verify: {}", e))?;
-                        let text = resp.text().await.map_err(|e| format!("rlm verify: {}", e))?;
-                        let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("rlm verify: {}", e))?;
-                        let tokens = v["usage"]["total_tokens"].as_u64().unwrap_or(0) as usize;
-                        let content = v["choices"][0]["message"]["content"].as_str()
-                            .map(|s| s.to_string()).ok_or_else(|| "rlm verify: no content".to_string())?;
-                        Ok::<_, String>((content, tokens))
-                    })?;
+                    let verify_messages = vec![
+                        ("system".to_string(), "You are a verification assistant. Answer YES or NO.".to_string()),
+                        ("user".to_string(), verify_prompt),
+                    ];
+                    let (verdict, vtokens) = {
+                        let verify_resp = env.llm_provider.as_ref().unwrap().complete(&verify_messages, Some(512))?;
+                        (verify_resp.content, verify_resp.tokens)
+                    };
                     env.tokens_used += vtokens;
                     env.llm_calls += 1;
 
                     if verdict.to_uppercase().starts_with("NO") {
                         eprintln!("[rlm verify] FAILED: {}", truncate_str(&verdict, 200));
-                        // One more iteration with critique
-                        messages.push(serde_json::json!({"role": "user", "content": format!("Verification failed: {}. Please fix.", verdict)}));
+                        messages.push(("user".to_string(), format!("Verification failed: {}. Please fix.", verdict)));
                         let snap = env.take_snapshot();
-                        let rt = &SHARED_RUNTIME;
-                        let (fix_text, fix_tokens) = rt.block_on(async {
-                            let client = &SHARED_CLIENT;
-                            let body = serde_json::json!({
-                                "model": model,
-                                "messages": messages,
-                                "max_tokens": 8192
-                            });
-                            let resp = client.post(format!("{}/chat/completions", api_base))
-                                .header("Authorization", format!("Bearer {}", api_key))
-                                .json(&body)
-                                .send().await.map_err(|e| format!("rlm: {}", e))?;
-                            let text = resp.text().await.map_err(|e| format!("rlm: {}", e))?;
-                            let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("rlm: {}", e))?;
-                            let tokens = v["usage"]["total_tokens"].as_u64().unwrap_or(0) as usize;
-                            let content = v["choices"][0]["message"]["content"].as_str()
-                                .map(|s| s.to_string()).ok_or_else(|| "rlm: unexpected".to_string())?;
-                            Ok::<_, String>((content, tokens))
-                        })?;
+                        let (fix_text, fix_tokens) = {
+                            let fix_resp = env.llm_provider.as_ref().unwrap().complete(&messages, Some(8192))?;
+                            (fix_resp.content, fix_resp.tokens)
+                        };
                         env.tokens_used += fix_tokens;
                         env.llm_calls += 1;
                         let fix_code = strip_markdown_fences(&fix_text);
@@ -2013,14 +1197,9 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                 let task = as_str(&args[0])?;
                 let save_path = args.get(1).map(|v| as_str(v)).transpose()?;
 
-                let api_key = std::env::var("RLM_API_KEY")
-                    .or_else(|_| std::env::var("OPENAI_API_KEY"))
-                    .or_else(|_| std::env::var("GLM_API_KEY"))
-                    .map_err(|_| "rlm-write: set API key env var")?;
-                let api_base = std::env::var("RLM_API_BASE")
-                    .unwrap_or_else(|_| "https://api.z.ai/api/coding/paas/v4".to_string());
-                let model = std::env::var("RLM_MODEL")
-                    .unwrap_or_else(|_| "glm-5.1".to_string());
+                if env.llm_provider.is_none() {
+                    return Err("rlm-write: no LLM provider configured".to_string());
+                }
 
                 let sys = r#"You are a Lisp code generator for lisp-rlm. Return ONLY raw Lisp code — no markdown fences, no explanations, no backticks.
 
@@ -2105,128 +1284,58 @@ try catch error
 
 DO NOT wrap code in markdown fences. DO NOT add explanations."#;
 
-                let rt = &SHARED_RUNTIME;
-                let (code, calls): (String, usize) = rt.block_on(async {
-                    let client = &SHARED_CLIENT;
-                    let mut calls: usize = 0;
+                // First call: initial code generation
+                let gen_messages = vec![
+                    ("system".to_string(), sys.to_string()),
+                    ("user".to_string(), task.clone()),
+                ];
+                let gen_resp = env.llm_provider.as_ref().unwrap().complete(&gen_messages, Some(8192))?;
+                env.tokens_used += gen_resp.tokens;
+                env.llm_calls += 1;
+                let code = strip_markdown_fences(&gen_resp.content);
 
-                    // Initial generation
-                    let body = serde_json::json!({
-                        "model": model,
-                        "messages": [
-                            {"role": "system", "content": sys},
-                            {"role": "user", "content": task}
-                        ],
-                        "max_tokens": 8192
-                    });
-                    let resp = client.post(format!("{}/chat/completions", api_base))
-                        .header("Authorization", format!("Bearer {}", api_key))
-                        .json(&body)
-                        .send().await.map_err(|e| format!("rlm-write: {}", e))?;
-                    let text = resp.text().await.map_err(|e| format!("rlm-write: {}", e))?;
-                    let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("rlm-write: {}", e))?;
-                    let raw = v["choices"][0]["message"]["content"].as_str()
-                        .map(|s| s.to_string())
-                        .ok_or_else(|| format!("rlm-write: unexpected response"))?;
-                    calls += 1;
-                    let code = strip_markdown_fences(&raw);
+                // Verify parse, retry once if broken
+                let final_code = if crate::parser::parse_all(&code).is_err() {
+                    let fix_messages = vec![
+                        ("system".to_string(), sys.to_string()),
+                        ("assistant".to_string(), code.clone()),
+                        ("user".to_string(), "The previous code had a parse error. Write it again, fixed. Return ONLY valid raw Lisp code, no markdown, no explanations.".to_string()),
+                    ];
+                    let fix_resp = env.llm_provider.as_ref().unwrap().complete(&fix_messages, Some(8192))?;
+                    env.tokens_used += fix_resp.tokens;
+                    env.llm_calls += 1;
+                    if let Some(fixed) = Some(strip_markdown_fences(&fix_resp.content)) {
+                        if crate::parser::parse_all(&fixed).is_ok() { fixed } else { code }
+                    } else { code.clone() }
+                } else { code.clone() };
 
-                    // Verify parse, retry once if broken
-                    let final_code = if crate::parser::parse_all(&code).is_err() {
-                        let fix = format!("The previous code had a parse error. Write it again, fixed. Return ONLY valid raw Lisp code, no markdown, no explanations.");
-                        let body2 = serde_json::json!({
-                            "model": model,
-                            "messages": [
-                                {"role": "system", "content": sys},
-                                {"role": "assistant", "content": &code},
-                                {"role": "user", "content": fix}
-                            ],
-                            "max_tokens": 8192
-                        });
-                        let resp2 = client.post(format!("{}/chat/completions", api_base))
-                            .header("Authorization", format!("Bearer {}", api_key))
-                            .json(&body2)
-                            .send().await.map_err(|e| format!("rlm-write retry: {}", e))?;
-                        let text2 = resp2.text().await.map_err(|e| format!("rlm-write retry: {}", e))?;
-                        let v2: serde_json::Value = serde_json::from_str(&text2).map_err(|e| format!("rlm-write retry: {}", e))?;
-                        calls += 1;
-                        if let Some(fixed) = v2["choices"][0]["message"]["content"].as_str() {
-                            let fixed = strip_markdown_fences(fixed);
-                            if crate::parser::parse_all(&fixed).is_ok() { fixed } else { code }
-                        } else { code }
-                    } else { code };
-
-                    // Strip trailing write-file calls (rlm-write saves automatically)
-                    let final_code = final_code.trim_end().to_string();
-                    let final_code = if final_code.ends_with(")") {
-                        // Remove last top-level (write-file ...) if present
-                        let trimmed = final_code.trim_end();
-                        if trimmed.rfind("(write-file").map(|i| {
-                            // Check it's a top-level form (count parens before it)
-                            let before = &trimmed[..i];
-                            let open = before.chars().filter(|c| *c == '(').count();
-                            let close = before.chars().filter(|c| *c == ')').count();
-                            open == close // top-level if parens are balanced before it
-                        }).unwrap_or(false) {
-                            trimmed[..trimmed.rfind("(write-file").unwrap()].trim_end().to_string()
-                        } else {
-                            final_code
-                        }
+                // Strip trailing write-file calls (rlm-write saves automatically)
+                let final_code = final_code.trim_end().to_string();
+                let final_code = if final_code.ends_with(")") {
+                    // Remove last top-level (write-file ...) if present
+                    let trimmed = final_code.trim_end();
+                    if trimmed.rfind("(write-file").map(|i| {
+                        // Check it's a top-level form (count parens before it)
+                        let before = &trimmed[..i];
+                        let open = before.chars().filter(|c| *c == '(').count();
+                        let close = before.chars().filter(|c| *c == ')').count();
+                        open == close // top-level if parens are balanced before it
+                    }).unwrap_or(false) {
+                        trimmed[..trimmed.rfind("(write-file").unwrap()].trim_end().to_string()
                     } else {
                         final_code
-                    };
-
-                    Ok::<(String, usize), String>((final_code, calls))
-                })?;
-
-                env.llm_calls += calls;
+                    }
+                } else {
+                    final_code
+                };
 
                 // Save to file if path provided (no unescaping — this is source code, \n should stay as \n)
                 if let Some(ref path) = save_path {
-                    std::fs::write(path, &code).map_err(|e| format!("rlm-write: {}", e))?;
+                    std::fs::write(path, &final_code).map_err(|e| format!("rlm-write: {}", e))?;
                 }
 
-                Ok(LispVal::Str(code))
-            }
-            // --- Env ---
-            "env/get" => {
-                let key = as_str(&args[0])?;
-                match std::env::var(&key) {
-                    Ok(v) => Ok(LispVal::Str(v)),
-                    Err(_) => Ok(LispVal::Nil),
-                }
-            }
-
-            // --- Snapshot builtins ---
-            "snapshot" => {
-                let snap = env.take_snapshot();
-                let id = env.snapshots.len();
-                env.snapshots.push(snap);
-                Ok(LispVal::Num(id as i64))
-            }
-            "rollback" => {
-                let snap = env.snapshots.pop().ok_or("rollback: no snapshots on stack")?;
-                env.restore_snapshot(snap);
-                Ok(LispVal::Bool(true))
-            }
-            "rollback-to" => {
-                let idx = as_num(args.get(0).ok_or("rollback-to: need index")?)? as usize;
-                let snap = env.snapshots.get(idx).ok_or_else(|| format!("rollback-to: no snapshot at index {}", idx))?.clone();
-                env.restore_snapshot(snap);
-                Ok(LispVal::Bool(true))
-            }
-
-            // rlm-set and rlm-get are now special forms (see lisp_eval_inner)
-
-            // --- Print ---
-            "print" | "println" => {
-                let s: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-                let out = s.join(" ");
-                if name == "println" { println!("{}", out); } else { print!("{}", out); }
-                Ok(LispVal::Str(out))
-            }
-
-            // --- RLM builtins ---
+                Ok(LispVal::Str(final_code))
+            }// --- RLM builtins ---
             "rlm/signature" => {
                 let sig_name = as_str(&args[0])?;
                 let inputs = match &args[1] {
@@ -2280,8 +1389,7 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
                     .ok_or_else(|| format!("undefined: {}", name))?;
                 call_val(&func, &args, env)
             }
-        }
-    } else if let LispVal::Lambda { params, rest_param, body, closed_env } = head {
+        }    } else if let LispVal::Lambda { params, rest_param, body, closed_env } = head {
         apply_lambda(params, &rest_param, body, closed_env, &args, env)
     } else if let LispVal::List(ll) = head {
         if ll.len() < 3 { return Err("inline lambda too short".into()); }
@@ -2291,6 +1399,7 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
         Err("not callable".into())
     }
 }
+
 
 fn call_val(func: &LispVal, args: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
     match func {
@@ -2430,7 +1539,8 @@ mod tests {
         std::env::remove_var("OPENAI_API_KEY");
         let r = eval_str(r#"(llm "hello")"#);
         assert!(r.is_err());
-        assert!(r.unwrap_err().contains("API_KEY"));
+        let err = r.unwrap_err();
+        assert!(err.contains("provider") || err.contains("API_KEY"));
     }
 
     #[test]
@@ -2439,6 +1549,7 @@ mod tests {
         std::env::remove_var("OPENAI_API_KEY");
         let r = eval_str(r#"(llm-code "compute 2+2")"#);
         assert!(r.is_err());
-        assert!(r.unwrap_err().contains("API_KEY"));
+        let err = r.unwrap_err();
+        assert!(err.contains("provider") || err.contains("API_KEY"));
     }
 }

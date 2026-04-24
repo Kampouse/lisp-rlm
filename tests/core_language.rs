@@ -591,8 +591,8 @@ fn test_require_unknown_module_still_errors() {
     let result = eval_str(r#"(require "nonexistent_module_xyz")"#);
     assert!(result.contains("ERROR"), "expected error: {}", result);
     assert!(
-        result.contains("unknown module"),
-        "expected 'unknown module': {}",
+        result.contains("unknown module") || result.contains("cannot load"),
+        "expected 'unknown module' or 'cannot load': {}",
         result
     );
 }

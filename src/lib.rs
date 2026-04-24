@@ -20,7 +20,7 @@
 //!
 //! - [`eval`] — core evaluator (`lisp_eval`, `apply_lambda`, JSON interop)
 //! - [`types`] — value types ([`LispVal`], [`Env`]), standard-library source
-//! - [`parser`] — S-expression parser (`parse_all`)
+//! - [`parser`] — S-expression parser (`parse_all`, `parse_all_spanned`)
 //! - [`bytecode`] — compiled fast path for higher-order list operations
 //! - [`helpers`] — utility predicates (`is_truthy`, `is_builtin_name`)
 
@@ -32,7 +32,10 @@ mod types;
 
 pub use bytecode::{try_compile_loop, exec_compiled_loop, try_compile_lambda, run_compiled_lambda};
 pub use eval::{apply_lambda, lisp_eval};
+pub use eval::llm_provider::{LlmProvider, GenericProvider, LlmResponse};
 pub use helpers::{is_builtin_name, is_truthy};
 pub use parser::parse_all;
+pub use parser::parse_all_spanned;
+pub use parser::Spanned;
 pub use types::DEFAULT_EVAL_BUDGET;
 pub use types::{get_stdlib_code, Env, LispVal};

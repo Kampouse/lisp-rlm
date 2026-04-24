@@ -75,7 +75,6 @@ pub const DEFAULT_EVAL_BUDGET: u64 = 10_000_000;
 /// mechanism: every call to [`lisp_eval`](crate::lisp_eval) increments
 /// `eval_count`; if it exceeds `eval_budget` the evaluator returns an error.
 /// Set `eval_budget` to `0` to disable the limit.
-#[derive(Clone, Debug)]
 pub struct Env {
     bindings: Vec<(String, LispVal)>,
     index: HashMap<String, usize>,
@@ -95,6 +94,8 @@ pub struct Env {
     pub rlm_depth: usize,
     /// RLM iteration counter (incremented by the rlm builtin each iteration)
     pub rlm_iteration: usize,
+    /// Pluggable LLM provider — when `None`, LLM builtins return an error.
+    pub llm_provider: Option<Box<dyn crate::eval::llm_provider::LlmProvider>>,
 }
 
 impl Env {
@@ -111,6 +112,7 @@ impl Env {
             llm_calls: 0,
             rlm_depth: 0,
             rlm_iteration: 0,
+            llm_provider: None,
         };
         // Common aliases
         env.push("t".to_string(), LispVal::Bool(true));
@@ -125,7 +127,19 @@ impl Env {
         for (i, (name, _)) in bindings.iter().enumerate() {
             index.insert(name.clone(), i);
         }
-        Env { bindings, index, eval_count: 0, eval_budget: DEFAULT_EVAL_BUDGET, snapshots: Vec::new(), rlm_state: BTreeMap::new(), tokens_used: 0, llm_calls: 0, rlm_depth: 0, rlm_iteration: 0 }
+        Env {
+            bindings,
+            index,
+            eval_count: 0,
+            eval_budget: DEFAULT_EVAL_BUDGET,
+            snapshots: Vec::new(),
+            rlm_state: BTreeMap::new(),
+            tokens_used: 0,
+            llm_calls: 0,
+            rlm_depth: 0,
+            rlm_iteration: 0,
+            llm_provider: None,
+        }
     }
 
     /// Insert or overwrite a binding, shadowing any previous binding with the
@@ -209,6 +223,11 @@ impl Env {
         self.index.clear();
     }
 
+    /// Set the LLM provider for this environment.
+    pub fn set_llm_provider(&mut self, provider: Box<dyn crate::eval::llm_provider::LlmProvider>) {
+        self.llm_provider = Some(provider);
+    }
+
     /// Take a snapshot of the current bindings.
     pub fn take_snapshot(&self) -> Vec<(String, LispVal)> {
         self.bindings.clone()
@@ -221,6 +240,41 @@ impl Env {
         for (i, (name, _)) in self.bindings.iter().enumerate() {
             self.index.insert(name.clone(), i);
         }
+    }
+}
+
+// Manual trait impls — Box<dyn LlmProvider> cannot derive Clone/Debug.
+
+impl Clone for Env {
+    fn clone(&self) -> Self {
+        Env {
+            bindings: self.bindings.clone(),
+            index: self.index.clone(),
+            eval_count: self.eval_count,
+            eval_budget: self.eval_budget,
+            snapshots: self.snapshots.clone(),
+            rlm_state: self.rlm_state.clone(),
+            tokens_used: self.tokens_used,
+            llm_calls: self.llm_calls,
+            rlm_depth: self.rlm_depth,
+            rlm_iteration: self.rlm_iteration,
+            llm_provider: None, // providers are not cloned
+        }
+    }
+}
+
+impl std::fmt::Debug for Env {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Env")
+            .field("bindings_count", &self.bindings.len())
+            .field("eval_count", &self.eval_count)
+            .field("eval_budget", &self.eval_budget)
+            .field("tokens_used", &self.tokens_used)
+            .field("llm_calls", &self.llm_calls)
+            .field("rlm_depth", &self.rlm_depth)
+            .field("rlm_iteration", &self.rlm_iteration)
+            .field("llm_provider", &self.llm_provider.is_some())
+            .finish()
     }
 }
 

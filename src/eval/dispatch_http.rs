@@ -2,7 +2,8 @@
 
 use crate::helpers::*;
 use crate::types::LispVal;
-use super::{json_to_lisp, SHARED_RUNTIME, SHARED_CLIENT};
+use super::json_to_lisp;
+use super::llm_provider::{SHARED_RUNTIME, SHARED_CLIENT};
 
 pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
     match name {

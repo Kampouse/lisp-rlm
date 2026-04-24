@@ -228,6 +228,75 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
             }
             Ok(Some(LispVal::Bool(true)))
         }
+        "par-map" => {
+            let func = args.get(0).ok_or("par-map: need (f list)")?;
+            let lst = match args.get(1) {
+                Some(LispVal::List(l)) => l.clone(),
+                Some(LispVal::Nil) => return Ok(Some(LispVal::List(vec![]))),
+                Some(other) => return Err(format!("par-map: expected list, got {}", other)),
+                None => return Err("par-map: need (f list)".into()),
+            };
+            if lst.is_empty() { return Ok(Some(LispVal::List(vec![]))); }
+
+            use std::sync::Arc;
+            let func = Arc::new(func.clone());
+            let rt = &crate::eval::llm_provider::SHARED_RUNTIME;
+
+            let results: Result<Vec<LispVal>, String> = rt.block_on(async {
+                let mut tasks = Vec::with_capacity(lst.len());
+                for elem in lst {
+                    let f = Arc::clone(&func);
+                    // Each task needs its own env clone since Env is not Sync
+                    let mut task_env = env.clone();
+                    tasks.push(tokio::spawn(async move {
+                        // Small async yield to allow concurrency, then do CPU work
+                        tokio::task::yield_now().await;
+                        super::call_val(&f, &[elem], &mut task_env)
+                    }));
+                }
+                let mut out = Vec::with_capacity(tasks.len());
+                for task in tasks {
+                    out.push(task.await.map_err(|e| format!("par-map: task failed: {}", e))??.clone());
+                }
+                Ok(out)
+            });
+            Ok(Some(LispVal::List(results?)))
+        }
+        "par-filter" => {
+            let func = args.get(0).ok_or("par-filter: need (pred list)")?;
+            let lst = match args.get(1) {
+                Some(LispVal::List(l)) => l.clone(),
+                Some(LispVal::Nil) => return Ok(Some(LispVal::List(vec![]))),
+                Some(other) => return Err(format!("par-filter: expected list, got {}", other)),
+                None => return Err("par-filter: need (pred list)".into()),
+            };
+            if lst.is_empty() { return Ok(Some(LispVal::List(vec![]))); }
+
+            use std::sync::Arc;
+            let func = Arc::new(func.clone());
+            let rt = &crate::eval::llm_provider::SHARED_RUNTIME;
+
+            let results: Result<Vec<LispVal>, String> = rt.block_on(async {
+                let mut tasks = Vec::with_capacity(lst.len());
+                for elem in &lst {
+                    let f = Arc::clone(&func);
+                    let mut task_env = env.clone();
+                    let e = elem.clone();
+                    tasks.push(tokio::spawn(async move {
+                        tokio::task::yield_now().await;
+                        let result = super::call_val(&f, &[e], &mut task_env)?;
+                        Ok::<bool, String>(super::is_truthy(&result))
+                    }));
+                }
+                let mut out = Vec::new();
+                for (i, task) in tasks.into_iter().enumerate() {
+                    let keep = task.await.map_err(|e| format!("par-filter: task failed: {}", e))??;
+                    if keep { out.push(lst[i].clone()); }
+                }
+                Ok(out)
+            });
+            Ok(Some(LispVal::List(results?)))
+        }
 
         _ => Ok(None),
     }
