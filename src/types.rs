@@ -51,10 +51,18 @@ pub fn get_stdlib_code(name: &str) -> Option<&'static str> {
     }
 }
 
+/// Default maximum number of eval iterations before budget exceeded.
+/// Prevents runaway infinite loops (e.g. tail-recursive functions with no base case).
+pub const DEFAULT_EVAL_BUDGET: u64 = 10_000_000;
+
 #[derive(Clone, Debug)]
 pub struct Env {
     bindings: Vec<(String, LispVal)>,
     index: HashMap<String, usize>,
+    /// Eval iteration counter for execution budget
+    pub eval_count: u64,
+    /// Maximum allowed eval iterations (0 = unlimited)
+    pub eval_budget: u64,
 }
 
 impl Env {
@@ -62,6 +70,8 @@ impl Env {
         Env {
             bindings: Vec::new(),
             index: HashMap::new(),
+            eval_count: 0,
+            eval_budget: DEFAULT_EVAL_BUDGET,
         }
     }
 
@@ -70,7 +80,7 @@ impl Env {
         for (i, (name, _)) in bindings.iter().enumerate() {
             index.insert(name.clone(), i);
         }
-        Env { bindings, index }
+        Env { bindings, index, eval_count: 0, eval_budget: DEFAULT_EVAL_BUDGET }
     }
 
     pub fn push(&mut self, name: String, val: LispVal) {

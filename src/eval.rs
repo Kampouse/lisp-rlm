@@ -82,6 +82,16 @@ pub fn lisp_to_json(val: &LispVal) -> serde_json::Value {
 // ---------------------------------------------------------------------------
 
 pub fn lisp_eval(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
+    // Execution budget check
+    if env.eval_budget > 0 {
+        env.eval_count += 1;
+        if env.eval_count > env.eval_budget {
+            return Err(format!(
+                "execution budget exceeded: {} iterations (limit: {})",
+                env.eval_count, env.eval_budget
+            ));
+        }
+    }
     stacker::maybe_grow(64 * 1024, 2 * 1024 * 1024, || lisp_eval_inner(expr, env))
 }
 
