@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use std::sync::LazyLock;
+
 use crate::helpers::*;
 use crate::parser::parse_all;
 use crate::types::{get_stdlib_code, Env, LispVal};
@@ -11,6 +13,19 @@ pub mod quasiquote;
 use crypto::{builtin_sha256, builtin_keccak256};
 use helpers::{truncate_str, strip_markdown_fences, extract_first_valid_expr};
 use quasiquote::expand_quasiquote;
+
+/// Shared tokio runtime — avoids creating a new runtime per LLM/HTTP call.
+static SHARED_RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
+    tokio::runtime::Runtime::new().expect("failed to create tokio runtime")
+});
+
+/// Shared reqwest client with a 60s timeout — reused across all HTTP/LLM calls.
+static SHARED_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .expect("failed to create reqwest client")
+});
 
 // ---------------------------------------------------------------------------
 // JSON conversion
@@ -1401,7 +1416,7 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
             // --- HTTP builtins ---
             "http-get" => {
                 let url = as_str(&args[0])?;
-                let rt = tokio::runtime::Runtime::new().map_err(|e| format!("http-get: {}", e))?;
+                let rt = &SHARED_RUNTIME;
                 let body = rt.block_on(async {
                     reqwest::get(&url).await
                         .map_err(|e| format!("http-get: {}", e))?
@@ -1413,9 +1428,9 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
             "http-post" => {
                 let url = as_str(&args[0])?;
                 let body_str = as_str(args.get(1).ok_or("http-post: need body")?)?;
-                let rt = tokio::runtime::Runtime::new().map_err(|e| format!("http-post: {}", e))?;
+                let rt = &SHARED_RUNTIME;
                 let body = rt.block_on(async {
-                    let client = reqwest::Client::new();
+                    let client = &SHARED_CLIENT;
                     client.post(&url)
                         .header("Content-Type", "application/json")
                         .body(body_str)
@@ -1428,7 +1443,7 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
             }
             "http-get-json" => {
                 let url = as_str(&args[0])?;
-                let rt = tokio::runtime::Runtime::new().map_err(|e| format!("http-get-json: {}", e))?;
+                let rt = &SHARED_RUNTIME;
                 let body = rt.block_on(async {
                     reqwest::get(&url).await
                         .map_err(|e| format!("http-get-json: {}", e))?
@@ -1454,9 +1469,9 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                 let model = std::env::var("RLM_MODEL")
                     .unwrap_or_else(|_| "glm-5.1".to_string());
 
-                let rt = tokio::runtime::Runtime::new().map_err(|e| format!("llm: {}", e))?;
+                let rt = &SHARED_RUNTIME;
                 let (resp, tokens) = rt.block_on(async {
-                    let client = reqwest::Client::new();
+                    let client = &SHARED_CLIENT;
                     let body = serde_json::json!({
                         "model": model,
                         "messages": [
@@ -1497,9 +1512,9 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
 
                 let builtin_ref = RLM_SYSTEM_PROMPT;
 
-                let rt = tokio::runtime::Runtime::new().map_err(|e| format!("llm-code: {}", e))?;
+                let rt = &SHARED_RUNTIME;
                 let (raw_code, tokens) = rt.block_on(async {
-                    let client = reqwest::Client::new();
+                    let client = &SHARED_CLIENT;
                     let body = serde_json::json!({
                         "model": model,
                         "messages": [
@@ -1572,9 +1587,9 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                          Reply with just ACTION or CODE and a brief one-line plan.\n\nTask: {}",
                         task
                     );
-                    let rt = tokio::runtime::Runtime::new().map_err(|e| format!("rlm: {}", e))?;
+                    let rt = &SHARED_RUNTIME;
                     let (plan_resp, plan_tokens) = rt.block_on(async {
-                        let client = reqwest::Client::new();
+                        let client = &SHARED_CLIENT;
                         let body = serde_json::json!({
                             "model": model,
                             "messages": [
@@ -1630,9 +1645,9 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                     let snap = env.take_snapshot();
 
                     // Call LLM
-                    let rt = tokio::runtime::Runtime::new().map_err(|e| format!("rlm: {}", e))?;
+                    let rt = &SHARED_RUNTIME;
                     let (resp_text, tokens) = rt.block_on(async {
-                        let client = reqwest::Client::new();
+                        let client = &SHARED_CLIENT;
                         let body = serde_json::json!({
                             "model": model,
                             "messages": messages,
@@ -1734,9 +1749,9 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                             let err_truncated = truncate_str(&err_msg, 200);
                             messages.push(serde_json::json!({"role": "user", "content": format!("Error (retry {}/{}): {}. Try again.", retry + 1, max_retries, err_truncated)}));
                             // Get new code from LLM
-                            let rt2 = tokio::runtime::Runtime::new().map_err(|e| format!("rlm: {}", e))?;
+                            let rt2 = &SHARED_RUNTIME;
                             let (retry_text, retry_tokens) = rt2.block_on(async {
-                                let client = reqwest::Client::new();
+                                let client = &SHARED_CLIENT;
                                 let body = serde_json::json!({
                                     "model": model,
                                     "messages": messages,
@@ -1817,9 +1832,9 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                         "Given the task: {}\nAnd the result: {}\n\nIs this correct? Answer YES or NO and explain briefly.",
                         task, truncate_str(&result_str, 300)
                     );
-                    let rt = tokio::runtime::Runtime::new().map_err(|e| format!("rlm verify: {}", e))?;
+                    let rt = &SHARED_RUNTIME;
                     let (verdict, vtokens) = rt.block_on(async {
-                        let client = reqwest::Client::new();
+                        let client = &SHARED_CLIENT;
                         let body = serde_json::json!({
                             "model": model,
                             "messages": [
@@ -1847,9 +1862,9 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                         // One more iteration with critique
                         messages.push(serde_json::json!({"role": "user", "content": format!("Verification failed: {}. Please fix.", verdict)}));
                         let snap = env.take_snapshot();
-                        let rt = tokio::runtime::Runtime::new().map_err(|e| format!("rlm: {}", e))?;
+                        let rt = &SHARED_RUNTIME;
                         let (fix_text, fix_tokens) = rt.block_on(async {
-                            let client = reqwest::Client::new();
+                            let client = &SHARED_CLIENT;
                             let body = serde_json::json!({
                                 "model": model,
                                 "messages": messages,
@@ -2087,9 +2102,9 @@ try catch error
 
 DO NOT wrap code in markdown fences. DO NOT add explanations."#;
 
-                let rt = tokio::runtime::Runtime::new().map_err(|e| format!("rlm-write: {}", e))?;
+                let rt = &SHARED_RUNTIME;
                 let (code, calls): (String, usize) = rt.block_on(async {
-                    let client = reqwest::Client::new();
+                    let client = &SHARED_CLIENT;
                     let mut calls: usize = 0;
 
                     // Initial generation
