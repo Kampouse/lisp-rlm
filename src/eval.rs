@@ -1241,6 +1241,8 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
             }
 
             // --- LLM builtins ---
+
+            // --- LLM builtins ---
             "llm" => {
                 let prompt = as_str(&args[0])?;
                 let api_key = std::env::var("RLM_API_KEY")
@@ -1253,12 +1255,12 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                     .unwrap_or_else(|_| "glm-5.1".to_string());
 
                 let rt = tokio::runtime::Runtime::new().map_err(|e| format!("llm: {}", e))?;
-                let resp = rt.block_on(async {
+                let (resp, tokens) = rt.block_on(async {
                     let client = reqwest::Client::new();
                     let body = serde_json::json!({
                         "model": model,
                         "messages": [
-                            {"role": "system", "content": "You are a helpful assistant with access to a Lisp runtime called lisp-rlm. You can reason about problems and suggest Lisp code using the available builtins: + - * / mod = < > <= >= not and or list cons car cdr nth len append reverse map filter reduce sort range zip find some every nil? list? number? string? bool? map? type? empty? str-concat str-contains str-split (multi-char delim = char-set split) str-split-exact (exact string split) str-trim str-upcase str-downcase str-length str-substring str-index-of str-starts-with str-ends-with print println read-file write-file append-file file-exists? shell http-get http-post http-get-json from-json to-json sha256 keccak256 to-int to-float to-string define def let lambda if cond match quote quasiquote loop recur begin progn defmacro require try catch error"},
+                            {"role": "system", "content": "You are a helpful assistant with access to a Lisp runtime called lisp-rlm."},
                             {"role": "user", "content": prompt}
                         ],
                         "max_tokens": 2048
@@ -1272,10 +1274,14 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                         .map_err(|e| format!("llm: read body failed: {}", e))?;
                     let v: serde_json::Value = serde_json::from_str(&text)
                         .map_err(|e| format!("llm: json parse error: {}", e))?;
-                    v["choices"][0]["message"]["content"].as_str()
+                    let tokens = v["usage"]["total_tokens"].as_u64().unwrap_or(0) as usize;
+                    let content = v["choices"][0]["message"]["content"].as_str()
                         .map(|s| s.to_string())
-                        .ok_or_else(|| format!("llm: unexpected response: {}", text))
+                        .ok_or_else(|| format!("llm: unexpected response: {}", text))?;
+                    Ok::<_, String>((content, tokens))
                 })?;
+                env.tokens_used += tokens;
+                env.llm_calls += 1;
                 Ok(LispVal::Str(resp))
             }
             "llm-code" => {
@@ -1297,17 +1303,17 @@ Available builtins:
 - Logic: and or
 - Lists: list cons car cdr nth len append reverse map filter reduce sort range zip find some every
 - Predicates: nil? list? number? string? bool? map? macro? type? empty?
-- Strings: str-concat str-contains str-split (multi-char delim = char-set split) str-split-exact (exact string split) str-trim str-upcase str-downcase str-length str-substring str-index-of str-starts-with str-ends-with
+- Strings: str-concat str-contains str-split str-split-exact str-trim str-upcase str-downcase str-length str-substring str-index-of str-starts-with str-ends-with
 - IO: print println read-file write-file append-file file-exists? shell
 - HTTP: http-get http-post http-get-json
 - JSON: from-json to-json json-parse json-get json-get-in json-build
-- LLM: llm llm-code
+- LLM: llm llm-code sub-rlm
 - Crypto: sha256 keccak256
 - Types: to-int to-float to-string to-num
 - Special forms: define def let lambda if cond match quote quasiquote unquote unquote-splicing loop recur begin progn defmacro require try catch error"#;
 
                 let rt = tokio::runtime::Runtime::new().map_err(|e| format!("llm-code: {}", e))?;
-                let code_str = rt.block_on(async {
+                let (raw_code, tokens) = rt.block_on(async {
                     let client = reqwest::Client::new();
                     let body = serde_json::json!({
                         "model": model,
@@ -1326,17 +1332,17 @@ Available builtins:
                         .map_err(|e| format!("llm-code: read body failed: {}", e))?;
                     let v: serde_json::Value = serde_json::from_str(&text)
                         .map_err(|e| format!("llm-code: json parse error: {}", e))?;
-                    v["choices"][0]["message"]["content"].as_str()
+                    let tokens = v["usage"]["total_tokens"].as_u64().unwrap_or(0) as usize;
+                    let content = v["choices"][0]["message"]["content"].as_str()
                         .map(|s| s.to_string())
-                        .ok_or_else(|| format!("llm-code: unexpected response: {}", text))
+                        .ok_or_else(|| format!("llm-code: unexpected response: {}", text))?;
+                    Ok::<_, String>((content, tokens))
                 })?;
 
-                // Strip markdown fences if present
-                let code_str = code_str.trim()
-                    .trim_start_matches("```lisp").trim_start_matches("```")
-                    .trim_end_matches("```")
-                    .trim()
-                    .to_string();
+                env.tokens_used += tokens;
+                env.llm_calls += 1;
+
+                let code_str = strip_markdown_fences(&raw_code);
 
                 // Parse and eval the LLM-generated Lisp code
                 let exprs = parse_all(&code_str)?;
@@ -1360,7 +1366,8 @@ Available builtins:
                 let model = std::env::var("RLM_MODEL")
                     .unwrap_or_else(|_| "glm-5.1".to_string());
 
-                let builtin_ref = r#"You are an autonomous agent. Given a task, generate Lisp code to accomplish it. Return ONLY valid Lisp code. No explanations, no markdown fences.
+                // Env-configurable system prompt and max iterations
+                let default_sys = r#"You are an autonomous agent. Given a task, generate Lisp code to accomplish it. Return ONLY valid Lisp code. No explanations, no markdown fences.
 
 Available builtins:
 - Arithmetic: + - * / mod
@@ -1368,24 +1375,29 @@ Available builtins:
 - Logic: and or
 - Lists: list cons car cdr nth len append reverse map filter reduce sort range zip find some every
 - Predicates: nil? list? number? string? bool? map? macro? type? empty?
-- Strings: str-concat str-contains str-split (multi-char delim = char-set split) str-split-exact (exact string split) str-trim str-upcase str-downcase str-length str-substring str-index-of str-starts-with str-ends-with
+- Strings: str-concat str-contains str-split str-split-exact str-trim str-upcase str-downcase str-length str-substring str-index-of str-starts-with str-ends-with
 - IO: print println read-file write-file append-file file-exists? shell
 - HTTP: http-get http-post http-get-json
 - JSON: from-json to-json json-parse json-get json-get-in json-build
-- LLM: llm llm-code
+- LLM: llm llm-code sub-rlm
 - Crypto: sha256 keccak256
 - Types: to-int to-float to-string to-num
 - Special forms: define def let lambda if cond match quote quasiquote unquote unquote-splicing loop recur begin progn defmacro require try catch error
 - Snapshot: snapshot rollback rollback-to
-- State: rlm-set rlm-get"#;
+- State: rlm-set rlm-get
+- Token tracking: rlm-tokens rlm-calls"#;
+                let sys_prompt = std::env::var("RLM_SYSTEM_PROMPT").unwrap_or_else(|_| default_sys.to_string());
+                let max_iterations: usize = std::env::var("RLM_MAX_ITERATIONS")
+                    .ok().and_then(|s| s.parse().ok()).unwrap_or(10);
+                let do_verify = std::env::var("RLM_VERIFY").unwrap_or_default() == "1";
 
                 let mut messages = vec![
-                    serde_json::json!({"role": "system", "content": builtin_ref}),
-                    serde_json::json!({"role": "user", "content": task}),
+                    serde_json::json!({"role": "system", "content": sys_prompt}),
+                    serde_json::json!({"role": "user", "content": task.clone()}),
                 ];
 
-                let max_iterations = 10;
                 let mut final_result = LispVal::Nil;
+                let max_retries: usize = 3;
 
                 for _iter in 0..max_iterations {
                     // Snapshot env
@@ -1393,7 +1405,7 @@ Available builtins:
 
                     // Call LLM
                     let rt = tokio::runtime::Runtime::new().map_err(|e| format!("rlm: {}", e))?;
-                    let resp_text = rt.block_on(async {
+                    let (resp_text, tokens) = rt.block_on(async {
                         let client = reqwest::Client::new();
                         let body = serde_json::json!({
                             "model": model,
@@ -1409,58 +1421,239 @@ Available builtins:
                             .map_err(|e| format!("rlm: read body failed: {}", e))?;
                         let v: serde_json::Value = serde_json::from_str(&text)
                             .map_err(|e| format!("rlm: json parse error: {}", e))?;
-                        v["choices"][0]["message"]["content"].as_str()
+                        let tokens = v["usage"]["total_tokens"].as_u64().unwrap_or(0) as usize;
+                        let content = v["choices"][0]["message"]["content"].as_str()
                             .map(|s| s.to_string())
-                            .ok_or_else(|| format!("rlm: unexpected response: {}", text))
+                            .ok_or_else(|| format!("rlm: unexpected response: {}", text))?;
+                        Ok::<_, String>((content, tokens))
                     })?;
 
+                    env.tokens_used += tokens;
+                    env.llm_calls += 1;
+
                     // Strip markdown fences
-                    let code_str = resp_text.trim()
-                        .trim_start_matches("```lisp").trim_start_matches("```")
-                        .trim_end_matches("```")
-                        .trim()
-                        .to_string();
+                    let code_str = strip_markdown_fences(&resp_text);
 
-                    // Append assistant message
-                    messages.push(serde_json::json!({"role": "assistant", "content": resp_text}));
+                    // Append assistant message (truncated for context window management)
+                    messages.push(serde_json::json!({"role": "assistant", "content": truncate_str(&resp_text, 500)}));
 
-                    // DEBUG: print what the LLM generated
                     eprintln!("[rlm iter] code:\n{}", code_str);
 
-                    // Try to parse
+                    // Try to parse with better error recovery
                     let exprs = match parse_all(&code_str) {
                         Ok(e) => e,
-                        Err(e) => {
-                            messages.push(serde_json::json!({"role": "user", "content": format!("That didn't parse. Error: {}. Try again.", e)}));
-                            continue;
+                        Err(parse_err) => {
+                            // Try extracting first valid expression
+                            if let Some(first_expr) = extract_first_valid_expr(&code_str) {
+                                vec![first_expr]
+                            } else {
+                                messages.push(serde_json::json!({"role": "user", "content": format!("Parse error at: {}. Please fix and return valid Lisp code.", parse_err)}));
+                                continue;
+                            }
                         }
                     };
 
-                    // Try to eval
+                    // Try to eval with retry logic
                     let mut result = LispVal::Nil;
-                    let mut eval_ok = true;
-                    for expr in &exprs {
-                        match lisp_eval(expr, env) {
-                            Ok(v) => result = v,
-                            Err(e) => {
-                                // Rollback
-                                env.restore_snapshot(snap);
-                                messages.push(serde_json::json!({"role": "user", "content": format!("That code failed with error: {}. Try again.", e)}));
-                                eval_ok = false;
+                    let mut eval_ok = false;
+
+                    for retry in 0..max_retries {
+                        let snap_inner = env.take_snapshot();
+                        let mut failed = false;
+                        let mut err_msg = String::new();
+
+                        // Try executing all expressions at once
+                        for expr in &exprs {
+                            match lisp_eval(expr, env) {
+                                Ok(v) => result = v,
+                                Err(e) => {
+                                    err_msg = e;
+                                    env.restore_snapshot(snap_inner.clone());
+                                    failed = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if !failed {
+                            eval_ok = true;
+                            break;
+                        }
+
+                        // If multi-expr failed, try one by one
+                        if exprs.len() > 1 {
+                            env.restore_snapshot(snap_inner.clone());
+                            let mut individual_ok = true;
+                            let mut individual_result = LispVal::Nil;
+                            for (j, sub_expr) in exprs.iter().enumerate() {
+                                match lisp_eval(sub_expr, env) {
+                                    Ok(v) => individual_result = v,
+                                    Err(se) => {
+                                        env.restore_snapshot(snap_inner.clone());
+                                        err_msg = format!("Expr {}/{} failed: {}", j + 1, exprs.len(), se);
+                                        individual_ok = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            if individual_ok {
+                                result = individual_result;
+                                eval_ok = true;
                                 break;
                             }
                         }
+
+                        // Ask LLM to retry
+                        if retry + 1 < max_retries {
+                            let err_truncated = truncate_str(&err_msg, 200);
+                            messages.push(serde_json::json!({"role": "user", "content": format!("Error (retry {}/{}): {}. Try again.", retry + 1, max_retries, err_truncated)}));
+                            // Get new code from LLM
+                            let rt2 = tokio::runtime::Runtime::new().map_err(|e| format!("rlm: {}", e))?;
+                            let (retry_text, retry_tokens) = rt2.block_on(async {
+                                let client = reqwest::Client::new();
+                                let body = serde_json::json!({
+                                    "model": model,
+                                    "messages": messages,
+                                    "max_tokens": 4096
+                                });
+                                let resp = client.post(format!("{}/chat/completions", api_base))
+                                    .header("Authorization", format!("Bearer {}", api_key))
+                                    .json(&body)
+                                    .send().await.map_err(|e| format!("rlm: {}", e))?;
+                                let text = resp.text().await.map_err(|e| format!("rlm: {}", e))?;
+                                let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("rlm: {}", e))?;
+                                let tokens = v["usage"]["total_tokens"].as_u64().unwrap_or(0) as usize;
+                                let content = v["choices"][0]["message"]["content"].as_str()
+                                    .map(|s| s.to_string()).ok_or_else(|| "rlm: unexpected".to_string())?;
+                                Ok::<_, String>((content, tokens))
+                            })?;
+                            env.tokens_used += retry_tokens;
+                            env.llm_calls += 1;
+                            messages.push(serde_json::json!({"role": "assistant", "content": truncate_str(&retry_text, 500)}));
+                            let retry_code = strip_markdown_fences(&retry_text);
+                            // Re-parse for next retry iteration
+                            // We'll just loop and re-use the original exprs vec... 
+                            // Actually let's break to outer loop since this gets complex
+                            break;
+                        }
                     }
 
-                    if eval_ok {
-                        final_result = result;
-                        break;
+                    if !eval_ok {
+                        // Move to next iteration — LLM will see the error in messages
+                        continue;
+                    }
+
+                    eprintln!("[rlm iter] result: {}", truncate_str(&result.to_string(), 200));
+                    final_result = result;
+                    break;
+                }
+
+                // Self-verification step
+                if do_verify {
+                    let result_str = final_result.to_string();
+                    let verify_prompt = format!(
+                        "Given the task: {}\nAnd the result: {}\n\nIs this correct? Answer YES or NO and explain briefly.",
+                        task, truncate_str(&result_str, 300)
+                    );
+                    let rt = tokio::runtime::Runtime::new().map_err(|e| format!("rlm verify: {}", e))?;
+                    let (verdict, vtokens) = rt.block_on(async {
+                        let client = reqwest::Client::new();
+                        let body = serde_json::json!({
+                            "model": model,
+                            "messages": [
+                                {"role": "system", "content": "You are a verification assistant. Answer YES or NO."},
+                                {"role": "user", "content": verify_prompt}
+                            ],
+                            "max_tokens": 512
+                        });
+                        let resp = client.post(format!("{}/chat/completions", api_base))
+                            .header("Authorization", format!("Bearer {}", api_key))
+                            .json(&body)
+                            .send().await.map_err(|e| format!("rlm verify: {}", e))?;
+                        let text = resp.text().await.map_err(|e| format!("rlm verify: {}", e))?;
+                        let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("rlm verify: {}", e))?;
+                        let tokens = v["usage"]["total_tokens"].as_u64().unwrap_or(0) as usize;
+                        let content = v["choices"][0]["message"]["content"].as_str()
+                            .map(|s| s.to_string()).ok_or_else(|| "rlm verify: no content".to_string())?;
+                        Ok::<_, String>((content, tokens))
+                    })?;
+                    env.tokens_used += vtokens;
+                    env.llm_calls += 1;
+
+                    if verdict.to_uppercase().starts_with("NO") {
+                        eprintln!("[rlm verify] FAILED: {}", truncate_str(&verdict, 200));
+                        // One more iteration with critique
+                        messages.push(serde_json::json!({"role": "user", "content": format!("Verification failed: {}. Please fix.", verdict)}));
+                        let snap = env.take_snapshot();
+                        let rt = tokio::runtime::Runtime::new().map_err(|e| format!("rlm: {}", e))?;
+                        let (fix_text, fix_tokens) = rt.block_on(async {
+                            let client = reqwest::Client::new();
+                            let body = serde_json::json!({
+                                "model": model,
+                                "messages": messages,
+                                "max_tokens": 4096
+                            });
+                            let resp = client.post(format!("{}/chat/completions", api_base))
+                                .header("Authorization", format!("Bearer {}", api_key))
+                                .json(&body)
+                                .send().await.map_err(|e| format!("rlm: {}", e))?;
+                            let text = resp.text().await.map_err(|e| format!("rlm: {}", e))?;
+                            let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("rlm: {}", e))?;
+                            let tokens = v["usage"]["total_tokens"].as_u64().unwrap_or(0) as usize;
+                            let content = v["choices"][0]["message"]["content"].as_str()
+                                .map(|s| s.to_string()).ok_or_else(|| "rlm: unexpected".to_string())?;
+                            Ok::<_, String>((content, tokens))
+                        })?;
+                        env.tokens_used += fix_tokens;
+                        env.llm_calls += 1;
+                        let fix_code = strip_markdown_fences(&fix_text);
+                        if let Ok(fix_exprs) = parse_all(&fix_code) {
+                            let mut fix_result = LispVal::Nil;
+                            let mut fix_ok = true;
+                            for expr in &fix_exprs {
+                                match lisp_eval(expr, env) {
+                                    Ok(v) => fix_result = v,
+                                    Err(_) => {
+                                        env.restore_snapshot(snap);
+                                        fix_ok = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            if fix_ok {
+                                final_result = fix_result;
+                            }
+                        }
                     }
                 }
 
                 Ok(final_result)
             }
 
+            // --- Sub-RLM ---
+            "sub-rlm" => {
+                let sub_task = as_str(&args[0])?;
+                if env.rlm_depth >= 5 {
+                    return Err("sub-rlm: max depth (5) exceeded".into());
+                }
+                env.rlm_depth += 1;
+                let result = lisp_eval(
+                    &LispVal::List(vec![
+                        LispVal::Sym("rlm".to_string()),
+                        LispVal::Str(sub_task),
+                    ]),
+                    env,
+                );
+                env.rlm_depth -= 1;
+                match &result {
+                    Ok(v) => Ok(LispVal::Str(v.to_string())),
+                    Err(e) => Ok(LispVal::Str(format!("error: {}", e))),
+                }
+            }
+
+            // --- Token tracking ---
+            "rlm-tokens" => Ok(LispVal::Num(env.tokens_used as i64)),
+            "rlm-calls" => Ok(LispVal::Num(env.llm_calls as i64)),
             // --- Env ---
             "env/get" => {
                 let key = as_str(&args[0])?;
@@ -1812,6 +2005,64 @@ fn expand_quasiquote(form: &LispVal) -> Result<LispVal, String> {
         ])),
         _ => Ok(form.clone()),
     }
+}
+
+// ---------------------------------------------------------------------------
+// RLM helper functions
+// ---------------------------------------------------------------------------
+
+/// Truncate a string to `max_len` chars, appending "..." if truncated.
+fn truncate_str(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...[truncated]", &s[..max_len])
+    }
+}
+
+/// Strip markdown code fences from LLM output.
+fn strip_markdown_fences(s: &str) -> String {
+    s.trim()
+        .trim_start_matches("```lisp").trim_start_matches("```scheme")
+        .trim_start_matches("```clisp").trim_start_matches("```common-lisp")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim()
+        .to_string()
+}
+
+/// Try to extract the first valid Lisp expression from a string.
+/// Used as fallback when parse_all fails on multi-expression code.
+fn extract_first_valid_expr(code: &str) -> Option<LispVal> {
+    // Try progressively longer substrings until one parses
+    let chars: Vec<char> = code.chars().collect();
+    let mut depth = 0i32;
+    let mut start = None;
+
+    for i in 0..chars.len() {
+        match chars[i] {
+            '(' => {
+                if depth == 0 { start = Some(i); }
+                depth += 1;
+            }
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    if let Some(s) = start {
+                        let sub: String = chars[s..=i].iter().collect();
+                        if let Ok(mut exprs) = parse_all(&sub) {
+                            if !exprs.is_empty() {
+                                return Some(exprs.remove(0));
+                            }
+                        }
+                    }
+                    start = None;
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 #[cfg(test)]

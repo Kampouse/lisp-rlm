@@ -93,6 +93,12 @@ pub struct Env {
     pub snapshots: Vec<Vec<(String, LispVal)>>,
     /// Persistent agent state (survives snapshots)
     pub rlm_state: BTreeMap<String, LispVal>,
+    /// Cumulative tokens across all LLM calls
+    pub tokens_used: usize,
+    /// Number of LLM API calls made
+    pub llm_calls: usize,
+    /// Current sub-rlm call depth (max 5)
+    pub rlm_depth: usize,
 }
 
 impl Env {
@@ -105,6 +111,9 @@ impl Env {
             eval_budget: DEFAULT_EVAL_BUDGET,
             snapshots: Vec::new(),
             rlm_state: BTreeMap::new(),
+            tokens_used: 0,
+            llm_calls: 0,
+            rlm_depth: 0,
         }
     }
 
@@ -114,7 +123,7 @@ impl Env {
         for (i, (name, _)) in bindings.iter().enumerate() {
             index.insert(name.clone(), i);
         }
-        Env { bindings, index, eval_count: 0, eval_budget: DEFAULT_EVAL_BUDGET, snapshots: Vec::new(), rlm_state: BTreeMap::new() }
+        Env { bindings, index, eval_count: 0, eval_budget: DEFAULT_EVAL_BUDGET, snapshots: Vec::new(), rlm_state: BTreeMap::new(), tokens_used: 0, llm_calls: 0, rlm_depth: 0 }
     }
 
     /// Insert or overwrite a binding, shadowing any previous binding with the
