@@ -1197,7 +1197,8 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                 let prompt = as_str(&args[0])?;
                 let api_key = std::env::var("RLM_API_KEY")
                     .or_else(|_| std::env::var("OPENAI_API_KEY"))
-                    .map_err(|_| "llm: set RLM_API_KEY or OPENAI_API_KEY")?;
+                    .or_else(|_| std::env::var("GLM_API_KEY"))
+                    .map_err(|_| "llm: set RLM_API_KEY, OPENAI_API_KEY, or GLM_API_KEY")?;
                 let api_base = std::env::var("RLM_API_BASE")
                     .unwrap_or_else(|_| "https://api.z.ai/api/coding/paas/v4".to_string());
                 let model = std::env::var("RLM_MODEL")
@@ -1230,7 +1231,8 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                 let prompt = as_str(&args[0])?;
                 let api_key = std::env::var("RLM_API_KEY")
                     .or_else(|_| std::env::var("OPENAI_API_KEY"))
-                    .map_err(|_| "llm-code: set RLM_API_KEY or OPENAI_API_KEY")?;
+                    .or_else(|_| std::env::var("GLM_API_KEY"))
+                    .map_err(|_| "llm-code: set RLM_API_KEY, OPENAI_API_KEY, or GLM_API_KEY")?;
                 let api_base = std::env::var("RLM_API_BASE")
                     .unwrap_or_else(|_| "https://api.z.ai/api/coding/paas/v4".to_string());
                 let model = std::env::var("RLM_MODEL")
