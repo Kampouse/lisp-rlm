@@ -1,8 +1,13 @@
-use lisp_rlm::{lisp_eval, parse_all, Env, LispVal};
+use lisp_rlm::{lisp_eval, parse_all, Env, LispVal, GenericProvider};
 use std::env;
 
 fn main() {
     let mut env = Env::new();
+
+    // Initialize LLM provider if API key is available
+    if let Ok(provider) = GenericProvider::from_env() {
+        env.llm_provider = Some(Box::new(provider));
+    }
 
     // Load stdlib (skip list — recursive defs may hang on eval budget)
     for module in &["math", "list", "string"] {
