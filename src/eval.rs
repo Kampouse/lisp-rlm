@@ -473,6 +473,40 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
                             }
                             return Err(format!("require: unknown module '{}'", module_name));
                         }
+                        "rlm-set" => {
+                            let key = match list.get(1) {
+                                Some(LispVal::Sym(s)) => s.clone(),
+                                Some(LispVal::Str(s)) => s.clone(),
+                                other => return Err(format!("rlm-set: key must be symbol or string, got {:?}", other)),
+                            };
+                            let val = match list.get(2) {
+                                Some(v) => lisp_eval(v, env)?,
+                                None => LispVal::Nil,
+                            };
+                            env.rlm_state.insert(key, val);
+                            return Ok(LispVal::Bool(true));
+                        }
+                        "rlm-get" => {
+                            let key = match list.get(1) {
+                                Some(LispVal::Sym(s)) => s.clone(),
+                                Some(LispVal::Str(s)) => s.clone(),
+                                other => return Err(format!("rlm-get: key must be symbol or string, got {:?}", other)),
+                            };
+                            return Ok(env.rlm_state.get(&key).cloned().unwrap_or(LispVal::Nil));
+                        }
+                        "set!" => {
+                            let name = match list.get(1) {
+                                Some(LispVal::Sym(s)) => s.clone(),
+                                _ => return Err("set!: need symbol".into()),
+                            };
+                            let val = lisp_eval(list.get(2).ok_or("set!: need value")?, env)?;
+                            if let Some(slot) = env.get_mut(&name) {
+                                *slot = val;
+                                return Ok(LispVal::Nil);
+                            } else {
+                                return Err(format!("set!: undefined variable '{}'", name));
+                            }
+                        }
                         _ => return dispatch_call(list, env),
                     }
                 } else {
@@ -649,6 +683,13 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                 match crate::parser::parse_all(&s) {
                     Ok(exprs) => exprs.into_iter().next().ok_or_else(|| "read: empty input".to_string()),
                     Err(e) => Err(format!("read: parse error: {}", e)),
+                }
+            }
+            "read-all" => {
+                let s = as_str(&args[0])?;
+                match crate::parser::parse_all(&s) {
+                    Ok(exprs) => Ok(LispVal::List(exprs)),
+                    Err(e) => Err(format!("read-all: parse error: {}", e)),
                 }
             }
             "str-length" => {
@@ -1168,6 +1209,17 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                     Ok(s) => Ok(LispVal::Str(s)),
                     Err(e) => Err(format!("read-file: {}", e)),
                 }
+            }
+            "load-file" => {
+                let path = as_str(&args[0])?;
+                let code = std::fs::read_to_string(&path)
+                    .map_err(|e| format!("load-file: {}", e))?;
+                let exprs = parse_all(&code)?;
+                let mut result = LispVal::Nil;
+                for expr in &exprs {
+                    result = lisp_eval(expr, env)?;
+                }
+                Ok(result)
             }
             "append-file" => {
                 let path = as_str(&args[0])?;
@@ -1689,17 +1741,7 @@ Available builtins:
                 Ok(LispVal::Bool(true))
             }
 
-            // --- RLM state builtins ---
-            "rlm-set" => {
-                let key = as_str(args.get(0).ok_or("rlm-set: need key")?)?;
-                let val = args.get(1).cloned().unwrap_or(LispVal::Nil);
-                env.rlm_state.insert(key, val);
-                Ok(LispVal::Bool(true))
-            }
-            "rlm-get" => {
-                let key = as_str(args.get(0).ok_or("rlm-get: need key")?)?;
-                Ok(env.rlm_state.get(&key).cloned().unwrap_or(LispVal::Nil))
-            }
+            // rlm-set and rlm-get are now special forms (see lisp_eval_inner)
 
             // --- Print ---
             "print" | "println" => {

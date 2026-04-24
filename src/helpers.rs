@@ -91,9 +91,12 @@ pub fn is_builtin_name(name: &str) -> bool {
             | "snapshot"
             | "rollback"
             | "rollback-to"
-            | "rlm-set"
-            | "rlm-get"
             | "rlm"
+            | "read-all"
+            | "load-file"
+            | "sub-rlm"
+            | "rlm-tokens"
+            | "rlm-calls"
     )
 }
 
