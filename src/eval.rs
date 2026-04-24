@@ -2083,10 +2083,9 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
 
                 env.llm_calls += calls;
 
-                // Save to file if path provided
+                // Save to file if path provided (no unescaping — this is source code, \n should stay as \n)
                 if let Some(ref path) = save_path {
-                    let unescaped = code.replace("\\n", "\n").replace("\\t", "\t");
-                    std::fs::write(path, &unescaped).map_err(|e| format!("rlm-write: {}", e))?;
+                    std::fs::write(path, &code).map_err(|e| format!("rlm-write: {}", e))?;
                 }
 
                 Ok(LispVal::Str(code))
