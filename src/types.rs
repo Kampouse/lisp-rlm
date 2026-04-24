@@ -89,6 +89,10 @@ pub struct Env {
     pub eval_count: u64,
     /// Maximum allowed eval iterations (0 = unlimited)
     pub eval_budget: u64,
+    /// Stack of env snapshots for snapshot/rollback
+    pub snapshots: Vec<Vec<(String, LispVal)>>,
+    /// Persistent agent state (survives snapshots)
+    pub rlm_state: BTreeMap<String, LispVal>,
 }
 
 impl Env {
@@ -99,6 +103,8 @@ impl Env {
             index: HashMap::new(),
             eval_count: 0,
             eval_budget: DEFAULT_EVAL_BUDGET,
+            snapshots: Vec::new(),
+            rlm_state: BTreeMap::new(),
         }
     }
 
@@ -108,7 +114,7 @@ impl Env {
         for (i, (name, _)) in bindings.iter().enumerate() {
             index.insert(name.clone(), i);
         }
-        Env { bindings, index, eval_count: 0, eval_budget: DEFAULT_EVAL_BUDGET }
+        Env { bindings, index, eval_count: 0, eval_budget: DEFAULT_EVAL_BUDGET, snapshots: Vec::new(), rlm_state: BTreeMap::new() }
     }
 
     /// Insert or overwrite a binding, shadowing any previous binding with the
@@ -190,6 +196,20 @@ impl Env {
     pub fn clear(&mut self) {
         self.bindings.clear();
         self.index.clear();
+    }
+
+    /// Take a snapshot of the current bindings.
+    pub fn take_snapshot(&self) -> Vec<(String, LispVal)> {
+        self.bindings.clone()
+    }
+
+    /// Restore bindings from a snapshot.
+    pub fn restore_snapshot(&mut self, snapshot: Vec<(String, LispVal)>) {
+        self.bindings = snapshot;
+        self.index.clear();
+        for (i, (name, _)) in self.bindings.iter().enumerate() {
+            self.index.insert(name.clone(), i);
+        }
     }
 }
 

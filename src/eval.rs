@@ -1320,6 +1320,117 @@ Available builtins:
                 Ok(result)
             }
 
+            // --- RLM agent loop ---
+            "rlm" => {
+                let task = as_str(&args[0])?;
+
+                let api_key = std::env::var("RLM_API_KEY")
+                    .or_else(|_| std::env::var("OPENAI_API_KEY"))
+                    .or_else(|_| std::env::var("GLM_API_KEY"))
+                    .map_err(|_| "rlm: set RLM_API_KEY, OPENAI_API_KEY, or GLM_API_KEY")?;
+                let api_base = std::env::var("RLM_API_BASE")
+                    .unwrap_or_else(|_| "https://api.z.ai/api/coding/paas/v4".to_string());
+                let model = std::env::var("RLM_MODEL")
+                    .unwrap_or_else(|_| "glm-5.1".to_string());
+
+                let builtin_ref = r#"You are an autonomous agent. Given a task, generate Lisp code to accomplish it. Return ONLY valid Lisp code. No explanations, no markdown fences.
+
+Available builtins:
+- Arithmetic: + - * / mod
+- Comparison: = < > <= >= not
+- Logic: and or
+- Lists: list cons car cdr nth len append reverse map filter reduce sort range zip find some every
+- Predicates: nil? list? number? string? bool? map? macro? type? empty?
+- Strings: str-concat str-contains str-split str-trim str-upcase str-downcase str-length str-substring str-index-of str-starts-with str-ends-with
+- IO: print println read-file write-file append-file file-exists? shell
+- HTTP: http-get http-post http-get-json
+- JSON: from-json to-json json-parse json-get json-get-in json-build
+- LLM: llm llm-code
+- Crypto: sha256 keccak256
+- Types: to-int to-float to-string to-num
+- Special forms: define def let lambda if cond match quote quasiquote unquote unquote-splicing loop recur begin progn defmacro require try catch error
+- Snapshot: snapshot rollback rollback-to
+- State: rlm-set rlm-get"#;
+
+                let mut messages = vec![
+                    serde_json::json!({"role": "system", "content": builtin_ref}),
+                    serde_json::json!({"role": "user", "content": task}),
+                ];
+
+                let max_iterations = 10;
+                let mut final_result = LispVal::Nil;
+
+                for _iter in 0..max_iterations {
+                    // Snapshot env
+                    let snap = env.take_snapshot();
+
+                    // Call LLM
+                    let rt = tokio::runtime::Runtime::new().map_err(|e| format!("rlm: {}", e))?;
+                    let resp_text = rt.block_on(async {
+                        let client = reqwest::Client::new();
+                        let body = serde_json::json!({
+                            "model": model,
+                            "messages": messages,
+                            "max_tokens": 4096
+                        });
+                        let resp = client.post(format!("{}/chat/completions", api_base))
+                            .header("Authorization", format!("Bearer {}", api_key))
+                            .json(&body)
+                            .send().await
+                            .map_err(|e| format!("rlm: request failed: {}", e))?;
+                        let text = resp.text().await
+                            .map_err(|e| format!("rlm: read body failed: {}", e))?;
+                        let v: serde_json::Value = serde_json::from_str(&text)
+                            .map_err(|e| format!("rlm: json parse error: {}", e))?;
+                        v["choices"][0]["message"]["content"].as_str()
+                            .map(|s| s.to_string())
+                            .ok_or_else(|| format!("rlm: unexpected response: {}", text))
+                    })?;
+
+                    // Strip markdown fences
+                    let code_str = resp_text.trim()
+                        .trim_start_matches("```lisp").trim_start_matches("```")
+                        .trim_end_matches("```")
+                        .trim()
+                        .to_string();
+
+                    // Append assistant message
+                    messages.push(serde_json::json!({"role": "assistant", "content": resp_text}));
+
+                    // Try to parse
+                    let exprs = match parse_all(&code_str) {
+                        Ok(e) => e,
+                        Err(e) => {
+                            messages.push(serde_json::json!({"role": "user", "content": format!("That didn't parse. Error: {}. Try again.", e)}));
+                            continue;
+                        }
+                    };
+
+                    // Try to eval
+                    let mut result = LispVal::Nil;
+                    let mut eval_ok = true;
+                    for expr in &exprs {
+                        match lisp_eval(expr, env) {
+                            Ok(v) => result = v,
+                            Err(e) => {
+                                // Rollback
+                                env.restore_snapshot(snap);
+                                messages.push(serde_json::json!({"role": "user", "content": format!("That code failed with error: {}. Try again.", e)}));
+                                eval_ok = false;
+                                break;
+                            }
+                        }
+                    }
+
+                    if eval_ok {
+                        final_result = result;
+                        break;
+                    }
+                }
+
+                Ok(final_result)
+            }
+
             // --- Env ---
             "env/get" => {
                 let key = as_str(&args[0])?;
@@ -1327,6 +1438,37 @@ Available builtins:
                     Ok(v) => Ok(LispVal::Str(v)),
                     Err(_) => Ok(LispVal::Nil),
                 }
+            }
+
+            // --- Snapshot builtins ---
+            "snapshot" => {
+                let snap = env.take_snapshot();
+                let id = env.snapshots.len();
+                env.snapshots.push(snap);
+                Ok(LispVal::Num(id as i64))
+            }
+            "rollback" => {
+                let snap = env.snapshots.pop().ok_or("rollback: no snapshots on stack")?;
+                env.restore_snapshot(snap);
+                Ok(LispVal::Bool(true))
+            }
+            "rollback-to" => {
+                let idx = as_num(args.get(0).ok_or("rollback-to: need index")?)? as usize;
+                let snap = env.snapshots.get(idx).ok_or_else(|| format!("rollback-to: no snapshot at index {}", idx))?.clone();
+                env.restore_snapshot(snap);
+                Ok(LispVal::Bool(true))
+            }
+
+            // --- RLM state builtins ---
+            "rlm-set" => {
+                let key = as_str(args.get(0).ok_or("rlm-set: need key")?)?;
+                let val = args.get(1).cloned().unwrap_or(LispVal::Nil);
+                env.rlm_state.insert(key, val);
+                Ok(LispVal::Bool(true))
+            }
+            "rlm-get" => {
+                let key = as_str(args.get(0).ok_or("rlm-get: need key")?)?;
+                Ok(env.rlm_state.get(&key).cloned().unwrap_or(LispVal::Nil))
             }
 
             // --- Print ---

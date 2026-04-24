@@ -87,6 +87,12 @@ pub fn is_builtin_name(name: &str) -> bool {
             | "http-get-json"
             | "llm"
             | "llm-code"
+            | "snapshot"
+            | "rollback"
+            | "rollback-to"
+            | "rlm-set"
+            | "rlm-get"
+            | "rlm"
     )
 }
 
