@@ -1199,9 +1199,9 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                     .or_else(|_| std::env::var("OPENAI_API_KEY"))
                     .map_err(|_| "llm: set RLM_API_KEY or OPENAI_API_KEY")?;
                 let api_base = std::env::var("RLM_API_BASE")
-                    .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+                    .unwrap_or_else(|_| "https://api.z.ai/api/coding/paas/v4".to_string());
                 let model = std::env::var("RLM_MODEL")
-                    .unwrap_or_else(|_| "gpt-4o-mini".to_string());
+                    .unwrap_or_else(|_| "glm-5.1".to_string());
 
                 let rt = tokio::runtime::Runtime::new().map_err(|e| format!("llm: {}", e))?;
                 let resp = rt.block_on(async {
@@ -1232,9 +1232,9 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                     .or_else(|_| std::env::var("OPENAI_API_KEY"))
                     .map_err(|_| "llm-code: set RLM_API_KEY or OPENAI_API_KEY")?;
                 let api_base = std::env::var("RLM_API_BASE")
-                    .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+                    .unwrap_or_else(|_| "https://api.z.ai/api/coding/paas/v4".to_string());
                 let model = std::env::var("RLM_MODEL")
-                    .unwrap_or_else(|_| "gpt-4o-mini".to_string());
+                    .unwrap_or_else(|_| "glm-5.1".to_string());
 
                 let rt = tokio::runtime::Runtime::new().map_err(|e| format!("llm-code: {}", e))?;
                 let code_str = rt.block_on(async {
