@@ -447,8 +447,12 @@ fn rlm_try_solve(task: &str, env: &mut Env, max_retries: usize) -> RlmNode {
             "user".to_string(),
             format!(
                 "Your task: {}\n\n\
-                 Write Lisp code to solve this. End with (final \"your answer\") when done.\n\
-                 You have access to: llm, read-file, write-file, str-*, json-*, http-*, show-vars, rlm-set, rlm-get.\n\
+                 Write Lisp code to solve this. You MUST:\n\
+                 1. Compute the result\n\
+                 2. Verify it with (assert <condition>) — e.g. (assert (= result expected)), (assert (> len 0))\n\
+                 3. Return it with (final <value>)\n\
+                 Without (assert ...), your answer is UNVERIFIED and will be rejected.\n\
+                 You have access to: llm, read-file, write-file, str-*, json-*, http-*, show-vars, rlm-set, rlm-get, assert.\n\
                  Available state: {}",
                 task,
                 rlm_state_summary(env)
@@ -519,18 +523,39 @@ fn rlm_try_solve(task: &str, env: &mut Env, max_retries: usize) -> RlmNode {
             return RlmNode::Red(format!("Runtime error: {}", err_msg));
         }
 
-        // Check if (final ...) was called
+        // Check if (final ...) AND (assert ...) were called
+        // RED→BLACK requires both: generation produced output AND verified it
         let is_final = env
             .rlm_state
             .get("Final")
             .map(|v| is_truthy(v))
             .unwrap_or(false);
+        let is_asserted = env
+            .rlm_state
+            .get("AssertPassed")
+            .map(|v| is_truthy(v))
+            .unwrap_or(false);
 
-        if is_final {
+        if is_final && is_asserted {
+            // Generation (RED) → Execution OK + Assertion passed → BLACK
             if let Some(r) = env.rlm_state.get("result") {
                 return RlmNode::Black(r.clone());
             }
             return RlmNode::Black(result);
+        }
+
+        if is_final && !is_asserted {
+            // (final ...) called but no (assert ...) — stays RED
+            if attempt < max_retries {
+                messages.push((
+                    "user".to_string(),
+                    "You called (final ...) but didn't verify your result. \
+                     Add (assert <condition>) before (final ...) to confirm correctness. \
+                     Example: (assert (> result 0)) then (final result)".to_string(),
+                ));
+                continue;
+            }
+            return RlmNode::Red("Generation not verified — no (assert ...) before (final ...)".to_string());
         }
 
         // Code ran but didn't call (final ...) — not done yet
@@ -1208,6 +1233,19 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
                                 .insert("Final".to_string(), LispVal::Bool(true));
                             env.rlm_state.insert("result".to_string(), val);
                             return Ok(LispVal::Bool(true));
+                        }
+                        "assert" => {
+                            let condition = lisp_eval(list.get(1).ok_or("assert: need condition")?, env)?;
+                            if is_truthy(&condition) {
+                                env.rlm_state
+                                    .insert("AssertPassed".to_string(), LispVal::Bool(true));
+                                return Ok(LispVal::Bool(true));
+                            } else {
+                                return Err(format!(
+                                    "assert failed: {}",
+                                    truncate_str(&list[1].to_string(), 100)
+                                ));
+                            }
                         }
                         "rlm-set" => {
                             let key = match list.get(1) {
