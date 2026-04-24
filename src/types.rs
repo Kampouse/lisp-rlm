@@ -88,6 +88,8 @@ pub struct Env {
     pub llm_calls: usize,
     /// Current sub-rlm call depth (max 5)
     pub rlm_depth: usize,
+    /// RLM iteration counter (incremented by the rlm builtin each iteration)
+    pub rlm_iteration: usize,
 }
 
 impl Env {
@@ -103,6 +105,7 @@ impl Env {
             tokens_used: 0,
             llm_calls: 0,
             rlm_depth: 0,
+            rlm_iteration: 0,
         };
         // Common aliases
         env.push("t".to_string(), LispVal::Bool(true));
@@ -117,7 +120,7 @@ impl Env {
         for (i, (name, _)) in bindings.iter().enumerate() {
             index.insert(name.clone(), i);
         }
-        Env { bindings, index, eval_count: 0, eval_budget: DEFAULT_EVAL_BUDGET, snapshots: Vec::new(), rlm_state: BTreeMap::new(), tokens_used: 0, llm_calls: 0, rlm_depth: 0 }
+        Env { bindings, index, eval_count: 0, eval_budget: DEFAULT_EVAL_BUDGET, snapshots: Vec::new(), rlm_state: BTreeMap::new(), tokens_used: 0, llm_calls: 0, rlm_depth: 0, rlm_iteration: 0 }
     }
 
     /// Insert or overwrite a binding, shadowing any previous binding with the

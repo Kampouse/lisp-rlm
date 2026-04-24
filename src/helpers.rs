@@ -97,6 +97,12 @@ pub fn is_builtin_name(name: &str) -> bool {
             | "sub-rlm"
             | "rlm-tokens"
             | "rlm-calls"
+            | "show-vars"
+            | "str-chunk"
+            | "llm-batch"
+            | "show-context"
+            | "final"
+            | "final-var"
     )
 }
 

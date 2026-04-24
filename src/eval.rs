@@ -103,6 +103,126 @@ pub fn lisp_to_json(val: &LispVal) -> serde_json::Value {
 }
 
 // ---------------------------------------------------------------------------
+// RLM System Prompt (aligned with MIT paper's reference implementation)
+// ---------------------------------------------------------------------------
+
+const RLM_SYSTEM_PROMPT: &str = r#"You are an autonomous agent with access to a Lisp REPL environment. Given a task, you write and execute Lisp code iteratively to accomplish it. You will be queried iteratively until you provide a final answer via (final "answer") or (final-var varname).
+
+## REPL Environment
+
+The REPL is initialized with:
+1. A `context` variable containing important information about your query. Check it with (rlm-get context) or look at (show-vars).
+2. `(llm "prompt")` — a single LLM completion call (no REPL, no iteration). Fast and lightweight. Use for simple extraction, summarization, or Q&A. The sub-LLM can handle large inputs.
+3. `(llm-code "prompt")` — like llm but returns parsed/evaluated Lisp code.
+4. `(sub-rlm "prompt")` — spawns a recursive RLM sub-call for deeper thinking subtasks. The child gets its own REPL and can iterate, just like you. Use when a subtask requires multi-step reasoning or its own iterative problem-solving — not just a simple one-shot answer.
+5. `(llm-batch (list "prompt1" "prompt2" ...))` — runs multiple llm calls sequentially, returns a list of responses. Use for independent queries over different chunks.
+6. `(show-vars)` — returns a string listing all variables in the current environment with their types.
+7. `(show-context)` — returns metadata about the task context: prompt length, preview, iteration count, whether Final is set.
+8. `(str-chunk str n)` — splits a string into n roughly equal chunks. Returns a list of strings.
+
+## When to use llm vs sub-rlm
+
+- Use `(llm "prompt")` for simple, one-shot tasks: extracting info from a chunk, summarizing text, answering a factual question, classifying content.
+- Use `(sub-rlm "prompt")` when the subtask itself requires deeper thinking: multi-step reasoning, solving a sub-problem that needs its own REPL and iteration, or tasks where a single LLM call might not be enough.
+
+## Breaking Down Problems
+
+You MUST break problems into digestible components — whether that means chunking or summarizing a large context, or decomposing a hard task into easier sub-problems and delegating them via llm/sub-rlm. Write a PROGRAMMATIC STRATEGY that uses these LLM calls to solve the problem, as if you were building an agent: plan steps, branch on results, combine answers in code.
+
+## Chunking Strategy
+
+For large contexts, use str-chunk to split the input, then process per-chunk with llm or llm-batch:
+
+```lisp
+;; Split context into 5 chunks and process each
+(define chunks (str-chunk context 5))
+(define answers (map (lambda (chunk)
+  (llm (str-concat "Extract relevant info from this text: " chunk)))
+  chunks))
+;; Aggregate answers
+(define final-answer (llm (str-concat "Based on these partial answers, respond to the query: "
+  (str-join "\n" answers))))
+(final final-answer)
+```
+
+For batch processing (faster for independent queries):
+```lisp
+(define chunks (str-chunk context 10))
+(define prompts (map (lambda (chunk)
+  (str-concat "Answer the query based on this chunk. Only answer if confident: " chunk))
+  chunks))
+(define answers (llm-batch prompts))
+```
+
+## Iterative Book Analysis Pattern
+
+```lisp
+(define query "Did the protagonist win?")
+(define chunks (str-chunk context 10))
+(define buffers (list))
+
+(loop ((i 0))
+  (if (>= i (len chunks))
+    (final (llm (str-concat "Based on gathered info: " (str-join "\n" buffers) "\nAnswer: " query)))
+    (do
+      (define chunk (nth i chunks))
+      (define result (llm (str-concat "Gather info to answer: " query "\nText: " chunk)))
+      (define buffers (append buffers (list result)))
+      (recur (+ i 1)))))
+```
+
+## Using sub-rlm for Complex Sub-problems
+
+```lisp
+;; Child RLM solves a sub-problem in its own REPL
+(define trend (sub-rlm "Analyze this dataset and conclude: up, down, or stable"))
+(define recommendation
+  (if (str-contains (str-downcase trend) "up")
+    "Consider increasing exposure."
+    (if (str-contains (str-downcase trend) "down")
+      "Consider hedging."
+      "Hold position.")))
+(final (llm (str-concat "Given trend=" trend " and recommendation=" recommendation ", summarize.")))
+```
+
+## Providing Your Answer
+
+When done, use one of:
+- `(final "your answer string")` — provide the answer directly
+- `(final-var myvar)` — return a variable you created in the REPL as the final answer
+
+IMPORTANT: Create and assign the variable FIRST in code, then call final-var in a SEPARATE expression. If unsure what variables exist, use (show-vars).
+
+## Key Rules
+
+- Your outputs are TRUNCATED in the conversation history. Only constant-size metadata is kept. Store important data in variables — do not rely on seeing previous output.
+- Use (show-vars) to check what state exists before referencing variables.
+- Use (show-context) to understand the task before diving in.
+- Think step by step. Plan, then execute. Output code and use sub-LLMs as much as possible.
+- Do NOT provide a final answer on the first iteration — first explore the context and plan your approach.
+
+## Available Builtins
+
+Arithmetic: + - * / mod
+Comparison: = < > <= >= not
+Logic: and or
+Lists: list cons car cdr nth len append reverse map filter reduce sort range zip find some every
+Predicates: nil? list? number? string? bool? map? macro? type? empty?
+Strings: str-concat str-contains str-split str-split-exact str-trim str-upcase str-downcase str-length str-substring str-index-of str-starts-with str-ends-with str= str!= str-chunk
+IO: print println read-file write-file append-file file-exists? shell
+HTTP: http-get http-post http-get-json
+JSON: from-json to-json json-parse json-get json-get-in json-build
+LLM: llm llm-code sub-rlm llm-batch
+Crypto: sha256 keccak256
+Types: to-int to-float to-string to-num
+State: rlm-set rlm-get
+Final: final final-var
+Introspection: show-vars show-context
+Token tracking: rlm-tokens rlm-calls
+Snapshot: snapshot rollback rollback-to
+Special forms: define def let lambda if cond match quote quasiquote unquote unquote-splicing loop recur begin progn defmacro require try catch error"#;
+
+// ---------------------------------------------------------------------------
 // Evaluator
 // ---------------------------------------------------------------------------
 
@@ -472,6 +592,23 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
                                 return Ok(LispVal::Nil);
                             }
                             return Err(format!("require: unknown module '{}'", module_name));
+                        }
+                        "final" => {
+                            let val = lisp_eval(list.get(1).ok_or("final: need value")?, env)?;
+                            env.rlm_state.insert("Final".to_string(), LispVal::Bool(true));
+                            env.rlm_state.insert("result".to_string(), val);
+                            return Ok(LispVal::Bool(true));
+                        }
+                        "final-var" => {
+                            let var_name = match list.get(1) {
+                                Some(LispVal::Sym(s)) => s.clone(),
+                                Some(LispVal::Str(s)) => s.clone(),
+                                other => return Err(format!("final-var: need symbol or string, got {:?}", other)),
+                            };
+                            let val = env.get(&var_name).cloned().ok_or_else(|| format!("final-var: undefined variable '{}'", var_name))?;
+                            env.rlm_state.insert("Final".to_string(), LispVal::Bool(true));
+                            env.rlm_state.insert("result".to_string(), val);
+                            return Ok(LispVal::Bool(true));
                         }
                         "rlm-set" => {
                             let key = match list.get(1) {
@@ -1358,22 +1495,7 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                 let model = std::env::var("RLM_MODEL")
                     .unwrap_or_else(|_| "glm-5.1".to_string());
 
-                let builtin_ref = r#"You are a Lisp code generator for lisp-rlm. Return ONLY valid Lisp expressions. No explanations, no markdown fences.
-
-Available builtins:
-- Arithmetic: + - * / mod
-- Comparison: = < > <= >= not
-- Logic: and or
-- Lists: list cons car cdr nth len append reverse map filter reduce sort range zip find some every
-- Predicates: nil? list? number? string? bool? map? macro? type? empty?
-- Strings: str-concat str-contains str-split str-split-exact str-trim str-upcase str-downcase str-length str-substring str-index-of str-starts-with str-ends-with
-- IO: print println read-file write-file append-file file-exists? shell
-- HTTP: http-get http-post http-get-json
-- JSON: from-json to-json json-parse json-get json-get-in json-build
-- LLM: llm llm-code sub-rlm
-- Crypto: sha256 keccak256
-- Types: to-int to-float to-string to-num
-- Special forms: define def let lambda if cond match quote quasiquote unquote unquote-splicing loop recur begin progn defmacro require try catch error"#;
+                let builtin_ref = RLM_SYSTEM_PROMPT;
 
                 let rt = tokio::runtime::Runtime::new().map_err(|e| format!("llm-code: {}", e))?;
                 let (raw_code, tokens) = rt.block_on(async {
@@ -1429,40 +1551,32 @@ Available builtins:
                 let model = std::env::var("RLM_MODEL")
                     .unwrap_or_else(|_| "glm-5.1".to_string());
 
-                // Env-configurable system prompt and max iterations
-                let default_sys = r#"You are an autonomous agent. Given a task, generate Lisp code to accomplish it. Return ONLY valid Lisp code. No explanations, no markdown fences.
-
-Available builtins:
-- Arithmetic: + - * / mod
-- Comparison: = < > <= >= not
-- Logic: and or
-- Lists: list cons car cdr nth len append reverse map filter reduce sort range zip find some every
-- Predicates: nil? list? number? string? bool? map? macro? type? empty?
-- Strings: str-concat str-contains str-split str-split-exact str-trim str-upcase str-downcase str-length str-substring str-index-of str-starts-with str-ends-with
-- IO: print println read-file write-file append-file file-exists? shell
-- HTTP: http-get http-post http-get-json
-- JSON: from-json to-json json-parse json-get json-get-in json-build
-- LLM: llm llm-code sub-rlm
-- Crypto: sha256 keccak256
-- Types: to-int to-float to-string to-num
-- Special forms: define def let lambda if cond match quote quasiquote unquote unquote-splicing loop recur begin progn defmacro require try catch error
-- Snapshot: snapshot rollback rollback-to
-- State: rlm-set rlm-get
-- Token tracking: rlm-tokens rlm-calls"#;
-                let sys_prompt = std::env::var("RLM_SYSTEM_PROMPT").unwrap_or_else(|_| default_sys.to_string());
+                // Use the rich system prompt aligned with MIT paper
+                let sys_prompt = std::env::var("RLM_SYSTEM_PROMPT").unwrap_or_else(|_| RLM_SYSTEM_PROMPT.to_string());
                 let max_iterations: usize = std::env::var("RLM_MAX_ITERATIONS")
                     .ok().and_then(|s| s.parse().ok()).unwrap_or(10);
                 let do_verify = std::env::var("RLM_VERIFY").unwrap_or_default() == "1";
 
                 let mut messages = vec![
                     serde_json::json!({"role": "system", "content": sys_prompt}),
-                    serde_json::json!({"role": "user", "content": task.clone()}),
+                    serde_json::json!({"role": "user", "content": format!("Your task: {}\n\nUse the REPL to explore context, plan, and solve. Call (show-context) and (show-vars) to understand your environment.", task)}),
                 ];
 
                 let mut final_result = LispVal::Nil;
                 let max_retries: usize = 3;
+                let saved_iteration = env.rlm_iteration;
 
-                for _iter in 0..max_iterations {
+                for iter in 0..max_iterations {
+                    env.rlm_iteration = saved_iteration + iter;
+
+                    // Iteration-specific prompt (paper's key insight)
+                    let iter_prompt = if iter == 0 {
+                        "You have not interacted with the context yet. Your next action should be to look through it and plan your approach. Don't provide a final answer yet.".to_string()
+                    } else {
+                        "The history above is your previous interactions. Continue using the REPL to solve the task.".to_string()
+                    };
+                    messages.push(serde_json::json!({"role": "user", "content": iter_prompt}));
+
                     // Snapshot env
                     let snap = env.take_snapshot();
 
@@ -1500,7 +1614,7 @@ Available builtins:
                     // Append assistant message (truncated for context window management)
                     messages.push(serde_json::json!({"role": "assistant", "content": truncate_str(&resp_text, 500)}));
 
-                    eprintln!("[rlm iter] code:\n{}", code_str);
+                    eprintln!("[rlm iter {}] code:\n{}", iter, code_str);
 
                     // Try to parse with better error recovery
                     let exprs = match parse_all(&code_str) {
@@ -1606,9 +1720,43 @@ Available builtins:
                         continue;
                     }
 
-                    eprintln!("[rlm iter] result: {}", truncate_str(&result.to_string(), 200));
+                    eprintln!("[rlm iter {}] result: {}", iter, truncate_str(&result.to_string(), 200));
                     final_result = result;
-                    break;
+
+                    // Check if code set Final=true via (final ...) or (final-var ...)
+                    let is_final = env.rlm_state.get("Final")
+                        .map(|v| is_truthy(v))
+                        .unwrap_or(false);
+                    if is_final {
+                        if let Some(r) = env.rlm_state.get("result") {
+                            final_result = r.clone();
+                        }
+                        break;
+                    }
+
+                    // Metadata-only stdout truncation (paper's key insight)
+                    // Instead of appending full result, append only metadata
+                    let result_str = final_result.to_string();
+                    let result_type = match &final_result {
+                        LispVal::Nil => "nil",
+                        LispVal::Bool(_) => "bool",
+                        LispVal::Num(_) => "int",
+                        LispVal::Float(_) => "float",
+                        LispVal::Str(_) => "string",
+                        LispVal::List(l) => &format!("list[{}]", l.len()),
+                        LispVal::Map(m) => &format!("map[{}]", m.len()),
+                        _ => "other",
+                    };
+                    let output_meta = format!(
+                        "[Output: type={}, len={}, preview=\"{}\"]",
+                        result_type,
+                        result_str.len(),
+                        truncate_str(&result_str, 100)
+                    );
+                    messages.push(serde_json::json!({"role": "user", "content": output_meta}));
+
+                    // Continue to next iteration if not final
+                    continue;
                 }
 
                 // Self-verification step
@@ -1714,6 +1862,79 @@ Available builtins:
                 }
             }
 
+            "show-vars" => {
+                let mut entries: Vec<String> = Vec::new();
+                for (name, val) in env.iter() {
+                    let type_str = match val {
+                        LispVal::Nil => "nil",
+                        LispVal::Bool(_) => "bool",
+                        LispVal::Num(_) => "int",
+                        LispVal::Float(_) => "float",
+                        LispVal::Str(_) => "string",
+                        LispVal::List(l) => &format!("list[{}]", l.len()),
+                        LispVal::Map(m) => &format!("map[{}]", m.len()),
+                        LispVal::Lambda { params, .. } => &format!("lambda({})", params.len()),
+                        LispVal::Macro { .. } => "macro",
+                        LispVal::Sym(_) => "symbol",
+                        LispVal::Recur(_) => "recur",
+                    };
+                    // Truncate value display
+                    let val_preview = truncate_str(&val.to_string(), 80);
+                    entries.push(format!("  {} : {} = {}", name, type_str, val_preview));
+                }
+                Ok(LispVal::Str(entries.join("\n")))
+            }
+            "str-chunk" => {
+                let s = as_str(&args[0])?;
+                let n = as_num(args.get(1).ok_or("str-chunk: need n")?)? as usize;
+                if n == 0 { return Err("str-chunk: n must be > 0".into()); }
+                let chars: Vec<char> = s.chars().collect();
+                let total = chars.len();
+                let chunk_size = (total + n - 1) / n; // ceil division
+                if chunk_size == 0 {
+                    return Ok(LispVal::List(vec![LispVal::Str(String::new()); n.min(total + 1)]));
+                }
+                let mut chunks: Vec<LispVal> = Vec::new();
+                let mut i = 0;
+                while i < total {
+                    let end = (i + chunk_size).min(total);
+                    let chunk: String = chars[i..end].iter().collect();
+                    chunks.push(LispVal::Str(chunk));
+                    i += chunk_size;
+                }
+                Ok(LispVal::List(chunks))
+            }
+            "llm-batch" => {
+                let prompts = match &args[0] {
+                    LispVal::List(l) => l.clone(),
+                    _ => return Err("llm-batch: need list of prompt strings".into()),
+                };
+                let mut results: Vec<LispVal> = Vec::new();
+                for p in &prompts {
+                    let prompt_str = as_str(p)?;
+                    // Call llm on each prompt
+                    let call = LispVal::List(vec![
+                        LispVal::Sym("llm".to_string()),
+                        LispVal::Str(prompt_str),
+                    ]);
+                    let result = lisp_eval(&call, env)?;
+                    results.push(result);
+                }
+                Ok(LispVal::List(results))
+            }
+            "show-context" => {
+                let context_val = env.rlm_state.get("context").cloned().unwrap_or(LispVal::Nil);
+                let context_str = context_val.to_string();
+                let preview = truncate_str(&context_str, 200);
+                let final_set = env.rlm_state.get("Final")
+                    .map(|v| is_truthy(v))
+                    .unwrap_or(false);
+                Ok(LispVal::Str(format!(
+                    "Context length: {} chars\nPreview: {}\nIteration: {}\nFinal set: {}",
+                    context_str.len(), preview, env.rlm_iteration, final_set
+                )))
+            }
+
             // --- Token tracking ---
             "rlm-tokens" => Ok(LispVal::Num(env.tokens_used as i64)),
             "rlm-calls" => Ok(LispVal::Num(env.llm_calls as i64)),
@@ -1732,29 +1953,7 @@ Available builtins:
                 let model = std::env::var("RLM_MODEL")
                     .unwrap_or_else(|_| "glm-5.1".to_string());
 
-                let sys = r#"You are a Lisp programmer for the lisp-rlm runtime. Given a task, write a COMPLETE, self-contained Lisp program. 
-
-RULES:
-- Return ONLY raw Lisp code. No write-file wrapper, no explanations, no markdown fences.
-- The code will be saved to a file automatically and then loaded/executed.
-- DO NOT redefine these builtins: llm llm-code rlm rlm-write load-file read-file write-file snapshot rollback. Use them as-is.
-- Use ONLY these builtins (do NOT use null?, set!, load, or any not listed):
-
-Functions: define def let lambda if cond begin loop recur
-IO: print println read-file write-file append-file file-exists?
-Strings: str-split str-concat str-length str-substring str-trim str-contains str-upcase str-downcase
-Lists: list cons car cdr nth len append reverse map filter reduce sort range
-Arithmetic: + - * / mod
-Comparison: = < > >= <= not
-Logic: and or
-Types: to-string to-int to-float number? string? list? empty? nil? bool?
-LLM: llm llm-code
-State: rlm-set rlm-get
-Error: try catch error
-Check empty list with (= (len lst) 0), NOT null?
-Convert numbers to strings with (to-string n)
-Use (llm-code "prompt") to call the LLM and get executable Lisp code back
-Use (llm "prompt") to call the LLM and get a text response"#;
+                let sys = RLM_SYSTEM_PROMPT;
 
                 let rt = tokio::runtime::Runtime::new().map_err(|e| format!("rlm-write: {}", e))?;
                 let code = rt.block_on(async {
