@@ -15,6 +15,11 @@ const MATH_STDLIB: &str = r#"
 "#;
 
 const STDLIB_LIST: &str = r#"
+(define (identity x) x)
+(define (constantly x) (lambda (_) x))
+(define (compose f g) (lambda (x) (f (g x))))
+(define (flip f) (lambda (a b) (f b a)))
+(define (flatten-once lst) (reduce append (list) lst))
 "#;
 
 const STDLIB_STRING: &str = r#"

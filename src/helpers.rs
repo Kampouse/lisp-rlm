@@ -99,6 +99,7 @@ pub fn is_builtin_name(name: &str) -> bool {
             | "rlm-calls"
             | "show-vars"
             | "str-chunk"
+            | "str-join"
             | "llm-batch"
             | "show-context"
             | "final"

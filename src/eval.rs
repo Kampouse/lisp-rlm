@@ -208,7 +208,7 @@ Comparison: = < > <= >= not
 Logic: and or
 Lists: list cons car cdr nth len append reverse map filter reduce sort range zip find some every
 Predicates: nil? list? number? string? bool? map? macro? type? empty?
-Strings: str-concat str-contains str-split str-split-exact str-trim str-upcase str-downcase str-length str-substring str-index-of str-starts-with str-ends-with str= str!= str-chunk
+Strings: str-concat str-contains str-split str-split-exact str-trim str-upcase str-downcase str-length str-substring str-index-of str-starts-with str-ends-with str= str!= str-chunk str-join
 IO: print println read-file write-file append-file file-exists? shell
 HTTP: http-get http-post http-get-json
 JSON: from-json to-json json-parse json-get json-get-in json-build
@@ -1209,10 +1209,33 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                     Some(other) => return Err(format!("reduce: expected list, got {}", other)),
                     None => return Err("reduce: need (f init list)".into()),
                 };
+                let acc_str = acc.to_string();
                 for elem in &lst {
-                    acc = call_val(func, &[acc.clone(), elem.clone()], env)?;
+                    let prev_acc = acc.clone();
+                    acc = call_val(func, &[prev_acc.clone(), elem.clone()], env)?;
+                    // Warn if accumulator doesn't incorporate the current element
+                    let new_acc_str = acc.to_string();
+                    if new_acc_str == prev_acc.to_string() && !lst.is_empty() {
+                        eprintln!("[WARN] reduce: accumulator unchanged after processing element. \
+                            Your function may be ignoring the current element. \
+                            Consider using (str-join sep lst) for string joining.");
+                    }
                 }
                 Ok(acc)
+            }
+            "str-join" => {
+                let sep = as_str(args.get(0).ok_or("str-join: need (separator list)")?)?;
+                let lst = match args.get(1) {
+                    Some(LispVal::List(l)) => l,
+                    Some(LispVal::Nil) => return Ok(LispVal::Str(String::new())),
+                    Some(other) => return Err(format!("str-join: expected list, got {}", other)),
+                    None => return Err("str-join: need (separator list)".into()),
+                };
+                let parts: Vec<String> = lst.iter().map(|v| match v {
+                    LispVal::Str(s) => s.clone(),
+                    _ => v.to_string(),
+                }).collect();
+                Ok(LispVal::Str(parts.join(&sep)))
             }
             "find" => {
                 let func = args.get(0).ok_or("find: need (pred list)")?;
@@ -1564,6 +1587,45 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                     serde_json::json!({"role": "user", "content": format!("Your task: {}\n\nUse the REPL to explore context, plan, and solve. Call (show-context) and (show-vars) to understand your environment.", task)}),
                 ];
 
+                // --- Planning step: determine ACTION vs CODE mode ---
+                let mut action_mode = false;
+                {
+                    let plan_prompt = format!(
+                        "Given this task, choose your approach: ACTION or CODE.\n\n\
+                         ACTION means you'll execute single Lisp expressions directly (like reading files, calling llm, processing strings). Best for: summarization, analysis, one-shot tasks.\n\
+                         CODE means you'll write a multi-step Lisp program with defines, loops, and logic. Best for: computation, data processing, multi-step algorithms.\n\n\
+                         Reply with just ACTION or CODE and a brief one-line plan.\n\nTask: {}",
+                        task
+                    );
+                    let rt = tokio::runtime::Runtime::new().map_err(|e| format!("rlm: {}", e))?;
+                    let (plan_resp, plan_tokens) = rt.block_on(async {
+                        let client = reqwest::Client::new();
+                        let body = serde_json::json!({
+                            "model": model,
+                            "messages": [
+                                {"role": "system", "content": "Reply with just ACTION or CODE followed by a brief plan. One line only."},
+                                {"role": "user", "content": plan_prompt}
+                            ],
+                            "max_tokens": 256
+                        });
+                        let resp = client.post(format!("{}/chat/completions", api_base))
+                            .header("Authorization", format!("Bearer {}", api_key))
+                            .json(&body)
+                            .send().await.map_err(|e| format!("rlm plan: {}", e))?;
+                        let text = resp.text().await.map_err(|e| format!("rlm plan: {}", e))?;
+                        let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("rlm plan: {}", e))?;
+                        let tokens = v["usage"]["total_tokens"].as_u64().unwrap_or(0) as usize;
+                        let content = v["choices"][0]["message"]["content"].as_str()
+                            .map(|s| s.to_string()).ok_or_else(|| "rlm plan: no content".to_string())?;
+                        Ok::<_, String>((content, tokens))
+                    })?;
+                    env.tokens_used += plan_tokens;
+                    env.llm_calls += 1;
+                    let plan_upper = plan_resp.to_uppercase();
+                    action_mode = plan_upper.contains("ACTION") && !plan_upper.contains("CODE");
+                    eprintln!("[rlm] mode: {} — {}", if action_mode { "ACTION" } else { "CODE" }, plan_resp.trim());
+                }
+
                 let mut final_result = LispVal::Nil;
                 let max_retries: usize = 3;
                 let saved_iteration = env.rlm_iteration;
@@ -1572,7 +1634,17 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                     env.rlm_iteration = saved_iteration + iter;
 
                     // Iteration-specific prompt (paper's key insight)
-                    let iter_prompt = if iter == 0 {
+                    let iter_prompt = if action_mode {
+                        if iter == 0 {
+                            "You are in ACTION mode. Return a SINGLE Lisp expression to evaluate. No definitions, no multi-step programs — just one expression like (read-file ...), (llm ...), (str-chunk ...), etc. Explore the context first. End with (final \"answer\") when done.".to_string()
+                        } else {
+                            let last_result_preview = match env.rlm_state.get("last_result") {
+                                Some(v) => truncate_str(&v.to_string(), 200),
+                                None => "none yet".to_string(),
+                            };
+                            format!("ACTION mode, iteration {}. Last result: {}. Return your NEXT single Lisp expression. Use (final \"answer\") or (final-var name) when done.", iter, last_result_preview)
+                        }
+                    } else if iter == 0 {
                         "You have not interacted with the context yet. Your next action should be to look through it and plan your approach. Don't provide a final answer yet.".to_string()
                     } else {
                         "The history above is your previous interactions. Continue using the REPL to solve the task.".to_string()
@@ -1723,7 +1795,9 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                     }
 
                     eprintln!("[rlm iter {}] result: {}", iter, truncate_str(&result.to_string(), 200));
-                    final_result = result;
+                    final_result = result.clone();
+                    // Store last_result for ACTION mode context
+                    env.rlm_state.insert("last_result".to_string(), result);
 
                     // Check if code set Final=true via (final ...) or (final-var ...)
                     let is_final = env.rlm_state.get("Final")
@@ -1955,49 +2029,80 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                 let model = std::env::var("RLM_MODEL")
                     .unwrap_or_else(|_| "glm-5.1".to_string());
 
-                let sys = r#"You are a Lisp code generator for lisp-rlm. Return ONLY raw Lisp code — no markdown fences, no explanations, no backticks, no non-Lisp text.
+                let sys = r#"You are a Lisp code generator for lisp-rlm. Return ONLY raw Lisp code — no markdown fences, no explanations, no backticks.
 
 SYNTAX RULES:
-- Use \n for newlines inside strings, NOT literal line breaks: (str-concat "line1\n" "line2")
-- Check empty list with (= (len lst) 0), NOT null?
-- Define functions with (define (name args) body) or (define name (lambda (args) body))
-- Use (set! var val) to update existing variables
-- Use (loop () ... (recur)) for iteration — no named-let with variables
-- Comments start with ;;
-- NO write-file wrappers — the code will be saved automatically
+- Use \n for newlines in strings: (str-concat "line1\n" "line2") — NOT literal line breaks
+- Check empty list with (= (len lst) 0) — NOT null?
+- Use (str-join sep list) to join strings — NOT reduce with str-concat
+- Use (reduce + 0 nums) for sum, (reduce * 1 nums) for product — the lambda gets (accumulator element)
+- Define functions: (define (name args) body)
+- Update variables: (set! var val)
+- Iterate: (loop () body... (recur)) or (define i 0) + (loop () (if cond (begin ... (set! i (+ i 1)) (recur))))
+- Comments: ;;
+- NO write-file wrappers — code is saved automatically
 
 WORKING EXAMPLES:
 
-;; Define and call a function:
-(define (add a b) (+ a b))
-(println (to-string (add 3 4)))
+;; Example 1: Define and test a function
+(define (square x) (* x x))
+(println (str-concat "5 squared = " (to-string (square 5))))
 
-;; Process a list:
-(define (sum-list lst)
-  (if (= (len lst) 0) 0
-    (+ (car lst) (sum-list (cdr lst)))))
-(println (to-string (sum-list (list 1 2 3 4 5))))
+;; Example 2: Process a list with map/filter/reduce
+(define nums (list 1 2 3 4 5 6 7 8 9 10))
+(define evens (filter (lambda (n) (= (mod n 2) 0)) nums))
+(define doubled (map (lambda (n) (* n 2)) evens))
+(println (str-concat "Sum of doubled evens: " (to-string (reduce + 0 doubled))))
 
-;; Read file, split, process:
+;; Example 3: Read file, count words
 (define content (read-file "/tmp/data.txt"))
 (define lines (str-split content "\n"))
 (define (count-words line) (len (str-split line " ")))
-(define word-counts (map count-words lines))
-(println (str-concat "Total words: " (to-string (reduce + 0 word-counts))))
+(define total (reduce + 0 (map count-words lines)))
+(println (str-concat "Total words: " (to-string total)))
 
-;; Chunk and batch process:
+;; Example 4: Join strings properly
+(define names (list "Alice" "Bob" "Charlie"))
+(println (str-join ", " names))
+;; → "Alice, Bob, Charlie"
+
+;; Example 5: Chunk a document and batch analyze
 (define text (read-file "/tmp/paper.txt"))
 (define chunks (str-chunk text 5))
-(define prompts (map (lambda (c) (str-concat "Summarize:\n" c)) chunks))
+(define prompts (map (lambda (c) (str-concat "Summarize the key ideas:\n" c)) chunks))
 (define summaries (llm-batch prompts))
-(define combined (reduce (lambda (a b) (str-concat a "\n" b)) "" summaries))
-(define answer (llm (str-concat "Synthesize:\n" combined)))
+(define all-summaries (str-join "\n\n" summaries))
+(define answer (llm (str-concat "Synthesize into one paragraph:\n\n" all-summaries)))
 (final answer)
+
+;; Example 6: Recursive function
+(define (factorial n)
+  (if (= n 0) 1
+    (* n (factorial (- n 1)))))
+(println (str-concat "10! = " (to-string (factorial 10))))
+
+;; Example 7: Loop with iteration
+(define i 0)
+(define total 0)
+(loop ()
+  (if (> i 100)
+    (println (str-concat "Sum 1-100 = " (to-string total)))
+    (begin
+      (set! total (+ total i))
+      (set! i (+ i 1))
+      (recur))))
+
+;; Example 8: Error handling
+(try
+  (begin
+    (define data (read-file "/tmp/optional.txt"))
+    (println data))
+  (lambda (e) (println "File not found, skipping")))
 
 AVAILABLE BUILTINS:
 define def let lambda if cond begin loop recur set!
 print println read-file write-file append-file load-file
-str-concat str-split str-length str-substring str-trim str-contains str-chunk
+str-concat str-join str-split str-length str-substring str-trim str-contains str-chunk
 list cons car cdr nth len append reverse map filter reduce sort range
 + - * / mod = < > >= <= not and or
 to-string to-int to-float number? string? list? empty? nil? bool?

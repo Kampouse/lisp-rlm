@@ -5,7 +5,7 @@ fn main() {
     let mut env = Env::new();
 
     // Load stdlib (skip list — recursive defs may hang on eval budget)
-    for module in &["math", "string"] {
+    for module in &["math", "list", "string"] {
         if let Some(code) = lisp_rlm::get_stdlib_code(module) {
             if let Ok(exprs) = parse_all(code) {
                 for expr in &exprs {
