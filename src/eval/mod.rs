@@ -23,8 +23,8 @@ pub mod dispatch_strings;
 
 pub use llm_provider::*;
 
-use crypto::{builtin_sha256, builtin_keccak256};
-use helpers::{truncate_str, strip_markdown_fences, extract_first_valid_expr};
+use crypto::{builtin_keccak256, builtin_sha256};
+use helpers::{extract_first_valid_expr, strip_markdown_fences, truncate_str};
 use quasiquote::expand_quasiquote;
 
 // ---------------------------------------------------------------------------
@@ -91,8 +91,10 @@ pub fn lisp_to_json(val: &LispVal) -> serde_json::Value {
         LispVal::Str(s) => serde_json::Value::String(s.clone()),
         LispVal::List(items) => serde_json::Value::Array(items.iter().map(lisp_to_json).collect()),
         LispVal::Map(m) => {
-            let obj: serde_json::Map<String, serde_json::Value> =
-                m.iter().map(|(k, v)| (k.clone(), lisp_to_json(v))).collect();
+            let obj: serde_json::Map<String, serde_json::Value> = m
+                .iter()
+                .map(|(k, v)| (k.clone(), lisp_to_json(v)))
+                .collect();
             serde_json::Value::Object(obj)
         }
         other => serde_json::Value::String(other.to_string()),
@@ -292,7 +294,8 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
                     match name.as_str() {
                         "quote" => return Ok(list.get(1).cloned().unwrap_or(LispVal::Nil)),
                         "quasiquote" => {
-                            let expanded = expand_quasiquote(list.get(1).ok_or("quasiquote: need form")?)?;
+                            let expanded =
+                                expand_quasiquote(list.get(1).ok_or("quasiquote: need form")?)?;
                             current_expr = expanded;
                             continue '_trampoline;
                         }
@@ -301,10 +304,13 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
                                 // (define (name args...) body) sugar → (define name (lambda (args...) body))
                                 Some(LispVal::List(inner)) if !inner.is_empty() => {
                                     if let Some(LispVal::Sym(name)) = inner.get(0) {
-                                        let params: Vec<String> = inner[1..].iter().map(|v| match v {
-                                            LispVal::Sym(s) => s.clone(),
-                                            _ => "_".to_string(),
-                                        }).collect();
+                                        let params: Vec<String> = inner[1..]
+                                            .iter()
+                                            .map(|v| match v {
+                                                LispVal::Sym(s) => s.clone(),
+                                                _ => "_".to_string(),
+                                            })
+                                            .collect();
                                         let body = list.get(2).cloned().unwrap_or(LispVal::Nil);
                                         let lam = LispVal::Lambda {
                                             params,
@@ -342,7 +348,9 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
                             let mut found: Option<LispVal> = None;
                             for clause in &list[1..] {
                                 if let LispVal::List(parts) = clause {
-                                    if parts.is_empty() { continue; }
+                                    if parts.is_empty() {
+                                        continue;
+                                    }
                                     if let LispVal::Sym(kw) = &parts[0] {
                                         if kw == "else" {
                                             found = parts.get(1).cloned();
@@ -357,7 +365,10 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
                                 }
                             }
                             match found {
-                                Some(e) => { current_expr = e; continue '_trampoline; }
+                                Some(e) => {
+                                    current_expr = e;
+                                    continue '_trampoline;
+                                }
                                 None => return Ok(LispVal::Nil),
                             }
                         }
@@ -377,12 +388,16 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
                                     }
                                 }
                             }
-                            let result = list.get(2).map(|e| lisp_eval(e, env)).unwrap_or(Ok(LispVal::Nil));
+                            let result = list
+                                .get(2)
+                                .map(|e| lisp_eval(e, env))
+                                .unwrap_or(Ok(LispVal::Nil));
                             env.truncate(base_len);
                             return result;
                         }
                         "lambda" => {
-                            let (params, rest_param) = parse_params(list.get(1).ok_or("lambda: need params")?)?;
+                            let (params, rest_param) =
+                                parse_params(list.get(1).ok_or("lambda: need params")?)?;
                             let body = list.get(2).ok_or("lambda: need body")?;
                             return Ok(LispVal::Lambda {
                                 params,
@@ -396,19 +411,25 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
                                 Some(LispVal::Sym(s)) => s.clone(),
                                 _ => return Err("defmacro: first arg must be symbol".into()),
                             };
-                            let (params, rest_param) = parse_params(list.get(2).ok_or("defmacro: need params")?)?;
+                            let (params, rest_param) =
+                                parse_params(list.get(2).ok_or("defmacro: need params")?)?;
                             let body = list.get(3).ok_or("defmacro: need body")?;
-                            env.push(macro_name, LispVal::Macro {
-                                params,
-                                rest_param,
-                                body: Box::new(body.clone()),
-                                closed_env: Box::new(env.clone().into_bindings()),
-                            });
+                            env.push(
+                                macro_name,
+                                LispVal::Macro {
+                                    params,
+                                    rest_param,
+                                    body: Box::new(body.clone()),
+                                    closed_env: Box::new(env.clone().into_bindings()),
+                                },
+                            );
                             return Ok(LispVal::Nil);
                         }
                         "progn" | "begin" => {
                             let exprs = &list[1..];
-                            if exprs.is_empty() { return Ok(LispVal::Nil); }
+                            if exprs.is_empty() {
+                                return Ok(LispVal::Nil);
+                            }
                             for e in &exprs[..exprs.len() - 1] {
                                 lisp_eval(e, env)?;
                             }
@@ -416,21 +437,29 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
                             continue '_trampoline;
                         }
                         "and" => {
-                            if list.len() == 1 { return Ok(LispVal::Bool(true)); }
+                            if list.len() == 1 {
+                                return Ok(LispVal::Bool(true));
+                            }
                             let exprs = &list[1..];
                             for e in &exprs[..exprs.len() - 1] {
                                 let r = lisp_eval(e, env)?;
-                                if !is_truthy(&r) { return Ok(r); }
+                                if !is_truthy(&r) {
+                                    return Ok(r);
+                                }
                             }
                             current_expr = exprs.last().unwrap().clone();
                             continue '_trampoline;
                         }
                         "or" => {
-                            if list.len() == 1 { return Ok(LispVal::Bool(false)); }
+                            if list.len() == 1 {
+                                return Ok(LispVal::Bool(false));
+                            }
                             let exprs = &list[1..];
                             for e in &exprs[..exprs.len() - 1] {
                                 let r = lisp_eval(e, env)?;
-                                if is_truthy(&r) { return Ok(r); }
+                                if is_truthy(&r) {
+                                    return Ok(r);
+                                }
                             }
                             current_expr = exprs.last().unwrap().clone();
                             continue '_trampoline;
@@ -444,14 +473,24 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
                             let res = match lisp_eval(expr_to_try, env) {
                                 Ok(val) => return Ok(val),
                                 Err(err_msg) => {
-                                    let catch_clause = list.get(2).ok_or("try: need catch clause")?;
+                                    let catch_clause =
+                                        list.get(2).ok_or("try: need catch clause")?;
                                     if let LispVal::List(clause) = catch_clause {
-                                        if clause.is_empty() || clause[0] != LispVal::Sym("catch".into()) {
-                                            return Err("try: second arg must be (catch var body...)".into());
+                                        if clause.is_empty()
+                                            || clause[0] != LispVal::Sym("catch".into())
+                                        {
+                                            return Err(
+                                                "try: second arg must be (catch var body...)"
+                                                    .into(),
+                                            );
                                         }
                                         let error_var = match clause.get(1) {
                                             Some(LispVal::Sym(s)) => s.clone(),
-                                            _ => return Err("try: catch needs a variable name".into()),
+                                            _ => {
+                                                return Err(
+                                                    "try: catch needs a variable name".into()
+                                                )
+                                            }
                                         };
                                         env.push(error_var, LispVal::Str(err_msg));
                                         let base_len = env.len() - 1;
@@ -475,7 +514,10 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
                                 if let LispVal::List(parts) = clause {
                                     if parts.len() >= 2 {
                                         if let Some(bindings) = match_pattern(&parts[0], &val) {
-                                            matched = Some((bindings, parts.get(1).cloned().unwrap_or(LispVal::Nil)));
+                                            matched = Some((
+                                                bindings,
+                                                parts.get(1).cloned().unwrap_or(LispVal::Nil),
+                                            ));
                                             break;
                                         }
                                     }
@@ -502,7 +544,8 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
                             let body = list.get(2).ok_or("loop: need body")?;
                             let mut binding_names: Vec<String> = Vec::new();
                             let mut binding_vals: Vec<LispVal> = Vec::new();
-                            let is_pair_style = bindings.iter().all(|b| matches!(b, LispVal::List(_)));
+                            let is_pair_style =
+                                bindings.iter().all(|b| matches!(b, LispVal::List(_)));
                             if is_pair_style {
                                 for b in bindings {
                                     if let LispVal::List(pair) = b {
@@ -524,7 +567,10 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
                                         binding_names.push(name.clone());
                                         binding_vals.push(lisp_eval(&bindings[i + 1], env)?);
                                     } else {
-                                        return Err(format!("loop: binding name must be sym, got {}", bindings[i]));
+                                        return Err(format!(
+                                            "loop: binding name must be sym, got {}",
+                                            bindings[i]
+                                        ));
                                     }
                                     i += 2;
                                 }
@@ -539,7 +585,11 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
                                 match result? {
                                     LispVal::Recur(new_vals) => {
                                         if new_vals.len() != binding_names.len() {
-                                            return Err(format!("recur: expected {} args, got {}", binding_names.len(), new_vals.len()));
+                                            return Err(format!(
+                                                "recur: expected {} args, got {}",
+                                                binding_names.len(),
+                                                new_vals.len()
+                                            ));
                                         }
                                         binding_vals = new_vals;
                                     }
@@ -565,24 +615,31 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
                                 None => None,
                                 _ => return Err("require: prefix must be string".into()),
                             };
-                            let marker = format!("__loaded_{}__{}", module_name, prefix.unwrap_or(""));
+                            let marker =
+                                format!("__loaded_{}__{}", module_name, prefix.unwrap_or(""));
                             if env.contains(&marker) {
                                 return Ok(LispVal::Nil);
                             }
                             // Try stdlib first, then file path
-                            let code: String = if let Some(stdlib_code) = get_stdlib_code(module_name) {
-                                stdlib_code.to_string()
-                            } else {
-                                // File-based loading: resolve relative to RLM_MODULE_PATH or cwd
-                                let path = if module_name.starts_with('/') || module_name.starts_with("./") || module_name.starts_with("../") {
-                                    module_name.to_string()
+                            let code: String =
+                                if let Some(stdlib_code) = get_stdlib_code(module_name) {
+                                    stdlib_code.to_string()
                                 } else {
-                                    let base = std::env::var("RLM_MODULE_PATH").unwrap_or_else(|_| ".".to_string());
-                                    format!("{}/{}.lisp", base, module_name)
+                                    // File-based loading: resolve relative to RLM_MODULE_PATH or cwd
+                                    let path = if module_name.starts_with('/')
+                                        || module_name.starts_with("./")
+                                        || module_name.starts_with("../")
+                                    {
+                                        module_name.to_string()
+                                    } else {
+                                        let base = std::env::var("RLM_MODULE_PATH")
+                                            .unwrap_or_else(|_| ".".to_string());
+                                        format!("{}/{}.lisp", base, module_name)
+                                    };
+                                    std::fs::read_to_string(&path).map_err(|e| {
+                                        format!("require: cannot load '{}': {}", path, e)
+                                    })?
                                 };
-                                std::fs::read_to_string(&path)
-                                    .map_err(|e| format!("require: cannot load '{}': {}", path, e))?
-                            };
                             if let Some(pfx) = prefix {
                                 let mut module_env = Env::new();
                                 let module_exprs = parse_all(&code)?;
@@ -590,19 +647,29 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
                                     lisp_eval(expr, &mut module_env)?;
                                 }
                                 // If module defines __exports__, only import those; otherwise import all
-                                let exports: Option<Vec<String>> = module_env.get("__exports__").and_then(|v| match v {
-                                    LispVal::List(items) => Some(items.iter().filter_map(|i| match i {
-                                        LispVal::Str(s) => Some(s.clone()),
-                                        LispVal::Sym(s) => Some(s.clone()),
+                                let exports: Option<Vec<String>> =
+                                    module_env.get("__exports__").and_then(|v| match v {
+                                        LispVal::List(items) => Some(
+                                            items
+                                                .iter()
+                                                .filter_map(|i| match i {
+                                                    LispVal::Str(s) => Some(s.clone()),
+                                                    LispVal::Sym(s) => Some(s.clone()),
+                                                    _ => None,
+                                                })
+                                                .collect(),
+                                        ),
                                         _ => None,
-                                    }).collect()),
-                                    _ => None,
-                                });
+                                    });
                                 let bindings = module_env.into_bindings();
                                 for (k, v) in &bindings {
-                                    if k.starts_with("__") { continue; } // skip internals
+                                    if k.starts_with("__") {
+                                        continue;
+                                    } // skip internals
                                     if let Some(ref exp) = exports {
-                                        if !exp.contains(&k) { continue; }
+                                        if !exp.contains(&k) {
+                                            continue;
+                                        }
                                     }
                                     env.push(format!("{}/{}", pfx, k), v.clone());
                                 }
@@ -617,16 +684,23 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
                         }
                         "export" => {
                             // (export sym1 sym2 ...) or (export "sym1" "sym2" ...)
-                            let names: Vec<String> = list[1..].iter().map(|a| match a {
-                                LispVal::Sym(s) => s.clone(),
-                                LispVal::Str(s) => s.clone(),
-                                other => format!("{}", other),
-                            }).collect();
+                            let names: Vec<String> = list[1..]
+                                .iter()
+                                .map(|a| match a {
+                                    LispVal::Sym(s) => s.clone(),
+                                    LispVal::Str(s) => s.clone(),
+                                    other => format!("{}", other),
+                                })
+                                .collect();
                             let existing = env.get("__exports__").cloned();
                             let merged = match existing {
                                 Some(LispVal::List(mut items)) => {
                                     for n in &names {
-                                        if !items.iter().any(|i| match i { LispVal::Str(s) => s == n, LispVal::Sym(s) => s == n, _ => false }) {
+                                        if !items.iter().any(|i| match i {
+                                            LispVal::Str(s) => s == n,
+                                            LispVal::Sym(s) => s == n,
+                                            _ => false,
+                                        }) {
                                             items.push(LispVal::Str(n.clone()));
                                         }
                                     }
@@ -639,7 +713,8 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
                         }
                         "final" => {
                             let val = lisp_eval(list.get(1).ok_or("final: need value")?, env)?;
-                            env.rlm_state.insert("Final".to_string(), LispVal::Bool(true));
+                            env.rlm_state
+                                .insert("Final".to_string(), LispVal::Bool(true));
                             env.rlm_state.insert("result".to_string(), val);
                             return Ok(LispVal::Bool(true));
                         }
@@ -647,10 +722,18 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
                             let var_name = match list.get(1) {
                                 Some(LispVal::Sym(s)) => s.clone(),
                                 Some(LispVal::Str(s)) => s.clone(),
-                                other => return Err(format!("final-var: need symbol or string, got {:?}", other)),
+                                other => {
+                                    return Err(format!(
+                                        "final-var: need symbol or string, got {:?}",
+                                        other
+                                    ))
+                                }
                             };
-                            let val = env.get(&var_name).cloned().ok_or_else(|| format!("final-var: undefined variable '{}'", var_name))?;
-                            env.rlm_state.insert("Final".to_string(), LispVal::Bool(true));
+                            let val = env.get(&var_name).cloned().ok_or_else(|| {
+                                format!("final-var: undefined variable '{}'", var_name)
+                            })?;
+                            env.rlm_state
+                                .insert("Final".to_string(), LispVal::Bool(true));
                             env.rlm_state.insert("result".to_string(), val);
                             return Ok(LispVal::Bool(true));
                         }
@@ -658,7 +741,12 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
                             let key = match list.get(1) {
                                 Some(LispVal::Sym(s)) => s.clone(),
                                 Some(LispVal::Str(s)) => s.clone(),
-                                other => return Err(format!("rlm-set: key must be symbol or string, got {:?}", other)),
+                                other => {
+                                    return Err(format!(
+                                        "rlm-set: key must be symbol or string, got {:?}",
+                                        other
+                                    ))
+                                }
                             };
                             let val = match list.get(2) {
                                 Some(v) => lisp_eval(v, env)?,
@@ -671,7 +759,12 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
                             let key = match list.get(1) {
                                 Some(LispVal::Sym(s)) => s.clone(),
                                 Some(LispVal::Str(s)) => s.clone(),
-                                other => return Err(format!("rlm-get: key must be symbol or string, got {:?}", other)),
+                                other => {
+                                    return Err(format!(
+                                        "rlm-get: key must be symbol or string, got {:?}",
+                                        other
+                                    ))
+                                }
                             };
                             return Ok(env.rlm_state.get(&key).cloned().unwrap_or(LispVal::Nil));
                         }
@@ -792,14 +885,10 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
 
         // ── Inline builtins: crypto + LLM/RLM ──
         match name.as_str() {
-"sha256" => {
-                builtin_sha256(&args)
-            }
-            "keccak256" => {
-                builtin_keccak256(&args)
-            }
+            "sha256" => builtin_sha256(&args),
+            "keccak256" => builtin_keccak256(&args),
 
-// --- LLM builtins ---
+            // --- LLM builtins ---
 
             // --- LLM builtins ---
             "llm" => {
@@ -808,7 +897,9 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                     ("system".to_string(), "You are a helpful assistant with access to a Lisp runtime called lisp-rlm.".to_string()),
                     ("user".to_string(), prompt),
                 ];
-                let resp = env.llm_provider.as_ref()
+                let resp = env
+                    .llm_provider
+                    .as_ref()
                     .ok_or("llm: no LLM provider configured")?
                     .complete(&messages, Some(2048))?;
                 env.tokens_used += resp.tokens;
@@ -821,7 +912,9 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                     ("system".to_string(), RLM_SYSTEM_PROMPT.to_string()),
                     ("user".to_string(), prompt),
                 ];
-                let resp = env.llm_provider.as_ref()
+                let resp = env
+                    .llm_provider
+                    .as_ref()
                     .ok_or("llm-code: no LLM provider configured")?
                     .complete(&messages, Some(2048))?;
 
@@ -844,9 +937,12 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                 let task = as_str(&args[0])?;
 
                 // Use the rich system prompt aligned with MIT paper
-                let sys_prompt = std::env::var("RLM_SYSTEM_PROMPT").unwrap_or_else(|_| RLM_SYSTEM_PROMPT.to_string());
+                let sys_prompt = std::env::var("RLM_SYSTEM_PROMPT")
+                    .unwrap_or_else(|_| RLM_SYSTEM_PROMPT.to_string());
                 let max_iterations: usize = std::env::var("RLM_MAX_ITERATIONS")
-                    .ok().and_then(|s| s.parse().ok()).unwrap_or(10);
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(10);
                 let do_verify = std::env::var("RLM_VERIFY").unwrap_or_default() == "1";
 
                 let mut messages: Vec<(String, String)> = vec![
@@ -868,12 +964,20 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                         ("system".to_string(), "Reply with just ACTION or CODE followed by a brief plan. One line only.".to_string()),
                         ("user".to_string(), plan_prompt),
                     ];
-                    let plan_resp = env.llm_provider.as_ref().unwrap().complete(&plan_messages, Some(256))?;
+                    let plan_resp = env
+                        .llm_provider
+                        .as_ref()
+                        .unwrap()
+                        .complete(&plan_messages, Some(256))?;
                     env.tokens_used += plan_resp.tokens;
                     env.llm_calls += 1;
                     let plan_upper = plan_resp.content.to_uppercase();
                     action_mode = plan_upper.contains("ACTION") && !plan_upper.contains("CODE");
-                    eprintln!("[rlm] mode: {} — {}", if action_mode { "ACTION" } else { "CODE" }, plan_resp.content.trim());
+                    eprintln!(
+                        "[rlm] mode: {} — {}",
+                        if action_mode { "ACTION" } else { "CODE" },
+                        plan_resp.content.trim()
+                    );
                 }
 
                 let mut final_result = LispVal::Nil;
@@ -906,7 +1010,11 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
 
                     // Call LLM via provider — scope the borrow
                     let (resp_text, tokens) = {
-                        let resp = env.llm_provider.as_ref().unwrap().complete(&messages, Some(8192))?;
+                        let resp = env
+                            .llm_provider
+                            .as_ref()
+                            .unwrap()
+                            .complete(&messages, Some(8192))?;
                         (resp.content, resp.tokens)
                     };
                     env.tokens_used += tokens;
@@ -971,7 +1079,12 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                                     Ok(v) => individual_result = v,
                                     Err(se) => {
                                         env.restore_snapshot(snap_inner.clone());
-                                        err_msg = format!("Expr {}/{} failed: {}", j + 1, exprs.len(), se);
+                                        err_msg = format!(
+                                            "Expr {}/{} failed: {}",
+                                            j + 1,
+                                            exprs.len(),
+                                            se
+                                        );
                                         individual_ok = false;
                                         break;
                                     }
@@ -987,14 +1100,27 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                         // Ask LLM to retry — scope the provider borrow
                         if retry + 1 < max_retries {
                             let err_truncated = truncate_str(&err_msg, 200);
-                            messages.push(("user".to_string(), format!("Error (retry {}/{}): {}. Try again.", retry + 1, max_retries, err_truncated)));
+                            messages.push((
+                                "user".to_string(),
+                                format!(
+                                    "Error (retry {}/{}): {}. Try again.",
+                                    retry + 1,
+                                    max_retries,
+                                    err_truncated
+                                ),
+                            ));
                             let (retry_text, retry_tokens) = {
-                                let retry_resp = env.llm_provider.as_ref().unwrap().complete(&messages, Some(8192))?;
+                                let retry_resp = env
+                                    .llm_provider
+                                    .as_ref()
+                                    .unwrap()
+                                    .complete(&messages, Some(8192))?;
                                 (retry_resp.content, retry_resp.tokens)
                             };
                             env.tokens_used += retry_tokens;
                             env.llm_calls += 1;
-                            messages.push(("assistant".to_string(), truncate_str(&retry_text, 500)));
+                            messages
+                                .push(("assistant".to_string(), truncate_str(&retry_text, 500)));
                             let _retry_code = strip_markdown_fences(&retry_text);
                             break;
                         }
@@ -1004,12 +1130,18 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                         continue;
                     }
 
-                    eprintln!("[rlm iter {}] result: {}", iter, truncate_str(&result.to_string(), 200));
+                    eprintln!(
+                        "[rlm iter {}] result: {}",
+                        iter,
+                        truncate_str(&result.to_string(), 200)
+                    );
                     final_result = result.clone();
                     env.rlm_state.insert("last_result".to_string(), result);
 
                     // Check if code set Final=true via (final ...) or (final-var ...)
-                    let is_final = env.rlm_state.get("Final")
+                    let is_final = env
+                        .rlm_state
+                        .get("Final")
                         .map(|v| is_truthy(v))
                         .unwrap_or(false);
                     if is_final {
@@ -1050,11 +1182,18 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                         task, truncate_str(&result_str, 300)
                     );
                     let verify_messages = vec![
-                        ("system".to_string(), "You are a verification assistant. Answer YES or NO.".to_string()),
+                        (
+                            "system".to_string(),
+                            "You are a verification assistant. Answer YES or NO.".to_string(),
+                        ),
                         ("user".to_string(), verify_prompt),
                     ];
                     let (verdict, vtokens) = {
-                        let verify_resp = env.llm_provider.as_ref().unwrap().complete(&verify_messages, Some(512))?;
+                        let verify_resp = env
+                            .llm_provider
+                            .as_ref()
+                            .unwrap()
+                            .complete(&verify_messages, Some(512))?;
                         (verify_resp.content, verify_resp.tokens)
                     };
                     env.tokens_used += vtokens;
@@ -1062,10 +1201,17 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
 
                     if verdict.to_uppercase().starts_with("NO") {
                         eprintln!("[rlm verify] FAILED: {}", truncate_str(&verdict, 200));
-                        messages.push(("user".to_string(), format!("Verification failed: {}. Please fix.", verdict)));
+                        messages.push((
+                            "user".to_string(),
+                            format!("Verification failed: {}. Please fix.", verdict),
+                        ));
                         let snap = env.take_snapshot();
                         let (fix_text, fix_tokens) = {
-                            let fix_resp = env.llm_provider.as_ref().unwrap().complete(&messages, Some(8192))?;
+                            let fix_resp = env
+                                .llm_provider
+                                .as_ref()
+                                .unwrap()
+                                .complete(&messages, Some(8192))?;
                             (fix_resp.content, fix_resp.tokens)
                         };
                         env.tokens_used += fix_tokens;
@@ -1140,12 +1286,17 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
             "str-chunk" => {
                 let s = as_str(&args[0])?;
                 let n = as_num(args.get(1).ok_or("str-chunk: need n")?)? as usize;
-                if n == 0 { return Err("str-chunk: n must be > 0".into()); }
+                if n == 0 {
+                    return Err("str-chunk: n must be > 0".into());
+                }
                 let chars: Vec<char> = s.chars().collect();
                 let total = chars.len();
                 let chunk_size = (total + n - 1) / n; // ceil division
                 if chunk_size == 0 {
-                    return Ok(LispVal::List(vec![LispVal::Str(String::new()); n.min(total + 1)]));
+                    return Ok(LispVal::List(vec![
+                        LispVal::Str(String::new());
+                        n.min(total + 1)
+                    ]));
                 }
                 let mut chunks: Vec<LispVal> = Vec::new();
                 let mut i = 0;
@@ -1176,15 +1327,24 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                 Ok(LispVal::List(results))
             }
             "show-context" => {
-                let context_val = env.rlm_state.get("context").cloned().unwrap_or(LispVal::Nil);
+                let context_val = env
+                    .rlm_state
+                    .get("context")
+                    .cloned()
+                    .unwrap_or(LispVal::Nil);
                 let context_str = context_val.to_string();
                 let preview = truncate_str(&context_str, 200);
-                let final_set = env.rlm_state.get("Final")
+                let final_set = env
+                    .rlm_state
+                    .get("Final")
                     .map(|v| is_truthy(v))
                     .unwrap_or(false);
                 Ok(LispVal::Str(format!(
                     "Context length: {} chars\nPreview: {}\nIteration: {}\nFinal set: {}",
-                    context_str.len(), preview, env.rlm_iteration, final_set
+                    context_str.len(),
+                    preview,
+                    env.rlm_iteration,
+                    final_set
                 )))
             }
 
@@ -1289,7 +1449,11 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
                     ("system".to_string(), sys.to_string()),
                     ("user".to_string(), task.clone()),
                 ];
-                let gen_resp = env.llm_provider.as_ref().unwrap().complete(&gen_messages, Some(8192))?;
+                let gen_resp = env
+                    .llm_provider
+                    .as_ref()
+                    .unwrap()
+                    .complete(&gen_messages, Some(8192))?;
                 env.tokens_used += gen_resp.tokens;
                 env.llm_calls += 1;
                 let code = strip_markdown_fences(&gen_resp.content);
@@ -1301,27 +1465,45 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
                         ("assistant".to_string(), code.clone()),
                         ("user".to_string(), "The previous code had a parse error. Write it again, fixed. Return ONLY valid raw Lisp code, no markdown, no explanations.".to_string()),
                     ];
-                    let fix_resp = env.llm_provider.as_ref().unwrap().complete(&fix_messages, Some(8192))?;
+                    let fix_resp = env
+                        .llm_provider
+                        .as_ref()
+                        .unwrap()
+                        .complete(&fix_messages, Some(8192))?;
                     env.tokens_used += fix_resp.tokens;
                     env.llm_calls += 1;
                     if let Some(fixed) = Some(strip_markdown_fences(&fix_resp.content)) {
-                        if crate::parser::parse_all(&fixed).is_ok() { fixed } else { code }
-                    } else { code.clone() }
-                } else { code.clone() };
+                        if crate::parser::parse_all(&fixed).is_ok() {
+                            fixed
+                        } else {
+                            code
+                        }
+                    } else {
+                        code.clone()
+                    }
+                } else {
+                    code.clone()
+                };
 
                 // Strip trailing write-file calls (rlm-write saves automatically)
                 let final_code = final_code.trim_end().to_string();
                 let final_code = if final_code.ends_with(")") {
                     // Remove last top-level (write-file ...) if present
                     let trimmed = final_code.trim_end();
-                    if trimmed.rfind("(write-file").map(|i| {
-                        // Check it's a top-level form (count parens before it)
-                        let before = &trimmed[..i];
-                        let open = before.chars().filter(|c| *c == '(').count();
-                        let close = before.chars().filter(|c| *c == ')').count();
-                        open == close // top-level if parens are balanced before it
-                    }).unwrap_or(false) {
-                        trimmed[..trimmed.rfind("(write-file").unwrap()].trim_end().to_string()
+                    if trimmed
+                        .rfind("(write-file")
+                        .map(|i| {
+                            // Check it's a top-level form (count parens before it)
+                            let before = &trimmed[..i];
+                            let open = before.chars().filter(|c| *c == '(').count();
+                            let close = before.chars().filter(|c| *c == ')').count();
+                            open == close // top-level if parens are balanced before it
+                        })
+                        .unwrap_or(false)
+                    {
+                        trimmed[..trimmed.rfind("(write-file").unwrap()]
+                            .trim_end()
+                            .to_string()
                     } else {
                         final_code
                     }
@@ -1335,39 +1517,78 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
                 }
 
                 Ok(LispVal::Str(final_code))
-            }// --- RLM builtins ---
+            } // --- RLM builtins ---
             "rlm/signature" => {
                 let sig_name = as_str(&args[0])?;
                 let inputs = match &args[1] {
-                    LispVal::List(l) => l.iter().map(|v| as_str(v)).collect::<Result<Vec<_>,_>>()?,
+                    LispVal::List(l) => {
+                        l.iter().map(|v| as_str(v)).collect::<Result<Vec<_>, _>>()?
+                    }
                     _ => return Err("rlm/signature: inputs must be list".into()),
                 };
                 let outputs = match &args[2] {
-                    LispVal::List(l) => l.iter().map(|v| as_str(v)).collect::<Result<Vec<_>,_>>()?,
+                    LispVal::List(l) => {
+                        l.iter().map(|v| as_str(v)).collect::<Result<Vec<_>, _>>()?
+                    }
                     _ => return Err("rlm/signature: outputs must be list".into()),
                 };
                 Ok(LispVal::Map(BTreeMap::from([
                     ("name".to_string(), LispVal::Str(sig_name)),
-                    ("inputs".to_string(), LispVal::List(inputs.into_iter().map(LispVal::Str).collect())),
-                    ("outputs".to_string(), LispVal::List(outputs.into_iter().map(LispVal::Str).collect())),
+                    (
+                        "inputs".to_string(),
+                        LispVal::List(inputs.into_iter().map(LispVal::Str).collect()),
+                    ),
+                    (
+                        "outputs".to_string(),
+                        LispVal::List(outputs.into_iter().map(LispVal::Str).collect()),
+                    ),
                 ])))
             }
             "rlm/format-prompt" => {
                 let sig = &args[0];
                 let input_dict = &args[1];
-                let sig_name = match sig { LispVal::Map(m) => m.get("name").and_then(|v| as_str(v).ok()).unwrap_or_default(), _ => "unknown".to_string() };
-                let inputs = match sig { LispVal::Map(m) => match m.get("inputs") { Some(LispVal::List(l)) => l.iter().map(|v| as_str(v).unwrap_or_default()).collect::<Vec<_>>(), _ => vec![] }, _ => vec![] };
-                let outputs = match sig { LispVal::Map(m) => match m.get("outputs") { Some(LispVal::List(l)) => l.iter().map(|v| as_str(v).unwrap_or_default()).collect::<Vec<_>>(), _ => vec![] }, _ => vec![] };
+                let sig_name = match sig {
+                    LispVal::Map(m) => m
+                        .get("name")
+                        .and_then(|v| as_str(v).ok())
+                        .unwrap_or_default(),
+                    _ => "unknown".to_string(),
+                };
+                let inputs = match sig {
+                    LispVal::Map(m) => match m.get("inputs") {
+                        Some(LispVal::List(l)) => l
+                            .iter()
+                            .map(|v| as_str(v).unwrap_or_default())
+                            .collect::<Vec<_>>(),
+                        _ => vec![],
+                    },
+                    _ => vec![],
+                };
+                let outputs = match sig {
+                    LispVal::Map(m) => match m.get("outputs") {
+                        Some(LispVal::List(l)) => l
+                            .iter()
+                            .map(|v| as_str(v).unwrap_or_default())
+                            .collect::<Vec<_>>(),
+                        _ => vec![],
+                    },
+                    _ => vec![],
+                };
                 let mut prompt = format!("You are a {} function.\n\nInputs:\n", sig_name);
                 for inp in &inputs {
                     let val = match input_dict {
-                        LispVal::Map(m) => m.get(inp).map(|v| v.to_string()).unwrap_or_else(|| "nil".to_string()),
+                        LispVal::Map(m) => m
+                            .get(inp)
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "nil".to_string()),
                         _ => "nil".to_string(),
                     };
                     prompt.push_str(&format!("- {}: {}\n", inp, val));
                 }
                 prompt.push_str("\nOutputs:\n");
-                for out in &outputs { prompt.push_str(&format!("- {}\n", out)); }
+                for out in &outputs {
+                    prompt.push_str(&format!("- {}\n", out));
+                }
                 prompt.push_str("\nRespond with a JSON object containing the output fields.");
                 Ok(LispVal::Str(prompt))
             }
@@ -1385,14 +1606,25 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
             }
 
             _ => {
-                let func = env.get(name).cloned()
+                let func = env
+                    .get(name)
+                    .cloned()
                     .ok_or_else(|| format!("undefined: {}", name))?;
                 call_val(&func, &args, env)
             }
-        }    } else if let LispVal::Lambda { params, rest_param, body, closed_env } = head {
+        }
+    } else if let LispVal::Lambda {
+        params,
+        rest_param,
+        body,
+        closed_env,
+    } = head
+    {
         apply_lambda(params, &rest_param, body, closed_env, &args, env)
     } else if let LispVal::List(ll) = head {
-        if ll.len() < 3 { return Err("inline lambda too short".into()); }
+        if ll.len() < 3 {
+            return Err("inline lambda too short".into());
+        }
         let (params, rest_param) = parse_params(&ll[1])?;
         apply_lambda(&params, &rest_param, &ll[2], &vec![], &args, env)
     } else {
@@ -1400,13 +1632,20 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
     }
 }
 
-
 fn call_val(func: &LispVal, args: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
     match func {
-        LispVal::Lambda { params, rest_param, body, closed_env } => {
-            apply_lambda(params, rest_param, body, closed_env, args, env)
-        }
-        LispVal::Macro { params, rest_param, body, closed_env } => {
+        LispVal::Lambda {
+            params,
+            rest_param,
+            body,
+            closed_env,
+        } => apply_lambda(params, rest_param, body, closed_env, args, env),
+        LispVal::Macro {
+            params,
+            rest_param,
+            body,
+            closed_env,
+        } => {
             // Macros receive UNEVALUATED args, return code to be evaluated
             let expanded = apply_lambda(params, rest_param, body, closed_env, args, env)?;
             lisp_eval(&expanded, env)
@@ -1490,7 +1729,10 @@ mod tests {
         let r = eval_str(r#"(shell "echo hello")"#);
         std::env::remove_var("RLM_ALLOW_SHELL");
         assert!(r.is_ok());
-        let s = match r.unwrap() { LispVal::Str(s) => s, _ => panic!("expected string") };
+        let s = match r.unwrap() {
+            LispVal::Str(s) => s,
+            _ => panic!("expected string"),
+        };
         assert_eq!(s.trim(), "hello");
     }
 
@@ -1507,15 +1749,22 @@ mod tests {
     fn test_http_get() {
         let r = eval_str(r#"(http-get "https://httpbin.org/get")"#);
         assert!(r.is_ok(), "http-get failed: {:?}", r);
-        let body = match r.unwrap() { LispVal::Str(s) => s, _ => panic!("expected string") };
+        let body = match r.unwrap() {
+            LispVal::Str(s) => s,
+            _ => panic!("expected string"),
+        };
         assert!(body.contains("httpbin.org"));
     }
 
     #[test]
     fn test_http_post() {
-        let r = eval_str(r#"(http-post "https://httpbin.org/post" (to-json (dict "hello" "world")))"#);
+        let r =
+            eval_str(r#"(http-post "https://httpbin.org/post" (to-json (dict "hello" "world")))"#);
         assert!(r.is_ok(), "http-post failed: {:?}", r);
-        let body = match r.unwrap() { LispVal::Str(s) => s, _ => panic!("expected string") };
+        let body = match r.unwrap() {
+            LispVal::Str(s) => s,
+            _ => panic!("expected string"),
+        };
         assert!(body.contains("hello"));
     }
 
@@ -1525,7 +1774,7 @@ mod tests {
         assert!(r.is_ok(), "http-get-json failed: {:?}", r);
         // Should return a LispVal::Map (parsed JSON)
         match r.unwrap() {
-            LispVal::Map(_) => {},
+            LispVal::Map(_) => {}
             other => panic!("expected map, got {}", other),
         }
     }

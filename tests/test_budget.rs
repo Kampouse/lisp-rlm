@@ -79,7 +79,11 @@ fn test_budget_does_not_trip_normal_code() {
         (sum 1000 0)
     "#;
     let result = eval_with_budget(code, 50_000);
-    assert!(result.is_ok(), "normal code should not hit budget, got: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "normal code should not hit budget, got: {:?}",
+        result
+    );
     assert_eq!(result.unwrap(), LispVal::Num(500500));
 }
 
@@ -92,7 +96,11 @@ fn test_budget_zero_means_unlimited() {
         (sum 500 0)
     "#;
     let result = eval_with_budget(code, 0);
-    assert!(result.is_ok(), "budget=0 should be unlimited, got: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "budget=0 should be unlimited, got: {:?}",
+        result
+    );
 }
 
 #[test]
@@ -108,7 +116,11 @@ fn test_budget_applies_to_map_over_list() {
     "#;
     // Budget of 20 is too small for 10-element map with all the nested evals
     let result = eval_with_budget(code, 20);
-    assert!(result.is_err(), "tiny budget should fail on map, got: {:?}", result);
+    assert!(
+        result.is_err(),
+        "tiny budget should fail on map, got: {:?}",
+        result
+    );
     assert!(result.unwrap_err().contains("execution budget exceeded"));
 }
 
@@ -129,7 +141,11 @@ fn test_budget_counter_increments() {
 
     assert!(env.eval_count > 0, "eval_count should have incremented");
     // (+ 1 2) = 1 top-level eval + 1 for the + dispatch = at least 2
-    assert!(env.eval_count >= 2, "single expression should count multiple evals, got {}", env.eval_count);
+    assert!(
+        env.eval_count >= 2,
+        "single expression should count multiple evals, got {}",
+        env.eval_count
+    );
 }
 
 #[test]
@@ -166,13 +182,16 @@ fn test_budget_works_with_loop_recur() {
                 (recur (+ i 1) (+ sum i))))
     "#;
     let result = eval_with_budget(code, 1000);
-    assert!(result.is_ok(), "loop/recur should complete within budget, got: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "loop/recur should complete within budget, got: {:?}",
+        result
+    );
     assert_eq!(result.unwrap(), LispVal::Num(45));
 }
 
 #[test]
 #[ignore] // stack overflow on deep recursion
-
 #[ignore] // stack overflow
 fn test_budget_large_computation_completes() {
     // Sum 1..5000 with default budget should be fine

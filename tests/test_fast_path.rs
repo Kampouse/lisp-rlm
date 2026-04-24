@@ -57,8 +57,16 @@ fn test_map_lambda_with_string_ops() {
     // Verify str-concat works through bytecode fast path
     let result = eval(r#"(map (lambda (x) (str-concat x "!")) (list "hi" "bye"))"#);
     // Result should contain the concatenated strings
-    assert!(result.contains("hi!"), "expected 'hi!' in output, got: {}", result);
-    assert!(result.contains("bye!"), "expected 'bye!' in output, got: {}", result);
+    assert!(
+        result.contains("hi!"),
+        "expected 'hi!' in output, got: {}",
+        result
+    );
+    assert!(
+        result.contains("bye!"),
+        "expected 'bye!' in output, got: {}",
+        result
+    );
 }
 
 #[test]

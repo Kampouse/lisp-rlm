@@ -194,23 +194,39 @@ pub fn match_pattern(pattern: &LispVal, value: &LispVal) -> Option<Vec<(String, 
     match pattern {
         LispVal::Sym(s) if s == "_" => Some(vec![]),
         LispVal::Sym(s) if s == "else" => Some(vec![]),
-        LispVal::Sym(s) if s.starts_with('?') => {
-            Some(vec![(s[1..].to_string(), value.clone())])
-        }
+        LispVal::Sym(s) if s.starts_with('?') => Some(vec![(s[1..].to_string(), value.clone())]),
         LispVal::Sym(s) => Some(vec![(s.clone(), value.clone())]),
         LispVal::Num(n) => {
-            if value == &LispVal::Num(*n) { Some(vec![]) } else { None }
+            if value == &LispVal::Num(*n) {
+                Some(vec![])
+            } else {
+                None
+            }
         }
         LispVal::Float(f) => {
             if let LispVal::Float(vf) = value {
-                if (*f - *vf).abs() < f64::EPSILON { Some(vec![]) } else { None }
-            } else { None }
+                if (*f - *vf).abs() < f64::EPSILON {
+                    Some(vec![])
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
         }
         LispVal::Str(s) => {
-            if value == &LispVal::Str(s.clone()) { Some(vec![]) } else { None }
+            if value == &LispVal::Str(s.clone()) {
+                Some(vec![])
+            } else {
+                None
+            }
         }
         LispVal::Bool(b) => {
-            if value == &LispVal::Bool(*b) { Some(vec![]) } else { None }
+            if value == &LispVal::Bool(*b) {
+                Some(vec![])
+            } else {
+                None
+            }
         }
         LispVal::List(pats) if !pats.is_empty() => {
             if let LispVal::Sym(s) = &pats[0] {
@@ -219,41 +235,79 @@ pub fn match_pattern(pattern: &LispVal, value: &LispVal) -> Option<Vec<(String, 
                         if vals.len() == pats.len() - 1 {
                             let mut all = vec![];
                             for (p, v) in pats[1..].iter().zip(vals.iter()) {
-                                if let Some(b) = match_pattern(p, v) { all.extend(b); } else { return None; }
+                                if let Some(b) = match_pattern(p, v) {
+                                    all.extend(b);
+                                } else {
+                                    return None;
+                                }
                             }
                             Some(all)
-                        } else { None }
-                    } else { None }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
                 } else if s == "cons" && pats.len() == 3 {
                     if let LispVal::List(vals) = value {
                         if !vals.is_empty() {
                             let mut all = vec![];
-                            if let Some(b1) = match_pattern(&pats[1], &vals[0]) { all.extend(b1); } else { return None; }
-                            if let Some(b2) = match_pattern(&pats[2], &LispVal::List(vals[1..].to_vec())) { all.extend(b2); } else { return None; }
+                            if let Some(b1) = match_pattern(&pats[1], &vals[0]) {
+                                all.extend(b1);
+                            } else {
+                                return None;
+                            }
+                            if let Some(b2) =
+                                match_pattern(&pats[2], &LispVal::List(vals[1..].to_vec()))
+                            {
+                                all.extend(b2);
+                            } else {
+                                return None;
+                            }
                             Some(all)
-                        } else { None }
-                    } else { None }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
                 } else {
                     if let LispVal::List(vals) = value {
                         if vals.len() == pats.len() {
                             let mut all = vec![];
                             for (p, v) in pats.iter().zip(vals.iter()) {
-                                if let Some(b) = match_pattern(p, v) { all.extend(b); } else { return None; }
+                                if let Some(b) = match_pattern(p, v) {
+                                    all.extend(b);
+                                } else {
+                                    return None;
+                                }
                             }
                             Some(all)
-                        } else { None }
-                    } else { None }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
                 }
             } else {
                 if let LispVal::List(vals) = value {
                     if vals.len() == pats.len() {
                         let mut all = vec![];
                         for (p, v) in pats.iter().zip(vals.iter()) {
-                            if let Some(b) = match_pattern(p, v) { all.extend(b); } else { return None; }
+                            if let Some(b) = match_pattern(p, v) {
+                                all.extend(b);
+                            } else {
+                                return None;
+                            }
                         }
                         Some(all)
-                    } else { None }
-                } else { None }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
             }
         }
         _ => None,

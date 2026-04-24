@@ -1,9 +1,9 @@
 //! HTTP builtins: http-get, http-post, http-get-json.
 
+use super::json_to_lisp;
+use super::llm_provider::{SHARED_CLIENT, SHARED_RUNTIME};
 use crate::helpers::*;
 use crate::types::LispVal;
-use super::json_to_lisp;
-use super::llm_provider::{SHARED_RUNTIME, SHARED_CLIENT};
 
 pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
     match name {
@@ -11,9 +11,11 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             let url = as_str(&args[0])?;
             let rt = &SHARED_RUNTIME;
             let body = rt.block_on(async {
-                reqwest::get(&url).await
+                reqwest::get(&url)
+                    .await
                     .map_err(|e| format!("http-get: {}", e))?
-                    .text().await
+                    .text()
+                    .await
                     .map_err(|e| format!("http-get: {}", e))
             })?;
             Ok(Some(LispVal::Str(body)))
@@ -24,12 +26,15 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             let rt = &SHARED_RUNTIME;
             let body = rt.block_on(async {
                 let client = &SHARED_CLIENT;
-                client.post(&url)
+                client
+                    .post(&url)
                     .header("Content-Type", "application/json")
                     .body(body_str)
-                    .send().await
+                    .send()
+                    .await
                     .map_err(|e| format!("http-post: {}", e))?
-                    .text().await
+                    .text()
+                    .await
                     .map_err(|e| format!("http-post: {}", e))
             })?;
             Ok(Some(LispVal::Str(body)))
@@ -38,9 +43,11 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             let url = as_str(&args[0])?;
             let rt = &SHARED_RUNTIME;
             let body = rt.block_on(async {
-                reqwest::get(&url).await
+                reqwest::get(&url)
+                    .await
                     .map_err(|e| format!("http-get-json: {}", e))?
-                    .text().await
+                    .text()
+                    .await
                     .map_err(|e| format!("http-get-json: {}", e))
             })?;
             let v: serde_json::Value = serde_json::from_str(&body)

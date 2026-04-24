@@ -2,7 +2,7 @@
 
 use crate::helpers::as_str;
 use crate::types::LispVal;
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use sha3::Keccak256;
 
 /// SHA-256 hash — returns hex-encoded digest.

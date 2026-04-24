@@ -21,23 +21,21 @@ fn main() {
     if args.len() > 1 {
         let path = &args[1];
         match std::fs::read_to_string(path) {
-            Ok(code) => {
-                match parse_all(&code) {
-                    Ok(exprs) => {
-                        for expr in &exprs {
-                            match lisp_eval(expr, &mut env) {
-                                Ok(val) => {
-                                    if !matches!(val, LispVal::Nil) {
-                                        println!("{}", val);
-                                    }
+            Ok(code) => match parse_all(&code) {
+                Ok(exprs) => {
+                    for expr in &exprs {
+                        match lisp_eval(expr, &mut env) {
+                            Ok(val) => {
+                                if !matches!(val, LispVal::Nil) {
+                                    println!("{}", val);
                                 }
-                                Err(e) => eprintln!("ERROR: {}", e),
                             }
+                            Err(e) => eprintln!("ERROR: {}", e),
                         }
                     }
-                    Err(e) => eprintln!("PARSE ERROR: {}", e),
                 }
-            }
+                Err(e) => eprintln!("PARSE ERROR: {}", e),
+            },
             Err(e) => eprintln!("Failed to read {}: {}", path, e),
         }
         return;

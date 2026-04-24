@@ -39,8 +39,11 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
         "append" => {
             let mut r = Vec::new();
             for a in args {
-                if let LispVal::List(l) = a { r.extend(l.iter().cloned()); }
-                else { r.push(a.clone()); }
+                if let LispVal::List(l) = a {
+                    r.extend(l.iter().cloned());
+                } else {
+                    r.push(a.clone());
+                }
             }
             Ok(Some(LispVal::List(r)))
         }
@@ -48,18 +51,27 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
             let list_val = args.get(0).ok_or("nth: need list and index")?;
             let i = as_num(args.get(1).ok_or("nth: need index")?)? as usize;
             match list_val {
-                LispVal::List(l) => l.get(i).cloned().ok_or("nth: index out of range".into()).map(Some),
+                LispVal::List(l) => l
+                    .get(i)
+                    .cloned()
+                    .ok_or("nth: index out of range".into())
+                    .map(Some),
                 _ => Err("nth: first arg must be a list".into()),
             }
         }
         "empty?" => Ok(Some(LispVal::Bool(
-            matches!(&args[0], LispVal::Nil) || matches!(&args[0], LispVal::List(ref v) if v.is_empty()),
+            matches!(&args[0], LispVal::Nil)
+                || matches!(&args[0], LispVal::List(ref v) if v.is_empty()),
         ))),
         "range" => {
             let start = as_num(args.get(0).ok_or("range: need 2 args")?)?;
             let end = as_num(args.get(1).ok_or("range: need 2 args")?)?;
-            if start >= end { return Ok(Some(LispVal::List(vec![]))); }
-            Ok(Some(LispVal::List((start..end).map(LispVal::Num).collect())))
+            if start >= end {
+                return Ok(Some(LispVal::List(vec![])));
+            }
+            Ok(Some(LispVal::List(
+                (start..end).map(LispVal::Num).collect(),
+            )))
         }
         "reverse" => match &args[0] {
             LispVal::List(l) => Ok(Some(LispVal::List(l.iter().rev().cloned().collect()))),
@@ -73,16 +85,38 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
                 other => return Err(format!("sort: expected list, got {}", other)),
             };
             vals.sort_by(|a, b| {
-                let fa = match a { LispVal::Num(n) => *n as f64, LispVal::Float(f) => *f, _ => 0.0 };
-                let fb = match b { LispVal::Num(n) => *n as f64, LispVal::Float(f) => *f, _ => 0.0 };
+                let fa = match a {
+                    LispVal::Num(n) => *n as f64,
+                    LispVal::Float(f) => *f,
+                    _ => 0.0,
+                };
+                let fb = match b {
+                    LispVal::Num(n) => *n as f64,
+                    LispVal::Float(f) => *f,
+                    _ => 0.0,
+                };
                 fa.partial_cmp(&fb).unwrap_or(std::cmp::Ordering::Equal)
             });
             Ok(Some(LispVal::List(vals)))
         }
         "zip" => {
-            let a = match &args[0] { LispVal::List(l) => l.clone(), LispVal::Nil => vec![], other => return Err(format!("zip: expected list, got {}", other)) };
-            let b = match args.get(1) { Some(LispVal::List(l)) => l.clone(), Some(LispVal::Nil) => vec![], Some(other) => return Err(format!("zip: expected list, got {}", other)), None => return Err("zip: need 2 args".into()) };
-            Ok(Some(LispVal::List(a.iter().zip(b.iter()).map(|(x, y)| LispVal::List(vec![x.clone(), y.clone()])).collect())))
+            let a = match &args[0] {
+                LispVal::List(l) => l.clone(),
+                LispVal::Nil => vec![],
+                other => return Err(format!("zip: expected list, got {}", other)),
+            };
+            let b = match args.get(1) {
+                Some(LispVal::List(l)) => l.clone(),
+                Some(LispVal::Nil) => vec![],
+                Some(other) => return Err(format!("zip: expected list, got {}", other)),
+                None => return Err("zip: need 2 args".into()),
+            };
+            Ok(Some(LispVal::List(
+                a.iter()
+                    .zip(b.iter())
+                    .map(|(x, y)| LispVal::List(vec![x.clone(), y.clone()]))
+                    .collect(),
+            )))
         }
 
         // Higher-order collection operations
@@ -95,19 +129,30 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
                 None => return Err("map: need (f list)".into()),
             };
             // Fast path: compile single-param lambda to bytecode
-            if let LispVal::Lambda { params, rest_param: None, body, closed_env } = func {
+            if let LispVal::Lambda {
+                params,
+                rest_param: None,
+                body,
+                closed_env,
+            } = func
+            {
                 if params.len() == 1 {
-                    if let Some(cl) = crate::bytecode::try_compile_lambda(
-                        params, body, closed_env, env,
-                    ) {
+                    if let Some(cl) =
+                        crate::bytecode::try_compile_lambda(params, body, closed_env, env)
+                    {
                         if lst.is_empty() {
                             return Ok(Some(LispVal::List(vec![])));
                         }
-                        if let Ok(first_result) = crate::bytecode::run_compiled_lambda(&cl, &[lst[0].clone()]) {
+                        if let Ok(first_result) =
+                            crate::bytecode::run_compiled_lambda(&cl, &[lst[0].clone()])
+                        {
                             let mut result = Vec::with_capacity(lst.len());
                             result.push(first_result);
                             for elem in &lst[1..] {
-                                result.push(crate::bytecode::run_compiled_lambda(&cl, &[elem.clone()])?);
+                                result.push(crate::bytecode::run_compiled_lambda(
+                                    &cl,
+                                    &[elem.clone()],
+                                )?);
                             }
                             return Ok(Some(LispVal::List(result)));
                         }
@@ -128,7 +173,13 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
                 Some(other) => return Err(format!("filter: expected list, got {}", other)),
                 None => return Err("filter: need (pred list)".into()),
             };
-            if let LispVal::Lambda { params, rest_param: None, body, closed_env } = func {
+            if let LispVal::Lambda {
+                params,
+                rest_param: None,
+                body,
+                closed_env,
+            } = func
+            {
                 if params.len() == 1 {
                     if let Some(cl) =
                         crate::bytecode::try_compile_lambda(params, body, closed_env, env)
@@ -144,7 +195,10 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
                                 result.push(lst[0].clone());
                             }
                             for elem in &lst[1..] {
-                                if is_truthy(&crate::bytecode::run_compiled_lambda(&cl, &[elem.clone()])?) {
+                                if is_truthy(&crate::bytecode::run_compiled_lambda(
+                                    &cl,
+                                    &[elem.clone()],
+                                )?) {
                                     result.push(elem.clone());
                                 }
                             }
@@ -176,9 +230,11 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
                 acc = call_val(func, &[prev_acc.clone(), elem.clone()], env)?;
                 let new_acc_str = acc.to_string();
                 if new_acc_str == prev_acc.to_string() && !lst.is_empty() {
-                    eprintln!("[WARN] reduce: accumulator unchanged after processing element. \
+                    eprintln!(
+                        "[WARN] reduce: accumulator unchanged after processing element. \
                         Your function may be ignoring the current element. \
-                        Consider using (str-join sep lst) for string joining.");
+                        Consider using (str-join sep lst) for string joining."
+                    );
                 }
             }
             Ok(Some(acc))
@@ -236,7 +292,9 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
                 Some(other) => return Err(format!("par-map: expected list, got {}", other)),
                 None => return Err("par-map: need (f list)".into()),
             };
-            if lst.is_empty() { return Ok(Some(LispVal::List(vec![]))); }
+            if lst.is_empty() {
+                return Ok(Some(LispVal::List(vec![])));
+            }
 
             use std::sync::Arc;
             let func = Arc::new(func.clone());
@@ -256,7 +314,11 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
                 }
                 let mut out = Vec::with_capacity(tasks.len());
                 for task in tasks {
-                    out.push(task.await.map_err(|e| format!("par-map: task failed: {}", e))??.clone());
+                    out.push(
+                        task.await
+                            .map_err(|e| format!("par-map: task failed: {}", e))??
+                            .clone(),
+                    );
                 }
                 Ok(out)
             });
@@ -270,7 +332,9 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
                 Some(other) => return Err(format!("par-filter: expected list, got {}", other)),
                 None => return Err("par-filter: need (pred list)".into()),
             };
-            if lst.is_empty() { return Ok(Some(LispVal::List(vec![]))); }
+            if lst.is_empty() {
+                return Ok(Some(LispVal::List(vec![])));
+            }
 
             use std::sync::Arc;
             let func = Arc::new(func.clone());
@@ -290,8 +354,12 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
                 }
                 let mut out = Vec::new();
                 for (i, task) in tasks.into_iter().enumerate() {
-                    let keep = task.await.map_err(|e| format!("par-filter: task failed: {}", e))??;
-                    if keep { out.push(lst[i].clone()); }
+                    let keep = task
+                        .await
+                        .map_err(|e| format!("par-filter: task failed: {}", e))??;
+                    if keep {
+                        out.push(lst[i].clone());
+                    }
                 }
                 Ok(out)
             });

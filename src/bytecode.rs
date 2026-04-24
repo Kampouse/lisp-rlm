@@ -459,7 +459,8 @@ impl LoopCompiler {
                         &LispVal::List(ref test_parts),
                         &LispVal::Sym(ref then_name),
                         Some(&LispVal::List(ref else_parts)),
-                    ) = (test, then_branch, else_branch) {
+                    ) = (test, then_branch, else_branch)
+                    {
                         // test_parts = [">=", counter_sym, limit_num]
                         // else_parts = ["recur", (+ counter step), (+ accum counter)]
                         if test_parts.len() == 3
@@ -467,18 +468,15 @@ impl LoopCompiler {
                             && else_parts.len() == 3
                             && else_parts[0] == LispVal::Sym("recur".into())
                         {
-                            if let (
-                                LispVal::Sym(ref counter_name),
-                                LispVal::Num(limit),
-                            ) = (&test_parts[1], &test_parts[2])
+                            if let (LispVal::Sym(ref counter_name), LispVal::Num(limit)) =
+                                (&test_parts[1], &test_parts[2])
                             {
                                 let recur_args = &else_parts[1..];
-                                if let (
-                                    LispVal::List(ref arg1),
-                                    LispVal::List(ref arg2),
-                                ) = (&recur_args[0], &recur_args[1])
+                                if let (LispVal::List(ref arg1), LispVal::List(ref arg2)) =
+                                    (&recur_args[0], &recur_args[1])
                                 {
-                                    if arg1.len() == 3 && arg2.len() == 3
+                                    if arg1.len() == 3
+                                        && arg2.len() == 3
                                         && arg1[0] == LispVal::Sym("+".into())
                                         && arg2[0] == LispVal::Sym("+".into())
                                     {
@@ -500,15 +498,28 @@ impl LoopCompiler {
                                                     self.slot_of(then_name),
                                                 ) {
                                                     let jf_idx = self.code.len();
-                                                    self.code.push(Op::JumpIfSlotGeImm(cs, *limit, 0)); // placeholder
-                                                    self.code.push(Op::RecurIncAccum(cs, as_, *a1_step, *limit, 0)); // placeholder
-                                                    // exit path: LoadSlot(accum), Return — this is what both ops jump to
+                                                    self.code
+                                                        .push(Op::JumpIfSlotGeImm(cs, *limit, 0)); // placeholder
+                                                    self.code.push(Op::RecurIncAccum(
+                                                        cs, as_, *a1_step, *limit, 0,
+                                                    )); // placeholder
+                                                        // exit path: LoadSlot(accum), Return — this is what both ops jump to
                                                     let exit_target = self.code.len();
                                                     self.code.push(Op::LoadSlot(as_));
                                                     self.code.push(Op::Return);
                                                     // Patch: both jump to the LoadSlot instruction
-                                                    self.code[jf_idx] = Op::JumpIfSlotGeImm(cs, *limit, exit_target);
-                                                    self.code[jf_idx + 1] = Op::RecurIncAccum(cs, as_, *a1_step, *limit, exit_target);
+                                                    self.code[jf_idx] = Op::JumpIfSlotGeImm(
+                                                        cs,
+                                                        *limit,
+                                                        exit_target,
+                                                    );
+                                                    self.code[jf_idx + 1] = Op::RecurIncAccum(
+                                                        cs,
+                                                        as_,
+                                                        *a1_step,
+                                                        *limit,
+                                                        exit_target,
+                                                    );
 
                                                     let captured = self.captured.clone();
                                                     let code = self.code;
@@ -641,11 +652,11 @@ fn peephole_optimize(code: &mut Vec<Op>) {
         if i + 5 < code.len() {
             // Extract the counter, limit, and exit from any comparison variant
             let cmp_info: Option<(usize, i64, usize)> = match &code[i] {
-                Op::JumpIfSlotGeImm(s, imm, addr) => Some((*s, *imm, *addr)),   // >= imm → exit at >= imm
+                Op::JumpIfSlotGeImm(s, imm, addr) => Some((*s, *imm, *addr)), // >= imm → exit at >= imm
                 Op::JumpIfSlotGtImm(s, imm, addr) => Some((*s, imm + 1, *addr)), // > imm → exit at >= imm+1
                 Op::JumpIfSlotLeImm(s, imm, addr) => Some((*s, imm + 1, *addr)), // <= imm → exit at >= imm+1
-                Op::JumpIfSlotLtImm(s, imm, addr) => Some((*s, *imm, *addr)),    // < imm → exit at >= imm
-                Op::JumpIfSlotEqImm(s, imm, addr) => Some((*s, *imm, *addr)),    // == imm → exit at >= imm (approx)
+                Op::JumpIfSlotLtImm(s, imm, addr) => Some((*s, *imm, *addr)), // < imm → exit at >= imm
+                Op::JumpIfSlotEqImm(s, imm, addr) => Some((*s, *imm, *addr)), // == imm → exit at >= imm (approx)
                 _ => None,
             };
             if let Some((counter, limit, exit)) = cmp_info {
@@ -656,7 +667,11 @@ fn peephole_optimize(code: &mut Vec<Op>) {
                     Op::Add,
                     Op::RecurDirect(n),
                 ) = (
-                    &code[i + 1], &code[i + 2], &code[i + 3], &code[i + 4], &code[i + 5],
+                    &code[i + 1],
+                    &code[i + 2],
+                    &code[i + 3],
+                    &code[i + 4],
+                    &code[i + 5],
                 ) {
                     // counter slot must be consistent, n==2 slots, accum != counter,
                     // and second LoadSlot loads the counter (accum += counter)
@@ -666,9 +681,7 @@ fn peephole_optimize(code: &mut Vec<Op>) {
                         for _ in 0..5 {
                             index_map.push(new_code.len());
                         }
-                        new_code.push(Op::RecurIncAccum(
-                            counter, *accum, *step, limit, exit,
-                        ));
+                        new_code.push(Op::RecurIncAccum(counter, *accum, *step, limit, exit));
                         i += 6;
                         continue;
                     }
@@ -772,10 +785,7 @@ fn remap_jump_target(op: &mut Op, index_map: &[usize]) {
 }
 
 /// Run a compiled loop. Returns the result.
-fn run_compiled_loop(
-    cl: &CompiledLoop,
-    outer_env: &mut Env,
-) -> Result<LispVal, String> {
+fn run_compiled_loop(cl: &CompiledLoop, outer_env: &mut Env) -> Result<LispVal, String> {
     // Slot-based env: binding slots + captured env slots, direct index access
     let mut slots: Vec<LispVal> = cl.init_vals.clone();
     // Append captured env values after binding slots
@@ -1175,7 +1185,10 @@ pub fn eval_builtin(name: &str, args: &[LispVal]) -> Result<LispVal, String> {
         "odd?" => Ok(LispVal::Bool(
             num_val(args.get(0).cloned().unwrap_or(LispVal::Nil)) % 2 != 0,
         )),
-        "nil?" => Ok(LispVal::Bool(matches!(args.get(0), Some(LispVal::Nil) | None))),
+        "nil?" => Ok(LispVal::Bool(matches!(
+            args.get(0),
+            Some(LispVal::Nil) | None
+        ))),
         "len" => match args.get(0) {
             Some(LispVal::List(l)) => Ok(LispVal::Num(l.len() as i64)),
             Some(LispVal::Str(s)) => Ok(LispVal::Num(s.len() as i64)),
@@ -1199,19 +1212,23 @@ pub fn eval_builtin(name: &str, args: &[LispVal]) -> Result<LispVal, String> {
             _ => Ok(LispVal::Nil),
         },
         "str-concat" => {
-            let s: String = args.iter().map(|a| match a {
-                LispVal::Str(st) => st.clone(),
-                _ => format!("{}", a),
-            }).collect();
+            let s: String = args
+                .iter()
+                .map(|a| match a {
+                    LispVal::Str(st) => st.clone(),
+                    _ => format!("{}", a),
+                })
+                .collect();
             Ok(LispVal::Str(s))
-        },
+        }
         "str-length" => match args.get(0) {
             Some(LispVal::Str(s)) => Ok(LispVal::Num(s.len() as i64)),
             _ => Ok(LispVal::Num(0)),
         },
         "str-split" => match (args.get(0), args.get(1)) {
             (Some(LispVal::Str(s)), Some(LispVal::Str(sep))) => {
-                let parts: Vec<LispVal> = s.split(sep).map(|p| LispVal::Str(p.to_string())).collect();
+                let parts: Vec<LispVal> =
+                    s.split(sep).map(|p| LispVal::Str(p.to_string())).collect();
                 Ok(LispVal::List(parts))
             }
             _ => Ok(LispVal::List(vec![])),
@@ -1225,7 +1242,8 @@ pub fn eval_builtin(name: &str, args: &[LispVal]) -> Result<LispVal, String> {
         "to-int" => match args.get(0) {
             Some(LispVal::Num(n)) => Ok(LispVal::Num(*n)),
             Some(LispVal::Float(f)) => Ok(LispVal::Num(*f as i64)),
-            Some(LispVal::Str(s)) => s.parse::<i64>()
+            Some(LispVal::Str(s)) => s
+                .parse::<i64>()
                 .map(LispVal::Num)
                 .or_else(|_| Ok(LispVal::Num(0))),
             _ => Ok(LispVal::Num(0)),
@@ -1467,9 +1485,6 @@ pub fn try_compile_loop(
 }
 
 /// Execute a compiled loop
-pub fn exec_compiled_loop(
-    cl: &CompiledLoop,
-    outer_env: &mut Env,
-) -> Result<LispVal, String> {
+pub fn exec_compiled_loop(cl: &CompiledLoop, outer_env: &mut Env) -> Result<LispVal, String> {
     run_compiled_loop(cl, outer_env)
 }

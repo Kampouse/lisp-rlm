@@ -30,9 +30,9 @@ mod helpers;
 mod parser;
 mod types;
 
-pub use bytecode::{try_compile_loop, exec_compiled_loop, try_compile_lambda, run_compiled_lambda};
+pub use bytecode::{exec_compiled_loop, run_compiled_lambda, try_compile_lambda, try_compile_loop};
+pub use eval::llm_provider::{GenericProvider, LlmProvider, LlmResponse};
 pub use eval::{apply_lambda, lisp_eval};
-pub use eval::llm_provider::{LlmProvider, GenericProvider, LlmResponse};
 pub use helpers::{is_builtin_name, is_truthy};
 pub use parser::parse_all;
 pub use parser::parse_all_spanned;

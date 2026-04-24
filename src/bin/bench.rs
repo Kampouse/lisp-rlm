@@ -2,13 +2,17 @@ use lisp_rlm::*;
 
 fn main() {
     let mut env = Env::new();
-    
+
     // Bench: 100k iterations
     let prog = "(loop ((i 0) (sum 0)) (if (>= i 100000) sum (recur (+ i 1) (+ sum i))))";
     let exprs = parse_all(prog).unwrap();
     let start = std::time::Instant::now();
     let result = lisp_eval(&exprs[0], &mut env);
-    println!("100k loop: {:?} ({}µs)", result, start.elapsed().as_micros());
+    println!(
+        "100k loop: {:?} ({}µs)",
+        result,
+        start.elapsed().as_micros()
+    );
 
     // Correctness: sum 0..10
     let prog2 = "(loop ((i 0) (sum 0)) (if (>= i 10) sum (recur (+ i 1) (+ sum i))))";

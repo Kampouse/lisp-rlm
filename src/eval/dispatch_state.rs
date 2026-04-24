@@ -7,11 +7,17 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
     match name {
         // --- Debug / print ---
         "error" => {
-            let msg = args.get(0).map(|v| format!("{}", v)).unwrap_or_else(|| "error".to_string());
+            let msg = args
+                .get(0)
+                .map(|v| format!("{}", v))
+                .unwrap_or_else(|| "error".to_string());
             Err(msg)
         }
         "debug" | "near/log-debug" => {
-            let msg = args.get(0).map(|v| format!("{}", v)).unwrap_or_else(|| "debug".to_string());
+            let msg = args
+                .get(0)
+                .map(|v| format!("{}", v))
+                .unwrap_or_else(|| "debug".to_string());
             eprintln!("[DEBUG] {}", msg);
             Ok(Some(LispVal::Nil))
         }
@@ -28,9 +34,26 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
                 LispVal::Num(_) => "integer",
                 LispVal::Float(_) => "float",
                 LispVal::Str(_) => "string",
-                LispVal::List(items) => return Ok(Some(LispVal::Str(format!("list[{}]: {}", items.len(), val)))),
-                LispVal::Map(m) => return Ok(Some(LispVal::Str(format!("map{{{} keys}}: {}", m.len(), val)))),
-                LispVal::Lambda { params, .. } => return Ok(Some(LispVal::Str(format!("lambda({}): <function>", params.len())))),
+                LispVal::List(items) => {
+                    return Ok(Some(LispVal::Str(format!(
+                        "list[{}]: {}",
+                        items.len(),
+                        val
+                    ))))
+                }
+                LispVal::Map(m) => {
+                    return Ok(Some(LispVal::Str(format!(
+                        "map{{{} keys}}: {}",
+                        m.len(),
+                        val
+                    ))))
+                }
+                LispVal::Lambda { params, .. } => {
+                    return Ok(Some(LispVal::Str(format!(
+                        "lambda({}): <function>",
+                        params.len()
+                    ))))
+                }
                 LispVal::Sym(s) => return Ok(Some(LispVal::Str(format!("symbol: {}", s)))),
                 _ => "unknown",
             };
@@ -39,7 +62,11 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
         "print" | "println" => {
             let s: Vec<String> = args.iter().map(|a| a.to_string()).collect();
             let out = s.join(" ");
-            if name == "println" { println!("{}", out); } else { print!("{}", out); }
+            if name == "println" {
+                println!("{}", out);
+            } else {
+                print!("{}", out);
+            }
             Ok(Some(LispVal::Str(out)))
         }
         "fmt" => {
@@ -59,7 +86,9 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
                         key.push(chars[i]);
                         i += 1;
                     }
-                    if i < chars.len() { i += 1; }
+                    if i < chars.len() {
+                        i += 1;
+                    }
                     let mut found = false;
                     if let LispVal::Map(map) = data {
                         if let Some(val) = map.get(&key) {
@@ -85,7 +114,11 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
         "read" => {
             let s = as_str(&args[0])?;
             match crate::parser::parse_all(&s) {
-                Ok(exprs) => exprs.into_iter().next().ok_or_else(|| "read: empty input".to_string()).map(Some),
+                Ok(exprs) => exprs
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| "read: empty input".to_string())
+                    .map(Some),
                 Err(e) => Err(format!("read: parse error: {}", e)),
             }
         }
@@ -105,13 +138,20 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
             Ok(Some(LispVal::Num(id as i64)))
         }
         "rollback" => {
-            let snap = env.snapshots.pop().ok_or("rollback: no snapshots on stack")?;
+            let snap = env
+                .snapshots
+                .pop()
+                .ok_or("rollback: no snapshots on stack")?;
             env.restore_snapshot(snap);
             Ok(Some(LispVal::Bool(true)))
         }
         "rollback-to" => {
             let idx = as_num(args.get(0).ok_or("rollback-to: need index")?)? as usize;
-            let snap = env.snapshots.get(idx).ok_or_else(|| format!("rollback-to: no snapshot at index {}", idx))?.clone();
+            let snap = env
+                .snapshots
+                .get(idx)
+                .ok_or_else(|| format!("rollback-to: no snapshot at index {}", idx))?
+                .clone();
             env.restore_snapshot(snap);
             Ok(Some(LispVal::Bool(true)))
         }
@@ -152,7 +192,10 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
         "write-file" => {
             let path = as_str(&args[0])?;
             let content = as_str(&args[1])?;
-            let content = content.replace("\\n", "\n").replace("\\t", "\t").replace("\\\"", "\"");
+            let content = content
+                .replace("\\n", "\n")
+                .replace("\\t", "\t")
+                .replace("\\\"", "\"");
             match std::fs::write(&path, &content) {
                 Ok(()) => Ok(Some(LispVal::Bool(true))),
                 Err(e) => Err(format!("write-file: {}", e)),
@@ -167,8 +210,7 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
         }
         "load-file" => {
             let path = as_str(&args[0])?;
-            let code = std::fs::read_to_string(&path)
-                .map_err(|e| format!("load-file: {}", e))?;
+            let code = std::fs::read_to_string(&path).map_err(|e| format!("load-file: {}", e))?;
             let exprs = crate::parser::parse_all(&code)?;
             let mut result = LispVal::Nil;
             for expr in &exprs {
@@ -209,7 +251,12 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(format!("shell: exit {:?}: {}{}", output.status.code(), stdout, stderr));
+                return Err(format!(
+                    "shell: exit {:?}: {}{}",
+                    output.status.code(),
+                    stdout,
+                    stderr
+                ));
             }
             Ok(Some(LispVal::Str(stdout)))
         }

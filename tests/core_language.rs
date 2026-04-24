@@ -18,17 +18,23 @@ fn eval_str_with_stdlib(code: &str) -> String {
     let mut env = Env::new();
     if let Some(scode) = get_stdlib_code("math") {
         if let Ok(exprs) = parse_all(scode) {
-            for expr in &exprs { let _ = lisp_eval(&expr, &mut env); }
+            for expr in &exprs {
+                let _ = lisp_eval(&expr, &mut env);
+            }
         }
     }
     if let Some(scode) = get_stdlib_code("list") {
         if let Ok(exprs) = parse_all(scode) {
-            for expr in &exprs { let _ = lisp_eval(&expr, &mut env); }
+            for expr in &exprs {
+                let _ = lisp_eval(&expr, &mut env);
+            }
         }
     }
     if let Some(scode) = get_stdlib_code("string") {
         if let Ok(exprs) = parse_all(scode) {
-            for expr in &exprs { let _ = lisp_eval(&expr, &mut env); }
+            for expr in &exprs {
+                let _ = lisp_eval(&expr, &mut env);
+            }
         }
     }
     run_program(code, &mut env).unwrap_or_else(|e| format!("ERROR: {}", e))

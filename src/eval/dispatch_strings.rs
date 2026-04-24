@@ -8,13 +8,18 @@ use crate::types::LispVal;
 pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
     match name {
         "str-concat" => {
-            let parts: Vec<String> = args.iter().map(|a| match a {
-                LispVal::Str(s) => s.clone(),
-                _ => a.to_string(),
-            }).collect();
+            let parts: Vec<String> = args
+                .iter()
+                .map(|a| match a {
+                    LispVal::Str(s) => s.clone(),
+                    _ => a.to_string(),
+                })
+                .collect();
             Ok(Some(LispVal::Str(parts.join(""))))
         }
-        "str-contains" => Ok(Some(LispVal::Bool(as_str(&args[0])?.contains(&as_str(&args[1])?)))),
+        "str-contains" => Ok(Some(LispVal::Bool(
+            as_str(&args[0])?.contains(&as_str(&args[1])?),
+        ))),
         "to-string" => Ok(Some(LispVal::Str(args[0].to_string()))),
         "str-length" => {
             let s = as_str(&args[0])?;
@@ -26,7 +31,12 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             let end = as_num(args.get(2).ok_or("str-substring: need end")?)? as usize;
             let chars: Vec<char> = s.chars().collect();
             if start > end || end > chars.len() {
-                return Err(format!("str-substring: indices out of range ({}..{} for len {})", start, end, chars.len()));
+                return Err(format!(
+                    "str-substring: indices out of range ({}..{} for len {})",
+                    start,
+                    end,
+                    chars.len()
+                ));
             }
             Ok(Some(LispVal::Str(chars[start..end].iter().collect())))
         }
@@ -34,7 +44,10 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             let s = as_str(&args[0])?;
             let delim = as_str(args.get(1).ok_or("str-split: need delimiter")?)?;
             let parts: Vec<LispVal> = if delim.len() == 1 {
-                s.split(delim.chars().next().unwrap()).filter(|p| !p.is_empty()).map(|p| LispVal::Str(p.to_string())).collect()
+                s.split(delim.chars().next().unwrap())
+                    .filter(|p| !p.is_empty())
+                    .map(|p| LispVal::Str(p.to_string()))
+                    .collect()
             } else {
                 let char_set: Vec<char> = delim.chars().collect();
                 let mut parts = Vec::new();
@@ -58,7 +71,10 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
         "str-split-exact" => {
             let s = as_str(&args[0])?;
             let delim = as_str(args.get(1).ok_or("str-split-exact: need delimiter")?)?;
-            let parts: Vec<LispVal> = s.split(&delim).map(|p| LispVal::Str(p.to_string())).collect();
+            let parts: Vec<LispVal> = s
+                .split(&delim)
+                .map(|p| LispVal::Str(p.to_string()))
+                .collect();
             Ok(Some(LispVal::List(parts)))
         }
         "str-trim" => {
@@ -96,12 +112,17 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
         "str-chunk" => {
             let s = as_str(&args[0])?;
             let n = as_num(args.get(1).ok_or("str-chunk: need n")?)? as usize;
-            if n == 0 { return Err("str-chunk: n must be > 0".into()); }
+            if n == 0 {
+                return Err("str-chunk: n must be > 0".into());
+            }
             let chars: Vec<char> = s.chars().collect();
             let total = chars.len();
             let chunk_size = (total + n - 1) / n; // ceil division
             if chunk_size == 0 {
-                return Ok(Some(LispVal::List(vec![LispVal::Str(String::new()); n.min(total + 1)])));
+                return Ok(Some(LispVal::List(vec![
+                    LispVal::Str(String::new());
+                    n.min(total + 1)
+                ])));
             }
             let mut chunks: Vec<LispVal> = Vec::new();
             let mut i = 0;
@@ -121,10 +142,13 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
                 Some(other) => return Err(format!("str-join: expected list, got {}", other)),
                 None => return Err("str-join: need (separator list)".into()),
             };
-            let parts: Vec<String> = lst.iter().map(|v| match v {
-                LispVal::Str(s) => s.clone(),
-                _ => v.to_string(),
-            }).collect();
+            let parts: Vec<String> = lst
+                .iter()
+                .map(|v| match v {
+                    LispVal::Str(s) => s.clone(),
+                    _ => v.to_string(),
+                })
+                .collect();
             Ok(Some(LispVal::Str(parts.join(&sep))))
         }
         _ => Ok(None),

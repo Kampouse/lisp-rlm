@@ -15,9 +15,8 @@ use std::sync::LazyLock;
 // ---------------------------------------------------------------------------
 
 /// Shared tokio runtime — avoids creating a new runtime per LLM/HTTP call.
-pub static SHARED_RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
-    tokio::runtime::Runtime::new().expect("failed to create tokio runtime")
-});
+pub static SHARED_RUNTIME: LazyLock<tokio::runtime::Runtime> =
+    LazyLock::new(|| tokio::runtime::Runtime::new().expect("failed to create tokio runtime"));
 
 /// Shared reqwest client with a 60 s timeout.
 pub static SHARED_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
@@ -77,10 +76,13 @@ impl GenericProvider {
         let api_base = std::env::var("RLM_API_BASE")
             .unwrap_or_else(|_| "https://api.z.ai/api/coding/paas/v4".to_string());
 
-        let model = std::env::var("RLM_MODEL")
-            .unwrap_or_else(|_| "glm-5.1".to_string());
+        let model = std::env::var("RLM_MODEL").unwrap_or_else(|_| "glm-5.1".to_string());
 
-        Ok(Self { api_key, api_base, model })
+        Ok(Self {
+            api_key,
+            api_base,
+            model,
+        })
     }
 
     /// Convenience: create a provider or panic with a helpful message.
@@ -99,9 +101,7 @@ impl LlmProvider for GenericProvider {
 
         let json_messages: Vec<serde_json::Value> = messages
             .iter()
-            .map(|(role, content)| {
-                serde_json::json!({"role": role, "content": content})
-            })
+            .map(|(role, content)| serde_json::json!({"role": role, "content": content}))
             .collect();
 
         let mt = max_tokens.unwrap_or(2048);
@@ -132,8 +132,8 @@ impl LlmProvider for GenericProvider {
                 .await
                 .map_err(|e| format!("LLM read body failed: {}", e))?;
 
-            let v: serde_json::Value = serde_json::from_str(&text)
-                .map_err(|e| format!("LLM json parse error: {}", e))?;
+            let v: serde_json::Value =
+                serde_json::from_str(&text).map_err(|e| format!("LLM json parse error: {}", e))?;
 
             let tokens = v["usage"]["total_tokens"].as_u64().unwrap_or(0) as usize;
 

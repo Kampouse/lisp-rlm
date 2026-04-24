@@ -5,12 +5,12 @@ use crate::types::LispVal;
 // ---------------------------------------------------------------------------
 
 /// A single token produced by the tokenizer, carrying its source location.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Token {
     pub text: String,
     /// 1-based line number.
     pub line: usize,
-    /// 1-based column number (byte offset within the line).
+    /// 1-based column number (character offset within the line).
     pub col: usize,
 }
 
@@ -75,12 +75,17 @@ fn tokenize(input: &str) -> Vec<Token> {
             cur.push(ch);
             col += 1;
             if ch == '"' {
-                tokens.push(Token { text: cur.clone(), line: line, col: token_start_col });
+                tokens.push(Token {
+                    text: cur.clone(),
+                    line: line,
+                    col: token_start_col,
+                });
                 cur.clear();
                 in_str = false;
             }
             i += 1;
-        } else if ch == '"' && !in_str {
+        } else if ch == '"' {
+            // Start of string literal (only reached when !in_str)
             in_str = true;
             cur.push(ch);
             token_start_col = col;
@@ -89,7 +94,11 @@ fn tokenize(input: &str) -> Vec<Token> {
         } else if ch == ';' && i + 1 < len && chars[i + 1] == ';' {
             // ;; line comment — skip to end of line
             if !cur.is_empty() {
-                tokens.push(Token { text: cur.clone(), line: line, col: token_start_col });
+                tokens.push(Token {
+                    text: cur.clone(),
+                    line: line,
+                    col: token_start_col,
+                });
                 cur.clear();
             }
             i += 2;
@@ -106,7 +115,11 @@ fn tokenize(input: &str) -> Vec<Token> {
         } else if ch == '(' && i + 1 < len && chars[i + 1] == ';' {
             // (; block comment ;) — skip until matching ;)
             if !cur.is_empty() {
-                tokens.push(Token { text: cur.clone(), line: line, col: token_start_col });
+                tokens.push(Token {
+                    text: cur.clone(),
+                    line: line,
+                    col: token_start_col,
+                });
                 cur.clear();
             }
             i += 2;
@@ -128,41 +141,77 @@ fn tokenize(input: &str) -> Vec<Token> {
         } else if ch == '`' {
             // Quasiquote — tokenize as special token
             if !cur.is_empty() {
-                tokens.push(Token { text: cur.clone(), line: line, col: token_start_col });
+                tokens.push(Token {
+                    text: cur.clone(),
+                    line: line,
+                    col: token_start_col,
+                });
                 cur.clear();
             }
-            tokens.push(Token { text: "#quasiquote".to_string(), line, col });
+            tokens.push(Token {
+                text: "#quasiquote".to_string(),
+                line,
+                col,
+            });
             col += 1;
             i += 1;
         } else if ch == ',' && i + 1 < len && chars[i + 1] == '@' {
             // Splicing unquote ,@
             if !cur.is_empty() {
-                tokens.push(Token { text: cur.clone(), line: line, col: token_start_col });
+                tokens.push(Token {
+                    text: cur.clone(),
+                    line: line,
+                    col: token_start_col,
+                });
                 cur.clear();
             }
-            tokens.push(Token { text: "#unquote-splicing".to_string(), line, col });
+            tokens.push(Token {
+                text: "#unquote-splicing".to_string(),
+                line,
+                col,
+            });
             col += 2;
             i += 2;
         } else if ch == ',' {
             // Unquote ,
             if !cur.is_empty() {
-                tokens.push(Token { text: cur.clone(), line: line, col: token_start_col });
+                tokens.push(Token {
+                    text: cur.clone(),
+                    line: line,
+                    col: token_start_col,
+                });
                 cur.clear();
             }
-            tokens.push(Token { text: "#unquote".to_string(), line, col });
+            tokens.push(Token {
+                text: "#unquote".to_string(),
+                line,
+                col,
+            });
             col += 1;
             i += 1;
         } else if ch == '(' || ch == ')' {
             if !cur.is_empty() {
-                tokens.push(Token { text: cur.clone(), line: line, col: token_start_col });
+                tokens.push(Token {
+                    text: cur.clone(),
+                    line: line,
+                    col: token_start_col,
+                });
                 cur.clear();
             }
-            tokens.push(Token { text: ch.to_string(), line, col });
+            tokens.push(Token {
+                text: ch.to_string(),
+                line,
+                col,
+            });
             col += 1;
             i += 1;
         } else if ch == '\n' {
             if !cur.is_empty() {
-                tokens.push(Token { text: cur.clone(), line: line, col: token_start_col });
+                tokens.push(Token {
+                    text: cur.clone(),
+                    line: line,
+                    col: token_start_col,
+                });
                 cur.clear();
             }
             line += 1;
@@ -170,14 +219,22 @@ fn tokenize(input: &str) -> Vec<Token> {
             i += 1;
         } else if ch == '\r' {
             if !cur.is_empty() {
-                tokens.push(Token { text: cur.clone(), line: line, col: token_start_col });
+                tokens.push(Token {
+                    text: cur.clone(),
+                    line: line,
+                    col: token_start_col,
+                });
                 cur.clear();
             }
             col += 1;
             i += 1;
         } else if ch.is_whitespace() {
             if !cur.is_empty() {
-                tokens.push(Token { text: cur.clone(), line: line, col: token_start_col });
+                tokens.push(Token {
+                    text: cur.clone(),
+                    line: line,
+                    col: token_start_col,
+                });
                 cur.clear();
             }
             col += 1;
@@ -193,7 +250,11 @@ fn tokenize(input: &str) -> Vec<Token> {
     }
 
     if !cur.is_empty() {
-        tokens.push(Token { text: cur, line: line, col: token_start_col });
+        tokens.push(Token {
+            text: cur,
+            line: line,
+            col: token_start_col,
+        });
     }
     tokens
 }
@@ -205,9 +266,7 @@ fn parse(tokens: &[Token], pos: &mut usize) -> Result<Spanned<LispVal>, String> 
     let tok = &tokens[*pos];
     let line = tok.line;
     let col = tok.col;
-    let span_err = |msg: &str| -> String {
-        format!("ERROR[{}:{}]: {}", line, col, msg)
-    };
+    let span_err = |msg: &str| -> String { format!("ERROR[{}:{}]: {}", line, col, msg) };
     *pos += 1;
     match tok.text.as_str() {
         "(" => {
@@ -223,37 +282,35 @@ fn parse(tokens: &[Token], pos: &mut usize) -> Result<Spanned<LispVal>, String> 
                 return Err(format!("ERROR[{}:{}]: missing )", last_line, last_col));
             }
             *pos += 1;
-            Ok(Spanned::new(LispVal::List(list.into_iter().map(|s| s.val).collect()), line, col))
+            Ok(Spanned::new(
+                LispVal::List(list.into_iter().map(|s| s.val).collect()),
+                line,
+                col,
+            ))
         }
         ")" => Err(span_err("unexpected )")),
         "#quasiquote" => {
             let inner = parse(tokens, pos)?;
             Ok(Spanned::new(
-                LispVal::List(vec![
-                    LispVal::Sym("quasiquote".into()),
-                    inner.val,
-                ]),
-                line, col,
+                LispVal::List(vec![LispVal::Sym("quasiquote".into()), inner.val]),
+                line,
+                col,
             ))
         }
         "#unquote" => {
             let inner = parse(tokens, pos)?;
             Ok(Spanned::new(
-                LispVal::List(vec![
-                    LispVal::Sym("unquote".into()),
-                    inner.val,
-                ]),
-                line, col,
+                LispVal::List(vec![LispVal::Sym("unquote".into()), inner.val]),
+                line,
+                col,
             ))
         }
         "#unquote-splicing" => {
             let inner = parse(tokens, pos)?;
             Ok(Spanned::new(
-                LispVal::List(vec![
-                    LispVal::Sym("unquote-splicing".into()),
-                    inner.val,
-                ]),
-                line, col,
+                LispVal::List(vec![LispVal::Sym("unquote-splicing".into()), inner.val]),
+                line,
+                col,
             ))
         }
         "nil" => Ok(Spanned::new(LispVal::Nil, line, col)),
@@ -261,7 +318,8 @@ fn parse(tokens: &[Token], pos: &mut usize) -> Result<Spanned<LispVal>, String> 
         "false" => Ok(Spanned::new(LispVal::Bool(false), line, col)),
         s if s.starts_with('"') => Ok(Spanned::new(
             LispVal::Str(s[1..s.len() - 1].to_string()),
-            line, col,
+            line,
+            col,
         )),
         s => {
             if let Ok(n) = s.parse::<i64>() {
@@ -280,8 +338,15 @@ fn parse(tokens: &[Token], pos: &mut usize) -> Result<Spanned<LispVal>, String> 
 /// Parse all expressions from a string, returning spanned values with source locations.
 ///
 /// Each [`Spanned<LispVal>`] carries the 1-based `line` and `col` where the
-/// expression started in the source.  Parse errors include `[line:col]` in the
-/// message.
+/// *outermost* expression started in the source.  Child elements inside lists
+/// are plain `LispVal` (their spans are stripped during construction).
+///
+/// This is sufficient for error reporting at the top-level expression granularity.
+/// To preserve child spans, the `LispVal` type would need to carry `Spanned` children
+/// recursively — a deeper refactor reserved for when spans are threaded through the
+/// evaluator.
+///
+/// Parse errors include `[line:col]` in the message.
 pub fn parse_all_spanned(input: &str) -> Result<Vec<Spanned<LispVal>>, String> {
     let tokens = tokenize(input);
     let mut pos = 0;
@@ -296,7 +361,10 @@ pub fn parse_all_spanned(input: &str) -> Result<Vec<Spanned<LispVal>>, String> {
 ///
 /// Internally uses [`parse_all_spanned`] and discards the span metadata.
 pub fn parse_all(input: &str) -> Result<Vec<LispVal>, String> {
-    Ok(parse_all_spanned(input)?.into_iter().map(|s| s.val).collect())
+    Ok(parse_all_spanned(input)?
+        .into_iter()
+        .map(|s| s.val)
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -331,7 +399,11 @@ mod tests {
         let result = parse_all("(+ 1");
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.contains("[1:"), "error should have line:col, got: {}", err);
+        assert!(
+            err.contains("[1:"),
+            "error should have line:col, got: {}",
+            err
+        );
     }
 
     #[test]
@@ -339,18 +411,25 @@ mod tests {
         let result = parse_all(")");
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.contains("[1:1]"), "unexpected ) should report location, got: {}", err);
+        assert!(
+            err.contains("[1:1]"),
+            "unexpected ) should report location, got: {}",
+            err
+        );
     }
 
     #[test]
     fn test_parse_all_backward_compat() {
         let result = parse_all("(+ 1 2) (* 3 4)").unwrap();
         assert_eq!(result.len(), 2);
-        assert_eq!(result[0], LispVal::List(vec![
-            LispVal::Sym("+".into()),
-            LispVal::Num(1),
-            LispVal::Num(2),
-        ]));
+        assert_eq!(
+            result[0],
+            LispVal::List(vec![
+                LispVal::Sym("+".into()),
+                LispVal::Num(1),
+                LispVal::Num(2),
+            ])
+        );
     }
 
     #[test]

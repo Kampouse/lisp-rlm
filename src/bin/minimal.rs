@@ -1,16 +1,18 @@
 fn main() {
     let mut env = lisp_rlm::Env::new();
-    
+
     // Load math + list first
     for module in &["math", "list"] {
         if let Some(code) = lisp_rlm::get_stdlib_code(module) {
             if let Ok(exprs) = lisp_rlm::parse_all(code) {
-                for expr in &exprs { let _ = lisp_rlm::lisp_eval(expr, &mut env); }
+                for expr in &exprs {
+                    let _ = lisp_rlm::lisp_eval(expr, &mut env);
+                }
             }
         }
     }
     eprintln!("math+list loaded");
-    
+
     // Now load string
     if let Some(code) = lisp_rlm::get_stdlib_code("string") {
         if let Ok(exprs) = lisp_rlm::parse_all(code) {
@@ -19,7 +21,10 @@ fn main() {
                 eprintln!("  eval [{}]...", i);
                 match lisp_rlm::lisp_eval(expr, &mut env) {
                     Ok(v) => eprintln!("  [{}] = {}", i, v),
-                    Err(e) => { eprintln!("  [{}] ERR: {}", i, e); break; }
+                    Err(e) => {
+                        eprintln!("  [{}] ERR: {}", i, e);
+                        break;
+                    }
                 }
             }
         }
