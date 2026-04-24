@@ -8,6 +8,7 @@ use crate::types::{get_stdlib_code, Env, LispVal};
 // Hex helpers
 // ---------------------------------------------------------------------------
 
+/// Encode a byte slice as a lowercase hexadecimal string.
 pub fn hex_encode(bytes: &[u8]) -> String {
     const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
     let mut s = String::with_capacity(bytes.len() * 2);
@@ -18,6 +19,10 @@ pub fn hex_encode(bytes: &[u8]) -> String {
     s
 }
 
+/// Decode a lowercase hexadecimal string into a byte vector.
+///
+/// Non-hex characters or odd-length strings will produce a shorter result
+/// (invalid pairs are silently skipped).
 pub fn hex_decode(hex: &str) -> Vec<u8> {
     (0..hex.len())
         .step_by(2)
@@ -29,6 +34,15 @@ pub fn hex_decode(hex: &str) -> Vec<u8> {
 // JSON conversion
 // ---------------------------------------------------------------------------
 
+/// Convert a [`serde_json::Value`] into a [`LispVal`].
+///
+/// Mapping:
+/// - `Null` → `Nil`
+/// - `Bool` → `Bool`
+/// - `Number` → `Num(i64)` or `Float(f64)`
+/// - `String` → `Str`
+/// - `Array` → `List`
+/// - `Object` → `Map`
 pub fn json_to_lisp(val: serde_json::Value) -> LispVal {
     match val {
         serde_json::Value::Null => LispVal::Nil,
@@ -54,6 +68,17 @@ pub fn json_to_lisp(val: serde_json::Value) -> LispVal {
     }
 }
 
+/// Convert a [`LispVal`] reference into a [`serde_json::Value`].
+///
+/// Mapping is the inverse of [`json_to_lisp`]:
+/// - `Nil` → `Null`
+/// - `Bool` → `Bool`
+/// - `Num` → integer `Number`
+/// - `Float` → float `Number` (non-finite values become `Null`)
+/// - `Str` → `String`
+/// - `List` → `Array`
+/// - `Map` → `Object`
+/// - All other variants (`Sym`, `Lambda`, `Macro`, `Recur`) → `String` (via [`Display`])
 pub fn lisp_to_json(val: &LispVal) -> serde_json::Value {
     match val {
         LispVal::Nil => serde_json::Value::Null,
@@ -81,6 +106,33 @@ pub fn lisp_to_json(val: &LispVal) -> serde_json::Value {
 // Evaluator
 // ---------------------------------------------------------------------------
 
+/// Evaluate a single Lisp expression in the given environment.
+///
+/// This is the main entry point for the tree-walking evaluator.  It handles
+/// all special forms (`quote`, `if`, `define`, `lambda`, `defmacro`, `let`,
+/// `loop`, `recur`, `match`, `try`, `cond`, `progn`/`begin`, `and`, `or`,
+/// `not`, `require`, `quasiquote`) and dispatches everything else to the
+/// function-call machinery ([`apply_lambda`] / builtins).
+///
+/// # Execution budget
+///
+/// Each call increments `env.eval_count` and checks it against
+/// `env.eval_budget`.  When the budget is exceeded an `Err` is returned.  A
+/// budget of `0` disables the limit.
+///
+/// # Stack safety
+///
+/// The call is wrapped in [`stacker::maybe_grow`] so deeply-recursive
+/// evaluation does not overflow the native stack.
+///
+/// # Errors
+///
+/// Returns `Err(String)` for:
+/// - undefined symbols
+/// - arity mismatches
+/// - type errors in builtins
+/// - execution budget exceeded
+/// - errors propagated from user code (`(error ...)`)
 pub fn lisp_eval(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
     // Execution budget check
     if env.eval_budget > 0 {
@@ -414,6 +466,22 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
 // Lambda application
 // ---------------------------------------------------------------------------
 
+/// Apply a lambda (or macro) to a set of arguments.
+///
+/// Creates a temporary scope in `caller_env` by extending it with:
+/// 1. The `closed_env` bindings (captured closure variables),
+/// 2. The `params` bound positionally from `args` (missing args default to
+///    [`LispVal::Nil`]),
+/// 3. An optional `rest_param` that collects leftover arguments into a
+///    [`LispVal::List`].
+///
+/// The body is then evaluated via [`lisp_eval`].  After evaluation the
+/// environment is truncated back to its original size, restoring lexical
+/// scoping.
+///
+/// # Errors
+///
+/// Propagates any evaluation error from the body.
 pub fn apply_lambda(
     params: &[String],
     rest_param: &Option<String>,

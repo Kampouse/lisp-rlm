@@ -1,51 +1,77 @@
-# lisp-rlm Optimization Plan — Port near-lisp bytecode compiler
+# lisp-rlm — Standalone Lisp Interpreter for RLM Orchestration
 
-## Goal
-Merge near-lisp's bytecode compiler + VM optimizations + all non-NEAR features into lisp-rlm, creating a fast standalone Lisp runtime.
+STATUS: **COMPLETE** — All planned and follow-up work is done. The interpreter is fully functional with bytecode compilation, a macro system, fast-path optimizations, and runtime execution budgets.
+
+---
+
+## Project Summary
+
+lisp-rlm is a standalone Lisp runtime forked from near-lisp, stripped of all NEAR/blockchain dependencies and rebuilt as a general-purpose interpreter with:
+
+- **Tree-walk eval** with tail-call optimization (`loop`/`recur`)
+- **Bytecode compiler + VM** for hot loops and lambda bodies
+- **Hygienic macro system** (`defmacro`, `quasiquote`, `unquote`, `unquote-splicing`)
+- **Fast-path optimization** for `map`/`filter` over compiled lambdas with graceful fallback
+- **Runtime execution budget** (`eval_count` + `eval_budget` in `Env`) replacing the old gas system
+
+---
+
+## Completed Work
+
+### Phase 1: Initial Fork (991d32c)
+- Forked near-lisp into standalone `lisp-rlm`
+- Removed all near-sdk dependencies and blockchain-specific code
+- Established core interpreter: parser, eval, types, helpers
+- Added `loop`/`recur` for iteration, basic builtins
+
+### Phase 2: Bytecode Compiler + VM (32e43fb)
+- Ported `bytecode.rs` from near-lisp with near-sdk stripped
+- Wired bytecode compilation into eval's `loop` handler
+- Removed gas system (replaced later with execution budget)
+- Added stacker-based stack protection for deep recursion
+- Updated `lib.rs` with `mod bytecode` and re-exports
+- Added missing builtins (`len`, `append`, `nth`) to helpers
+
+### Phase 3: Macro System (d026b87)
+- Fixed `defmacro` — macro arguments are no longer evaluated prematurely
+- Corrected quasiquote expansion logic
+- Fixed `unquote` and `unquote-splicing` — splice flattening now handles nested cases
+- Added `macroexpand` builtin for debugging
+- 31 new tests covering all macro features
+
+### Phase 4: Fast Path + Bug Fix (7205d84)
+- Added bytecode fast path for `map` and `filter` when given compiled lambda arguments
+- Graceful fallback to tree-walk eval when compilation fails
+- Fixed `str-concat` double-quoting bug
+- 14 new tests for fast-path and string operations
+
+### Phase 5: Execution Budget (7b443e5)
+- Implemented `eval_count` and `eval_budget` fields on `Env`
+- Replaces the removed gas system with a lightweight evaluation counter
+- Budget checked on each eval step; exceeds raise a clean error
+- 12 new tests for budget enforcement and exhaustion behavior
+
+---
 
 ## Architecture
-Port bytecode.rs (strip near-sdk deps), wire it into eval.rs loop/recur path + map/filter HOFs, and add the `len`/`append`/`nth` builtins that are missing.
 
-## Files to modify
-1. `src/bytecode.rs` — NEW: port from near-lisp, strip near-sdk imports
-2. `src/eval.rs` — add bytecode call in loop handler + lambda fast-path in map/filter
-3. `src/lib.rs` — add `mod bytecode;` + re-exports
-4. `src/helpers.rs` — add missing builtins to `is_builtin_name`
+### Source Files
+| File | Purpose |
+|------|---------|
+| `src/bytecode.rs` | Bytecode compiler + VM (ported from near-lisp, no NEAR deps) |
+| `src/eval.rs` | Tree-walk evaluator with loop/recur TCO, macro expansion |
+| `src/helpers.rs` | Builtins: arithmetic, list ops, predicates, map/filter, str-concat |
+| `src/types.rs` | `LispVal`, `Env`, `Lambda`, `BytecodeFn`, eval budget tracking |
+| `src/parser.rs` | S-expression parser (atoms, lists, quoting, quasiquote) |
+| `src/lib.rs` | Module declarations and public API |
+| `src/bin/rlm.rs` | Main REPL binary |
+| `src/bin/test_runner.rs` | Test harness |
+| `src/bin/bench.rs` | Benchmark runner |
+| `src/bin/minimal.rs` | Minimal REPL |
 
-## What's NOT being ported (NEAR-specific)
-- contract.rs (smart contract layer)
-- vm.rs (yield/resume, ccall machinery)
-- near/* builtins (storage, chain state, cross-contract calls)
+### What Was NOT Ported (NEAR-specific, correctly excluded)
+- `contract.rs` (smart contract layer)
+- `vm.rs` (yield/resume, ccall machinery)
+- `near/*` builtins (storage, chain state, cross-contract calls)
 - NEP-297 events
 - near-sdk dependency
-
-## Task breakdown
-
-### Task 1: Create bytecode.rs (port from near-lisp)
-- Copy near-lisp's bytecode.rs
-- Remove `use near_sdk::*` imports (line 1-6)
-- Replace with `use std::collections::{BTreeMap, HashMap};` only
-- The `crate::types::check_gas` call already works standalone
-
-### Task 2: Wire bytecode into eval.rs loop handler
-- Add `use crate::bytecode::{exec_compiled_loop, try_compile_loop};`
-- In the "loop" special form, after computing binding_vals, try `try_compile_loop` before tree-walk fallback
-- Same pattern as near-lisp eval.rs
-
-### Task 3: Wire bytecode into map/filter (lambda fast-path)
-- In dispatch_call's "map" and "filter" handlers, add compiled lambda fast-path
-- Use `try_compile_lambda` + `run_compiled_lambda` when lambda has 1 param
-
-### Task 4: Add missing builtins to helpers.rs
-- `len` and `length` (near-lisp has both, lisp-rlm only uses `len`)
-- `append`, `nth` (present in lisp-rlm's is_builtin_name but verify)
-- Add `defmacro` and `macroexpand` to is_builtin_name for forward compat
-
-### Task 5: Update lib.rs
-- Add `mod bytecode;`
-- Add bytecode re-exports
-
-### Task 6: Build + test
-- `cd /tmp/lisp-rlm && cargo build`
-- Run REPL and test loop/recur performance
-- Test map/filter with lambdas

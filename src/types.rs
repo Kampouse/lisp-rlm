@@ -41,6 +41,18 @@ const STDLIB_CRYPTO: &str = r#"
 (define hash/keccak256-bytes (lambda (s) (keccak256 s)))
 "#;
 
+/// Look up a standard-library module by name and return its Lisp source code.
+///
+/// # Known modules
+///
+/// | Name      | Contents                                       |
+/// |-----------|------------------------------------------------|
+/// | `"math"`  | `abs`, `min`, `max`, `even?`, `odd?`, `gcd`, `square`, `identity`, `pow`, `sqrt`, `lcm` |
+/// | `"list"`  | `empty?`, `map`, `filter`, `reduce`, `find`, `some`, `every`, `reverse`, `sort`, `range`, `zip` |
+/// | `"string"`| `str-join`, `str-replace`, `str-repeat`, `str-pad-left`, `str-pad-right` |
+/// | `"crypto"`| `hash/sha256-bytes`, `hash/keccak256-bytes` |
+///
+/// Returns `None` for unknown module names.
 pub fn get_stdlib_code(name: &str) -> Option<&'static str> {
     match name {
         "math" => Some(MATH_STDLIB),
@@ -55,6 +67,20 @@ pub fn get_stdlib_code(name: &str) -> Option<&'static str> {
 /// Prevents runaway infinite loops (e.g. tail-recursive functions with no base case).
 pub const DEFAULT_EVAL_BUDGET: u64 = 10_000_000;
 
+/// A scoped environment that maps variable names to [`LispVal`] bindings.
+///
+/// Internally the bindings are stored in a `Vec<(String, LispVal)>` with an
+/// accompanying `HashMap<String, usize>` index for O(1) lookups by name.
+/// Lexical scoping is achieved by recording the binding-vector length before
+/// entering a scope and calling [`Env::truncate`] on exit.
+///
+/// # Execution budget
+///
+/// The two public fields [`eval_count`](Env::eval_count) and
+/// [`eval_budget`](Env::eval_budget) together implement an execution-budget
+/// mechanism: every call to [`lisp_eval`](crate::lisp_eval) increments
+/// `eval_count`; if it exceeds `eval_budget` the evaluator returns an error.
+/// Set `eval_budget` to `0` to disable the limit.
 #[derive(Clone, Debug)]
 pub struct Env {
     bindings: Vec<(String, LispVal)>,
@@ -66,6 +92,7 @@ pub struct Env {
 }
 
 impl Env {
+    /// Create a new empty environment with [`DEFAULT_EVAL_BUDGET`].
     pub fn new() -> Self {
         Env {
             bindings: Vec::new(),
@@ -75,6 +102,7 @@ impl Env {
         }
     }
 
+    /// Create an environment pre-populated with the given bindings.
     pub fn from_vec(bindings: Vec<(String, LispVal)>) -> Self {
         let mut index = HashMap::new();
         for (i, (name, _)) in bindings.iter().enumerate() {
@@ -83,29 +111,38 @@ impl Env {
         Env { bindings, index, eval_count: 0, eval_budget: DEFAULT_EVAL_BUDGET }
     }
 
+    /// Insert or overwrite a binding, shadowing any previous binding with the
+    /// same name.
     pub fn push(&mut self, name: String, val: LispVal) {
         let idx = self.bindings.len();
         self.bindings.push((name.clone(), val));
         self.index.insert(name, idx);
     }
 
+    /// Look up a binding by name, returning `None` if not found.
     pub fn get(&self, name: &str) -> Option<&LispVal> {
         let idx = *self.index.get(name)?;
         Some(&self.bindings[idx].1)
     }
 
+    /// Returns `true` if a binding with the given name exists.
     pub fn contains(&self, name: &str) -> bool {
         self.index.contains_key(name)
     }
 
+    /// Number of bindings currently in the environment.
     pub fn len(&self) -> usize {
         self.bindings.len()
     }
+    /// Returns `true` if the environment has no bindings.
     #[allow(clippy::len_without_is_empty)]
     pub fn is_empty(&self) -> bool {
         self.bindings.is_empty()
     }
 
+    /// Truncate the binding vector to `new_len`, removing any bindings added
+    /// after that point.  The name-index is updated so that shadowed bindings
+    /// are correctly restored.
     pub fn truncate(&mut self, new_len: usize) {
         for i in (new_len..self.bindings.len()).rev() {
             let name = &self.bindings[i].0;
@@ -128,23 +165,28 @@ impl Env {
         self.bindings.truncate(new_len);
     }
 
+    /// Look up a binding by name and return a mutable reference, or `None`.
     pub fn get_mut(&mut self, name: &str) -> Option<&mut LispVal> {
         let idx = *self.index.get(name)?;
         Some(&mut self.bindings[idx].1)
     }
 
+    /// Iterate over all bindings in insertion order.
     pub fn iter(&self) -> std::slice::Iter<'_, (String, LispVal)> {
         self.bindings.iter()
     }
 
+    /// Iterate over all bindings mutably in insertion order.
     pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, (String, LispVal)> {
         self.bindings.iter_mut()
     }
 
+    /// Consume the environment and return the inner binding vector.
     pub fn into_bindings(self) -> Vec<(String, LispVal)> {
         self.bindings
     }
 
+    /// Remove all bindings, leaving the environment empty.
     pub fn clear(&mut self) {
         self.bindings.clear();
         self.index.clear();
@@ -158,28 +200,77 @@ impl std::ops::Index<usize> for Env {
     }
 }
 
+/// A value in the Lisp interpreter.
+///
+/// Every datum that can appear during evaluation — including intermediate
+/// control-flow markers — is represented as a `LispVal`.
+///
+/// # Variants
+///
+/// | Variant   | Meaning |
+/// |-----------|---------|
+/// | [`Nil`]       | The unit / null value. |
+/// | [`Bool`]      | Boolean `true` / `false`. |
+/// | [`Num`]       | 64-bit signed integer. |
+/// | [`Float`]     | 64-bit floating-point number. |
+/// | [`Str`]       | Heap-allocated string. |
+/// | [`Sym`]       | Symbol (variable / operator name). |
+/// | [`List`]      | Heterogeneous list of values. |
+/// | [`Lambda`]    | First-class closure with captured environment. |
+/// | [`Macro`]     | Macro: receives unevaluated args, returns code to evaluate. |
+/// | [`Recur`]     | Control-flow marker used by `loop`/`recur` (not user-visible). |
+/// | [`Map`]       | String-keyed hash map (`BTreeMap<String, LispVal>`). |
+///
+/// [`Nil`]: LispVal::Nil
+/// [`Bool`]: LispVal::Bool
+/// [`Num`]: LispVal::Num
+/// [`Float`]: LispVal::Float
+/// [`Str`]: LispVal::Str
+/// [`Sym`]: LispVal::Sym
+/// [`List`]: LispVal::List
+/// [`Lambda`]: LispVal::Lambda
+/// [`Macro`]: LispVal::Macro
+/// [`Recur`]: LispVal::Recur
+/// [`Map`]: LispVal::Map
 #[derive(Clone, Debug, PartialEq)]
 pub enum LispVal {
+    /// The unit / null value (`nil` in Lisp).
     Nil,
+    /// Boolean value.
     Bool(bool),
+    /// 64-bit signed integer.
     Num(i64),
+    /// 64-bit floating-point number.
     Float(f64),
+    /// Heap-allocated string.
     Str(String),
+    /// Symbol — a variable or operator name, resolved at eval time.
     Sym(String),
+    /// Heterogeneous list of Lisp values.
     List(Vec<LispVal>),
+    /// First-class closure.
+    ///
+    /// - `params` — parameter names.
+    /// - `rest_param` — optional rest-parameter that collects extra args.
+    /// - `body` — the expression to evaluate.
+    /// - `closed_env` — captured lexical environment at closure-creation time.
     Lambda {
         params: Vec<String>,
         rest_param: Option<String>,
         body: Box<LispVal>,
         closed_env: Box<Vec<(String, LispVal)>>,
     },
+    /// Macro (like `Lambda` but receives *unevaluated* arguments).
     Macro {
         params: Vec<String>,
         rest_param: Option<String>,
         body: Box<LispVal>,
         closed_env: Box<Vec<(String, LispVal)>>,
     },
+    /// Control-flow marker emitted by `recur` inside a `loop` form.
+    /// Carries the new binding values for the next iteration.
     Recur(Vec<LispVal>),
+    /// String-keyed dictionary backed by a `BTreeMap`.
     Map(BTreeMap<String, LispVal>),
 }
 
