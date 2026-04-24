@@ -1,0 +1,234 @@
+//! Collection builtins: list, car, cdr, cons, len, append, nth, range, reverse, sort, zip, empty?
+//! Also includes map, filter, reduce, find, some, every (higher-order).
+
+use crate::helpers::*;
+use crate::types::{Env, LispVal};
+
+/// Helper: call a function value with given args in the given env.
+/// We delegate to `super::call_val`.
+fn call_val(func: &LispVal, args: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
+    super::call_val(func, args, env)
+}
+
+pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<LispVal>, String> {
+    match name {
+        "list" => Ok(Some(LispVal::List(args.to_vec()))),
+        "car" => match args.get(0) {
+            Some(LispVal::List(l)) if !l.is_empty() => Ok(Some(l[0].clone())),
+            _ => Ok(Some(LispVal::Nil)),
+        },
+        "cdr" => match args.get(0) {
+            Some(LispVal::List(l)) if l.len() > 1 => Ok(Some(LispVal::List(l[1..].to_vec()))),
+            Some(LispVal::List(_)) => Ok(Some(LispVal::List(vec![]))),
+            _ => Ok(Some(LispVal::Nil)),
+        },
+        "cons" => match args.get(1) {
+            Some(LispVal::List(l)) => {
+                let mut n = vec![args[0].clone()];
+                n.extend(l.iter().cloned());
+                Ok(Some(LispVal::List(n)))
+            }
+            _ => Ok(Some(LispVal::List(args.to_vec()))),
+        },
+        "len" => match args.get(0) {
+            Some(LispVal::List(l)) => Ok(Some(LispVal::Num(l.len() as i64))),
+            Some(LispVal::Str(s)) => Ok(Some(LispVal::Num(s.len() as i64))),
+            Some(LispVal::Nil) => Ok(Some(LispVal::Num(0))),
+            _ => Err("len: need list or string".into()),
+        },
+        "append" => {
+            let mut r = Vec::new();
+            for a in args {
+                if let LispVal::List(l) = a { r.extend(l.iter().cloned()); }
+                else { r.push(a.clone()); }
+            }
+            Ok(Some(LispVal::List(r)))
+        }
+        "nth" => {
+            let list_val = args.get(0).ok_or("nth: need list and index")?;
+            let i = as_num(args.get(1).ok_or("nth: need index")?)? as usize;
+            match list_val {
+                LispVal::List(l) => l.get(i).cloned().ok_or("nth: index out of range".into()).map(Some),
+                _ => Err("nth: first arg must be a list".into()),
+            }
+        }
+        "empty?" => Ok(Some(LispVal::Bool(
+            matches!(&args[0], LispVal::Nil) || matches!(&args[0], LispVal::List(ref v) if v.is_empty()),
+        ))),
+        "range" => {
+            let start = as_num(args.get(0).ok_or("range: need 2 args")?)?;
+            let end = as_num(args.get(1).ok_or("range: need 2 args")?)?;
+            if start >= end { return Ok(Some(LispVal::List(vec![]))); }
+            Ok(Some(LispVal::List((start..end).map(LispVal::Num).collect())))
+        }
+        "reverse" => match &args[0] {
+            LispVal::List(l) => Ok(Some(LispVal::List(l.iter().rev().cloned().collect()))),
+            LispVal::Nil => Ok(Some(LispVal::List(vec![]))),
+            other => Err(format!("reverse: expected list, got {}", other)),
+        },
+        "sort" => {
+            let mut vals = match &args[0] {
+                LispVal::List(l) => l.clone(),
+                LispVal::Nil => vec![],
+                other => return Err(format!("sort: expected list, got {}", other)),
+            };
+            vals.sort_by(|a, b| {
+                let fa = match a { LispVal::Num(n) => *n as f64, LispVal::Float(f) => *f, _ => 0.0 };
+                let fb = match b { LispVal::Num(n) => *n as f64, LispVal::Float(f) => *f, _ => 0.0 };
+                fa.partial_cmp(&fb).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            Ok(Some(LispVal::List(vals)))
+        }
+        "zip" => {
+            let a = match &args[0] { LispVal::List(l) => l.clone(), LispVal::Nil => vec![], other => return Err(format!("zip: expected list, got {}", other)) };
+            let b = match args.get(1) { Some(LispVal::List(l)) => l.clone(), Some(LispVal::Nil) => vec![], Some(other) => return Err(format!("zip: expected list, got {}", other)), None => return Err("zip: need 2 args".into()) };
+            Ok(Some(LispVal::List(a.iter().zip(b.iter()).map(|(x, y)| LispVal::List(vec![x.clone(), y.clone()])).collect())))
+        }
+
+        // Higher-order collection operations
+        "map" => {
+            let func = args.get(0).ok_or("map: need (f list)")?;
+            let lst = match args.get(1) {
+                Some(LispVal::List(l)) => l.clone(),
+                Some(LispVal::Nil) => return Ok(Some(LispVal::List(vec![]))),
+                Some(other) => return Err(format!("map: expected list, got {}", other)),
+                None => return Err("map: need (f list)".into()),
+            };
+            // Fast path: compile single-param lambda to bytecode
+            if let LispVal::Lambda { params, rest_param: None, body, closed_env } = func {
+                if params.len() == 1 {
+                    if let Some(cl) = crate::bytecode::try_compile_lambda(
+                        params, body, closed_env, env,
+                    ) {
+                        if lst.is_empty() {
+                            return Ok(Some(LispVal::List(vec![])));
+                        }
+                        if let Ok(first_result) = crate::bytecode::run_compiled_lambda(&cl, &[lst[0].clone()]) {
+                            let mut result = Vec::with_capacity(lst.len());
+                            result.push(first_result);
+                            for elem in &lst[1..] {
+                                result.push(crate::bytecode::run_compiled_lambda(&cl, &[elem.clone()])?);
+                            }
+                            return Ok(Some(LispVal::List(result)));
+                        }
+                    }
+                }
+            }
+            let mut result = Vec::with_capacity(lst.len());
+            for elem in &lst {
+                result.push(call_val(func, &[elem.clone()], env)?);
+            }
+            Ok(Some(LispVal::List(result)))
+        }
+        "filter" => {
+            let func = args.get(0).ok_or("filter: need (pred list)")?;
+            let lst = match args.get(1) {
+                Some(LispVal::List(l)) => l.clone(),
+                Some(LispVal::Nil) => return Ok(Some(LispVal::List(vec![]))),
+                Some(other) => return Err(format!("filter: expected list, got {}", other)),
+                None => return Err("filter: need (pred list)".into()),
+            };
+            if let LispVal::Lambda { params, rest_param: None, body, closed_env } = func {
+                if params.len() == 1 {
+                    if let Some(cl) =
+                        crate::bytecode::try_compile_lambda(params, body, closed_env, env)
+                    {
+                        if lst.is_empty() {
+                            return Ok(Some(LispVal::List(vec![])));
+                        }
+                        if let Ok(first_result) =
+                            crate::bytecode::run_compiled_lambda(&cl, &[lst[0].clone()])
+                        {
+                            let mut result = Vec::new();
+                            if is_truthy(&first_result) {
+                                result.push(lst[0].clone());
+                            }
+                            for elem in &lst[1..] {
+                                if is_truthy(&crate::bytecode::run_compiled_lambda(&cl, &[elem.clone()])?) {
+                                    result.push(elem.clone());
+                                }
+                            }
+                            return Ok(Some(LispVal::List(result)));
+                        }
+                    }
+                }
+            }
+            let mut result = Vec::new();
+            for elem in &lst {
+                if is_truthy(&call_val(func, &[elem.clone()], env)?) {
+                    result.push(elem.clone());
+                }
+            }
+            Ok(Some(LispVal::List(result)))
+        }
+        "reduce" => {
+            let func = args.get(0).ok_or("reduce: need (f init list)")?;
+            let mut acc = args.get(1).ok_or("reduce: need (f init list)")?.clone();
+            let lst = match args.get(2) {
+                Some(LispVal::List(l)) => l.clone(),
+                Some(LispVal::Nil) => return Ok(Some(acc)),
+                Some(other) => return Err(format!("reduce: expected list, got {}", other)),
+                None => return Err("reduce: need (f init list)".into()),
+            };
+            let acc_str = acc.to_string();
+            for elem in &lst {
+                let prev_acc = acc.clone();
+                acc = call_val(func, &[prev_acc.clone(), elem.clone()], env)?;
+                let new_acc_str = acc.to_string();
+                if new_acc_str == prev_acc.to_string() && !lst.is_empty() {
+                    eprintln!("[WARN] reduce: accumulator unchanged after processing element. \
+                        Your function may be ignoring the current element. \
+                        Consider using (str-join sep lst) for string joining.");
+                }
+            }
+            Ok(Some(acc))
+        }
+        "find" => {
+            let func = args.get(0).ok_or("find: need (pred list)")?;
+            let lst = match args.get(1) {
+                Some(LispVal::List(l)) => l.clone(),
+                Some(LispVal::Nil) => return Ok(Some(LispVal::Nil)),
+                Some(other) => return Err(format!("find: expected list, got {}", other)),
+                None => return Err("find: need (pred list)".into()),
+            };
+            for elem in &lst {
+                if is_truthy(&call_val(func, &[elem.clone()], env)?) {
+                    return Ok(Some(elem.clone()));
+                }
+            }
+            Ok(Some(LispVal::Nil))
+        }
+        "some" => {
+            let func = args.get(0).ok_or("some: need (pred list)")?;
+            let lst = match args.get(1) {
+                Some(LispVal::List(l)) => l.clone(),
+                Some(LispVal::Nil) => return Ok(Some(LispVal::Bool(false))),
+                Some(other) => return Err(format!("some: expected list, got {}", other)),
+                None => return Err("some: need (pred list)".into()),
+            };
+            for elem in &lst {
+                if is_truthy(&call_val(func, &[elem.clone()], env)?) {
+                    return Ok(Some(LispVal::Bool(true)));
+                }
+            }
+            Ok(Some(LispVal::Bool(false)))
+        }
+        "every" => {
+            let func = args.get(0).ok_or("every: need (pred list)")?;
+            let lst = match args.get(1) {
+                Some(LispVal::List(l)) => l.clone(),
+                Some(LispVal::Nil) => return Ok(Some(LispVal::Bool(true))),
+                Some(other) => return Err(format!("every: expected list, got {}", other)),
+                None => return Err("every: need (pred list)".into()),
+            };
+            for elem in &lst {
+                if !is_truthy(&call_val(func, &[elem.clone()], env)?) {
+                    return Ok(Some(LispVal::Bool(false)));
+                }
+            }
+            Ok(Some(LispVal::Bool(true)))
+        }
+
+        _ => Ok(None),
+    }
+}
