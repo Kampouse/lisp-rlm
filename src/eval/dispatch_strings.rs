@@ -1,6 +1,8 @@
 //! String builtins: str-concat, str-contains, str-length, str-substring, str-split,
 //! str-split-exact, str-trim, str-index-of, str-upcase, str-downcase, str-starts-with,
 //! str-ends-with, str=, str!=, str-chunk, str-join, to-string
+//!
+//! All indices and lengths are in **characters** (Unicode code points), not bytes.
 
 use crate::helpers::*;
 use crate::types::LispVal;
@@ -84,7 +86,11 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
         "str-index-of" => {
             let haystack = as_str(&args[0])?;
             let needle = as_str(args.get(1).ok_or("str-index-of: need needle")?)?;
-            let idx = haystack.find(&needle).map(|i| i as i64).unwrap_or(-1);
+            // Return character offset (not byte offset) for consistency with str-substring
+            let idx = haystack
+                .find(&needle)
+                .map(|byte_pos| haystack[..byte_pos].chars().count() as i64)
+                .unwrap_or(-1);
             Ok(Some(LispVal::Num(idx)))
         }
         "str-upcase" => Ok(Some(LispVal::Str(as_str(&args[0])?.to_uppercase()))),
@@ -100,12 +106,12 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             Ok(Some(LispVal::Bool(s.ends_with(&suffix))))
         }
         "str=" => {
-            let a = as_str(args.get(0).ok_or("str=: need 2 args")?)?;
+            let a = as_str(args.first().ok_or("str=: need 2 args")?)?;
             let b = as_str(args.get(1).ok_or("str=: need 2 args")?)?;
             Ok(Some(LispVal::Bool(a == b)))
         }
         "str!=" => {
-            let a = as_str(args.get(0).ok_or("str!=: need 2 args")?)?;
+            let a = as_str(args.first().ok_or("str!=: need 2 args")?)?;
             let b = as_str(args.get(1).ok_or("str!=: need 2 args")?)?;
             Ok(Some(LispVal::Bool(a != b)))
         }
@@ -135,7 +141,7 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             Ok(Some(LispVal::List(chunks)))
         }
         "str-join" => {
-            let sep = as_str(args.get(0).ok_or("str-join: need (separator list)")?)?;
+            let sep = as_str(args.first().ok_or("str-join: need (separator list)")?)?;
             let lst = match args.get(1) {
                 Some(LispVal::List(l)) => l,
                 Some(LispVal::Nil) => return Ok(Some(LispVal::Str(String::new()))),

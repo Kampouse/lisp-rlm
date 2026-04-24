@@ -1,11 +1,15 @@
 //! Shared helper functions for the eval module.
 
-/// Truncate a string to `max_len` chars, appending "..." if truncated.
+/// Truncate a string to `max_len` characters, appending "..." if truncated.
+///
+/// Correctly handles multi-byte UTF-8: truncation is at character boundaries,
+/// never mid-codepoint.
 pub fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
+    if s.chars().count() <= max_len {
         s.to_string()
     } else {
-        format!("{}...[truncated]", &s[..max_len])
+        let truncated: String = s.chars().take(max_len).collect();
+        format!("{}...[truncated]", truncated)
     }
 }
 
