@@ -8,7 +8,7 @@ pub mod crypto;
 pub mod helpers;
 pub mod quasiquote;
 
-use crypto::{hex_encode, sha256_hash, keccak256_hash};
+use crypto::{builtin_sha256, builtin_keccak256};
 use helpers::{truncate_str, strip_markdown_fences, extract_first_valid_expr};
 use quasiquote::expand_quasiquote;
 
@@ -690,7 +690,7 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
 
     // Check if head resolves to a Macro — macros get unevaluated args
     if let LispVal::Sym(name) = head {
-        if let Some((_, func)) = env.iter().rev().find(|(k, _)| k == name) {
+        if let Some(func) = env.get(name) {
             if matches!(func, LispVal::Macro { .. }) {
                 let func_clone = func.clone();
                 return call_val(&func_clone, &raw_args, env);
@@ -1043,8 +1043,7 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
                 Ok(json_to_lisp(cur.clone()))
             }
             "json-build" => {
-                let val = if args.len() == 1 { lisp_eval(&args[0], env)? } else { args[0].clone() };
-                let j = lisp_to_json(&val);
+                let j = lisp_to_json(&args[0]);
                 Ok(LispVal::Str(j.to_string()))
             }
             "to-json" => {
@@ -1054,16 +1053,10 @@ fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
 
             // --- Crypto (standalone using sha2/keccak crates or stubs) ---
             "sha256" => {
-
-                let data = as_str(&args[0])?;
-                // Use a simple SHA-256 implementation
-                let hash = sha256_hash(data.as_bytes());
-                Ok(LispVal::Str(hex_encode(&hash)))
+                builtin_sha256(&args)
             }
             "keccak256" => {
-                let data = as_str(&args[0])?;
-                let hash = keccak256_hash(data.as_bytes());
-                Ok(LispVal::Str(hex_encode(&hash)))
+                builtin_keccak256(&args)
             }
 
             // --- List stdlib native builtins ---
@@ -2265,8 +2258,7 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
             }
 
             _ => {
-                let func = env.iter().rev().find(|(k, _)| k == name)
-                    .map(|(_, v)| v.clone())
+                let func = env.get(name).cloned()
                     .ok_or_else(|| format!("undefined: {}", name))?;
                 call_val(&func, &args, env)
             }
