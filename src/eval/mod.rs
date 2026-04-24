@@ -294,6 +294,10 @@ fn rlm_fractal(
     let max_retries: usize = 3;
     let do_verify = std::env::var("RLM_VERIFY").unwrap_or_default() == "1";
 
+    // Clear stale RLM state from parent/sibling — each node starts clean
+    let saved_state = env.rlm_state.clone();
+    env.rlm_state.clear();
+
     // --- Phase 1: TRY to solve in one shot ---
     let solve_result = rlm_try_solve(&task, env, max_retries);
 
@@ -307,10 +311,14 @@ fn rlm_fractal(
             // Optional verification
             if do_verify {
                 if let Some(verified) = rlm_verify(&task, &result, env)? {
+                    // Restore parent state (preserve token counts)
+                    merge_rlm_state(env, &saved_state);
                     return Ok(verified);
                 }
                 // Verification failed — fall through to split
+                env.rlm_state.clear();
             } else {
+                merge_rlm_state(env, &saved_state);
                 return Ok(result);
             }
         }
@@ -347,6 +355,7 @@ fn rlm_fractal(
 
     if halves.is_empty() {
         // Decomposition failed — best effort
+        merge_rlm_state(env, &saved_state);
         let best = env
             .rlm_state
             .get("result")
@@ -356,6 +365,7 @@ fn rlm_fractal(
     }
 
     // --- Phase 4: DFS — recurse on left, then right ---
+    // Each child gets a clean rlm_state, but inherits cumulative token counts
     let mut child_results: Vec<LispVal> = Vec::new();
 
     for (i, subtask) in halves.iter().enumerate() {
@@ -366,7 +376,19 @@ fn rlm_fractal(
             halves.len(),
             truncate_str(subtask, 80)
         );
+        // Save state before child, restore after (isolate siblings)
+        let pre_child_state = env.rlm_state.clone();
+        env.rlm_state.clear();
+
         let child_result = rlm_fractal(subtask.clone(), env, depth + 1, max_depth);
+
+        // Restore parent state (keep cumulative tokens/calls)
+        let child_tokens = env.tokens_used;
+        let child_calls = env.llm_calls;
+        env.rlm_state = pre_child_state;
+        env.tokens_used = child_tokens;
+        env.llm_calls = child_calls;
+
         match child_result {
             Ok(v) => child_results.push(v),
             Err(e) => {
@@ -390,6 +412,9 @@ fn rlm_fractal(
     );
 
     let combined = rlm_synthesize(&task, &child_results, env)?;
+
+    // Restore parent state (preserve token counts)
+    merge_rlm_state(env, &saved_state);
 
     // Optional verification of synthesized result
     if do_verify {
@@ -699,6 +724,15 @@ fn rlm_state_summary(env: &Env) -> String {
         .map(|(k, v)| format!("{} = {}", k, truncate_str(&v.to_string(), 60)))
         .collect();
     truncate_str(&entries.join(", "), 300).to_string()
+}
+
+/// Merge saved parent state back into env, preserving cumulative token/call counts
+fn merge_rlm_state(env: &mut Env, saved: &BTreeMap<String, LispVal>) {
+    let tokens = env.tokens_used;
+    let calls = env.llm_calls;
+    env.rlm_state = saved.clone();
+    env.tokens_used = tokens;
+    env.llm_calls = calls;
 }
 
 fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
