@@ -247,6 +247,47 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
             Ok(Some(LispVal::Str(stdout)))
         }
 
+        // shell-bg: spawn a background process, return immediately with PID
+        "shell-bg" => {
+            let cmd = as_str(&args[0])?;
+            let allow = std::env::var("RLM_ALLOW_SHELL").unwrap_or_default();
+            if allow != "1" && allow != "true" {
+                return Err("shell-bg: blocked unless RLM_ALLOW_SHELL=1 is set".into());
+            }
+            let child = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(&cmd)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .map_err(|e| format!("shell-bg: {}", e))?;
+            let pid = child.id();
+            // Store PID so shell-kill can use it later
+            env.rlm_state.insert("__bg_pids".to_string(), {
+                let mut pids = match env.rlm_state.get("__bg_pids") {
+                    Some(LispVal::List(v)) => v.clone(),
+                    _ => vec![],
+                };
+                pids.push(LispVal::Num(pid as i64));
+                LispVal::List(pids)
+            });
+            Ok(Some(LispVal::Num(pid as i64)))
+        }
+
+        // shell-kill: kill a background process by PID
+        "shell-kill" => {
+            let pid = as_num(&args[0])?;
+            let allow = std::env::var("RLM_ALLOW_SHELL").unwrap_or_default();
+            if allow != "1" && allow != "true" {
+                return Err("shell-kill: blocked unless RLM_ALLOW_SHELL=1 is set".into());
+            }
+            unsafe {
+                libc::kill(pid as i32, libc::SIGTERM);
+            }
+            Ok(Some(LispVal::Bool(true)))
+        }
+
         // --- Env ---
         "env/get" => {
             let key = as_str(&args[0])?;

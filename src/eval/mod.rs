@@ -207,9 +207,28 @@ Logic: and or
 Lists: list cons car cdr nth len append reverse map filter reduce sort range zip find some every
 Predicates: nil? list? number? string? bool? map? macro? type? empty?
 Strings: str-concat str-contains str-split str-split-exact str-trim str-upcase str-downcase str-length str-substring str-index-of str-starts-with str-ends-with str= str!= str-chunk str-join
-IO: print println read-file write-file append-file file-exists? shell
-HTTP: http-get http-post http-get-json
-JSON: from-json to-json json-parse json-get json-get-in json-build
+
+IO — file and shell:
+  (read-file "path.txt")           → string contents
+  (write-file "path.txt" content)  → writes string to file
+  (append-file "path.txt" content) → appends string to file
+  (file-exists? "path.txt")        → bool
+  (shell "ls -la")                 → stdout string (requires RLM_ALLOW_SHELL=1)
+  (shell-bg "python3 server.py")   → spawn background process, returns PID (requires RLM_ALLOW_SHELL=1)
+  (shell-kill pid)                 → kill background process by PID
+
+HTTP — make HTTP requests:
+  (http-get "https://example.com")                     → response body as string
+  (http-post "https://api.com" "{\"key\":\"val\"}")    → POST with JSON body, returns response body
+  (http-get-json "https://api.com/data")               → returns parsed JSON as Lisp map/list
+
+JSON:
+  (from-json "{\"a\":1}")      → Lisp map
+  (to-json val)                → JSON string
+  (json-get obj "key")         → value from map
+  (json-get-in obj (list "a" "b"))  → nested access
+  (json-build "key" val ...)   → build JSON object
+
 LLM: llm llm-code sub-rlm llm-batch
 Crypto: sha256 keccak256
 Types: to-int to-float to-string to-num
@@ -836,7 +855,12 @@ fn merge_rlm_state(env: &mut Env, saved: &BTreeMap<String, LispVal>) {
 
 fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
     let mut current_expr: LispVal = expr.clone();
+    let mut _iter_count: u32 = 0;
     '_trampoline: loop {
+        _iter_count += 1;
+        if _iter_count % 1000 == 0 {
+            eprintln!("[trampoline] iter {}, current_expr={}", _iter_count, truncate_str(&current_expr.to_string(), 80));
+        }
         match &current_expr {
             LispVal::Nil
             | LispVal::Bool(_)
@@ -1444,7 +1468,13 @@ pub fn apply_lambda(
         push_saving!(rest_name, LispVal::List(rest_args));
     }
 
-    let result = lisp_eval(body, caller_env);
+    let result = {
+        eprintln!("[apply_lambda] BEFORE lisp_eval, body={}, env len={}, eval_count={}", 
+            truncate_str(&body.to_string(), 60), caller_env.len(), caller_env.eval_count);
+        let r = lisp_eval(body, caller_env);
+        eprintln!("[apply_lambda] AFTER lisp_eval, result={:?}", r.as_ref().map(|v| truncate_str(&v.to_string(), 50)));
+        r
+    };
 
     // Restore: truncate any new bindings, then restore overwritten ones
     caller_env.truncate(base_len);

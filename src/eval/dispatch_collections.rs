@@ -220,8 +220,11 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
                 }
             }
             let mut result = Vec::new();
-            for elem in &lst {
-                if is_truthy(&call_val(func, &[elem.clone()], env)?) {
+            for (idx, elem) in lst.iter().enumerate() {
+                eprintln!("[filter] elem {}/{}", idx, lst.len());
+                let pred = call_val(func, &[elem.clone()], env)?;
+                eprintln!("[filter] pred result: {}", pred);
+                if is_truthy(&pred) {
                     result.push(elem.clone());
                 }
             }

@@ -83,6 +83,8 @@ pub fn is_builtin_name(name: &str) -> bool {
             | "append-file"
             | "file-exists?"
             | "shell"
+            | "shell-bg"
+            | "shell-kill"
             | "http-get"
             | "http-post"
             | "http-get-json"
