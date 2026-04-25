@@ -74,6 +74,33 @@ CPS (continuation-passing style) iterative evaluator with explicit `Cont` stack.
 - All fib/fibonacci tests pass (fib(15) = 610) — no stack overflow
 - All budget tests pass — infinite loops caught by budget, not stack overflow
 
+## Architecture: Persistent Data Structures
+
+`Env` wraps `im::HashMap` — a Hash Array Mapped Trie (HAMT). This is a persistent (immutable) data structure: every mutation creates a new version that shares unchanged nodes with the old one via structural sharing.
+
+**What this means concretely:**
+
+- `env.clone()` / `env.snapshot()` is O(1) — just a pointer bump, not a deep copy
+- Old versions remain valid and usable as long as someone holds a reference
+- Only the path from root to the changed key is allocated per edit (2-3 nodes, regardless of map size)
+- Lookup is O(log32 n) — effectively constant for any realistic env size
+
+**What this enables for the evaluator:**
+
+1. **Time-travel debugging** — Every eval step can snapshot env in O(1). Full timeline of environment state for auditing agent execution without memory blowup.
+
+2. **Speculative evaluation** — Fork env, try risky code (macro expansion, generated code), commit or discard. The fork is O(1) because the parent version never changed. No rollback machinery needed.
+
+3. **Safe recursive branching** — `(+ (fib (- n 1)) (fib (- n 2)))` evaluates two recursive calls that share the parent's bindings via structural sharing, not copying. Each branch mutates independently without clobbering the other.
+
+**What it does NOT enable (yet):**
+
+Concurrency. The eval loop is synchronous and single-threaded. `im` gives the data structure for parallel evaluation, but the evaluator doesn't use threads. The persistent map is currently doing defensive work (preventing clobber) rather than enabling parallelism.
+
+**Design origin:** Okasaki's "Purely Functional Data Structures" (1999). Clojure made it mainstream. `im` is Rust's implementation.
+
+---
+
 ## Future (not planned)
 
 ### Full Continuation Stack for deeper patterns
