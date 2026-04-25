@@ -14,10 +14,18 @@ use std::sync::LazyLock;
 pub static SHARED_RUNTIME: LazyLock<tokio::runtime::Runtime> =
     LazyLock::new(|| tokio::runtime::Runtime::new().expect("failed to create tokio runtime"));
 
-/// Shared reqwest client with a 60 s timeout.
+/// Shared reqwest client.
+///
+/// Timeout is configurable via `RLM_TIMEOUT_SECS` (default 300 s = 5 min).
+/// Fractal decomposition can trigger many sequential LLM calls; 60 s was too
+/// aggressive for complex tasks that need long generation times.
 pub static SHARED_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    let timeout_secs: u64 = std::env::var("RLM_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(300);
     reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
+        .timeout(std::time::Duration::from_secs(timeout_secs))
         .build()
         .expect("failed to create reqwest client")
 });

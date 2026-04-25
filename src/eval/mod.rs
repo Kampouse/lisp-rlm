@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::time::Instant;
 
 use std::sync::LazyLock;
 
@@ -289,10 +290,38 @@ fn rlm_fractal(
     depth: usize,
     max_depth: usize,
 ) -> Result<LispVal, String> {
+    // Compute deadline on first call, pass through recursion
+    let deadline = if depth == 0 {
+        let secs: u64 = std::env::var("RLM_TIME_BUDGET")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(300);
+        Instant::now() + std::time::Duration::from_secs(secs)
+    } else {
+        // Already set by parent — read from state
+        env.rlm_state
+            .get("__deadline")
+            .and_then(|v| match v {
+                LispVal::Float(f) => Some(Instant::now() + std::time::Duration::from_secs_f64(*f - Instant::now().elapsed().as_secs_f64())),
+                _ => None,
+            })
+            .unwrap_or_else(|| Instant::now() + std::time::Duration::from_secs(300))
+    };
+
+    rlm_fractal_inner(task, env, depth, max_depth, deadline)
+}
+
+fn rlm_fractal_inner(
+    task: String,
+    env: &mut Env,
+    depth: usize,
+    max_depth: usize,
+    deadline: Instant,
+) -> Result<LispVal, String> {
     let max_retries: usize = 3;
     let do_verify = std::env::var("RLM_VERIFY").unwrap_or_default() == "1";
 
-    // Global token/call budget to prevent unbounded LLM API calls in deep decomposition trees
+    // --- Budget checks (graceful degradation, not SIGKILL) ---
     let token_budget: usize = std::env::var("RLM_TOKEN_BUDGET")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -302,34 +331,23 @@ fn rlm_fractal(
         .and_then(|s| s.parse().ok())
         .unwrap_or(100);
 
+    // Time budget — return best effort instead of dying
+    if Instant::now() >= deadline {
+        eprintln!("[rlm depth={}] ⚠ time budget exceeded, returning best effort", depth);
+        let best = env.rlm_state.get("result").cloned()
+            .unwrap_or(LispVal::Str("Time budget exceeded".to_string()));
+        return Ok(best);
+    }
     if env.tokens_used >= token_budget {
-        eprintln!(
-            "[rlm depth={}] ⚠ token budget exceeded ({}/{}), returning best effort",
-            depth, env.tokens_used, token_budget
-        );
-        let best = env
-            .rlm_state
-            .get("result")
-            .cloned()
-            .unwrap_or(LispVal::Str(format!(
-                "Token budget exceeded ({} tokens used)",
-                env.tokens_used
-            )));
+        eprintln!("[rlm depth={}] ⚠ token budget ({}/{})", depth, env.tokens_used, token_budget);
+        let best = env.rlm_state.get("result").cloned()
+            .unwrap_or(LispVal::Str(format!("Token budget exceeded ({} used)", env.tokens_used)));
         return Ok(best);
     }
     if env.llm_calls >= call_budget {
-        eprintln!(
-            "[rlm depth={}] ⚠ call budget exceeded ({}/{}), returning best effort",
-            depth, env.llm_calls, call_budget
-        );
-        let best = env
-            .rlm_state
-            .get("result")
-            .cloned()
-            .unwrap_or(LispVal::Str(format!(
-                "Call budget exceeded ({} calls used)",
-                env.llm_calls
-            )));
+        eprintln!("[rlm depth={}] ⚠ call budget ({}/{})", depth, env.llm_calls, call_budget);
+        let best = env.rlm_state.get("result").cloned()
+            .unwrap_or(LispVal::Str(format!("Call budget exceeded ({} calls)", env.llm_calls)));
         return Ok(best);
     }
 
@@ -389,6 +407,13 @@ fn rlm_fractal(
     }
 
     // --- Phase 3: DECOMPOSE into 2 subtasks ---
+    if Instant::now() >= deadline {
+        eprintln!("[rlm depth={}] ⚠ time budget hit before decompose, returning best effort", depth);
+        merge_rlm_state(env, &saved_state);
+        let best = env.rlm_state.get("result").cloned()
+            .unwrap_or(LispVal::Str("Time budget exceeded before decompose".to_string()));
+        return Ok(best);
+    }
     eprintln!("[rlm depth={}] ⟳ SPLITTING into 2 subtasks...", depth);
 
     let halves = rlm_decompose(&task, env)?;
@@ -420,7 +445,7 @@ fn rlm_fractal(
         let pre_child_state = env.rlm_state.clone();
         env.rlm_state.clear();
 
-        let child_result = rlm_fractal(subtask.clone(), env, depth + 1, max_depth);
+        let child_result = rlm_fractal_inner(subtask.clone(), env, depth + 1, max_depth, deadline);
 
         // Restore parent state (keep cumulative tokens/calls)
         let child_tokens = env.tokens_used;
