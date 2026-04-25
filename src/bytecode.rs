@@ -1268,14 +1268,29 @@ pub struct CompiledLambda {
 /// Try to compile a lambda body for fast inline evaluation.
 /// Returns None if the body contains unsupported forms (macros, user-defined functions, etc.)
 pub fn try_compile_lambda(
-    _param_names: &[String],
-    _body: &LispVal,
-    _closed_env: &[(String, LispVal)],
-    _outer_env: &Env,
+    param_names: &[String],
+    body: &LispVal,
+    closed_env: &[(String, LispVal)],
+    outer_env: &Env,
 ) -> Option<CompiledLambda> {
-    // Disabled: bytecode runner has infinite loop bug.
-    // Lambda calls fall through to call_val (apply_lambda) path.
-    None
+    let mut compiler = LoopCompiler::new(param_names.to_vec());
+    // Pre-register captured env from the lambda closure
+    for (name, val) in closed_env {
+        compiler.captured.push((name.clone(), val.clone()));
+    }
+    if !compiler.compile_expr(body, outer_env) {
+        return None;
+    }
+    compiler.code.push(Op::Return);
+    let mut code = compiler.code;
+    peephole_optimize(&mut code);
+    peephole_optimize(&mut code);
+    peephole_optimize(&mut code);
+    Some(CompiledLambda {
+        num_param_slots: param_names.len(),
+        code,
+        captured: compiler.captured,
+    })
 }
 
 /// Run a compiled lambda with the given arguments. Returns the result directly.
@@ -1292,10 +1307,14 @@ pub fn run_compiled_lambda(cl: &CompiledLambda, args: &[LispVal]) -> Result<Lisp
     let mut stack: Vec<LispVal> = Vec::with_capacity(8);
     let code = &cl.code;
     let mut pc: usize = 0;
-    let mut op_count: u32 = 0;
+    let mut ops: u32 = 0;
+    const LAMBDA_BUDGET: u32 = 1_000_000;
 
     loop {
-        op_count += 1;
+        ops += 1;
+        if ops > LAMBDA_BUDGET {
+            return Err("compiled lambda: budget exceeded (possible infinite loop)".into());
+        }
         match &code[pc] {
             Op::LoadSlot(s) => {
                 let slot_ref = &slots[*s];
@@ -1470,6 +1489,10 @@ pub fn try_compile_loop(
 }
 
 /// Execute a compiled loop
-pub fn exec_compiled_loop(cl: &CompiledLoop, _outer_env: &mut Env, _state: &mut EvalState) -> Result<LispVal, String> {
+pub fn exec_compiled_loop(
+    cl: &CompiledLoop,
+    _outer_env: &mut Env,
+    _state: &mut EvalState,
+) -> Result<LispVal, String> {
     run_compiled_loop(cl)
 }
