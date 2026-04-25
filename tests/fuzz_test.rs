@@ -1,10 +1,11 @@
+use lisp_rlm::EvalState;
 use lisp_rlm::*;
 
-fn run_program(code: &str, env: &mut Env) -> Result<String, String> {
+fn run_program(code: &str, env: &mut Env, state: &mut EvalState) -> Result<String, String> {
     let exprs = parse_all(code)?;
     let mut result = LispVal::Nil;
     for expr in &exprs {
-        result = lisp_eval(&expr, env)?;
+        result = lisp_eval(&expr, env, state)?;
     }
     Ok(result.to_string())
 }
@@ -168,7 +169,8 @@ fn test_fuzz_evaluator_no_panics() {
     for code in eval_cases {
         let result = catch_unwind(AssertUnwindSafe(|| {
             let mut env = Env::new();
-            let _ = run_program(code, &mut env);
+    let mut state = EvalState::new();
+            let _ = run_program(code, &mut env, &mut state);
         }));
         assert!(result.is_ok(), "Evaluator panicked on: {:?}", code);
     }
@@ -177,6 +179,7 @@ fn test_fuzz_evaluator_no_panics() {
 #[test]
 fn test_arithmetic_commutativity() {
     let mut env = Env::new();
+    let mut state = EvalState::new();
     let pairs: Vec<(i64, i64)> = vec![
         (0, 0),
         (1, 1),
@@ -190,14 +193,14 @@ fn test_arithmetic_commutativity() {
     for (a, b) in pairs {
         let code_ab = format!("(+ {} {})", a, b);
         let code_ba = format!("(+ {} {})", b, a);
-        let r_ab = run_program(&code_ab, &mut env).unwrap();
-        let r_ba = run_program(&code_ba, &mut env).unwrap();
+        let r_ab = run_program(&code_ab, &mut env, &mut state).unwrap();
+        let r_ba = run_program(&code_ba, &mut env, &mut state).unwrap();
         assert_eq!(r_ab, r_ba, "+ not commutative for ({}, {})", a, b);
 
         let code_ab = format!("(* {} {})", a, b);
         let code_ba = format!("(* {} {})", b, a);
-        let r_ab = run_program(&code_ab, &mut env).unwrap();
-        let r_ba = run_program(&code_ba, &mut env).unwrap();
+        let r_ab = run_program(&code_ab, &mut env, &mut state).unwrap();
+        let r_ba = run_program(&code_ba, &mut env, &mut state).unwrap();
         assert_eq!(r_ab, r_ba, "* not commutative for ({}, {})", a, b);
     }
 }
@@ -205,17 +208,18 @@ fn test_arithmetic_commutativity() {
 #[test]
 fn test_arithmetic_identity() {
     let mut env = Env::new();
+    let mut state = EvalState::new();
     let values: Vec<i64> = vec![0, 1, 42, -1, 100, -999, 999999];
 
     for v in values {
         // a + 0 = a
         let code = format!("(+ {} 0)", v);
-        let result = run_program(&code, &mut env).unwrap();
+        let result = run_program(&code, &mut env, &mut state).unwrap();
         assert_eq!(result, v.to_string(), "+ identity failed for {}", v);
 
         // a * 1 = a
         let code = format!("(* {} 1)", v);
-        let result = run_program(&code, &mut env).unwrap();
+        let result = run_program(&code, &mut env, &mut state).unwrap();
         assert_eq!(result, v.to_string(), "* identity failed for {}", v);
     }
 }
@@ -223,13 +227,14 @@ fn test_arithmetic_identity() {
 #[test]
 fn test_arithmetic_associativity() {
     let mut env = Env::new();
+    let mut state = EvalState::new();
     let triples: Vec<(i64, i64, i64)> = vec![(1, 2, 3), (0, 0, 0), (5, -3, 7), (10, 20, -5)];
 
     for (a, b, c) in triples {
         let left = format!("(+ (+ {} {}) {})", a, b, c);
         let right = format!("(+ {} (+ {} {}))", a, b, c);
-        let r_left = run_program(&left, &mut env).unwrap();
-        let r_right = run_program(&right, &mut env).unwrap();
+        let r_left = run_program(&left, &mut env, &mut state).unwrap();
+        let r_right = run_program(&right, &mut env, &mut state).unwrap();
         assert_eq!(
             r_left, r_right,
             "+ not associative for ({}, {}, {})",
@@ -241,21 +246,22 @@ fn test_arithmetic_associativity() {
 #[test]
 fn test_boolean_invariants() {
     let mut env = Env::new();
+    let mut state = EvalState::new();
 
     // not(not(x)) = x
     for val in &["true", "false"] {
         let code = format!("(not (not {}))", val);
-        let result = run_program(&code, &mut env).unwrap();
+        let result = run_program(&code, &mut env, &mut state).unwrap();
         assert_eq!(result, *val, "double negation failed for {}", val);
     }
 
     // and(x, y) = and(y, x)
-    let ab = run_program("(and true false)", &mut env).unwrap();
-    let ba = run_program("(and false true)", &mut env).unwrap();
+    let ab = run_program("(and true false)", &mut env, &mut state).unwrap();
+    let ba = run_program("(and false true)", &mut env, &mut state).unwrap();
     assert_eq!(ab, ba, "and not commutative");
 
     // or(x, y) = or(y, x)
-    let ab = run_program("(or true false)", &mut env).unwrap();
-    let ba = run_program("(or false true)", &mut env).unwrap();
+    let ab = run_program("(or true false)", &mut env, &mut state).unwrap();
+    let ba = run_program("(or false true)", &mut env, &mut state).unwrap();
     assert_eq!(ab, ba, "or not commutative");
 }

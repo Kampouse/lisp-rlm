@@ -1,43 +1,46 @@
+use lisp_rlm::EvalState;
 use lisp_rlm::*;
 
-fn run_program(code: &str, env: &mut Env) -> Result<String, String> {
+fn run_program(code: &str, env: &mut Env, state: &mut EvalState) -> Result<String, String> {
     let exprs = parse_all(code)?;
     let mut result = LispVal::Nil;
     for expr in &exprs {
-        result = lisp_eval(&expr, env)?;
+        result = lisp_eval(&expr, env, state)?;
     }
     Ok(result.to_string())
 }
 
 fn eval_str(code: &str) -> String {
     let mut env = Env::new();
-    run_program(code, &mut env).unwrap_or_else(|e| format!("ERROR: {}", e))
+    let mut state = EvalState::new();
+    run_program(code, &mut env, &mut state).unwrap_or_else(|e| format!("ERROR: {}", e))
 }
 
 fn eval_str_with_stdlib(code: &str) -> String {
     let mut env = Env::new();
+    let mut state = EvalState::new();
     if let Some(scode) = get_stdlib_code("math") {
         if let Ok(exprs) = parse_all(scode) {
             for expr in &exprs {
-                let _ = lisp_eval(&expr, &mut env);
+                let _ = lisp_eval(&expr, &mut env, &mut state);
             }
         }
     }
     if let Some(scode) = get_stdlib_code("list") {
         if let Ok(exprs) = parse_all(scode) {
             for expr in &exprs {
-                let _ = lisp_eval(&expr, &mut env);
+                let _ = lisp_eval(&expr, &mut env, &mut state);
             }
         }
     }
     if let Some(scode) = get_stdlib_code("string") {
         if let Ok(exprs) = parse_all(scode) {
             for expr in &exprs {
-                let _ = lisp_eval(&expr, &mut env);
+                let _ = lisp_eval(&expr, &mut env, &mut state);
             }
         }
     }
-    run_program(code, &mut env).unwrap_or_else(|e| format!("ERROR: {}", e))
+    run_program(code, &mut env, &mut state).unwrap_or_else(|e| format!("ERROR: {}", e))
 }
 
 #[test]

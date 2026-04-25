@@ -4,14 +4,14 @@
 //! par-map and par-filter propagate the LLM provider into cloned envs.
 
 use crate::helpers::*;
-use crate::types::{Env, LispVal};
+use crate::types::{Env, EvalState, LispVal};
 
 /// Helper: call a function value with given args in the given env.
-fn call_val(func: &LispVal, args: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
-    super::call_val(func, args, env)
+fn call_val(func: &LispVal, args: &[LispVal], env: &mut Env, state: &mut EvalState) -> Result<LispVal, String> {
+    super::call_val(func, args, env, state)
 }
 
-pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<LispVal>, String> {
+pub fn handle(name: &str, args: &[LispVal], env: &mut Env, state: &mut EvalState) -> Result<Option<LispVal>, String> {
     match name {
         "list" => Ok(Some(LispVal::List(args.to_vec()))),
         "car" => match args.first() {
@@ -173,7 +173,7 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
             }
             let mut result = Vec::with_capacity(lst.len());
             for elem in &lst {
-                result.push(call_val(func, &[elem.clone()], env)?);
+                result.push(call_val(func, &[elem.clone()], env, state)?);
             }
             Ok(Some(LispVal::List(result)))
         }
@@ -222,7 +222,7 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
             let mut result = Vec::new();
             for (idx, elem) in lst.iter().enumerate() {
                 eprintln!("[filter] elem {}/{}", idx, lst.len());
-                let pred = call_val(func, &[elem.clone()], env)?;
+                let pred = call_val(func, &[elem.clone()], env, state)?;
                 eprintln!("[filter] pred result: {}", pred);
                 if is_truthy(&pred) {
                     result.push(elem.clone());
@@ -241,7 +241,7 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
             };
             for (i, elem) in lst.iter().enumerate() {
                 let prev_acc = acc.clone();
-                acc = call_val(func, &[prev_acc.clone(), elem.clone()], env)?;
+                acc = call_val(func, &[prev_acc.clone(), elem.clone()], env, state)?;
                 // Only warn on last iteration — accumulator didn't change through entire reduce
                 if i == lst.len() - 1 && acc.to_string() == prev_acc.to_string() && lst.len() > 1 {
                     eprintln!(
@@ -261,7 +261,7 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
                 None => return Err("find: need (pred list)".into()),
             };
             for elem in &lst {
-                if is_truthy(&call_val(func, &[elem.clone()], env)?) {
+                if is_truthy(&call_val(func, &[elem.clone()], env, state)?) {
                     return Ok(Some(elem.clone()));
                 }
             }
@@ -276,7 +276,7 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
                 None => return Err("some: need (pred list)".into()),
             };
             for elem in &lst {
-                if is_truthy(&call_val(func, &[elem.clone()], env)?) {
+                if is_truthy(&call_val(func, &[elem.clone()], env, state)?) {
                     return Ok(Some(LispVal::Bool(true)));
                 }
             }
@@ -291,7 +291,7 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
                 None => return Err("every: need (pred list)".into()),
             };
             for elem in &lst {
-                if !is_truthy(&call_val(func, &[elem.clone()], env)?) {
+                if !is_truthy(&call_val(func, &[elem.clone()], env, state)?) {
                     return Ok(Some(LispVal::Bool(false)));
                 }
             }
@@ -311,7 +311,7 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
 
             use std::sync::Arc;
             let func = Arc::new(func.clone());
-            let provider = env.llm_provider.as_ref().map(|p| p.box_clone());
+            let provider = state.llm_provider.as_ref().map(|p| p.box_clone());
             let rt = &crate::eval::llm_provider::SHARED_RUNTIME;
 
             let results: Result<Vec<LispVal>, String> = rt.block_on(async {
@@ -319,13 +319,13 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
                 for elem in lst {
                     let f = Arc::clone(&func);
                     let mut task_env = env.clone();
-                    // Propagate the LLM provider into the cloned env
+                    let mut task_state = crate::types::EvalState::new();
                     if let Some(ref p) = provider {
-                        task_env.llm_provider = Some(p.box_clone());
+                        task_state.llm_provider = Some(p.box_clone());
                     }
                     tasks.push(tokio::spawn(async move {
                         tokio::task::yield_now().await;
-                        super::call_val(&f, &[elem], &mut task_env)
+                        super::call_val(&f, &[elem], &mut task_env, &mut task_state)
                     }));
                 }
                 let mut out = Vec::with_capacity(tasks.len());
@@ -354,7 +354,7 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
 
             use std::sync::Arc;
             let func = Arc::new(func.clone());
-            let provider = env.llm_provider.as_ref().map(|p| p.box_clone());
+            let provider = state.llm_provider.as_ref().map(|p| p.box_clone());
             let rt = &crate::eval::llm_provider::SHARED_RUNTIME;
 
             let results: Result<Vec<LispVal>, String> = rt.block_on(async {
@@ -362,13 +362,14 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
                 for elem in &lst {
                     let f = Arc::clone(&func);
                     let mut task_env = env.clone();
+                    let mut task_state = crate::types::EvalState::new();
                     if let Some(ref p) = provider {
-                        task_env.llm_provider = Some(p.box_clone());
+                        task_state.llm_provider = Some(p.box_clone());
                     }
                     let e = elem.clone();
                     tasks.push(tokio::spawn(async move {
                         tokio::task::yield_now().await;
-                        let result = super::call_val(&f, &[e], &mut task_env)?;
+                        let result = super::call_val(&f, &[e], &mut task_env, &mut task_state)?;
                         Ok::<bool, String>(super::is_truthy(&result))
                     }));
                 }

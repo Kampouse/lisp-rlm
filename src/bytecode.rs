@@ -1,5 +1,5 @@
 use crate::helpers::is_truthy;
-use crate::types::{Env, LispVal};
+use crate::types::{Env, EvalState, LispVal};
 
 // ---------------------------------------------------------------------------
 // Loop Bytecode Compiler — tight VM for loop/recur
@@ -785,7 +785,7 @@ fn remap_jump_target(op: &mut Op, index_map: &[usize]) {
 }
 
 /// Run a compiled loop. Returns the result.
-fn run_compiled_loop(cl: &CompiledLoop, outer_env: &mut Env) -> Result<LispVal, String> {
+fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
     // Slot-based env: binding slots + captured env slots, direct index access
     let mut slots: Vec<LispVal> = cl.init_vals.clone();
     // Append captured env values after binding slots
@@ -1470,6 +1470,6 @@ pub fn try_compile_loop(
 }
 
 /// Execute a compiled loop
-pub fn exec_compiled_loop(cl: &CompiledLoop, outer_env: &mut Env) -> Result<LispVal, String> {
-    run_compiled_loop(cl, outer_env)
+pub fn exec_compiled_loop(cl: &CompiledLoop, _outer_env: &mut Env, _state: &mut EvalState) -> Result<LispVal, String> {
+    run_compiled_loop(cl)
 }

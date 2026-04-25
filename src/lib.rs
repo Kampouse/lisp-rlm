@@ -8,18 +8,19 @@
 //! # Quick start
 //!
 //! ```ignore
-//! use lisp_rlm::{parse_all, lisp_eval, Env};
+//! use lisp_rlm::{parse_all, lisp_eval, Env, EvalState};
 //!
 //! let exprs = parse_all("(+ 1 2)")?;
 //! let mut env = Env::new();
-//! let result = lisp_eval(&exprs[0], &mut env)?;
+//! let mut state = EvalState::new();
+//! let result = lisp_eval(&exprs[0], &mut env, &mut state)?;
 //! assert_eq!(result.to_string(), "3");
 //! ```
 //!
 //! # Modules
 //!
 //! - [`eval`] — core evaluator (`lisp_eval`, `apply_lambda`, JSON interop)
-//! - [`types`] — value types ([`LispVal`], [`Env`]), standard-library source
+//! - [`types`] — value types ([`LispVal`], [`Env`], [`EvalState`]), standard-library source
 //! - [`parser`] — S-expression parser (`parse_all`, `parse_all_spanned`)
 //! - [`bytecode`] — compiled fast path for higher-order list operations
 //! - [`helpers`] — utility predicates (`is_truthy`, `is_builtin_name`)
@@ -38,4 +39,4 @@ pub use parser::parse_all;
 pub use parser::parse_all_spanned;
 pub use parser::Spanned;
 pub use types::DEFAULT_EVAL_BUDGET;
-pub use types::{get_stdlib_code, Env, LispVal};
+pub use types::{get_stdlib_code, Env, EvalState, LispVal};

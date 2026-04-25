@@ -1,11 +1,13 @@
+use lisp_rlm::EvalState;
 use lisp_rlm::*;
 
 fn run_program(code: &str) -> Result<String, String> {
     let exprs = parse_all(code)?;
     let mut env = Env::new();
+    let mut state = EvalState::new();
     let mut result = LispVal::Nil;
     for expr in &exprs {
-        result = lisp_eval(expr, &mut env)?;
+        result = lisp_eval(expr, &mut env, &mut state)?;
     }
     Ok(result.to_string())
 }
@@ -17,9 +19,10 @@ fn eval(code: &str) -> String {
 fn eval_val(code: &str) -> LispVal {
     let exprs = parse_all(code).unwrap();
     let mut env = Env::new();
+    let mut state = EvalState::new();
     let mut result = LispVal::Nil;
     for expr in &exprs {
-        result = lisp_eval(expr, &mut env).unwrap();
+        result = lisp_eval(expr, &mut env, &mut state).unwrap();
     }
     result
 }

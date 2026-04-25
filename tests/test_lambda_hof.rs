@@ -10,15 +10,17 @@
 //! compiler (disabled). The call_val → apply_lambda → lisp_eval path
 //! hangs inside dispatch_collections::handle but works fine in direct calls.
 
+use lisp_rlm::EvalState;
 use lisp_rlm::{lisp_eval, parse_all, Env, LispVal};
 
 fn eval_val(code: &str) -> LispVal {
     let mut env = Env::new();
+    let mut state = EvalState::new();
     for module in &["math", "list", "string"] {
         if let Some(mcode) = lisp_rlm::get_stdlib_code(module) {
             if let Ok(exprs) = parse_all(mcode) {
                 for expr in &exprs {
-                    let _ = lisp_eval(expr, &mut env);
+                    let _ = lisp_eval(expr, &mut env, &mut state);
                 }
             }
         }
@@ -27,7 +29,7 @@ fn eval_val(code: &str) -> LispVal {
         Ok(exprs) => {
             let mut result = LispVal::Nil;
             for expr in &exprs {
-                match lisp_eval(expr, &mut env) {
+                match lisp_eval(expr, &mut env, &mut state) {
                     Ok(v) => result = v,
                     Err(e) => return LispVal::Str(format!("ERROR: {}", e)),
                 }

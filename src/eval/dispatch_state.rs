@@ -1,9 +1,9 @@
 //! Debug, state management, snapshot, I/O, shell, env, print, fmt, error builtins.
 
 use crate::helpers::*;
-use crate::types::{Env, LispVal};
+use crate::types::{Env, EvalState, LispVal};
 
-pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<LispVal>, String> {
+pub fn handle(name: &str, args: &[LispVal], env: &mut Env, state: &mut EvalState) -> Result<Option<LispVal>, String> {
     match name {
         // --- Debug / print ---
         "error" => {
@@ -132,27 +132,27 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
 
         // --- Snapshot / rollback ---
         "snapshot" => {
-            let snap = env.take_snapshot();
-            let id = env.snapshots.len();
-            env.snapshots.push(snap);
+            let snap = env.snapshot();
+            let id = state.snapshots.len();
+            state.snapshots.push(snap);
             Ok(Some(LispVal::Num(id as i64)))
         }
         "rollback" => {
-            let snap = env
+            let snap = state
                 .snapshots
                 .pop()
                 .ok_or("rollback: no snapshots on stack")?;
-            env.restore_snapshot(snap);
+            env.restore(snap);
             Ok(Some(LispVal::Bool(true)))
         }
         "rollback-to" => {
             let idx = as_num(args.first().ok_or("rollback-to: need index")?)? as usize;
-            if idx >= env.snapshots.len() {
+            if idx >= state.snapshots.len() {
                 return Err(format!("rollback-to: no snapshot at index {}", idx));
             }
             // Remove the snapshot from the stack (and all above it)
-            let snap = env.snapshots.remove(idx);
-            env.restore_snapshot(snap);
+            let snap = state.snapshots.remove(idx);
+            env.restore(snap);
             Ok(Some(LispVal::Bool(true)))
         }
 
@@ -204,7 +204,7 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
             let exprs = crate::parser::parse_all(&code)?;
             let mut result = LispVal::Nil;
             for expr in &exprs {
-                result = super::lisp_eval(expr, env)?;
+                result = super::lisp_eval(expr, env, state)?;
             }
             Ok(Some(result))
         }
@@ -264,8 +264,8 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env) -> Result<Option<Lisp
                 .map_err(|e| format!("shell-bg: {}", e))?;
             let pid = child.id();
             // Store PID so shell-kill can use it later
-            env.rlm_state.insert("__bg_pids".to_string(), {
-                let mut pids = match env.rlm_state.get("__bg_pids") {
+            state.rlm_state.insert("__bg_pids".to_string(), {
+                let mut pids = match state.rlm_state.get("__bg_pids") {
                     Some(LispVal::List(v)) => v.clone(),
                     _ => vec![],
                 };

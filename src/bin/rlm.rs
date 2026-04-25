@@ -1,12 +1,14 @@
+use lisp_rlm::EvalState;
 use lisp_rlm::{lisp_eval, parse_all, Env, LispVal, GenericProvider};
 use std::env;
 
 fn main() {
     let mut env = Env::new();
+    let mut state = EvalState::new();
 
     // Initialize LLM provider if API key is available
     if let Ok(provider) = GenericProvider::from_env() {
-        env.llm_provider = Some(Box::new(provider));
+        state.llm_provider = Some(Box::new(provider));
     }
 
     // Load stdlib (skip list — recursive defs may hang on eval budget)
@@ -14,7 +16,7 @@ fn main() {
         if let Some(code) = lisp_rlm::get_stdlib_code(module) {
             if let Ok(exprs) = parse_all(code) {
                 for expr in &exprs {
-                    let _ = lisp_eval(expr, &mut env);
+                    let _ = lisp_eval(expr, &mut env, &mut state);
                 }
             }
         }
@@ -29,7 +31,7 @@ fn main() {
             Ok(code) => match parse_all(&code) {
                 Ok(exprs) => {
                     for expr in &exprs {
-                        match lisp_eval(expr, &mut env) {
+                        match lisp_eval(expr, &mut env, &mut state) {
                             Ok(val) => {
                                 if !matches!(val, LispVal::Nil) {
                                     println!("{}", val);
@@ -59,7 +61,7 @@ fn main() {
                 match parse_all(&line) {
                     Ok(exprs) => {
                         for expr in &exprs {
-                            match lisp_eval(expr, &mut env) {
+                            match lisp_eval(expr, &mut env, &mut state) {
                                 Ok(val) => {
                                     if !matches!(val, LispVal::Nil) {
                                         println!("{}", val);

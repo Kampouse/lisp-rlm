@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 const MATH_STDLIB: &str = r#"
 (define abs (lambda (x) (if (< x 0) (- 0 x) x)))
@@ -63,29 +63,125 @@ pub const DEFAULT_EVAL_BUDGET: u64 = 10_000_000;
 
 /// A scoped environment that maps variable names to [`LispVal`] bindings.
 ///
-/// Internally the bindings are stored in a `Vec<(String, LispVal)>` with an
-/// accompanying `HashMap<String, usize>` index for O(1) lookups by name.
-/// Lexical scoping is achieved by recording the binding-vector length before
-/// entering a scope and calling [`Env::truncate`] on exit.
-///
-/// # Execution budget
-///
-/// The two public fields [`eval_count`](Env::eval_count) and
-/// [`eval_budget`](Env::eval_budget) together implement an execution-budget
-/// mechanism: every call to [`lisp_eval`](crate::lisp_eval) increments
-/// `eval_count`; if it exceeds `eval_budget` the evaluator returns an error.
-/// Set `eval_budget` to `0` to disable the limit.
+/// Uses `im::HashMap` for O(1) clone via structural sharing, making
+/// save/restore patterns cheap. Bindings are mutated in-place via
+/// `insert_mut`.
+#[derive(Clone)]
 pub struct Env {
-    bindings: Vec<(String, LispVal)>,
-    index: HashMap<String, usize>,
+    bindings: im::HashMap<String, LispVal>,
+}
+
+impl Env {
+    /// Create a new empty environment with the standard aliases (`t`, `true`, `false`).
+    pub fn new() -> Self {
+        let mut env = Env {
+            bindings: im::HashMap::new(),
+        };
+        // Common aliases
+        env.insert_mut("t".to_string(), LispVal::Bool(true));
+        env.insert_mut("true".to_string(), LispVal::Bool(true));
+        env.insert_mut("false".to_string(), LispVal::Bool(false));
+        env
+    }
+
+    /// Create an environment pre-populated with the given bindings.
+    pub fn from_vec(bindings: Vec<(String, LispVal)>) -> Self {
+        let mut env = Env {
+            bindings: im::HashMap::new(),
+        };
+        for (name, val) in bindings {
+            env.insert_mut(name, val);
+        }
+        env
+    }
+
+    /// Insert or overwrite a binding in-place.
+    pub fn insert_mut(&mut self, name: String, val: LispVal) {
+        self.bindings.insert(name, val);
+    }
+
+    /// Alias for `insert_mut` — kept for backward compatibility.
+    pub fn push(&mut self, name: String, val: LispVal) {
+        self.insert_mut(name, val);
+    }
+
+    /// Look up a binding by name, returning `None` if not found.
+    pub fn get(&self, name: &str) -> Option<&LispVal> {
+        self.bindings.get(name)
+    }
+
+    /// Returns `true` if a binding with the given name exists.
+    pub fn contains(&self, name: &str) -> bool {
+        self.bindings.contains_key(name)
+    }
+
+    /// Number of bindings currently in the environment.
+    pub fn len(&self) -> usize {
+        self.bindings.len()
+    }
+
+    /// Returns `true` if the environment has no bindings.
+    #[allow(clippy::len_without_is_empty)]
+    pub fn is_empty(&self) -> bool {
+        self.bindings.is_empty()
+    }
+
+    /// Look up a binding by name and return a mutable reference, or `None`.
+    pub fn get_mut(&mut self, name: &str) -> Option<&mut LispVal> {
+        self.bindings.get_mut(name)
+    }
+
+    /// Iterate over all bindings.
+    pub fn iter(&self) -> im::hashmap::Iter<'_, String, LispVal> {
+        self.bindings.iter()
+    }
+
+    /// Remove all bindings, leaving the environment empty.
+    pub fn clear(&mut self) {
+        self.bindings.clear();
+    }
+
+    /// Take an O(1) snapshot of the current bindings (structural sharing).
+    pub fn snapshot(&self) -> im::HashMap<String, LispVal> {
+        self.bindings.clone()
+    }
+
+    /// Restore bindings from a previous snapshot.
+    pub fn restore(&mut self, snap: im::HashMap<String, LispVal>) {
+        self.bindings = snap;
+    }
+
+    /// Consume the environment and return the bindings as a Vec.
+    pub fn into_bindings(self) -> Vec<(String, LispVal)> {
+        self.bindings.into_iter().collect()
+    }
+}
+
+impl std::fmt::Debug for Env {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Env")
+            .field("bindings_count", &self.bindings.len())
+            .finish()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// EvalState — mutable counters and runtime state separated from bindings
+// ---------------------------------------------------------------------------
+
+/// Mutable evaluation state: counters, budgets, LLM provider, etc.
+///
+/// Separated from [`Env`] so that bindings can be cheaply cloned via
+/// structural sharing while mutable state remains independent.
+pub struct EvalState {
     /// Eval iteration counter for execution budget
     pub eval_count: u64,
     /// Maximum allowed eval iterations (0 = unlimited)
     pub eval_budget: u64,
     /// Stack of env snapshots for snapshot/rollback
-    pub snapshots: Vec<Vec<(String, LispVal)>>,
+    pub snapshots: Vec<im::HashMap<String, LispVal>>,
     /// Persistent agent state (survives snapshots)
-    pub rlm_state: BTreeMap<String, LispVal>,
+    pub rlm_state: im::OrdMap<String, LispVal>,
     /// Cumulative tokens across all LLM calls
     pub tokens_used: usize,
     /// Number of LLM API calls made
@@ -98,42 +194,14 @@ pub struct Env {
     pub llm_provider: Option<Box<dyn crate::eval::llm_provider::LlmProvider>>,
 }
 
-impl Env {
-    /// Create a new empty environment with [`DEFAULT_EVAL_BUDGET`].
+impl EvalState {
+    /// Create a new `EvalState` with [`DEFAULT_EVAL_BUDGET`].
     pub fn new() -> Self {
-        let mut env = Env {
-            bindings: Vec::new(),
-            index: HashMap::new(),
+        EvalState {
             eval_count: 0,
             eval_budget: DEFAULT_EVAL_BUDGET,
             snapshots: Vec::new(),
-            rlm_state: BTreeMap::new(),
-            tokens_used: 0,
-            llm_calls: 0,
-            rlm_depth: 0,
-            rlm_iteration: 0,
-            llm_provider: None,
-        };
-        // Common aliases
-        env.push("t".to_string(), LispVal::Bool(true));
-        env.push("true".to_string(), LispVal::Bool(true));
-        env.push("false".to_string(), LispVal::Bool(false));
-        env
-    }
-
-    /// Create an environment pre-populated with the given bindings.
-    pub fn from_vec(bindings: Vec<(String, LispVal)>) -> Self {
-        let mut index = HashMap::new();
-        for (i, (name, _)) in bindings.iter().enumerate() {
-            index.insert(name.clone(), i);
-        }
-        Env {
-            bindings,
-            index,
-            eval_count: 0,
-            eval_budget: DEFAULT_EVAL_BUDGET,
-            snapshots: Vec::new(),
-            rlm_state: BTreeMap::new(),
+            rlm_state: im::OrdMap::new(),
             tokens_used: 0,
             llm_calls: 0,
             rlm_depth: 0,
@@ -142,118 +210,15 @@ impl Env {
         }
     }
 
-    /// Insert or overwrite a binding.  When the name already exists, the old
-    /// entry is updated in place so the binding vector does not grow monotonically.
-    pub fn push(&mut self, name: String, val: LispVal) {
-        if let Some(&idx) = self.index.get(&name) {
-            self.bindings[idx].1 = val;
-        } else {
-            let idx = self.bindings.len();
-            self.bindings.push((name.clone(), val));
-            self.index.insert(name, idx);
-        }
-    }
-
-    /// Look up a binding by name, returning `None` if not found.
-    pub fn get(&self, name: &str) -> Option<&LispVal> {
-        let idx = *self.index.get(name)?;
-        Some(&self.bindings[idx].1)
-    }
-
-    /// Returns `true` if a binding with the given name exists.
-    pub fn contains(&self, name: &str) -> bool {
-        self.index.contains_key(name)
-    }
-
-    /// Number of bindings currently in the environment.
-    pub fn len(&self) -> usize {
-        self.bindings.len()
-    }
-    /// Returns `true` if the environment has no bindings.
-    #[allow(clippy::len_without_is_empty)]
-    pub fn is_empty(&self) -> bool {
-        self.bindings.is_empty()
-    }
-
-    /// Truncate the binding vector to `new_len`, removing any bindings added
-    /// after that point.  The name-index is updated so that shadowed bindings
-    /// are correctly restored.
-    pub fn truncate(&mut self, new_len: usize) {
-        for i in (new_len..self.bindings.len()).rev() {
-            let name = &self.bindings[i].0;
-            if let Some(idx) = self.index.get(name) {
-                if *idx >= new_len {
-                    let mut found = false;
-                    for j in (0..new_len).rev() {
-                        if self.bindings[j].0 == *name {
-                            self.index.insert(name.clone(), j);
-                            found = true;
-                            break;
-                        }
-                    }
-                    if !found {
-                        self.index.remove(name);
-                    }
-                }
-            }
-        }
-        self.bindings.truncate(new_len);
-    }
-
-    /// Look up a binding by name and return a mutable reference, or `None`.
-    pub fn get_mut(&mut self, name: &str) -> Option<&mut LispVal> {
-        let idx = *self.index.get(name)?;
-        Some(&mut self.bindings[idx].1)
-    }
-
-    /// Iterate over all bindings in insertion order.
-    pub fn iter(&self) -> std::slice::Iter<'_, (String, LispVal)> {
-        self.bindings.iter()
-    }
-
-    /// Iterate over all bindings mutably in insertion order.
-    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, (String, LispVal)> {
-        self.bindings.iter_mut()
-    }
-
-    /// Consume the environment and return the inner binding vector.
-    pub fn into_bindings(self) -> Vec<(String, LispVal)> {
-        self.bindings
-    }
-
-    /// Remove all bindings, leaving the environment empty.
-    pub fn clear(&mut self) {
-        self.bindings.clear();
-        self.index.clear();
-    }
-
-    /// Set the LLM provider for this environment.
+    /// Set the LLM provider for this state.
     pub fn set_llm_provider(&mut self, provider: Box<dyn crate::eval::llm_provider::LlmProvider>) {
         self.llm_provider = Some(provider);
     }
-
-    /// Take a snapshot of the current bindings.
-    pub fn take_snapshot(&self) -> Vec<(String, LispVal)> {
-        self.bindings.clone()
-    }
-
-    /// Restore bindings from a snapshot.
-    pub fn restore_snapshot(&mut self, snapshot: Vec<(String, LispVal)>) {
-        self.bindings = snapshot;
-        self.index.clear();
-        for (i, (name, _)) in self.bindings.iter().enumerate() {
-            self.index.insert(name.clone(), i);
-        }
-    }
 }
 
-// Manual trait impls — Box<dyn LlmProvider> cannot derive Clone/Debug.
-
-impl Clone for Env {
+impl Clone for EvalState {
     fn clone(&self) -> Self {
-        Env {
-            bindings: self.bindings.clone(),
-            index: self.index.clone(),
+        EvalState {
             eval_count: self.eval_count,
             eval_budget: self.eval_budget,
             snapshots: self.snapshots.clone(),
@@ -267,10 +232,9 @@ impl Clone for Env {
     }
 }
 
-impl std::fmt::Debug for Env {
+impl std::fmt::Debug for EvalState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Env")
-            .field("bindings_count", &self.bindings.len())
+        f.debug_struct("EvalState")
             .field("eval_count", &self.eval_count)
             .field("eval_budget", &self.eval_budget)
             .field("tokens_used", &self.tokens_used)
@@ -279,13 +243,6 @@ impl std::fmt::Debug for Env {
             .field("rlm_iteration", &self.rlm_iteration)
             .field("llm_provider", &self.llm_provider.is_some())
             .finish()
-    }
-}
-
-impl std::ops::Index<usize> for Env {
-    type Output = (String, LispVal);
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.bindings[index]
     }
 }
 
