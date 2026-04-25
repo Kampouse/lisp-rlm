@@ -6,8 +6,8 @@ use std::sync::LazyLock;
 use crate::helpers::*;
 use crate::parser::parse_all;
 use crate::types::{get_stdlib_code, Env, EvalState, LispVal};
-use continuation::EvalResult;
-
+use continuation::{Cont, EvalResult, Step};
+use cps_eval::{catch_error, eval_step, handle_cont};
 pub mod crypto;
 pub mod errors;
 pub mod helpers;
@@ -16,6 +16,7 @@ pub mod quasiquote;
 
 // Tail-call elimination
 pub mod continuation;
+pub mod cps_eval;
 
 // Domain-specific dispatch modules (v0.2 god-function split)
 pub mod dispatch_arithmetic;
@@ -275,17 +276,77 @@ Special forms: define def let lambda if cond match quote quasiquote unquote unqu
 /// - execution budget exceeded
 /// - errors propagated from user code (`(error ...)`)
 pub fn lisp_eval(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result<LispVal, String> {
-    // Execution budget check
-    if state.eval_budget > 0 {
-        state.eval_count += 1;
-        if state.eval_count > state.eval_budget {
-            return Err(format!(
-                "execution budget exceeded: {} iterations (limit: {})",
-                state.eval_count, state.eval_budget
-            ));
+    let mut stack: Vec<Cont> = Vec::new();
+    let mut current = expr.clone();
+
+    'main: loop {
+        if state.eval_budget > 0 {
+            state.eval_count += 1;
+            if state.eval_count > state.eval_budget {
+                return Err(format!(
+                    "execution budget exceeded: {} iterations (limit: {})",
+                    state.eval_count, state.eval_budget
+                ));
+            }
+        }
+
+        // Evaluate current expression
+        let step = match eval_step(&current, env, state) {
+            Ok(s) => s,
+            Err(e) => {
+                match catch_error(&mut stack, e, env, state)? {
+                    Step::Done(v) => return Ok(v),
+                    Step::EvalNext { expr, conts, new_env } => {
+                        stack.extend(conts);
+                        current = expr;
+                        if let Some(ne) = new_env { *env = ne; }
+                        continue 'main;
+                    }
+                }
+            }
+        };
+
+        match step {
+            Step::Done(mut val) => {
+                // Unwind continuation stack
+                'unwind: loop {
+                    match stack.pop() {
+                        None => return Ok(val),
+                        Some(cont) => {
+                            let step = match handle_cont(cont, val, env, state) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    match catch_error(&mut stack, e, env, state)? {
+                                        Step::Done(v) => { val = v; continue 'unwind; }
+                                        Step::EvalNext { expr, conts, new_env } => {
+                                            stack.extend(conts);
+                                            current = expr;
+                                            if let Some(ne) = new_env { *env = ne; }
+                                            continue 'main;
+                                        }
+                                    }
+                                }
+                            };
+                            match step {
+                                Step::Done(v) => { val = v; }
+                                Step::EvalNext { expr, conts, new_env } => {
+                                    stack.extend(conts);
+                                    current = expr;
+                                    if let Some(ne) = new_env { *env = ne; }
+                                    continue 'main;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Step::EvalNext { expr, conts, new_env } => {
+                stack.extend(conts);
+                current = expr;
+                if let Some(ne) = new_env { *env = ne; }
+            }
         }
     }
-    lisp_eval_inner(expr, env, state)
 }
 
 // ---------------------------------------------------------------------------
@@ -858,579 +919,6 @@ fn merge_rlm_state(env: &mut Env, state: &mut EvalState, saved: &im::OrdMap<Stri
     state.rlm_state = saved.clone();
     state.tokens_used = tokens;
     state.llm_calls = calls;
-}
-
-fn lisp_eval_inner(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result<LispVal, String> {
-    let mut current_expr: LispVal = expr.clone();
-    let mut _iter_count: u32 = 0;
-    '_trampoline: loop {
-        _iter_count += 1;
-        if _iter_count % 1000 == 0 {
-            eprintln!("[trampoline] iter {}, current_expr={}", _iter_count, truncate_str(&current_expr.to_string(), 80));
-        }
-        match &current_expr {
-            LispVal::Nil
-            | LispVal::Bool(_)
-            | LispVal::Num(_)
-            | LispVal::Float(_)
-            | LispVal::Str(_)
-            | LispVal::Lambda { .. }
-            | LispVal::Macro { .. }
-            | LispVal::Map(_) => return Ok(current_expr.clone()),
-            LispVal::Recur(_) => return Err("recur outside loop".into()),
-            LispVal::Sym(name) => {
-                if let Some(v) = env.get(name) {
-                    return Ok(v.clone());
-                }
-                if is_builtin_name(name) {
-                    return Ok(current_expr);
-                }
-                return Err(format!("undefined: {}", name));
-            }
-            LispVal::List(list) if list.is_empty() => return Ok(LispVal::Nil),
-            LispVal::List(list) => {
-                if let LispVal::Sym(name) = &list[0] {
-                    match name.as_str() {
-                        "quote" => return Ok(list.get(1).cloned().unwrap_or(LispVal::Nil)),
-                        "quasiquote" => {
-                            let expanded =
-                                expand_quasiquote(list.get(1).ok_or("quasiquote: need form")?)?;
-                            current_expr = expanded;
-                            continue '_trampoline;
-                        }
-                        "define" => {
-                            match list.get(1) {
-                                // (define (name args...) body) sugar → (define name (lambda (args...) body))
-                                Some(LispVal::List(inner)) if !inner.is_empty() => {
-                                    if let Some(LispVal::Sym(name)) = inner.get(0) {
-                                        let params: Vec<String> = inner[1..]
-                                            .iter()
-                                            .map(|v| match v {
-                                                LispVal::Sym(s) => s.clone(),
-                                                _ => "_".to_string(),
-                                            })
-                                            .collect();
-                                        let body = list.get(2).cloned().unwrap_or(LispVal::Nil);
-                                        let lam = LispVal::Lambda {
-                                            params,
-                                            rest_param: None,
-                                            body: Box::new(body),
-closed_env: std::sync::Arc::new(env.clone().into_bindings()),
-                                        };
-                                        env.push(name.clone(), lam);
-                                        return Ok(LispVal::Nil);
-                                    }
-                                    return Err("define: need symbol in head position".into());
-                                }
-                                // (define symbol value)
-                                Some(LispVal::Sym(s)) => {
-                                    let val = match list.get(2) {
-                                        Some(v) => lisp_eval(v, env, state)?,
-                                        None => LispVal::Nil,
-                                    };
-                                    env.push(s.clone(), val);
-                                    return Ok(LispVal::Nil);
-                                }
-                                _ => return Err("define: need symbol".into()),
-                            }
-                        }
-                        "if" => {
-                            let cond = lisp_eval(list.get(1).ok_or("if: need cond")?, env, state)?;
-                            current_expr = if is_truthy(&cond) {
-                                list.get(2).ok_or("if: need then")?.clone()
-                            } else {
-                                list.get(3).cloned().unwrap_or(LispVal::Nil)
-                            };
-                            continue '_trampoline;
-                        }
-                        "cond" => {
-                            let mut found: Option<LispVal> = None;
-                            for clause in &list[1..] {
-                                if let LispVal::List(parts) = clause {
-                                    if parts.is_empty() {
-                                        continue;
-                                    }
-                                    if let LispVal::Sym(kw) = &parts[0] {
-                                        if kw == "else" {
-                                            found = parts.get(1).cloned();
-                                            break;
-                                        }
-                                    }
-                                    let test = lisp_eval(&parts[0], env, state)?;
-                                    if is_truthy(&test) {
-                                        found = Some(parts.get(1).cloned().unwrap_or(test));
-                                        break;
-                                    }
-                                }
-                            }
-                            match found {
-                                Some(e) => {
-                                    current_expr = e;
-                                    continue '_trampoline;
-                                }
-                                None => return Ok(LispVal::Nil),
-                            }
-                        }
-                        "let" => {
-                            let bindings = match list.get(1) {
-                                Some(LispVal::List(b)) => b,
-                                _ => return Err("let: bindings must be list".into()),
-                            };
-                            let snap = env.snapshot();
-                            for b in bindings {
-                                if let LispVal::List(pair) = b {
-                                    if pair.len() == 2 {
-                                        if let LispVal::Sym(name) = &pair[0] {
-                                            let val = lisp_eval(&pair[1], env, state)?;
-                                            env.push(name.clone(), val);
-                                        }
-                                    }
-                                }
-                            }
-                            // Evaluate ALL body forms (list[2..]), return the last one
-                            // Use a closure so env.truncate always runs even on error
-                            let body_exprs = &list[2..];
-                            let result: Result<LispVal, String> = (|| {
-                                if body_exprs.is_empty() {
-                                    return Ok(LispVal::Nil);
-                                }
-                                let mut r = LispVal::Nil;
-                                for e in body_exprs {
-                                    r = lisp_eval(e, env, state)?;
-                                }
-                                Ok(r)
-                            })();
-                            env.restore(snap);
-                            return result;
-                        }
-                        "lambda" => {
-                            let (params, rest_param) =
-                                parse_params(list.get(1).ok_or("lambda: need params")?)?;
-                            let body = list.get(2).ok_or("lambda: need body")?;
-                            return Ok(LispVal::Lambda {
-                                params,
-                                rest_param,
-                                body: Box::new(body.clone()),
-closed_env: std::sync::Arc::new(env.clone().into_bindings()),
-                            });
-                        }
-                        "defmacro" => {
-                            let macro_name = match list.get(1) {
-                                Some(LispVal::Sym(s)) => s.clone(),
-                                _ => return Err("defmacro: first arg must be symbol".into()),
-                            };
-                            let (params, rest_param) =
-                                parse_params(list.get(2).ok_or("defmacro: need params")?)?;
-                            let body = list.get(3).ok_or("defmacro: need body")?;
-                            env.push(
-                                macro_name,
-                                LispVal::Macro {
-                                    params,
-                                    rest_param,
-                                    body: Box::new(body.clone()),
-closed_env: std::sync::Arc::new(env.clone().into_bindings()),
-                                },
-                            );
-                            return Ok(LispVal::Nil);
-                        }
-                        "progn" | "begin" => {
-                            let exprs = &list[1..];
-                            if exprs.is_empty() {
-                                return Ok(LispVal::Nil);
-                            }
-                            for e in &exprs[..exprs.len() - 1] {
-                                lisp_eval(e, env, state)?;
-                            }
-                            current_expr = exprs.last().unwrap().clone();
-                            continue '_trampoline;
-                        }
-                        "and" => {
-                            if list.len() == 1 {
-                                return Ok(LispVal::Bool(true));
-                            }
-                            let exprs = &list[1..];
-                            for e in &exprs[..exprs.len() - 1] {
-                                let r = lisp_eval(e, env, state)?;
-                                if !is_truthy(&r) {
-                                    return Ok(r);
-                                }
-                            }
-                            current_expr = exprs.last().unwrap().clone();
-                            continue '_trampoline;
-                        }
-                        "or" => {
-                            if list.len() == 1 {
-                                return Ok(LispVal::Bool(false));
-                            }
-                            let exprs = &list[1..];
-                            for e in &exprs[..exprs.len() - 1] {
-                                let r = lisp_eval(e, env, state)?;
-                                if is_truthy(&r) {
-                                    return Ok(r);
-                                }
-                            }
-                            current_expr = exprs.last().unwrap().clone();
-                            continue '_trampoline;
-                        }
-                        "not" => {
-                            let v = lisp_eval(list.get(1).ok_or("not: need arg")?, env, state)?;
-                            return Ok(LispVal::Bool(!is_truthy(&v)));
-                        }
-                        "try" => {
-                            let expr_to_try = list.get(1).ok_or("try: need expression")?;
-                            let res = match lisp_eval(expr_to_try, env, state) {
-                                Ok(val) => return Ok(val),
-                                Err(err_msg) => {
-                                    let catch_clause =
-                                        list.get(2).ok_or("try: need catch clause")?;
-                                    if let LispVal::List(clause) = catch_clause {
-                                        if clause.is_empty()
-                                            || clause[0] != LispVal::Sym("catch".into())
-                                        {
-                                            return Err(
-                                                "try: second arg must be (catch var body...)"
-                                                    .into(),
-                                            );
-                                        }
-                                        let error_var = match clause.get(1) {
-                                            Some(LispVal::Sym(s)) => s.clone(),
-                                            _ => {
-                                                return Err(
-                                                    "try: catch needs a variable name".into()
-                                                )
-                                            }
-                                        };
-                                        env.push(error_var.clone(), LispVal::Str(err_msg));
-                                        let snap = env.snapshot();
-                                        let catch_result: Result<LispVal, String> = (|| {
-                                            let mut r = LispVal::Nil;
-                                            for body_expr in &clause[2..] {
-                                                r = lisp_eval(body_expr, env, state)?;
-                                            }
-                                            Ok(r)
-                                        })();
-                                        env.restore(snap);
-                                        catch_result?
-                                    } else {
-                                        return Err("try: catch clause must be a list".into());
-                                    }
-                                }
-                            };
-                            return Ok(res);
-                        }
-                        "match" => {
-                            let val = lisp_eval(list.get(1).ok_or("match: need expr")?, env, state)?;
-                            let mut matched: Option<(Vec<(String, LispVal)>, LispVal)> = None;
-                            for clause in &list[2..] {
-                                if let LispVal::List(parts) = clause {
-                                    if parts.len() >= 2 {
-                                        if let Some(bindings) = match_pattern(&parts[0], &val) {
-                                            matched = Some((
-                                                bindings,
-                                                parts.get(1).cloned().unwrap_or(LispVal::Nil),
-                                            ));
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                            match matched {
-                                Some((bindings, body)) => {
-                                    let snap = env.snapshot();
-                                    for (name, v) in bindings {
-                                        env.push(name, v);
-                                    }
-                                    let result = lisp_eval(&body, env, state);
-                                    env.restore(snap);
-                                    return result;
-                                }
-                                None => return Ok(LispVal::Nil),
-                            }
-                        }
-                        "loop" => {
-                            let bindings = match list.get(1) {
-                                Some(LispVal::List(b)) => b,
-                                _ => return Err("loop: bindings must be list".into()),
-                            };
-                            let body = list.get(2).ok_or("loop: need body")?;
-                            let mut binding_names: Vec<String> = Vec::new();
-                            let mut binding_vals: Vec<LispVal> = Vec::new();
-                            let is_pair_style =
-                                bindings.iter().all(|b| matches!(b, LispVal::List(_)));
-                            if is_pair_style {
-                                for b in bindings {
-                                    if let LispVal::List(pair) = b {
-                                        if pair.len() == 2 {
-                                            if let LispVal::Sym(name) = &pair[0] {
-                                                binding_names.push(name.clone());
-                                                binding_vals.push(lisp_eval(&pair[1], env, state)?);
-                                            }
-                                        }
-                                    }
-                                }
-                            } else {
-                                if bindings.len() % 2 != 0 {
-                                    return Err("loop: flat bindings need even count".into());
-                                }
-                                let mut i = 0;
-                                while i < bindings.len() {
-                                    if let LispVal::Sym(name) = &bindings[i] {
-                                        binding_names.push(name.clone());
-                                        binding_vals.push(lisp_eval(&bindings[i + 1], env, state)?);
-                                    } else {
-                                        return Err(format!(
-                                            "loop: binding name must be sym, got {}",
-                                            bindings[i]
-                                        ));
-                                    }
-                                    i += 2;
-                                }
-                            }
-                            let result = loop {
-                                let snap = env.snapshot();
-                                for (i, name) in binding_names.iter().enumerate() {
-                                    env.push(name.clone(), binding_vals[i].clone());
-                                }
-                                let result = lisp_eval(body, env, state);
-                                env.restore(snap);
-                                match result? {
-                                    LispVal::Recur(new_vals) => {
-                                        if new_vals.len() != binding_names.len() {
-                                            return Err(format!(
-                                                "recur: expected {} args, got {}",
-                                                binding_names.len(),
-                                                new_vals.len()
-                                            ));
-                                        }
-                                        binding_vals = new_vals;
-                                    }
-                                    other => break other,
-                                }
-                            };
-                            return Ok(result);
-                        }
-                        "recur" => {
-                            let vals: Vec<LispVal> = list[1..]
-                                .iter()
-                                .map(|a| lisp_eval(a, env, state))
-                                .collect::<Result<_, _>>()?;
-                            return Ok(LispVal::Recur(vals));
-                        }
-                        "require" => {
-                            let module_name = match list.get(1) {
-                                Some(LispVal::Str(s)) => s.as_str(),
-                                _ => return Err("require: need string module name".into()),
-                            };
-                            let prefix: Option<&str> = match list.get(2) {
-                                Some(LispVal::Str(s)) => Some(s.as_str()),
-                                None => None,
-                                _ => return Err("require: prefix must be string".into()),
-                            };
-                            let marker =
-                                format!("__loaded_{}__{}", module_name, prefix.unwrap_or(""));
-                            if env.contains(&marker) {
-                                return Ok(LispVal::Nil);
-                            }
-                            // Try stdlib first, then file path
-                            let code: String =
-                                if let Some(stdlib_code) = get_stdlib_code(module_name) {
-                                    stdlib_code.to_string()
-                                } else {
-                                    // File-based loading: resolve relative to RLM_MODULE_PATH or cwd
-                                    let path = if module_name.starts_with('/')
-                                        || module_name.starts_with("./")
-                                        || module_name.starts_with("../")
-                                    {
-                                        module_name.to_string()
-                                    } else {
-                                        let base = std::env::var("RLM_MODULE_PATH")
-                                            .unwrap_or_else(|_| ".".to_string());
-                                        format!("{}/{}.lisp", base, module_name)
-                                    };
-                                    std::fs::read_to_string(&path).map_err(|e| {
-                                        format!("require: cannot load '{}': {}", path, e)
-                                    })?
-                                };
-                            if let Some(pfx) = prefix {
-                                let mut module_env = Env::new();
-                                let module_exprs = parse_all(&code)?;
-                                for expr in &module_exprs {
-                                    lisp_eval(expr, &mut module_env, state)?;
-                                }
-                                // If module defines __exports__, only import those; otherwise import all
-                                let exports: Option<Vec<String>> =
-                                    module_env.get("__exports__").and_then(|v| match v {
-                                        LispVal::List(items) => Some(
-                                            items
-                                                .iter()
-                                                .filter_map(|i| match i {
-                                                    LispVal::Str(s) => Some(s.clone()),
-                                                    LispVal::Sym(s) => Some(s.clone()),
-                                                    _ => None,
-                                                })
-                                                .collect(),
-                                        ),
-                                        _ => None,
-                                    });
-                                let bindings = module_env.into_bindings();
-                                for (k, v) in &bindings {
-                                    if k.starts_with("__") {
-                                        continue;
-                                    } // skip internals
-                                    if let Some(ref exp) = exports {
-                                        if !exp.contains(&k) {
-                                            continue;
-                                        }
-                                    }
-                                    env.push(format!("{}/{}", pfx, k), v.clone());
-                                }
-                            } else {
-                                let module_exprs = parse_all(&code)?;
-                                for expr in &module_exprs {
-                                    lisp_eval(expr, env, state)?;
-                                }
-                            }
-                            env.push(marker, LispVal::Bool(true));
-                            return Ok(LispVal::Nil);
-                        }
-                        "export" => {
-                            // (export sym1 sym2 ...) or (export "sym1" "sym2" ...)
-                            let names: Vec<String> = list[1..]
-                                .iter()
-                                .map(|a| match a {
-                                    LispVal::Sym(s) => s.clone(),
-                                    LispVal::Str(s) => s.clone(),
-                                    other => format!("{}", other),
-                                })
-                                .collect();
-                            let existing = env.get("__exports__").cloned();
-                            let merged = match existing {
-                                Some(LispVal::List(mut items)) => {
-                                    for n in &names {
-                                        if !items.iter().any(|i| match i {
-                                            LispVal::Str(s) => s == n,
-                                            LispVal::Sym(s) => s == n,
-                                            _ => false,
-                                        }) {
-                                            items.push(LispVal::Str(n.clone()));
-                                        }
-                                    }
-                                    LispVal::List(items)
-                                }
-                                _ => LispVal::List(names.into_iter().map(LispVal::Str).collect()),
-                            };
-                            env.push("__exports__".to_string(), merged);
-                            return Ok(LispVal::Bool(true));
-                        }
-                        "final" => {
-                            let val = lisp_eval(list.get(1).ok_or("final: need value")?, env, state)?;
-                            state.rlm_state
-                                .insert("Final".to_string(), LispVal::Bool(true));
-                            state.rlm_state.insert("result".to_string(), val);
-                            return Ok(LispVal::Bool(true));
-                        }
-                        "final-var" => {
-                            let var_name = match list.get(1) {
-                                Some(LispVal::Sym(s)) => s.clone(),
-                                Some(LispVal::Str(s)) => s.clone(),
-                                other => {
-                                    return Err(format!(
-                                        "final-var: need symbol or string, got {:?}",
-                                        other
-                                    ))
-                                }
-                            };
-                            let val = env.get(&var_name).cloned().ok_or_else(|| {
-                                format!("final-var: undefined variable '{}'", var_name)
-                            })?;
-                            state.rlm_state
-                                .insert("Final".to_string(), LispVal::Bool(true));
-                            state.rlm_state.insert("result".to_string(), val);
-                            return Ok(LispVal::Bool(true));
-                        }
-                        "assert" => {
-                            let condition = lisp_eval(list.get(1).ok_or("assert: need condition")?, env, state)?;
-                            if is_truthy(&condition) {
-                                state.rlm_state
-                                    .insert("AssertPassed".to_string(), LispVal::Bool(true));
-                                return Ok(LispVal::Bool(true));
-                            } else {
-                                return Err(format!(
-                                    "assert failed: {}",
-                                    truncate_str(&list[1].to_string(), 100)
-                                ));
-                            }
-                        }
-                        "rlm-set" => {
-                            let key = match list.get(1) {
-                                Some(LispVal::Sym(s)) => s.clone(),
-                                Some(LispVal::Str(s)) => s.clone(),
-                                other => {
-                                    return Err(format!(
-                                        "rlm-set: key must be symbol or string, got {:?}",
-                                        other
-                                    ))
-                                }
-                            };
-                            let val = match list.get(2) {
-                                Some(v) => lisp_eval(v, env, state)?,
-                                None => LispVal::Nil,
-                            };
-                            state.rlm_state.insert(key, val);
-                            return Ok(LispVal::Bool(true));
-                        }
-                        "rlm-get" => {
-                            let key = match list.get(1) {
-                                Some(LispVal::Sym(s)) => s.clone(),
-                                Some(LispVal::Str(s)) => s.clone(),
-                                other => {
-                                    return Err(format!(
-                                        "rlm-get: key must be symbol or string, got {:?}",
-                                        other
-                                    ))
-                                }
-                            };
-                            return Ok(state.rlm_state.get(&key).cloned().unwrap_or(LispVal::Nil));
-                        }
-                        "set!" => {
-                            let name = match list.get(1) {
-                                Some(LispVal::Sym(s)) => s.clone(),
-                                _ => return Err("set!: need symbol".into()),
-                            };
-                            let val = lisp_eval(list.get(2).ok_or("set!: need value")?, env, state)?;
-                            if let Some(slot) = env.get_mut(&name) {
-                                *slot = val;
-                                return Ok(LispVal::Nil);
-                            } else {
-                                return Err(format!("set!: undefined variable '{}'", name));
-                            }
-                        }
-                        _ => {
-                            let er = dispatch_call(list, env, state)?;
-                            match er {
-                                EvalResult::Value(v) => return Ok(v),
-                                EvalResult::TailCall { expr, env: tail_env } => {
-                                    current_expr = expr;
-                                    *env = tail_env;
-                                    continue '_trampoline;
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    let er = dispatch_call(list, env, state)?;
-                    match er {
-                        EvalResult::Value(v) => return Ok(v),
-                        EvalResult::TailCall { expr, env: tail_env } => {
-                            current_expr = expr;
-                            *env = tail_env;
-                            continue '_trampoline;
-                        }
-                    }
-                }
-            }
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
