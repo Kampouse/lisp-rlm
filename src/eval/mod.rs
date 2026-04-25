@@ -1498,6 +1498,37 @@ pub fn apply_lambda(
 // Function dispatch
 // ---------------------------------------------------------------------------
 
+/// Dispatch a builtin by name with already-evaluated args.
+/// Used by call_val when a builtin symbol is passed as a first-class value.
+fn dispatch_call_with_args(name: &str, args: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
+    if let Some(result) = dispatch_arithmetic::handle(name, args)? {
+        return Ok(result);
+    }
+    if let Some(result) = dispatch_collections::handle(name, args, env)? {
+        return Ok(result);
+    }
+    if let Some(result) = dispatch_strings::handle(name, args)? {
+        return Ok(result);
+    }
+    if let Some(result) = dispatch_predicates::handle(name, args)? {
+        return Ok(result);
+    }
+    if let Some(result) = dispatch_json::handle(name, args)? {
+        return Ok(result);
+    }
+    if let Some(result) = dispatch_http::handle(name, args)? {
+        return Ok(result);
+    }
+    if let Some(result) = dispatch_state::handle(name, args, env)? {
+        return Ok(result);
+    }
+    match name {
+        "sha256" => builtin_sha256(args),
+        "keccak256" => builtin_keccak256(args),
+        _ => Err(format!("{}: not a dispatchable builtin", name)),
+    }
+}
+
 fn dispatch_call(list: &[LispVal], env: &mut Env) -> Result<LispVal, String> {
     let head = &list[0];
     let raw_args: Vec<LispVal> = list[1..].to_vec();
@@ -1955,14 +1986,10 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
     } = head
     {
         apply_lambda(params, &rest_param, body, closed_env, &args, env)
-    } else if let LispVal::List(ll) = head {
-        if ll.len() < 3 {
-            return Err("inline lambda too short".into());
-        }
-        let (params, rest_param) = parse_params(&ll[1])?;
-        apply_lambda(&params, &rest_param, &ll[2], &std::sync::Arc::new(vec![]), &args, env)
     } else {
-        Err("not callable".into())
+        // Head is a compound expression — evaluate it, then call the result
+        let func = lisp_eval(head, env)?;
+        call_val(&func, &args, env)
     }
 }
 
@@ -1993,10 +2020,15 @@ fn call_val(func: &LispVal, args: &[LispVal], env: &mut Env) -> Result<LispVal, 
             let (params, rest_param) = parse_params(&ll[1])?;
             apply_lambda(&params, &rest_param, &ll[2], &std::sync::Arc::new(vec![]), args, env)
         }
-        LispVal::Sym(_) => {
-            let mut call = vec![func.clone()];
-            call.extend(args.iter().cloned());
-            dispatch_call(&call, env)
+        LispVal::Sym(name) => {
+            // Resolve symbol in env first. If not found (builtin), dispatch by name.
+            if let Some(resolved) = env.get(name).cloned() {
+                call_val(&resolved, args, env)
+            } else if is_builtin_name(name) {
+                dispatch_call_with_args(name, args, env)
+            } else {
+                Err(format!("undefined: {}", name))
+            }
         }
         _ => Err(format!("not callable: {}", func)),
     }
