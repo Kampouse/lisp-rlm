@@ -172,7 +172,26 @@ pub fn handle(
             Some(LispVal::Float(f)) => Ok(Some(LispVal::Str(f.to_string()))),
             _ => Err("number->string: need number".into()),
         },
-        // ── Tier 1: Numeric predicates ──
+        "expt" => {
+            let base = as_num(args.first().ok_or("expt: need base")?)?;
+            let exp = as_num(args.get(1).ok_or("expt: need exponent")?)?;
+            let result = (base as f64).powf(exp as f64);
+            if result == result.floor() && result.abs() < 1e18 {
+                Ok(Some(LispVal::Num(result as i64)))
+            } else {
+                Ok(Some(LispVal::Float(result)))
+            }
+        }
+        "atan" => {
+            let y = as_num(args.first().ok_or("atan: need number")?)?;
+            if args.len() >= 2 {
+                let x = as_num(args.get(1).ok_or("atan: need x")?)?;
+                Ok(Some(LispVal::Float((y as f64).atan2(x as f64))))
+            } else {
+                Ok(Some(LispVal::Float((y as f64).atan())))
+            }
+        }
+        // R7RS arithmetic aliases
         "zero?" => match args.first() {
             Some(LispVal::Num(n)) => Ok(Some(LispVal::Bool(*n == 0))),
             Some(LispVal::Float(f)) => Ok(Some(LispVal::Bool(*f == 0.0))),

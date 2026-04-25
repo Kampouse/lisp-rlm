@@ -410,6 +410,21 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             let b = args.get(1).ok_or("equal?: need 2 args")?;
             Ok(Some(LispVal::Bool(crate::helpers::lisp_equal(a, b))))
         }
+        "eqv?" => {
+            // eqv? ≈ equal? for our purposes (no number tower distinction)
+            let a = args.first().ok_or("eqv?: need 2 args")?;
+            let b = args.get(1).ok_or("eqv?: need 2 args")?;
+            Ok(Some(LispVal::Bool(crate::helpers::lisp_equal(a, b))))
+        }
+        "boolean=?" => {
+            let a = args.first().ok_or("boolean=?: need 2 args")?;
+            let b = args.get(1).ok_or("boolean=?: need 2 args")?;
+            let eq = match (a, b) {
+                (LispVal::Bool(x), LispVal::Bool(y)) => x == y,
+                _ => false,
+            };
+            Ok(Some(LispVal::Bool(eq)))
+        }
         "eq?" => {
             let a = args.first().ok_or("eq?: need 2 args")?;
             let b = args.get(1).ok_or("eq?: need 2 args")?;

@@ -206,6 +206,34 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
         "string<?" => Ok(Some(LispVal::Bool(args.get(0).and_then(|a| args.get(1).map(|b| {
             if let (LispVal::Str(a), LispVal::Str(b)) = (a, b) { a < b } else { false }
         })).unwrap_or(false)))),
+        "string>?" => Ok(Some(LispVal::Bool(args.get(0).and_then(|a| args.get(1).map(|b| {
+            if let (LispVal::Str(a), LispVal::Str(b)) = (a, b) { a > b } else { false }
+        })).unwrap_or(false)))),
+        "string<=?" => Ok(Some(LispVal::Bool(args.get(0).and_then(|a| args.get(1).map(|b| {
+            if let (LispVal::Str(a), LispVal::Str(b)) = (a, b) { a <= b } else { false }
+        })).unwrap_or(false)))),
+        "string>=?" => Ok(Some(LispVal::Bool(args.get(0).and_then(|a| args.get(1).map(|b| {
+            if let (LispVal::Str(a), LispVal::Str(b)) = (a, b) { a >= b } else { false }
+        })).unwrap_or(false)))),
+        "string-ci=?" => Ok(Some(LispVal::Bool(args.get(0).and_then(|a| args.get(1).map(|b| {
+            if let (LispVal::Str(a), LispVal::Str(b)) = (a, b) { a.to_lowercase() == b.to_lowercase() } else { false }
+        })).unwrap_or(false)))),
+        "string-ci<?" => Ok(Some(LispVal::Bool(args.get(0).and_then(|a| args.get(1).map(|b| {
+            if let (LispVal::Str(a), LispVal::Str(b)) = (a, b) { a.to_lowercase() < b.to_lowercase() } else { false }
+        })).unwrap_or(false)))),
+        "string-ci>?" => Ok(Some(LispVal::Bool(args.get(0).and_then(|a| args.get(1).map(|b| {
+            if let (LispVal::Str(a), LispVal::Str(b)) = (a, b) { a.to_lowercase() > b.to_lowercase() } else { false }
+        })).unwrap_or(false)))),
+        "string-ci<=?" => Ok(Some(LispVal::Bool(args.get(0).and_then(|a| args.get(1).map(|b| {
+            if let (LispVal::Str(a), LispVal::Str(b)) = (a, b) { a.to_lowercase() <= b.to_lowercase() } else { false }
+        })).unwrap_or(false)))),
+        "string-ci>=?" => Ok(Some(LispVal::Bool(args.get(0).and_then(|a| args.get(1).map(|b| {
+            if let (LispVal::Str(a), LispVal::Str(b)) = (a, b) { a.to_lowercase() >= b.to_lowercase() } else { false }
+        })).unwrap_or(false)))),
+        "string-foldcase" => match args.first() {
+            Some(LispVal::Str(s)) => Ok(Some(LispVal::Str(s.to_lowercase()))),
+            _ => Err("string-foldcase: need string".into()),
+        },
         "display" => handle("print", args),
         "newline" => { println!(); Ok(Some(LispVal::Nil)) }
         "write" => handle("inspect", args),

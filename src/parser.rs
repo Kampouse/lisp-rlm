@@ -169,6 +169,16 @@ fn parse(tokens: &[String], pos: &mut usize) -> Result<LispVal, String> {
             Ok(LispVal::Str(processed))
         }
         s => {
+            // Special float literals
+            if s == "+nan.0" || s == "+nan.0f" || s == "nan" {
+                return Ok(LispVal::Float(f64::NAN));
+            }
+            if s == "+inf.0" || s == "+inf.0f" || s == "+inf" {
+                return Ok(LispVal::Float(f64::INFINITY));
+            }
+            if s == "-inf.0" || s == "-inf.0f" || s == "-inf" {
+                return Ok(LispVal::Float(f64::NEG_INFINITY));
+            }
             if let Ok(n) = s.parse::<i64>() {
                 Ok(LispVal::Num(n))
             } else if s.contains('.') {

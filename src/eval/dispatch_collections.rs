@@ -526,6 +526,11 @@ pub fn handle(
             }
             Ok(Some(LispVal::Nil))
         }
+        "list-copy" => match args.first() {
+            Some(LispVal::List(l)) => Ok(Some(LispVal::List(l.clone()))),
+            Some(v) => Ok(Some(v.clone())),
+            None => Err("list-copy: need 1 arg".into()),
+        },
         "cons*" => {
             if args.is_empty() {
                 return Err("cons*: need at least 1 arg".into());

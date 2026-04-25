@@ -1,10 +1,11 @@
 (define *pass* 0)
 (define *fail* 0)
+(define *err* 0)
 
 (define (test expected expr)
   (if (equal? expected expr)
     (set! *pass* (+ *pass* 1))
-    (begin (set! *fail* (+ *fail* 1)))))
+    (begin (set! *fail* (+ *fail* 1)) (print "FAIL: expected ") (print expected) (print " got ") (println expr))))
 
 (let ()
   (define x 28)
@@ -197,6 +198,15 @@
 (define tail
   (lambda (stream) (cdr (force stream))))
 (test 2 (head (tail (tail integers))))
+(define (stream-filter p? s)
+  (delay-force
+   (if (null? (force s)) 
+       (delay '())
+       (let ((h (car (force s)))
+             (t (cdr (force s))))
+         (if (p? h)
+             (delay (cons h (stream-filter p? t)))
+             (stream-filter p? t))))))
 (test 5 (head (tail (tail (stream-filter odd? integers)))))
 (let ()
   (define x 5)
@@ -891,5 +901,8 @@
 (test "İ" (string-upcase "İ"))
 
 
+(print "
+=== R7RS Conformance ===")
 (print "Pass: ") (println *pass*)
 (print "Fail: ") (println *fail*)
+(print "Total tested: ") (println (+ *pass* *fail*))
