@@ -299,6 +299,19 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                         })
                     }
 
+                    // ── fork (speculative evaluation) ──
+                    // (fork expr) — evaluates expr in a forked env, returns result.
+                    // Parent's env is unchanged. O(1) via im::HashMap structural sharing.
+                    "fork" => {
+                        let body = list.get(1).ok_or("fork: need expression")?;
+                        let mut forked_env = env.clone();
+                        let mut forked_state = state.clone();
+                        // Each fork gets its own provider clone
+                        forked_state.llm_provider = state.llm_provider.as_ref().map(|p| p.box_clone());
+                        let result = super::lisp_eval(body, &mut forked_env, &mut forked_state)?;
+                        Ok(Step::Done(result))
+                    }
+
                     // ── match ──
                     "match" => Ok(Step::EvalNext {
                         expr: list.get(1).ok_or("match: need expr")?.clone(),

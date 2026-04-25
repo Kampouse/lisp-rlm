@@ -1,7 +1,5 @@
 //! JSON and Dict builtins.
 
-use std::collections::BTreeMap;
-
 use super::{json_to_lisp, lisp_to_json};
 use crate::helpers::*;
 use crate::types::LispVal;
@@ -10,7 +8,7 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
     match name {
         // --- Dict / Map builtins ---
         "dict" => {
-            let mut m = BTreeMap::new();
+            let mut m = im::HashMap::new();
             let mut i = 0;
             while i + 1 < args.len() {
                 let key = as_str(&args[i]).map_err(|_| "dict: keys must be strings")?;

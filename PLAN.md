@@ -114,6 +114,42 @@ The model writes `(rlm "solve this")`, the fractal decomposes, subtasks run in p
 - Writes → `.fetch_add(n as u64, Ordering::Relaxed)`
 - `merge_rlm_state()` simplified — no more token/call save/restore
 
+---
+
+## Persistent Data Structures for Lisp
+
+### Persistent Maps (`LispVal::Map`)
+
+Changed from `BTreeMap<String, LispVal>` to `im::HashMap<String, LispVal>`:
+
+- `dict/set` and `dict/remove` now return a new version via structural sharing — O(1) instead of O(n) clone
+- All dict operations (`dict`, `dict/get`, `dict/set`, `dict/remove`, `dict/merge`, `dict/has?`, `dict/keys`, `dict/vals`) unchanged at the Lisp level
+- `sort` builtin now handles strings (lexicographic) in addition to numbers
+- JSON interop (`json_to_lisp` / `lisp_to_json`) transparently uses `im::HashMap`
+
+### Speculative Evaluation (`fork`)
+
+New special form: `(fork expr)`
+
+- Evaluates `expr` in an isolated environment fork — O(1) via `im::HashMap` structural sharing
+- Returns the result without affecting the parent's bindings
+- Shares `Arc<AtomicU64>` token/call counters — budget is consumed but env is isolated
+- Gets its own `LlmProvider` clone (shared HTTP client pool)
+
+Usage:
+```lisp
+;; Try a risky computation without polluting the env
+(define result (fork (begin (define x 42) (compute x))))
+;; x is NOT defined here — fork's env was isolated
+
+;; Compare two approaches speculatively
+(define a (fork (approach-1 data)))
+(define b (fork (approach-2 data)))
+(if (> (score a) (score b)) a b)
+```
+
+This is the key primitive for self-harnessing RLM: the model can evaluate generated code speculatively, keep the result, and discard the side effects.
+
 ## Architecture: Persistent Data Structures
 
 `Env` wraps `im::HashMap` — a Hash Array Mapped Trie (HAMT). This is a persistent (immutable) data structure: every mutation creates a new version that shares unchanged nodes with the old one via structural sharing.

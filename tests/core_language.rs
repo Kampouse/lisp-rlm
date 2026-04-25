@@ -103,6 +103,7 @@ fn test_define_and_lambda() {
 }
 #[test]
 fn test_dict_keys_sorted() {
+    // dict/keys returns keys in hash order (im::HashMap), sort them for deterministic test
     let code = r#"(sort (dict/keys (dict "z" 1 "a" 2 "m" 3)))"#;
     assert_eq!(eval_str(code), "(\"a\" \"m\" \"z\")");
 }

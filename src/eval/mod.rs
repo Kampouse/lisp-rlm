@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
@@ -61,7 +60,7 @@ pub fn json_to_lisp(val: serde_json::Value) -> LispVal {
         serde_json::Value::String(s) => LispVal::Str(s),
         serde_json::Value::Array(a) => LispVal::List(a.into_iter().map(json_to_lisp).collect()),
         serde_json::Value::Object(m) => {
-            let map: BTreeMap<String, LispVal> =
+            let map: im::HashMap<String, LispVal> =
                 m.into_iter().map(|(k, v)| (k, json_to_lisp(v))).collect();
             LispVal::Map(map)
         }
@@ -241,7 +240,8 @@ Final: final final-var
 Introspection: show-vars show-context
 Token tracking: rlm-tokens rlm-calls
 Snapshot: snapshot rollback rollback-to
-Special forms: define def let lambda if cond match quote quasiquote unquote unquote-splicing loop recur begin progn defmacro require try catch error"#;
+Fork: (fork expr) — evaluate expr in isolated env fork, parent unchanged. O(1) via persistent data structures. Use for speculative execution.
+Special forms: define def let lambda if cond match quote quasiquote unquote unquote-splicing loop recur begin progn defmacro require try catch error fork"#;
 
 // ---------------------------------------------------------------------------
 // Evaluator
@@ -1423,7 +1423,7 @@ list cons car cdr nth len append reverse map filter reduce sort range
 to-string to-int to-float number? string? list? empty? nil? bool?
 llm llm-batch sub-rlm rlm-set rlm-get
 show-vars show-context final final-var snapshot rollback
-try catch error
+try catch error fork
 
 DO NOT wrap code in markdown fences. DO NOT add explanations."#;
 
@@ -1512,17 +1512,17 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
                     }
                     _ => return Err("rlm/signature: outputs must be list".into()),
                 };
-                Ok(EvalResult::Value(LispVal::Map(BTreeMap::from([
-                    ("name".to_string(), LispVal::Str(sig_name)),
-                    (
-                        "inputs".to_string(),
-                        LispVal::List(inputs.into_iter().map(LispVal::Str).collect()),
-                    ),
-                    (
-                        "outputs".to_string(),
-                        LispVal::List(outputs.into_iter().map(LispVal::Str).collect()),
-                    ),
-                ]))))
+                let mut m = im::HashMap::new();
+                m.insert("name".to_string(), LispVal::Str(sig_name));
+                m.insert(
+                    "inputs".to_string(),
+                    LispVal::List(inputs.into_iter().map(LispVal::Str).collect()),
+                );
+                m.insert(
+                    "outputs".to_string(),
+                    LispVal::List(outputs.into_iter().map(LispVal::Str).collect()),
+                );
+                Ok(EvalResult::Value(LispVal::Map(m)))
             }
             "rlm/format-prompt" => {
                 let sig = &args[0];

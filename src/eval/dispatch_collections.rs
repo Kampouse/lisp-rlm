@@ -115,17 +115,22 @@ pub fn handle(
                 None => return Err("sort: need 1 argument".into()),
             };
             vals.sort_by(|a, b| {
-                let fa = match a {
-                    LispVal::Num(n) => *n as f64,
-                    LispVal::Float(f) => *f,
-                    _ => return std::cmp::Ordering::Equal,
-                };
-                let fb = match b {
-                    LispVal::Num(n) => *n as f64,
-                    LispVal::Float(f) => *f,
-                    _ => return std::cmp::Ordering::Equal,
-                };
-                fa.partial_cmp(&fb).unwrap_or(std::cmp::Ordering::Equal)
+                match (a, b) {
+                    (LispVal::Str(sa), LispVal::Str(sb)) => sa.cmp(sb),
+                    _ => {
+                        let fa = match a {
+                            LispVal::Num(n) => *n as f64,
+                            LispVal::Float(f) => *f,
+                            _ => return std::cmp::Ordering::Equal,
+                        };
+                        let fb = match b {
+                            LispVal::Num(n) => *n as f64,
+                            LispVal::Float(f) => *f,
+                            _ => return std::cmp::Ordering::Equal,
+                        };
+                        fa.partial_cmp(&fb).unwrap_or(std::cmp::Ordering::Equal)
+                    }
+                }
             });
             Ok(Some(LispVal::List(vals)))
         }

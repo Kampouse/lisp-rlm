@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
@@ -268,7 +267,7 @@ impl std::fmt::Debug for EvalState {
 /// | [`Lambda`]    | First-class closure with captured environment. |
 /// | [`Macro`]     | Macro: receives unevaluated args, returns code to evaluate. |
 /// | [`Recur`]     | Control-flow marker used by `loop`/`recur` (not user-visible). |
-/// | [`Map`]       | String-keyed hash map (`BTreeMap<String, LispVal>`). |
+/// | [`Map`]       | String-keyed hash map (`im::HashMap` — persistent, structural sharing). |
 ///
 /// [`Nil`]: LispVal::Nil
 /// [`Bool`]: LispVal::Bool
@@ -321,8 +320,8 @@ pub enum LispVal {
     /// Control-flow marker emitted by `recur` inside a `loop` form.
     /// Carries the new binding values for the next iteration.
     Recur(Vec<LispVal>),
-    /// String-keyed dictionary backed by a `BTreeMap`.
-    Map(BTreeMap<String, LispVal>),
+    /// String-keyed dictionary backed by an `im::HashMap` (persistent, O(1) clone).
+    Map(im::HashMap<String, LispVal>),
 }
 
 impl std::fmt::Display for LispVal {
