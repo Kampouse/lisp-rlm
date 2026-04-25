@@ -230,6 +230,29 @@ Concurrency. The eval loop is synchronous and single-threaded. `im` gives the da
 
 ---
 
+## Closure `set!` Mutation — commit `9badbb0`
+
+**Problem:** `set!` inside a lambda didn't accumulate across calls. `(for-each (lambda (x) (set! total (+ total x))) (list 1 2 3))` returned 3 instead of 6.
+
+**Root cause:** `closed_env` was `Arc<Vec<(String, LispVal)>>` — a frozen snapshot from lambda creation. Every `apply_lambda` call rebuilt `local_env` from this stale snapshot, overwriting live `set!` values.
+
+**Fix: Shared Mutable Closed Environment**
+
+Changed `closed_env` type to `Arc<RwLock<im::HashMap<String, LispVal>>>`:
+
+1. `Env` gets a `shared_env` back-reference field, set by `apply_lambda`
+2. `set!` handler calls `propagate_to_shared()` to write mutations back to the shared `Arc<RwLock<...>>`
+3. Next call to the same lambda reads updated values from the shared closed_env
+4. Overlay is unconditional — correct lexical scoping preserved (compose/repeat work)
+5. `RwLock` (not `RefCell`) — `Send + Sync` for the auto-parallel RLM fractal loop
+6. Manual `PartialEq` for `LispVal` — `RwLock` doesn't derive it
+
+**Why not scope chains?** Full `Env { bindings, parent: Rc<RefCell<Env>> }` would be the textbook fix, but it's a 200+ line refactor touching every env lookup site. The shared mutable closed_env achieves the same effect with 4 files changed, 71 lines added to types.rs.
+
+317 tests, 0 failures. All norvig tests pass (20/20).
+
+---
+
 ## Future (not planned)
 
 ### Full Continuation Stack for deeper patterns
