@@ -114,22 +114,20 @@ pub fn handle(
                 Some(other) => return Err(format!("sort: expected list, got {}", other)),
                 None => return Err("sort: need 1 argument".into()),
             };
-            vals.sort_by(|a, b| {
-                match (a, b) {
-                    (LispVal::Str(sa), LispVal::Str(sb)) => sa.cmp(sb),
-                    _ => {
-                        let fa = match a {
-                            LispVal::Num(n) => *n as f64,
-                            LispVal::Float(f) => *f,
-                            _ => return std::cmp::Ordering::Equal,
-                        };
-                        let fb = match b {
-                            LispVal::Num(n) => *n as f64,
-                            LispVal::Float(f) => *f,
-                            _ => return std::cmp::Ordering::Equal,
-                        };
-                        fa.partial_cmp(&fb).unwrap_or(std::cmp::Ordering::Equal)
-                    }
+            vals.sort_by(|a, b| match (a, b) {
+                (LispVal::Str(sa), LispVal::Str(sb)) => sa.cmp(sb),
+                _ => {
+                    let fa = match a {
+                        LispVal::Num(n) => *n as f64,
+                        LispVal::Float(f) => *f,
+                        _ => return std::cmp::Ordering::Equal,
+                    };
+                    let fb = match b {
+                        LispVal::Num(n) => *n as f64,
+                        LispVal::Float(f) => *f,
+                        _ => return std::cmp::Ordering::Equal,
+                    };
+                    fa.partial_cmp(&fb).unwrap_or(std::cmp::Ordering::Equal)
                 }
             });
             Ok(Some(LispVal::List(vals)))
@@ -425,6 +423,112 @@ pub fn handle(
                 Ok(out)
             });
             Ok(Some(LispVal::List(results?)))
+        }
+
+        // ── Tier 1: List operations ──
+        "member" => {
+            let obj = args.first().ok_or("member: need (obj list)")?;
+            let lst = match args.get(1) {
+                Some(LispVal::List(l)) => l,
+                _ => return Err("member: need list as second arg".into()),
+            };
+            for (i, elem) in lst.iter().enumerate() {
+                if lisp_equal(obj, elem) {
+                    return Ok(Some(LispVal::List(lst[i..].to_vec())));
+                }
+            }
+            Ok(Some(LispVal::Bool(false)))
+        }
+        "assoc" => {
+            let key = args.first().ok_or("assoc: need (key alist)")?;
+            let alist = match args.get(1) {
+                Some(LispVal::List(l)) => l,
+                _ => return Err("assoc: need list as second arg".into()),
+            };
+            for entry in alist {
+                if let LispVal::List(pair) = entry {
+                    if !pair.is_empty() && lisp_equal(key, &pair[0]) {
+                        return Ok(Some(entry.clone()));
+                    }
+                }
+            }
+            Ok(Some(LispVal::Bool(false)))
+        }
+        "partition" => {
+            let func = args.first().ok_or("partition: need (pred list)")?;
+            let lst = match args.get(1) {
+                Some(LispVal::List(l)) => l.clone(),
+                _ => return Err("partition: need list as second arg".into()),
+            };
+            let mut yes = Vec::new();
+            let mut no = Vec::new();
+            for elem in &lst {
+                if is_truthy(&call_val(func, &[elem.clone()], env, state)?) {
+                    yes.push(elem.clone());
+                } else {
+                    no.push(elem.clone());
+                }
+            }
+            Ok(Some(LispVal::List(vec![
+                LispVal::List(yes),
+                LispVal::List(no),
+            ])))
+        }
+        "fold-left" => {
+            let func = args.first().ok_or("fold-left: need (f init list)")?;
+            let mut acc = args.get(1).ok_or("fold-left: need (f init list)")?.clone();
+            let lst = match args.get(2) {
+                Some(LispVal::List(l)) => l.clone(),
+                Some(LispVal::Nil) => return Ok(Some(acc)),
+                _ => return Err("fold-left: need list as third arg".into()),
+            };
+            for elem in &lst {
+                acc = call_val(func, &[acc, elem.clone()], env, state)?;
+            }
+            Ok(Some(acc))
+        }
+        "fold-right" => {
+            let func = args.first().ok_or("fold-right: need (f init list)")?;
+            let init = args.get(1).ok_or("fold-right: need (f init list)")?.clone();
+            let lst = match args.get(2) {
+                Some(LispVal::List(l)) => l.clone(),
+                Some(LispVal::Nil) => return Ok(Some(init)),
+                _ => return Err("fold-right: need list as third arg".into()),
+            };
+            let mut acc = init;
+            for elem in lst.iter().rev() {
+                acc = call_val(func, &[elem.clone(), acc], env, state)?;
+            }
+            Ok(Some(acc))
+        }
+        "for-each" => {
+            let func = args.first().ok_or("for-each: need (f list)")?;
+            let lst = match args.get(1) {
+                Some(LispVal::List(l)) => l.clone(),
+                Some(LispVal::Nil) => return Ok(Some(LispVal::Nil)),
+                _ => return Err("for-each: need list as second arg".into()),
+            };
+            for elem in &lst {
+                call_val(func, &[elem.clone()], env, state)?;
+            }
+            Ok(Some(LispVal::Nil))
+        }
+        "cons*" => {
+            if args.is_empty() {
+                return Err("cons*: need at least 1 arg".into());
+            }
+            if args.len() == 1 {
+                return Ok(Some(args[0].clone()));
+            }
+            let last = args.last().unwrap();
+            let mut result = match last {
+                LispVal::List(l) => l.clone(),
+                _ => vec![last.clone()],
+            };
+            for elem in args[..args.len() - 1].iter().rev() {
+                result.insert(0, elem.clone());
+            }
+            Ok(Some(LispVal::List(result)))
         }
 
         _ => Ok(None),

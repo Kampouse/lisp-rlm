@@ -277,9 +277,9 @@ fn test_generic_eq_strings_not_equal() {
 #[test]
 fn test_higher_order() {
     let code = r#"
-        (define apply (lambda (f x) (f x)))
+        (define apply-fn (lambda (f x) (f x)))
         (define double (lambda (n) (* n 2)))
-        (apply double 21)
+        (apply-fn double 21)
     "#;
     assert_eq!(eval_str(code), "42");
 }
@@ -731,7 +731,7 @@ fn test_stdlib_math_sqrt() {
 #[test]
 fn test_stdlib_math_sqrt_negative() {
     let code = r#"(require "math") (sqrt -1)"#;
-    assert_eq!(eval_str(code), "nil");
+    assert_eq!(eval_str(code), "NaN");
 }
 #[test]
 fn test_stdlib_math_sqrt_perfect() {

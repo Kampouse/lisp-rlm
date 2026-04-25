@@ -85,6 +85,117 @@ pub fn handle(
                 Ok(Some(LispVal::Bool(as_num(&args[0])? >= as_num(&args[1])?)))
             }
         }
+        // ── Tier 1: Numeric ──
+        "abs" => match args.first() {
+            Some(LispVal::Num(n)) => Ok(Some(LispVal::Num(n.abs()))),
+            Some(LispVal::Float(f)) => Ok(Some(LispVal::Float(f.abs()))),
+            _ => Err("abs: need number".into()),
+        },
+        "min" => {
+            if args.is_empty() {
+                return Err("min: need at least 1 arg".into());
+            }
+            if any_float(args) {
+                let mut best = as_float(&args[0])?;
+                for a in &args[1..] {
+                    let v = as_float(a)?;
+                    if v < best {
+                        best = v;
+                    }
+                }
+                Ok(Some(LispVal::Float(best)))
+            } else {
+                let mut best = as_num(&args[0])?;
+                for a in &args[1..] {
+                    let v = as_num(a)?;
+                    if v < best {
+                        best = v;
+                    }
+                }
+                Ok(Some(LispVal::Num(best)))
+            }
+        }
+        "max" => {
+            if args.is_empty() {
+                return Err("max: need at least 1 arg".into());
+            }
+            if any_float(args) {
+                let mut best = as_float(&args[0])?;
+                for a in &args[1..] {
+                    let v = as_float(a)?;
+                    if v > best {
+                        best = v;
+                    }
+                }
+                Ok(Some(LispVal::Float(best)))
+            } else {
+                let mut best = as_num(&args[0])?;
+                for a in &args[1..] {
+                    let v = as_num(a)?;
+                    if v > best {
+                        best = v;
+                    }
+                }
+                Ok(Some(LispVal::Num(best)))
+            }
+        }
+        "floor" => match args.first() {
+            Some(LispVal::Num(n)) => Ok(Some(LispVal::Num(*n))),
+            Some(LispVal::Float(f)) => Ok(Some(LispVal::Num(f.floor() as i64))),
+            _ => Err("floor: need number".into()),
+        },
+        "ceiling" => match args.first() {
+            Some(LispVal::Num(n)) => Ok(Some(LispVal::Num(*n))),
+            Some(LispVal::Float(f)) => Ok(Some(LispVal::Num(f.ceil() as i64))),
+            _ => Err("ceiling: need number".into()),
+        },
+        "round" => match args.first() {
+            Some(LispVal::Num(n)) => Ok(Some(LispVal::Num(*n))),
+            Some(LispVal::Float(f)) => Ok(Some(LispVal::Num(f.round() as i64))),
+            _ => Err("round: need number".into()),
+        },
+        "sqrt" => match args.first() {
+            Some(LispVal::Num(n)) => {
+                let n = *n as f64;
+                let r = n.sqrt();
+                if r == r.floor() {
+                    Ok(Some(LispVal::Num(r as i64)))
+                } else {
+                    Ok(Some(LispVal::Float(r)))
+                }
+            }
+            Some(LispVal::Float(f)) => Ok(Some(LispVal::Float(f.sqrt()))),
+            _ => Err("sqrt: need number".into()),
+        },
+        "number->string" => match args.first() {
+            Some(LispVal::Num(n)) => Ok(Some(LispVal::Str(n.to_string()))),
+            Some(LispVal::Float(f)) => Ok(Some(LispVal::Str(f.to_string()))),
+            _ => Err("number->string: need number".into()),
+        },
+        // ── Tier 1: Numeric predicates ──
+        "zero?" => match args.first() {
+            Some(LispVal::Num(n)) => Ok(Some(LispVal::Bool(*n == 0))),
+            Some(LispVal::Float(f)) => Ok(Some(LispVal::Bool(*f == 0.0))),
+            _ => Err("zero?: need number".into()),
+        },
+        "positive?" => match args.first() {
+            Some(LispVal::Num(n)) => Ok(Some(LispVal::Bool(*n > 0))),
+            Some(LispVal::Float(f)) => Ok(Some(LispVal::Bool(*f > 0.0))),
+            _ => Err("positive?: need number".into()),
+        },
+        "negative?" => match args.first() {
+            Some(LispVal::Num(n)) => Ok(Some(LispVal::Bool(*n < 0))),
+            Some(LispVal::Float(f)) => Ok(Some(LispVal::Bool(*f < 0.0))),
+            _ => Err("negative?: need number".into()),
+        },
+        "even?" => match args.first() {
+            Some(LispVal::Num(n)) => Ok(Some(LispVal::Bool(n % 2 == 0))),
+            _ => Err("even?: need integer".into()),
+        },
+        "odd?" => match args.first() {
+            Some(LispVal::Num(n)) => Ok(Some(LispVal::Bool(n % 2 != 0))),
+            _ => Err("odd?: need integer".into()),
+        },
         _ => Ok(None),
     }
 }

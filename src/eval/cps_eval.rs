@@ -315,7 +315,8 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                         let mut forked_env = env.clone();
                         let mut forked_state = state.clone();
                         // Each fork gets its own provider clone
-                        forked_state.llm_provider = state.llm_provider.as_ref().map(|p| p.box_clone());
+                        forked_state.llm_provider =
+                            state.llm_provider.as_ref().map(|p| p.box_clone());
                         let result = super::lisp_eval(body, &mut forked_env, &mut forked_state)?;
                         Ok(Step::Done(result))
                     }
@@ -342,12 +343,23 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                             let mut m = im::HashMap::new();
                             m.insert("__contract".into(), LispVal::Bool(true));
                             m.insert("fn".into(), lam);
-                            m.insert("param_types".into(), LispVal::List(
-                                param_types.into_iter().map(|t| LispVal::Str(format_type(&t))).collect()
-                            ));
-                            m.insert("return_type".into(), LispVal::Str(
-                                ret_type.map(|t| format_type(&t)).unwrap_or_else(|| ":any".into())
-                            ));
+                            m.insert(
+                                "param_types".into(),
+                                LispVal::List(
+                                    param_types
+                                        .into_iter()
+                                        .map(|t| LispVal::Str(format_type(&t)))
+                                        .collect(),
+                                ),
+                            );
+                            m.insert(
+                                "return_type".into(),
+                                LispVal::Str(
+                                    ret_type
+                                        .map(|t| format_type(&t))
+                                        .unwrap_or_else(|| ":any".into()),
+                                ),
+                            );
                             m
                         })))
                     }

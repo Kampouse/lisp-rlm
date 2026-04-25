@@ -148,6 +148,49 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
                 .collect();
             Ok(Some(LispVal::Str(parts.join(&sep))))
         }
+        // -- Tier 1: String operations --
+        "string->list" => match args.first() {
+            Some(LispVal::Str(s)) => Ok(Some(LispVal::List(
+                s.chars().map(|c| LispVal::Str(c.to_string())).collect(),
+            ))),
+            _ => Err("string->list: need string".into()),
+        },
+        "list->string" => match args.first() {
+            Some(LispVal::List(l)) => {
+                let s: String = l
+                    .iter()
+                    .map(|v| match v {
+                        LispVal::Str(s) => s.clone(),
+                        _ => v.to_string(),
+                    })
+                    .collect();
+                Ok(Some(LispVal::Str(s)))
+            }
+            _ => Err("list->string: need list".into()),
+        },
+        "string<?" => {
+            let a = match args.first() {
+                Some(LispVal::Str(s)) => s,
+                _ => return Err("string<?: need strings".into()),
+            };
+            let b = match args.get(1) {
+                Some(LispVal::Str(s)) => s,
+                _ => return Err("string<?: need strings".into()),
+            };
+            Ok(Some(LispVal::Bool(a < b)))
+        }
+        "string->number" => match args.first() {
+            Some(LispVal::Str(s)) => {
+                if let Ok(n) = s.parse::<i64>() {
+                    Ok(Some(LispVal::Num(n)))
+                } else if let Ok(f) = s.parse::<f64>() {
+                    Ok(Some(LispVal::Float(f)))
+                } else {
+                    Ok(Some(LispVal::Bool(false)))
+                }
+            }
+            _ => Err("string->number: need string".into()),
+        },
         _ => Ok(None),
     }
 }

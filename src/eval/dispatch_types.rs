@@ -26,7 +26,7 @@ pub enum RlType {
     Bool,
     Int,
     Float,
-    Num,     // :num = int or float
+    Num, // :num = int or float
     Str,
     Sym,
     List,
@@ -34,11 +34,11 @@ pub enum RlType {
     Fn,
     Any,
     // Parameterized
-    ListOf(Box<RlType>),                    // (:list :int)
-    MapOf(Box<RlType>, Box<RlType>),        // (:map :str :int)
-    Tuple(Vec<RlType>),                      // (:tuple :int :str :bool)
+    ListOf(Box<RlType>),             // (:list :int)
+    MapOf(Box<RlType>, Box<RlType>), // (:map :str :int)
+    Tuple(Vec<RlType>),              // (:tuple :int :str :bool)
     // Union
-    Or(Vec<RlType>),                         // (:or :int :str)
+    Or(Vec<RlType>), // (:or :int :str)
     // Custom predicate — name of a function to call
     Predicate(String),
 }
@@ -70,13 +70,19 @@ pub fn parse_type(t: &LispVal) -> Result<RlType, String> {
             match head {
                 ":list" | "list" => {
                     if elems.len() != 2 {
-                        return Err(format!("(:list T) expects 1 type arg, got {}", elems.len() - 1));
+                        return Err(format!(
+                            "(:list T) expects 1 type arg, got {}",
+                            elems.len() - 1
+                        ));
                     }
                     Ok(RlType::ListOf(Box::new(parse_type(&elems[1])?)))
                 }
                 ":map" | "map" => {
                     if elems.len() != 3 {
-                        return Err(format!("(:map K V) expects 2 type args, got {}", elems.len() - 1));
+                        return Err(format!(
+                            "(:map K V) expects 2 type args, got {}",
+                            elems.len() - 1
+                        ));
                     }
                     Ok(RlType::MapOf(
                         Box::new(parse_type(&elems[1])?),
@@ -150,15 +156,16 @@ pub fn type_matches(value: &LispVal, t: &RlType) -> bool {
             _ => false,
         },
         RlType::MapOf(kt, vt) => match value {
-            LispVal::Map(m) => m.iter().all(|(k, v)| {
-                type_matches(&LispVal::Str(k.clone()), kt) && type_matches(v, vt)
-            }),
+            LispVal::Map(m) => m
+                .iter()
+                .all(|(k, v)| type_matches(&LispVal::Str(k.clone()), kt) && type_matches(v, vt)),
             _ => false,
         },
         RlType::Tuple(types) => match value {
-            LispVal::List(elems) if elems.len() == types.len() => {
-                elems.iter().zip(types.iter()).all(|(e, t)| type_matches(e, t))
-            }
+            LispVal::List(elems) if elems.len() == types.len() => elems
+                .iter()
+                .zip(types.iter())
+                .all(|(e, t)| type_matches(e, t)),
             _ => false,
         },
         RlType::Or(types) => types.iter().any(|t| type_matches(value, t)),
@@ -210,7 +217,6 @@ pub struct RlSchema {
 pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
     match name {
         // ── Layer 1: Predicates ──
-
         "type-of" => {
             let val = args.first().ok_or("type-of: need 1 argument")?;
             Ok(Some(LispVal::Sym(type_of(val).to_string())))
@@ -274,13 +280,17 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
         }
 
         // ── Layer 3: Schemas ──
-
         "defschema" => {
             let name_val = args.first().ok_or("defschema: need schema name")?;
             let schema_name = match name_val {
                 LispVal::Sym(s) => s.clone(),
                 LispVal::Str(s) => s.clone(),
-                other => return Err(format!("defschema: name must be symbol or string, got {}", other)),
+                other => {
+                    return Err(format!(
+                        "defschema: name must be symbol or string, got {}",
+                        other
+                    ))
+                }
             };
 
             // Remaining args are alternating key-type pairs
@@ -292,7 +302,12 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
                 let key = match &args[i] {
                     LispVal::Sym(s) => s.clone(),
                     LispVal::Str(s) => s.clone(),
-                    other => return Err(format!("defschema: field name must be symbol or string, got {}", other)),
+                    other => {
+                        return Err(format!(
+                            "defschema: field name must be symbol or string, got {}",
+                            other
+                        ))
+                    }
                 };
 
                 // Check for :strict flag
@@ -321,7 +336,9 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
                 strict,
             };
 
-            let mut schemas = SCHEMAS.lock().map_err(|e| format!("defschema: lock error: {}", e))?;
+            let mut schemas = SCHEMAS
+                .lock()
+                .map_err(|e| format!("defschema: lock error: {}", e))?;
             schemas.insert(schema_name.clone(), schema);
 
             Ok(Some(LispVal::Str(format!("schema:{}", schema_name))))
@@ -333,11 +350,19 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             let name = match schema_name {
                 LispVal::Sym(s) => s.clone(),
                 LispVal::Str(s) => s.clone(),
-                other => return Err(format!("validate: schema name must be symbol or string, got {}", other)),
+                other => {
+                    return Err(format!(
+                        "validate: schema name must be symbol or string, got {}",
+                        other
+                    ))
+                }
             };
 
-            let schemas = SCHEMAS.lock().map_err(|e| format!("validate: lock error: {}", e))?;
-            let schema = schemas.get(&name)
+            let schemas = SCHEMAS
+                .lock()
+                .map_err(|e| format!("validate: lock error: {}", e))?;
+            let schema = schemas
+                .get(&name)
                 .ok_or_else(|| format!("validate: unknown schema '{}'", name))?;
 
             validate_schema(val, schema)
@@ -349,18 +374,27 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             let name = match schema_name {
                 LispVal::Sym(s) => s.clone(),
                 LispVal::Str(s) => s.clone(),
-                other => return Err(format!("schema: name must be symbol or string, got {}", other)),
+                other => {
+                    return Err(format!(
+                        "schema: name must be symbol or string, got {}",
+                        other
+                    ))
+                }
             };
 
-            let schemas = SCHEMAS.lock().map_err(|e| format!("schema: lock error: {}", e))?;
-            let schema = schemas.get(&name)
+            let schemas = SCHEMAS
+                .lock()
+                .map_err(|e| format!("schema: lock error: {}", e))?;
+            let schema = schemas
+                .get(&name)
                 .ok_or_else(|| format!("schema: unknown schema '{}'", name))?;
 
-            let fields: Vec<LispVal> = schema.fields.iter()
-                .map(|(k, t)| LispVal::List(vec![
-                    LispVal::Str(k.clone()),
-                    LispVal::Str(format_type(t)),
-                ]))
+            let fields: Vec<LispVal> = schema
+                .fields
+                .iter()
+                .map(|(k, t)| {
+                    LispVal::List(vec![LispVal::Str(k.clone()), LispVal::Str(format_type(t))])
+                })
                 .collect();
 
             Ok(Some(LispVal::List(vec![
@@ -370,6 +404,53 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             ])))
         }
 
+        // ── Tier 1: Equivalence ──
+        "equal?" => {
+            let a = args.first().ok_or("equal?: need 2 args")?;
+            let b = args.get(1).ok_or("equal?: need 2 args")?;
+            Ok(Some(LispVal::Bool(crate::helpers::lisp_equal(a, b))))
+        }
+        "eq?" => {
+            let a = args.first().ok_or("eq?: need 2 args")?;
+            let b = args.get(1).ok_or("eq?: need 2 args")?;
+            // Identity / shallow equality for primitives
+            let eq = match (a, b) {
+                (LispVal::Num(x), LispVal::Num(y)) => x == y,
+                (LispVal::Float(x), LispVal::Float(y)) => x == y,
+                (LispVal::Bool(x), LispVal::Bool(y)) => x == y,
+                (LispVal::Str(x), LispVal::Str(y)) => std::ptr::eq(x, y),
+                (LispVal::Sym(x), LispVal::Sym(y)) => x == y,
+                (LispVal::Nil, LispVal::Nil) => true,
+                _ => std::ptr::eq(a, b),
+            };
+            Ok(Some(LispVal::Bool(eq)))
+        }
+        "symbol=?" => match (args.first(), args.get(1)) {
+            (Some(LispVal::Sym(x)), Some(LispVal::Sym(y))) => Ok(Some(LispVal::Bool(x == y))),
+            _ => Err("symbol=?: need two symbols".into()),
+        },
+        // ── Tier 1: Type predicates ──
+        "procedure?" => {
+            let val = args.first().ok_or("procedure?: need 1 arg")?;
+            Ok(Some(LispVal::Bool(matches!(
+                val,
+                LispVal::Lambda { .. } | LispVal::Macro { .. }
+            ))))
+        }
+        "symbol?" => {
+            let val = args.first().ok_or("symbol?: need 1 arg")?;
+            Ok(Some(LispVal::Bool(matches!(val, LispVal::Sym(_)))))
+        }
+        // ── Tier 1: Conversion ──
+        "symbol->string" => match args.first() {
+            Some(LispVal::Sym(s)) => Ok(Some(LispVal::Str(s.clone()))),
+            _ => Err("symbol->string: need symbol".into()),
+        },
+        "string->symbol" => match args.first() {
+            Some(LispVal::Str(s)) => Ok(Some(LispVal::Sym(s.clone()))),
+            _ => Err("string->symbol: need string".into()),
+        },
+
         _ => Ok(None),
     }
 }
@@ -378,10 +459,13 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
 fn validate_schema(val: &LispVal, schema: &RlSchema) -> Result<Option<LispVal>, String> {
     let map = match val {
         LispVal::Map(m) => m,
-        other => return Err(format!(
-            "validate: expected map for schema '{}', got {}",
-            schema.name, type_of(other)
-        )),
+        other => {
+            return Err(format!(
+                "validate: expected map for schema '{}', got {}",
+                schema.name,
+                type_of(other)
+            ))
+        }
     };
 
     // Check all required fields

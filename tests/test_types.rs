@@ -17,21 +17,51 @@ fn eval_str(code: &str) -> Result<LispVal, String> {
 
 #[test]
 fn test_type_of_primitives() {
-    assert_eq!(eval_str("(type-of 42)").unwrap(), LispVal::Sym(":int".into()));
-    assert_eq!(eval_str("(type-of 3.14)").unwrap(), LispVal::Sym(":float".into()));
-    assert_eq!(eval_str("(type-of \"hello\")").unwrap(), LispVal::Sym(":str".into()));
-    assert_eq!(eval_str("(type-of true)").unwrap(), LispVal::Sym(":bool".into()));
-    assert_eq!(eval_str("(type-of nil)").unwrap(), LispVal::Sym(":nil".into()));
-    assert_eq!(eval_str("(type-of (quote foo))").unwrap(), LispVal::Sym(":sym".into()));
-    assert_eq!(eval_str("(type-of (list 1 2 3))").unwrap(), LispVal::Sym(":list".into()));
-    assert_eq!(eval_str("(type-of (dict \"a\" 1))").unwrap(), LispVal::Sym(":map".into()));
-    assert_eq!(eval_str("(type-of (lambda (x) x))").unwrap(), LispVal::Sym(":fn".into()));
+    assert_eq!(
+        eval_str("(type-of 42)").unwrap(),
+        LispVal::Sym(":int".into())
+    );
+    assert_eq!(
+        eval_str("(type-of 3.14)").unwrap(),
+        LispVal::Sym(":float".into())
+    );
+    assert_eq!(
+        eval_str("(type-of \"hello\")").unwrap(),
+        LispVal::Sym(":str".into())
+    );
+    assert_eq!(
+        eval_str("(type-of true)").unwrap(),
+        LispVal::Sym(":bool".into())
+    );
+    assert_eq!(
+        eval_str("(type-of nil)").unwrap(),
+        LispVal::Sym(":nil".into())
+    );
+    assert_eq!(
+        eval_str("(type-of (quote foo))").unwrap(),
+        LispVal::Sym(":sym".into())
+    );
+    assert_eq!(
+        eval_str("(type-of (list 1 2 3))").unwrap(),
+        LispVal::Sym(":list".into())
+    );
+    assert_eq!(
+        eval_str("(type-of (dict \"a\" 1))").unwrap(),
+        LispVal::Sym(":map".into())
+    );
+    assert_eq!(
+        eval_str("(type-of (lambda (x) x))").unwrap(),
+        LispVal::Sym(":fn".into())
+    );
 }
 
 #[test]
 fn test_check_pass() {
     assert_eq!(eval_str("(check 42 :int)").unwrap(), LispVal::Num(42));
-    assert_eq!(eval_str("(check \"hello\" :str)").unwrap(), LispVal::Str("hello".into()));
+    assert_eq!(
+        eval_str("(check \"hello\" :str)").unwrap(),
+        LispVal::Str("hello".into())
+    );
     assert_eq!(eval_str("(check true :bool)").unwrap(), LispVal::Bool(true));
     assert_eq!(eval_str("(check nil :nil)").unwrap(), LispVal::Nil);
 }
@@ -46,9 +76,10 @@ fn test_check_fail() {
 #[test]
 fn test_check_compound() {
     // (:list :int) — list of ints
-    assert_eq!(eval_str("(check (list 1 2 3) (:list :int))").unwrap(), LispVal::List(vec![
-        LispVal::Num(1), LispVal::Num(2), LispVal::Num(3),
-    ]));
+    assert_eq!(
+        eval_str("(check (list 1 2 3) (:list :int))").unwrap(),
+        LispVal::List(vec![LispVal::Num(1), LispVal::Num(2), LispVal::Num(3),])
+    );
     // Fails: list with string in int list
     assert!(eval_str("(check (list 1 \"two\" 3) (:list :int))").is_err());
 
@@ -89,8 +120,14 @@ fn test_check_num() {
 #[test]
 fn test_matches_pred() {
     assert_eq!(eval_str("(matches? 42 :int)").unwrap(), LispVal::Bool(true));
-    assert_eq!(eval_str("(matches? \"hello\" :int)").unwrap(), LispVal::Bool(false));
-    assert_eq!(eval_str("(matches? (list 1 2) (:list :int))").unwrap(), LispVal::Bool(true));
+    assert_eq!(
+        eval_str("(matches? \"hello\" :int)").unwrap(),
+        LispVal::Bool(false)
+    );
+    assert_eq!(
+        eval_str("(matches? (list 1 2) (:list :int))").unwrap(),
+        LispVal::Bool(true)
+    );
 }
 
 // ── Layer 2: Contracts ──

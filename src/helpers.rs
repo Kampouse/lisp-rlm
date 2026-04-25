@@ -114,11 +114,53 @@ pub fn is_builtin_name(name: &str) -> bool {
             | "show-context"
             | "final"
             | "final-var"
+            // -- Tier 1: Scheme stdlib --
+            | "abs" | "min" | "max" | "floor" | "ceiling" | "round" | "sqrt"
+            | "number->string"
+            | "zero?" | "positive?" | "negative?" | "even?" | "odd?"
+            | "equal?" | "eq?" | "symbol=?"
+            | "procedure?" | "symbol?"
+            | "symbol->string" | "string->symbol"
+            | "member" | "assoc" | "partition"
+            | "fold-left" | "fold-right" | "for-each" | "cons*"
+            | "string->list" | "list->string" | "string<?" | "string->number"
+            | "apply" | "eval"
+            | "delete-file"
     )
 }
 
 pub fn is_truthy(v: &LispVal) -> bool {
     !matches!(v, LispVal::Nil | LispVal::Bool(false))
+}
+
+/// Deep structural equality (Scheme's equal?).
+pub fn lisp_equal(a: &LispVal, b: &LispVal) -> bool {
+    match (a, b) {
+        (LispVal::Num(x), LispVal::Num(y)) => x == y,
+        (LispVal::Float(x), LispVal::Float(y)) => x == y,
+        (LispVal::Float(x), LispVal::Num(y)) => *x == *y as f64,
+        (LispVal::Num(x), LispVal::Float(y)) => *x as f64 == *y,
+        (LispVal::Str(x), LispVal::Str(y)) => x == y,
+        (LispVal::Bool(x), LispVal::Bool(y)) => x == y,
+        (LispVal::Nil, LispVal::Nil) => true,
+        (LispVal::Sym(x), LispVal::Sym(y)) => x == y,
+        (LispVal::List(x), LispVal::List(y)) => {
+            x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| lisp_equal(a, b))
+        }
+        (LispVal::Map(x), LispVal::Map(y)) => {
+            if x.len() != y.len() {
+                return false;
+            }
+            for (k, v) in x {
+                match y.get(k) {
+                    Some(yv) if lisp_equal(v, yv) => {}
+                    _ => return false,
+                }
+            }
+            true
+        }
+        _ => false,
+    }
 }
 
 pub fn as_num(v: &LispVal) -> Result<i64, String> {

@@ -205,18 +205,23 @@ IMPORTANT: Create and assign the variable FIRST in code, then call final-var in 
 
 ## Available Builtins
 
-Arithmetic: + - * / mod
+Arithmetic: + - * / mod abs min max floor ceiling round sqrt number->string
 Comparison: = < > <= >= not
 Logic: and or
-Lists: list cons car cdr nth len append reverse map filter reduce sort range zip find some every
-Predicates: nil? list? number? string? bool? map? macro? type? empty?
-Strings: str-concat str-contains str-split str-split-exact str-trim str-upcase str-downcase str-length str-substring str-index-of str-starts-with str-ends-with str= str!= str-chunk str-join
+Numeric predicates: zero? positive? negative? even? odd?
+Lists: list cons car cdr nth len append reverse map filter reduce sort range zip find some every member assoc partition fold-left fold-right for-each cons*
+Predicates: nil? list? number? string? bool? map? macro? type? empty? procedure? symbol?
+Equivalence: equal? eq? symbol=?
+Conversion: symbol->string string->symbol to-int to-float to-string to-num
+Strings: str-concat str-contains str-split str-split-exact str-trim str-upcase str-downcase str-length str-substring str-index-of str-starts-with str-ends-with str= str!= str-chunk str-join string->list list->string string<? string->number
+Control: apply eval
 
 IO — file and shell:
   (read-file "path.txt")           → string contents
   (write-file "path.txt" content)  → writes string to file
   (append-file "path.txt" content) → appends string to file
   (file-exists? "path.txt")        → bool
+  (delete-file "path.txt")         → bool, deletes file
   (shell "ls -la")                 → stdout string (requires RLM_ALLOW_SHELL=1)
   (shell-bg "python3 server.py")   → spawn background process, returns PID (requires RLM_ALLOW_SHELL=1)
   (shell-kill pid)                 → kill background process by PID
@@ -594,14 +599,12 @@ fn rlm_fractal_inner(
     if halves.len() > 1 {
         // PARALLEL: spawn one thread per subtask
         let n = halves.len();
-        eprintln!(
-            "[rlm depth={}] ⚡ PARALLEL {} subtasks",
-            depth, n
-        );
+        eprintln!("[rlm depth={}] ⚡ PARALLEL {} subtasks", depth, n);
 
         // Pre-clone provider for each branch
-        let provider_clones: Vec<Option<Box<dyn crate::eval::llm_provider::LlmProvider>>> =
-            (0..n).map(|_| state.llm_provider.as_ref().map(|p| p.box_clone())).collect();
+        let provider_clones: Vec<Option<Box<dyn crate::eval::llm_provider::LlmProvider>>> = (0..n)
+            .map(|_| state.llm_provider.as_ref().map(|p| p.box_clone()))
+            .collect();
 
         let handles: Vec<std::thread::JoinHandle<Result<LispVal, String>>> = halves
             .into_iter()
@@ -621,7 +624,14 @@ fn rlm_fractal_inner(
                         total,
                         truncate_str(&subtask, 80)
                     );
-                    rlm_fractal_inner(subtask, &mut env_fork, &mut state_fork, depth + 1, max_depth, deadline)
+                    rlm_fractal_inner(
+                        subtask,
+                        &mut env_fork,
+                        &mut state_fork,
+                        depth + 1,
+                        max_depth,
+                        deadline,
+                    )
                 })
             })
             .collect();
@@ -748,7 +758,9 @@ fn rlm_try_solve(task: &str, env: &mut Env, state: &mut EvalState, max_retries: 
             Ok(r) => r,
             Err(e) => return RlmNode::Red(format!("LLM error: {}", e)),
         };
-        state.tokens_used.fetch_add(resp.tokens as u64, Ordering::Relaxed);
+        state
+            .tokens_used
+            .fetch_add(resp.tokens as u64, Ordering::Relaxed);
         state.llm_calls.fetch_add(1, Ordering::Relaxed);
 
         let code_str = strip_markdown_fences(&resp.content);
@@ -893,7 +905,9 @@ fn rlm_decompose(task: &str, _env: &mut Env, state: &mut EvalState) -> Result<Ve
         .as_ref()
         .unwrap()
         .complete(&messages, Some(1024))?;
-    state.tokens_used.fetch_add(resp.tokens as u64, Ordering::Relaxed);
+    state
+        .tokens_used
+        .fetch_add(resp.tokens as u64, Ordering::Relaxed);
     state.llm_calls.fetch_add(1, Ordering::Relaxed);
 
     // Parse the JSON array
@@ -964,7 +978,9 @@ fn rlm_synthesize(
         .as_ref()
         .unwrap()
         .complete(&messages, Some(4096))?;
-    state.tokens_used.fetch_add(resp.tokens as u64, Ordering::Relaxed);
+    state
+        .tokens_used
+        .fetch_add(resp.tokens as u64, Ordering::Relaxed);
     state.llm_calls.fetch_add(1, Ordering::Relaxed);
 
     let code_str = strip_markdown_fences(&resp.content);
@@ -1023,7 +1039,9 @@ fn rlm_verify(
         .as_ref()
         .unwrap()
         .complete(&messages, Some(512))?;
-    state.tokens_used.fetch_add(resp.tokens as u64, Ordering::Relaxed);
+    state
+        .tokens_used
+        .fetch_add(resp.tokens as u64, Ordering::Relaxed);
     state.llm_calls.fetch_add(1, Ordering::Relaxed);
 
     if resp.content.to_uppercase().starts_with("NO") {
@@ -1221,7 +1239,9 @@ fn dispatch_call(
                     .as_ref()
                     .ok_or("llm: no LLM provider configured")?
                     .complete(&messages, Some(2048))?;
-                state.tokens_used.fetch_add(resp.tokens as u64, Ordering::Relaxed);
+                state
+                    .tokens_used
+                    .fetch_add(resp.tokens as u64, Ordering::Relaxed);
                 state.llm_calls.fetch_add(1, Ordering::Relaxed);
                 Ok(EvalResult::Value(LispVal::Str(resp.content)))
             }
@@ -1237,7 +1257,9 @@ fn dispatch_call(
                     .ok_or("llm-code: no LLM provider configured")?
                     .complete(&messages, Some(2048))?;
 
-                state.tokens_used.fetch_add(resp.tokens as u64, Ordering::Relaxed);
+                state
+                    .tokens_used
+                    .fetch_add(resp.tokens as u64, Ordering::Relaxed);
                 state.llm_calls.fetch_add(1, Ordering::Relaxed);
 
                 let code_str = strip_markdown_fences(&resp.content);
@@ -1345,8 +1367,12 @@ fn dispatch_call(
             }
 
             // --- Token tracking ---
-            "rlm-tokens" => Ok(EvalResult::Value(LispVal::Num(state.tokens_used.load(Ordering::Relaxed) as i64))),
-            "rlm-calls" => Ok(EvalResult::Value(LispVal::Num(state.llm_calls.load(Ordering::Relaxed) as i64))),
+            "rlm-tokens" => Ok(EvalResult::Value(LispVal::Num(
+                state.tokens_used.load(Ordering::Relaxed) as i64,
+            ))),
+            "rlm-calls" => Ok(EvalResult::Value(LispVal::Num(
+                state.llm_calls.load(Ordering::Relaxed) as i64,
+            ))),
             "rlm-write" => {
                 // Like (rlm "task") but returns the generated code as a string
                 // Also saves to file if path is provided as second arg
@@ -1452,7 +1478,9 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
                     .as_ref()
                     .unwrap()
                     .complete(&gen_messages, Some(8192))?;
-                state.tokens_used.fetch_add(gen_resp.tokens as u64, Ordering::Relaxed);
+                state
+                    .tokens_used
+                    .fetch_add(gen_resp.tokens as u64, Ordering::Relaxed);
                 state.llm_calls.fetch_add(1, Ordering::Relaxed);
                 let code = strip_markdown_fences(&gen_resp.content);
 
@@ -1468,7 +1496,9 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
                         .as_ref()
                         .unwrap()
                         .complete(&fix_messages, Some(8192))?;
-                    state.tokens_used.fetch_add(fix_resp.tokens as u64, Ordering::Relaxed);
+                    state
+                        .tokens_used
+                        .fetch_add(fix_resp.tokens as u64, Ordering::Relaxed);
                     state.llm_calls.fetch_add(1, Ordering::Relaxed);
                     let fixed = strip_markdown_fences(&fix_resp.content);
                     if crate::parser::parse_all(&fixed).is_ok() {
@@ -1600,6 +1630,37 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
                 Ok(EvalResult::Value(LispVal::Bool(true)))
             }
 
+            // -- Tier 1: Control --
+            "apply" => {
+                // (apply f arg1 arg2 ... arglist)
+                // Last arg must be a list, prepend any preceding args
+                if args.len() < 2 {
+                    return Err("apply: need (f ... arglist)".into());
+                }
+                let func = args[0].clone();
+                let mut apply_args = args[1..args.len() - 1].to_vec();
+                match args.last() {
+                    Some(LispVal::List(lst)) => apply_args.extend(lst.iter().cloned()),
+                    Some(LispVal::Nil) => {}
+                    _ => return Err("apply: last arg must be list".into()),
+                }
+                call_val(&func, &apply_args, env, state)
+            }
+            "eval" => {
+                // (eval datum) — evaluate datum as code in current env
+                let datum = args.first().ok_or("eval: need 1 arg")?;
+                lisp_eval(datum, env, state).map(EvalResult::Value)
+            }
+
+            // -- Tier 1: IO --
+            "delete-file" => {
+                let path = as_str(args.first().ok_or("delete-file: need path")?)?;
+                match std::fs::remove_file(&path) {
+                    Ok(()) => Ok(EvalResult::Value(LispVal::Bool(true))),
+                    Err(e) => Err(format!("delete-file: {}", e)),
+                }
+            }
+
             _ => {
                 let func = env
                     .get(name)
@@ -1708,7 +1769,9 @@ fn call_val(
             // Resolve TailCall to get the actual value for return type check
             let resolved = match &result {
                 EvalResult::Value(v) => v.clone(),
-                EvalResult::TailCall { expr, env: tc_env, .. } => {
+                EvalResult::TailCall {
+                    expr, env: tc_env, ..
+                } => {
                     let mut tc_env = tc_env.clone();
                     lisp_eval(expr, &mut tc_env, state)?
                 }
