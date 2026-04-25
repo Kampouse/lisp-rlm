@@ -68,11 +68,51 @@ CPS (continuation-passing style) iterative evaluator with explicit `Cont` stack.
 
 ## Test Suite Status
 
-- 283 tests (was 276, added str-replace and more)
-- 0 ignored (was 14)
-- 0 warnings (was 20)
+- 268 tests, 0 failed, 2 ignored (doc tests), 0 warnings from source
 - All fib/fibonacci tests pass (fib(15) = 610) — no stack overflow
 - All budget tests pass — infinite loops caught by budget, not stack overflow
+
+---
+
+## Auto-Parallelism in RLM Fractal Decomposition
+
+When the RLM fractal loop decomposes a task into 2+ subtasks (Phase 4), subtasks now run **in parallel** via `std::thread::spawn`.
+
+**How it works:**
+
+- Each branch gets its own `Env` fork (O(1) via `im::HashMap` structural sharing)
+- Each branch gets its own `EvalState` clone with **shared** `Arc<AtomicU64>` counters for `tokens_used` and `llm_calls`
+- Each branch gets its own `LlmProvider` clone (shares `SHARED_CLIENT` HTTP connection pool)
+- Threads are joined in order; results collected for Phase 5 (synthesize)
+- Single subtask (len=1) runs sequentially to avoid thread overhead
+
+**Shared budget semantics:**
+
+- `tokens_used` and `llm_calls` are `Arc<AtomicU64>` — all branches share the same counters
+- If branch A burns 80% of the token budget, branch B gets the remaining 20%
+- Budget checks (`state.tokens_used.load() >= token_budget`) are automatically cross-branch
+- No manual save/restore needed — the atomics accumulate correctly
+
+**Why `std::thread::spawn` (not rayon/tokio):**
+
+- The evaluator is synchronous; each branch calls `SHARED_RUNTIME.block_on()` for LLM HTTP
+- `tokio::spawn` would create nested `block_on` panics
+- `std::thread::spawn` gives each branch its own OS thread — `block_on` works from any thread
+- No new dependency required
+
+**Enabled automatically — no model changes needed:**
+
+The model writes `(rlm "solve this")`, the fractal decomposes, subtasks run in parallel, synthesize merges results. Zero new Lisp syntax. The concurrency is an implementation detail of the evaluator.
+
+### `Arc<AtomicU64>` Migration
+
+`EvalState.tokens_used` and `llm_calls` changed from `usize` to `Arc<AtomicU64>`:
+
+- `new()` → `Arc::new(AtomicU64::new(0))`
+- `Clone` → `Arc::clone(&self.tokens_used)` (shared reference, not copied value)
+- Reads → `.load(Ordering::Relaxed) as usize`
+- Writes → `.fetch_add(n as u64, Ordering::Relaxed)`
+- `merge_rlm_state()` simplified — no more token/call save/restore
 
 ## Architecture: Persistent Data Structures
 

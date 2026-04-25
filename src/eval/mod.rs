@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use crate::helpers::*;
@@ -459,10 +460,11 @@ fn rlm_fractal_inner(
             .unwrap_or(LispVal::Str("Time budget exceeded".to_string()));
         return Ok(best);
     }
-    if state.tokens_used >= token_budget {
+    let tokens_now = state.tokens_used.load(Ordering::Relaxed) as usize;
+    if tokens_now >= token_budget {
         eprintln!(
             "[rlm depth={}] ⚠ token budget ({}/{})",
-            depth, state.tokens_used, token_budget
+            depth, tokens_now, token_budget
         );
         let best = state
             .rlm_state
@@ -470,14 +472,15 @@ fn rlm_fractal_inner(
             .cloned()
             .unwrap_or(LispVal::Str(format!(
                 "Token budget exceeded ({} used)",
-                state.tokens_used
+                tokens_now
             )));
         return Ok(best);
     }
-    if state.llm_calls >= call_budget {
+    let calls_now = state.llm_calls.load(Ordering::Relaxed) as usize;
+    if calls_now >= call_budget {
         eprintln!(
             "[rlm depth={}] ⚠ call budget ({}/{})",
-            depth, state.llm_calls, call_budget
+            depth, calls_now, call_budget
         );
         let best = state
             .rlm_state
@@ -485,7 +488,7 @@ fn rlm_fractal_inner(
             .cloned()
             .unwrap_or(LispVal::Str(format!(
                 "Call budget exceeded ({} calls)",
-                state.llm_calls
+                calls_now
             )));
         return Ok(best);
     }
@@ -576,43 +579,91 @@ fn rlm_fractal_inner(
         return Ok(best);
     }
 
-    // --- Phase 4: DFS — recurse on left, then right ---
-    // Each child gets a clean rlm_state, but inherits cumulative token counts
+    // --- Phase 4: Parallel execution of subtasks ---
+    // Each branch gets its own Env fork (O(1) via im) and EvalState clone
+    // (shares Arc<AtomicU64> counters). Run in parallel threads.
     let mut child_results: Vec<LispVal> = Vec::new();
 
-    for (i, subtask) in halves.iter().enumerate() {
+    if halves.len() > 1 {
+        // PARALLEL: spawn one thread per subtask
+        let n = halves.len();
         eprintln!(
-            "[rlm depth={}] → child {}/{}: {}",
-            depth,
-            i + 1,
-            halves.len(),
-            truncate_str(subtask, 80)
+            "[rlm depth={}] ⚡ PARALLEL {} subtasks",
+            depth, n
         );
-        // Save state before child, restore after (isolate siblings)
-        let pre_child_state = state.rlm_state.clone();
-        state.rlm_state.clear();
 
-        let child_result =
-            rlm_fractal_inner(subtask.clone(), env, state, depth + 1, max_depth, deadline);
+        // Pre-clone provider for each branch
+        let provider_clones: Vec<Option<Box<dyn crate::eval::llm_provider::LlmProvider>>> =
+            (0..n).map(|_| state.llm_provider.as_ref().map(|p| p.box_clone())).collect();
 
-        // Restore parent state (keep cumulative tokens/calls)
-        let child_tokens = state.tokens_used;
-        let child_calls = state.llm_calls;
-        state.rlm_state = pre_child_state;
-        state.tokens_used = child_tokens;
-        state.llm_calls = child_calls;
+        let handles: Vec<std::thread::JoinHandle<Result<LispVal, String>>> = halves
+            .into_iter()
+            .zip(provider_clones.into_iter())
+            .enumerate()
+            .map(|(i, (subtask, prov))| {
+                let mut env_fork = env.clone();
+                let mut state_fork = state.clone();
+                state_fork.llm_provider = prov;
+                state_fork.rlm_state.clear();
+                let total = n;
+                std::thread::spawn(move || {
+                    eprintln!(
+                        "[rlm depth={}] → child {}/{}: {}",
+                        depth + 1,
+                        i + 1,
+                        total,
+                        truncate_str(&subtask, 80)
+                    );
+                    rlm_fractal_inner(subtask, &mut env_fork, &mut state_fork, depth + 1, max_depth, deadline)
+                })
+            })
+            .collect();
 
-        match child_result {
-            Ok(v) => child_results.push(v),
-            Err(e) => {
-                eprintln!(
-                    "[rlm depth={}] child {}/{} error: {}",
-                    depth,
-                    i + 1,
-                    halves.len(),
-                    e
-                );
-                child_results.push(LispVal::Str(format!("error: {}", e)));
+        // Collect results in order
+        for (i, handle) in handles.into_iter().enumerate() {
+            match handle.join() {
+                Ok(Ok(v)) => child_results.push(v),
+                Ok(Err(e)) => {
+                    eprintln!("[rlm depth={}] child {} error: {}", depth, i + 1, e);
+                    child_results.push(LispVal::Str(format!("error: {}", e)));
+                }
+                Err(_) => {
+                    eprintln!("[rlm depth={}] child {} panicked", depth, i + 1);
+                    child_results.push(LispVal::Str(format!("error: child {} panicked", i + 1)));
+                }
+            }
+        }
+    } else {
+        // SEQUENTIAL: single subtask, no thread overhead
+        for (i, subtask) in halves.iter().enumerate() {
+            eprintln!(
+                "[rlm depth={}] → child {}/{}: {}",
+                depth,
+                i + 1,
+                halves.len(),
+                truncate_str(subtask, 80)
+            );
+            let pre_child_state = state.rlm_state.clone();
+            state.rlm_state.clear();
+
+            let child_result =
+                rlm_fractal_inner(subtask.clone(), env, state, depth + 1, max_depth, deadline);
+
+            // Restore parent rlm_state (tokens/calls already shared via Arc<AtomicU64>)
+            state.rlm_state = pre_child_state;
+
+            match child_result {
+                Ok(v) => child_results.push(v),
+                Err(e) => {
+                    eprintln!(
+                        "[rlm depth={}] child {}/{} error: {}",
+                        depth,
+                        i + 1,
+                        halves.len(),
+                        e
+                    );
+                    child_results.push(LispVal::Str(format!("error: {}", e)));
+                }
             }
         }
     }
@@ -690,8 +741,8 @@ fn rlm_try_solve(task: &str, env: &mut Env, state: &mut EvalState, max_retries: 
             Ok(r) => r,
             Err(e) => return RlmNode::Red(format!("LLM error: {}", e)),
         };
-        state.tokens_used += resp.tokens;
-        state.llm_calls += 1;
+        state.tokens_used.fetch_add(resp.tokens as u64, Ordering::Relaxed);
+        state.llm_calls.fetch_add(1, Ordering::Relaxed);
 
         let code_str = strip_markdown_fences(&resp.content);
         messages.push(("assistant".to_string(), truncate_str(&resp.content, 500)));
@@ -835,8 +886,8 @@ fn rlm_decompose(task: &str, _env: &mut Env, state: &mut EvalState) -> Result<Ve
         .as_ref()
         .unwrap()
         .complete(&messages, Some(1024))?;
-    state.tokens_used += resp.tokens;
-    state.llm_calls += 1;
+    state.tokens_used.fetch_add(resp.tokens as u64, Ordering::Relaxed);
+    state.llm_calls.fetch_add(1, Ordering::Relaxed);
 
     // Parse the JSON array
     let content = resp.content.trim();
@@ -906,8 +957,8 @@ fn rlm_synthesize(
         .as_ref()
         .unwrap()
         .complete(&messages, Some(4096))?;
-    state.tokens_used += resp.tokens;
-    state.llm_calls += 1;
+    state.tokens_used.fetch_add(resp.tokens as u64, Ordering::Relaxed);
+    state.llm_calls.fetch_add(1, Ordering::Relaxed);
 
     let code_str = strip_markdown_fences(&resp.content);
 
@@ -965,8 +1016,8 @@ fn rlm_verify(
         .as_ref()
         .unwrap()
         .complete(&messages, Some(512))?;
-    state.tokens_used += resp.tokens;
-    state.llm_calls += 1;
+    state.tokens_used.fetch_add(resp.tokens as u64, Ordering::Relaxed);
+    state.llm_calls.fetch_add(1, Ordering::Relaxed);
 
     if resp.content.to_uppercase().starts_with("NO") {
         eprintln!("[rlm verify] FAILED: {}", truncate_str(&resp.content, 200));
@@ -989,13 +1040,10 @@ fn rlm_state_summary(_env: &Env, state: &EvalState) -> String {
     truncate_str(&entries.join(", "), 300).to_string()
 }
 
-/// Merge saved parent state back into env, preserving cumulative token/call counts
+/// Merge saved parent state back into env, preserving cumulative token/call counts.
+/// With shared atomics, tokens/calls are already accumulated — just restore rlm_state.
 fn merge_rlm_state(_env: &mut Env, state: &mut EvalState, saved: &im::OrdMap<String, LispVal>) {
-    let tokens = state.tokens_used;
-    let calls = state.llm_calls;
     state.rlm_state = saved.clone();
-    state.tokens_used = tokens;
-    state.llm_calls = calls;
 }
 
 // ---------------------------------------------------------------------------
@@ -1160,8 +1208,8 @@ fn dispatch_call(
                     .as_ref()
                     .ok_or("llm: no LLM provider configured")?
                     .complete(&messages, Some(2048))?;
-                state.tokens_used += resp.tokens;
-                state.llm_calls += 1;
+                state.tokens_used.fetch_add(resp.tokens as u64, Ordering::Relaxed);
+                state.llm_calls.fetch_add(1, Ordering::Relaxed);
                 Ok(EvalResult::Value(LispVal::Str(resp.content)))
             }
             "llm-code" => {
@@ -1176,8 +1224,8 @@ fn dispatch_call(
                     .ok_or("llm-code: no LLM provider configured")?
                     .complete(&messages, Some(2048))?;
 
-                state.tokens_used += resp.tokens;
-                state.llm_calls += 1;
+                state.tokens_used.fetch_add(resp.tokens as u64, Ordering::Relaxed);
+                state.llm_calls.fetch_add(1, Ordering::Relaxed);
 
                 let code_str = strip_markdown_fences(&resp.content);
 
@@ -1284,8 +1332,8 @@ fn dispatch_call(
             }
 
             // --- Token tracking ---
-            "rlm-tokens" => Ok(EvalResult::Value(LispVal::Num(state.tokens_used as i64))),
-            "rlm-calls" => Ok(EvalResult::Value(LispVal::Num(state.llm_calls as i64))),
+            "rlm-tokens" => Ok(EvalResult::Value(LispVal::Num(state.tokens_used.load(Ordering::Relaxed) as i64))),
+            "rlm-calls" => Ok(EvalResult::Value(LispVal::Num(state.llm_calls.load(Ordering::Relaxed) as i64))),
             "rlm-write" => {
                 // Like (rlm "task") but returns the generated code as a string
                 // Also saves to file if path is provided as second arg
@@ -1389,8 +1437,8 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
                     .as_ref()
                     .unwrap()
                     .complete(&gen_messages, Some(8192))?;
-                state.tokens_used += gen_resp.tokens;
-                state.llm_calls += 1;
+                state.tokens_used.fetch_add(gen_resp.tokens as u64, Ordering::Relaxed);
+                state.llm_calls.fetch_add(1, Ordering::Relaxed);
                 let code = strip_markdown_fences(&gen_resp.content);
 
                 // Verify parse, retry once if broken
@@ -1405,8 +1453,8 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
                         .as_ref()
                         .unwrap()
                         .complete(&fix_messages, Some(8192))?;
-                    state.tokens_used += fix_resp.tokens;
-                    state.llm_calls += 1;
+                    state.tokens_used.fetch_add(fix_resp.tokens as u64, Ordering::Relaxed);
+                    state.llm_calls.fetch_add(1, Ordering::Relaxed);
                     let fixed = strip_markdown_fences(&fix_resp.content);
                     if crate::parser::parse_all(&fixed).is_ok() {
                         fixed

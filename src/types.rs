@@ -1,4 +1,8 @@
 use std::collections::BTreeMap;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 
 const MATH_STDLIB: &str = r#"
 (define abs (lambda (x) (if (< x 0) (- 0 x) x)))
@@ -181,10 +185,10 @@ pub struct EvalState {
     pub snapshots: Vec<im::HashMap<String, LispVal>>,
     /// Persistent agent state (survives snapshots)
     pub rlm_state: im::OrdMap<String, LispVal>,
-    /// Cumulative tokens across all LLM calls
-    pub tokens_used: usize,
-    /// Number of LLM API calls made
-    pub llm_calls: usize,
+    /// Cumulative tokens across all LLM calls (shared across parallel branches)
+    pub tokens_used: Arc<AtomicU64>,
+    /// Number of LLM API calls made (shared across parallel branches)
+    pub llm_calls: Arc<AtomicU64>,
     /// Current sub-rlm call depth (max 5)
     pub rlm_depth: usize,
     /// RLM iteration counter (incremented by the rlm builtin each iteration)
@@ -201,8 +205,8 @@ impl EvalState {
             eval_budget: DEFAULT_EVAL_BUDGET,
             snapshots: Vec::new(),
             rlm_state: im::OrdMap::new(),
-            tokens_used: 0,
-            llm_calls: 0,
+            tokens_used: Arc::new(AtomicU64::new(0)),
+            llm_calls: Arc::new(AtomicU64::new(0)),
             rlm_depth: 0,
             rlm_iteration: 0,
             llm_provider: None,
@@ -222,8 +226,8 @@ impl Clone for EvalState {
             eval_budget: self.eval_budget,
             snapshots: self.snapshots.clone(),
             rlm_state: self.rlm_state.clone(),
-            tokens_used: self.tokens_used,
-            llm_calls: self.llm_calls,
+            tokens_used: Arc::clone(&self.tokens_used),
+            llm_calls: Arc::clone(&self.llm_calls),
             rlm_depth: self.rlm_depth,
             rlm_iteration: self.rlm_iteration,
             llm_provider: None, // providers are not cloned
@@ -236,8 +240,8 @@ impl std::fmt::Debug for EvalState {
         f.debug_struct("EvalState")
             .field("eval_count", &self.eval_count)
             .field("eval_budget", &self.eval_budget)
-            .field("tokens_used", &self.tokens_used)
-            .field("llm_calls", &self.llm_calls)
+            .field("tokens_used", &self.tokens_used.load(Ordering::Relaxed))
+            .field("llm_calls", &self.llm_calls.load(Ordering::Relaxed))
             .field("rlm_depth", &self.rlm_depth)
             .field("rlm_iteration", &self.rlm_iteration)
             .field("llm_provider", &self.llm_provider.is_some())
