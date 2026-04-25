@@ -5,10 +5,18 @@
 
 use crate::helpers::*;
 use crate::types::{Env, EvalState, LispVal};
+use super::continuation::EvalResult;
 
 /// Helper: call a function value with given args in the given env.
+/// Resolves any TailCall from the call chain.
 fn call_val(func: &LispVal, args: &[LispVal], env: &mut Env, state: &mut EvalState) -> Result<LispVal, String> {
-    super::call_val(func, args, env, state)
+    match super::call_val(func, args, env, state)? {
+        EvalResult::Value(v) => Ok(v),
+        EvalResult::TailCall { expr, env: tail_env } => {
+            *env = tail_env;
+            super::lisp_eval(&expr, env, state)
+        }
+    }
 }
 
 pub fn handle(name: &str, args: &[LispVal], env: &mut Env, state: &mut EvalState) -> Result<Option<LispVal>, String> {
@@ -325,7 +333,13 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env, state: &mut EvalState
                     }
                     tasks.push(tokio::spawn(async move {
                         tokio::task::yield_now().await;
-                        super::call_val(&f, &[elem], &mut task_env, &mut task_state)
+                        match super::call_val(&f, &[elem], &mut task_env, &mut task_state)? {
+                            EvalResult::Value(v) => Ok(v),
+                            EvalResult::TailCall { expr, env: tail_env } => {
+                                let mut e = tail_env;
+                                super::lisp_eval(&expr, &mut e, &mut task_state)
+                            }
+                        }
                     }));
                 }
                 let mut out = Vec::with_capacity(tasks.len());
@@ -333,7 +347,6 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env, state: &mut EvalState
                     out.push(
                         task.await
                             .map_err(|e| format!("par-map: task failed: {}", e))??
-                            .clone(),
                     );
                 }
                 Ok(out)
@@ -369,7 +382,13 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env, state: &mut EvalState
                     let e = elem.clone();
                     tasks.push(tokio::spawn(async move {
                         tokio::task::yield_now().await;
-                        let result = super::call_val(&f, &[e], &mut task_env, &mut task_state)?;
+                        let result = match super::call_val(&f, &[e], &mut task_env, &mut task_state)? {
+                            EvalResult::Value(v) => v,
+                            EvalResult::TailCall { expr, env: tail_env } => {
+                                let mut env = tail_env;
+                                super::lisp_eval(&expr, &mut env, &mut task_state)?
+                            }
+                        };
                         Ok::<bool, String>(super::is_truthy(&result))
                     }));
                 }

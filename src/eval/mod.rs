@@ -6,12 +6,16 @@ use std::sync::LazyLock;
 use crate::helpers::*;
 use crate::parser::parse_all;
 use crate::types::{get_stdlib_code, Env, EvalState, LispVal};
+use continuation::EvalResult;
 
 pub mod crypto;
 pub mod errors;
 pub mod helpers;
 pub mod llm_provider;
 pub mod quasiquote;
+
+// Tail-call elimination
+pub mod continuation;
 
 // Domain-specific dispatch modules (v0.2 god-function split)
 pub mod dispatch_arithmetic;
@@ -1401,10 +1405,28 @@ closed_env: std::sync::Arc::new(env.clone().into_bindings()),
                                 return Err(format!("set!: undefined variable '{}'", name));
                             }
                         }
-                        _ => return dispatch_call(list, env, state),
+                        _ => {
+                            let er = dispatch_call(list, env, state)?;
+                            match er {
+                                EvalResult::Value(v) => return Ok(v),
+                                EvalResult::TailCall { expr, env: tail_env } => {
+                                    current_expr = expr;
+                                    *env = tail_env;
+                                    continue '_trampoline;
+                                }
+                            }
+                        }
                     }
                 } else {
-                    return dispatch_call(list, env, state);
+                    let er = dispatch_call(list, env, state)?;
+                    match er {
+                        EvalResult::Value(v) => return Ok(v),
+                        EvalResult::TailCall { expr, env: tail_env } => {
+                            current_expr = expr;
+                            *env = tail_env;
+                            continue '_trampoline;
+                        }
+                    }
                 }
             }
         }
@@ -1438,10 +1460,10 @@ pub fn apply_lambda(
     closed_env: &std::sync::Arc<Vec<(String, LispVal)>>,
     args: &[LispVal],
     caller_env: &mut Env,
-    state: &mut EvalState,
-) -> Result<LispVal, String> {
-    // Clone the caller's env (O(1) via structural sharing), add bindings,
-    // eval body in the clone. Caller's env is never modified.
+    _state: &mut EvalState,
+) -> Result<EvalResult, String> {
+    // Clone the caller's env (O(1) via structural sharing), add bindings.
+    // Return TailCall — the trampoline evaluates the body iteratively.
     let mut local_env = caller_env.clone();
 
     for (k, v) in closed_env.iter() {
@@ -1455,7 +1477,7 @@ pub fn apply_lambda(
         local_env.push(rest_name.to_string(), LispVal::List(rest_args));
     }
 
-    lisp_eval(body, &mut local_env, state)
+    Ok(EvalResult::TailCall { expr: body.clone(), env: local_env })
 }
 
 // ---------------------------------------------------------------------------
@@ -1464,36 +1486,36 @@ pub fn apply_lambda(
 
 /// Dispatch a builtin by name with already-evaluated args.
 /// Used by call_val when a builtin symbol is passed as a first-class value.
-fn dispatch_call_with_args(name: &str, args: &[LispVal], env: &mut Env, state: &mut EvalState) -> Result<LispVal, String> {
+fn dispatch_call_with_args(name: &str, args: &[LispVal], env: &mut Env, state: &mut EvalState) -> Result<EvalResult, String> {
     if let Some(result) = dispatch_arithmetic::handle(name, args)? {
-        return Ok(result);
+        return Ok(EvalResult::Value(result));
     }
     if let Some(result) = dispatch_collections::handle(name, args, env, state)? {
-        return Ok(result);
+        return Ok(EvalResult::Value(result));
     }
     if let Some(result) = dispatch_strings::handle(name, args)? {
-        return Ok(result);
+        return Ok(EvalResult::Value(result));
     }
     if let Some(result) = dispatch_predicates::handle(name, args)? {
-        return Ok(result);
+        return Ok(EvalResult::Value(result));
     }
     if let Some(result) = dispatch_json::handle(name, args)? {
-        return Ok(result);
+        return Ok(EvalResult::Value(result));
     }
     if let Some(result) = dispatch_http::handle(name, args)? {
-        return Ok(result);
+        return Ok(EvalResult::Value(result));
     }
     if let Some(result) = dispatch_state::handle(name, args, env, state)? {
-        return Ok(result);
+        return Ok(EvalResult::Value(result));
     }
     match name {
-        "sha256" => builtin_sha256(args),
-        "keccak256" => builtin_keccak256(args),
+        "sha256" => Ok(EvalResult::Value(builtin_sha256(args)?)),
+        "keccak256" => Ok(EvalResult::Value(builtin_keccak256(args)?)),
         _ => Err(format!("{}: not a dispatchable builtin", name)),
     }
 }
 
-fn dispatch_call(list: &[LispVal], env: &mut Env, state: &mut EvalState) -> Result<LispVal, String> {
+fn dispatch_call(list: &[LispVal], env: &mut Env, state: &mut EvalState) -> Result<EvalResult, String> {
     let head = &list[0];
     let raw_args: Vec<LispVal> = list[1..].to_vec();
 
@@ -1508,39 +1530,42 @@ fn dispatch_call(list: &[LispVal], env: &mut Env, state: &mut EvalState) -> Resu
     }
 
     // Normal path: evaluate args
+    // Save env so inner TailCall resolution doesn't corrupt our view.
+    let saved_env = env.snapshot();
     let args: Vec<LispVal> = raw_args
         .iter()
         .map(|a| lisp_eval(a, env, state))
         .collect::<Result<_, _>>()?;
+    env.restore(saved_env);
 
     if let LispVal::Sym(name) = head {
         // ── Dispatch chain: delegate to domain modules ──
         if let Some(result) = dispatch_arithmetic::handle(name, &args)? {
-            return Ok(result);
+            return Ok(EvalResult::Value(result));
         }
         if let Some(result) = dispatch_collections::handle(name, &args, env, state)? {
-            return Ok(result);
+            return Ok(EvalResult::Value(result));
         }
         if let Some(result) = dispatch_strings::handle(name, &args)? {
-            return Ok(result);
+            return Ok(EvalResult::Value(result));
         }
         if let Some(result) = dispatch_predicates::handle(name, &args)? {
-            return Ok(result);
+            return Ok(EvalResult::Value(result));
         }
         if let Some(result) = dispatch_json::handle(name, &args)? {
-            return Ok(result);
+            return Ok(EvalResult::Value(result));
         }
         if let Some(result) = dispatch_http::handle(name, &args)? {
-            return Ok(result);
+            return Ok(EvalResult::Value(result));
         }
         if let Some(result) = dispatch_state::handle(name, &args, env, state)? {
-            return Ok(result);
+            return Ok(EvalResult::Value(result));
         }
 
         // ── Inline builtins: crypto + LLM/RLM ──
         match name.as_str() {
-            "sha256" => builtin_sha256(&args),
-            "keccak256" => builtin_keccak256(&args),
+            "sha256" => Ok(EvalResult::Value(builtin_sha256(&args)?)),
+            "keccak256" => Ok(EvalResult::Value(builtin_keccak256(&args)?)),
 
             // --- LLM builtins ---
 
@@ -1558,7 +1583,7 @@ fn dispatch_call(list: &[LispVal], env: &mut Env, state: &mut EvalState) -> Resu
                     .complete(&messages, Some(2048))?;
                 state.tokens_used += resp.tokens;
                 state.llm_calls += 1;
-                Ok(LispVal::Str(resp.content))
+                Ok(EvalResult::Value(LispVal::Str(resp.content)))
             }
             "llm-code" => {
                 let prompt = as_str(&args[0])?;
@@ -1583,7 +1608,7 @@ fn dispatch_call(list: &[LispVal], env: &mut Env, state: &mut EvalState) -> Resu
                 for expr in &exprs {
                     result = lisp_eval(expr, env, state)?;
                 }
-                Ok(result)
+                Ok(EvalResult::Value(result))
             }
 
 
@@ -1596,7 +1621,7 @@ fn dispatch_call(list: &[LispVal], env: &mut Env, state: &mut EvalState) -> Resu
                     .ok()
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(6);
-                rlm_fractal(task, env, state, 0, max_depth)
+                rlm_fractal(task, env, state, 0, max_depth).map(EvalResult::Value)
             }
 
             // --- Sub-RLM: delegates to the same fractal loop ---
@@ -1613,8 +1638,8 @@ fn dispatch_call(list: &[LispVal], env: &mut Env, state: &mut EvalState) -> Resu
                 let result = rlm_fractal(sub_task, env, state, 0, max_depth);
                 state.rlm_depth -= 1;
                 match &result {
-                    Ok(v) => Ok(LispVal::Str(v.to_string())),
-                    Err(e) => Ok(LispVal::Str(format!("error: {}", e))),
+                    Ok(v) => Ok(EvalResult::Value(LispVal::Str(v.to_string()))),
+                    Err(e) => Ok(EvalResult::Value(LispVal::Str(format!("error: {}", e)))),
                 }
             }
 
@@ -1638,7 +1663,7 @@ fn dispatch_call(list: &[LispVal], env: &mut Env, state: &mut EvalState) -> Resu
                     let val_preview = truncate_str(&val.to_string(), 80);
                     entries.push(format!("  {} : {} = {}", name, type_str, val_preview));
                 }
-                Ok(LispVal::Str(entries.join("\n")))
+                Ok(EvalResult::Value(LispVal::Str(entries.join("\n"))))
             }
             "llm-batch" => {
                 let prompts = match &args[0] {
@@ -1656,7 +1681,7 @@ fn dispatch_call(list: &[LispVal], env: &mut Env, state: &mut EvalState) -> Resu
                     let result = lisp_eval(&call, env, state)?;
                     results.push(result);
                 }
-                Ok(LispVal::List(results))
+                Ok(EvalResult::Value(LispVal::List(results)))
             }
             "show-context" => {
                 let context_val = state
@@ -1671,18 +1696,18 @@ fn dispatch_call(list: &[LispVal], env: &mut Env, state: &mut EvalState) -> Resu
                     .get("Final")
                     .map(|v| is_truthy(v))
                     .unwrap_or(false);
-                Ok(LispVal::Str(format!(
+                Ok(EvalResult::Value(LispVal::Str(format!(
                     "Context length: {} chars\nPreview: {}\nIteration: {}\nFinal set: {}",
                     context_str.len(),
                     preview,
                     state.rlm_iteration,
                     final_set
-                )))
+                ))))
             }
 
             // --- Token tracking ---
-            "rlm-tokens" => Ok(LispVal::Num(state.tokens_used as i64)),
-            "rlm-calls" => Ok(LispVal::Num(state.llm_calls as i64)),
+            "rlm-tokens" => Ok(EvalResult::Value(LispVal::Num(state.tokens_used as i64))),
+            "rlm-calls" => Ok(EvalResult::Value(LispVal::Num(state.llm_calls as i64))),
             "rlm-write" => {
                 // Like (rlm "task") but returns the generated code as a string
                 // Also saves to file if path is provided as second arg
@@ -1845,7 +1870,8 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
                     std::fs::write(path, &final_code).map_err(|e| format!("rlm-write: {}", e))?;
                 }
 
-                Ok(LispVal::Str(final_code))
+                Ok(EvalResult::Value(LispVal::Str(final_code)))
+
             } // --- RLM builtins ---
             "rlm/signature" => {
                 let sig_name = as_str(&args[0])?;
@@ -1861,7 +1887,7 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
                     }
                     _ => return Err("rlm/signature: outputs must be list".into()),
                 };
-                Ok(LispVal::Map(BTreeMap::from([
+                Ok(EvalResult::Value(LispVal::Map(BTreeMap::from([
                     ("name".to_string(), LispVal::Str(sig_name)),
                     (
                         "inputs".to_string(),
@@ -1871,7 +1897,7 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
                         "outputs".to_string(),
                         LispVal::List(outputs.into_iter().map(LispVal::Str).collect()),
                     ),
-                ])))
+                ]))))
             }
             "rlm/format-prompt" => {
                 let sig = &args[0];
@@ -1919,19 +1945,20 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
                     prompt.push_str(&format!("- {}\n", out));
                 }
                 prompt.push_str("\nRespond with a JSON object containing the output fields.");
-                Ok(LispVal::Str(prompt))
+                Ok(EvalResult::Value(LispVal::Str(prompt)))
+
             }
             "rlm/trace" => {
                 let step = as_str(&args[0])?;
                 let data = &args[1];
                 eprintln!("[RLM] {}: {}", step, data);
-                Ok(LispVal::Bool(true))
+                Ok(EvalResult::Value(LispVal::Bool(true)))
             }
             "rlm/config" => {
                 let key = as_str(&args[0])?;
                 let val = args[1].clone();
                 env.push(format!("__rlm_{}__", key), val);
-                Ok(LispVal::Bool(true))
+                Ok(EvalResult::Value(LispVal::Bool(true)))
             }
 
             _ => {
@@ -1957,7 +1984,7 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
     }
 }
 
-fn call_val(func: &LispVal, args: &[LispVal], env: &mut Env, state: &mut EvalState) -> Result<LispVal, String> {
+fn call_val(func: &LispVal, args: &[LispVal], env: &mut Env, state: &mut EvalState) -> Result<EvalResult, String> {
     match func {
         LispVal::Lambda {
             params,
@@ -1965,10 +1992,7 @@ fn call_val(func: &LispVal, args: &[LispVal], env: &mut Env, state: &mut EvalSta
             body,
             closed_env,
         } => {
-            eprintln!("[call_val] applying lambda with {} params, closed_env len {}", params.len(), closed_env.len());
-            let result = apply_lambda(params, rest_param, body, closed_env, args, env, state);
-            eprintln!("[call_val] lambda result: {:?}", result.as_ref().map(|v| truncate_str(&v.to_string(), 50)));
-            result
+            apply_lambda(params, rest_param, body, closed_env, args, env, state)
         }
         LispVal::Macro {
             params,
@@ -1978,7 +2002,18 @@ fn call_val(func: &LispVal, args: &[LispVal], env: &mut Env, state: &mut EvalSta
         } => {
             // Macros receive UNEVALUATED args, return code to be evaluated
             let expanded = apply_lambda(params, rest_param, body, closed_env, args, env, state)?;
-            lisp_eval(&expanded, env, state)
+            let expanded_val = match expanded {
+                EvalResult::Value(v) => v,
+                EvalResult::TailCall { expr, env: tail_env } => {
+                    // Evaluate the expansion in the macro's env, but don't
+                    // overwrite caller's env — the expansion is just code.
+                    let mut tmp_env = tail_env;
+                    lisp_eval(&expr, &mut tmp_env, state)?
+                }
+            };
+            // Now eval the expanded code in the CALLER's env (preserved)
+            let result = lisp_eval(&expanded_val, env, state)?;
+            Ok(EvalResult::Value(result))
         }
         LispVal::List(ll) if ll.len() >= 3 => {
             let (params, rest_param) = parse_params(&ll[1])?;
