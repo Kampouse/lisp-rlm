@@ -1165,6 +1165,24 @@ pub fn dispatch_call_with_args(
     match name {
         "sha256" => Ok(EvalResult::Value(builtin_sha256(args)?)),
         "keccak256" => Ok(EvalResult::Value(builtin_keccak256(args)?)),
+        // These are handled in call_val but need to be accessible from ArgCollect
+        "apply" => {
+            if args.len() < 2 {
+                return Err("apply: need (f ... arglist)".into());
+            }
+            let func = args[0].clone();
+            let mut apply_args = args[1..args.len() - 1].to_vec();
+            match args.last() {
+                Some(LispVal::List(lst)) => apply_args.extend(lst.iter().cloned()),
+                Some(LispVal::Nil) => {}
+                _ => return Err("apply: last arg must be list".into()),
+            }
+            call_val(&func, &apply_args, env, state)
+        }
+        "eval" => {
+            let datum = args.first().ok_or("eval: need 1 arg")?;
+            lisp_eval(datum, env, state).map(EvalResult::Value)
+        }
         _ => {
             // Check env for user-defined function
             if let Some(func) = env.get(name) {

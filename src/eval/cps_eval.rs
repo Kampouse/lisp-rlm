@@ -1417,6 +1417,8 @@ pub fn handle_cont(
                     }
                 }
             } else {
+                // Restore env before evaluating next arg (previous arg may have modified it)
+                env.restore(env_snapshot.clone());
                 // Eval next arg
                 Ok(Step::EvalNext {
                     expr: remaining[0].clone(),

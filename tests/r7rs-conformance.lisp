@@ -188,8 +188,38 @@
              (loop (cdr numbers)
                    nonneg
                    (cons (car numbers) neg))))))
+(test 3 (force (delay (+ 1 2))))
+(test '(3 3)  
+    (let ((p (delay (+ 1 2))))
+      (list (force p) (force p))))
+(define head
+  (lambda (stream) (car (force stream))))
+(define tail
+  (lambda (stream) (cdr (force stream))))
 (test 2 (head (tail (tail integers))))
+(test 5 (head (tail (tail (stream-filter odd? integers)))))
+(let ()
+  (define x 5)
+  (define count 0)
+  (define p
+    (delay (begin (set! count (+ count 1))
+                  (if (> count x)
+                      count
+                      (force p)))))
+  (test 6 (force p))
+  (test 6 (begin (set! x 10) (force p))))
+(test true (promise? (delay (+ 2 2))))
 (test true (promise? (make-promise (+ 2 2))))
+(test true
+    (let ((x (delay (+ 2 2))))
+      (force x)
+      (promise? x)))
+(test true
+    (let ((x (make-promise (+ 2 2))))
+      (force x)
+      (promise? x)))
+(test 4 (force (make-promise (+ 2 2))))
+(test 4 (force (make-promise (make-promise (+ 2 2)))))
 (define radix
   (make-parameter
    10
@@ -261,6 +291,12 @@
 (jabberwocky mad-hatter)
 (test 42 (mad-hatter))
 (test 'ok (let ((=> false)) (cond (true => 'ok))))
+(let ()
+  (define x 1)
+  (let-syntax ()
+    (define x 2)
+    false)
+  (test 1 x))
 (define add3
   (lambda (x) (+ x 3)))
 (test 6 (add3 3))
