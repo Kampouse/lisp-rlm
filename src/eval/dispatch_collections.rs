@@ -171,9 +171,17 @@ pub fn handle(
             } = func
             {
                 if params.len() == 1 {
-                    if let Some(cl) =
-                        crate::bytecode::try_compile_lambda(params, body, closed_env, env)
-                    {
+                    if let Some(cl) = crate::bytecode::try_compile_lambda(
+                        params,
+                        body,
+                        &closed_env
+                            .read()
+                            .unwrap()
+                            .clone()
+                            .into_iter()
+                            .collect::<Vec<_>>(),
+                        env,
+                    ) {
                         if lst.is_empty() {
                             return Ok(Some(LispVal::List(vec![])));
                         }
@@ -215,9 +223,17 @@ pub fn handle(
             } = func
             {
                 if params.len() == 1 {
-                    if let Some(cl) =
-                        crate::bytecode::try_compile_lambda(params, body, closed_env, env)
-                    {
+                    if let Some(cl) = crate::bytecode::try_compile_lambda(
+                        params,
+                        body,
+                        &closed_env
+                            .read()
+                            .unwrap()
+                            .clone()
+                            .into_iter()
+                            .collect::<Vec<_>>(),
+                        env,
+                    ) {
                         if lst.is_empty() {
                             return Ok(Some(LispVal::List(vec![])));
                         }

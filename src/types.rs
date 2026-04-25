@@ -71,6 +71,7 @@ pub const DEFAULT_EVAL_BUDGET: u64 = 10_000_000;
 #[derive(Clone)]
 pub struct Env {
     bindings: im::HashMap<String, LispVal>,
+    shared_env: Option<std::sync::Arc<std::sync::RwLock<im::HashMap<String, LispVal>>>>,
 }
 
 impl Env {
@@ -78,6 +79,7 @@ impl Env {
     pub fn new() -> Self {
         let mut env = Env {
             bindings: im::HashMap::new(),
+            shared_env: None,
         };
         // Common aliases
         env.insert_mut("t".to_string(), LispVal::Bool(true));
@@ -90,6 +92,7 @@ impl Env {
     pub fn from_vec(bindings: Vec<(String, LispVal)>) -> Self {
         let mut env = Env {
             bindings: im::HashMap::new(),
+            shared_env: None,
         };
         for (name, val) in bindings {
             env.insert_mut(name, val);
@@ -156,6 +159,22 @@ impl Env {
     /// Consume the environment and return the bindings as a Vec.
     pub fn into_bindings(self) -> Vec<(String, LispVal)> {
         self.bindings.into_iter().collect()
+    }
+
+    pub fn set_shared_env(
+        &mut self,
+        shared: std::sync::Arc<std::sync::RwLock<im::HashMap<String, LispVal>>>,
+    ) {
+        self.shared_env = Some(shared);
+    }
+
+    pub fn propagate_to_shared(&self, key: &str, val: &LispVal) {
+        if let Some(ref shared) = self.shared_env {
+            let mut map = shared.write().unwrap();
+            if map.contains_key(key) {
+                map.insert(key.to_string(), val.clone());
+            }
+        }
     }
 }
 
@@ -280,7 +299,7 @@ impl std::fmt::Debug for EvalState {
 /// [`Macro`]: LispVal::Macro
 /// [`Recur`]: LispVal::Recur
 /// [`Map`]: LispVal::Map
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum LispVal {
     /// The unit / null value (`nil` in Lisp).
     Nil,
@@ -308,20 +327,66 @@ pub enum LispVal {
         body: Box<LispVal>,
         /// Captured lexical environment — `Rc` so cloning a Lambda is O(1)
         /// instead of exponentially expensive when closures capture other closures.
-        closed_env: std::sync::Arc<Vec<(String, LispVal)>>,
+        closed_env: std::sync::Arc<std::sync::RwLock<im::HashMap<String, LispVal>>>,
     },
     /// Macro (like `Lambda` but receives *unevaluated* arguments).
     Macro {
         params: Vec<String>,
         rest_param: Option<String>,
         body: Box<LispVal>,
-        closed_env: std::sync::Arc<Vec<(String, LispVal)>>,
+        closed_env: std::sync::Arc<std::sync::RwLock<im::HashMap<String, LispVal>>>,
     },
     /// Control-flow marker emitted by `recur` inside a `loop` form.
     /// Carries the new binding values for the next iteration.
     Recur(Vec<LispVal>),
     /// String-keyed dictionary backed by an `im::HashMap` (persistent, O(1) clone).
     Map(im::HashMap<String, LispVal>),
+}
+
+impl PartialEq for LispVal {
+    fn eq(&self, other: &Self) -> bool {
+        use LispVal::*;
+        match (self, other) {
+            (Nil, Nil) => true,
+            (Bool(a), Bool(b)) => a == b,
+            (Num(a), Num(b)) => a == b,
+            (Float(a), Float(b)) => a == b,
+            (Str(a), Str(b)) => a == b,
+            (Sym(a), Sym(b)) => a == b,
+            (List(a), List(b)) => a == b,
+            (Map(a), Map(b)) => a == b,
+            (Recur(a), Recur(b)) => a == b,
+            (
+                Lambda {
+                    params: pa,
+                    rest_param: ra,
+                    body: ba,
+                    ..
+                },
+                Lambda {
+                    params: pb,
+                    rest_param: rb,
+                    body: bb,
+                    ..
+                },
+            ) => pa == pb && ra == rb && ba == bb,
+            (
+                Macro {
+                    params: pa,
+                    rest_param: ra,
+                    body: ba,
+                    ..
+                },
+                Macro {
+                    params: pb,
+                    rest_param: rb,
+                    body: bb,
+                    ..
+                },
+            ) => pa == pb && ra == rb && ba == bb,
+            _ => false,
+        }
+    }
 }
 
 impl std::fmt::Display for LispVal {

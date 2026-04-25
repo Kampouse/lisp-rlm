@@ -1095,7 +1095,7 @@ pub fn apply_lambda(
     params: &[String],
     rest_param: &Option<String>,
     body: &LispVal,
-    closed_env: &std::sync::Arc<Vec<(String, LispVal)>>,
+    closed_env: &std::sync::Arc<std::sync::RwLock<im::HashMap<String, LispVal>>>,
     args: &[LispVal],
     caller_env: &mut Env,
     _state: &mut EvalState,
@@ -1103,8 +1103,10 @@ pub fn apply_lambda(
     // Clone the caller's env (O(1) via structural sharing), add bindings.
     // Return TailCall — the trampoline evaluates the body iteratively.
     let mut local_env = caller_env.clone();
+    local_env.set_shared_env(closed_env.clone());
 
-    for (k, v) in closed_env.iter() {
+    // Overlay closed_env bindings (lexical scope)
+    for (k, v) in closed_env.read().unwrap().iter() {
         local_env.push(k.to_string(), v.clone());
     }
     for (i, p) in params.iter().enumerate() {
@@ -1727,7 +1729,7 @@ fn call_val(
                 &params,
                 &rest_param,
                 &ll[2],
-                &std::sync::Arc::new(vec![]),
+                &std::sync::Arc::new(std::sync::RwLock::new(im::HashMap::new())),
                 args,
                 env,
                 state,

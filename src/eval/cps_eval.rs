@@ -78,7 +78,9 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                                     params,
                                     rest_param: None,
                                     body: Box::new(body),
-                                    closed_env: std::sync::Arc::new(env.clone().into_bindings()),
+                                    closed_env: std::sync::Arc::new(std::sync::RwLock::new(
+                                        env.snapshot(),
+                                    )),
                                 };
                                 env.push(name.clone(), lam);
                                 Ok(Step::Done(LispVal::Nil))
@@ -167,7 +169,7 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                             params,
                             rest_param,
                             body: Box::new(body.clone()),
-                            closed_env: std::sync::Arc::new(env.clone().into_bindings()),
+                            closed_env: std::sync::Arc::new(std::sync::RwLock::new(env.snapshot())),
                         }))
                     }
 
@@ -186,7 +188,9 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                                 params,
                                 rest_param,
                                 body: Box::new(body.clone()),
-                                closed_env: std::sync::Arc::new(env.clone().into_bindings()),
+                                closed_env: std::sync::Arc::new(std::sync::RwLock::new(
+                                    env.snapshot(),
+                                )),
                             },
                         );
                         Ok(Step::Done(LispVal::Nil))
@@ -335,7 +339,7 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                             params,
                             rest_param: None,
                             body: Box::new(body_expr.clone()),
-                            closed_env: std::sync::Arc::new(env.snapshot().into_iter().collect()),
+                            closed_env: std::sync::Arc::new(std::sync::RwLock::new(env.snapshot())),
                         };
 
                         // Wrap in a Contract value
@@ -826,7 +830,8 @@ pub fn handle_cont(
 
         Cont::SetVal { name } => {
             if let Some(slot) = env.get_mut(&name) {
-                *slot = val;
+                *slot = val.clone();
+                env.propagate_to_shared(&name, &val);
                 Ok(Step::Done(LispVal::Nil))
             } else {
                 Err(format!("set!: undefined variable '{}'", name))
