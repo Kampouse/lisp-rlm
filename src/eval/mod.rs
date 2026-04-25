@@ -1388,18 +1388,54 @@ pub fn apply_lambda(
     caller_env: &mut Env,
 ) -> Result<LispVal, String> {
     let base_len = caller_env.len();
+
+    // Track any existing bindings that get overwritten by closed_env/params
+    // so we can restore them after evaluation. This is necessary because
+    // Env::push() updates existing bindings in-place, and truncate() only
+    // removes entries appended past base_len — it can't undo in-place updates.
+    let mut saved: Vec<(String, Option<LispVal>)> = Vec::new();
+
+    // Helper: push a binding, saving any existing value first
+    macro_rules! push_saving {
+        ($name:expr, $val:expr) => {{
+            let name = $name;
+            let existing = caller_env.get(name).cloned();
+            let existed = caller_env.contains(name);
+            caller_env.push(name.to_string(), $val);
+            if existed {
+                saved.push((name.to_string(), existing));
+            }
+        }};
+    }
+
     for (k, v) in closed_env {
-        caller_env.push(k.clone(), v.clone());
+        push_saving!(k, v.clone());
     }
     for (i, p) in params.iter().enumerate() {
-        caller_env.push(p.clone(), args.get(i).cloned().unwrap_or(LispVal::Nil));
+        push_saving!(p, args.get(i).cloned().unwrap_or(LispVal::Nil));
     }
     if let Some(rest_name) = rest_param {
         let rest_args: Vec<LispVal> = args.get(params.len()..).unwrap_or(&[]).to_vec();
-        caller_env.push(rest_name.clone(), LispVal::List(rest_args));
+        push_saving!(rest_name, LispVal::List(rest_args));
     }
+
     let result = lisp_eval(body, caller_env);
+
+    // Restore: truncate any new bindings, then restore overwritten ones
     caller_env.truncate(base_len);
+    for (name, orig_val) in saved.into_iter().rev() {
+        match orig_val {
+            Some(v) => caller_env.push(name, v),
+            None => {
+                // Wasn't in env before push — but push() created it.
+                // After truncate it's gone if it was appended past base_len.
+                // If it was created by updating an index that existed at base_len,
+                // truncate already restored it. No action needed for the None case
+                // because the binding was new and truncate removed it.
+            }
+        }
+    }
+
     result
 }
 
