@@ -61,7 +61,7 @@ pub fn get_stdlib_code(name: &str) -> Option<&'static str> {
 
 /// Default maximum number of eval iterations before budget exceeded.
 /// Prevents runaway infinite loops (e.g. tail-recursive functions with no base case).
-pub const DEFAULT_EVAL_BUDGET: u64 = 10_000_000;
+pub const DEFAULT_EVAL_BUDGET: u64 = 1_000_000;
 
 /// A scoped environment that maps variable names to [`LispVal`] bindings.
 ///

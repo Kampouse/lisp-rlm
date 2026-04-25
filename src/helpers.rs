@@ -126,6 +126,18 @@ pub fn is_builtin_name(name: &str) -> bool {
             | "string->list" | "list->string" | "string<?" | "string->number"
             | "apply" | "eval"
             | "delete-file"
+            // -- R7RS aliases --
+            | "null?" | "boolean?" | "pair?" | "length"
+            | "string-length" | "string-append" | "substring" | "string-contains"
+            | "string-upcase" | "string-downcase" | "string-copy"
+            | "string=?" | "string<?" | "string>?" | "string<=?" | "string>=?"
+            | "string-ref" | "string-replace"
+            | "display" | "write" | "newline"
+            | "modulo" | "remainder" | "quotient"
+            | "list-ref" | "list-tail"
+            | "assv" | "assq" | "memv" | "memq"
+            | "char->integer" | "integer->char"
+            | "exact" | "inexact" | "exact->inexact" | "inexact->exact"
             // -- Runtime --
             | "now" | "elapsed" | "sleep"
             | "save-state" | "load-state"

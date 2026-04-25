@@ -1132,7 +1132,7 @@ pub fn apply_lambda(
 
 /// Dispatch a builtin by name with already-evaluated args.
 /// Used by call_val when a builtin symbol is passed as a first-class value.
-fn dispatch_call_with_args(
+pub fn dispatch_call_with_args(
     name: &str,
     args: &[LispVal],
     env: &mut Env,
@@ -1165,7 +1165,14 @@ fn dispatch_call_with_args(
     match name {
         "sha256" => Ok(EvalResult::Value(builtin_sha256(args)?)),
         "keccak256" => Ok(EvalResult::Value(builtin_keccak256(args)?)),
-        _ => Err(format!("{}: not a dispatchable builtin", name)),
+        _ => {
+            // Check env for user-defined function
+            if let Some(func) = env.get(name) {
+                let func = func.clone();
+                return call_val(&func, args, env, state);
+            }
+            Err(format!("undefined: {}", name))
+        }
     }
 }
 
@@ -1187,9 +1194,53 @@ fn dispatch_call(
         }
     }
 
-    // Normal path: evaluate args
-    // Save/restore env around EACH arg — inner lisp_eval may replace env
-    // via TailCall (e.g. recursive fib), corrupting the view for subsequent args.
+    // Normal path: evaluate args using CPS (no recursive lisp_eval)
+    // Push a continuation that collects args, then evals the function
+    // First arg goes through eval_step, rest queued in the continuation
+    if raw_args.is_empty() {
+        // No args — dispatch immediately
+        if let LispVal::Sym(name) = head {
+            let args: Vec<LispVal> = vec![];
+            if let Some(result) = dispatch_arithmetic::handle(name, &args)? {
+                return Ok(EvalResult::Value(result));
+            }
+            if let Some(result) = dispatch_collections::handle(name, &args, env, state)? {
+                return Ok(EvalResult::Value(result));
+            }
+            if let Some(result) = dispatch_strings::handle(name, &args)? {
+                return Ok(EvalResult::Value(result));
+            }
+            if let Some(result) = dispatch_predicates::handle(name, &args)? {
+                return Ok(EvalResult::Value(result));
+            }
+            if let Some(result) = dispatch_json::handle(name, &args)? {
+                return Ok(EvalResult::Value(result));
+            }
+            if let Some(result) = dispatch_http::handle(name, &args)? {
+                return Ok(EvalResult::Value(result));
+            }
+            if let Some(result) = dispatch_state::handle(name, &args, env, state)? {
+                return Ok(EvalResult::Value(result));
+            }
+            if let Some(result) = dispatch_types::handle(name, &args)? {
+                return Ok(EvalResult::Value(result));
+            }
+            // Lookup in env
+            if let Some(func) = env.get(name) {
+                let func = func.clone();
+                return call_val(&func, &args, env, state);
+            }
+            return Err(format!("undefined: {}", name));
+        }
+        // Non-symbol head with no args — eval head first
+        // Fall through to recursive eval (rare case)
+        let head_val = lisp_eval(head, env, state)?;
+        return call_val(&head_val, &raw_args, env, state);
+    }
+
+    // Has args — use CPS arg collection via the trampoline
+    // This path is only reached for non-CPS callers (e.g., load-file)
+    // CPS callers go through ArgCollect continuation instead
     let saved_env = env.snapshot();
     let mut args: Vec<LispVal> = Vec::with_capacity(raw_args.len());
     for a in &raw_args {
@@ -1689,7 +1740,7 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
     }
 }
 
-fn call_val(
+pub fn call_val(
     func: &LispVal,
     args: &[LispVal],
     env: &mut Env,

@@ -3,6 +3,16 @@ use lisp_rlm::{lisp_eval, parse_all, Env, GenericProvider, LispVal};
 use std::env;
 
 fn main() {
+    // Spawn with 64MB stack to avoid overflow from deeply nested eval
+    std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(real_main)
+        .expect("thread spawn failed")
+        .join()
+        .expect("thread panicked");
+}
+
+fn real_main() {
     let mut env = Env::new();
     let mut state = EvalState::new();
 

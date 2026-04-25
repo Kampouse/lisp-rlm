@@ -54,6 +54,14 @@ fn tokenize(input: &str) -> Vec<String> {
                 }
                 i += 1;
             }
+        } else if ch == '\'' {
+            // Quote shorthand: 'x => (quote x)
+            if !cur.is_empty() {
+                tokens.push(cur.clone());
+                cur.clear();
+            }
+            tokens.push("#quote".to_string());
+            i += 1;
         } else if ch == '`' {
             // Quasiquote — tokenize as special token
             if !cur.is_empty() {
@@ -122,6 +130,11 @@ fn parse(tokens: &[String], pos: &mut usize) -> Result<LispVal, String> {
             Ok(LispVal::List(list))
         }
         ")" => Err("unexpected )".into()),
+        "#quote" => {
+            // 'form => (quote form)
+            let inner = parse(tokens, pos)?;
+            Ok(LispVal::List(vec![LispVal::Sym("quote".into()), inner]))
+        }
         "#quasiquote" => {
             // (` form) => (quasiquote form)
             let inner = parse(tokens, pos)?;

@@ -191,6 +191,24 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             }
             _ => Err("string->number: need string".into()),
         },
+        // R7RS string aliases
+        "string-length" => handle("str-length", args),
+        "string-append" => handle("str-concat", args),
+        "substring" => handle("str-substring", args),
+        "string-contains" => handle("str-contains", args),
+        "string-upcase" => handle("str-upcase", args),
+        "string-downcase" => handle("str-downcase", args),
+        "string-copy" => handle("str-substring", args),
+        "string-index" => handle("str-index-of", args),
+        "string=?" => Ok(Some(LispVal::Bool(args.get(0).and_then(|a| args.get(1).map(|b| {
+            if let (LispVal::Str(a), LispVal::Str(b)) = (a, b) { a == b } else { false }
+        })).unwrap_or(false)))),
+        "string<?" => Ok(Some(LispVal::Bool(args.get(0).and_then(|a| args.get(1).map(|b| {
+            if let (LispVal::Str(a), LispVal::Str(b)) = (a, b) { a < b } else { false }
+        })).unwrap_or(false)))),
+        "display" => handle("print", args),
+        "newline" => { println!(); Ok(Some(LispVal::Nil)) }
+        "write" => handle("inspect", args),
         _ => Ok(None),
     }
 }

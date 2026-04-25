@@ -196,6 +196,13 @@ pub fn handle(
             Some(LispVal::Num(n)) => Ok(Some(LispVal::Bool(n % 2 != 0))),
             _ => Err("odd?: need integer".into()),
         },
+        // R7RS arithmetic aliases
+        "modulo" => handle("mod", args),
+        "remainder" => handle("mod", args),
+        "quotient" => match (&args[0], &args[1]) {
+            (LispVal::Num(a), LispVal::Num(b)) if *b != 0 => Ok(Some(LispVal::Num(a / b))),
+            _ => Err("quotient: need two numbers".into()),
+        },
         _ => Ok(None),
     }
 }

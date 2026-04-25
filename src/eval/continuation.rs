@@ -98,6 +98,16 @@ pub enum Cont {
         done: Vec<LispVal>,
         remaining: Vec<LispVal>,
     },
+    CaseMatch {
+        clauses: Vec<LispVal>,
+    },
+    /// Collect function arguments one at a time, then dispatch the call
+    ArgCollect {
+        head: LispVal,              // function to call (evaluated or symbol)
+        done: Vec<LispVal>,         // already-evaluated args
+        remaining: Vec<LispVal>,    // args still to evaluate
+        env_snapshot: im::HashMap<String, LispVal>,  // saved env for restore
+    },
     FinalVal,
     AssertCheck {
         message: Option<String>,

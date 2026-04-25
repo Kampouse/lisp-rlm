@@ -66,6 +66,17 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
                 .map_err(|_| format!("to-num: cannot parse '{}'", s)),
             other => Err(format!("to-num: expected number, got {}", other)),
         },
+        // R7RS aliases
+        "null?" => handle("nil?", args),
+        "boolean?" => handle("bool?", args),
+        "pair?" => handle("list?", args),
+        "symbol?" => Ok(Some(LispVal::Bool(matches!(&args[0], LispVal::Sym(_))))),
+        "procedure?" => Ok(Some(LispVal::Bool(matches!(&args[0], LispVal::Lambda { .. })))),
+        "exact" => Ok(Some(args[0].clone())), // identity for integers
+        "inexact" => match &args[0] {
+            LispVal::Num(n) => Ok(Some(LispVal::Float(*n as f64))),
+            other => Ok(Some(other.clone())),
+        },
         _ => Ok(None),
     }
 }

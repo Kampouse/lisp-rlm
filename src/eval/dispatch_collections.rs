@@ -8,7 +8,7 @@ use crate::helpers::*;
 use crate::types::{Env, EvalState, LispVal};
 
 /// Helper: call a function value with given args in the given env.
-/// Resolves any TailCall from the call chain.
+/// Single lisp_eval call — the trampoline resolves everything iteratively.
 fn call_val(
     func: &LispVal,
     args: &[LispVal],
@@ -17,10 +17,7 @@ fn call_val(
 ) -> Result<LispVal, String> {
     match super::call_val(func, args, env, state)? {
         EvalResult::Value(v) => Ok(v),
-        EvalResult::TailCall {
-            expr,
-            env: tail_env,
-        } => {
+        EvalResult::TailCall { expr, env: tail_env } => {
             *env = tail_env;
             super::lisp_eval(&expr, env, state)
         }
@@ -547,6 +544,13 @@ pub fn handle(
             Ok(Some(LispVal::List(result)))
         }
 
+        // R7RS collection aliases
+        "length" => handle("len", args, env, state),
+        "list-ref" => handle("nth", args, env, state),
+        "assv" => handle("assoc", args, env, state),
+        "assq" => handle("assoc", args, env, state),
+        "memv" => handle("member", args, env, state),
+        "memq" => handle("member", args, env, state),
         _ => Ok(None),
     }
 }
