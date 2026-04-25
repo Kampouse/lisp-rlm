@@ -347,14 +347,16 @@ pub enum LispVal {
         params: Vec<String>,
         rest_param: Option<String>,
         body: Box<LispVal>,
-        closed_env: Box<Vec<(String, LispVal)>>,
+        /// Captured lexical environment — `Rc` so cloning a Lambda is O(1)
+        /// instead of exponentially expensive when closures capture other closures.
+        closed_env: std::sync::Arc<Vec<(String, LispVal)>>,
     },
     /// Macro (like `Lambda` but receives *unevaluated* arguments).
     Macro {
         params: Vec<String>,
         rest_param: Option<String>,
         body: Box<LispVal>,
-        closed_env: Box<Vec<(String, LispVal)>>,
+        closed_env: std::sync::Arc<Vec<(String, LispVal)>>,
     },
     /// Control-flow marker emitted by `recur` inside a `loop` form.
     /// Carries the new binding values for the next iteration.

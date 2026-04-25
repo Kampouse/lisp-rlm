@@ -1268,33 +1268,14 @@ pub struct CompiledLambda {
 /// Try to compile a lambda body for fast inline evaluation.
 /// Returns None if the body contains unsupported forms (macros, user-defined functions, etc.)
 pub fn try_compile_lambda(
-    param_names: &[String],
-    body: &LispVal,
-    closed_env: &[(String, LispVal)],
-    outer_env: &Env,
+    _param_names: &[String],
+    _body: &LispVal,
+    _closed_env: &[(String, LispVal)],
+    _outer_env: &Env,
 ) -> Option<CompiledLambda> {
-    let mut compiler = LoopCompiler::new(param_names.to_vec());
-
-    // Pre-register all closed_env bindings so compile_expr can reference them
-    for (name, val) in closed_env {
-        compiler.captured.push((name.clone(), val.clone()));
-    }
-
-    // Try to compile the body
-    if !compiler.compile_expr(body, outer_env) {
-        return None;
-    }
-
-    compiler.code.push(Op::Return);
-
-    let mut code = compiler.code;
-    peephole_optimize(&mut code);
-
-    Some(CompiledLambda {
-        num_param_slots: param_names.len(),
-        code,
-        captured: compiler.captured,
-    })
+    // Disabled: bytecode runner has infinite loop bug.
+    // Lambda calls fall through to call_val (apply_lambda) path.
+    None
 }
 
 /// Run a compiled lambda with the given arguments. Returns the result directly.

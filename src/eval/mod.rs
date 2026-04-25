@@ -884,7 +884,7 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
                                             params,
                                             rest_param: None,
                                             body: Box::new(body),
-                                            closed_env: Box::new(env.clone().into_bindings()),
+closed_env: std::sync::Arc::new(env.clone().into_bindings()),
                                         };
                                         env.push(name.clone(), lam);
                                         return Ok(LispVal::Nil);
@@ -980,7 +980,7 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
                                 params,
                                 rest_param,
                                 body: Box::new(body.clone()),
-                                closed_env: Box::new(env.clone().into_bindings()),
+closed_env: std::sync::Arc::new(env.clone().into_bindings()),
                             });
                         }
                         "defmacro" => {
@@ -997,7 +997,7 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
                                     params,
                                     rest_param,
                                     body: Box::new(body.clone()),
-                                    closed_env: Box::new(env.clone().into_bindings()),
+closed_env: std::sync::Arc::new(env.clone().into_bindings()),
                                 },
                             );
                             return Ok(LispVal::Nil);
@@ -1408,7 +1408,7 @@ pub fn apply_lambda(
     params: &[String],
     rest_param: &Option<String>,
     body: &LispVal,
-    closed_env: &Vec<(String, LispVal)>,
+    closed_env: &std::sync::Arc<Vec<(String, LispVal)>>,
     args: &[LispVal],
     caller_env: &mut Env,
 ) -> Result<LispVal, String> {
@@ -1433,7 +1433,7 @@ pub fn apply_lambda(
         }};
     }
 
-    for (k, v) in closed_env {
+    for (k, v) in closed_env.iter() {
         push_saving!(k, v.clone());
     }
     for (i, p) in params.iter().enumerate() {
@@ -1930,7 +1930,7 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
             return Err("inline lambda too short".into());
         }
         let (params, rest_param) = parse_params(&ll[1])?;
-        apply_lambda(&params, &rest_param, &ll[2], &vec![], &args, env)
+        apply_lambda(&params, &rest_param, &ll[2], &std::sync::Arc::new(vec![]), &args, env)
     } else {
         Err("not callable".into())
     }
@@ -1943,7 +1943,12 @@ fn call_val(func: &LispVal, args: &[LispVal], env: &mut Env) -> Result<LispVal, 
             rest_param,
             body,
             closed_env,
-        } => apply_lambda(params, rest_param, body, closed_env, args, env),
+        } => {
+            eprintln!("[call_val] applying lambda with {} params, closed_env len {}", params.len(), closed_env.len());
+            let result = apply_lambda(params, rest_param, body, closed_env, args, env);
+            eprintln!("[call_val] lambda result: {:?}", result.as_ref().map(|v| truncate_str(&v.to_string(), 50)));
+            result
+        }
         LispVal::Macro {
             params,
             rest_param,
@@ -1956,7 +1961,7 @@ fn call_val(func: &LispVal, args: &[LispVal], env: &mut Env) -> Result<LispVal, 
         }
         LispVal::List(ll) if ll.len() >= 3 => {
             let (params, rest_param) = parse_params(&ll[1])?;
-            apply_lambda(&params, &rest_param, &ll[2], &vec![], args, env)
+            apply_lambda(&params, &rest_param, &ll[2], &std::sync::Arc::new(vec![]), args, env)
         }
         LispVal::Sym(_) => {
             let mut call = vec![func.clone()];
