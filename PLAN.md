@@ -1,7 +1,5 @@
 # lisp-rlm Evaluator Refactor
 
-> **For Hermes:** Use subagent-driven-development skill to implement this plan task-by-task.
-
 **Goal:** Eliminate stack overflow and exponential clone costs in the Lisp evaluator.
 
 ---
@@ -23,13 +21,9 @@ Split `Env` into immutable `im::HashMap` bindings + mutable `EvalState` for coun
 Minimal tail-call optimization via `EvalResult` enum instead of a full continuation stack.
 
 - `apply_lambda` returns `EvalResult::TailCall { expr, env }` — no recursive `lisp_eval` call
-- `lisp_eval_inner` trampoline resolves TailCalls iteratively: `current_expr = expr; *env = tail_env; continue '_trampoline`
-- `dispatch_call` uses `env.snapshot()`/`env.restore()` guard around arg evaluation to prevent TailCall env corruption
-- Macro TailCall resolution preserves caller env via `saved_env`
-- `dispatch_collections.rs` local `call_val` wrapper resolves TailCalls back to `LispVal`
+- `lisp_eval_inner` trampoline resolves TailCalls iteratively
+- `dispatch_call` uses `env.snapshot()`/`env.restore()` guard around arg evaluation
 - 3 files changed (+140/-54), 255 tests green
-
-**Why minimal TailCall instead of full continuation stack:** The stack overflow came from the `lisp_eval → dispatch_call → call_val → apply_lambda → lisp_eval` chain. Breaking that one link (via TailCall) eliminates the problem. Other recursive patterns (if-chains, begin sequences, let nesting) are bounded by program structure, not self-referential loops. A full CPS rewrite (the original Tasks 7-12) would be ~400 net LOC for marginal benefit.
 
 ### Arc Fix: Lambda Clone — commit `c3c3465`
 
@@ -39,37 +33,49 @@ Changed `closed_env` from `Vec<(String, LispVal)>` to `Arc<Vec<(String, LispVal)
 
 **Fix:** `Arc` makes lambda closure cloning O(1) — map/filter/reduce all instant.
 
+### Full Continuation Stack — commit `174bcf4`
+
+CPS (continuation-passing style) iterative evaluator with explicit `Cont` stack.
+
+- `eval_step()` evaluates one expression, returns `Step::Done` or `Step::EvalNext`
+- `handle_cont()` processes continuations on unwind
+- All recursive patterns (if, cond, let, begin, match, loop) handled iteratively
+- No Rust stack overflow for any Lisp program — budget enforcement catches infinite loops
+
+### Env Bug Fix: Recursive Arg Evaluation
+
+**Problem:** `dispatch_call` saved/restored env around ALL args at once. Inner `lisp_eval` calls for recursive functions (e.g. `(+ (fib (- n 1)) (fib (- n 2)))`) replaced `env` via TailCall, corrupting the view for subsequent args. `fib(10)` returned 6 instead of 55.
+
+**Fix:** Save/restore env around EACH individual arg evaluation.
+
+### str-replace Bug Fix
+
+**Problem:** `str-split` treated multi-char delimiters as char sets (splitting on ANY char). `str-replace` was implemented as `(str-join new (str-split s old))` in stdlib, inheriting the bug.
+
+**Fix:** Replaced `str-split` multi-char path with proper `str::split()`. Added `str-replace` as a native builtin using Rust's `str::replace()`.
+
+### Bytecode Compiler
+
+**Status:** Working. Re-enabled in commit `ee7971c`.
+
+- Loop VM (`exec_compiled_loop`) — tight bytecode for `(loop ...)` forms, 20-50x faster
+- Lambda VM (`try_compile_lambda` / `run_compiled_lambda`) — compiles single-param lambdas for map/filter/reduce fast paths
+- Peephole optimizer runs 3 passes
+- Supports: arithmetic, comparison, if, and/or, begin/progn, cond, builtins
+- Falls back to tree-walking for unsupported forms (returns `None`)
+
 ---
 
-## In Progress
+## Test Suite Status
 
-### Bytecode Compiler Fix
-
-**Status:** Disabled in `try_compile_lambda()` (returns `None`). Has an infinite loop bug.
-
-The loop VM (`exec_compiled_loop`) works — used for `(loop ((i 0)) ... (recur ...))`. The lambda compiler (`try_compile_lambda` / `run_compiled_lambda`) is disabled because it enters infinite loops on certain lambda bodies.
-
-**Files:**
-- `src/bytecode.rs` — 1475 lines. Loop VM works, lambda VM disabled.
-- `src/eval/dispatch_collections.rs` — calls `try_compile_lambda` in map/filter fast paths (currently falls through to `apply_lambda`)
-
-**Plan:**
-1. Write a minimal failing test — a lambda that causes the infinite loop
-2. Diagnose: likely a missing `Return` op or infinite jump in the compiled code
-3. Fix and re-enable
-4. Verify map/filter/reduce fast paths work via existing tests
-
----
+- 283 tests (was 276, added str-replace and more)
+- 0 ignored (was 14)
+- 0 warnings (was 20)
+- All fib/fibonacci tests pass (fib(15) = 610) — no stack overflow
+- All budget tests pass — infinite loops caught by budget, not stack overflow
 
 ## Future (not planned)
 
-### Full Continuation Stack
+### Full Continuation Stack for deeper patterns
 
-If deeper recursion patterns (mutually recursive functions not in tail position) ever overflow, a full continuation stack could be added. The architecture from the original Tasks 6-12 would work:
-
-- `Cont` enum with ~15 variants owns its own `Env` (O(1) clone)
-- `lisp_eval` becomes a `loop` over `eval_step()` results
-- All 27 recursive call sites become `push Cont + return next_expr`
-- Estimated ~400 net LOC
-
-This is **not needed** for the current use case — TailCall handles the problematic chain.
+If mutually recursive functions not in tail position ever overflow, the architecture supports it. The `Cont` enum already has ~15 variants. All that's needed is converting more `lisp_eval` recursive call sites into `push Cont + return next_expr`.

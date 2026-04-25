@@ -50,10 +50,7 @@ fn check(name: &str, actual: &str, expected: &str) {
         PASS.fetch_add(1, Ordering::SeqCst);
     } else {
         FAIL.fetch_add(1, Ordering::SeqCst);
-        eprintln!(
-            "FAIL [{}]: expected {:?}, got {:?}",
-            name, expected, actual
-        );
+        eprintln!("FAIL [{}]: expected {:?}, got {:?}", name, expected, actual);
     }
 }
 
@@ -92,64 +89,112 @@ fn norvig_lis_tests() {
     {
         let r = run("(+ 2 2)", &mut env, &mut state);
         check("+2+2", &r, "4");
-        if r == "4" { local_pass += 1; } else { local_fail += 1; }
+        if r == "4" {
+            local_pass += 1;
+        } else {
+            local_fail += 1;
+        }
     }
 
     // ---- Test 3: (+ (* 2 100) (* 1 10)) → 210 -------------------------
     {
         let r = run("(+ (* 2 100) (* 1 10))", &mut env, &mut state);
         check("+nested_mul", &r, "210");
-        if r == "210" { local_pass += 1; } else { local_fail += 1; }
+        if r == "210" {
+            local_pass += 1;
+        } else {
+            local_fail += 1;
+        }
     }
 
     // ---- Test 4: (if (> 6 5) (+ 1 1) (+ 2 2)) → 2 ---------------------
     {
         let r = run("(if (> 6 5) (+ 1 1) (+ 2 2))", &mut env, &mut state);
         check("if_true", &r, "2");
-        if r == "2" { local_pass += 1; } else { local_fail += 1; }
+        if r == "2" {
+            local_pass += 1;
+        } else {
+            local_fail += 1;
+        }
     }
 
     // ---- Test 5: (if (< 6 5) (+ 1 1) (+ 2 2)) → 4 ---------------------
     {
         let r = run("(if (< 6 5) (+ 1 1) (+ 2 2))", &mut env, &mut state);
         check("if_false", &r, "4");
-        if r == "4" { local_pass += 1; } else { local_fail += 1; }
+        if r == "4" {
+            local_pass += 1;
+        } else {
+            local_fail += 1;
+        }
     }
 
     // ---- Test 6: define / variable lookup ------------------------------
     {
         let r1 = run("(define x 3)", &mut env, &mut state);
         check("define_x", &r1, "nil");
-        if r1 == "nil" { local_pass += 1; } else { local_fail += 1; }
+        if r1 == "nil" {
+            local_pass += 1;
+        } else {
+            local_fail += 1;
+        }
 
         let r2 = run("x", &mut env, &mut state);
         check("lookup_x", &r2, "3");
-        if r2 == "3" { local_pass += 1; } else { local_fail += 1; }
+        if r2 == "3" {
+            local_pass += 1;
+        } else {
+            local_fail += 1;
+        }
 
         let r3 = run("(+ x x)", &mut env, &mut state);
         check("+x+x", &r3, "6");
-        if r3 == "6" { local_pass += 1; } else { local_fail += 1; }
+        if r3 == "6" {
+            local_pass += 1;
+        } else {
+            local_fail += 1;
+        }
     }
 
     // ---- Test 7: begin / set! ------------------------------------------
     {
-        let r = run("(begin (define y 1) (set! y (+ y 1)) (+ y 1))", &mut env, &mut state);
+        let r = run(
+            "(begin (define y 1) (set! y (+ y 1)) (+ y 1))",
+            &mut env,
+            &mut state,
+        );
         check("begin_set!", &r, "3");
-        if r == "3" { local_pass += 1; } else { local_fail += 1; }
+        if r == "3" {
+            local_pass += 1;
+        } else {
+            local_fail += 1;
+        }
     }
 
     // ---- Test 8: immediate lambda application --------------------------
     {
         let r = run("((lambda (x) (+ x x)) 5)", &mut env, &mut state);
         check("immed_lambda", &r, "10");
-        if r == "10" { local_pass += 1; } else { local_fail += 1; }
+        if r == "10" {
+            local_pass += 1;
+        } else {
+            local_fail += 1;
+        }
     }
 
     // ---- Test 9: define + call lambda ----------------------------------
     {
-        let r = run("(define twice (lambda (x) (* 2 x))) (twice 5)", &mut env, &mut state);
+        let r = run(
+            "(define twice (lambda (x) (* 2 x))) (twice 5)",
+            &mut env,
+            &mut state,
+        );
         check("twice_5", &r, "10");
-        if r == "10" { local_pass += 1; } else { local_fail += 1; }
+        if r == "10" {
+            local_pass += 1;
+        } else {
+            local_fail += 1;
+        }
     }
 
     // ---- Test 10: compose (higher-order) -------------------------------
@@ -157,30 +202,46 @@ fn norvig_lis_tests() {
         run(
             "(define compose (lambda (f g) (lambda (x) (f (g x)))))",
             &mut env,
-        &mut state,
+            &mut state,
         );
         // (compose list twice) → λx. list(twice(x))
         // list(twice(5)) = list(10) = (10)
         let r = run("((compose list twice) 5)", &mut env, &mut state);
         check("compose_list_twice", &r, "(10)");
-        if r == "(10)" { local_pass += 1; } else { local_fail += 1; }
+        if r == "(10)" {
+            local_pass += 1;
+        } else {
+            local_fail += 1;
+        }
     }
 
     // ---- Test 11: repeat (compose f f) ---------------------------------
     {
-        run("(define repeat (lambda (f) (compose f f)))", &mut env, &mut state);
+        run(
+            "(define repeat (lambda (f) (compose f f)))",
+            &mut env,
+            &mut state,
+        );
         // (repeat twice) = compose(twice, twice) = λx. twice(twice(x))
         // twice(5)=10, twice(10)=20
         let r1 = run("((repeat twice) 5)", &mut env, &mut state);
         check("repeat_twice_5", &r1, "20");
-        if r1 == "20" { local_pass += 1; } else { local_fail += 1; }
+        if r1 == "20" {
+            local_pass += 1;
+        } else {
+            local_fail += 1;
+        }
 
         // (repeat (repeat twice)) = compose(R, R) where R=(repeat twice)
         // R(5) = twice(twice(5)) = 20
         // (repeat (repeat twice))(5) = R(R(5)) = R(20) = twice(twice(20)) = 80
         let r2 = run("((repeat (repeat twice)) 5)", &mut env, &mut state);
         check("repeat_repeat_twice_5", &r2, "80");
-        if r2 == "80" { local_pass += 1; } else { local_fail += 1; }
+        if r2 == "80" {
+            local_pass += 1;
+        } else {
+            local_fail += 1;
+        }
     }
 
     // ---- Test 12: factorial (recursive lambda) -------------------------
@@ -188,11 +249,15 @@ fn norvig_lis_tests() {
         run(
             "(define fact (lambda (n) (if (<= n 1) 1 (* n (fact (- n 1))))))",
             &mut env,
-        &mut state,
+            &mut state,
         );
         let r1 = run("(fact 3)", &mut env, &mut state);
         check("fact_3", &r1, "6");
-        if r1 == "6" { local_pass += 1; } else { local_fail += 1; }
+        if r1 == "6" {
+            local_pass += 1;
+        } else {
+            local_fail += 1;
+        }
 
         // fact(10) = 3628800
         // NOTE: fact(50) would overflow i64 (lisp-rlm uses i64 for integers).
@@ -200,7 +265,11 @@ fn norvig_lis_tests() {
         let r2 = run("(fact 10)", &mut env, &mut state);
         let expected = "3628800";
         check("fact_10", &r2, expected);
-        if r2 == expected { local_pass += 1; } else { local_fail += 1; }
+        if r2 == expected {
+            local_pass += 1;
+        } else {
+            local_fail += 1;
+        }
     }
 
     // ---- Test 13: abs (first-class operators via if) -------------------
@@ -212,11 +281,15 @@ fn norvig_lis_tests() {
         run(
             "(define abs (lambda (n) ((if (> n 0) + -) 0 n)))",
             &mut env,
-        &mut state,
+            &mut state,
         );
         let r = run("(list (abs -3) (abs 0) (abs 3))", &mut env, &mut state);
         check("abs_list", &r, "(3 0 3)");
-        if r == "(3 0 3)" { local_pass += 1; } else { local_fail += 1; }
+        if r == "(3 0 3)" {
+            local_pass += 1;
+        } else {
+            local_fail += 1;
+        }
     }
 
     // ---- Test 14: combine / zip (higher-order recursive) ---------------
@@ -229,22 +302,30 @@ fn norvig_lis_tests() {
                     (f (list (car x) (car y))
                        ((combine f) (cdr x) (cdr y)))))))"#,
             &mut env,
-        &mut state,
+            &mut state,
         );
         // (combine append) merges element-by-element
         let r1 = run(
             r#"((combine append) (quote (a b c)) (list 1 2 3))"#,
             &mut env,
-        &mut state,
+            &mut state,
         );
         check("combine_append", &r1, "(a 1 b 2 c 3)");
-        if r1 == "(a 1 b 2 c 3)" { local_pass += 1; } else { local_fail += 1; }
+        if r1 == "(a 1 b 2 c 3)" {
+            local_pass += 1;
+        } else {
+            local_fail += 1;
+        }
 
         // (combine cons) → zip (Norvig's original uses combine cons)
         run("(define zip (combine cons))", &mut env, &mut state);
         let r2 = run("(zip (list 1 2 3) (list 4 5 6))", &mut env, &mut state);
         check("zip_list", &r2, "((1 4) (2 5) (3 6))");
-        if r2 == "((1 4) (2 5) (3 6))" { local_pass += 1; } else { local_fail += 1; }
+        if r2 == "((1 4) (2 5) (3 6))" {
+            local_pass += 1;
+        } else {
+            local_fail += 1;
+        }
     }
 
     // ---- Test 15: riff-shuffle (complex nested, uses combine) ----------
@@ -258,7 +339,7 @@ fn norvig_lis_tests() {
         run(
             "(define drop (lambda (n seq) (if (<= n 0) seq (drop (- n 1) (cdr seq)))))",
             &mut env,
-        &mut state,
+            &mut state,
         );
 
         // riff-shuffle: split deck in half, interleave with combine append
@@ -273,7 +354,11 @@ fn norvig_lis_tests() {
         // drop 3 of (1 2 3 4 5 6) → (4 5 6)
         // combine append: (1 4 2 5 3 6)
         check("riff_shuffle", &r, "(1 4 2 5 3 6)");
-        if r == "(1 4 2 5 3 6)" { local_pass += 1; } else { local_fail += 1; }
+        if r == "(1 4 2 5 3 6)" {
+            local_pass += 1;
+        } else {
+            local_fail += 1;
+        }
     }
 
     // ---- Summary -------------------------------------------------------

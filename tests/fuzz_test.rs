@@ -169,7 +169,7 @@ fn test_fuzz_evaluator_no_panics() {
     for code in eval_cases {
         let result = catch_unwind(AssertUnwindSafe(|| {
             let mut env = Env::new();
-    let mut state = EvalState::new();
+            let mut state = EvalState::new();
             let _ = run_program(code, &mut env, &mut state);
         }));
         assert!(result.is_ok(), "Evaluator panicked on: {:?}", code);

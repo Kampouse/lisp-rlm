@@ -133,10 +133,7 @@ fn parse(tokens: &[String], pos: &mut usize) -> Result<LispVal, String> {
         "#unquote" => {
             // (, form) => (unquote form)
             let inner = parse(tokens, pos)?;
-            Ok(LispVal::List(vec![
-                LispVal::Sym("unquote".into()),
-                inner,
-            ]))
+            Ok(LispVal::List(vec![LispVal::Sym("unquote".into()), inner]))
         }
         "#unquote-splicing" => {
             // (,@ form) => (unquote-splicing form)
@@ -150,7 +147,7 @@ fn parse(tokens: &[String], pos: &mut usize) -> Result<LispVal, String> {
         "true" => Ok(LispVal::Bool(true)),
         "false" => Ok(LispVal::Bool(false)),
         s if s.starts_with('"') => {
-            let inner = if s.len() >= 2 { &s[1..s.len()-1] } else { "" };
+            let inner = if s.len() >= 2 { &s[1..s.len() - 1] } else { "" };
             let processed = inner
                 .replace("\\n", "\n")
                 .replace("\\t", "\t")

@@ -1,8 +1,8 @@
 //! Tests for lambda execution and higher-order functions.
-//! 
+//!
 //! KNOWN BUG: map/filter/reduce with lambda arguments hang due to
 //! apply_lambda infinite loop when called from dispatch_collections.
-//! 
+//!
 //! Tracked in: test_lambda_hof.rs — ignored tests below
 //! Workaround: use (loop ...) with recur instead of map/filter
 //!
@@ -72,39 +72,39 @@ fn test_nested_lambda() {
     assert_eq!(result, LispVal::Num(10));
 }
 
-// --- KNOWN BUGS (run with: cargo test --test test_lambda_hof -- --ignored) ---
-// WARNING: These tests will HANG. Only run individually with timeout.
-
 #[test]
-#[ignore]
 fn _bug_map_with_lambda() {
     // EXPECTED: (2 3 4)
     // ACTUAL: hangs forever in apply_lambda
     let result = eval_val("(map (lambda (x) (+ x 1)) (list 1 2 3))");
     match result {
         LispVal::List(items) => {
-            assert_eq!(items, vec![LispVal::Num(2), LispVal::Num(3), LispVal::Num(4)]);
+            assert_eq!(
+                items,
+                vec![LispVal::Num(2), LispVal::Num(3), LispVal::Num(4)]
+            );
         }
         _ => panic!("expected list, got {:?}", result),
     }
 }
 
 #[test]
-#[ignore]
 fn _bug_filter_with_lambda() {
     // EXPECTED: (4 5 6)
     // ACTUAL: hangs forever in apply_lambda
     let result = eval_val("(filter (lambda (x) (> x 3)) (list 1 4 2 5 6))");
     match result {
         LispVal::List(items) => {
-            assert_eq!(items, vec![LispVal::Num(4), LispVal::Num(5), LispVal::Num(6)]);
+            assert_eq!(
+                items,
+                vec![LispVal::Num(4), LispVal::Num(5), LispVal::Num(6)]
+            );
         }
         _ => panic!("expected list, got {:?}", result),
     }
 }
 
 #[test]
-#[ignore]
 fn _bug_reduce_with_lambda() {
     // EXPECTED: 15
     // ACTUAL: hangs forever in apply_lambda

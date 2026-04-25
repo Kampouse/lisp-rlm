@@ -31,6 +31,7 @@ pub fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
+#[allow(dead_code)]
 pub fn hex_decode(hex: &str) -> Vec<u8> {
     (0..hex.len())
         .step_by(2)

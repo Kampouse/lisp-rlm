@@ -31,7 +31,6 @@ fn eval_with_budget(code: &str, budget: u64) -> Result<LispVal, String> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore] // stack overflow
 fn test_budget_catches_infinite_tail_recursion() {
     // Use "spin" not "loop" — "loop" is a special form keyword
     let code = r#"
@@ -49,7 +48,6 @@ fn test_budget_catches_infinite_tail_recursion() {
 }
 
 #[test]
-#[ignore] // stack overflow
 fn test_budget_catches_infinite_mutual_recursion() {
     let code = r#"
         (define f (lambda () (g)))
@@ -62,7 +60,6 @@ fn test_budget_catches_infinite_mutual_recursion() {
 }
 
 #[test]
-#[ignore] // stack overflow
 fn test_budget_catches_infinite_recursion_with_state() {
     let code = r#"
         (define count (lambda (n) (count (+ n 1))))
@@ -74,7 +71,6 @@ fn test_budget_catches_infinite_recursion_with_state() {
 }
 
 #[test]
-#[ignore] // stack overflow
 fn test_budget_does_not_trip_normal_code() {
     let code = r#"
         (define sum (lambda (n acc)
@@ -91,7 +87,6 @@ fn test_budget_does_not_trip_normal_code() {
 }
 
 #[test]
-#[ignore] // stack overflow
 fn test_budget_zero_means_unlimited() {
     let code = r#"
         (define sum (lambda (n acc)
@@ -168,7 +163,6 @@ fn test_budget_resets_on_new_env() {
 }
 
 #[test]
-#[ignore] // stack overflow
 fn test_budget_error_message_contains_counts() {
     let code = r#"
         (define spin (lambda () (spin)))
@@ -198,8 +192,6 @@ fn test_budget_works_with_loop_recur() {
 }
 
 #[test]
-#[ignore] // stack overflow on deep recursion
-#[ignore] // stack overflow
 fn test_budget_large_computation_completes() {
     // Sum 1..5000 with default budget should be fine
     let code = r#"

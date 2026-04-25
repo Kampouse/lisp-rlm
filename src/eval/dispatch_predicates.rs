@@ -1,6 +1,5 @@
 //! Predicate and type conversion builtins.
 
-use crate::helpers::*;
 use crate::types::LispVal;
 
 pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {

@@ -38,7 +38,8 @@ pub fn strip_markdown_fences(s: &str) -> String {
                 // Opening fence — start collecting
                 in_fence = true;
                 // If there's content on the same line after ```, capture it
-                let after = trimmed.trim_start_matches("```lisp")
+                let after = trimmed
+                    .trim_start_matches("```lisp")
                     .trim_start_matches("```scheme")
                     .trim_start_matches("```clisp")
                     .trim_start_matches("```common-lisp")
@@ -56,9 +57,8 @@ pub fn strip_markdown_fences(s: &str) -> String {
             buf.push('\n');
         } else {
             // Outside fence — check if line looks like Lisp (starts with ( or ;)
-            let maybe_code = trimmed.starts_with('(')
-                || trimmed.starts_with(';')
-                || trimmed.starts_with('"');
+            let maybe_code =
+                trimmed.starts_with('(') || trimmed.starts_with(';') || trimmed.starts_with('"');
             if maybe_code {
                 result.push(trimmed.to_string());
             }
@@ -75,6 +75,7 @@ pub fn strip_markdown_fences(s: &str) -> String {
 
 /// Try to extract the first valid Lisp expression from a string.
 /// Used as fallback when parse_all fails on multi-expression code.
+#[allow(dead_code)]
 pub fn extract_first_valid_expr(code: &str) -> Option<crate::types::LispVal> {
     use crate::parser::parse_all;
 

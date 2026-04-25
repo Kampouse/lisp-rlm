@@ -37,24 +37,72 @@ pub enum Step {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum Cont {
-    IfBranch { then_branch: LispVal, else_branch: LispVal },
-    CondTest { result_expr: Option<LispVal>, remaining: Vec<LispVal> },
-    DefineSet { name: String },
-    SetVal { name: String },
-    BeginSeq { remaining: Vec<LispVal> },
-    AndNext { remaining: Vec<LispVal> },
-    OrNext { remaining: Vec<LispVal> },
+    IfBranch {
+        then_branch: LispVal,
+        else_branch: LispVal,
+    },
+    CondTest {
+        result_expr: Option<LispVal>,
+        remaining: Vec<LispVal>,
+    },
+    DefineSet {
+        name: String,
+    },
+    SetVal {
+        name: String,
+    },
+    BeginSeq {
+        remaining: Vec<LispVal>,
+    },
+    AndNext {
+        remaining: Vec<LispVal>,
+    },
+    OrNext {
+        remaining: Vec<LispVal>,
+    },
     NotArg,
-    LetBind { name: String, remaining_pairs: Vec<(String, LispVal)>, body_exprs: Vec<LispVal> },
-    LetRestore { snapshot: im::HashMap<String, LispVal> },
-    MatchScrutinee { val: LispVal, arms: Vec<LispVal> },
-    MatchRestore { snapshot: im::HashMap<String, LispVal> },
-    TryCatch { var: String, catch_body_exprs: Vec<LispVal> },
-    LoopBind { names: Vec<String>, vals: Vec<LispVal>, remaining: Vec<(String, LispVal)>, body: LispVal },
-    LoopIter { binding_names: Vec<String>, binding_vals: Vec<LispVal>, body: LispVal, snapshot: im::HashMap<String, LispVal> },
-    RecurArg { done: Vec<LispVal>, remaining: Vec<LispVal> },
+    LetBind {
+        name: String,
+        remaining_pairs: Vec<(String, LispVal)>,
+        body_exprs: Vec<LispVal>,
+    },
+    LetRestore {
+        snapshot: im::HashMap<String, LispVal>,
+    },
+    MatchScrutinee {
+        val: LispVal,
+        arms: Vec<LispVal>,
+    },
+    MatchRestore {
+        snapshot: im::HashMap<String, LispVal>,
+    },
+    TryCatch {
+        var: String,
+        catch_body_exprs: Vec<LispVal>,
+    },
+    LoopBind {
+        names: Vec<String>,
+        vals: Vec<LispVal>,
+        remaining: Vec<(String, LispVal)>,
+        body: LispVal,
+    },
+    LoopIter {
+        binding_names: Vec<String>,
+        binding_vals: Vec<LispVal>,
+        body: LispVal,
+        snapshot: im::HashMap<String, LispVal>,
+    },
+    RecurArg {
+        done: Vec<LispVal>,
+        remaining: Vec<LispVal>,
+    },
     FinalVal,
-    AssertCheck { message: Option<String> },
-    RlmSetVal { name: String },
+    AssertCheck {
+        message: Option<String>,
+    },
+    RlmSetVal {
+        name: String,
+    },
 }

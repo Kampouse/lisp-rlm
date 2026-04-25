@@ -21,6 +21,7 @@ use crate::types::{Env, EvalState, LispVal};
 
 /// Bytecode opcodes for the loop VM.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 enum Op {
     /// Push binding slot value onto stack
     LoadSlot(usize),
@@ -101,6 +102,7 @@ enum Op {
 }
 
 /// Compiled loop representation.
+#[allow(dead_code)]
 pub struct CompiledLoop {
     /// Number of binding slots
     num_slots: usize,

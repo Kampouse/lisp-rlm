@@ -3,23 +3,36 @@
 //!
 //! par-map and par-filter propagate the LLM provider into cloned envs.
 
+use super::continuation::EvalResult;
 use crate::helpers::*;
 use crate::types::{Env, EvalState, LispVal};
-use super::continuation::EvalResult;
 
 /// Helper: call a function value with given args in the given env.
 /// Resolves any TailCall from the call chain.
-fn call_val(func: &LispVal, args: &[LispVal], env: &mut Env, state: &mut EvalState) -> Result<LispVal, String> {
+fn call_val(
+    func: &LispVal,
+    args: &[LispVal],
+    env: &mut Env,
+    state: &mut EvalState,
+) -> Result<LispVal, String> {
     match super::call_val(func, args, env, state)? {
         EvalResult::Value(v) => Ok(v),
-        EvalResult::TailCall { expr, env: tail_env } => {
+        EvalResult::TailCall {
+            expr,
+            env: tail_env,
+        } => {
             *env = tail_env;
             super::lisp_eval(&expr, env, state)
         }
     }
 }
 
-pub fn handle(name: &str, args: &[LispVal], env: &mut Env, state: &mut EvalState) -> Result<Option<LispVal>, String> {
+pub fn handle(
+    name: &str,
+    args: &[LispVal],
+    env: &mut Env,
+    state: &mut EvalState,
+) -> Result<Option<LispVal>, String> {
     match name {
         "list" => Ok(Some(LispVal::List(args.to_vec()))),
         "car" => match args.first() {
@@ -74,9 +87,7 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env, state: &mut EvalState
         }
         "empty?" => match args.first() {
             Some(LispVal::Nil) => Ok(Some(LispVal::Bool(true))),
-            Some(LispVal::List(ref v)) if v.is_empty() => {
-                Ok(Some(LispVal::Bool(true)))
-            }
+            Some(LispVal::List(ref v)) if v.is_empty() => Ok(Some(LispVal::Bool(true))),
             Some(_) => Ok(Some(LispVal::Bool(false))),
             None => Err("empty?: need 1 argument".into()),
         },
@@ -333,7 +344,10 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env, state: &mut EvalState
                         tokio::task::yield_now().await;
                         match super::call_val(&f, &[elem], &mut task_env, &mut task_state)? {
                             EvalResult::Value(v) => Ok(v),
-                            EvalResult::TailCall { expr, env: tail_env } => {
+                            EvalResult::TailCall {
+                                expr,
+                                env: tail_env,
+                            } => {
                                 let mut e = tail_env;
                                 super::lisp_eval(&expr, &mut e, &mut task_state)
                             }
@@ -344,7 +358,7 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env, state: &mut EvalState
                 for task in tasks {
                     out.push(
                         task.await
-                            .map_err(|e| format!("par-map: task failed: {}", e))??
+                            .map_err(|e| format!("par-map: task failed: {}", e))??,
                     );
                 }
                 Ok(out)
@@ -380,13 +394,17 @@ pub fn handle(name: &str, args: &[LispVal], env: &mut Env, state: &mut EvalState
                     let e = elem.clone();
                     tasks.push(tokio::spawn(async move {
                         tokio::task::yield_now().await;
-                        let result = match super::call_val(&f, &[e], &mut task_env, &mut task_state)? {
-                            EvalResult::Value(v) => v,
-                            EvalResult::TailCall { expr, env: tail_env } => {
-                                let mut env = tail_env;
-                                super::lisp_eval(&expr, &mut env, &mut task_state)?
-                            }
-                        };
+                        let result =
+                            match super::call_val(&f, &[e], &mut task_env, &mut task_state)? {
+                                EvalResult::Value(v) => v,
+                                EvalResult::TailCall {
+                                    expr,
+                                    env: tail_env,
+                                } => {
+                                    let mut env = tail_env;
+                                    super::lisp_eval(&expr, &mut env, &mut task_state)?
+                                }
+                            };
                         Ok::<bool, String>(super::is_truthy(&result))
                     }));
                 }

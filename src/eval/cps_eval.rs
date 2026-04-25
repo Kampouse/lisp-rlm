@@ -45,8 +45,13 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
 
                     // ── quasiquote ──
                     "quasiquote" => {
-                        let expanded = expand_quasiquote(list.get(1).ok_or("quasiquote: need form")?)?;
-                        Ok(Step::EvalNext { expr: expanded, conts: vec![], new_env: None })
+                        let expanded =
+                            expand_quasiquote(list.get(1).ok_or("quasiquote: need form")?)?;
+                        Ok(Step::EvalNext {
+                            expr: expanded,
+                            conts: vec![],
+                            new_env: None,
+                        })
                     }
 
                     // ── define ──
@@ -73,19 +78,17 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                                 Err("define: need symbol in head position".into())
                             }
                         }
-                        Some(LispVal::Sym(s)) => {
-                            match list.get(2) {
-                                Some(v) => Ok(Step::EvalNext {
-                                    expr: v.clone(),
-                                    conts: vec![Cont::DefineSet { name: s.clone() }],
-                                    new_env: None,
-                                }),
-                                None => {
-                                    env.push(s.clone(), LispVal::Nil);
-                                    Ok(Step::Done(LispVal::Nil))
-                                }
+                        Some(LispVal::Sym(s)) => match list.get(2) {
+                            Some(v) => Ok(Step::EvalNext {
+                                expr: v.clone(),
+                                conts: vec![Cont::DefineSet { name: s.clone() }],
+                                new_env: None,
+                            }),
+                            None => {
+                                env.push(s.clone(), LispVal::Nil);
+                                Ok(Step::Done(LispVal::Nil))
                             }
-                        }
+                        },
                         _ => Err("define: need symbol".into()),
                     },
 
@@ -188,7 +191,7 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                             return Ok(Step::Done(LispVal::Nil));
                         }
                         let last = exprs.len() - 1;
-                        let mut conts: Vec<Cont> = Vec::new();
+                        let _conts: Vec<Cont> = Vec::new();
                         // Push BeginSeq for all but the last (in reverse for stack order,
                         // but since we use extend, we push from last to first... actually,
                         // we need the FIRST remaining to be popped first. So push in order.)
@@ -204,7 +207,7 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                         // So if we want [e2, e3] to be evaluated in order:
                         //   conts = [BeginSeq{remaining:[e3]}, BeginSeq{remaining:[]}]
                         //   No wait, that's wrong.
-                        // 
+                        //
                         // Let's think again. For (begin e1 e2 e3):
                         // - Eval e1 first, then we need to eval e2, then e3.
                         // - So cont stack should be: [BeginSeq{remaining:[e2,e3]}] on top
@@ -215,7 +218,7 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                         // So we push one cont: BeginSeq{remaining:[e2,e3]}.
                         // handle_cont pops remaining[0] as next, pushes BeginSeq{remaining:rest}.
                         // This works! But for N items we'd push N-1 conts one at a time.
-                        // 
+                        //
                         // Simpler: push a SINGLE BeginSeq with all remaining exprs.
                         // eval e1, push BeginSeq{[e2,e3]}, done.
                         // handle_cont: eval remaining[0], push BeginSeq{remaining[1..]}.
@@ -224,7 +227,9 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                         Ok(Step::EvalNext {
                             expr: exprs[0].clone(),
                             conts: if last > 0 {
-                                vec![Cont::BeginSeq { remaining: exprs[1..].to_vec() }]
+                                vec![Cont::BeginSeq {
+                                    remaining: exprs[1..].to_vec(),
+                                }]
                             } else {
                                 vec![]
                             },
@@ -242,7 +247,9 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                         Ok(Step::EvalNext {
                             expr: exprs[0].clone(),
                             conts: if last > 0 {
-                                vec![Cont::AndNext { remaining: exprs[1..].to_vec() }]
+                                vec![Cont::AndNext {
+                                    remaining: exprs[1..].to_vec(),
+                                }]
                             } else {
                                 vec![]
                             },
@@ -260,7 +267,9 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                         Ok(Step::EvalNext {
                             expr: exprs[0].clone(),
                             conts: if last > 0 {
-                                vec![Cont::OrNext { remaining: exprs[1..].to_vec() }]
+                                vec![Cont::OrNext {
+                                    remaining: exprs[1..].to_vec(),
+                                }]
                             } else {
                                 vec![]
                             },
@@ -282,7 +291,10 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                         let (var, catch_body) = parse_catch_clause(catch_clause)?;
                         Ok(Step::EvalNext {
                             expr: expr_to_try.clone(),
-                            conts: vec![Cont::TryCatch { var, catch_body_exprs: catch_body }],
+                            conts: vec![Cont::TryCatch {
+                                var,
+                                catch_body_exprs: catch_body,
+                            }],
                             new_env: None,
                         })
                     }
@@ -307,16 +319,19 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                         let is_pair_style = bindings.iter().all(|b| matches!(b, LispVal::List(_)));
 
                         let pairs: Vec<(String, LispVal)> = if is_pair_style {
-                            bindings.iter().filter_map(|b| {
-                                if let LispVal::List(pair) = b {
-                                    if pair.len() == 2 {
-                                        if let LispVal::Sym(name) = &pair[0] {
-                                            return Some((name.clone(), pair[1].clone()));
+                            bindings
+                                .iter()
+                                .filter_map(|b| {
+                                    if let LispVal::List(pair) = b {
+                                        if pair.len() == 2 {
+                                            if let LispVal::Sym(name) = &pair[0] {
+                                                return Some((name.clone(), pair[1].clone()));
+                                            }
                                         }
                                     }
-                                }
-                                None
-                            }).collect()
+                                    None
+                                })
+                                .collect()
                         } else {
                             if bindings.len() % 2 != 0 {
                                 return Err("loop: flat bindings need even count".into());
@@ -327,7 +342,10 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                                 if let LispVal::Sym(name) = &bindings[i] {
                                     pairs.push((name.clone(), bindings[i + 1].clone()));
                                 } else {
-                                    return Err(format!("loop: binding name must be sym, got {}", bindings[i]));
+                                    return Err(format!(
+                                        "loop: binding name must be sym, got {}",
+                                        bindings[i]
+                                    ));
                                 }
                                 i += 2;
                             }
@@ -409,9 +427,8 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                                     .unwrap_or_else(|_| ".".to_string());
                                 format!("{}/{}.lisp", base, module_name)
                             };
-                            std::fs::read_to_string(&path).map_err(|e| {
-                                format!("require: cannot load '{}': {}", path, e)
-                            })?
+                            std::fs::read_to_string(&path)
+                                .map_err(|e| format!("require: cannot load '{}': {}", path, e))?
                         };
                         if let Some(pfx) = prefix {
                             let mut module_env = Env::new();
@@ -422,7 +439,8 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                             let exports: Option<Vec<String>> =
                                 module_env.get("__exports__").and_then(|v| match v {
                                     LispVal::List(items) => Some(
-                                        items.iter()
+                                        items
+                                            .iter()
                                             .filter_map(|i| match i {
                                                 LispVal::Str(s) => Some(s.clone()),
                                                 LispVal::Sym(s) => Some(s.clone()),
@@ -434,9 +452,13 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                                 });
                             let bindings = module_env.into_bindings();
                             for (k, v) in &bindings {
-                                if k.starts_with("__") { continue; }
+                                if k.starts_with("__") {
+                                    continue;
+                                }
                                 if let Some(ref exp) = exports {
-                                    if !exp.contains(&k) { continue; }
+                                    if !exp.contains(&k) {
+                                        continue;
+                                    }
                                 }
                                 env.push(format!("{}/{}", pfx, k), v.clone());
                             }
@@ -492,12 +514,19 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                         let var_name = match list.get(1) {
                             Some(LispVal::Sym(s)) => s.clone(),
                             Some(LispVal::Str(s)) => s.clone(),
-                            other => return Err(format!("final-var: need symbol or string, got {:?}", other)),
+                            other => {
+                                return Err(format!(
+                                    "final-var: need symbol or string, got {:?}",
+                                    other
+                                ))
+                            }
                         };
                         let val = env.get(&var_name).cloned().ok_or_else(|| {
                             format!("final-var: undefined variable '{}'", var_name)
                         })?;
-                        state.rlm_state.insert("Final".to_string(), LispVal::Bool(true));
+                        state
+                            .rlm_state
+                            .insert("Final".to_string(), LispVal::Bool(true));
                         state.rlm_state.insert("result".to_string(), val);
                         Ok(Step::Done(LispVal::Bool(true)))
                     }
@@ -516,7 +545,12 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                         let key = match list.get(1) {
                             Some(LispVal::Sym(s)) => s.clone(),
                             Some(LispVal::Str(s)) => s.clone(),
-                            other => return Err(format!("rlm-set: key must be symbol or string, got {:?}", other)),
+                            other => {
+                                return Err(format!(
+                                    "rlm-set: key must be symbol or string, got {:?}",
+                                    other
+                                ))
+                            }
                         };
                         match list.get(2) {
                             Some(v) => Ok(Step::EvalNext {
@@ -536,9 +570,16 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                         let key = match list.get(1) {
                             Some(LispVal::Sym(s)) => s.clone(),
                             Some(LispVal::Str(s)) => s.clone(),
-                            other => return Err(format!("rlm-get: key must be symbol or string, got {:?}", other)),
+                            other => {
+                                return Err(format!(
+                                    "rlm-get: key must be symbol or string, got {:?}",
+                                    other
+                                ))
+                            }
                         };
-                        Ok(Step::Done(state.rlm_state.get(&key).cloned().unwrap_or(LispVal::Nil)))
+                        Ok(Step::Done(
+                            state.rlm_state.get(&key).cloned().unwrap_or(LispVal::Nil),
+                        ))
                     }
 
                     // ── function call (symbol head) ──
@@ -546,9 +587,14 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                         let er = dispatch_call(list, env, state)?;
                         match er {
                             EvalResult::Value(v) => Ok(Step::Done(v)),
-                            EvalResult::TailCall { expr, env: tail_env } => {
-                                Ok(Step::EvalNext { expr, conts: vec![], new_env: Some(tail_env) })
-                            }
+                            EvalResult::TailCall {
+                                expr,
+                                env: tail_env,
+                            } => Ok(Step::EvalNext {
+                                expr,
+                                conts: vec![],
+                                new_env: Some(tail_env),
+                            }),
                         }
                     }
                 }
@@ -557,9 +603,14 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                 let er = dispatch_call(list, env, state)?;
                 match er {
                     EvalResult::Value(v) => Ok(Step::Done(v)),
-                    EvalResult::TailCall { expr, env: tail_env } => {
-                        Ok(Step::EvalNext { expr, conts: vec![], new_env: Some(tail_env) })
-                    }
+                    EvalResult::TailCall {
+                        expr,
+                        env: tail_env,
+                    } => Ok(Step::EvalNext {
+                        expr,
+                        conts: vec![],
+                        new_env: Some(tail_env),
+                    }),
                 }
             }
         }
@@ -583,15 +634,21 @@ fn parse_catch_clause(clause: &LispVal) -> Result<(String, Vec<LispVal>), String
 }
 
 /// Evaluate cond clauses iteratively.
-fn eval_cond_clauses(clauses: Vec<LispVal>, env: &mut Env) -> Result<Step, String> {
+fn eval_cond_clauses(clauses: Vec<LispVal>, _env: &mut Env) -> Result<Step, String> {
     for (i, clause) in clauses.iter().enumerate() {
         if let LispVal::List(parts) = clause {
-            if parts.is_empty() { continue; }
+            if parts.is_empty() {
+                continue;
+            }
             // Check for else clause
             if let LispVal::Sym(kw) = &parts[0] {
                 if kw == "else" {
                     if let Some(body) = parts.get(1) {
-                        return Ok(Step::EvalNext { expr: body.clone(), conts: vec![], new_env: None });
+                        return Ok(Step::EvalNext {
+                            expr: body.clone(),
+                            conts: vec![],
+                            new_env: None,
+                        });
                     }
                     return Ok(Step::Done(LispVal::Nil));
                 }
@@ -602,7 +659,10 @@ fn eval_cond_clauses(clauses: Vec<LispVal>, env: &mut Env) -> Result<Step, Strin
             let remaining: Vec<LispVal> = clauses[i + 1..].to_vec();
             return Ok(Step::EvalNext {
                 expr: test_expr,
-                conts: vec![Cont::CondTest { result_expr, remaining }],
+                conts: vec![Cont::CondTest {
+                    result_expr,
+                    remaining,
+                }],
                 new_env: None,
             });
         }
@@ -611,7 +671,11 @@ fn eval_cond_clauses(clauses: Vec<LispVal>, env: &mut Env) -> Result<Step, Strin
 }
 
 /// Evaluate let bindings iteratively.
-fn eval_let(pairs: Vec<(String, LispVal)>, body_exprs: Vec<LispVal>, env: &mut Env) -> Result<Step, String> {
+fn eval_let(
+    pairs: Vec<(String, LispVal)>,
+    body_exprs: Vec<LispVal>,
+    env: &mut Env,
+) -> Result<Step, String> {
     if pairs.is_empty() {
         let snap = env.snapshot();
         // Push restore cont, then eval body as begin
@@ -623,7 +687,9 @@ fn eval_let(pairs: Vec<(String, LispVal)>, body_exprs: Vec<LispVal>, env: &mut E
             conts: {
                 let mut cs: Vec<Cont> = Vec::new();
                 if body_exprs.len() > 1 {
-                    cs.push(Cont::BeginSeq { remaining: body_exprs[1..].to_vec() });
+                    cs.push(Cont::BeginSeq {
+                        remaining: body_exprs[1..].to_vec(),
+                    });
                 }
                 cs.push(Cont::LetRestore { snapshot: snap });
                 cs
@@ -645,17 +711,40 @@ fn eval_let(pairs: Vec<(String, LispVal)>, body_exprs: Vec<LispVal>, env: &mut E
 }
 
 /// Handle a continuation with the value produced by evaluating a sub-expression.
-pub fn handle_cont(cont: Cont, val: LispVal, env: &mut Env, _state: &mut EvalState) -> Result<Step, String> {
+pub fn handle_cont(
+    cont: Cont,
+    val: LispVal,
+    env: &mut Env,
+    _state: &mut EvalState,
+) -> Result<Step, String> {
     match cont {
-        Cont::IfBranch { then_branch, else_branch } => {
-            let next = if is_truthy(&val) { then_branch } else { else_branch };
-            Ok(Step::EvalNext { expr: next, conts: vec![], new_env: None })
+        Cont::IfBranch {
+            then_branch,
+            else_branch,
+        } => {
+            let next = if is_truthy(&val) {
+                then_branch
+            } else {
+                else_branch
+            };
+            Ok(Step::EvalNext {
+                expr: next,
+                conts: vec![],
+                new_env: None,
+            })
         }
 
-        Cont::CondTest { result_expr, remaining } => {
+        Cont::CondTest {
+            result_expr,
+            remaining,
+        } => {
             if is_truthy(&val) {
                 match result_expr {
-                    Some(e) => Ok(Step::EvalNext { expr: e, conts: vec![], new_env: None }),
+                    Some(e) => Ok(Step::EvalNext {
+                        expr: e,
+                        conts: vec![],
+                        new_env: None,
+                    }),
                     None => Ok(Step::Done(val)),
                 }
             } else if remaining.is_empty() {
@@ -686,7 +775,9 @@ pub fn handle_cont(cont: Cont, val: LispVal, env: &mut Env, _state: &mut EvalSta
                 Ok(Step::EvalNext {
                     expr: remaining[0].clone(),
                     conts: if remaining.len() > 1 {
-                        vec![Cont::BeginSeq { remaining: remaining[1..].to_vec() }]
+                        vec![Cont::BeginSeq {
+                            remaining: remaining[1..].to_vec(),
+                        }]
                     } else {
                         vec![]
                     },
@@ -704,7 +795,9 @@ pub fn handle_cont(cont: Cont, val: LispVal, env: &mut Env, _state: &mut EvalSta
                 Ok(Step::EvalNext {
                     expr: remaining[0].clone(),
                     conts: if remaining.len() > 1 {
-                        vec![Cont::AndNext { remaining: remaining[1..].to_vec() }]
+                        vec![Cont::AndNext {
+                            remaining: remaining[1..].to_vec(),
+                        }]
                     } else {
                         vec![]
                     },
@@ -722,7 +815,9 @@ pub fn handle_cont(cont: Cont, val: LispVal, env: &mut Env, _state: &mut EvalSta
                 Ok(Step::EvalNext {
                     expr: remaining[0].clone(),
                     conts: if remaining.len() > 1 {
-                        vec![Cont::OrNext { remaining: remaining[1..].to_vec() }]
+                        vec![Cont::OrNext {
+                            remaining: remaining[1..].to_vec(),
+                        }]
                     } else {
                         vec![]
                     },
@@ -733,7 +828,11 @@ pub fn handle_cont(cont: Cont, val: LispVal, env: &mut Env, _state: &mut EvalSta
 
         Cont::NotArg => Ok(Step::Done(LispVal::Bool(!is_truthy(&val)))),
 
-        Cont::LetBind { name, remaining_pairs, body_exprs } => {
+        Cont::LetBind {
+            name,
+            remaining_pairs,
+            body_exprs,
+        } => {
             env.push(name, val);
             if remaining_pairs.is_empty() {
                 // All bindings done, eval body
@@ -746,7 +845,9 @@ pub fn handle_cont(cont: Cont, val: LispVal, env: &mut Env, _state: &mut EvalSta
                     conts: {
                         let mut cs: Vec<Cont> = Vec::new();
                         if body_exprs.len() > 1 {
-                            cs.push(Cont::BeginSeq { remaining: body_exprs[1..].to_vec() });
+                            cs.push(Cont::BeginSeq {
+                                remaining: body_exprs[1..].to_vec(),
+                            });
                         }
                         cs.push(Cont::LetRestore { snapshot: snap });
                         cs
@@ -774,7 +875,7 @@ pub fn handle_cont(cont: Cont, val: LispVal, env: &mut Env, _state: &mut EvalSta
 
         Cont::MatchScrutinee { arms, .. } => {
             // val is the scrutinee
-            for (i, clause) in arms.iter().enumerate() {
+            for (_i, clause) in arms.iter().enumerate() {
                 if let LispVal::List(parts) = clause {
                     if parts.len() >= 2 {
                         if let Some(bindings) = match_pattern(&parts[0], &val) {
@@ -805,7 +906,12 @@ pub fn handle_cont(cont: Cont, val: LispVal, env: &mut Env, _state: &mut EvalSta
             Ok(Step::Done(val))
         }
 
-        Cont::LoopBind { mut names, mut vals, remaining, body } => {
+        Cont::LoopBind {
+            mut names,
+            mut vals,
+            remaining,
+            body,
+        } => {
             vals.push(val);
             if remaining.is_empty() {
                 // All bindings evaluated — start loop iteration
@@ -839,7 +945,12 @@ pub fn handle_cont(cont: Cont, val: LispVal, env: &mut Env, _state: &mut EvalSta
             }
         }
 
-        Cont::LoopIter { binding_names, binding_vals, body, snapshot } => {
+        Cont::LoopIter {
+            binding_names,
+            binding_vals: _binding_vals,
+            body,
+            snapshot,
+        } => {
             match val {
                 LispVal::Recur(new_vals) => {
                     if new_vals.len() != binding_names.len() {
@@ -873,7 +984,10 @@ pub fn handle_cont(cont: Cont, val: LispVal, env: &mut Env, _state: &mut EvalSta
             }
         }
 
-        Cont::RecurArg { mut done, remaining } => {
+        Cont::RecurArg {
+            mut done,
+            remaining,
+        } => {
             done.push(val);
             if remaining.is_empty() {
                 Ok(Step::Done(LispVal::Recur(done)))
@@ -890,14 +1004,18 @@ pub fn handle_cont(cont: Cont, val: LispVal, env: &mut Env, _state: &mut EvalSta
         }
 
         Cont::FinalVal => {
-            _state.rlm_state.insert("Final".to_string(), LispVal::Bool(true));
+            _state
+                .rlm_state
+                .insert("Final".to_string(), LispVal::Bool(true));
             _state.rlm_state.insert("result".to_string(), val);
             Ok(Step::Done(LispVal::Bool(true)))
         }
 
         Cont::AssertCheck { message } => {
             if is_truthy(&val) {
-                _state.rlm_state.insert("AssertPassed".to_string(), LispVal::Bool(true));
+                _state
+                    .rlm_state
+                    .insert("AssertPassed".to_string(), LispVal::Bool(true));
                 Ok(Step::Done(LispVal::Bool(true)))
             } else {
                 match message {
@@ -916,10 +1034,19 @@ pub fn handle_cont(cont: Cont, val: LispVal, env: &mut Env, _state: &mut EvalSta
 
 /// Walk the continuation stack looking for a TryCatch handler.
 /// If found, evaluate the catch body. If not found, re-raise the error.
-pub fn catch_error(stack: &mut Vec<Cont>, error: String, env: &mut Env, _state: &mut EvalState) -> Result<Step, String> {
+pub fn catch_error(
+    stack: &mut Vec<Cont>,
+    error: String,
+    env: &mut Env,
+    _state: &mut EvalState,
+) -> Result<Step, String> {
     // Find the nearest TryCatch
     while let Some(cont) = stack.pop() {
-        if let Cont::TryCatch { var, catch_body_exprs } = cont {
+        if let Cont::TryCatch {
+            var,
+            catch_body_exprs,
+        } = cont
+        {
             // Found handler — bind error var, eval catch body
             env.push(var, LispVal::Str(error));
             if catch_body_exprs.is_empty() {
@@ -927,7 +1054,9 @@ pub fn catch_error(stack: &mut Vec<Cont>, error: String, env: &mut Env, _state: 
             }
             let mut cs: Vec<Cont> = Vec::new();
             if catch_body_exprs.len() > 1 {
-                cs.push(Cont::BeginSeq { remaining: catch_body_exprs[1..].to_vec() });
+                cs.push(Cont::BeginSeq {
+                    remaining: catch_body_exprs[1..].to_vec(),
+                });
             }
             return Ok(Step::EvalNext {
                 expr: catch_body_exprs[0].clone(),

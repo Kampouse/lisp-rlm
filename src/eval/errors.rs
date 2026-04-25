@@ -112,6 +112,7 @@ impl From<String> for EvalError {
 ///
 /// At the moment the output is simply `"ERROR: <msg>"`, but once spans are
 /// threaded through the evaluator the message will include location info.
+#[allow(dead_code)]
 pub fn err(msg: &str) -> String {
     EvalError::new(msg).to_string()
 }

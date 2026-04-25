@@ -1,11 +1,9 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-use std::sync::LazyLock;
-
 use crate::helpers::*;
 use crate::parser::parse_all;
-use crate::types::{get_stdlib_code, Env, EvalState, LispVal};
+use crate::types::{Env, EvalState, LispVal};
 use continuation::{Cont, EvalResult, Step};
 use cps_eval::{catch_error, eval_step, handle_cont};
 pub mod crypto;
@@ -30,7 +28,7 @@ pub mod dispatch_strings;
 pub use llm_provider::*;
 
 use crypto::{builtin_keccak256, builtin_sha256};
-use helpers::{extract_first_valid_expr, strip_markdown_fences, truncate_str};
+use helpers::{strip_markdown_fences, truncate_str};
 use quasiquote::expand_quasiquote;
 
 // ---------------------------------------------------------------------------
@@ -293,17 +291,21 @@ pub fn lisp_eval(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
         // Evaluate current expression
         let step = match eval_step(&current, env, state) {
             Ok(s) => s,
-            Err(e) => {
-                match catch_error(&mut stack, e, env, state)? {
-                    Step::Done(v) => return Ok(v),
-                    Step::EvalNext { expr, conts, new_env } => {
-                        stack.extend(conts);
-                        current = expr;
-                        if let Some(ne) = new_env { *env = ne; }
-                        continue 'main;
+            Err(e) => match catch_error(&mut stack, e, env, state)? {
+                Step::Done(v) => return Ok(v),
+                Step::EvalNext {
+                    expr,
+                    conts,
+                    new_env,
+                } => {
+                    stack.extend(conts);
+                    current = expr;
+                    if let Some(ne) = new_env {
+                        *env = ne;
                     }
+                    continue 'main;
                 }
-            }
+            },
         };
 
         match step {
@@ -315,24 +317,39 @@ pub fn lisp_eval(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                         Some(cont) => {
                             let step = match handle_cont(cont, val, env, state) {
                                 Ok(s) => s,
-                                Err(e) => {
-                                    match catch_error(&mut stack, e, env, state)? {
-                                        Step::Done(v) => { val = v; continue 'unwind; }
-                                        Step::EvalNext { expr, conts, new_env } => {
-                                            stack.extend(conts);
-                                            current = expr;
-                                            if let Some(ne) = new_env { *env = ne; }
-                                            continue 'main;
-                                        }
+                                Err(e) => match catch_error(&mut stack, e, env, state)? {
+                                    Step::Done(v) => {
+                                        val = v;
+                                        continue 'unwind;
                                     }
-                                }
+                                    Step::EvalNext {
+                                        expr,
+                                        conts,
+                                        new_env,
+                                    } => {
+                                        stack.extend(conts);
+                                        current = expr;
+                                        if let Some(ne) = new_env {
+                                            *env = ne;
+                                        }
+                                        continue 'main;
+                                    }
+                                },
                             };
                             match step {
-                                Step::Done(v) => { val = v; }
-                                Step::EvalNext { expr, conts, new_env } => {
+                                Step::Done(v) => {
+                                    val = v;
+                                }
+                                Step::EvalNext {
+                                    expr,
+                                    conts,
+                                    new_env,
+                                } => {
                                     stack.extend(conts);
                                     current = expr;
-                                    if let Some(ne) = new_env { *env = ne; }
+                                    if let Some(ne) = new_env {
+                                        *env = ne;
+                                    }
                                     continue 'main;
                                 }
                             }
@@ -340,10 +357,16 @@ pub fn lisp_eval(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                     }
                 }
             }
-            Step::EvalNext { expr, conts, new_env } => {
+            Step::EvalNext {
+                expr,
+                conts,
+                new_env,
+            } => {
                 stack.extend(conts);
                 current = expr;
-                if let Some(ne) = new_env { *env = ne; }
+                if let Some(ne) = new_env {
+                    *env = ne;
+                }
             }
         }
     }
@@ -384,10 +407,16 @@ fn rlm_fractal(
         Instant::now() + std::time::Duration::from_secs(secs)
     } else {
         // Already set by parent — read from state
-        state.rlm_state
+        state
+            .rlm_state
             .get("__deadline")
             .and_then(|v| match v {
-                LispVal::Float(f) => Some(Instant::now() + std::time::Duration::from_secs_f64(*f - Instant::now().elapsed().as_secs_f64())),
+                LispVal::Float(f) => Some(
+                    Instant::now()
+                        + std::time::Duration::from_secs_f64(
+                            *f - Instant::now().elapsed().as_secs_f64(),
+                        ),
+                ),
                 _ => None,
             })
             .unwrap_or_else(|| Instant::now() + std::time::Duration::from_secs(300))
@@ -419,21 +448,45 @@ fn rlm_fractal_inner(
 
     // Time budget — return best effort instead of dying
     if Instant::now() >= deadline {
-        eprintln!("[rlm depth={}] ⚠ time budget exceeded, returning best effort", depth);
-        let best = state.rlm_state.get("result").cloned()
+        eprintln!(
+            "[rlm depth={}] ⚠ time budget exceeded, returning best effort",
+            depth
+        );
+        let best = state
+            .rlm_state
+            .get("result")
+            .cloned()
             .unwrap_or(LispVal::Str("Time budget exceeded".to_string()));
         return Ok(best);
     }
     if state.tokens_used >= token_budget {
-        eprintln!("[rlm depth={}] ⚠ token budget ({}/{})", depth, state.tokens_used, token_budget);
-        let best = state.rlm_state.get("result").cloned()
-            .unwrap_or(LispVal::Str(format!("Token budget exceeded ({} used)", state.tokens_used)));
+        eprintln!(
+            "[rlm depth={}] ⚠ token budget ({}/{})",
+            depth, state.tokens_used, token_budget
+        );
+        let best = state
+            .rlm_state
+            .get("result")
+            .cloned()
+            .unwrap_or(LispVal::Str(format!(
+                "Token budget exceeded ({} used)",
+                state.tokens_used
+            )));
         return Ok(best);
     }
     if state.llm_calls >= call_budget {
-        eprintln!("[rlm depth={}] ⚠ call budget ({}/{})", depth, state.llm_calls, call_budget);
-        let best = state.rlm_state.get("result").cloned()
-            .unwrap_or(LispVal::Str(format!("Call budget exceeded ({} calls)", state.llm_calls)));
+        eprintln!(
+            "[rlm depth={}] ⚠ call budget ({}/{})",
+            depth, state.llm_calls, call_budget
+        );
+        let best = state
+            .rlm_state
+            .get("result")
+            .cloned()
+            .unwrap_or(LispVal::Str(format!(
+                "Call budget exceeded ({} calls)",
+                state.llm_calls
+            )));
         return Ok(best);
     }
 
@@ -494,10 +547,18 @@ fn rlm_fractal_inner(
 
     // --- Phase 3: DECOMPOSE into 2 subtasks ---
     if Instant::now() >= deadline {
-        eprintln!("[rlm depth={}] ⚠ time budget hit before decompose, returning best effort", depth);
+        eprintln!(
+            "[rlm depth={}] ⚠ time budget hit before decompose, returning best effort",
+            depth
+        );
         merge_rlm_state(env, state, &saved_state);
-        let best = state.rlm_state.get("result").cloned()
-            .unwrap_or(LispVal::Str("Time budget exceeded before decompose".to_string()));
+        let best = state
+            .rlm_state
+            .get("result")
+            .cloned()
+            .unwrap_or(LispVal::Str(
+                "Time budget exceeded before decompose".to_string(),
+            ));
         return Ok(best);
     }
     eprintln!("[rlm depth={}] ⟳ SPLITTING into 2 subtasks...", depth);
@@ -531,7 +592,8 @@ fn rlm_fractal_inner(
         let pre_child_state = state.rlm_state.clone();
         state.rlm_state.clear();
 
-        let child_result = rlm_fractal_inner(subtask.clone(), env, state, depth + 1, max_depth, deadline);
+        let child_result =
+            rlm_fractal_inner(subtask.clone(), env, state, depth + 1, max_depth, deadline);
 
         // Restore parent state (keep cumulative tokens/calls)
         let child_tokens = state.tokens_used;
@@ -581,14 +643,14 @@ fn rlm_fractal_inner(
 /// RED = generation (LLM produced output, needs verification)
 /// BLACK = success (output verified via execution)
 enum RlmNode {
-    Black(LispVal),   // Generated (RED) → Executed → Success → BLACK
-    Red(String),      // Generated (RED) → Execution failed → stays RED → trigger split
+    Black(LispVal), // Generated (RED) → Executed → Success → BLACK
+    Red(String),    // Generated (RED) → Execution failed → stays RED → trigger split
 }
 
 /// Try to solve a task in one shot: generate Lisp code, eval it, check for (final ...)
 fn rlm_try_solve(task: &str, env: &mut Env, state: &mut EvalState, max_retries: usize) -> RlmNode {
-    let sys_prompt = std::env::var("RLM_SYSTEM_PROMPT")
-        .unwrap_or_else(|_| RLM_SYSTEM_PROMPT.to_string());
+    let sys_prompt =
+        std::env::var("RLM_SYSTEM_PROMPT").unwrap_or_else(|_| RLM_SYSTEM_PROMPT.to_string());
 
     // Fresh context — no history from parent or siblings
     let mut messages: Vec<(String, String)> = vec![
@@ -619,7 +681,12 @@ fn rlm_try_solve(task: &str, env: &mut Env, state: &mut EvalState, max_retries: 
         state.rlm_state.remove("AssertPassed");
 
         // Call LLM
-        let resp = match state.llm_provider.as_ref().unwrap().complete(&messages, Some(8192)) {
+        let resp = match state
+            .llm_provider
+            .as_ref()
+            .unwrap()
+            .complete(&messages, Some(8192))
+        {
             Ok(r) => r,
             Err(e) => return RlmNode::Red(format!("LLM error: {}", e)),
         };
@@ -629,7 +696,11 @@ fn rlm_try_solve(task: &str, env: &mut Env, state: &mut EvalState, max_retries: 
         let code_str = strip_markdown_fences(&resp.content);
         messages.push(("assistant".to_string(), truncate_str(&resp.content, 500)));
 
-        eprintln!("[rlm try {}] code:\n{}", attempt, truncate_str(&code_str, 300));
+        eprintln!(
+            "[rlm try {}] code:\n{}",
+            attempt,
+            truncate_str(&code_str, 300)
+        );
 
         // Parse
         let exprs = match parse_all(&code_str) {
@@ -708,11 +779,14 @@ fn rlm_try_solve(task: &str, env: &mut Env, state: &mut EvalState, max_retries: 
                     "user".to_string(),
                     "You called (final ...) but didn't verify your result. \
                      Add (assert <condition>) before (final ...) to confirm correctness. \
-                     Example: (assert (> result 0)) then (final result)".to_string(),
+                     Example: (assert (> result 0)) then (final result)"
+                        .to_string(),
                 ));
                 continue;
             }
-            return RlmNode::Red("Generation not verified — no (assert ...) before (final ...)".to_string());
+            return RlmNode::Red(
+                "Generation not verified — no (assert ...) before (final ...)".to_string(),
+            );
         }
 
         // Code ran but didn't call (final ...) — not done yet
@@ -737,7 +811,7 @@ fn rlm_try_solve(task: &str, env: &mut Env, state: &mut EvalState, max_retries: 
 }
 
 /// Decompose a failed task into exactly 2 subtasks
-fn rlm_decompose(task: &str, env: &mut Env, state: &mut EvalState) -> Result<Vec<String>, String> {
+fn rlm_decompose(task: &str, _env: &mut Env, state: &mut EvalState) -> Result<Vec<String>, String> {
     let decompose_prompt = format!(
         "You need to split this task into exactly 2 independent subtasks.\n\
          Each subtask should be solvable in one shot by writing Lisp code.\n\
@@ -781,9 +855,7 @@ fn rlm_decompose(task: &str, env: &mut Env, state: &mut EvalState) -> Result<Vec
     };
 
     // Simple JSON array parsing — split by comma, strip quotes
-    let inner = json_str
-        .trim_start_matches('[')
-        .trim_end_matches(']');
+    let inner = json_str.trim_start_matches('[').trim_end_matches(']');
     let subtasks: Vec<String> = inner
         .split("\",")
         .map(|s| s.trim().trim_matches('"').trim().to_string())
@@ -846,7 +918,7 @@ fn rlm_synthesize(
     for expr in &exprs {
         match lisp_eval(expr, env, state) {
             Ok(v) => result = v,
-            Err(e) => {
+            Err(_e) => {
                 env.restore(snap);
                 // Fallback: join child results as string
                 let combined = child_results
@@ -868,7 +940,12 @@ fn rlm_synthesize(
 }
 
 /// Verify a result — returns Some(verified_result) if OK, None if failed verification
-fn rlm_verify(task: &str, result: &LispVal, env: &mut Env, state: &mut EvalState) -> Result<Option<LispVal>, String> {
+fn rlm_verify(
+    task: &str,
+    result: &LispVal,
+    _env: &mut Env,
+    state: &mut EvalState,
+) -> Result<Option<LispVal>, String> {
     let verify_prompt = format!(
         "Given the task: {}\nAnd the result: {}\n\nIs this correct? Answer YES or NO and explain briefly.",
         task,
@@ -900,12 +977,12 @@ fn rlm_verify(task: &str, result: &LispVal, env: &mut Env, state: &mut EvalState
 }
 
 /// Compact summary of rlm_state for context injection
-fn rlm_state_summary(env: &Env, state: &EvalState) -> String {
+fn rlm_state_summary(_env: &Env, state: &EvalState) -> String {
     if state.rlm_state.is_empty() {
         return "(empty)".to_string();
     }
     let entries: Vec<String> = state
-            .rlm_state
+        .rlm_state
         .iter()
         .map(|(k, v)| format!("{} = {}", k, truncate_str(&v.to_string(), 60)))
         .collect();
@@ -913,7 +990,7 @@ fn rlm_state_summary(env: &Env, state: &EvalState) -> String {
 }
 
 /// Merge saved parent state back into env, preserving cumulative token/call counts
-fn merge_rlm_state(env: &mut Env, state: &mut EvalState, saved: &im::OrdMap<String, LispVal>) {
+fn merge_rlm_state(_env: &mut Env, state: &mut EvalState, saved: &im::OrdMap<String, LispVal>) {
     let tokens = state.tokens_used;
     let calls = state.llm_calls;
     state.rlm_state = saved.clone();
@@ -965,7 +1042,10 @@ pub fn apply_lambda(
         local_env.push(rest_name.to_string(), LispVal::List(rest_args));
     }
 
-    Ok(EvalResult::TailCall { expr: body.clone(), env: local_env })
+    Ok(EvalResult::TailCall {
+        expr: body.clone(),
+        env: local_env,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -974,7 +1054,12 @@ pub fn apply_lambda(
 
 /// Dispatch a builtin by name with already-evaluated args.
 /// Used by call_val when a builtin symbol is passed as a first-class value.
-fn dispatch_call_with_args(name: &str, args: &[LispVal], env: &mut Env, state: &mut EvalState) -> Result<EvalResult, String> {
+fn dispatch_call_with_args(
+    name: &str,
+    args: &[LispVal],
+    env: &mut Env,
+    state: &mut EvalState,
+) -> Result<EvalResult, String> {
     if let Some(result) = dispatch_arithmetic::handle(name, args)? {
         return Ok(EvalResult::Value(result));
     }
@@ -1003,7 +1088,11 @@ fn dispatch_call_with_args(name: &str, args: &[LispVal], env: &mut Env, state: &
     }
 }
 
-fn dispatch_call(list: &[LispVal], env: &mut Env, state: &mut EvalState) -> Result<EvalResult, String> {
+fn dispatch_call(
+    list: &[LispVal],
+    env: &mut Env,
+    state: &mut EvalState,
+) -> Result<EvalResult, String> {
     let head = &list[0];
     let raw_args: Vec<LispVal> = list[1..].to_vec();
 
@@ -1018,13 +1107,15 @@ fn dispatch_call(list: &[LispVal], env: &mut Env, state: &mut EvalState) -> Resu
     }
 
     // Normal path: evaluate args
-    // Save env so inner TailCall resolution doesn't corrupt our view.
+    // Save/restore env around EACH arg — inner lisp_eval may replace env
+    // via TailCall (e.g. recursive fib), corrupting the view for subsequent args.
     let saved_env = env.snapshot();
-    let args: Vec<LispVal> = raw_args
-        .iter()
-        .map(|a| lisp_eval(a, env, state))
-        .collect::<Result<_, _>>()?;
-    env.restore(saved_env);
+    let mut args: Vec<LispVal> = Vec::with_capacity(raw_args.len());
+    for a in &raw_args {
+        let val = lisp_eval(a, env, state)?;
+        env.restore(saved_env.clone());
+        args.push(val);
+    }
 
     if let LispVal::Sym(name) = head {
         // ── Dispatch chain: delegate to domain modules ──
@@ -1065,7 +1156,7 @@ fn dispatch_call(list: &[LispVal], env: &mut Env, state: &mut EvalState) -> Resu
                     ("user".to_string(), prompt),
                 ];
                 let resp = state
-        .llm_provider
+                    .llm_provider
                     .as_ref()
                     .ok_or("llm: no LLM provider configured")?
                     .complete(&messages, Some(2048))?;
@@ -1080,7 +1171,7 @@ fn dispatch_call(list: &[LispVal], env: &mut Env, state: &mut EvalState) -> Resu
                     ("user".to_string(), prompt),
                 ];
                 let resp = state
-        .llm_provider
+                    .llm_provider
                     .as_ref()
                     .ok_or("llm-code: no LLM provider configured")?
                     .complete(&messages, Some(2048))?;
@@ -1098,7 +1189,6 @@ fn dispatch_call(list: &[LispVal], env: &mut Env, state: &mut EvalState) -> Resu
                 }
                 Ok(EvalResult::Value(result))
             }
-
 
             // --- Fractal RLM: try-solve → fail → binary split → recurse ---
             // Self-similar at every scale. O(1) context per node. O(log n) depth.
@@ -1173,14 +1263,14 @@ fn dispatch_call(list: &[LispVal], env: &mut Env, state: &mut EvalState) -> Resu
             }
             "show-context" => {
                 let context_val = state
-            .rlm_state
+                    .rlm_state
                     .get("context")
                     .cloned()
                     .unwrap_or(LispVal::Nil);
                 let context_str = context_val.to_string();
                 let preview = truncate_str(&context_str, 200);
                 let final_set = state
-            .rlm_state
+                    .rlm_state
                     .get("Final")
                     .map(|v| is_truthy(v))
                     .unwrap_or(false);
@@ -1295,7 +1385,7 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
                     ("user".to_string(), task.clone()),
                 ];
                 let gen_resp = state
-        .llm_provider
+                    .llm_provider
                     .as_ref()
                     .unwrap()
                     .complete(&gen_messages, Some(8192))?;
@@ -1311,7 +1401,7 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
                         ("user".to_string(), "The previous code had a parse error. Write it again, fixed. Return ONLY valid raw Lisp code, no markdown, no explanations.".to_string()),
                     ];
                     let fix_resp = state
-        .llm_provider
+                        .llm_provider
                         .as_ref()
                         .unwrap()
                         .complete(&fix_messages, Some(8192))?;
@@ -1359,7 +1449,6 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
                 }
 
                 Ok(EvalResult::Value(LispVal::Str(final_code)))
-
             } // --- RLM builtins ---
             "rlm/signature" => {
                 let sig_name = as_str(&args[0])?;
@@ -1434,7 +1523,6 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
                 }
                 prompt.push_str("\nRespond with a JSON object containing the output fields.");
                 Ok(EvalResult::Value(LispVal::Str(prompt)))
-
             }
             "rlm/trace" => {
                 let step = as_str(&args[0])?;
@@ -1472,16 +1560,19 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
     }
 }
 
-fn call_val(func: &LispVal, args: &[LispVal], env: &mut Env, state: &mut EvalState) -> Result<EvalResult, String> {
+fn call_val(
+    func: &LispVal,
+    args: &[LispVal],
+    env: &mut Env,
+    state: &mut EvalState,
+) -> Result<EvalResult, String> {
     match func {
         LispVal::Lambda {
             params,
             rest_param,
             body,
             closed_env,
-        } => {
-            apply_lambda(params, rest_param, body, closed_env, args, env, state)
-        }
+        } => apply_lambda(params, rest_param, body, closed_env, args, env, state),
         LispVal::Macro {
             params,
             rest_param,
@@ -1492,7 +1583,10 @@ fn call_val(func: &LispVal, args: &[LispVal], env: &mut Env, state: &mut EvalSta
             let expanded = apply_lambda(params, rest_param, body, closed_env, args, env, state)?;
             let expanded_val = match expanded {
                 EvalResult::Value(v) => v,
-                EvalResult::TailCall { expr, env: tail_env } => {
+                EvalResult::TailCall {
+                    expr,
+                    env: tail_env,
+                } => {
                     // Evaluate the expansion in the macro's env, but don't
                     // overwrite caller's env — the expansion is just code.
                     let mut tmp_env = tail_env;
@@ -1505,7 +1599,15 @@ fn call_val(func: &LispVal, args: &[LispVal], env: &mut Env, state: &mut EvalSta
         }
         LispVal::List(ll) if ll.len() >= 3 => {
             let (params, rest_param) = parse_params(&ll[1])?;
-            apply_lambda(&params, &rest_param, &ll[2], &std::sync::Arc::new(vec![]), args, env, state)
+            apply_lambda(
+                &params,
+                &rest_param,
+                &ll[2],
+                &std::sync::Arc::new(vec![]),
+                args,
+                env,
+                state,
+            )
         }
         LispVal::Sym(name) => {
             // Resolve symbol in env first. If not found (builtin), dispatch by name.

@@ -45,28 +45,13 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
         "str-split" => {
             let s = as_str(&args[0])?;
             let delim = as_str(args.get(1).ok_or("str-split: need delimiter")?)?;
-            let parts: Vec<LispVal> = if delim.len() == 1 {
-                s.split(delim.chars().next().unwrap())
+            let parts: Vec<LispVal> = if delim.is_empty() {
+                s.chars().map(|c| LispVal::Str(c.to_string())).collect()
+            } else {
+                s.split(&delim)
                     .filter(|p| !p.is_empty())
                     .map(|p| LispVal::Str(p.to_string()))
                     .collect()
-            } else {
-                let char_set: Vec<char> = delim.chars().collect();
-                let mut parts = Vec::new();
-                let mut current = String::new();
-                for ch in s.chars() {
-                    if char_set.contains(&ch) {
-                        if !current.is_empty() {
-                            parts.push(LispVal::Str(std::mem::take(&mut current)));
-                        }
-                    } else {
-                        current.push(ch);
-                    }
-                }
-                if !current.is_empty() {
-                    parts.push(LispVal::Str(current));
-                }
-                parts
             };
             Ok(Some(LispVal::List(parts)))
         }
@@ -104,6 +89,12 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             let s = as_str(&args[0])?;
             let suffix = as_str(args.get(1).ok_or("str-ends-with: need suffix")?)?;
             Ok(Some(LispVal::Bool(s.ends_with(&suffix))))
+        }
+        "str-replace" => {
+            let s = as_str(&args[0])?;
+            let from = as_str(args.get(1).ok_or("str-replace: need pattern")?)?;
+            let to = as_str(args.get(2).ok_or("str-replace: need replacement")?)?;
+            Ok(Some(LispVal::Str(s.replace(&from.as_str(), &to.as_str()))))
         }
         "str=" => {
             let a = as_str(args.first().ok_or("str=: need 2 args")?)?;

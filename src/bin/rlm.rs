@@ -1,5 +1,5 @@
 use lisp_rlm::EvalState;
-use lisp_rlm::{lisp_eval, parse_all, Env, LispVal, GenericProvider};
+use lisp_rlm::{lisp_eval, parse_all, Env, GenericProvider, LispVal};
 use std::env;
 
 fn main() {

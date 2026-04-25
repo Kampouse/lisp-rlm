@@ -3,7 +3,12 @@
 use crate::helpers::*;
 use crate::types::{Env, EvalState, LispVal};
 
-pub fn handle(name: &str, args: &[LispVal], env: &mut Env, state: &mut EvalState) -> Result<Option<LispVal>, String> {
+pub fn handle(
+    name: &str,
+    args: &[LispVal],
+    env: &mut Env,
+    state: &mut EvalState,
+) -> Result<Option<LispVal>, String> {
     match name {
         // --- Debug / print ---
         "error" => {
