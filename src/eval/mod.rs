@@ -1046,7 +1046,7 @@ fn lisp_eval_inner(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
                                         };
                                         env.push(error_var.clone(), LispVal::Str(err_msg));
                                         let base_len = env.len();
-                                        let catch_result = (|| {
+                                        let catch_result: Result<LispVal, String> = (|| {
                                             let mut r = LispVal::Nil;
                                             for body_expr in &clause[2..] {
                                                 r = lisp_eval(body_expr, env)?;

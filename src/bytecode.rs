@@ -1271,26 +1271,10 @@ pub fn try_compile_lambda(
     param_names: &[String],
     body: &LispVal,
     closed_env: &[(String, LispVal)],
-    outer_env: &Env,
+    _outer_env: &Env,
 ) -> Option<CompiledLambda> {
-    let mut compiler = LoopCompiler::new(param_names.to_vec());
-    // Pre-register captured env from the lambda closure
-    for (name, val) in closed_env {
-        compiler.captured.push((name.clone(), val.clone()));
-    }
-    if !compiler.compile_expr(body, outer_env) {
-        return None;
-    }
-    compiler.code.push(Op::Return);
-    let mut code = compiler.code;
-    peephole_optimize(&mut code);
-    peephole_optimize(&mut code);
-    peephole_optimize(&mut code);
-    Some(CompiledLambda {
-        num_param_slots: param_names.len(),
-        code,
-        captured: compiler.captured,
-    })
+    // Temporarily disabled — bytecode runner has infinite loop bug
+    None
 }
 
 /// Run a compiled lambda with the given arguments. Returns the result directly.
