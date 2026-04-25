@@ -72,6 +72,10 @@ pub const DEFAULT_EVAL_BUDGET: u64 = 10_000_000;
 pub struct Env {
     bindings: im::HashMap<String, LispVal>,
     shared_env: Option<std::sync::Arc<std::sync::RwLock<im::HashMap<String, LispVal>>>>,
+    /// Shared snapshot for sibling lambdas defined at the same scope.
+    /// `define` and `set!` propagate to it so siblings see each other's updates.
+    pub(crate) scope_snapshot:
+        Option<std::sync::Arc<std::sync::RwLock<im::HashMap<String, LispVal>>>>,
 }
 
 impl Env {
@@ -80,6 +84,7 @@ impl Env {
         let mut env = Env {
             bindings: im::HashMap::new(),
             shared_env: None,
+            scope_snapshot: None,
         };
         // Common aliases
         env.insert_mut("t".to_string(), LispVal::Bool(true));
@@ -93,6 +98,7 @@ impl Env {
         let mut env = Env {
             bindings: im::HashMap::new(),
             shared_env: None,
+            scope_snapshot: None,
         };
         for (name, val) in bindings {
             env.insert_mut(name, val);
@@ -174,6 +180,28 @@ impl Env {
             if map.contains_key(key) {
                 map.insert(key.to_string(), val.clone());
             }
+        }
+    }
+
+    /// Get or create the scope's shared snapshot Arc.
+    /// All lambdas defined at this scope level share the same Arc.
+    /// The snapshot is mutable — `define` and `set!` propagate to it.
+    pub fn get_or_create_scope_snapshot(
+        &mut self,
+    ) -> std::sync::Arc<std::sync::RwLock<im::HashMap<String, LispVal>>> {
+        if let Some(ref arc) = self.scope_snapshot {
+            return arc.clone();
+        }
+        let arc = std::sync::Arc::new(std::sync::RwLock::new(self.snapshot()));
+        self.scope_snapshot = Some(arc.clone());
+        arc
+    }
+
+    /// Propagate a binding to the scope snapshot (for sibling lambda visibility).
+    pub fn propagate_to_scope_snapshot(&self, key: &str, val: &LispVal) {
+        if let Some(ref scope) = self.scope_snapshot {
+            let mut map = scope.write().unwrap();
+            map.insert(key.to_string(), val.clone());
         }
     }
 }

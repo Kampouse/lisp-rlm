@@ -302,6 +302,53 @@ pub fn handle(
             }
         }
 
+        // --- Clock ---
+        "now" => {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|e| format!("now: {}", e))?;
+            Ok(Some(LispVal::Float(ts.as_secs_f64())))
+        }
+        "elapsed" => {
+            let since = as_float(&args[0])?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|e| format!("elapsed: {}", e))?;
+            let elapsed = now.as_secs_f64() - since;
+            Ok(Some(LispVal::Float(elapsed)))
+        }
+        "sleep" => {
+            let secs = as_float(&args[0])?;
+            if secs > 0.0 {
+                let dur = std::time::Duration::from_secs_f64(secs);
+                std::thread::sleep(dur);
+            }
+            Ok(Some(LispVal::Bool(true)))
+        }
+
+        // --- State Persistence ---
+        "save-state" => {
+            let path = as_str(&args[0])?;
+            let val = args.get(1).cloned().unwrap_or(LispVal::Nil);
+            let json = super::lisp_to_json(&val);
+            let pretty =
+                serde_json::to_string_pretty(&json).map_err(|e| format!("save-state: {}", e))?;
+            // Create parent dirs if needed
+            if let Some(parent) = std::path::Path::new(&path).parent() {
+                std::fs::create_dir_all(parent).map_err(|e| format!("save-state: {}", e))?;
+            }
+            std::fs::write(path, pretty).map_err(|e| format!("save-state: {}", e))?;
+            Ok(Some(LispVal::Bool(true)))
+        }
+        "load-state" => {
+            let path = as_str(&args[0])?;
+            let content =
+                std::fs::read_to_string(path).map_err(|e| format!("load-state: {}", e))?;
+            let json: serde_json::Value =
+                serde_json::from_str(&content).map_err(|e| format!("load-state: {}", e))?;
+            Ok(Some(super::json_to_lisp(json)))
+        }
+
         _ => Ok(None),
     }
 }

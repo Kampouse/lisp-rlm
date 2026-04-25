@@ -11,6 +11,8 @@ Layer 3: Agent code (Lisp, freely patchable by LLM)
 
 Same eval/verify/patch loop at every layer, different safety thresholds.
 
+The LLM is a builtin inside the runtime, not the driver. The runtime calls it. It proposes. The kernel decides.
+
 ---
 
 ## Layer 1 — Rust Kernel (Immutable)
@@ -26,6 +28,7 @@ The frozen foundation. ~10K lines already exist.
 - Trace logging
 - Patch registration and verification
 - Persistence (save/load state to disk)
+- Clock: expose `(now)` and `(elapsed since)` builtins
 
 **What the kernel NEVER does:**
 - Self-modify
@@ -45,8 +48,9 @@ The frozen foundation. ~10K lines already exist.
 | Capability scanner | new `src/capability.rs` | ~80 |
 | Disk persistence | new `src/persist.rs` | ~120 |
 | `load-directory` builtin | `eval/mod.rs` | ~30 |
+| `(now)` / `(elapsed)` builtins | `eval/mod.rs` | ~20 |
 
-Total: ~540 new lines on existing 10K.
+Total: ~560 new lines on existing 10K.
 
 ---
 
@@ -57,19 +61,30 @@ The agent's operating system. Written in Lisp, evolves through patches, but stri
 **File:** `harness.lisp`
 
 ```lisp
+;; === Clock ===
+;; Kernel exposes (now) → unix timestamp. Everything else is subtraction.
+
+(defpatch time-since (timestamp)
+  (- (now) timestamp))
+
 ;; === Scheduler ===
-;; The main loop. Wakes up, checks events, picks actions, executes.
+;; Wakes up, ranks intentions, executes sequentially within budget.
 
 (defpatch scheduler-run ()
   :capabilities (scheduler)
-  (let ((events (inbox-drain))
-        (intentions (load-intentions)))
-    (if (or events intentions)
-        (let ((action (choose-action events intentions)))
-          (if (policy-check action)
-              (execute action)
-            (ask-human action)))
-      (noop))))
+  (let ((candidates (rank-intentions (load-intentions) (inbox-drain) *budget*)))
+    ;; Execute as many as budget allows, one at a time (no parallel by default)
+    (loop for action in candidates
+          while (budget-remaining?)
+          do (run-action action))))
+
+(defpatch run-action (action)
+  (if (policy-check action)
+      (let ((result (execute action)))
+        (handle-result (action-intention action) result)
+        (trace-write action result)
+        (checkpoint))
+    (ask-human action)))
 
 ;; === Intention Store ===
 ;; Standing intentions: things the agent keeps caring about.
@@ -90,8 +105,132 @@ The agent's operating system. Written in Lisp, evolves through patches, but stri
   (save-state "state/intentions" *intentions*))
 
 (defpatch intention-done? (intent)
-  ;; Check if the done-when condition is met
   (eval-condition (get intent :done-when) intent))
+
+;; === Intention Types ===
+;; Intentions declare their lifecycle upfront.
+
+;; perpetual  — never done, runs forever (monitoring, health checks)
+;; completable — has a finish line (merge PR, fix bug)
+;; one-shot — do once, then archive (deploy hotfix)
+;; recurring — runs on schedule, each run independent (daily backup)
+
+(defpatch handle-result (intention result)
+  (case (get intention :type)
+    ;; Never archive, just update last-acted
+    (perpetual
+      (set intention :last-acted (now)))
+
+    ;; Check done-when condition
+    (completable
+      (if (eval-condition (get intention :done-when))
+          (archive-intention intention)
+        (set intention :last-acted (now))))
+
+    ;; Archive after first run
+    (one-shot
+      (archive-intention intention))
+
+    ;; Track last run, reset for next trigger
+    (recurring
+      (set intention :last-run (now))
+      (set intention :status 'waiting))))
+
+;; === Priority Scoring ===
+;; Three inputs, one score: urgency × relevance × cost-efficiency
+
+(defpatch urgency (intention events)
+  (let ((deadline (get intention :deadline))
+        (trigger (get intention :trigger)))
+    (cond
+      ;; Hard deadline within 1 hour
+      ((and deadline (< (time-until deadline) 3600))
+       1.0)
+      ;; Trigger just fired
+      ((trigger-matched? trigger events)
+       0.8)
+      ;; Trigger close to firing
+      ((trigger-close? trigger events)
+       0.5)
+      ;; No trigger, just timer
+      (t 0.2))))
+
+(defpatch relevance (intention events)
+  (let ((tags (get intention :tags))
+        (event-tags (map event-tags events)))
+    (/ (count-intersection tags event-tags)
+       (max (length tags) 1))))
+
+(defpatch cost-efficiency (intention budget)
+  (let ((cost (estimate-cost (get intention :next-action))))
+    (cond
+      ((= cost 0) 1.0)                                    ;; free action
+      ((< cost (* 0.01 (get budget :daily-limit))) 0.9)   ;; cheap
+      ((< cost (* 0.10 (get budget :daily-limit))) 0.6)   ;; moderate
+      (t 0.3))))                                          ;; expensive
+
+(defpatch score-intention (intention events budget)
+  (let ((u (urgency intention events))
+        (r (relevance intention events))
+        (e (cost-efficiency intention budget))
+        (score (+ (* 0.5 u) (* 0.3 r) (* 0.2 e))))
+    (set intention :score score)
+    score))
+
+(defpatch rank-intentions (intentions events budget)
+  (sort (lambda (a b) (> (get a :score) (get b :score)))
+        (map (lambda (i) (score-intention i events budget))
+             intentions)))
+
+;; === Starvation Prevention ===
+;; Nothing waits forever. If an intention hasn't been acted on
+;; beyond its max-wait, urgency auto-bumps to 0.9.
+
+(defvar *check-history* (map))
+
+(defpatch find-starved (intentions)
+  (filter (lambda (i)
+            (let ((last-check (get *check-history* (get i :id))))
+              (or (nil? last-check)
+                  (> (time-since last-check)
+                     (get i :max-wait (* 24 3600))))))
+          intentions))
+
+(defpatch balance-intentions (ranked budget)
+  (let ((starved (find-starved ranked)))
+    (when starved
+      (set (car starved) :score 0.9)))  ;; force into contention
+  ranked)
+
+;; === Conflict Resolution ===
+;; Two layers: declared conflicts and resource conflicts.
+
+;; Layer 1: intentions declare what they conflict with
+;;
+;; (intention :id "trade-near"
+;;   :conflicts-with (preserve-capital)
+;;   :priority 2)
+;;
+;; (intention :id "preserve-capital"
+;;   :priority 1)  ;; lower number = higher priority
+
+;; Layer 2: runtime detects resource conflicts (budget, wallet)
+(defpatch find-resource-conflicts (actions)
+  (let ((spends (filter spends-budget? actions)))
+    (if (> (length spends) 1)
+        (let ((total (reduce + (map action-cost spends))))
+          (if (> total (budget-remaining))
+              (list :conflict :over-budget spends)
+            nil))
+      nil)))
+
+(defpatch resolve-conflicts (candidates)
+  (let ((declared (filter-declared-conflicts candidates))
+        (resource (find-resource-conflicts candidates)))
+    ;; Declared: lower priority number wins
+    ;; Resource: reject if over budget
+    ;; Tied: ask human
+    (remove-resolved-conflicts candidates declared resource)))
 
 ;; === Policy Gate ===
 ;; Decides if an action is allowed without human approval.
@@ -108,13 +247,13 @@ The agent's operating system. Written in Lisp, evolves through patches, but stri
 
 ;; === Tool Attention ===
 ;; Only load tools relevant to the current intention.
+;; Avoids tool-schema bloat, reduces token cost.
 
 (defpatch score-tools (intention)
   (let ((tools (all-tools)))
     (take 5 (sort-by-relevance intention tools))))
 
 ;; === Budget ===
-;; Track spending across the loop.
 
 (defvar *budget* (map "daily-limit" 1000 "used" 0))
 
@@ -140,13 +279,14 @@ The agent's operating system. Written in Lisp, evolves through patches, but stri
   (checkpoint))
 
 ;; === Persistence ===
-;; Save state so reboot is clean.
+;; Save state so reboot is clean. Every accepted patch is a file on disk.
 
 (defpatch checkpoint ()
   :capabilities (file-write)
   (save-state "state/intentions" *intentions*)
   (save-state "state/memory" *memory*)
   (save-state "state/budget" *budget*)
+  (save-state "state/check-history" *check-history*)
   (save-patches "patches/" *accepted-patches*)
   (trace-write '(checkpoint)))
 
@@ -189,6 +329,22 @@ LLM proposes patch
   → eval into runtime
 ```
 
+**The LLM is invoked as a builtin, not as the driver:**
+
+```lisp
+;; Inside the intent loop, only for novel situations:
+(defpatch handle-novel (situation)
+  (let ((proposal (ask-llm (format-prompt situation))))
+    (let ((ast (parse proposal)))
+      (if (verify ast)
+          (if (requires-human? ast)
+              (ask-human ast)
+            (eval ast))
+        (trace-write '(rejected proposal))))))
+```
+
+The LLM never runs anything. It proposes. The eval loop runs. The LLM is a read-only oracle — it generates text, the kernel decides what to do with it.
+
 ---
 
 ## The Intent Loop
@@ -199,33 +355,97 @@ The perpetual loop that drives the agent:
 wake up
   → what do I care about?        (intentions)
   → what happened since I slept?  (events)
-  → what should I do?             (choose action)
+  → score and rank intentions     (urgency × relevance × cost)
+  → detect conflicts              (declared + resource)
+  → pick top actions within budget
   → am I allowed?                 (policy gate)
-  → do it or ask human            (execute)
+  → do it or ask human            (execute sequentially)
+  → update intention state        (perpetual/completable/one-shot/recurring)
   → remember what happened        (trace)
   → save state                    (checkpoint)
   → sleep
 ```
 
-**No LLM call for routine stuff.** Intentions encode patterns:
+**No LLM call for routine stuff.** Intentions encode patterns.
 
+**Execution is sequential, not parallel.** Actions run one at a time because they share resources (budget, wallet). Within one intention, `progn` sequences sub-actions. Parallel execution is a capability that requires human approval.
+
+---
+
+## Intention Types
+
+Intentions declare their lifecycle upfront:
+
+### Perpetual — never done, runs forever
 ```lisp
 (intention
-  :id "watch-pr-42"
-  :goal "get PR 42 merged"
-  :status active
-  :trigger (or timer ci-failed review-comment)
-  :next-action check-ci-status
-  :done-when merged
-  :budget (max 10-per-day))
+  :id "watch-prices"
+  :type perpetual
+  :trigger (timer :every 1800)  ;; every 30 minutes
+  :next-action check-prices
+  :max-wait 7200)               ;; starve alert if not checked in 2 hours
 ```
 
-The loop:
-1. Find active intentions whose trigger fired
-2. Run their `next-action`
-3. Update based on result
-4. Check if done → archive
-5. LLM only involved for novel situations
+### Completable — has a finish line
+```lisp
+(intention
+  :id "get-pr-42-merged"
+  :type completable
+  :trigger (or ci-failed review-comment timer)
+  :next-action check-ci-status
+  :done-when (pr-state "42" 'merged)
+  :budget (max 10-per-day)
+  :max-wait 14400)
+```
+
+### One-shot — do once, archive
+```lisp
+(intention
+  :id "deploy-hotfix"
+  :type one-shot
+  :next-action (progn (build) (deploy) (verify))
+  :priority 1)
+```
+
+### Recurring — runs on schedule, each run independent
+```lisp
+(intention
+  :id "daily-backup"
+  :type recurring
+  :trigger (timer :cron "0 3 * * *")
+  :next-action backup-state)
+```
+
+---
+
+## Priority Scoring
+
+Three factors, weighted:
+
+| Factor | Weight | Purpose |
+|--------|--------|---------|
+| Urgency | 50% | Act on what's time-sensitive |
+| Relevance | 30% | Act on what matches current events |
+| Cost-efficiency | 20% | Prefer cheap actions, dampen expensive ones |
+| Starvation guard | override | Nothing waits forever |
+
+**Starvation prevention:** if an intention hasn't been acted on beyond its `:max-wait` (default 24 hours), urgency auto-bumps to 0.9 regardless of other scores. The agent never forgets.
+
+---
+
+## Conflict Resolution
+
+Two layers:
+
+**1. Declared conflicts** — intentions say what they conflict with, lower priority number wins:
+```lisp
+(intention :id "trade-near" :conflicts-with (preserve-capital) :priority 2)
+(intention :id "preserve-capital" :priority 1)  ;; wins
+```
+
+**2. Resource conflicts** — runtime detects when two actions would consume the same budget/wallet. Reject if over budget.
+
+**3. Tied** — ask human.
 
 ---
 
@@ -248,7 +468,8 @@ lisp-rlm/
 │   ├── state/                  ← persisted state
 │   │   ├── intentions.json
 │   │   ├── memory.json
-│   │   └── budget.json
+│   │   ├── budget.json
+│   │   └── check-history.json
 │   └── trace/                  ← audit log
 │       └── 2026-04-25.log
 └── BOOTSTRAP.md                ← this file
@@ -302,11 +523,25 @@ Human governs.
 | deploy | deny |
 | delete | deny |
 | publish | deny |
+| parallel | deny |
 | file-read | allow |
 | memory | allow |
 | scheduler | allow |
+| llm | allow |
 
 **Sharp actions always require human approval.**
+
+---
+
+## Why This Design
+
+**The LLM is the most expensive part.** It should be the last resort, not the first. Most of what an agent does is repetitive: check status, compare against threshold, update state, send notification. That's just `if` statements.
+
+The intent loop is a cache for LLM decisions. Last time you saw this pattern, the LLM decided X. Now that decision is encoded as an intention running as Lisp. Next time, skip the LLM entirely.
+
+**Sequential execution** prevents resource conflicts by default. Parallel is a capability, not the norm.
+
+**The LLM is inside the runtime, not wrapping it.** The runtime calls `(llm "prompt")` like any other function. No special privileges. Same capability gate, same budget check, same verification.
 
 ---
 
@@ -314,6 +549,7 @@ Human governs.
 
 ### Week 1: Foundation
 - [ ] Node IDs + source spans in parser
+- [ ] `(now)` / `(elapsed)` builtins
 - [ ] `checked-fn` special form (runtime contracts)
 - [ ] `defpatch` + patch registry
 - [ ] Capability scanner (AST walk for dangerous symbols)
@@ -322,7 +558,10 @@ Human governs.
 ### Week 2: Harness
 - [ ] Write `harness.lisp`
 - [ ] Scheduler + heartbeat loop
-- [ ] Intention store
+- [ ] Intention store with types (perpetual/completable/one-shot/recurring)
+- [ ] Priority scoring (urgency × relevance × cost-efficiency)
+- [ ] Starvation prevention
+- [ ] Conflict resolution (declared + resource)
 - [ ] Policy gate
 - [ ] Boot sequence (load harness → patches → state → run)
 
@@ -362,3 +601,5 @@ Build a tiny Lisp machine where the LLM can dream, but every dream must:
 5. Leave a trace
 
 The kernel is physics. Patches are evolution. The verifier is the immune system. The LLM is imagination.
+
+The goal: set an intention, walk away, and it just runs. For days. For weeks. You only hear from it when something actually needs your attention. That's not babysitting — that's delegation.

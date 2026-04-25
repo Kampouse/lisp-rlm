@@ -1104,6 +1104,9 @@ pub fn apply_lambda(
     // Return TailCall — the trampoline evaluates the body iteratively.
     let mut local_env = caller_env.clone();
     local_env.set_shared_env(closed_env.clone());
+    // Do NOT propagate scope_snapshot — each scope level creates its own.
+    // The scope_snapshot is only shared between lambdas defined at the same scope.
+    local_env.scope_snapshot = None;
 
     // Overlay closed_env bindings (lexical scope)
     for (k, v) in closed_env.read().unwrap().iter() {

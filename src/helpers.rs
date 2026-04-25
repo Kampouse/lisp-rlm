@@ -126,6 +126,9 @@ pub fn is_builtin_name(name: &str) -> bool {
             | "string->list" | "list->string" | "string<?" | "string->number"
             | "apply" | "eval"
             | "delete-file"
+            // -- Runtime --
+            | "now" | "elapsed" | "sleep"
+            | "save-state" | "load-state"
     )
 }
 

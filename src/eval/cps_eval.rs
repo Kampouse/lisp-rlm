@@ -78,11 +78,10 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                                     params,
                                     rest_param: None,
                                     body: Box::new(body),
-                                    closed_env: std::sync::Arc::new(std::sync::RwLock::new(
-                                        env.snapshot(),
-                                    )),
+                                    closed_env: env.get_or_create_scope_snapshot(),
                                 };
-                                env.push(name.clone(), lam);
+                                env.push(name.clone(), lam.clone());
+                                env.propagate_to_scope_snapshot(&name, &lam);
                                 Ok(Step::Done(LispVal::Nil))
                             } else {
                                 Err("define: need symbol in head position".into())
@@ -169,7 +168,7 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                             params,
                             rest_param,
                             body: Box::new(body.clone()),
-                            closed_env: std::sync::Arc::new(std::sync::RwLock::new(env.snapshot())),
+                            closed_env: env.get_or_create_scope_snapshot(),
                         }))
                     }
 
@@ -182,15 +181,14 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                         let (params, rest_param) =
                             parse_params(list.get(2).ok_or("defmacro: need params")?)?;
                         let body = list.get(3).ok_or("defmacro: need body")?;
+                        let snap = env.get_or_create_scope_snapshot();
                         env.push(
                             macro_name,
                             LispVal::Macro {
                                 params,
                                 rest_param,
                                 body: Box::new(body.clone()),
-                                closed_env: std::sync::Arc::new(std::sync::RwLock::new(
-                                    env.snapshot(),
-                                )),
+                                closed_env: snap,
                             },
                         );
                         Ok(Step::Done(LispVal::Nil))
@@ -339,7 +337,7 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                             params,
                             rest_param: None,
                             body: Box::new(body_expr.clone()),
-                            closed_env: std::sync::Arc::new(std::sync::RwLock::new(env.snapshot())),
+                            closed_env: env.get_or_create_scope_snapshot(),
                         };
 
                         // Wrap in a Contract value
@@ -824,7 +822,8 @@ pub fn handle_cont(
         }
 
         Cont::DefineSet { name } => {
-            env.push(name, val);
+            env.push(name.clone(), val.clone());
+            env.propagate_to_scope_snapshot(&name, &val);
             Ok(Step::Done(LispVal::Nil))
         }
 
@@ -832,6 +831,7 @@ pub fn handle_cont(
             if let Some(slot) = env.get_mut(&name) {
                 *slot = val.clone();
                 env.propagate_to_shared(&name, &val);
+                env.propagate_to_scope_snapshot(&name, &val);
                 Ok(Step::Done(LispVal::Nil))
             } else {
                 Err(format!("set!: undefined variable '{}'", name))
