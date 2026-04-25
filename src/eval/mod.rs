@@ -281,7 +281,7 @@ pub fn lisp_eval(expr: &LispVal, env: &mut Env) -> Result<LispVal, String> {
             ));
         }
     }
-    stacker::maybe_grow(64 * 1024, 2 * 1024 * 1024, || lisp_eval_inner(expr, env))
+    lisp_eval_inner(expr, env)
 }
 
 // ---------------------------------------------------------------------------
