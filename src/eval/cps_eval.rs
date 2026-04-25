@@ -7,6 +7,7 @@ use crate::parser::parse_all;
 use crate::types::{get_stdlib_code, Env, EvalState, LispVal};
 
 use super::continuation::{Cont, EvalResult, Step};
+use super::dispatch_types::{format_type, parse_type, RlType};
 use super::{dispatch_call, expand_quasiquote, lisp_eval};
 
 /// Evaluate a single expression (no recursion).
@@ -26,7 +27,10 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
         LispVal::Recur(_) => Err("recur outside loop".into()),
 
         LispVal::Sym(name) => {
-            if let Some(v) = env.get(name) {
+            // Keywords (starting with :) are self-evaluating — used for type descriptors
+            if name.starts_with(':') {
+                Ok(Step::Done(expr.clone()))
+            } else if let Some(v) = env.get(name) {
                 Ok(Step::Done(v.clone()))
             } else if is_builtin_name(name) {
                 Ok(Step::Done(expr.clone()))
@@ -39,6 +43,10 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
 
         LispVal::List(list) => {
             if let LispVal::Sym(name) = &list[0] {
+                // Type descriptor lists (head is a keyword starting with :) are self-evaluating
+                if name.starts_with(':') {
+                    return Ok(Step::Done(expr.clone()));
+                }
                 match name.as_str() {
                     // ── quote ──
                     "quote" => Ok(Step::Done(list.get(1).cloned().unwrap_or(LispVal::Nil))),
@@ -310,6 +318,38 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                         forked_state.llm_provider = state.llm_provider.as_ref().map(|p| p.box_clone());
                         let result = super::lisp_eval(body, &mut forked_env, &mut forked_state)?;
                         Ok(Step::Done(result))
+                    }
+
+                    // ── contract (runtime type-checked lambda) ──
+                    // (contract ((param :type ...) → :ret-type) body...)
+                    // Creates a lambda that checks arg types on entry, return type on exit.
+                    "contract" => {
+                        let sig = list.get(1).ok_or("contract: need signature")?;
+                        let body_expr = list.get(2).ok_or("contract: need body")?;
+
+                        // Parse signature: ((p1 :t1 p2 :t2 ...) → :ret)
+                        let (params, param_types, ret_type) = parse_contract_sig(sig)?;
+
+                        let lam = LispVal::Lambda {
+                            params,
+                            rest_param: None,
+                            body: Box::new(body_expr.clone()),
+                            closed_env: std::sync::Arc::new(env.snapshot().into_iter().collect()),
+                        };
+
+                        // Wrap in a Contract value
+                        Ok(Step::Done(LispVal::Map({
+                            let mut m = im::HashMap::new();
+                            m.insert("__contract".into(), LispVal::Bool(true));
+                            m.insert("fn".into(), lam);
+                            m.insert("param_types".into(), LispVal::List(
+                                param_types.into_iter().map(|t| LispVal::Str(format_type(&t))).collect()
+                            ));
+                            m.insert("return_type".into(), LispVal::Str(
+                                ret_type.map(|t| format_type(&t)).unwrap_or_else(|| ":any".into())
+                            ));
+                            m
+                        })))
                     }
 
                     // ── match ──
@@ -1080,4 +1120,105 @@ pub fn catch_error(
         // Discard non-TryCatch continuations (they're in the try block we're escaping)
     }
     Err(error)
+}
+
+/// Parse a contract signature: (x :int y :str -> :ret-type)
+/// Also supports grouped form: ((x :int) (y :str) -> :ret-type)
+/// Returns (param_names, param_types, optional_return_type)
+fn parse_contract_sig(sig: &LispVal) -> Result<(Vec<String>, Vec<RlType>, Option<RlType>), String> {
+    let list = match sig {
+        LispVal::List(l) => l,
+        other => return Err(format!("contract: signature must be a list, got {}", other)),
+    };
+
+    // Find the -> (arrow) separator
+    let arrow_pos = list
+        .iter()
+        .position(|v| matches!(v, LispVal::Sym(s) if s == "->" || s == "→"));
+
+    let (param_section, ret_section) = match arrow_pos {
+        Some(pos) => (&list[..pos], Some(&list[pos + 1..])),
+        None => (list.as_slice(), None),
+    };
+
+    // Detect format: grouped ((x :int) (y :str)) vs flat (x :int y :str)
+    let grouped = param_section
+        .first()
+        .map_or(false, |e| matches!(e, LispVal::List(_)));
+
+    let mut params = Vec::new();
+    let mut param_types = Vec::new();
+
+    if grouped {
+        for (i, elem) in param_section.iter().enumerate() {
+            let pair = match elem {
+                LispVal::List(l) => l,
+                other => {
+                    return Err(format!(
+                        "contract: grouped param {} must be a list, got {}",
+                        i + 1,
+                        other
+                    ))
+                }
+            };
+            if pair.is_empty() {
+                return Err(format!("contract: grouped param {} is empty", i + 1));
+            }
+            let name = match &pair[0] {
+                LispVal::Sym(s) => s.clone(),
+                other => {
+                    return Err(format!(
+                        "contract: param name must be symbol, got {}",
+                        other
+                    ))
+                }
+            };
+            let t = if pair.len() > 1 {
+                parse_type(&pair[1])?
+            } else {
+                RlType::Any
+            };
+            params.push(name);
+            param_types.push(t);
+        }
+    } else {
+        // Flat format: x :int y :str
+        let mut i = 0;
+        while i + 1 < param_section.len() {
+            let name = match &param_section[i] {
+                LispVal::Sym(s) => s.clone(),
+                other => {
+                    return Err(format!(
+                        "contract: param name must be symbol, got {}",
+                        other
+                    ))
+                }
+            };
+            let t = parse_type(&param_section[i + 1])?;
+            params.push(name);
+            param_types.push(t);
+            i += 2;
+        }
+        if i < param_section.len() {
+            let name = match &param_section[i] {
+                LispVal::Sym(s) => s.clone(),
+                other => {
+                    return Err(format!(
+                        "contract: param name must be symbol, got {}",
+                        other
+                    ))
+                }
+            };
+            params.push(name);
+            param_types.push(RlType::Any);
+        }
+    }
+
+    // Parse return type
+    let ret_type = match ret_section {
+        Some(section) if !section.is_empty() => Some(parse_type(&section[0])?),
+        _ => None,
+    };
+
+    Ok((params, param_types, ret_type))
 }

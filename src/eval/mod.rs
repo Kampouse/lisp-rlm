@@ -24,6 +24,7 @@ pub mod dispatch_json;
 pub mod dispatch_predicates;
 pub mod dispatch_state;
 pub mod dispatch_strings;
+pub mod dispatch_types;
 
 pub use llm_provider::*;
 
@@ -241,7 +242,13 @@ Introspection: show-vars show-context
 Token tracking: rlm-tokens rlm-calls
 Snapshot: snapshot rollback rollback-to
 Fork: (fork expr) — evaluate expr in isolated env fork, parent unchanged. O(1) via persistent data structures. Use for speculative execution.
-Special forms: define def let lambda if cond match quote quasiquote unquote unquote-splicing loop recur begin progn defmacro require try catch error fork"#;
+Types: type-of check check! matches? valid-type?
+  Type primitives: :nil :bool :int :float :num :str :sym :list :map :fn :any
+  Compound: (:list :int) (:map :str :int) (:tuple :int :str) (:or :int :nil)
+  (check value :type) → value or error. (matches? value :type) → bool.
+Contract: (contract ((x :int y :str) -> :bool) body) — runtime type-checked function.
+Schema: (defschema :user "name" :str "age" :int "tags" (:list :str) :strict) then (validate data :user).
+Special forms: define def let lambda if cond match quote quasiquote unquote unquote-splicing loop recur begin progn defmacro require try catch error fork contract"#;
 
 // ---------------------------------------------------------------------------
 // Evaluator
@@ -1129,6 +1136,9 @@ fn dispatch_call_with_args(
     if let Some(result) = dispatch_state::handle(name, args, env, state)? {
         return Ok(EvalResult::Value(result));
     }
+    if let Some(result) = dispatch_types::handle(name, args)? {
+        return Ok(EvalResult::Value(result));
+    }
     match name {
         "sha256" => Ok(EvalResult::Value(builtin_sha256(args)?)),
         "keccak256" => Ok(EvalResult::Value(builtin_keccak256(args)?)),
@@ -1186,6 +1196,9 @@ fn dispatch_call(
             return Ok(EvalResult::Value(result));
         }
         if let Some(result) = dispatch_state::handle(name, &args, env, state)? {
+            return Ok(EvalResult::Value(result));
+        }
+        if let Some(result) = dispatch_types::handle(name, &args)? {
             return Ok(EvalResult::Value(result));
         }
 
@@ -1424,6 +1437,8 @@ to-string to-int to-float number? string? list? empty? nil? bool?
 llm llm-batch sub-rlm rlm-set rlm-get
 show-vars show-context final final-var snapshot rollback
 try catch error fork
+type-of check check! matches? valid-type?
+defschema validate schema
 
 DO NOT wrap code in markdown fences. DO NOT add explanations."#;
 
@@ -1656,6 +1671,66 @@ fn call_val(
                 env,
                 state,
             )
+        }
+        LispVal::Map(m) if m.contains_key("__contract") => {
+            // Contract-wrapped function — check param types, call, check return type
+            let inner_fn = m.get("fn").ok_or("contract: missing fn")?;
+            let param_type_strs = match m.get("param_types") {
+                Some(LispVal::List(ts)) => ts.clone(),
+                _ => vec![],
+            };
+            let ret_type_str = match m.get("return_type") {
+                Some(LispVal::Str(s)) => Some(s.clone()),
+                _ => None,
+            };
+
+            // Check argument types
+            for (i, (arg, type_str)) in args.iter().zip(param_type_strs.iter()).enumerate() {
+                let t = dispatch_types::parse_type(type_str)
+                    .map_err(|e| format!("contract: invalid param type: {}", e))?;
+                if !dispatch_types::type_matches(arg, &t) {
+                    return Err(format!(
+                        "contract violation: param {} expected {}, got {} — {}",
+                        i + 1,
+                        dispatch_types::format_type(&t),
+                        dispatch_types::type_of(arg),
+                        match arg {
+                            LispVal::Str(s) => format!("\"{}\"", s),
+                            other => other.to_string(),
+                        }
+                    ));
+                }
+            }
+
+            // Call the inner function
+            let result = call_val(inner_fn, args, env, state)?;
+
+            // Resolve TailCall to get the actual value for return type check
+            let resolved = match &result {
+                EvalResult::Value(v) => v.clone(),
+                EvalResult::TailCall { expr, env: tc_env, .. } => {
+                    let mut tc_env = tc_env.clone();
+                    lisp_eval(expr, &mut tc_env, state)?
+                }
+            };
+
+            // Check return type
+            if let Some(ref ret_str) = ret_type_str {
+                let ret_type_sym = LispVal::Sym(ret_str.clone());
+                let rt = dispatch_types::parse_type(&ret_type_sym)
+                    .map_err(|e| format!("contract: invalid return type: {}", e))?;
+                if !dispatch_types::type_matches(&resolved, &rt) {
+                    return Err(format!(
+                        "contract violation: return expected {}, got {} — {}",
+                        dispatch_types::format_type(&rt),
+                        dispatch_types::type_of(&resolved),
+                        resolved.to_string()
+                    ));
+                }
+            }
+
+            // Return the original result (TailCall or Value) so the trampoline continues
+            Ok(result)
         }
         LispVal::Sym(name) => {
             // Resolve symbol in env first. If not found (builtin), dispatch by name.

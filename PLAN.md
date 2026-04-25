@@ -150,6 +150,59 @@ Usage:
 
 This is the key primitive for self-harnessing RLM: the model can evaluate generated code speculatively, keep the result, and discard the side effects.
 
+## Runtime Type System
+
+Three layers, all checked at runtime — no compile-time phase.
+
+### Layer 1: Predicate-style (`check`, `type-of`, `matches?`)
+
+```lisp
+(type-of 42)              ;; → :int
+(check 42 :int)           ;; → 42
+(check "hello" :int)      ;; → Error: expected :int, got :str
+(matches? nil (:or :int :nil))  ;; → true
+```
+
+Type language:
+- Primitives: `:nil :bool :int :float :num :str :sym :list :map :fn :any`
+- Parameterized: `(:list :int)`, `(:map :str :int)`, `(:tuple :int :str :bool)`
+- Union: `(:or :int :nil)`
+- `:num` = int or float
+
+### Layer 2: Contracts (`contract` special form)
+
+```lisp
+(define add1
+  (contract (x :int -> :int)
+    (+ x 1)))
+(add1 5)         ;; → 6
+(add1 "hello")   ;; → Error: contract violation: param 1 expected :int, got :str
+```
+
+Two signature formats:
+- Flat: `(x :int y :str -> :ret)`
+- Grouped: `((x :int) (y :str) -> :ret)`
+
+Checks param types on entry, return type on exit. Resolves TailCalls before return check.
+
+### Layer 3: Schemas (`defschema`, `validate`)
+
+```lisp
+(defschema :user "name" :str "age" :int "tags" (:list :str) :strict)
+(validate (dict "name" "Jean" "age" 30 "tags" (list "dev")) :user)  ;; → ok
+(validate (dict "name" 42) :user)  ;; → Error: missing field 'age'
+(validate (dict "name" "J" "age" 30 "extra" "x") :user)  ;; → Error: unexpected field 'extra' (strict)
+```
+
+Strict mode rejects unknown keys. Compound types work in schemas.
+
+### Design decisions
+
+- Keywords (symbols starting with `:`) are self-evaluating — `:int` evaluates to itself
+- Lists starting with a keyword are self-evaluating — `(:list :int)` passes through unchanged
+- `parse_type` accepts both `Sym` and `Str` (contracts store types as strings internally)
+- Contract return check force-evaluates TailCalls to check actual values, not unevaluated expressions
+
 ## Architecture: Persistent Data Structures
 
 `Env` wraps `im::HashMap` — a Hash Array Mapped Trie (HAMT). This is a persistent (immutable) data structure: every mutation creates a new version that shares unchanged nodes with the old one via structural sharing.
