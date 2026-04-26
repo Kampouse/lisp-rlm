@@ -32,10 +32,15 @@
 
 (define (urgency intent)
   (let ((deadline (get-default intent "deadline" nil))
-        (last (get-default intent "last-acted" nil)))
+        (last (get-default intent "last-acted" nil))
+        (t0 (now)))
     (cond
-      ((and deadline (< (elapsed 0) deadline)) 1.0)
-      ((and last (> (elapsed last) 3600)) 0.7)
+      ;; Overdue: deadline is a future timestamp, we're past it
+      ((and deadline (> t0 deadline)) 1.0)
+      ;; Due soon: within 1 hour of deadline
+      ((and deadline (< (- deadline t0) 3600000)) 0.9)
+      ;; Stale: not acted on in over 1 hour
+      ((and last (> (elapsed last) 3600000)) 0.7)
       (t 0.3))))
 
 (define (cost-efficiency intent)

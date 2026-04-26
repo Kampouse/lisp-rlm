@@ -11,10 +11,12 @@ pub enum EvalResult {
 }
 
 impl EvalResult {
-    pub fn unwrap_value(self) -> LispVal {
+    pub fn unwrap_value(self) -> Result<LispVal, String> {
         match self {
-            EvalResult::Value(v) => v,
-            EvalResult::TailCall { .. } => panic!("EvalResult::unwrap_value on TailCall"),
+            EvalResult::Value(v) => Ok(v),
+            EvalResult::TailCall { .. } => {
+                Err("EvalResult::unwrap_value called on TailCall".into())
+            }
         }
     }
 }

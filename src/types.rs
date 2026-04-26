@@ -181,7 +181,7 @@ impl Env {
 
     pub fn propagate_to_shared(&self, key: &str, val: &LispVal) {
         if let Some(ref shared) = self.shared_env {
-            let mut map = shared.write().unwrap();
+            let mut map = shared.write().expect("shared_env lock poisoned");
             if map.contains_key(key) {
                 map.insert(key.to_string(), val.clone());
             }
@@ -219,7 +219,7 @@ impl Env {
     /// Propagate a binding to the scope snapshot (for sibling lambda visibility).
     pub fn propagate_to_scope_snapshot(&self, key: &str, val: &LispVal) {
         if let Some(ref scope) = self.scope_snapshot {
-            let mut map = scope.write().unwrap();
+            let mut map = scope.write().expect("scope_snapshot lock poisoned");
             map.insert(key.to_string(), val.clone());
         }
     }
@@ -287,6 +287,27 @@ impl EvalState {
     /// Set the LLM provider for this state.
     pub fn set_llm_provider(&mut self, provider: Box<dyn crate::eval::llm_provider::LlmProvider>) {
         self.llm_provider = Some(provider);
+    }
+
+    /// Create a forked state for parallel execution.
+    /// Shares token/LLM counters with the parent, but has fresh eval budget and trace.
+    pub fn fork_for_parallel(
+        &self,
+        provider: Option<Box<dyn crate::eval::llm_provider::LlmProvider>>,
+    ) -> EvalState {
+        EvalState {
+            eval_count: 0,
+            eval_budget: self.eval_budget,
+            snapshots: Vec::new(),
+            rlm_state: self.rlm_state.clone(),
+            tokens_used: Arc::clone(&self.tokens_used),
+            llm_calls: Arc::clone(&self.llm_calls),
+            rlm_depth: self.rlm_depth,
+            rlm_iteration: self.rlm_iteration,
+            llm_provider: provider,
+            call_trace: Vec::new(),
+            call_trace_max: self.call_trace_max,
+        }
     }
 
     /// Push a function name onto the call trace ring buffer.

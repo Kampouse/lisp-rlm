@@ -355,10 +355,10 @@ pub fn handle(
                 for elem in lst {
                     let f = Arc::clone(&func);
                     let mut task_env = env.clone();
-                    let mut task_state = crate::types::EvalState::new();
-                    if let Some(ref p) = provider {
-                        task_state.llm_provider = Some(p.box_clone());
-                    }
+                    let mut task_state = crate::types::EvalState::fork_for_parallel(
+                        &state,
+                        provider.as_ref().map(|p| p.box_clone()),
+                    );
                     tasks.push(tokio::spawn(async move {
                         tokio::task::yield_now().await;
                         match super::call_val(&f, &[elem], &mut task_env, &mut task_state)? {
@@ -406,10 +406,10 @@ pub fn handle(
                 for elem in &lst {
                     let f = Arc::clone(&func);
                     let mut task_env = env.clone();
-                    let mut task_state = crate::types::EvalState::new();
-                    if let Some(ref p) = provider {
-                        task_state.llm_provider = Some(p.box_clone());
-                    }
+                    let mut task_state = crate::types::EvalState::fork_for_parallel(
+                        &state,
+                        provider.as_ref().map(|p| p.box_clone()),
+                    );
                     let e = elem.clone();
                     tasks.push(tokio::spawn(async move {
                         tokio::task::yield_now().await;

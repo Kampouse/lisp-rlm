@@ -7,7 +7,6 @@ use crate::types::{Env, EvalState, LispVal};
 use continuation::{Cont, EvalResult, Step};
 use cps_eval::{catch_error, eval_step, handle_cont};
 pub mod crypto;
-pub mod errors;
 pub mod helpers;
 pub mod llm_provider;
 pub mod quasiquote;
@@ -749,12 +748,11 @@ fn rlm_try_solve(task: &str, env: &mut Env, state: &mut EvalState, max_retries: 
         state.rlm_state.remove("AssertPassed");
 
         // Call LLM
-        let resp = match state
-            .llm_provider
-            .as_ref()
-            .unwrap()
-            .complete(&messages, Some(8192))
-        {
+        let provider = match state.llm_provider.as_ref() {
+            Some(p) => p,
+            None => return RlmNode::Red("LLM provider not configured".into()),
+        };
+        let resp = match provider.complete(&messages, Some(8192)) {
             Ok(r) => r,
             Err(e) => return RlmNode::Red(format!("LLM error: {}", e)),
         };
@@ -903,7 +901,7 @@ fn rlm_decompose(task: &str, _env: &mut Env, state: &mut EvalState) -> Result<Ve
     let resp = state
         .llm_provider
         .as_ref()
-        .unwrap()
+        .ok_or("LLM provider not configured")?
         .complete(&messages, Some(1024))?;
     state
         .tokens_used
@@ -976,7 +974,7 @@ fn rlm_synthesize(
     let resp = state
         .llm_provider
         .as_ref()
-        .unwrap()
+        .ok_or("LLM provider not configured")?
         .complete(&messages, Some(4096))?;
     state
         .tokens_used
@@ -1037,7 +1035,7 @@ fn rlm_verify(
     let resp = state
         .llm_provider
         .as_ref()
-        .unwrap()
+        .ok_or("LLM provider not configured")?
         .complete(&messages, Some(512))?;
     state
         .tokens_used
@@ -1110,7 +1108,7 @@ pub fn apply_lambda(
     local_env.scope_snapshot = None;
 
     // Overlay closed_env bindings (lexical scope)
-    for (k, v) in closed_env.read().unwrap().iter() {
+    for (k, v) in closed_env.read().expect("closed_env lock poisoned").iter() {
         local_env.push(k.to_string(), v.clone());
     }
     for (i, p) in params.iter().enumerate() {
@@ -1581,7 +1579,7 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
                 let gen_resp = state
                     .llm_provider
                     .as_ref()
-                    .unwrap()
+                    .ok_or("LLM provider not configured")?
                     .complete(&gen_messages, Some(8192))?;
                 state
                     .tokens_used
@@ -1599,7 +1597,7 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
                     let fix_resp = state
                         .llm_provider
                         .as_ref()
-                        .unwrap()
+                        .ok_or("LLM provider not configured")?
                         .complete(&fix_messages, Some(8192))?;
                     state
                         .tokens_used
