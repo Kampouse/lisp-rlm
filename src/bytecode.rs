@@ -530,28 +530,19 @@ impl LoopCompiler {
                             true
                         }
                         _ => {
-                            // Try as a captured function call first
-                            if let Some(slot) = self.slot_of(op) {
-                                let n_args = list.len() - 1;
-                                for arg in &list[1..] {
-                                    if !self.compile_expr(arg, outer_env) {
-                                        return false;
-                                    }
+                            // Function call: captured var or assumed builtin
+                            let n_args = list.len() - 1;
+                            for arg in &list[1..] {
+                                if !self.compile_expr(arg, outer_env) {
+                                    return false;
                                 }
-                                self.code.push(Op::CallCaptured(slot, n_args));
-                                true
-                            } else if list.len() > 1 {
-                                let n_args = list.len() - 1;
-                                for arg in &list[1..] {
-                                    if !self.compile_expr(arg, outer_env) {
-                                        return false;
-                                    }
-                                }
-                                self.code.push(Op::BuiltinCall(op.clone(), n_args));
-                                true
-                            } else {
-                                false
                             }
+                            if let Some(slot) = self.slot_of(op) {
+                                self.code.push(Op::CallCaptured(slot, n_args));
+                            } else {
+                                self.code.push(Op::BuiltinCall(op.clone(), n_args));
+                            }
+                            true
                         }
                     }
                 } else {
@@ -1710,7 +1701,7 @@ pub fn try_compile_lambda(
 pub fn run_compiled_lambda(
     cl: &CompiledLambda,
     args: &[LispVal],
-    outer_env: &mut Env,
+    outer_env: &Env,
     state: &mut EvalState,
 ) -> Result<LispVal, String> {
     let mut slots: Vec<LispVal> = Vec::with_capacity(cl.total_slots);
@@ -1899,49 +1890,44 @@ pub fn run_compiled_lambda(
                 }
                 cargs.reverse();
                 // Fast path: if the function has pre-compiled bytecode, call it directly.
-                // This avoids call_val → apply_lambda → lisp_eval dispatch chain.
                 if let LispVal::Lambda {
                     rest_param: None,
                     compiled: Some(ref cl),
                     ..
                 } = func
                 {
-                    let saved_env = outer_env.clone();
                     match run_compiled_lambda(cl, &cargs, outer_env, state) {
                         Ok(v) => {
                             stack.push(v);
-                            *outer_env = saved_env.clone();
                         }
                         Err(_) => {
                             // Compiled path failed — fall back to full eval
-                            *outer_env = saved_env.clone();
-                            match crate::eval::call_val(&func, &cargs, outer_env, state)? {
+                            let mut env_clone = outer_env.clone();
+                            match crate::eval::call_val(&func, &cargs, &mut env_clone, state)? {
                                 crate::eval::continuation::EvalResult::Value(v) => {
                                     stack.push(v);
                                 }
                                 crate::eval::continuation::EvalResult::TailCall { expr, env: tail_env } => {
-                                    *outer_env = tail_env;
-                                    let result = crate::eval::lisp_eval(&expr, outer_env, state)?;
+                                    env_clone = tail_env;
+                                    let result = crate::eval::lisp_eval(&expr, &mut env_clone, state)?;
                                     stack.push(result);
                                 }
                             }
-                            *outer_env = saved_env;
                         }
                     }
                 } else {
                     // No compiled version — full dispatch
-                    let saved_env = outer_env.clone();
-                    match crate::eval::call_val(&func, &cargs, outer_env, state)? {
+                    let mut env_clone = outer_env.clone();
+                    match crate::eval::call_val(&func, &cargs, &mut env_clone, state)? {
                         crate::eval::continuation::EvalResult::Value(v) => {
                             stack.push(v);
                         }
                         crate::eval::continuation::EvalResult::TailCall { expr, env: tail_env } => {
-                            *outer_env = tail_env;
-                            let result = crate::eval::lisp_eval(&expr, outer_env, state)?;
+                            env_clone = tail_env;
+                            let result = crate::eval::lisp_eval(&expr, &mut env_clone, state)?;
                             stack.push(result);
                         }
                     }
-                    *outer_env = saved_env;
                 }
                 pc += 1;
             }
