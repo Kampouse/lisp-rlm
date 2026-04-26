@@ -142,6 +142,8 @@ struct LoopCompiler {
     closures: Vec<CompiledLambda>,
     /// Name of the function being compiled (for CallSelf detection)
     self_name: Option<String>,
+    /// Active loops: (jump_target_pc, var_slot_indices)
+    loop_stack: Vec<(usize, Vec<usize>)>,
 }
 
 impl LoopCompiler {
@@ -152,6 +154,7 @@ impl LoopCompiler {
             captured: Vec::new(),
             closures: Vec::new(),
             self_name: None,
+            loop_stack: Vec::new(),
         }
     }
 
@@ -335,19 +338,28 @@ impl LoopCompiler {
                             self.code[jmp_idx] = Op::Jump(self.code.len());
                             true
                         }
-                        // recur: compile args, emit Recur(N) — valid in any tail position
+                        // recur: compile args, store into loop var slots, jump to loop start
                         "recur" => {
-                            let num_slots = self.slot_map.len();
-                            if list.len() - 1 != num_slots {
-                                return false;
-                            }
-                            for arg in &list[1..] {
-                                if !self.compile_expr(arg, outer_env) {
+                            if let Some((loop_start, var_slots)) = self.loop_stack.last().cloned() {
+                                let n_args = list.len() - 1;
+                                if n_args != var_slots.len() {
                                     return false;
                                 }
+                                for arg in &list[1..] {
+                                    if !self.compile_expr(arg, outer_env) {
+                                        return false;
+                                    }
+                                }
+                                // Store args into loop var slots in reverse order
+                                // (StoreSlot pops from stack, and stack is LIFO)
+                                for &slot_idx in var_slots.iter().rev() {
+                                    self.code.push(Op::StoreSlot(slot_idx));
+                                }
+                                self.code.push(Op::Jump(loop_start));
+                                true
+                            } else {
+                                false
                             }
-                            self.code.push(Op::Recur(num_slots));
-                            true
                         }
                         // and: short-circuit, returns first falsy or last value
                         // Pattern: compile arg; Dup; JumpIfFalse(end); Pop; ...next arg...
@@ -555,6 +567,44 @@ impl LoopCompiler {
                                 }
                             }
                             self.code[jt_idx] = Op::JumpIfTrue(self.code.len());
+                            true
+                        }
+                        // loop: (loop ((var init) ...) body) with (recur val ...) inside body
+                        "loop" => {
+                            let bindings = match list.get(1) {
+                                Some(LispVal::List(b)) => b,
+                                _ => return false,
+                            };
+                            let body = match list.get(2) {
+                                Some(b) => b,
+                                None => return false,
+                            };
+                            // Parse bindings: ((var1 init1) (var2 init2) ...)
+                            let mut var_slots: Vec<usize> = Vec::new();
+                            for binding in bindings.iter() {
+                                if let LispVal::List(pair) = binding {
+                                    if pair.len() == 2 {
+                                        if let LispVal::Sym(name) = &pair[0] {
+                                            let slot = self.slot_map.len();
+                                            self.slot_map.push(name.clone());
+                                            var_slots.push(slot);
+                                            if !self.compile_expr(&pair[1], outer_env) {
+                                                return false;
+                                            }
+                                            self.code.push(Op::StoreSlot(slot));
+                                            continue;
+                                        }
+                                    }
+                                }
+                                return false;
+                            }
+                            let loop_start = self.code.len();
+                            self.loop_stack.push((loop_start, var_slots));
+                            if !self.compile_expr(body, outer_env) {
+                                self.loop_stack.pop();
+                                return false;
+                            }
+                            self.loop_stack.pop();
                             true
                         }
                         "set!" => {
@@ -1674,6 +1724,7 @@ pub fn eval_builtin(name: &str, args: &[LispVal]) -> Result<LispVal, String> {
             let exp = num_val(args.get(1).cloned().unwrap_or(LispVal::Nil));
             Ok(LispVal::Float((base as f64).powf(exp as f64)))
         }
+        "dict" => Ok(LispVal::Map(im::HashMap::new())),
         "dict/get" | "dict-ref" => match (args.get(0), args.get(1)) {
             (Some(LispVal::Map(m)), Some(LispVal::Str(key))) => {
                 Ok(m.get(key).cloned().unwrap_or(LispVal::Nil))

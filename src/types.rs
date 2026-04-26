@@ -13,7 +13,6 @@ const MATH_STDLIB: &str = r#"
 (define square (lambda (x) (* x x)))
 (define identity (lambda (x) x))
 (define pow (lambda (base exp) (if (<= exp 0) 1 (* base (pow base (- exp 1))))))
-(define sqrt (lambda (n) (if (< n 0) nil (if (< n 2) n (loop ((x (/ n 2))) (let ((x1 (/ (+ x (/ n x)) 2))) (if (>= x1 x) x (recur x1))))))))
 (define lcm (lambda (a b) (if (or (= a 0) (= b 0)) 0 (/ (* (abs a) (abs b)) (gcd a b)))))
 "#;
 
