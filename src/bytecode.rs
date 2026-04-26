@@ -359,7 +359,7 @@ impl LoopCompiler {
                             true
                         }
                         // progn / begin: evaluate all, return last
-                        "progn" | "begin" => {
+                        "progn" | "begin" | "do" => {
                             if list.len() < 2 {
                                 self.code.push(Op::PushNil);
                                 return true;
@@ -501,6 +501,21 @@ impl LoopCompiler {
                                 }
                             }
                             self.code[jt_idx] = Op::JumpIfTrue(self.code.len());
+                            true
+                        }
+                        "set!" => {
+                            if list.len() != 3 { return false; }
+                            let name = match &list[1] {
+                                LispVal::Sym(s) => s.clone(),
+                                _ => return false,
+                            };
+                            let slot = match self.slot_of(&name) {
+                                Some(s) => s,
+                                None => return false,
+                            };
+                            if !self.compile_expr(&list[2], outer_env) { return false; }
+                            self.code.push(Op::StoreSlot(slot));
+                            self.code.push(Op::LoadSlot(slot)); // set! returns the new value
                             true
                         }
                         _ => {
@@ -1182,6 +1197,21 @@ pub fn num_val_ref(v: &LispVal) -> i64 {
     }
 }
 
+/// Polymorphic arithmetic: if either operand is Float, use float arithmetic.
+fn num_arith(
+    a: &LispVal, b: &LispVal,
+    int_op: impl Fn(i64, i64) -> i64,
+    float_op: impl Fn(f64, f64) -> f64,
+) -> LispVal {
+    match (a, b) {
+        (LispVal::Float(x), LispVal::Float(y)) => LispVal::Float(float_op(*x, *y)),
+        (LispVal::Float(x), LispVal::Num(y)) => LispVal::Float(float_op(*x, *y as f64)),
+        (LispVal::Num(x), LispVal::Float(y)) => LispVal::Float(float_op(*x as f64, *y)),
+        (LispVal::Num(x), LispVal::Num(y)) => LispVal::Num(int_op(*x, *y)),
+        _ => LispVal::Num(0),
+    }
+}
+
 /// Lisp equality
 pub fn lisp_eq(a: &LispVal, b: &LispVal) -> bool {
     match (a, b) {
@@ -1354,6 +1384,100 @@ pub fn eval_builtin(name: &str, args: &[LispVal]) -> Result<LispVal, String> {
             Some(LispVal::Float(f)) => Ok(LispVal::Float(*f)),
             _ => Ok(LispVal::Float(0.0)),
         },
+        // --- Additional builtins for lambda bytecode ---
+        "inc" => {
+            let n = num_val(args.get(0).cloned().unwrap_or(LispVal::Nil));
+            Ok(LispVal::Num(n + 1))
+        }
+        "dec" => {
+            let n = num_val(args.get(0).cloned().unwrap_or(LispVal::Nil));
+            Ok(LispVal::Num(n - 1))
+        }
+        "first" => match args.get(0) {
+            Some(LispVal::List(l)) => Ok(l.first().cloned().unwrap_or(LispVal::Nil)),
+            _ => Ok(LispVal::Nil),
+        },
+        "rest" => match args.get(0) {
+            Some(LispVal::List(l)) => {
+                if l.len() > 1 {
+                    Ok(LispVal::List(l[1..].to_vec()))
+                } else {
+                    Ok(LispVal::Nil)
+                }
+            }
+            _ => Ok(LispVal::Nil),
+        },
+        "equal?" => {
+            let a = args.get(0).unwrap_or(&LispVal::Nil);
+            let b = args.get(1).unwrap_or(&LispVal::Nil);
+            Ok(LispVal::Bool(lisp_eq(a, b)))
+        }
+        "not" => {
+            let v = args.get(0).unwrap_or(&LispVal::Nil);
+            Ok(LispVal::Bool(!is_truthy(v)))
+        }
+        "string?" => Ok(LispVal::Bool(matches!(args.get(0), Some(LispVal::Str(_))))),
+        "number?" => Ok(LispVal::Bool(matches!(args.get(0), Some(LispVal::Num(_)) | Some(LispVal::Float(_))))),
+        "boolean?" => Ok(LispVal::Bool(matches!(args.get(0), Some(LispVal::Bool(_))))),
+        "list?" => Ok(LispVal::Bool(matches!(args.get(0), Some(LispVal::List(_))))),
+        "pair?" => Ok(LispVal::Bool(matches!(args.get(0), Some(LispVal::List(l)) if l.len() >= 2))),
+        "symbol?" => Ok(LispVal::Bool(matches!(args.get(0), Some(LispVal::Sym(_))))),
+        "int?" => Ok(LispVal::Bool(matches!(args.get(0), Some(LispVal::Num(_))))),
+        "float?" => Ok(LispVal::Bool(matches!(args.get(0), Some(LispVal::Float(_))))),
+        "reverse" => match args.get(0) {
+            Some(LispVal::List(l)) => Ok(LispVal::List(l.iter().rev().cloned().collect())),
+            _ => Ok(LispVal::Nil),
+        },
+        "take" => match (args.get(0), args.get(1)) {
+            (Some(LispVal::Num(n)), Some(LispVal::List(l))) => {
+                Ok(LispVal::List(l.iter().take(*n as usize).cloned().collect()))
+            }
+            _ => Ok(LispVal::Nil),
+        },
+        "drop" => match (args.get(0), args.get(1)) {
+            (Some(LispVal::Num(n)), Some(LispVal::List(l))) => {
+                Ok(LispVal::List(l.iter().skip(*n as usize).cloned().collect()))
+            }
+            _ => Ok(LispVal::Nil),
+        },
+        "last" => match args.get(0) {
+            Some(LispVal::List(l)) => Ok(l.last().cloned().unwrap_or(LispVal::Nil)),
+            _ => Ok(LispVal::Nil),
+        },
+        "butlast" => match args.get(0) {
+            Some(LispVal::List(l)) if l.len() > 1 => {
+                Ok(LispVal::List(l[..l.len()-1].to_vec()))
+            }
+            _ => Ok(LispVal::Nil),
+        },
+        "range" => {
+            let start = num_val(args.get(0).cloned().unwrap_or(LispVal::Nil));
+            let end = num_val(args.get(1).cloned().unwrap_or(LispVal::Nil));
+            let step = if args.len() > 2 { num_val(args.get(2).cloned().unwrap_or(LispVal::Nil)) } else { 1 };
+            let mut result = Vec::new();
+            let mut i = start;
+            if step > 0 {
+                while i < end {
+                    result.push(LispVal::Num(i));
+                    i += step;
+                }
+            } else if step < 0 {
+                while i > end {
+                    result.push(LispVal::Num(i));
+                    i += step;
+                }
+            }
+            Ok(LispVal::List(result))
+        }
+        "sqrt" => {
+            let n = num_val(args.get(0).cloned().unwrap_or(LispVal::Nil));
+            Ok(LispVal::Float((n as f64).sqrt()))
+        }
+        "pow" => {
+            let base = num_val(args.get(0).cloned().unwrap_or(LispVal::Nil));
+            let exp = num_val(args.get(1).cloned().unwrap_or(LispVal::Nil));
+            Ok(LispVal::Float((base as f64).powf(exp as f64)))
+        }
         _ => Err(format!("loop bytecode: unknown builtin '{}'", name)),
     }
 }
@@ -1477,30 +1601,31 @@ pub fn run_compiled_lambda(
                 pc += 1;
             }
             Op::Add => {
-                let b = num_val(stack.pop().unwrap_or(LispVal::Nil));
-                let a = num_val(stack.pop().unwrap_or(LispVal::Nil));
-                stack.push(LispVal::Num(a + b));
+                let b = stack.pop().unwrap_or(LispVal::Nil);
+                let a = stack.pop().unwrap_or(LispVal::Nil);
+                stack.push(num_arith(&a, &b, |x, y| x + y, |x, y| x + y));
                 pc += 1;
             }
             Op::Sub => {
-                let b = num_val(stack.pop().unwrap_or(LispVal::Nil));
-                let a = num_val(stack.pop().unwrap_or(LispVal::Nil));
-                stack.push(LispVal::Num(a - b));
+                let b = stack.pop().unwrap_or(LispVal::Nil);
+                let a = stack.pop().unwrap_or(LispVal::Nil);
+                stack.push(num_arith(&a, &b, |x, y| x - y, |x, y| x - y));
                 pc += 1;
             }
             Op::Mul => {
-                let b = num_val(stack.pop().unwrap_or(LispVal::Nil));
-                let a = num_val(stack.pop().unwrap_or(LispVal::Nil));
-                stack.push(LispVal::Num(a * b));
+                let b = stack.pop().unwrap_or(LispVal::Nil);
+                let a = stack.pop().unwrap_or(LispVal::Nil);
+                stack.push(num_arith(&a, &b, |x, y| x * y, |x, y| x * y));
                 pc += 1;
             }
             Op::Div => {
-                let b = num_val(stack.pop().unwrap_or(LispVal::Nil));
-                let a = num_val(stack.pop().unwrap_or(LispVal::Nil));
-                if b == 0 {
+                let b = stack.pop().unwrap_or(LispVal::Nil);
+                let a = stack.pop().unwrap_or(LispVal::Nil);
+                let bf = num_val_ref(&b);
+                if bf == 0 {
                     return Err("division by zero".into());
                 }
-                stack.push(LispVal::Num(a / b));
+                stack.push(num_arith(&a, &b, |x, y| x / y, |x, y| x / y));
                 pc += 1;
             }
             Op::Mod => {
