@@ -188,6 +188,78 @@ impl LoopCompiler {
     /// Maximum number of ops in a callee to be eligible for inlining.
     const INLINE_THRESHOLD: usize = 30;
 
+    /// Extract a constant LispVal from an Op, if it's a pure constant push.
+    fn const_val(op: &Op) -> Option<LispVal> {
+        match op {
+            Op::PushI64(n) => Some(LispVal::Num(*n)),
+            Op::PushFloat(f) => Some(LispVal::Float(*f)),
+            Op::PushBool(b) => Some(LispVal::Bool(*b)),
+            Op::PushStr(s) => Some(LispVal::Str(s.clone())),
+            Op::PushNil => Some(LispVal::Nil),
+            _ => None,
+        }
+    }
+
+    /// Emit a single op to push a constant LispVal onto the stack.
+    fn emit_const(&mut self, val: &LispVal) {
+        match val {
+            LispVal::Num(n) => self.code.push(Op::PushI64(*n)),
+            LispVal::Float(f) => self.code.push(Op::PushFloat(*f)),
+            LispVal::Bool(b) => self.code.push(Op::PushBool(*b)),
+            LispVal::Str(s) => self.code.push(Op::PushStr(s.clone())),
+            LispVal::Nil => self.code.push(Op::PushNil),
+            _ => {} // can't represent as a single const op
+        }
+    }
+
+    /// Try constant folding: if the last n_args ops are all constants AND
+    /// the captured function at idx is pure+compiled, evaluate at compile time
+    /// and replace with a single constant op.
+    fn try_const_fold(&mut self, idx: usize, n_args: usize) -> bool {
+        if n_args == 0 || self.code.len() < n_args {
+            return false;
+        }
+
+        // Check if callee is pure compiled
+        let (is_pure, callee) = match self.captured.get(idx).map(|(_, v)| v) {
+            Some(LispVal::Lambda {
+                pure_type: Some(_),
+                compiled: Some(ref cl),
+                rest_param: None,
+                ..
+            }) => (true, cl.clone()),
+            _ => return false,
+        };
+        if !is_pure {
+            return false;
+        }
+
+        // Extract constant args from the last n_args ops
+        let code_len = self.code.len();
+        let mut const_args = Vec::with_capacity(n_args);
+        for i in 0..n_args {
+            match Self::const_val(&self.code[code_len - 1 - i]) {
+                Some(v) => const_args.push(v),
+                None => return false,
+            }
+        }
+        const_args.reverse(); // we extracted in reverse order
+
+        // Evaluate the compiled lambda with the constant args
+        let mut state = EvalState::new();
+        let env = Env::new();
+        match run_compiled_lambda(&callee, &const_args, &env, &mut state) {
+            Ok(result) => {
+                // Remove the n_args constant ops
+                self.code.truncate(code_len - n_args);
+                // Emit single constant op with the result
+                self.emit_const(&result);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
     /// Try to inline a call to a captured pure compiled lambda.
     /// Returns true if inlined (caller should not emit CallCapturedRef/CallCaptured).
     /// `n_args` = number of args already compiled onto the stack.
@@ -843,17 +915,21 @@ impl LoopCompiler {
                                 }
                             }
                             if let Some(idx) = self.captured_idx(op) {
-                                // Try to inline pure compiled lambdas first
-                                if !self.try_inline_call(idx, n_args) {
+                                // Try const fold (pure + all-const args → eval at compile time)
+                                // Then try inline (small compiled lambda → paste body)
+                                // Otherwise emit call
+                                if !self.try_const_fold(idx, n_args)
+                                    && !self.try_inline_call(idx, n_args)
+                                {
                                     self.code.push(Op::CallCapturedRef(idx, n_args));
                                 }
                             } else if let Some(slot) = self.slot_of(op) {
-                                // Slot-bound calls: can't inline at compile time (slot value unknown)
                                 self.code.push(Op::CallCaptured(slot, n_args));
                             } else if self.try_capture(op, outer_env) {
                                 let idx = self.captured_idx(op).unwrap();
-                                // Try to inline the just-captured pure lambda
-                                if !self.try_inline_call(idx, n_args) {
+                                if !self.try_const_fold(idx, n_args)
+                                    && !self.try_inline_call(idx, n_args)
+                                {
                                     self.code.push(Op::CallCapturedRef(idx, n_args));
                                 }
                             } else {
