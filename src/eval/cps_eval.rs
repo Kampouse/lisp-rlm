@@ -11,6 +11,27 @@ use super::continuation::{Cont, EvalResult, Step};
 use super::dispatch_types::{format_type, parse_type, RlType};
 use super::{dispatch_call, expand_quasiquote, lisp_eval};
 
+/// Create a Lambda with pre-compiled bytecode (cached at define-time).
+/// Compilation is best-effort — if it fails, `compiled` is None and the
+/// lambda falls back to tree-walking eval at call time.
+fn make_lambda(
+    params: Vec<String>,
+    rest_param: Option<String>,
+    body: Box<crate::types::LispVal>,
+    closed_env: std::sync::Arc<std::sync::RwLock<im::HashMap<String, crate::types::LispVal>>>,
+    pure_type: Option<String>,
+    outer_env: &crate::types::Env,
+) -> crate::types::LispVal {
+    use crate::types::LispVal;
+    let compiled = crate::bytecode::try_compile_lambda(
+        &params,
+        &body,
+        &closed_env.read().unwrap().clone().into_iter().collect::<Vec<_>>(),
+        outer_env,
+    ).map(|cl| Box::new(cl));
+    LispVal::Lambda { params, rest_param, body, closed_env, pure_type, compiled }
+}
+
 /// Evaluate a single expression (no recursion).
 /// Returns Step::Done for atoms/immediates, or Step::EvalNext to evaluate a
 /// sub-expression with continuations pushed onto the stack.
@@ -77,13 +98,14 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                                     })
                                     .collect();
                                 let body = list.get(2).cloned().unwrap_or(LispVal::Nil);
-                                let lam = LispVal::Lambda {
+                                let lam = make_lambda(
                                     params,
-                                    rest_param: None,
-                                    body: Box::new(body),
-                                    closed_env: env.get_or_create_scope_snapshot(),
-                                    pure_type: state.pending_pure_type.take(),
-                                };
+                                    None,
+                                    Box::new(body),
+                                    env.get_or_create_scope_snapshot(),
+                                    state.pending_pure_type.take(),
+                                    env,
+                                );
                                 env.push(name.clone(), lam.clone());
                                 env.propagate_to_scope_snapshot(&name, &lam);
                                 Ok(Step::Done(LispVal::Nil))
@@ -584,13 +606,14 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                         let (params, rest_param) =
                             parse_params(list.get(1).ok_or("lambda: need params")?)?;
                         let body = list.get(2).ok_or("lambda: need body")?;
-                        Ok(Step::Done(LispVal::Lambda {
+                        Ok(Step::Done(make_lambda(
                             params,
                             rest_param,
-                            body: Box::new(body.clone()),
-                            closed_env: env.get_or_create_scope_snapshot(),
-                            pure_type: state.pending_pure_type.take(),
-                        }))
+                            Box::new(body.clone()),
+                            env.get_or_create_scope_snapshot(),
+                            state.pending_pure_type.take(),
+                            env,
+                        )))
                     }
 
                     // ── memoize ──
@@ -815,13 +838,14 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                         // Parse signature: ((p1 :t1 p2 :t2 ...) → :ret)
                         let (params, param_types, ret_type) = parse_contract_sig(sig)?;
 
-                        let lam = LispVal::Lambda {
+                        let lam = make_lambda(
                             params,
-                            rest_param: None,
-                            body: Box::new(body_expr.clone()),
-                            closed_env: env.get_or_create_scope_snapshot(),
-                            pure_type: None,
-                        };
+                            None,
+                            Box::new(body_expr.clone()),
+                            env.get_or_create_scope_snapshot(),
+                            None,
+                            env,
+                        );
 
                         // Wrap in a Contract value
                         Ok(Step::Done(LispVal::Map({

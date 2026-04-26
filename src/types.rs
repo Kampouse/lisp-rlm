@@ -459,6 +459,9 @@ pub enum LispVal {
         closed_env: std::sync::Arc<std::sync::RwLock<im::HashMap<String, LispVal>>>,
         /// Inferred type from `(pure ...)` type checker. `None` for regular lambdas.
         pure_type: Option<String>,
+        /// Pre-compiled bytecode (cached at define-time). `None` if compilation failed
+        /// (unsupported forms) or not yet attempted.
+        compiled: Option<Box<crate::bytecode::CompiledLambda>>,
     },
     /// case-lambda: dispatches based on arg count
     CaseLambda {

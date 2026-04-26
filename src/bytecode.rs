@@ -126,14 +126,18 @@ struct LoopCompiler {
     code: Vec<Op>,
     /// Outer env variables captured at compile time (name, value)
     captured: Vec<(String, LispVal)>,
+    /// Number of param slots (fixed). Captured vars start at this offset.
+    num_param_slots: usize,
 }
 
 impl LoopCompiler {
     fn new(slot_names: Vec<String>) -> Self {
+        let nps = slot_names.len();
         Self {
             slot_map: slot_names,
             code: Vec::new(),
             captured: Vec::new(),
+            num_param_slots: nps,
         }
     }
 
@@ -143,7 +147,9 @@ impl LoopCompiler {
             return Some(idx);
         }
         if let Some(idx) = self.captured.iter().position(|(s, _)| s == name) {
-            return Some(self.slot_map.len() + idx);
+            // Captured vars are always at fixed positions after param slots.
+            // NOT slot_map.len() — that shifts as let bindings are added/removed.
+            return Some(self.num_param_slots + idx);
         }
         None
     }
@@ -1483,12 +1489,46 @@ pub fn eval_builtin(name: &str, args: &[LispVal]) -> Result<LispVal, String> {
             let exp = num_val(args.get(1).cloned().unwrap_or(LispVal::Nil));
             Ok(LispVal::Float((base as f64).powf(exp as f64)))
         }
+        "dict/get" | "dict-ref" => {
+            match (args.get(0), args.get(1)) {
+                (Some(LispVal::Map(m)), Some(LispVal::Str(key))) => {
+                    Ok(m.get(key).cloned().unwrap_or(LispVal::Nil))
+                }
+                _ => Ok(LispVal::Nil),
+            }
+        }
+        "dict/set" | "dict-set" => {
+            match (args.get(0), args.get(1), args.get(2)) {
+                (Some(LispVal::Map(m)), Some(LispVal::Str(key)), Some(val)) => {
+                    Ok(LispVal::Map(m.update(key.clone(), val.clone())))
+                }
+                _ => Err("dict/set: need (map key value)".into()),
+            }
+        }
+        "dict/has?" => {
+            match (args.get(0), args.get(1)) {
+                (Some(LispVal::Map(m)), Some(LispVal::Str(key))) => {
+                    Ok(LispVal::Bool(m.contains_key(key)))
+                }
+                _ => Ok(LispVal::Bool(false)),
+            }
+        }
+        "dict/keys" => {
+            match args.get(0) {
+                Some(LispVal::Map(m)) => {
+                    let keys: Vec<LispVal> = m.keys().map(|k| LispVal::Str(k.clone())).collect();
+                    Ok(LispVal::List(keys))
+                }
+                _ => Ok(LispVal::List(vec![])),
+            }
+        }
         _ => Err(format!("loop bytecode: unknown builtin '{}'", name)),
     }
 }
 
 /// Compiled lambda: a flat bytecode program with N param slots + captured env slots.
 /// Used for fast-path map/filter/reduce — avoids env push/pop per element.
+#[derive(Clone, Debug)]
 pub struct CompiledLambda {
     num_param_slots: usize,
     total_slots: usize,
@@ -1737,19 +1777,51 @@ pub fn run_compiled_lambda(
                     cargs.push(stack.pop().unwrap_or(LispVal::Nil));
                 }
                 cargs.reverse();
-                // Save env, call function, restore env (lambda VM uses its own slots)
-                let saved_env = outer_env.clone();
-                match crate::eval::call_val(&func, &cargs, outer_env, state)? {
-                    crate::eval::continuation::EvalResult::Value(v) => {
-                        stack.push(v);
+                // Fast path: if the function has pre-compiled bytecode, call it directly.
+                // This avoids call_val → apply_lambda → lisp_eval dispatch chain.
+                if let LispVal::Lambda {
+                    rest_param: None,
+                    compiled: Some(ref cl),
+                    ..
+                } = func
+                {
+                    let saved_env = outer_env.clone();
+                    match run_compiled_lambda(cl, &cargs, outer_env, state) {
+                        Ok(v) => {
+                            stack.push(v);
+                            *outer_env = saved_env.clone();
+                        }
+                        Err(_) => {
+                            // Compiled path failed — fall back to full eval
+                            *outer_env = saved_env.clone();
+                            match crate::eval::call_val(&func, &cargs, outer_env, state)? {
+                                crate::eval::continuation::EvalResult::Value(v) => {
+                                    stack.push(v);
+                                }
+                                crate::eval::continuation::EvalResult::TailCall { expr, env: tail_env } => {
+                                    *outer_env = tail_env;
+                                    let result = crate::eval::lisp_eval(&expr, outer_env, state)?;
+                                    stack.push(result);
+                                }
+                            }
+                            *outer_env = saved_env;
+                        }
                     }
-                    crate::eval::continuation::EvalResult::TailCall { expr, env: tail_env } => {
-                        *outer_env = tail_env;
-                        let result = crate::eval::lisp_eval(&expr, outer_env, state)?;
-                        stack.push(result);
+                } else {
+                    // No compiled version — full dispatch
+                    let saved_env = outer_env.clone();
+                    match crate::eval::call_val(&func, &cargs, outer_env, state)? {
+                        crate::eval::continuation::EvalResult::Value(v) => {
+                            stack.push(v);
+                        }
+                        crate::eval::continuation::EvalResult::TailCall { expr, env: tail_env } => {
+                            *outer_env = tail_env;
+                            let result = crate::eval::lisp_eval(&expr, outer_env, state)?;
+                            stack.push(result);
+                        }
                     }
+                    *outer_env = saved_env;
                 }
-                *outer_env = saved_env;
                 pc += 1;
             }
             Op::Return => {

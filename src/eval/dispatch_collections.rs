@@ -162,46 +162,30 @@ pub fn handle(
                 Some(other) => return Err(format!("map: expected list, got {}", other)),
                 None => return Err("map: need (f list)".into()),
             };
-            // Fast path: compile lambda to bytecode
+            // Fast path: use pre-compiled bytecode (cached at define-time)
             if let LispVal::Lambda {
-                params,
                 rest_param: None,
-                body,
-                closed_env,
+                compiled: Some(ref cl),
                 ..
             } = func
             {
-                if let Some(cl) = crate::bytecode::try_compile_lambda(
-                    params,
-                    body,
-                    &closed_env
-                        .read()
-                        .unwrap()
-                        .clone()
-                        .into_iter()
-                        .collect::<Vec<_>>(),
-                    env,
-                ) {
-                    if true {
-                        if lst.is_empty() {
-                            return Ok(Some(LispVal::List(vec![])));
-                        }
-                        if let Ok(first_result) =
-                            crate::bytecode::run_compiled_lambda(&cl, &[lst[0].clone()], env, state)
-                        {
-                            let mut result = Vec::with_capacity(lst.len());
-                            result.push(first_result);
-                            for elem in &lst[1..] {
-                                result.push(crate::bytecode::run_compiled_lambda(
-                                    &cl,
-                                    &[elem.clone()],
-                                    env,
-                                    state,
-                                )?);
-                            }
-                            return Ok(Some(LispVal::List(result)));
-                        }
+                if lst.is_empty() {
+                    return Ok(Some(LispVal::List(vec![])));
+                }
+                if let Ok(first_result) =
+                    crate::bytecode::run_compiled_lambda(cl, &[lst[0].clone()], env, state)
+                {
+                    let mut result = Vec::with_capacity(lst.len());
+                    result.push(first_result);
+                    for elem in &lst[1..] {
+                        result.push(crate::bytecode::run_compiled_lambda(
+                            cl,
+                            &[elem.clone()],
+                            env,
+                            state,
+                        )?);
                     }
+                    return Ok(Some(LispVal::List(result)));
                 }
             }
             let mut result = Vec::with_capacity(lst.len());
@@ -219,48 +203,32 @@ pub fn handle(
                 None => return Err("filter: need (pred list)".into()),
             };
             if let LispVal::Lambda {
-                params,
                 rest_param: None,
-                body,
-                closed_env,
+                compiled: Some(ref cl),
                 ..
             } = func
             {
-                if let Some(cl) = crate::bytecode::try_compile_lambda(
-                    params,
-                    body,
-                    &closed_env
-                        .read()
-                        .unwrap()
-                        .clone()
-                        .into_iter()
-                        .collect::<Vec<_>>(),
-                    env,
-                ) {
-                    if true {
-                        if lst.is_empty() {
-                            return Ok(Some(LispVal::List(vec![])));
-                        }
-                        if let Ok(first_result) =
-                            crate::bytecode::run_compiled_lambda(&cl, &[lst[0].clone()], env, state)
-                        {
-                            let mut result = Vec::new();
-                            if is_truthy(&first_result) {
-                                result.push(lst[0].clone());
-                            }
-                            for elem in &lst[1..] {
-                                if is_truthy(&crate::bytecode::run_compiled_lambda(
-                                    &cl,
-                                    &[elem.clone()],
-                                    env,
-                                    state,
-                                )?) {
-                                    result.push(elem.clone());
-                                }
-                            }
-                            return Ok(Some(LispVal::List(result)));
+                if lst.is_empty() {
+                    return Ok(Some(LispVal::List(vec![])));
+                }
+                if let Ok(first_result) =
+                    crate::bytecode::run_compiled_lambda(cl, &[lst[0].clone()], env, state)
+                {
+                    let mut result = Vec::new();
+                    if is_truthy(&first_result) {
+                        result.push(lst[0].clone());
+                    }
+                    for elem in &lst[1..] {
+                        if is_truthy(&crate::bytecode::run_compiled_lambda(
+                            cl,
+                            &[elem.clone()],
+                            env,
+                            state,
+                        )?) {
+                            result.push(elem.clone());
                         }
                     }
+                    return Ok(Some(LispVal::List(result)));
                 }
             }
             let mut result = Vec::new();
@@ -281,38 +249,24 @@ pub fn handle(
                 Some(other) => return Err(format!("reduce: expected list, got {}", other)),
                 None => return Err("reduce: need (f init list)".into()),
             };
-            // Fast path: compile lambda to bytecode
+            // Fast path: use pre-compiled bytecode
             if let LispVal::Lambda {
-                params,
                 rest_param: None,
-                body,
-                closed_env,
+                compiled: Some(ref cl),
                 ..
             } = func
             {
-                if let Some(cl) = crate::bytecode::try_compile_lambda(
-                    params,
-                    body,
-                    &closed_env
-                        .read()
-                        .unwrap()
-                        .clone()
-                        .into_iter()
-                        .collect::<Vec<_>>(),
-                    env,
-                ) {
-                    if true && !lst.is_empty() {
-                        if let Ok(first_result) = crate::bytecode::run_compiled_lambda(
-                            &cl, &[init_acc.clone(), lst[0].clone()], env, state,
-                        ) {
-                            let mut acc = first_result;
-                            for elem in &lst[1..] {
-                                acc = crate::bytecode::run_compiled_lambda(
-                                    &cl, &[acc.clone(), elem.clone()], env, state,
-                                )?;
-                            }
-                            return Ok(Some(acc));
+                if !lst.is_empty() {
+                    if let Ok(first_result) = crate::bytecode::run_compiled_lambda(
+                        cl, &[init_acc.clone(), lst[0].clone()], env, state,
+                    ) {
+                        let mut acc = first_result;
+                        for elem in &lst[1..] {
+                            acc = crate::bytecode::run_compiled_lambda(
+                                cl, &[acc.clone(), elem.clone()], env, state,
+                            )?;
                         }
+                        return Ok(Some(acc));
                     }
                 }
             }
@@ -338,45 +292,30 @@ pub fn handle(
                 Some(other) => return Err(format!("find: expected list, got {}", other)),
                 None => return Err("find: need (pred list)".into()),
             };
-            // Fast path: compile lambda to bytecode
+            // Fast path: use pre-compiled bytecode
             if let LispVal::Lambda {
-                params,
                 rest_param: None,
-                body,
-                closed_env,
+                compiled: Some(ref cl),
                 ..
             } = func
             {
-                if let Some(cl) = crate::bytecode::try_compile_lambda(
-                    params,
-                    body,
-                    &closed_env
-                        .read()
-                        .unwrap()
-                        .clone()
-                        .into_iter()
-                        .collect::<Vec<_>>(),
-                    env,
+                if lst.is_empty() {
+                    return Ok(Some(LispVal::Nil));
+                }
+                if let Ok(first_res) = crate::bytecode::run_compiled_lambda(
+                    cl, &[lst[0].clone()], env, state,
                 ) {
-                    if true && !lst.is_empty() {
-                        if let Ok(first_res) = crate::bytecode::run_compiled_lambda(
-                            &cl, &[lst[0].clone()], env, state,
-                        ) {
-                            if is_truthy(&first_res) {
-                                return Ok(Some(lst[0].clone()));
-                            }
-                            for elem in &lst[1..] {
-                                if is_truthy(&crate::bytecode::run_compiled_lambda(
-                                    &cl, &[elem.clone()], env, state,
-                                )?) {
-                                    return Ok(Some(elem.clone()));
-                                }
-                            }
-                            return Ok(Some(LispVal::Nil));
-                        }
-                    } else {
-                        return Ok(Some(LispVal::Nil));
+                    if is_truthy(&first_res) {
+                        return Ok(Some(lst[0].clone()));
                     }
+                    for elem in &lst[1..] {
+                        if is_truthy(&crate::bytecode::run_compiled_lambda(
+                            cl, &[elem.clone()], env, state,
+                        )?) {
+                            return Ok(Some(elem.clone()));
+                        }
+                    }
+                    return Ok(Some(LispVal::Nil));
                 }
             }
             for elem in &lst {
@@ -394,45 +333,30 @@ pub fn handle(
                 Some(other) => return Err(format!("some: expected list, got {}", other)),
                 None => return Err("some: need (pred list)".into()),
             };
-            // Fast path: compile lambda to bytecode
+            // Fast path: use pre-compiled bytecode
             if let LispVal::Lambda {
-                params,
                 rest_param: None,
-                body,
-                closed_env,
+                compiled: Some(ref cl),
                 ..
             } = func
             {
-                if let Some(cl) = crate::bytecode::try_compile_lambda(
-                    params,
-                    body,
-                    &closed_env
-                        .read()
-                        .unwrap()
-                        .clone()
-                        .into_iter()
-                        .collect::<Vec<_>>(),
-                    env,
+                if lst.is_empty() {
+                    return Ok(Some(LispVal::Bool(false)));
+                }
+                if let Ok(first_res) = crate::bytecode::run_compiled_lambda(
+                    cl, &[lst[0].clone()], env, state,
                 ) {
-                    if true && !lst.is_empty() {
-                        if let Ok(first_res) = crate::bytecode::run_compiled_lambda(
-                            &cl, &[lst[0].clone()], env, state,
-                        ) {
-                            if is_truthy(&first_res) {
-                                return Ok(Some(LispVal::Bool(true)));
-                            }
-                            for elem in &lst[1..] {
-                                if is_truthy(&crate::bytecode::run_compiled_lambda(
-                                    &cl, &[elem.clone()], env, state,
-                                )?) {
-                                    return Ok(Some(LispVal::Bool(true)));
-                                }
-                            }
-                            return Ok(Some(LispVal::Bool(false)));
-                        }
-                    } else {
-                        return Ok(Some(LispVal::Bool(false)));
+                    if is_truthy(&first_res) {
+                        return Ok(Some(LispVal::Bool(true)));
                     }
+                    for elem in &lst[1..] {
+                        if is_truthy(&crate::bytecode::run_compiled_lambda(
+                            cl, &[elem.clone()], env, state,
+                        )?) {
+                            return Ok(Some(LispVal::Bool(true)));
+                        }
+                    }
+                    return Ok(Some(LispVal::Bool(false)));
                 }
             }
             for elem in &lst {
@@ -450,45 +374,30 @@ pub fn handle(
                 Some(other) => return Err(format!("every: expected list, got {}", other)),
                 None => return Err("every: need (pred list)".into()),
             };
-            // Fast path: compile lambda to bytecode
+            // Fast path: use pre-compiled bytecode
             if let LispVal::Lambda {
-                params,
                 rest_param: None,
-                body,
-                closed_env,
+                compiled: Some(ref cl),
                 ..
             } = func
             {
-                if let Some(cl) = crate::bytecode::try_compile_lambda(
-                    params,
-                    body,
-                    &closed_env
-                        .read()
-                        .unwrap()
-                        .clone()
-                        .into_iter()
-                        .collect::<Vec<_>>(),
-                    env,
+                if lst.is_empty() {
+                    return Ok(Some(LispVal::Bool(true)));
+                }
+                if let Ok(first_res) = crate::bytecode::run_compiled_lambda(
+                    cl, &[lst[0].clone()], env, state,
                 ) {
-                    if true && !lst.is_empty() {
-                        if let Ok(first_res) = crate::bytecode::run_compiled_lambda(
-                            &cl, &[lst[0].clone()], env, state,
-                        ) {
-                            if !is_truthy(&first_res) {
-                                return Ok(Some(LispVal::Bool(false)));
-                            }
-                            for elem in &lst[1..] {
-                                if !is_truthy(&crate::bytecode::run_compiled_lambda(
-                                    &cl, &[elem.clone()], env, state,
-                                )?) {
-                                    return Ok(Some(LispVal::Bool(false)));
-                                }
-                            }
-                            return Ok(Some(LispVal::Bool(true)));
-                        }
-                    } else {
-                        return Ok(Some(LispVal::Bool(true)));
+                    if !is_truthy(&first_res) {
+                        return Ok(Some(LispVal::Bool(false)));
                     }
+                    for elem in &lst[1..] {
+                        if !is_truthy(&crate::bytecode::run_compiled_lambda(
+                            cl, &[elem.clone()], env, state,
+                        )?) {
+                            return Ok(Some(LispVal::Bool(false)));
+                        }
+                    }
+                    return Ok(Some(LispVal::Bool(true)));
                 }
             }
             for elem in &lst {
@@ -641,57 +550,42 @@ pub fn handle(
                 Some(LispVal::List(l)) => l.clone(),
                 _ => return Err("partition: need list as second arg".into()),
             };
-            // Fast path: compile lambda to bytecode
+            // Fast path: use pre-compiled bytecode
             if let LispVal::Lambda {
-                params,
                 rest_param: None,
-                body,
-                closed_env,
+                compiled: Some(ref cl),
                 ..
             } = func
             {
-                if let Some(cl) = crate::bytecode::try_compile_lambda(
-                    params,
-                    body,
-                    &closed_env
-                        .read()
-                        .unwrap()
-                        .clone()
-                        .into_iter()
-                        .collect::<Vec<_>>(),
-                    env,
+                if lst.is_empty() {
+                    return Ok(Some(LispVal::List(vec![
+                        LispVal::List(vec![]),
+                        LispVal::List(vec![]),
+                    ])));
+                }
+                if let Ok(first_res) = crate::bytecode::run_compiled_lambda(
+                    cl, &[lst[0].clone()], env, state,
                 ) {
-                    if !lst.is_empty() {
-                        if let Ok(first_res) = crate::bytecode::run_compiled_lambda(
-                            &cl, &[lst[0].clone()], env, state,
-                        ) {
-                            let mut yes = Vec::new();
-                            let mut no = Vec::new();
-                            if is_truthy(&first_res) {
-                                yes.push(lst[0].clone());
-                            } else {
-                                no.push(lst[0].clone());
-                            }
-                            for elem in &lst[1..] {
-                                if is_truthy(&crate::bytecode::run_compiled_lambda(
-                                    &cl, &[elem.clone()], env, state,
-                                )?) {
-                                    yes.push(elem.clone());
-                                } else {
-                                    no.push(elem.clone());
-                                }
-                            }
-                            return Ok(Some(LispVal::List(vec![
-                                LispVal::List(yes),
-                                LispVal::List(no),
-                            ])));
-                        }
+                    let mut yes = Vec::new();
+                    let mut no = Vec::new();
+                    if is_truthy(&first_res) {
+                        yes.push(lst[0].clone());
                     } else {
-                        return Ok(Some(LispVal::List(vec![
-                            LispVal::List(vec![]),
-                            LispVal::List(vec![]),
-                        ])));
+                        no.push(lst[0].clone());
                     }
+                    for elem in &lst[1..] {
+                        if is_truthy(&crate::bytecode::run_compiled_lambda(
+                            cl, &[elem.clone()], env, state,
+                        )?) {
+                            yes.push(elem.clone());
+                        } else {
+                            no.push(elem.clone());
+                        }
+                    }
+                    return Ok(Some(LispVal::List(vec![
+                        LispVal::List(yes),
+                        LispVal::List(no),
+                    ])));
                 }
             }
             let mut yes = Vec::new();
@@ -716,38 +610,24 @@ pub fn handle(
                 Some(LispVal::Nil) => return Ok(Some(init_acc)),
                 _ => return Err("fold-left: need list as third arg".into()),
             };
-            // Fast path: compile lambda to bytecode
+            // Fast path: use pre-compiled bytecode
             if let LispVal::Lambda {
-                params,
                 rest_param: None,
-                body,
-                closed_env,
+                compiled: Some(ref cl),
                 ..
             } = func
             {
-                if let Some(cl) = crate::bytecode::try_compile_lambda(
-                    params,
-                    body,
-                    &closed_env
-                        .read()
-                        .unwrap()
-                        .clone()
-                        .into_iter()
-                        .collect::<Vec<_>>(),
-                    env,
-                ) {
-                    if !lst.is_empty() {
-                        if let Ok(first_result) = crate::bytecode::run_compiled_lambda(
-                            &cl, &[init_acc.clone(), lst[0].clone()], env, state,
-                        ) {
-                            let mut acc = first_result;
-                            for elem in &lst[1..] {
-                                acc = crate::bytecode::run_compiled_lambda(
-                                    &cl, &[acc.clone(), elem.clone()], env, state,
-                                )?;
-                            }
-                            return Ok(Some(acc));
+                if !lst.is_empty() {
+                    if let Ok(first_result) = crate::bytecode::run_compiled_lambda(
+                        cl, &[init_acc.clone(), lst[0].clone()], env, state,
+                    ) {
+                        let mut acc = first_result;
+                        for elem in &lst[1..] {
+                            acc = crate::bytecode::run_compiled_lambda(
+                                cl, &[acc.clone(), elem.clone()], env, state,
+                            )?;
                         }
+                        return Ok(Some(acc));
                     }
                 }
             }
@@ -765,39 +645,25 @@ pub fn handle(
                 Some(LispVal::Nil) => return Ok(Some(init)),
                 _ => return Err("fold-right: need list as third arg".into()),
             };
-            // Fast path: compile lambda to bytecode
+            // Fast path: use pre-compiled bytecode
             if let LispVal::Lambda {
-                params,
                 rest_param: None,
-                body,
-                closed_env,
+                compiled: Some(ref cl),
                 ..
             } = func
             {
-                if let Some(cl) = crate::bytecode::try_compile_lambda(
-                    params,
-                    body,
-                    &closed_env
-                        .read()
-                        .unwrap()
-                        .clone()
-                        .into_iter()
-                        .collect::<Vec<_>>(),
-                    env,
-                ) {
-                    let rev: Vec<_> = lst.iter().rev().cloned().collect();
-                    if !rev.is_empty() {
-                        if let Ok(first_result) = crate::bytecode::run_compiled_lambda(
-                            &cl, &[rev[0].clone(), init.clone()], env, state,
-                        ) {
-                            let mut acc = first_result;
-                            for elem in &rev[1..] {
-                                acc = crate::bytecode::run_compiled_lambda(
-                                    &cl, &[elem.clone(), acc.clone()], env, state,
-                                )?;
-                            }
-                            return Ok(Some(acc));
+                let rev: Vec<_> = lst.iter().rev().cloned().collect();
+                if !rev.is_empty() {
+                    if let Ok(first_result) = crate::bytecode::run_compiled_lambda(
+                        cl, &[rev[0].clone(), init.clone()], env, state,
+                    ) {
+                        let mut acc = first_result;
+                        for elem in &rev[1..] {
+                            acc = crate::bytecode::run_compiled_lambda(
+                                cl, &[elem.clone(), acc.clone()], env, state,
+                            )?;
                         }
+                        return Ok(Some(acc));
                     }
                 }
             }
@@ -814,9 +680,7 @@ pub fn handle(
                 Some(LispVal::Nil) => return Ok(Some(LispVal::Nil)),
                 _ => return Err("for-each: need list as second arg".into()),
             };
-            // No bytecode fast path: for-each discards results (nil gain),
-            // and CallCaptured inside compiled lambdas adds stack frames that
-            // can overflow in deeply nested harness runtimes.
+            // No bytecode fast path: for-each discards results (no gain over slow path).
             for elem in &lst {
                 call_val(func, &[elem.clone()], env, state)?;
             }
