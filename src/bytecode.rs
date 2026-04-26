@@ -107,6 +107,12 @@ pub enum Op {
     CallCapturedRef(usize, usize),
     /// Push a pre-compiled closure from cl.closures[idx] onto the stack
     PushClosure(usize),
+    /// DictGet: pop key, pop map, push map[key] (or Nil)
+    DictGet,
+    /// DictSet: pop val, pop key, pop map, push map with key=val
+    DictSet,
+    /// CallSelf: call this compiled lambda recursively with N args from stack
+    CallSelf(usize),
 }
 
 /// Compiled loop representation.
@@ -640,8 +646,26 @@ impl LoopCompiler {
                             true
                         }
                         _ => {
-                            // Function call: captured var or assumed builtin
+                            // Function call: captured var, self-call, inline op, or assumed builtin
                             let n_args = list.len() - 1;
+                            // Check for inline dict ops first
+                            if op == "dict/get" || op == "dict-ref" {
+                                if n_args == 2 {
+                                    for arg in &list[1..] {
+                                        if !self.compile_expr(arg, outer_env) { return false; }
+                                    }
+                                    self.code.push(Op::DictGet);
+                                    return true;
+                                }
+                            } else if op == "dict/set" || op == "dict-set" {
+                                if n_args == 3 {
+                                    for arg in &list[1..] {
+                                        if !self.compile_expr(arg, outer_env) { return false; }
+                                    }
+                                    self.code.push(Op::DictSet);
+                                    return true;
+                                }
+                            }
                             for arg in &list[1..] {
                                 if !self.compile_expr(arg, outer_env) {
                                     return false;
@@ -1297,8 +1321,29 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
                 stack.push(result);
                 pc += 1;
             }
-            Op::CallCaptured(_, _) | Op::CallCapturedRef(_, _) | Op::PushClosure(_) => {
-                return Err("loop VM: CallCaptured not supported in loop body".into());
+            Op::DictGet => {
+                let key = stack.pop().unwrap_or(LispVal::Nil);
+                let map = stack.pop().unwrap_or(LispVal::Nil);
+                let result = match (&map, &key) {
+                    (LispVal::Map(m), LispVal::Str(k)) => m.get(k).cloned().unwrap_or(LispVal::Nil),
+                    _ => LispVal::Nil,
+                };
+                stack.push(result);
+                pc += 1;
+            }
+            Op::DictSet => {
+                let val = stack.pop().unwrap_or(LispVal::Nil);
+                let key = stack.pop().unwrap_or(LispVal::Nil);
+                let map = stack.pop().unwrap_or(LispVal::Nil);
+                let result = match (&map, &key) {
+                    (LispVal::Map(m), LispVal::Str(k)) => LispVal::Map(m.update(k.clone(), val)),
+                    _ => return Err("dict/set: need (map key value)".into()),
+                };
+                stack.push(result);
+                pc += 1;
+            }
+            Op::CallCaptured(_, _) | Op::CallCapturedRef(_, _) | Op::PushClosure(_) | Op::CallSelf(_) => {
+                return Err("loop VM: CallCaptured/CallSelf not supported in loop body".into());
             }
         }
     }
@@ -2487,6 +2532,45 @@ pub fn run_compiled_lambda(
             }
             Op::Jump(addr) => {
                 pc = *addr;
+            }
+            Op::DictGet => {
+                let key = stack.pop().unwrap_or(LispVal::Nil);
+                let map = stack.pop().unwrap_or(LispVal::Nil);
+                let result = match (&map, &key) {
+                    (LispVal::Map(m), LispVal::Str(k)) => {
+                        m.get(k).cloned().unwrap_or(LispVal::Nil)
+                    }
+                    _ => LispVal::Nil,
+                };
+                stack.push(result);
+                pc += 1;
+            }
+            Op::DictSet => {
+                let val = stack.pop().unwrap_or(LispVal::Nil);
+                let key = stack.pop().unwrap_or(LispVal::Nil);
+                let map = stack.pop().unwrap_or(LispVal::Nil);
+                let result = match (&map, &key) {
+                    (LispVal::Map(m), LispVal::Str(k)) => {
+                        LispVal::Map(m.update(k.clone(), val))
+                    }
+                    _ => return Err("dict/set: need (map key value)".into()),
+                };
+                stack.push(result);
+                pc += 1;
+            }
+            Op::CallSelf(n_args) => {
+                // Recursive self-call: reuse the current CompiledLambda
+                // Pop args, then recursively call run_compiled_lambda with cl (self)
+                let mut self_args: Vec<LispVal> = Vec::with_capacity(*n_args);
+                for _ in 0..*n_args {
+                    self_args.push(stack.pop().unwrap_or(LispVal::Nil));
+                }
+                self_args.reverse();
+                match run_compiled_lambda(cl, &self_args, outer_env, state) {
+                    Ok(v) => stack.push(v),
+                    Err(e) => return Err(e),
+                }
+                pc += 1;
             }
             // Unsupported ops for lambda body — shouldn't appear but handle gracefully
             _ => return Err("compiled lambda: unsupported op".into()),
