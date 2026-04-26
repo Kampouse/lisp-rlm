@@ -509,6 +509,11 @@ impl LoopCompiler {
                                 LispVal::Sym(s) => s.clone(),
                                 _ => return false,
                             };
+                            // Only compile set! for local bindings (params/let), not captured vars.
+                            // Captured vars are copies — mutation would be lost (no write-back to outer env).
+                            if self.slot_map.iter().position(|s| s == &name).is_none() {
+                                return false; // captured var — force fallback to tree-walking
+                            }
                             let slot = match self.slot_of(&name) {
                                 Some(s) => s,
                                 None => return false,
@@ -1410,7 +1415,7 @@ pub fn eval_builtin(name: &str, args: &[LispVal]) -> Result<LispVal, String> {
         "equal?" => {
             let a = args.get(0).unwrap_or(&LispVal::Nil);
             let b = args.get(1).unwrap_or(&LispVal::Nil);
-            Ok(LispVal::Bool(lisp_eq(a, b)))
+            Ok(LispVal::Bool(crate::helpers::lisp_equal(a, b)))
         }
         "not" => {
             let v = args.get(0).unwrap_or(&LispVal::Nil);
