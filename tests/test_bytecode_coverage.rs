@@ -197,3 +197,82 @@ fn test_harness_style_pipeline() {
     let result = eval_program(code).unwrap();
     assert_eq!(result, "(10 1 7)");
 }
+
+
+#[test]
+fn test_fib_compiles_with_fallback() {
+    // Recursive fib compiles, but self-calls go through BuiltinCall("fib")
+    // which fails at runtime. The eval fallback handles it correctly.
+    let result = eval_and_get_lambda(r#"
+        (define (fib n)
+            (if (<= n 1) n
+                (+ (fib (- n 1)) (fib (- n 2)))))
+    "#, "fib");
+    let cl = result.unwrap().expect("fib should compile");
+    assert!(cl.captured.is_empty(), "fib captures nothing (self-reference via BuiltinCall)");
+    // Correctness: eval fallback produces correct results
+    let output = eval_program(r#"
+        (define (fib n) (if (<= n 1) n (+ (fib (- n 1)) (fib (- n 2)))))
+        (fib 10)
+    "#).unwrap();
+    assert_eq!(output, "55");
+}
+
+
+#[test]
+fn test_scheduler_run_compiles_with_closure() {
+    let result = eval_and_get_lambda(r#"
+        (define (get-default m key default)
+            (let ((v (dict/get m key)))
+                (if (nil? v) default v)))
+        (define (urgency intent)
+            (let ((deadline (get-default intent "deadline" nil))
+                  (t0 (now)))
+                (if (and deadline (> t0 deadline)) 1.0 0.3)))
+        (define (cost-efficiency intent)
+            (let ((cost (get-default intent "cost" 1)))
+                (if (< cost 10) 0.9 0.3)))
+        (define (score-intention intent)
+            (+ (urgency intent) (cost-efficiency intent)))
+        (define (rank-intentions intentions)
+            (map score-intention intentions))
+        (define (handle-result intent result)
+            (let ((t0 (now)))
+                (if (> t0 0)
+                    (dict/set intent "status" "done")
+                    intent)))
+        (define (execute-action intent)
+            (get-default intent "id" "?"))
+        (define (scheduler-run intentions)
+            (let ((ranked (rank-intentions intentions)))
+                (map (lambda (intent)
+                    (let ((result (execute-action intent)))
+                        (handle-result intent result)))
+                    ranked)))
+    "#, "scheduler-run");
+    let cl = result.unwrap().expect("scheduler-run should compile");
+    assert_eq!(cl.code.len(), 7);
+    assert_eq!(cl.closures.len(), 1);
+    // Inner closure captures execute-action and handle-result
+    let inner = &cl.closures[0];
+    assert!(inner.captured.iter().any(|(k, _)| k == "execute-action"));
+    assert!(inner.captured.iter().any(|(k, _)| k == "handle-result"));
+}
+
+
+#[test]
+fn test_rank_intentions_compiles() {
+    let result = eval_and_get_lambda(r#"
+        (define (score-intention intent) (+ 1 2))
+        (define (rank-intentions intentions) (map score-intention intentions))
+    "#, "rank-intentions");
+    let cl = result.unwrap().expect("rank-intentions should compile");
+    assert!(cl.captured.iter().any(|(k, _)| k == "score-intention"));
+    // Correctness: map over list with compiled lambda
+    let output = eval_program(r#"
+        (define (score-intention intent) (+ 1 2))
+        (define (rank-intentions intentions) (map score-intention intentions))
+        (rank-intentions (list (dict "x" 1) (dict "x" 2)))
+    "#).unwrap();
+    assert_eq!(output, "(3 3)");
+}

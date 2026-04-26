@@ -2107,6 +2107,45 @@ pub fn run_compiled_lambda(
                         }
                         stack.push(LispVal::List(vals));
                     }
+                    "reduce" if bargs.len() == 3 => {
+                        let func = &bargs[0];
+                        let init = bargs[1].clone();
+                        let list = &bargs[2];
+                        let vals = match list {
+                            LispVal::List(l) => l,
+                            _ => {
+                                stack.push(init);
+                                pc += 1;
+                                continue;
+                            }
+                        };
+                        let mut acc = init;
+                        if let LispVal::Lambda { rest_param: None, compiled: Some(ref cl2), .. } = func {
+                            let comp_cl = cl2.clone();
+                            for v in vals.iter() {
+                                let acc_clone = acc.clone();
+                                acc = match run_compiled_lambda(&comp_cl, &[acc_clone, v.clone()], outer_env, state) {
+                                    Ok(r) => r,
+                                    Err(_) => {
+                                        let mut env_clone = outer_env.clone();
+                                        match crate::eval::call_val(func, &[acc.clone(), v.clone()], &mut env_clone, state) {
+                                            Ok(crate::eval::continuation::EvalResult::Value(r)) => r,
+                                            _ => acc,
+                                        }
+                                    }
+                                };
+                            }
+                        } else {
+                            for v in vals.iter() {
+                                let mut env_clone = outer_env.clone();
+                                acc = match crate::eval::call_val(func, &[acc.clone(), v.clone()], &mut env_clone, state) {
+                                    Ok(crate::eval::continuation::EvalResult::Value(r)) => r,
+                                    _ => acc,
+                                };
+                            }
+                        }
+                        stack.push(acc);
+                    }
                     _ => {
                         // Regular builtin — no lambda args needed
                         let result = eval_builtin(name, &bargs)?;
