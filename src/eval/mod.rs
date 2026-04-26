@@ -286,6 +286,85 @@ Special forms: define def let lambda if cond match quote quasiquote unquote unqu
 /// - execution budget exceeded
 /// - errors propagated from user code (`(error ...)`)
 pub fn lisp_eval(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result<LispVal, String> {
+    // Ultra-fast path: (name literal_args...) where name resolves to a compiled lambda.
+    // Skips the entire CPS loop, budget counter, and eval_step dispatch.
+    if let LispVal::List(list) = expr {
+        if list.len() > 1 {
+            if let LispVal::Sym(name) = &list[0] {
+                if let Some(LispVal::Lambda {
+                    params,
+                    rest_param: None,
+                    compiled: Some(ref cl),
+                    ..
+                }) = env.get(name)
+                {
+                    if list.len() - 1 == params.len() {
+                        // Check all args are self-evaluating (no symbols to resolve)
+                        let mut all_literal = true;
+                        for arg in &list[1..] {
+                            match arg {
+                                LispVal::Nil
+                                | LispVal::Bool(_)
+                                | LispVal::Num(_)
+                                | LispVal::Float(_)
+                                | LispVal::Str(_)
+                                | LispVal::Map(_) => {}
+                                _ => {
+                                    all_literal = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if all_literal {
+                            return crate::bytecode::run_compiled_lambda(
+                                cl,
+                                &list[1..].to_vec(),
+                                env,
+                                state,
+                            );
+                        }
+                        // Also fast-path when args are symbols + literals
+                        let mut resolved_args: Vec<LispVal> = Vec::with_capacity(list.len() - 1);
+                        let mut all_resolvable = true;
+                        for arg in &list[1..] {
+                            match arg {
+                                LispVal::Nil
+                                | LispVal::Bool(_)
+                                | LispVal::Num(_)
+                                | LispVal::Float(_)
+                                | LispVal::Str(_)
+                                | LispVal::Map(_) => resolved_args.push(arg.clone()),
+                                LispVal::Sym(s) => {
+                                    if let Some(v) = env.get(s) {
+                                        resolved_args.push(v.clone());
+                                    } else {
+                                        all_resolvable = false;
+                                        break;
+                                    }
+                                }
+                                _ => {
+                                    all_resolvable = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if all_resolvable {
+                            match crate::bytecode::run_compiled_lambda(
+                                cl,
+                                &resolved_args,
+                                env,
+                                state,
+                            ) {
+                                Ok(v) => return Ok(v),
+                                Err(_) => {} // fall through to CPS
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let mut stack: Vec<Cont> = Vec::new();
     let mut current = expr.clone();
 

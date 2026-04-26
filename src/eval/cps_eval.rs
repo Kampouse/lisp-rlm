@@ -1484,6 +1484,46 @@ pub fn handle_cont(
         }
 
         Cont::DefineSet { name } => {
+            // If defining a compiled lambda without self_name, recompile with the name
+            // so that recursive self-calls emit CallSelf instead of BuiltinCall.
+            let val = match &val {
+                LispVal::Lambda {
+                    params,
+                    rest_param,
+                    body,
+                    compiled: Some(_),
+                    pure_type,
+                    closed_env,
+                    ..
+                } => {
+                    // Recompile with the function name for CallSelf support
+                    let new_compiled = crate::bytecode::try_compile_lambda(
+                        params,
+                        body,
+                        &closed_env
+                            .read()
+                            .unwrap()
+                            .clone()
+                            .into_iter()
+                            .collect::<Vec<_>>(),
+                        env,
+                        Some(name.as_str()),
+                    );
+                    if new_compiled.is_some() {
+                        LispVal::Lambda {
+                            params: params.clone(),
+                            rest_param: rest_param.clone(),
+                            body: body.clone(),
+                            compiled: new_compiled.map(|cl| Box::new(cl)),
+                            pure_type: pure_type.clone(),
+                            closed_env: closed_env.clone(),
+                        }
+                    } else {
+                        val
+                    }
+                }
+                _ => val,
+            };
             env.push(name.clone(), val.clone());
             env.propagate_to_scope_snapshot(&name, &val);
             Ok(Step::Done(LispVal::Nil))
