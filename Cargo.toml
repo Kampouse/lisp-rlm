@@ -2,6 +2,7 @@
 name = "lisp-rlm"
 version = "0.1.0"
 edition = "2021"
+default-run = "rlm"
 description = "Recursive Language Model runtime in Lisp"
 
 [[bin]]

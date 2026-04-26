@@ -260,6 +260,10 @@ pub struct EvalState {
     pub rlm_iteration: usize,
     /// Pluggable LLM provider — when `None`, LLM builtins return an error.
     pub llm_provider: Option<Box<dyn crate::eval::llm_provider::LlmProvider>>,
+    /// Call trace ring buffer — last N function calls for error reporting.
+    pub call_trace: Vec<String>,
+    /// Maximum call trace depth to keep (ring buffer).
+    pub call_trace_max: usize,
 }
 
 impl EvalState {
@@ -275,12 +279,62 @@ impl EvalState {
             rlm_depth: 0,
             rlm_iteration: 0,
             llm_provider: None,
+            call_trace: Vec::new(),
+            call_trace_max: 64,
         }
     }
 
     /// Set the LLM provider for this state.
     pub fn set_llm_provider(&mut self, provider: Box<dyn crate::eval::llm_provider::LlmProvider>) {
         self.llm_provider = Some(provider);
+    }
+
+    /// Push a function name onto the call trace ring buffer.
+    pub fn trace_push(&mut self, name: &str) {
+        if self.call_trace.len() >= self.call_trace_max {
+            self.call_trace.remove(0);
+        }
+        self.call_trace.push(name.to_string());
+    }
+
+    /// Pop the last function from the call trace.
+    pub fn trace_pop(&mut self) {
+        self.call_trace.pop();
+    }
+
+    /// Format the call trace as a readable stack trace string.
+    /// Format the call trace as a readable stack trace string.
+    /// Shows unique call names with repeat counts, deduped.
+    pub fn format_trace(&self) -> String {
+        if self.call_trace.is_empty() {
+            return "  (empty call trace)".to_string();
+        }
+        // Count occurrences of each name in order of first appearance
+        let mut counts: Vec<(String, usize)> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for name in &self.call_trace {
+            if seen.insert(name.clone()) {
+                counts.push((name.clone(), 1));
+            } else if let Some(entry) = counts.iter_mut().find(|(n, _)| n == name) {
+                entry.1 += 1;
+            }
+        }
+
+        // Show the last 15 unique call names
+        let skip = counts.len().saturating_sub(15);
+        let visible = &counts[skip..];
+        let mut out = String::new();
+        let total = visible.len();
+        for (i, (name, count)) in visible.iter().enumerate() {
+            let arrow = if i + 1 == total { "→ " } else { "  " };
+            let label = if *count > 1 {
+                format!("{} ×{}", name, count)
+            } else {
+                name.clone()
+            };
+            out.push_str(&format!("  {}{}\n", arrow, label));
+        }
+        out
     }
 }
 
@@ -296,6 +350,8 @@ impl Clone for EvalState {
             rlm_depth: self.rlm_depth,
             rlm_iteration: self.rlm_iteration,
             llm_provider: None, // providers are not cloned
+            call_trace: self.call_trace.clone(),
+            call_trace_max: self.call_trace_max,
         }
     }
 }

@@ -148,6 +148,7 @@ pub fn is_builtin_name(name: &str) -> bool {
             // -- Runtime --
             | "now" | "elapsed" | "sleep"
             | "save-state" | "load-state"
+            | "doc"
     )
 }
 
@@ -391,4 +392,127 @@ pub fn match_pattern(pattern: &LispVal, value: &LispVal) -> Option<Vec<(String, 
         }
         _ => None,
     }
+}
+
+/// Get documentation string for a builtin.
+pub fn get_doc(name: &str) -> Option<&'static str> {
+    Some(match name {
+        // Arithmetic
+        "+" => "(+ a b ...) — Add numbers. Single arg: identity. No args: 0.",
+        "-" => "(- a b ...) — Subtract. (- x) negates.",
+        "*" => "(* a b ...) — Multiply. Single arg: identity. No args: 1.",
+        "/" => "(/ a b ...) — Divide. Returns float if any arg is float.",
+        "mod" => "(mod a b) — Modulo.",
+        "abs" => "(abs n) — Absolute value.",
+        "min" | "max" => "(min a b ...) / (max a b ...) — Min/max of numbers.",
+        "sqrt" => "(sqrt n) — Square root (returns float).",
+        "expt" => "(expt base exp) — Exponentiation.",
+
+        // Comparison
+        "=" | "==" => "(= a b) — Numeric equality (int or float).",
+        "!=" | "/=" => "(!= a b) — Numeric inequality.",
+        "<" | ">" | "<=" | ">=" => "(< a b) — Numeric comparison.",
+        "equal?" => "(equal? a b) — Deep structural equality.",
+
+        // Collections
+        "list" => "(list a b ...) — Create a list.",
+        "car" => "(car lst) — First element of list.",
+        "cdr" => "(cdr lst) — Rest of list.",
+        "cons" => "(cons head tail) — Prepend to list.",
+        "len" | "length" => "(len lst) — Length of list or string.",
+        "append" => "(append l1 l2) — Concatenate lists.",
+        "nth" | "list-ref" => "(nth lst i) — Get element by index (0-based).",
+        "reverse" => "(reverse lst) — Reverse a list.",
+        "sort" => "(sort lst) — Sort numbers (ascending) or strings (lexicographic).",
+        "range" => {
+            "(range n) / (range start end) / (range start end step) — Generate list of numbers."
+        }
+        "zip" => "(zip l1 l2) — Zip two lists into pairs.",
+
+        // HOFs
+        "map" => "(map f lst) — Apply f to each element, return new list.",
+        "filter" => "(filter pred lst) — Keep elements matching predicate.",
+        "reduce" => "(reduce f init lst) — Fold left: f(accumulator, element).",
+        "find" => "(find pred lst) — First element matching predicate, or nil.",
+        "some" => "(some pred lst) — True if any element satisfies predicate.",
+        "every" => "(every pred lst) — True if all elements satisfy predicate.",
+        "for-each" => "(for-each f lst) — Apply f to each element for side effects. Returns nil.",
+        "fold-left" => "(fold-left f init lst) — Left fold.",
+        "fold-right" => "(fold-right f init lst) — Right fold.",
+
+        // Strings
+        "str-concat" | "string-append" => "(str-concat s1 s2 ...) — Concatenate strings.",
+        "str-length" | "string-length" => "(str-length s) — String length.",
+        "str-substring" | "substring" => "(str-substring s start end) — Substring.",
+        "str-split" => "(str-split s delim) — Split string by delimiter.",
+        "str-contains" | "string-contains" => {
+            "(str-contains s sub) — Check if string contains substring."
+        }
+        "str-trim" => "(str-trim s) — Trim whitespace.",
+        "str-upcase" | "string-upcase" => "(str-upcase s) — Uppercase.",
+        "str-downcase" | "string-downcase" => "(str-downcase s) — Lowercase.",
+        "str-replace" | "string-replace" => "(str-replace s old new) — Replace substring.",
+        "str-join" => "(str-join lst sep) — Join list of strings with separator.",
+
+        // Predicates
+        "nil?" | "null?" => "(nil? x) — Is x nil?",
+        "list?" | "pair?" => "(list? x) — Is x a list?",
+        "number?" => "(number? x) — Is x a number?",
+        "string?" => "(string? x) — Is x a string?",
+        "map?" => "(map? x) — Is x a dict?",
+        "bool?" | "boolean?" => "(bool? x) — Is x a boolean?",
+        "procedure?" => "(procedure? x) — Is x callable (lambda)?",
+        "symbol?" => "(symbol? x) — Is x a symbol?",
+        "zero?" => "(zero? n) — Is n zero?",
+        "positive?" => "(positive? n) — Is n > 0?",
+        "negative?" => "(negative? n) — Is n < 0?",
+        "even?" => "(even? n) — Is n even?",
+        "odd?" => "(odd? n) — Is n odd?",
+        "empty?" => "(empty? x) — Is list/string empty?",
+
+        // Dict
+        "dict" => "(dict k1 v1 k2 v2 ...) — Create a dict.",
+        "dict/get" => "(dict/get d key) — Get value from dict. Returns nil if missing.",
+        "dict/set" => "(dict/set d key val) — Set key in dict (returns new dict).",
+        "dict/has?" => "(dict/has? d key) — Check if key exists.",
+        "dict/keys" => "(dict/keys d) — List of keys.",
+        "dict/vals" => "(dict/vals d) — List of values.",
+
+        // IO
+        "print" => "(print x) — Print value without newline.",
+        "println" => "(println x) — Print value with newline.",
+        "read-file" => "(read-file path) — Read file contents as string.",
+        "write-file" => "(write-file path content) — Write string to file.",
+        "load-file" => "(load-file path) — Load and evaluate a Lisp file.",
+
+        // Special forms
+        "define" => "(define name val) or (define (f params...) body) — Define binding.",
+        "set!" => "(set! name val) — Mutate existing binding.",
+        "lambda" => "(lambda (params...) body) — Create anonymous function.",
+        "if" => "(if cond then else?) — Conditional.",
+        "cond" => "(cond (test expr) ... (else expr)) — Multi-branch conditional.",
+        "begin" => "(begin e1 e2 ...) — Sequence expressions, return last.",
+        "let" => "(let ((var val) ...) body) — Local bindings.",
+        "let*" => "(let* ((var val) ...) body) — Sequential local bindings.",
+        "letrec" => "(letrec ((var val) ...) body) — Recursive local bindings.",
+        "and" => "(and e1 e2 ...) — Short-circuit logical AND.",
+        "or" => "(or e1 e2 ...) — Short-circuit logical OR.",
+        "when" => "(when cond body...) — Execute body if cond is truthy.",
+        "unless" => "(unless cond body...) — Execute body if cond is falsy.",
+
+        // Eval
+        "apply" => "(apply f arg1 ... arglist) — Apply function to spread args.",
+        "eval" => "(eval expr) — Evaluate a Lisp expression.",
+        "error" => "(error msg) — Raise an error.",
+        "type-of" => "(type-of x) — Return type name as string.",
+
+        // Runtime
+        "now" => "(now) — Current Unix timestamp (milliseconds).",
+        "elapsed" => "(elapsed since) — Milliseconds since given timestamp.",
+        "sleep" => "(sleep ms) — Sleep for milliseconds.",
+        "save-state" => "(save-state path val) — Serialize value to JSON file.",
+        "load-state" => "(load-state path) — Load value from JSON file.",
+
+        _ => return None,
+    })
 }

@@ -1091,6 +1091,7 @@ fn merge_rlm_state(_env: &mut Env, state: &mut EvalState, saved: &im::OrdMap<Str
 /// # Errors
 ///
 /// Propagates any evaluation error from the body.
+
 pub fn apply_lambda(
     params: &[String],
     rest_param: &Option<String>,
@@ -1138,6 +1139,8 @@ pub fn dispatch_call_with_args(
     env: &mut Env,
     state: &mut EvalState,
 ) -> Result<EvalResult, String> {
+    state.trace_push(name);
+
     if let Some(result) = dispatch_arithmetic::handle(name, args)? {
         return Ok(EvalResult::Value(result));
     }
@@ -1182,6 +1185,31 @@ pub fn dispatch_call_with_args(
         "eval" => {
             let datum = args.first().ok_or("eval: need 1 arg")?;
             lisp_eval(datum, env, state).map(EvalResult::Value)
+        }
+        "doc" => {
+            let name = match args.first() {
+                Some(LispVal::Sym(s)) => s.to_string(),
+                Some(LispVal::Str(s)) => s.to_string(),
+                Some(v) => v.to_string(),
+                None => return Err("doc: need 1 arg (function name)".into()),
+            };
+            match crate::helpers::get_doc(&name) {
+                Some(d) => Ok(EvalResult::Value(LispVal::Str(d.to_string()))),
+                None => {
+                    // Check if it's defined in env
+                    if env.get(&name).is_some() {
+                        Ok(EvalResult::Value(LispVal::Str(format!(
+                            "User-defined: {} (no doc)",
+                            name
+                        ))))
+                    } else {
+                        Ok(EvalResult::Value(LispVal::Str(format!(
+                            "No documentation for '{}'",
+                            name
+                        ))))
+                    }
+                }
+            }
         }
         _ => {
             // Check env for user-defined function
