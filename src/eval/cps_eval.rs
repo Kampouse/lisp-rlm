@@ -21,6 +21,7 @@ fn make_lambda(
     closed_env: std::sync::Arc<std::sync::RwLock<im::HashMap<String, crate::types::LispVal>>>,
     pure_type: Option<String>,
     outer_env: &crate::types::Env,
+    func_name: Option<&str>,
 ) -> crate::types::LispVal {
     use crate::types::LispVal;
     let compiled = crate::bytecode::try_compile_lambda(
@@ -33,6 +34,7 @@ fn make_lambda(
             .into_iter()
             .collect::<Vec<_>>(),
         outer_env,
+        func_name,
     )
     .map(|cl| Box::new(cl));
     LispVal::Lambda {
@@ -118,6 +120,7 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                                     env.get_or_create_scope_snapshot(),
                                     state.pending_pure_type.take(),
                                     env,
+                                    Some(name.as_str()),
                                 );
                                 env.push(name.clone(), lam.clone());
                                 env.propagate_to_scope_snapshot(&name, &lam);
@@ -626,6 +629,7 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                             env.get_or_create_scope_snapshot(),
                             state.pending_pure_type.take(),
                             env,
+                            None,
                         )))
                     }
 
@@ -858,6 +862,7 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                             env.get_or_create_scope_snapshot(),
                             None,
                             env,
+                            None,
                         );
 
                         // Wrap in a Contract value

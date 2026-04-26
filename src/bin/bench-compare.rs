@@ -26,7 +26,7 @@ fn main() {
     fn eval_all(code: &str, env: &mut Env) -> LispVal {
         let parsed = parse_all(code).unwrap();
         let mut state = EvalState::new();
-        state.eval_budget = 100_000_000; // 100M for fib(30)
+        state.eval_budget = 100_000_000;
         let mut result = LispVal::Nil;
         for form in parsed {
             result = lisp_eval(&form, env, &mut state).unwrap();
@@ -38,7 +38,8 @@ fn main() {
 
     println!("\n=== lisp-rlm Bytecode Benchmarks ===\n");
 
-    eval_all(r#"
+    eval_all(
+        r#"
 (define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
 (define (get-default m key default)
   (let ((found (dict/get m key)))
@@ -57,35 +58,91 @@ fn main() {
 (define (dict-chain n)
   (loop ((i 0) (m (dict)))
     (if (>= i n) m (recur (+ i 1) (dict/set m (to-string i) i)))))
-"#, &mut env);
+"#,
+        &mut env,
+    );
 
-    // fib(30)
-    time_it("fib(30)", || { eval_all("(fib 30)", &mut env); }, 5);
+    // fib(28) — fast enough to not dominate
+    time_it(
+        "fib(28)",
+        || {
+            eval_all("(fib 28)", &mut env);
+        },
+        3,
+    );
 
     // get-default
-    eval_all("(define test-dict (dict \"a\" 1 \"b\" 2 \"c\" 3))", &mut env);
-    time_it("get-default", || { eval_all("(get-default test-dict \"b\" 0)", &mut env); }, 10_000_000);
+    eval_all(
+        "(define test-dict (dict \"a\" 1 \"b\" 2 \"c\" 3))",
+        &mut env,
+    );
+    time_it(
+        "get-default",
+        || {
+            eval_all("(get-default test-dict \"b\" 0)", &mut env);
+        },
+        1_000_000,
+    );
 
     // score-intention
-    eval_all("(define test-item (dict \"urgency\" 0.8 \"cost\" 0.5))", &mut env);
-    time_it("score-intention", || { eval_all("(score-intention test-item)", &mut env); }, 1_000_000);
+    eval_all(
+        "(define test-item (dict \"urgency\" 0.8 \"cost\" 0.5))",
+        &mut env,
+    );
+    time_it(
+        "score-intention",
+        || {
+            eval_all("(score-intention test-item)", &mut env);
+        },
+        100_000,
+    );
 
     // map(100-elem)
     eval_all("(define test-list (range 0 100))", &mut env);
-    time_it("map(100-elem)", || { eval_all("(map-test test-list)", &mut env); }, 100_000);
+    time_it(
+        "map(100-elem)",
+        || {
+            eval_all("(map-test test-list)", &mut env);
+        },
+        10_000,
+    );
 
     // filter(100-elem)
-    time_it("filter(100-elem)", || { eval_all("(filter-test test-list)", &mut env); }, 100_000);
+    time_it(
+        "filter(100-elem)",
+        || {
+            eval_all("(filter-test test-list)", &mut env);
+        },
+        10_000,
+    );
 
     // sort(100-elem)
     eval_all("(define test-sort-list (reverse (range 0 100)))", &mut env);
-    time_it("sort(100-elem)", || { eval_all("(sort-test test-sort-list)", &mut env); }, 10_000);
+    time_it(
+        "sort(100-elem)",
+        || {
+            eval_all("(sort-test test-sort-list)", &mut env);
+        },
+        10_000,
+    );
 
     // loop-sum(1000)
-    time_it("loop-sum(1000)", || { eval_all("(loop-sum 1000)", &mut env); }, 100_000);
+    time_it(
+        "loop-sum(1000)",
+        || {
+            eval_all("(loop-sum 1000)", &mut env);
+        },
+        10_000,
+    );
 
     // dict-chain(100)
-    time_it("dict-chain(100)", || { eval_all("(dict-chain 100)", &mut env); }, 100_000);
+    time_it(
+        "dict-chain(100)",
+        || {
+            eval_all("(dict-chain 100)", &mut env);
+        },
+        10_000,
+    );
 
     println!("\n=== Done ===");
 }

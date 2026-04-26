@@ -140,6 +140,8 @@ struct LoopCompiler {
     captured: Vec<(String, LispVal)>,
     /// Pre-compiled inner lambdas
     closures: Vec<CompiledLambda>,
+    /// Name of the function being compiled (for CallSelf detection)
+    self_name: Option<String>,
 }
 
 impl LoopCompiler {
@@ -149,6 +151,7 @@ impl LoopCompiler {
             code: Vec::new(),
             captured: Vec::new(),
             closures: Vec::new(),
+            self_name: None,
         }
     }
 
@@ -652,7 +655,9 @@ impl LoopCompiler {
                             if op == "dict/get" || op == "dict-ref" {
                                 if n_args == 2 {
                                     for arg in &list[1..] {
-                                        if !self.compile_expr(arg, outer_env) { return false; }
+                                        if !self.compile_expr(arg, outer_env) {
+                                            return false;
+                                        }
                                     }
                                     self.code.push(Op::DictGet);
                                     return true;
@@ -660,7 +665,9 @@ impl LoopCompiler {
                             } else if op == "dict/set" || op == "dict-set" {
                                 if n_args == 3 {
                                     for arg in &list[1..] {
-                                        if !self.compile_expr(arg, outer_env) { return false; }
+                                        if !self.compile_expr(arg, outer_env) {
+                                            return false;
+                                        }
                                     }
                                     self.code.push(Op::DictSet);
                                     return true;
@@ -669,6 +676,12 @@ impl LoopCompiler {
                             for arg in &list[1..] {
                                 if !self.compile_expr(arg, outer_env) {
                                     return false;
+                                }
+                            }
+                            if let Some(ref sn) = self.self_name {
+                                if op == sn {
+                                    self.code.push(Op::CallSelf(n_args));
+                                    return true;
                                 }
                             }
                             if let Some(idx) = self.captured_idx(op) {
@@ -1342,7 +1355,10 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
                 stack.push(result);
                 pc += 1;
             }
-            Op::CallCaptured(_, _) | Op::CallCapturedRef(_, _) | Op::PushClosure(_) | Op::CallSelf(_) => {
+            Op::CallCaptured(_, _)
+            | Op::CallCapturedRef(_, _)
+            | Op::PushClosure(_)
+            | Op::CallSelf(_) => {
                 return Err("loop VM: CallCaptured/CallSelf not supported in loop body".into());
             }
         }
@@ -1810,8 +1826,10 @@ pub fn try_compile_lambda(
     body: &LispVal,
     _closed_env: &[(String, LispVal)],
     outer_env: &Env,
+    func_name: Option<&str>,
 ) -> Option<CompiledLambda> {
     let mut compiler = LoopCompiler::new(param_names.to_vec());
+    compiler.self_name = func_name.map(|s| s.to_string());
     // Don't pre-populate captured — try_capture will pull in only what's needed from outer_env.
     // closed_env contains the ENTIRE scope snapshot (all builtins, etc) — most are unused.
     if !compiler.compile_expr(body, outer_env) {
@@ -2537,9 +2555,7 @@ pub fn run_compiled_lambda(
                 let key = stack.pop().unwrap_or(LispVal::Nil);
                 let map = stack.pop().unwrap_or(LispVal::Nil);
                 let result = match (&map, &key) {
-                    (LispVal::Map(m), LispVal::Str(k)) => {
-                        m.get(k).cloned().unwrap_or(LispVal::Nil)
-                    }
+                    (LispVal::Map(m), LispVal::Str(k)) => m.get(k).cloned().unwrap_or(LispVal::Nil),
                     _ => LispVal::Nil,
                 };
                 stack.push(result);
@@ -2550,9 +2566,7 @@ pub fn run_compiled_lambda(
                 let key = stack.pop().unwrap_or(LispVal::Nil);
                 let map = stack.pop().unwrap_or(LispVal::Nil);
                 let result = match (&map, &key) {
-                    (LispVal::Map(m), LispVal::Str(k)) => {
-                        LispVal::Map(m.update(k.clone(), val))
-                    }
+                    (LispVal::Map(m), LispVal::Str(k)) => LispVal::Map(m.update(k.clone(), val)),
                     _ => return Err("dict/set: need (map key value)".into()),
                 };
                 stack.push(result);
