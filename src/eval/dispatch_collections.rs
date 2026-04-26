@@ -531,6 +531,24 @@ pub fn handle(
             Some(v) => Ok(Some(v.clone())),
             None => Err("list-copy: need 1 arg".into()),
         },
+        // R7RS multiple values (simplified: returns list, call-with-values unpacks)
+        "values" => {
+            if args.len() == 1 {
+                Ok(Some(args[0].clone()))
+            } else {
+                Ok(Some(LispVal::List(args.to_vec())))
+            }
+        }
+        "call-with-values" => {
+            let producer = args.first().ok_or("call-with-values: need producer consumer")?;
+            let consumer = args.get(1).ok_or("call-with-values: need producer consumer")?;
+            let produced = call_val(producer, &[], env, state)?;
+            let vals = match &produced {
+                LispVal::List(l) => l.clone(),
+                other => vec![other.clone()],
+            };
+            call_val(consumer, &vals, env, state).map(Some)
+        }
         "cons*" => {
             if args.is_empty() {
                 return Err("cons*: need at least 1 arg".into());

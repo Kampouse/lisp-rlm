@@ -191,6 +191,23 @@ pub fn handle(
                 Ok(Some(LispVal::Float((y as f64).atan())))
             }
         }
+        "exact-integer-sqrt" => {
+            let n = as_num(args.first().ok_or("exact-integer-sqrt: need number")?)?;
+            if n < 0 { return Err("exact-integer-sqrt: need non-negative".into()); }
+            let s = (n as f64).sqrt().floor() as i64;
+            let r = n - s * s;
+            Ok(Some(LispVal::List(vec![LispVal::Num(s), LispVal::Num(r)])))
+        }
+        "exp" => {
+            let n = as_num(args.first().ok_or("exp: need number")?)?;
+            Ok(Some(LispVal::Float((n as f64).exp())))
+        }
+        "rational?" => {
+            match args.first() {
+                Some(LispVal::Num(_)) | Some(LispVal::Float(_)) => Ok(Some(LispVal::Bool(true))),
+                _ => Ok(Some(LispVal::Bool(false))),
+            }
+        }
         // R7RS arithmetic aliases
         "zero?" => match args.first() {
             Some(LispVal::Num(n)) => Ok(Some(LispVal::Bool(*n == 0))),

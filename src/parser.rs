@@ -62,6 +62,26 @@ fn tokenize(input: &str) -> Vec<String> {
             }
             tokens.push("#quote".to_string());
             i += 1;
+        } else if ch == '#' && i + 1 < len && chars[i + 1] == '\\' {
+            // Character literal: #\a, #\space, #\newline
+            if !cur.is_empty() {
+                tokens.push(cur.clone());
+                cur.clear();
+            }
+            i += 2; // skip #\
+            if i < len {
+                // Collect the character name
+                let mut char_name = String::new();
+                while i < len && !chars[i].is_whitespace() && chars[i] != '(' && chars[i] != ')' {
+                    char_name.push(chars[i]);
+                    i += 1;
+                    // If first char after \ is a letter and next is not a letter, stop
+                    if char_name.len() == 1 && (i >= len || !chars[i].is_ascii_alphabetic()) {
+                        break;
+                    }
+                }
+                tokens.push(format!("#char:{}", char_name));
+            }
         } else if ch == '`' {
             // Quasiquote — tokenize as special token
             if !cur.is_empty() {
@@ -134,6 +154,21 @@ fn parse(tokens: &[String], pos: &mut usize) -> Result<LispVal, String> {
             // 'form => (quote form)
             let inner = parse(tokens, pos)?;
             Ok(LispVal::List(vec![LispVal::Sym("quote".into()), inner]))
+        }
+        t if t.starts_with("#char:") => {
+            // Character literal: #char:a => (char a)
+            let name = &t[6..];
+            let ch = match name.to_lowercase().as_str() {
+                "space" => ' ',
+                "newline" => '\n',
+                "tab" => '\t',
+                "return" => '\r',
+                "nul" | "null" => '\0',
+                "delete" | "del" => '\u{7f}',
+                "escape" => '\u{1b}',
+                s => s.chars().next().unwrap_or('\0'),
+            };
+            Ok(LispVal::Str(ch.to_string()))
         }
         "#quasiquote" => {
             // (` form) => (quasiquote form)
