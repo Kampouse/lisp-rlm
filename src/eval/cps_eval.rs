@@ -35,6 +35,7 @@ fn make_lambda(
             .collect::<Vec<_>>(),
         outer_env,
         func_name,
+        pure_type.as_deref(),
     )
     .map(|cl| Box::new(cl));
     // Auto-memoize: attach cache for pure compiled lambdas
@@ -1517,6 +1518,7 @@ pub fn handle_cont(
                             .collect::<Vec<_>>(),
                         env,
                         Some(name.as_str()),
+                        pure_type.as_deref(),
                     );
                     if new_compiled.is_some() {
                         LispVal::Lambda {

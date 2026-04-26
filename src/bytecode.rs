@@ -19,6 +19,28 @@ use crate::types::{Env, EvalState, LispVal};
 //   - No LispVal::List construction for recur args
 // ---------------------------------------------------------------------------
 
+/// Typed binary operation kind.
+#[derive(Clone, Debug)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Eq,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+/// Known type for typed ops.
+#[derive(Clone, Debug)]
+pub enum Ty {
+    I64,
+    F64,
+}
+
 /// Bytecode opcodes for the loop VM.
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
@@ -127,6 +149,9 @@ pub enum Op {
     /// ReturnSlot: return the value in slot N directly, no stack push/pop.
     /// Fuses LoadSlot(N) + Return.
     ReturnSlot(usize),
+    // --- Typed ops: assume operand types, zero dynamic dispatch ---
+    /// Pop 2, perform typed binary op, push result.
+    TypedBinOp(BinOp, Ty),
 }
 
 /// Compiled loop representation.
@@ -163,6 +188,11 @@ struct LoopCompiler {
     parent_slots: Vec<String>,
     /// Runtime captures: (name, outer_slot_index) — read from caller's slots at PushClosure time
     runtime_captures: Vec<(String, usize)>,
+    /// Per-slot type info: true if slot is known to always hold Num(i64)
+    slot_is_i64: Vec<bool>,
+    /// Whether the last compile_expr call produced an i64 value on the stack.
+    /// Used by callers (e.g., let-binding) to propagate type info to new slots.
+    last_result_i64: bool,
 }
 
 impl LoopCompiler {
@@ -176,6 +206,8 @@ impl LoopCompiler {
             loop_stack: Vec::new(),
             parent_slots: Vec::new(),
             runtime_captures: Vec::new(),
+            slot_is_i64: Vec::new(),
+            last_result_i64: false,
         }
     }
 
@@ -185,6 +217,19 @@ impl LoopCompiler {
             return Some(idx);
         }
         None
+    }
+
+    /// Mark a slot as known to always hold Num(i64)
+    fn mark_slot_i64(&mut self, slot: usize) {
+        while self.slot_is_i64.len() <= slot {
+            self.slot_is_i64.push(false);
+        }
+        self.slot_is_i64[slot] = true;
+    }
+
+    /// Check if a slot is known to always hold Num(i64)
+    fn is_slot_i64(&self, slot: usize) -> bool {
+        self.slot_is_i64.get(slot).copied().unwrap_or(false)
     }
 
     /// Return the captured var index (into self.captured) for a name.
@@ -380,9 +425,11 @@ impl LoopCompiler {
 
     /// Try to compile an expression. Returns false if unsupported.
     fn compile_expr(&mut self, expr: &LispVal, outer_env: &Env) -> bool {
+        self.last_result_i64 = false; // default: unknown type
         match expr {
             LispVal::Num(n) => {
                 self.code.push(Op::PushI64(*n));
+                self.last_result_i64 = true;
                 true
             }
             LispVal::Float(f) => {
@@ -420,6 +467,7 @@ impl LoopCompiler {
                 }
                 if let Some(slot) = self.slot_of(name) {
                     self.code.push(Op::LoadSlot(slot));
+                    self.last_result_i64 = self.is_slot_i64(slot);
                     true
                 } else if let Some(idx) = self.captured_idx(name) {
                     self.code.push(Op::LoadCaptured(idx));
@@ -456,11 +504,17 @@ impl LoopCompiler {
                             if !self.compile_expr(&list[1], outer_env) {
                                 return false;
                             }
+                            let mut all_i64 = self.last_result_i64;
                             for arg in &list[2..] {
                                 if !self.compile_expr(arg, outer_env) {
                                     return false;
                                 }
+                                all_i64 = all_i64 && self.last_result_i64;
                                 self.code.push(opcode.clone());
+                            }
+                            // For int arithmetic (+, -, *), if all operands were i64, result is i64
+                            if all_i64 && matches!(op.as_str(), "+" | "-" | "*") {
+                                self.last_result_i64 = true;
                             }
                             true
                         }
@@ -689,16 +743,23 @@ impl LoopCompiler {
                                                 all_ok = false;
                                                 break;
                                             }
+                                            let val_is_i64 = self.last_result_i64;
                                             // Check if this name already has a slot (shadowing)
                                             if let Some(existing) =
                                                 self.slot_map.iter().position(|s| s == name)
                                             {
                                                 self.code.push(Op::StoreSlot(existing));
                                                 shadowed.push((name.clone(), existing));
+                                                if val_is_i64 {
+                                                    self.mark_slot_i64(existing);
+                                                }
                                             } else {
                                                 let slot_idx = self.slot_map.len();
                                                 self.slot_map.push(name.clone());
                                                 self.code.push(Op::StoreSlot(slot_idx));
+                                                if val_is_i64 {
+                                                    self.mark_slot_i64(slot_idx);
+                                                }
                                             }
                                         } else {
                                             all_ok = false;
@@ -1137,11 +1198,11 @@ impl LoopCompiler {
                 self.code.push(Op::Return);
                 let captured = self.captured.clone();
                 let mut code = self.code;
-                peephole_optimize(&mut code);
+                peephole_optimize(&mut code, &[]);
                 // Second pass: now that 3-op and 2-op fusions are done, check for mega-fuse
-                peephole_optimize(&mut code);
+                peephole_optimize(&mut code, &[]);
                 // Third pass: 2-op fusion may have created new JumpIfSlotCmpImm for mega-fuse
-                peephole_optimize(&mut code);
+                peephole_optimize(&mut code, &[]);
                 return Some(CompiledLoop {
                     num_slots,
                     slot_names: self.slot_map,
@@ -1157,11 +1218,11 @@ impl LoopCompiler {
             self.code.push(Op::Return);
             let captured = self.captured.clone();
             let mut code = self.code;
-            peephole_optimize(&mut code);
+            peephole_optimize(&mut code, &[]);
             // Second pass: now that 3-op and 2-op fusions are done, check for mega-fuse
-            peephole_optimize(&mut code);
+            peephole_optimize(&mut code, &[]);
             // Third pass: 2-op fusion may have created new JumpIfSlotCmpImm for mega-fuse
-            peephole_optimize(&mut code);
+            peephole_optimize(&mut code, &[]);
             return Some(CompiledLoop {
                 num_slots,
                 slot_names: self.slot_map,
@@ -1261,7 +1322,10 @@ fn remap_op(op: &Op, slot_offset: usize, captured_remap: &[usize], jump_offset: 
 /// Peephole optimizer: fuse LoadSlot + PushI64 + Arith/Cmp sequences,
 /// convert small Recur → RecurDirect, fuse SlotCmpImm + JumpIfFalse,
 /// and remap jump targets.
-fn peephole_optimize(code: &mut Vec<Op>) {
+/// `slot_is_i64` maps slot index → true if known to always hold Num(i64).
+/// When provided, converts generic Arith/Cmp ops to typed I64 variants
+/// when both source slots are known i64.
+fn peephole_optimize(code: &mut Vec<Op>, slot_is_i64: &[bool]) {
     // Pre-compute set of jump targets — positions that are jumped to from elsewhere.
     // Used to prevent fusing ops at jump targets (which would break fallthrough semantics).
     let jump_targets: std::collections::HashSet<usize> = code
@@ -1353,6 +1417,41 @@ fn peephole_optimize(code: &mut Vec<Op>) {
                     new_code.push(op);
                     i += 3;
                     continue;
+                }
+            }
+        }
+
+        // Convert LoadSlot(a) + LoadSlot(b) + {Add|Sub|...} → typed I64 variant
+        // when both slots are known to always hold Num(i64).
+        // This keeps the two LoadSlots but replaces the generic op with zero-dispatch version.
+        if i + 2 < code.len() {
+            if let (Op::LoadSlot(a), Op::LoadSlot(b)) = (&code[i], &code[i + 1]) {
+                let a = *a;
+                let b = *b;
+                let sa = slot_is_i64.get(a).copied().unwrap_or(false);
+                let sb = slot_is_i64.get(b).copied().unwrap_or(false);
+                if sa && sb {
+                    let typed = match &code[i + 2] {
+                        Op::Add => Some(Op::TypedBinOp(BinOp::Add, Ty::I64)),
+                        Op::Sub => Some(Op::TypedBinOp(BinOp::Sub, Ty::I64)),
+                        Op::Mul => Some(Op::TypedBinOp(BinOp::Mul, Ty::I64)),
+                        Op::Lt => Some(Op::TypedBinOp(BinOp::Lt, Ty::I64)),
+                        Op::Le => Some(Op::TypedBinOp(BinOp::Le, Ty::I64)),
+                        Op::Gt => Some(Op::TypedBinOp(BinOp::Gt, Ty::I64)),
+                        Op::Ge => Some(Op::TypedBinOp(BinOp::Ge, Ty::I64)),
+                        Op::Eq => Some(Op::TypedBinOp(BinOp::Eq, Ty::I64)),
+                        _ => None,
+                    };
+                    if let Some(top) = typed {
+                        index_map.push(new_code.len());
+                        new_code.push(code[i].clone());
+                        index_map.push(new_code.len());
+                        new_code.push(code[i + 1].clone());
+                        index_map.push(new_code.len());
+                        new_code.push(top);
+                        i += 3;
+                        continue;
+                    }
                 }
             }
         }
@@ -1691,6 +1790,60 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
                 let b = num_val(stack.pop().unwrap_or(LispVal::Nil));
                 let a = num_val(stack.pop().unwrap_or(LispVal::Nil));
                 stack.push(LispVal::Bool(a >= b));
+                pc += 1;
+            }
+            // Typed binary ops — zero dynamic dispatch
+            Op::TypedBinOp(op, ty) => {
+                let b = stack.pop().unwrap();
+                let a = stack.pop().unwrap();
+                match ty {
+                    Ty::I64 => {
+                        let av = match &a {
+                            LispVal::Num(n) => *n,
+                            _ => 0,
+                        };
+                        let bv = match &b {
+                            LispVal::Num(n) => *n,
+                            _ => 0,
+                        };
+                        stack.push(match op {
+                            BinOp::Add => LispVal::Num(av + bv),
+                            BinOp::Sub => LispVal::Num(av - bv),
+                            BinOp::Mul => LispVal::Num(av * bv),
+                            BinOp::Div => LispVal::Num(av / bv),
+                            BinOp::Mod => LispVal::Num(av % bv),
+                            BinOp::Lt => LispVal::Bool(av < bv),
+                            BinOp::Le => LispVal::Bool(av <= bv),
+                            BinOp::Gt => LispVal::Bool(av > bv),
+                            BinOp::Ge => LispVal::Bool(av >= bv),
+                            BinOp::Eq => LispVal::Bool(av == bv),
+                        });
+                    }
+                    Ty::F64 => {
+                        let av = match &a {
+                            LispVal::Float(f) => *f,
+                            LispVal::Num(n) => *n as f64,
+                            _ => 0.0,
+                        };
+                        let bv = match &b {
+                            LispVal::Float(f) => *f,
+                            LispVal::Num(n) => *n as f64,
+                            _ => 0.0,
+                        };
+                        stack.push(match op {
+                            BinOp::Add => LispVal::Float(av + bv),
+                            BinOp::Sub => LispVal::Float(av - bv),
+                            BinOp::Mul => LispVal::Float(av * bv),
+                            BinOp::Div => LispVal::Float(av / bv),
+                            BinOp::Mod => LispVal::Float(av % bv),
+                            BinOp::Lt => LispVal::Bool(av < bv),
+                            BinOp::Le => LispVal::Bool(av <= bv),
+                            BinOp::Gt => LispVal::Bool(av > bv),
+                            BinOp::Ge => LispVal::Bool(av >= bv),
+                            BinOp::Eq => LispVal::Bool(av == bv),
+                        });
+                    }
+                }
                 pc += 1;
             }
             Op::JumpIfTrue(addr) => {
@@ -2358,9 +2511,27 @@ pub fn try_compile_lambda(
     _closed_env: &[(String, LispVal)],
     outer_env: &Env,
     func_name: Option<&str>,
+    pure_type: Option<&str>,
 ) -> Option<CompiledLambda> {
     let mut compiler = LoopCompiler::new(param_names.to_vec());
     compiler.self_name = func_name.map(|s| s.to_string());
+
+    // Parse pure_type to mark parameter slots as i64.
+    // Format: "int -> int", "int -> int -> int", etc.
+    // Mark params as i64 where the corresponding arrow-input is "int".
+    if let Some(pt) = pure_type {
+        let parts: Vec<&str> = pt.split("->").map(|s| s.trim()).collect();
+        // All parts except the last are inputs. If input is "int", mark param.
+        for (i, part) in parts.iter().enumerate() {
+            if i >= param_names.len() {
+                break;
+            }
+            // Only mark inputs (all but last segment)
+            if i < parts.len() - 1 && *part == "int" {
+                compiler.mark_slot_i64(i);
+            }
+        }
+    }
     // Don't pre-populate captured — try_capture will pull in only what's needed from outer_env.
     // closed_env contains the ENTIRE scope snapshot (all builtins, etc) — most are unused.
     if !compiler.compile_expr(body, outer_env) {
@@ -2368,9 +2539,10 @@ pub fn try_compile_lambda(
     }
     compiler.code.push(Op::Return);
     let mut code = compiler.code;
-    peephole_optimize(&mut code);
-    peephole_optimize(&mut code);
-    peephole_optimize(&mut code);
+    let slot_types = compiler.slot_is_i64;
+    peephole_optimize(&mut code, &slot_types);
+    peephole_optimize(&mut code, &slot_types);
+    peephole_optimize(&mut code, &slot_types);
     // Compute total slots: params + any let-binding slots used in code
     // Captured vars are accessed via LoadCaptured/CallCapturedRef, not slots
     let base_slots = param_names.len();
@@ -2552,6 +2724,60 @@ pub fn run_compiled_lambda(
                 let b = num_val(stack.pop().unwrap_or(LispVal::Nil));
                 let a = num_val(stack.pop().unwrap_or(LispVal::Nil));
                 stack.push(LispVal::Bool(a >= b));
+                pc += 1;
+            }
+            // Typed binary ops — zero dynamic dispatch
+            Op::TypedBinOp(op, ty) => {
+                let b = stack.pop().unwrap();
+                let a = stack.pop().unwrap();
+                match ty {
+                    Ty::I64 => {
+                        let av = match &a {
+                            LispVal::Num(n) => *n,
+                            _ => 0,
+                        };
+                        let bv = match &b {
+                            LispVal::Num(n) => *n,
+                            _ => 0,
+                        };
+                        stack.push(match op {
+                            BinOp::Add => LispVal::Num(av + bv),
+                            BinOp::Sub => LispVal::Num(av - bv),
+                            BinOp::Mul => LispVal::Num(av * bv),
+                            BinOp::Div => LispVal::Num(av / bv),
+                            BinOp::Mod => LispVal::Num(av % bv),
+                            BinOp::Lt => LispVal::Bool(av < bv),
+                            BinOp::Le => LispVal::Bool(av <= bv),
+                            BinOp::Gt => LispVal::Bool(av > bv),
+                            BinOp::Ge => LispVal::Bool(av >= bv),
+                            BinOp::Eq => LispVal::Bool(av == bv),
+                        });
+                    }
+                    Ty::F64 => {
+                        let av = match &a {
+                            LispVal::Float(f) => *f,
+                            LispVal::Num(n) => *n as f64,
+                            _ => 0.0,
+                        };
+                        let bv = match &b {
+                            LispVal::Float(f) => *f,
+                            LispVal::Num(n) => *n as f64,
+                            _ => 0.0,
+                        };
+                        stack.push(match op {
+                            BinOp::Add => LispVal::Float(av + bv),
+                            BinOp::Sub => LispVal::Float(av - bv),
+                            BinOp::Mul => LispVal::Float(av * bv),
+                            BinOp::Div => LispVal::Float(av / bv),
+                            BinOp::Mod => LispVal::Float(av % bv),
+                            BinOp::Lt => LispVal::Bool(av < bv),
+                            BinOp::Le => LispVal::Bool(av <= bv),
+                            BinOp::Gt => LispVal::Bool(av > bv),
+                            BinOp::Ge => LispVal::Bool(av >= bv),
+                            BinOp::Eq => LispVal::Bool(av == bv),
+                        });
+                    }
+                }
                 pc += 1;
             }
             Op::SlotAddImm(s, imm) => {
