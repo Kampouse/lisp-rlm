@@ -115,6 +115,11 @@ pub enum Op {
     DictMutSet(usize),
     /// CallSelf: call this compiled lambda recursively with N args from stack
     CallSelf(usize),
+    /// GetDefaultSlot(map_slot, key_slot, default_slot, result_slot):
+    /// Fused get-default pattern — reads slots directly, no stack traffic.
+    /// result = if dict/get(slots[map_slot], slots[key_slot]) is nil
+    ///          then slots[default_slot] else dict/get result
+    GetDefaultSlot(usize, usize, usize, usize),
 }
 
 /// Compiled loop representation.
@@ -1200,6 +1205,14 @@ fn remap_op(op: &Op, slot_offset: usize, captured_remap: &[usize], jump_offset: 
         // CallCaptured — offset slot
         Op::CallCaptured(s, n) => Op::CallCaptured(s + slot_offset, *n),
 
+        // GetDefaultSlot — offset all slots
+        Op::GetDefaultSlot(m, k, d, r) => Op::GetDefaultSlot(
+            m + slot_offset,
+            k + slot_offset,
+            d + slot_offset,
+            r + slot_offset,
+        ),
+
         // Everything else — no remapping needed
         _ => op.clone(),
     }
@@ -1327,6 +1340,58 @@ fn peephole_optimize(code: &mut Vec<Op>) {
                 new_code.push(Op::RecurDirect(*n));
                 i += 1;
                 continue;
+            }
+        }
+        // Fuse get-default pattern (11 ops → 1):
+        // LoadSlot(m) → LoadSlot(k) → DictGet → StoreSlot(tmp) → LoadSlot(tmp)
+        // → BuiltinCall("nil?", 1) → JumpIfFalse(else) → LoadSlot(default) → Jump(end)
+        // → LoadSlot(tmp) → StoreSlot(result)
+        // → GetDefaultSlot(m, k, default, result)
+        if i + 10 < code.len() {
+            if let (
+                Op::LoadSlot(m_slot),
+                Op::LoadSlot(k_slot),
+                Op::DictGet,
+                Op::StoreSlot(tmp_slot),
+                Op::LoadSlot(ls5),
+                Op::BuiltinCall(name, 1),
+                Op::JumpIfFalse(else_addr),
+                Op::LoadSlot(default_slot),
+                Op::Jump(end_addr),
+                Op::LoadSlot(ls10),
+                Op::StoreSlot(result_slot),
+            ) = (
+                &code[i],
+                &code[i + 1],
+                &code[i + 2],
+                &code[i + 3],
+                &code[i + 4],
+                &code[i + 5],
+                &code[i + 6],
+                &code[i + 7],
+                &code[i + 8],
+                &code[i + 9],
+                &code[i + 10],
+            ) {
+                if name == "nil?"
+                    && ls5 == tmp_slot
+                    && ls10 == tmp_slot
+                    && *else_addr == i + 9
+                    && *end_addr == i + 10
+                {
+                    // All 11 indices map to the same new index
+                    for _ in 0..10 {
+                        index_map.push(new_code.len());
+                    }
+                    new_code.push(Op::GetDefaultSlot(
+                        *m_slot,
+                        *k_slot,
+                        *default_slot,
+                        *result_slot,
+                    ));
+                    i += 11;
+                    continue;
+                }
             }
         }
         new_code.push(code[i].clone());
@@ -1669,9 +1734,10 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
             | Op::CallCapturedRef(_, _)
             | Op::PushClosure(_)
             | Op::CallSelf(_)
-            | Op::DictMutSet(_) => {
+            | Op::DictMutSet(_)
+            | Op::GetDefaultSlot(_, _, _, _) => {
                 return Err(
-                    "loop VM: CallCaptured/CallSelf/DictMutSet not supported in loop body".into(),
+                    "loop VM: CallCaptured/CallSelf/DictMutSet/GetDefaultSlot not supported in loop body".into(),
                 );
             }
         }
@@ -2942,6 +3008,22 @@ pub fn run_compiled_lambda(
                 }
                 stack = Vec::with_capacity(8);
                 pc = 0;
+            }
+            Op::GetDefaultSlot(map_slot, key_slot, default_slot, result_slot) => {
+                // Fused: result = dict/get(slots[map], slots[key]) ?? slots[default]
+                let map_val = &slots[*map_slot];
+                let key_val = &slots[*key_slot];
+                let result = if let (LispVal::Map(ref m), LispVal::Str(ref k)) = (map_val, key_val)
+                {
+                    match m.get(k) {
+                        Some(v) if !matches!(v, LispVal::Nil) => v.clone(),
+                        _ => slots[*default_slot].clone(),
+                    }
+                } else {
+                    slots[*default_slot].clone()
+                };
+                slots[*result_slot] = result;
+                pc += 1;
             }
             // Unsupported ops for lambda body — shouldn't appear but handle gracefully
             _ => return Err("compiled lambda: unsupported op".into()),
