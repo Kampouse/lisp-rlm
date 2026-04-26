@@ -190,9 +190,13 @@ struct LoopCompiler {
     runtime_captures: Vec<(String, usize)>,
     /// Per-slot type info: true if slot is known to always hold Num(i64)
     slot_is_i64: Vec<bool>,
+    /// Per-slot type info: true if slot is known to always hold Float(f64)
+    slot_is_f64: Vec<bool>,
     /// Whether the last compile_expr call produced an i64 value on the stack.
     /// Used by callers (e.g., let-binding) to propagate type info to new slots.
     last_result_i64: bool,
+    /// Whether the last compile_expr call produced an f64 value on the stack.
+    last_result_f64: bool,
 }
 
 impl LoopCompiler {
@@ -207,7 +211,9 @@ impl LoopCompiler {
             parent_slots: Vec::new(),
             runtime_captures: Vec::new(),
             slot_is_i64: Vec::new(),
+            slot_is_f64: Vec::new(),
             last_result_i64: false,
+            last_result_f64: false,
         }
     }
 
@@ -225,6 +231,24 @@ impl LoopCompiler {
             self.slot_is_i64.push(false);
         }
         self.slot_is_i64[slot] = true;
+        // i64 and f64 are mutually exclusive
+        while self.slot_is_f64.len() <= slot {
+            self.slot_is_f64.push(false);
+        }
+        self.slot_is_f64[slot] = false;
+    }
+
+    /// Mark a slot as known to always hold Float(f64)
+    fn mark_slot_f64(&mut self, slot: usize) {
+        while self.slot_is_f64.len() <= slot {
+            self.slot_is_f64.push(false);
+        }
+        self.slot_is_f64[slot] = true;
+        // i64 and f64 are mutually exclusive
+        while self.slot_is_i64.len() <= slot {
+            self.slot_is_i64.push(false);
+        }
+        self.slot_is_i64[slot] = false;
     }
 
     /// Check if a slot is known to always hold Num(i64)
@@ -426,6 +450,7 @@ impl LoopCompiler {
     /// Try to compile an expression. Returns false if unsupported.
     fn compile_expr(&mut self, expr: &LispVal, outer_env: &Env) -> bool {
         self.last_result_i64 = false; // default: unknown type
+        self.last_result_f64 = false; // default: unknown type
         match expr {
             LispVal::Num(n) => {
                 self.code.push(Op::PushI64(*n));
@@ -434,6 +459,7 @@ impl LoopCompiler {
             }
             LispVal::Float(f) => {
                 self.code.push(Op::PushFloat(*f));
+                self.last_result_f64 = true;
                 true
             }
             LispVal::Bool(b) => {
@@ -505,16 +531,22 @@ impl LoopCompiler {
                                 return false;
                             }
                             let mut all_i64 = self.last_result_i64;
+                            let mut any_f64 = self.last_result_f64;
                             for arg in &list[2..] {
                                 if !self.compile_expr(arg, outer_env) {
                                     return false;
                                 }
                                 all_i64 = all_i64 && self.last_result_i64;
+                                any_f64 = any_f64 || self.last_result_f64;
                                 self.code.push(opcode.clone());
                             }
-                            // For int arithmetic (+, -, *), if all operands were i64, result is i64
-                            if all_i64 && matches!(op.as_str(), "+" | "-" | "*") {
+                            // For int arithmetic (+, -, *), if all operands were i64 and none f64, result is i64
+                            if all_i64 && !any_f64 && matches!(op.as_str(), "+" | "-" | "*") {
                                 self.last_result_i64 = true;
+                            }
+                            // If any operand was f64, result is f64 for arithmetic ops
+                            if any_f64 && matches!(op.as_str(), "+" | "-" | "*" | "/" | "%") {
+                                self.last_result_f64 = true;
                             }
                             true
                         }
@@ -744,6 +776,7 @@ impl LoopCompiler {
                                                 break;
                                             }
                                             let val_is_i64 = self.last_result_i64;
+                                            let val_is_f64 = self.last_result_f64;
                                             // Check if this name already has a slot (shadowing)
                                             if let Some(existing) =
                                                 self.slot_map.iter().position(|s| s == name)
@@ -753,12 +786,18 @@ impl LoopCompiler {
                                                 if val_is_i64 {
                                                     self.mark_slot_i64(existing);
                                                 }
+                                                if val_is_f64 {
+                                                    self.mark_slot_f64(existing);
+                                                }
                                             } else {
                                                 let slot_idx = self.slot_map.len();
                                                 self.slot_map.push(name.clone());
                                                 self.code.push(Op::StoreSlot(slot_idx));
                                                 if val_is_i64 {
                                                     self.mark_slot_i64(slot_idx);
+                                                }
+                                                if val_is_f64 {
+                                                    self.mark_slot_f64(slot_idx);
                                                 }
                                             }
                                         } else {
@@ -1198,11 +1237,11 @@ impl LoopCompiler {
                 self.code.push(Op::Return);
                 let captured = self.captured.clone();
                 let mut code = self.code;
-                peephole_optimize(&mut code, &[]);
+                peephole_optimize(&mut code, &[], &[]);
                 // Second pass: now that 3-op and 2-op fusions are done, check for mega-fuse
-                peephole_optimize(&mut code, &[]);
+                peephole_optimize(&mut code, &[], &[]);
                 // Third pass: 2-op fusion may have created new JumpIfSlotCmpImm for mega-fuse
-                peephole_optimize(&mut code, &[]);
+                peephole_optimize(&mut code, &[], &[]);
                 return Some(CompiledLoop {
                     num_slots,
                     slot_names: self.slot_map,
@@ -1218,11 +1257,11 @@ impl LoopCompiler {
             self.code.push(Op::Return);
             let captured = self.captured.clone();
             let mut code = self.code;
-            peephole_optimize(&mut code, &[]);
+            peephole_optimize(&mut code, &[], &[]);
             // Second pass: now that 3-op and 2-op fusions are done, check for mega-fuse
-            peephole_optimize(&mut code, &[]);
+            peephole_optimize(&mut code, &[], &[]);
             // Third pass: 2-op fusion may have created new JumpIfSlotCmpImm for mega-fuse
-            peephole_optimize(&mut code, &[]);
+            peephole_optimize(&mut code, &[], &[]);
             return Some(CompiledLoop {
                 num_slots,
                 slot_names: self.slot_map,
@@ -1325,7 +1364,8 @@ fn remap_op(op: &Op, slot_offset: usize, captured_remap: &[usize], jump_offset: 
 /// `slot_is_i64` maps slot index → true if known to always hold Num(i64).
 /// When provided, converts generic Arith/Cmp ops to typed I64 variants
 /// when both source slots are known i64.
-fn peephole_optimize(code: &mut Vec<Op>, slot_is_i64: &[bool]) {
+/// `slot_is_f64` maps slot index → true if known to always hold Float(f64).
+fn peephole_optimize(code: &mut Vec<Op>, slot_is_i64: &[bool], slot_is_f64: &[bool]) {
     // Pre-compute set of jump targets — positions that are jumped to from elsewhere.
     // Used to prevent fusing ops at jump targets (which would break fallthrough semantics).
     let jump_targets: std::collections::HashSet<usize> = code
@@ -1421,15 +1461,75 @@ fn peephole_optimize(code: &mut Vec<Op>, slot_is_i64: &[bool]) {
             }
         }
 
-        // Convert LoadSlot(a) + LoadSlot(b) + {Add|Sub|...} → typed I64 variant
-        // when both slots are known to always hold Num(i64).
-        // This keeps the two LoadSlots but replaces the generic op with zero-dispatch version.
+        // Convert LoadSlot(s) + PushFloat(f) + BinOp → keep operands, use TypedBinOp F64
+        // PushFloat guarantees the operation produces an f64 result.
+        if i + 2 < code.len() {
+            if let (Op::LoadSlot(_), Op::PushFloat(_)) = (&code[i], &code[i + 1]) {
+                let typed = match &code[i + 2] {
+                    Op::Add => Some(Op::TypedBinOp(BinOp::Add, Ty::F64)),
+                    Op::Sub => Some(Op::TypedBinOp(BinOp::Sub, Ty::F64)),
+                    Op::Mul => Some(Op::TypedBinOp(BinOp::Mul, Ty::F64)),
+                    Op::Div => Some(Op::TypedBinOp(BinOp::Div, Ty::F64)),
+                    Op::Mod => Some(Op::TypedBinOp(BinOp::Mod, Ty::F64)),
+                    Op::Lt => Some(Op::TypedBinOp(BinOp::Lt, Ty::F64)),
+                    Op::Le => Some(Op::TypedBinOp(BinOp::Le, Ty::F64)),
+                    Op::Gt => Some(Op::TypedBinOp(BinOp::Gt, Ty::F64)),
+                    Op::Ge => Some(Op::TypedBinOp(BinOp::Ge, Ty::F64)),
+                    Op::Eq => Some(Op::TypedBinOp(BinOp::Eq, Ty::F64)),
+                    _ => None,
+                };
+                if let Some(top) = typed {
+                    index_map.push(new_code.len());
+                    new_code.push(code[i].clone());
+                    index_map.push(new_code.len());
+                    new_code.push(code[i + 1].clone());
+                    index_map.push(new_code.len());
+                    new_code.push(top);
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+
+        // Also match PushFloat(f) + LoadSlot(s) + BinOp (reversed operand order)
+        if i + 2 < code.len() {
+            if let (Op::PushFloat(_), Op::LoadSlot(_)) = (&code[i], &code[i + 1]) {
+                let typed = match &code[i + 2] {
+                    Op::Add => Some(Op::TypedBinOp(BinOp::Add, Ty::F64)),
+                    Op::Sub => Some(Op::TypedBinOp(BinOp::Sub, Ty::F64)),
+                    Op::Mul => Some(Op::TypedBinOp(BinOp::Mul, Ty::F64)),
+                    Op::Div => Some(Op::TypedBinOp(BinOp::Div, Ty::F64)),
+                    Op::Mod => Some(Op::TypedBinOp(BinOp::Mod, Ty::F64)),
+                    Op::Lt => Some(Op::TypedBinOp(BinOp::Lt, Ty::F64)),
+                    Op::Le => Some(Op::TypedBinOp(BinOp::Le, Ty::F64)),
+                    Op::Gt => Some(Op::TypedBinOp(BinOp::Gt, Ty::F64)),
+                    Op::Ge => Some(Op::TypedBinOp(BinOp::Ge, Ty::F64)),
+                    Op::Eq => Some(Op::TypedBinOp(BinOp::Eq, Ty::F64)),
+                    _ => None,
+                };
+                if let Some(top) = typed {
+                    index_map.push(new_code.len());
+                    new_code.push(code[i].clone());
+                    index_map.push(new_code.len());
+                    new_code.push(code[i + 1].clone());
+                    index_map.push(new_code.len());
+                    new_code.push(top);
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+
+        // Convert LoadSlot(a) + LoadSlot(b) + {Add|Sub|...} → typed variant
+        // when both slots are known to hold the same type.
         if i + 2 < code.len() {
             if let (Op::LoadSlot(a), Op::LoadSlot(b)) = (&code[i], &code[i + 1]) {
                 let a = *a;
                 let b = *b;
                 let sa = slot_is_i64.get(a).copied().unwrap_or(false);
                 let sb = slot_is_i64.get(b).copied().unwrap_or(false);
+                let fa = slot_is_f64.get(a).copied().unwrap_or(false);
+                let fb = slot_is_f64.get(b).copied().unwrap_or(false);
                 if sa && sb {
                     let typed = match &code[i + 2] {
                         Op::Add => Some(Op::TypedBinOp(BinOp::Add, Ty::I64)),
@@ -1440,6 +1540,28 @@ fn peephole_optimize(code: &mut Vec<Op>, slot_is_i64: &[bool]) {
                         Op::Gt => Some(Op::TypedBinOp(BinOp::Gt, Ty::I64)),
                         Op::Ge => Some(Op::TypedBinOp(BinOp::Ge, Ty::I64)),
                         Op::Eq => Some(Op::TypedBinOp(BinOp::Eq, Ty::I64)),
+                        _ => None,
+                    };
+                    if let Some(top) = typed {
+                        index_map.push(new_code.len());
+                        new_code.push(code[i].clone());
+                        index_map.push(new_code.len());
+                        new_code.push(code[i + 1].clone());
+                        index_map.push(new_code.len());
+                        new_code.push(top);
+                        i += 3;
+                        continue;
+                    }
+                } else if fa && fb {
+                    let typed = match &code[i + 2] {
+                        Op::Add => Some(Op::TypedBinOp(BinOp::Add, Ty::F64)),
+                        Op::Sub => Some(Op::TypedBinOp(BinOp::Sub, Ty::F64)),
+                        Op::Mul => Some(Op::TypedBinOp(BinOp::Mul, Ty::F64)),
+                        Op::Lt => Some(Op::TypedBinOp(BinOp::Lt, Ty::F64)),
+                        Op::Le => Some(Op::TypedBinOp(BinOp::Le, Ty::F64)),
+                        Op::Gt => Some(Op::TypedBinOp(BinOp::Gt, Ty::F64)),
+                        Op::Ge => Some(Op::TypedBinOp(BinOp::Ge, Ty::F64)),
+                        Op::Eq => Some(Op::TypedBinOp(BinOp::Eq, Ty::F64)),
                         _ => None,
                     };
                     if let Some(top) = typed {
@@ -2539,10 +2661,11 @@ pub fn try_compile_lambda(
     }
     compiler.code.push(Op::Return);
     let mut code = compiler.code;
-    let slot_types = compiler.slot_is_i64;
-    peephole_optimize(&mut code, &slot_types);
-    peephole_optimize(&mut code, &slot_types);
-    peephole_optimize(&mut code, &slot_types);
+    let slot_i64 = compiler.slot_is_i64;
+    let slot_f64 = compiler.slot_is_f64;
+    peephole_optimize(&mut code, &slot_i64, &slot_f64);
+    peephole_optimize(&mut code, &slot_i64, &slot_f64);
+    peephole_optimize(&mut code, &slot_i64, &slot_f64);
     // Compute total slots: params + any let-binding slots used in code
     // Captured vars are accessed via LoadCaptured/CallCapturedRef, not slots
     let base_slots = param_names.len();

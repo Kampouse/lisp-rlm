@@ -328,3 +328,51 @@ fn test_rank_intentions_compiles() {
     .unwrap();
     assert_eq!(output, "(3 3)");
 }
+
+#[test]
+fn test_float_peephole_in_arithmetic() {
+    // (* 0.7 x) should compile with TypedBinOp F64
+    let cl = eval_and_get_lambda("(define (test-float-mul x) (* 0.7 x))", "test-float-mul")
+        .unwrap()
+        .unwrap();
+    let has_f64_mul = cl.code.iter().any(|op| {
+        matches!(
+            op,
+            lisp_rlm::bytecode::Op::TypedBinOp(
+                lisp_rlm::bytecode::BinOp::Mul,
+                lisp_rlm::bytecode::Ty::F64,
+            )
+        )
+    });
+    assert!(
+        has_f64_mul,
+        "Expected TypedBinOp(Mul, F64), got: {:?}",
+        cl.code
+    );
+
+    // Verify correct result
+    let result = eval_program("(define (tfm x) (* 0.7 x)) (tfm 0.5)").unwrap();
+    assert_eq!(result, "0.35");
+
+    // (- 1.0 x) — reversed PushFloat + LoadSlot
+    let cl2 = eval_and_get_lambda("(define (test-float-sub x) (- 1.0 x))", "test-float-sub")
+        .unwrap()
+        .unwrap();
+    let has_f64_sub = cl2.code.iter().any(|op| {
+        matches!(
+            op,
+            lisp_rlm::bytecode::Op::TypedBinOp(
+                lisp_rlm::bytecode::BinOp::Sub,
+                lisp_rlm::bytecode::Ty::F64,
+            )
+        )
+    });
+    assert!(
+        has_f64_sub,
+        "Expected TypedBinOp(Sub, F64), got: {:?}",
+        cl2.code
+    );
+
+    let result2 = eval_program("(define (tfs x) (- 1.0 x)) (tfs 0.3)").unwrap();
+    assert_eq!(result2, "0.7");
+}
