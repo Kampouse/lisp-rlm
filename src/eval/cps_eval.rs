@@ -1197,8 +1197,67 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                                 }
                             }
                         }
-                        // CPS arg collection for regular function calls
+                        // Fast path: if head resolves to a compiled lambda and all args are simple,
+                        // skip CPS arg collection and call run_compiled_lambda directly.
                         let raw_args: Vec<LispVal> = list[1..].to_vec();
+                        if let LispVal::Sym(name) = &list[0] {
+                            if let Some(LispVal::Lambda {
+                                params,
+                                rest_param: None,
+                                compiled: Some(ref cl),
+                                ..
+                            }) = env.get(name)
+                            {
+                                if raw_args.len() == params.len() {
+                                    // Resolve args — fast path for symbols and self-evaluating values
+                                    let mut resolved_args: Vec<LispVal> =
+                                        Vec::with_capacity(raw_args.len());
+                                    let mut all_simple = true;
+                                    for arg in &raw_args {
+                                        match arg {
+                                            LispVal::Sym(s) => {
+                                                if s.starts_with(':') {
+                                                    resolved_args.push(arg.clone());
+                                                } else if let Some(v) = env.get(s) {
+                                                    resolved_args.push(v.clone());
+                                                } else if is_builtin_name(s) {
+                                                    resolved_args.push(arg.clone());
+                                                } else {
+                                                    all_simple = false;
+                                                    break;
+                                                }
+                                            }
+                                            LispVal::Nil
+                                            | LispVal::Bool(_)
+                                            | LispVal::Num(_)
+                                            | LispVal::Float(_)
+                                            | LispVal::Str(_)
+                                            | LispVal::Map(_) => {
+                                                resolved_args.push(arg.clone());
+                                            }
+                                            _ => {
+                                                all_simple = false;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if all_simple {
+                                        match crate::bytecode::run_compiled_lambda(
+                                            cl,
+                                            &resolved_args,
+                                            env,
+                                            state,
+                                        ) {
+                                            Ok(v) => return Ok(Step::Done(v)),
+                                            Err(_) => {
+                                                // Bytecode failed — fall through to CPS
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // CPS arg collection for regular function calls
                         if raw_args.is_empty() {
                             // No args — dispatch directly
                             let r = crate::eval::dispatch_call(list, env, state)?;
