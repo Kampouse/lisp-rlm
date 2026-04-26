@@ -1894,10 +1894,17 @@ pub fn run_compiled_lambda(
         slots[i] = args.get(i).cloned().unwrap_or(LispVal::Nil);
     }
     let mut stack: Vec<LispVal> = Vec::with_capacity(8);
+    // Frame stack for iterative CallSelf — avoids recursive run_compiled_lambda calls
+    struct Frame {
+        pc: usize,
+        slots: Vec<LispVal>,
+        stack: Vec<LispVal>,
+    }
+    let mut frames: Vec<Frame> = Vec::new();
     let code = &cl.code;
     let mut pc: usize = 0;
     let mut ops: u32 = 0;
-    const LAMBDA_BUDGET: u32 = 1_000_000;
+    const LAMBDA_BUDGET: u32 = 10_000_000;
 
     loop {
         ops += 1;
@@ -2508,7 +2515,16 @@ pub fn run_compiled_lambda(
                 pc += 1;
             }
             Op::Return => {
-                return Ok(stack.pop().unwrap_or(LispVal::Nil));
+                let retval = stack.pop().unwrap_or(LispVal::Nil);
+                if let Some(frame) = frames.pop() {
+                    // Restore caller frame
+                    slots = frame.slots;
+                    stack = frame.stack;
+                    stack.push(retval);
+                    pc = frame.pc;
+                } else {
+                    return Ok(retval);
+                }
             }
             Op::StoreSlot(s) => {
                 if *s < slots.len() {
@@ -2573,18 +2589,26 @@ pub fn run_compiled_lambda(
                 pc += 1;
             }
             Op::CallSelf(n_args) => {
-                // Recursive self-call: reuse the current CompiledLambda
-                // Pop args, then recursively call run_compiled_lambda with cl (self)
+                // Iterative self-call: save current frame, reset for new call
                 let mut self_args: Vec<LispVal> = Vec::with_capacity(*n_args);
                 for _ in 0..*n_args {
                     self_args.push(stack.pop().unwrap_or(LispVal::Nil));
                 }
                 self_args.reverse();
-                match run_compiled_lambda(cl, &self_args, outer_env, state) {
-                    Ok(v) => stack.push(v),
-                    Err(e) => return Err(e),
+                // Save current frame
+                let return_pc = pc + 1;
+                frames.push(Frame {
+                    pc: return_pc,
+                    slots: std::mem::take(&mut slots),
+                    stack: std::mem::take(&mut stack),
+                });
+                // Fresh slots for new invocation
+                slots = vec![LispVal::Nil; cl.total_slots];
+                for i in 0..cl.num_param_slots.min(self_args.len()) {
+                    slots[i] = self_args[i].clone();
                 }
-                pc += 1;
+                stack = Vec::with_capacity(8);
+                pc = 0;
             }
             // Unsupported ops for lambda body — shouldn't appear but handle gracefully
             _ => return Err("compiled lambda: unsupported op".into()),
