@@ -2562,6 +2562,7 @@ pub fn run_compiled_lambda(
                     closed_env,
                     pure_type: None,
                     compiled: Some(Box::new(inner.clone())),
+                    memo_cache: None,
                 });
                 pc += 1;
             }

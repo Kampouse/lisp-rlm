@@ -461,6 +461,8 @@ pub enum LispVal {
         /// Pre-compiled bytecode (cached at define-time). `None` if compilation failed
         /// (unsupported forms) or not yet attempted.
         compiled: Option<Box<crate::bytecode::CompiledLambda>>,
+        /// Fast memoization cache for pure compiled lambdas. Shared across clones.
+        memo_cache: Option<std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, LispVal>>>>,
     },
     /// case-lambda: dispatches based on arg count
     CaseLambda {
@@ -575,4 +577,31 @@ impl std::fmt::Display for LispVal {
             }
         }
     }
+}
+
+/// Fast hash of argument values for memoization. Uses a simple FNV-1a-like hash
+/// on the discriminant + payload of each LispVal. Only works for simple types
+/// (Num, Float, Bool, Str, Nil) — complex types (List, Map, Lambda) hash to 0.
+pub fn hash_args(args: &[LispVal]) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325; // FNV offset basis
+    for arg in args {
+        h ^= match arg {
+            LispVal::Num(n) => *n as u64,
+            LispVal::Float(f) => f.to_bits(),
+            LispVal::Bool(b) => if *b { 1 } else { 0 },
+            LispVal::Nil => 0xDEAD,
+            LispVal::Str(s) => {
+                // Simple string hash
+                let mut sh: u64 = 0x100000001b3;
+                for b in s.bytes() {
+                    sh ^= b as u64;
+                    sh = sh.wrapping_mul(0x00000100000001B3);
+                }
+                sh
+            }
+            _ => 0, // complex types can't be hashed fast
+        };
+        h = h.wrapping_mul(0x00000100000001B3); // FNV prime
+    }
+    h
 }

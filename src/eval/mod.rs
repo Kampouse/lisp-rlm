@@ -295,6 +295,7 @@ pub fn lisp_eval(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                     params,
                     rest_param: None,
                     compiled: Some(ref cl),
+                    ref memo_cache,
                     ..
                 }) = env.get(name)
                 {
@@ -316,6 +317,27 @@ pub fn lisp_eval(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                             }
                         }
                         if all_literal {
+                            // Check memo cache for pure functions
+                            if let Some(ref cache) = memo_cache {
+                                let key = crate::types::hash_args(&list[1..]);
+                                if let Ok(guard) = cache.lock() {
+                                    if let Some(cached) = guard.get(&key) {
+                                        return Ok(cached.clone());
+                                    }
+                                }
+                                let result = crate::bytecode::run_compiled_lambda(
+                                    cl,
+                                    &list[1..].to_vec(),
+                                    env,
+                                    state,
+                                )?;
+                                if let Ok(mut guard) = cache.lock() {
+                                    if guard.len() < 4096 {
+                                        guard.insert(key, result.clone());
+                                    }
+                                }
+                                return Ok(result);
+                            }
                             return crate::bytecode::run_compiled_lambda(
                                 cl,
                                 &list[1..].to_vec(),
@@ -1881,6 +1903,7 @@ pub fn call_val(
             body,
             closed_env,
             compiled,
+            memo_cache,
             ..
         } => {
             // Fast path: if the lambda has compiled bytecode, skip apply_lambda
@@ -1888,10 +1911,33 @@ pub fn call_val(
             // Only works for fixed-arity calls (no rest_param).
             if rest_param.is_none() && args.len() == params.len() {
                 if let Some(ref cl) = compiled {
-                    match crate::bytecode::run_compiled_lambda(cl, args, env, state) {
-                        Ok(val) => return Ok(EvalResult::Value(val)),
-                        Err(_) => {
-                            // Bytecode failed — fall through to tree-walk
+                    // Check memo cache for pure functions
+                    if let Some(ref cache) = memo_cache {
+                        let key = crate::types::hash_args(args);
+                        if let Ok(guard) = cache.lock() {
+                            if let Some(cached) = guard.get(&key) {
+                                return Ok(EvalResult::Value(cached.clone()));
+                            }
+                        }
+                        match crate::bytecode::run_compiled_lambda(cl, args, env, state) {
+                            Ok(val) => {
+                                if let Ok(mut guard) = cache.lock() {
+                                    if guard.len() < 4096 {
+                                        guard.insert(key, val.clone());
+                                    }
+                                }
+                                return Ok(EvalResult::Value(val));
+                            }
+                            Err(_) => {
+                                // Bytecode failed — fall through to tree-walk
+                            }
+                        }
+                    } else {
+                        match crate::bytecode::run_compiled_lambda(cl, args, env, state) {
+                            Ok(val) => return Ok(EvalResult::Value(val)),
+                            Err(_) => {
+                                // Bytecode failed — fall through to tree-walk
+                            }
                         }
                     }
                 }

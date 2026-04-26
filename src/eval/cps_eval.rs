@@ -37,6 +37,12 @@ fn make_lambda(
         func_name,
     )
     .map(|cl| Box::new(cl));
+    // Auto-memoize: attach cache for pure compiled lambdas
+    let memo_cache = if pure_type.is_some() && compiled.is_some() {
+        Some(std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())))
+    } else {
+        None
+    };
     LispVal::Lambda {
         params,
         rest_param,
@@ -44,6 +50,7 @@ fn make_lambda(
         closed_env,
         pure_type,
         compiled,
+        memo_cache,
     }
 }
 
@@ -1517,6 +1524,7 @@ pub fn handle_cont(
                             compiled: new_compiled.map(|cl| Box::new(cl)),
                             pure_type: pure_type.clone(),
                             closed_env: closed_env.clone(),
+                            memo_cache: None,
                         }
                     } else {
                         val
