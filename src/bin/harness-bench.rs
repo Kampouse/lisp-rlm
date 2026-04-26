@@ -89,11 +89,23 @@ fn main() {
 
     // --- Compilation stats ---
     println!("--- Compilation stats ---");
-    for name in &["get-default", "urgency", "cost-efficiency", "score-intention",
-                   "handle-result", "execute-action", "rank-intentions", "scheduler-run"] {
+    for name in &[
+        "get-default",
+        "urgency",
+        "cost-efficiency",
+        "score-intention",
+        "handle-result",
+        "execute-action",
+        "rank-intentions",
+        "scheduler-run",
+    ] {
         match env.get(name) {
-            Some(LispVal::Lambda { compiled: Some(_), .. }) => println!("  {} -> compiled (bytecode)", name),
-            Some(LispVal::Lambda { compiled: None, .. }) => println!("  {} -> NOT compiled (tree-walk)", name),
+            Some(LispVal::Lambda {
+                compiled: Some(_), ..
+            }) => println!("  {} -> compiled (bytecode)", name),
+            Some(LispVal::Lambda { compiled: None, .. }) => {
+                println!("  {} -> NOT compiled (tree-walk)", name)
+            }
             _ => println!("  {} -> not found", name),
         }
     }
@@ -102,14 +114,20 @@ fn main() {
     // --- Benchmark 1: score-intention (single intent) ---
     {
         let n = 1000;
-        let prog = r#"(score-intention (dict "id" "bench" "type" "completable" "cost" 5 "deadline" 1))"#;
+        let prog =
+            r#"(score-intention (dict "id" "bench" "type" "completable" "cost" 5 "deadline" 1))"#;
         let exprs = parse_all(prog).unwrap();
         let start = std::time::Instant::now();
         for _ in 0..n {
             let _ = lisp_eval(&exprs[0], &mut env, &mut state);
         }
         let ms = elapsed_ms(start);
-        println!("score-intention: {} calls in {:.1}ms ({:.0} calls/sec)", n, ms, n as f64 / (ms / 1000.0));
+        println!(
+            "score-intention: {} calls in {:.1}ms ({:.0} calls/sec)",
+            n,
+            ms,
+            n as f64 / (ms / 1000.0)
+        );
     }
 
     // --- Benchmark 2: get-default in isolation ---
@@ -122,7 +140,12 @@ fn main() {
             let _ = lisp_eval(&exprs[0], &mut env, &mut state);
         }
         let ms = elapsed_ms(start);
-        println!("get-default: {} calls in {:.1}ms ({:.0} calls/sec)", n, ms, n as f64 / (ms / 1000.0));
+        println!(
+            "get-default: {} calls in {:.1}ms ({:.0} calls/sec)",
+            n,
+            ms,
+            n as f64 / (ms / 1000.0)
+        );
     }
 
     // --- Benchmark 3: rank-intentions (10 intents: map+sort) ---
@@ -135,7 +158,12 @@ fn main() {
             let _ = lisp_eval(&exprs[0], &mut env, &mut state);
         }
         let ms = elapsed_ms(start);
-        println!("rank-intentions (10 intents): {} calls in {:.1}ms ({:.0} calls/sec)", n, ms, n as f64 / (ms / 1000.0));
+        println!(
+            "rank-intentions (10 intents): {} calls in {:.1}ms ({:.0} calls/sec)",
+            n,
+            ms,
+            n as f64 / (ms / 1000.0)
+        );
     }
 
     // --- Benchmark 4: full scheduler-run (10 intents) ---
@@ -149,8 +177,13 @@ fn main() {
         }
         let ms = elapsed_ms(start);
         let ticks_per_sec = n as f64 / (ms / 1000.0);
-        println!("scheduler-run (10 intents): {} ticks in {:.1}ms ({:.0} ticks/sec, {:.2}ms/tick)",
-                 n, ms, ticks_per_sec, ms / n as f64);
+        println!(
+            "scheduler-run (10 intents): {} ticks in {:.1}ms ({:.0} ticks/sec, {:.2}ms/tick)",
+            n,
+            ms,
+            ticks_per_sec,
+            ms / n as f64
+        );
     }
 
     // --- Benchmark 5: map HOF fast path (10-elem list) ---
@@ -164,7 +197,12 @@ fn main() {
         }
         let ms = elapsed_ms(start);
         let total_elems = n * 10;
-        println!("map (10-elem list): {} iterations in {:.1}ms ({:.0} elem/sec)", n, ms, total_elems as f64 / (ms / 1000.0));
+        println!(
+            "map (10-elem list): {} iterations in {:.1}ms ({:.0} elem/sec)",
+            n,
+            ms,
+            total_elems as f64 / (ms / 1000.0)
+        );
     }
 
     // --- Benchmark 6: filter HOF fast path ---
@@ -177,7 +215,12 @@ fn main() {
             let _ = lisp_eval(&exprs[0], &mut env, &mut state);
         }
         let ms = elapsed_ms(start);
-        println!("filter (10-elem list): {} iterations in {:.1}ms ({:.0} calls/sec)", n, ms, n as f64 / (ms / 1000.0));
+        println!(
+            "filter (10-elem list): {} iterations in {:.1}ms ({:.0} calls/sec)",
+            n,
+            ms,
+            n as f64 / (ms / 1000.0)
+        );
     }
 
     // --- Benchmark 7: for-each HOF fast path ---
@@ -190,7 +233,12 @@ fn main() {
             let _ = lisp_eval(&exprs[0], &mut env, &mut state);
         }
         let ms = elapsed_ms(start);
-        println!("for-each (10-elem list): {} iterations in {:.1}ms ({:.0} calls/sec)", n, ms, n as f64 / (ms / 1000.0));
+        println!(
+            "for-each (10-elem list): {} iterations in {:.1}ms ({:.0} calls/sec)",
+            n,
+            ms,
+            n as f64 / (ms / 1000.0)
+        );
     }
 
     // --- Benchmark 8: dict/get raw ---
@@ -203,7 +251,12 @@ fn main() {
             let _ = lisp_eval(&exprs[0], &mut env, &mut state);
         }
         let ms = elapsed_ms(start);
-        println!("dict/get (raw eval): {} calls in {:.1}ms ({:.0} calls/sec)", n, ms, n as f64 / (ms / 1000.0));
+        println!(
+            "dict/get (raw eval): {} calls in {:.1}ms ({:.0} calls/sec)",
+            n,
+            ms,
+            n as f64 / (ms / 1000.0)
+        );
     }
 
     // --- Benchmark 9: urgency alone ---
@@ -216,7 +269,12 @@ fn main() {
             let _ = lisp_eval(&exprs[0], &mut env, &mut state);
         }
         let ms = elapsed_ms(start);
-        println!("urgency: {} calls in {:.1}ms ({:.0} calls/sec)", n, ms, n as f64 / (ms / 1000.0));
+        println!(
+            "urgency: {} calls in {:.1}ms ({:.0} calls/sec)",
+            n,
+            ms,
+            n as f64 / (ms / 1000.0)
+        );
     }
 
     // --- Benchmark 10: cost-efficiency alone ---
@@ -229,7 +287,12 @@ fn main() {
             let _ = lisp_eval(&exprs[0], &mut env, &mut state);
         }
         let ms = elapsed_ms(start);
-        println!("cost-efficiency: {} calls in {:.1}ms ({:.0} calls/sec)", n, ms, n as f64 / (ms / 1000.0));
+        println!(
+            "cost-efficiency: {} calls in {:.1}ms ({:.0} calls/sec)",
+            n,
+            ms,
+            n as f64 / (ms / 1000.0)
+        );
     }
 
     // --- Benchmark 11: handle-result ---
@@ -242,7 +305,12 @@ fn main() {
             let _ = lisp_eval(&exprs[0], &mut env, &mut state);
         }
         let ms = elapsed_ms(start);
-        println!("handle-result: {} calls in {:.1}ms ({:.0} calls/sec)", n, ms, n as f64 / (ms / 1000.0));
+        println!(
+            "handle-result: {} calls in {:.1}ms ({:.0} calls/sec)",
+            n,
+            ms,
+            n as f64 / (ms / 1000.0)
+        );
     }
 
     // --- Benchmark 12: 100-intent scheduler-run (scaled up) ---
@@ -280,16 +348,23 @@ fn main() {
         }
         let ms = elapsed_ms(start);
         let ticks_per_sec = n as f64 / (ms / 1000.0);
-        println!("scheduler-run (100 intents): {} ticks in {:.1}ms ({:.0} ticks/sec, {:.2}ms/tick)",
-                 n, ms, ticks_per_sec, ms / n as f64);
+        println!(
+            "scheduler-run (100 intents): {} ticks in {:.1}ms ({:.0} ticks/sec, {:.2}ms/tick)",
+            n,
+            ms,
+            ticks_per_sec,
+            ms / n as f64
+        );
     }
-
 
     // --- Benchmark 13: raw run_compiled_lambda throughput ---
     {
         // Get score-intention as a compiled lambda
         let score_cl = match env.get("score-intention") {
-            Some(LispVal::Lambda { compiled: Some(ref cl), .. }) => (**cl).clone(),
+            Some(LispVal::Lambda {
+                compiled: Some(ref cl),
+                ..
+            }) => (**cl).clone(),
             _ => panic!("score-intention should be compiled"),
         };
         let mut fresh_state = EvalState::new();
@@ -303,16 +378,29 @@ fn main() {
         let start = std::time::Instant::now();
         for _ in 0..n {
             let mut fresh_state = EvalState::new();
-            let _ = lisp_rlm::bytecode::run_compiled_lambda(&score_cl, &[intent.clone()], &env, &mut fresh_state);
+            let _ = lisp_rlm::bytecode::run_compiled_lambda(
+                &score_cl,
+                &[intent.clone()],
+                &env,
+                &mut fresh_state,
+            );
         }
         let ms = elapsed_ms(start);
-        println!("score-intention (raw compiled): {} calls in {:.1}ms ({:.0} calls/sec)", n, ms, n as f64 / (ms / 1000.0));
+        println!(
+            "score-intention (raw compiled): {} calls in {:.1}ms ({:.0} calls/sec)",
+            n,
+            ms,
+            n as f64 / (ms / 1000.0)
+        );
     }
 
     // --- Benchmark 14: get-default raw compiled ---
     {
         let gd_cl = match env.get("get-default") {
-            Some(LispVal::Lambda { compiled: Some(ref cl), .. }) => (**cl).clone(),
+            Some(LispVal::Lambda {
+                compiled: Some(ref cl),
+                ..
+            }) => (**cl).clone(),
             _ => panic!("get-default should be compiled"),
         };
         let mut fresh_state2 = EvalState::new();
@@ -326,10 +414,20 @@ fn main() {
         let start = std::time::Instant::now();
         for _ in 0..n {
             let mut fresh_state = EvalState::new();
-            let _ = lisp_rlm::bytecode::run_compiled_lambda(&gd_cl, &[m.clone(), LispVal::Str("a".to_string()), LispVal::Num(99)], &env, &mut fresh_state);
+            let _ = lisp_rlm::bytecode::run_compiled_lambda(
+                &gd_cl,
+                &[m.clone(), LispVal::Str("a".to_string()), LispVal::Num(99)],
+                &env,
+                &mut fresh_state,
+            );
         }
         let ms = elapsed_ms(start);
-        println!("get-default (raw compiled): {} calls in {:.1}ms ({:.0} calls/sec)", n, ms, n as f64 / (ms / 1000.0));
+        println!(
+            "get-default (raw compiled): {} calls in {:.1}ms ({:.0} calls/sec)",
+            n,
+            ms,
+            n as f64 / (ms / 1000.0)
+        );
     }
 
     println!("\n=== Done ===");

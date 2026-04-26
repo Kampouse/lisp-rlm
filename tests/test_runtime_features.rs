@@ -45,7 +45,10 @@ fn test_fork_define_isolation() {
 (fork (define secret 42))
 secret
 "#;
-    assert!(eval_str(code).is_err(), "secret should not be defined in parent");
+    assert!(
+        eval_str(code).is_err(),
+        "secret should not be defined in parent"
+    );
 }
 
 #[test]
@@ -111,10 +114,7 @@ fn test_memoize_string_args() {
 (define greet (memoize (lambda (name) (str-concat "hi " name))))
 (greet "alice")
 "#;
-    assert_eq!(
-        eval_str(code).unwrap(),
-        LispVal::Str("hi alice".into())
-    );
+    assert_eq!(eval_str(code).unwrap(), LispVal::Str("hi alice".into()));
 }
 
 #[test]
@@ -226,7 +226,11 @@ fn test_letrec_mutual_recursion() {
 "#;
     assert_eq!(
         eval_str(code).unwrap(),
-        LispVal::List(vec![LispVal::Bool(true), LispVal::Bool(true), LispVal::Bool(false)])
+        LispVal::List(vec![
+            LispVal::Bool(true),
+            LispVal::Bool(true),
+            LispVal::Bool(false)
+        ])
     );
 }
 
@@ -338,8 +342,11 @@ fn test_par_map_basic() {
     assert_eq!(
         eval_str(code).unwrap(),
         LispVal::List(vec![
-            LispVal::Num(2), LispVal::Num(4), LispVal::Num(6),
-            LispVal::Num(8), LispVal::Num(10)
+            LispVal::Num(2),
+            LispVal::Num(4),
+            LispVal::Num(6),
+            LispVal::Num(8),
+            LispVal::Num(10)
         ])
     );
 }
@@ -353,7 +360,10 @@ fn test_par_map_empty() {
 #[test]
 fn test_par_map_single() {
     let code = "(par-map (lambda (x) (+ x 1)) (list 41))";
-    assert_eq!(eval_str(code).unwrap(), LispVal::List(vec![LispVal::Num(42)]));
+    assert_eq!(
+        eval_str(code).unwrap(),
+        LispVal::List(vec![LispVal::Num(42)])
+    );
 }
 
 #[test]
@@ -364,8 +374,11 @@ fn test_par_map_order_preserved() {
     assert_eq!(
         eval_str(code).unwrap(),
         LispVal::List(vec![
-            LispVal::Num(25), LispVal::Num(16), LispVal::Num(9),
-            LispVal::Num(4), LispVal::Num(1)
+            LispVal::Num(25),
+            LispVal::Num(16),
+            LispVal::Num(9),
+            LispVal::Num(4),
+            LispVal::Num(1)
         ])
     );
 }

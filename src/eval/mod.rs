@@ -1801,8 +1801,24 @@ pub fn call_val(
             rest_param,
             body,
             closed_env,
+            compiled,
             ..
-        } => apply_lambda(params, rest_param, body, closed_env, args, env, state),
+        } => {
+            // Fast path: if the lambda has compiled bytecode, skip apply_lambda
+            // (env clone, closed_env iteration, CPS TailReturn trampoline).
+            // Only works for fixed-arity calls (no rest_param).
+            if rest_param.is_none() && args.len() == params.len() {
+                if let Some(ref cl) = compiled {
+                    match crate::bytecode::run_compiled_lambda(cl, args, env, state) {
+                        Ok(val) => return Ok(EvalResult::Value(val)),
+                        Err(_) => {
+                            // Bytecode failed — fall through to tree-walk
+                        }
+                    }
+                }
+            }
+            apply_lambda(params, rest_param, body, closed_env, args, env, state)
+        }
         LispVal::Macro {
             params,
             rest_param,
@@ -1942,7 +1958,11 @@ pub fn call_val(
         }
         LispVal::Memoized { func, cache } => {
             // Build a cache key from the arguments
-            let key: String = args.iter().map(|a| a.to_string()).collect::<Vec<_>>().join("|");
+            let key: String = args
+                .iter()
+                .map(|a| a.to_string())
+                .collect::<Vec<_>>()
+                .join("|");
             {
                 let cache_map = cache.read().expect("memoize cache lock");
                 if let Some(cached) = cache_map.get(&key) {
@@ -1954,7 +1974,13 @@ pub fn call_val(
             // Return a TailCall so the CPS evaluator handles it properly.
             // But first check the cache result after execution.
             let result = match func.as_ref() {
-                LispVal::Lambda { params, rest_param, body, closed_env, .. } => {
+                LispVal::Lambda {
+                    params,
+                    rest_param,
+                    body,
+                    closed_env,
+                    ..
+                } => {
                     // Use apply_lambda which properly sets up the env
                     let mut local_env = env.clone();
                     local_env.set_shared_env(closed_env.clone());
@@ -1966,7 +1992,8 @@ pub fn call_val(
                         local_env.push(p.to_string(), args.get(i).cloned().unwrap_or(LispVal::Nil));
                     }
                     if let Some(rest_name) = rest_param {
-                        let rest_args: Vec<LispVal> = args.get(params.len()..).unwrap_or(&[]).to_vec();
+                        let rest_args: Vec<LispVal> =
+                            args.get(params.len()..).unwrap_or(&[]).to_vec();
                         local_env.push(rest_name.to_string(), LispVal::List(rest_args));
                     }
                     // Evaluate body in the local env, then copy mutations back

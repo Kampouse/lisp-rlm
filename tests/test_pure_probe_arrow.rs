@@ -28,7 +28,11 @@ fn test_pure_lambda_has_type_annotation() {
     // Should return a string with the type signature, not nil
     match result {
         LispVal::Str(s) => {
-            assert!(s.contains("int") || s.contains("num"), "pure type should mention int/num, got: {}", s);
+            assert!(
+                s.contains("int") || s.contains("num"),
+                "pure type should mention int/num, got: {}",
+                s
+            );
         }
         other => panic!("expected string, got {}", other),
     }
@@ -76,7 +80,11 @@ fn test_infer_type_arithmetic() {
     let result = eval_str(code).unwrap();
     match result {
         LispVal::Str(sig) => {
-            assert!(sig.contains("int") || sig.contains(":int"), "should mention int, got: {}", sig);
+            assert!(
+                sig.contains("int") || sig.contains(":int"),
+                "should mention int, got: {}",
+                sig
+            );
         }
         other => panic!("expected string, got {}", other),
     }
@@ -92,7 +100,11 @@ fn test_infer_type_string_function() {
     let result = eval_str(code).unwrap();
     match result {
         LispVal::Str(sig) => {
-            assert!(sig.contains("str") || sig.contains(":str"), "should mention str, got: {}", sig);
+            assert!(
+                sig.contains("str") || sig.contains(":str"),
+                "should mention str, got: {}",
+                sig
+            );
         }
         other => panic!("expected string, got {}", other),
     }
@@ -109,7 +121,11 @@ fn test_infer_type_identity() {
     match result {
         LispVal::Str(sig) => {
             // Should have :any or wide union for param type
-            assert!(sig.contains("any") || sig.contains("→"), "should have signature, got: {}", sig);
+            assert!(
+                sig.contains("any") || sig.contains("→"),
+                "should have signature, got: {}",
+                sig
+            );
         }
         other => panic!("expected string, got {}", other),
     }
@@ -148,7 +164,11 @@ fn test_infer_type_no_args() {
     let result = eval_str(code).unwrap();
     match result {
         LispVal::Str(sig) => {
-            assert!(sig.contains("int") || sig.contains("→"), "should mention int or arrow, got: {}", sig);
+            assert!(
+                sig.contains("int") || sig.contains("→"),
+                "should mention int or arrow, got: {}",
+                sig
+            );
         }
         other => panic!("expected string, got {}", other),
     }
@@ -204,7 +224,10 @@ fn test_arrow_matches_pure_lambda() {
 (pure (define (inc x) (+ x 1)))
 (check inc (:fn :int → :int))
 "#;
-    assert!(eval_str(code).is_ok(), "pure lambda should match arrow type");
+    assert!(
+        eval_str(code).is_ok(),
+        "pure lambda should match arrow type"
+    );
 }
 
 #[test]
@@ -213,7 +236,10 @@ fn test_arrow_matches_memoized() {
 (define f (memoize (lambda (x) (* x 2))))
 (check f (:fn :int → :int))
 "#;
-    assert!(eval_str(code).is_ok(), "memoized fn should match arrow type");
+    assert!(
+        eval_str(code).is_ok(),
+        "memoized fn should match arrow type"
+    );
 }
 
 #[test]
@@ -226,7 +252,11 @@ fn test_arrow_in_contract_param() {
 (apply-fn (lambda (n) (+ n 1)) 5)
 "#;
     let result = eval_str(code);
-    assert!(result.is_ok(), "contract with arrow param should work, got: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "contract with arrow param should work, got: {:?}",
+        result
+    );
     assert_eq!(result.unwrap(), LispVal::Num(6));
 }
 
@@ -239,10 +269,17 @@ fn test_arrow_contract_rejects_non_fn() {
 (apply-fn 42 5)
 "#;
     let result = eval_str(code);
-    assert!(result.is_err(), "passing non-fn to arrow contract should fail");
+    assert!(
+        result.is_err(),
+        "passing non-fn to arrow contract should fail"
+    );
     let err = result.unwrap_err();
     // Error is either "contract violation" or "not callable" depending on dispatch order
-    assert!(err.contains("contract violation") || err.contains("not callable"), "got: {}", err);
+    assert!(
+        err.contains("contract violation") || err.contains("not callable"),
+        "got: {}",
+        err
+    );
 }
 
 #[test]
@@ -290,7 +327,11 @@ fn test_higher_order_pipeline() {
 (safe-apply inc (list 1 2 3))
 "#;
     let result = eval_str(code);
-    assert!(result.is_ok(), "higher-order contract pipeline should work, got: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "higher-order contract pipeline should work, got: {:?}",
+        result
+    );
     assert_eq!(
         result.unwrap(),
         LispVal::List(vec![LispVal::Num(2), LispVal::Num(3), LispVal::Num(4)])

@@ -3,9 +3,9 @@
 //! Given a pure lambda, probe each parameter with representative values of each type,
 //! observe which inputs succeed and what type the output is. Build an inferred signature.
 
-use crate::types::{Env, EvalState, LispVal};
 use crate::eval::lisp_eval;
 use crate::parser::parse_all;
+use crate::types::{Env, EvalState, LispVal};
 
 /// Representative sample values for each type.
 fn sample_values() -> Vec<(&'static str, LispVal)> {
@@ -15,7 +15,10 @@ fn sample_values() -> Vec<(&'static str, LispVal)> {
         ("str", LispVal::Str("hello".into())),
         ("bool", LispVal::Bool(true)),
         ("nil", LispVal::Nil),
-        ("list", LispVal::List(vec![LispVal::Num(1), LispVal::Num(2)])),
+        (
+            "list",
+            LispVal::List(vec![LispVal::Num(1), LispVal::Num(2)]),
+        ),
     ]
 }
 
@@ -55,9 +58,18 @@ pub fn probe_function(
     state: &mut EvalState,
 ) -> Result<(Vec<String>, String), String> {
     let (params, _rest, _body, _closed_env) = match func {
-        LispVal::Lambda { params, rest_param, body, closed_env, .. } => {
-            (params.clone(), rest_param.clone(), body.clone(), closed_env.clone())
-        }
+        LispVal::Lambda {
+            params,
+            rest_param,
+            body,
+            closed_env,
+            ..
+        } => (
+            params.clone(),
+            rest_param.clone(),
+            body.clone(),
+            closed_env.clone(),
+        ),
         _ => return Err("infer-type: expected lambda".into()),
     };
 
@@ -91,7 +103,9 @@ pub fn probe_function(
             match call_with_args(func, &args, env, state) {
                 Ok(result) => {
                     probe.accepted.push(type_name.to_string());
-                    probe.io_types.push((type_name.to_string(), type_keyword(&result).to_string()));
+                    probe
+                        .io_types
+                        .push((type_name.to_string(), type_keyword(&result).to_string()));
                 }
                 Err(_) => {
                     // This type was rejected — parameter doesn't accept it

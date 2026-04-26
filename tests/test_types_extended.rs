@@ -251,19 +251,28 @@ fn test_schema_compound_or_field() {
 (defschema :event "name" :str "count" (:or :int :nil))
 (validate (dict "name" "click" "count" 42) :event)
 "#;
-    assert!(eval_str(code).is_ok(), "int value for :or :int :nil should pass");
+    assert!(
+        eval_str(code).is_ok(),
+        "int value for :or :int :nil should pass"
+    );
 
     let code2 = r#"
 (defschema :event "name" :str "count" (:or :int :nil))
 (validate (dict "name" "click" "count" nil) :event)
 "#;
-    assert!(eval_str(code2).is_ok(), "nil value for :or :int :nil should pass");
+    assert!(
+        eval_str(code2).is_ok(),
+        "nil value for :or :int :nil should pass"
+    );
 
     let code3 = r#"
 (defschema :event "name" :str "count" (:or :int :nil))
 (validate (dict "name" "click" "count" "bad") :event)
 "#;
-    assert!(eval_str(code3).is_err(), "string value for :or :int :nil should fail");
+    assert!(
+        eval_str(code3).is_err(),
+        "string value for :or :int :nil should fail"
+    );
 }
 
 #[test]
@@ -272,7 +281,10 @@ fn test_schema_nested_list_field() {
 (defschema :config "name" :str "tags" (:list :str))
 (validate (dict "name" "prod" "tags" (list "web" "api")) :config)
 "#;
-    assert!(eval_str(code).is_ok(), "schema with nested list field should pass");
+    assert!(
+        eval_str(code).is_ok(),
+        "schema with nested list field should pass"
+    );
 }
 
 #[test]
@@ -303,7 +315,11 @@ fn test_schema_strict_rejects_extra() {
 (validate (dict "x" 1 "y" 2 "z" 3) :point)
 "#;
     let err = eval_str(code).unwrap_err();
-    assert!(err.contains("unexpected") || err.contains("extra"), "got: {}", err);
+    assert!(
+        err.contains("unexpected") || err.contains("extra"),
+        "got: {}",
+        err
+    );
 }
 
 #[test]
@@ -312,7 +328,10 @@ fn test_schema_strict_passes_exact() {
 (defschema :point "x" :int "y" :int :strict)
 (validate (dict "x" 1 "y" 2) :point)
 "#;
-    assert!(eval_str(code).is_ok(), "exact fields in strict schema should pass");
+    assert!(
+        eval_str(code).is_ok(),
+        "exact fields in strict schema should pass"
+    );
 }
 
 #[test]
@@ -321,7 +340,10 @@ fn test_schema_non_strict_allows_extra() {
 (defschema :person "name" :str "age" :int)
 (validate (dict "name" "Jean" "age" 30 "email" "j@x.com") :person)
 "#;
-    assert!(eval_str(code).is_ok(), "non-strict schema should allow extra fields");
+    assert!(
+        eval_str(code).is_ok(),
+        "non-strict schema should allow extra fields"
+    );
 }
 
 #[test]
@@ -332,7 +354,11 @@ fn test_schema_missing_required_field() {
 "#;
     let err = eval_str(code).unwrap_err();
     assert!(err.contains("missing"), "got: {}", err);
-    assert!(err.contains("c"), "should mention missing field 'c', got: {}", err);
+    assert!(
+        err.contains("c"),
+        "should mention missing field 'c', got: {}",
+        err
+    );
 }
 
 #[test]
@@ -342,7 +368,11 @@ fn test_schema_wrong_type_nested() {
 (validate (dict "items" (list 1 "bad" 3)) :nested)
 "#;
     let err = eval_str(code).unwrap_err();
-    assert!(err.contains("items") || err.contains("int") || err.contains("list"), "got: {}", err);
+    assert!(
+        err.contains("items") || err.contains("int") || err.contains("list"),
+        "got: {}",
+        err
+    );
 }
 
 #[test]
@@ -357,8 +387,16 @@ fn test_schema_inspect_structure() {
             assert_eq!(parts.len(), 3, "schema inspect should return 3 parts");
             // First should be the name (stored as string with : prefix)
             match &parts[0] {
-                LispVal::Str(s) => assert!(s.contains("test-inspect"), "name should contain schema name, got: {}", s),
-                LispVal::Sym(s) => assert!(s.contains("test-inspect"), "name should contain schema name, got: {}", s),
+                LispVal::Str(s) => assert!(
+                    s.contains("test-inspect"),
+                    "name should contain schema name, got: {}",
+                    s
+                ),
+                LispVal::Sym(s) => assert!(
+                    s.contains("test-inspect"),
+                    "name should contain schema name, got: {}",
+                    s
+                ),
                 other => panic!("expected string or symbol for name, got {}", other),
             }
             // Second should be field list
@@ -390,10 +428,7 @@ fn test_equal_basic() {
         eval_str("(equal? (list 1 2) (list 1 3))").unwrap(),
         LispVal::Bool(false)
     );
-    assert_eq!(
-        eval_str("(equal? 42 42)").unwrap(),
-        LispVal::Bool(true)
-    );
+    assert_eq!(eval_str("(equal? 42 42)").unwrap(), LispVal::Bool(true));
     assert_eq!(
         eval_str("(equal? \"a\" \"a\")").unwrap(),
         LispVal::Bool(true)
@@ -412,10 +447,7 @@ fn test_eq_symbol_identity() {
 #[test]
 fn test_matches_vs_check_consistency() {
     // matches? and check should agree on all types
-    assert_eq!(
-        eval_str("(matches? 42 :int)").unwrap(),
-        LispVal::Bool(true)
-    );
+    assert_eq!(eval_str("(matches? 42 :int)").unwrap(), LispVal::Bool(true));
     assert!(eval_str("(check 42 :int)").is_ok());
 
     assert_eq!(
@@ -482,12 +514,8 @@ fn test_or_single_type() {
 
 #[test]
 fn test_or_wide_union() {
-    assert!(
-        eval_str("(check 42 (:or :int :str :bool :nil))").is_ok()
-    );
-    assert!(
-        eval_str("(check nil (:or :int :str :bool :nil))").is_ok()
-    );
+    assert!(eval_str("(check 42 (:or :int :str :bool :nil))").is_ok());
+    assert!(eval_str("(check nil (:or :int :str :bool :nil))").is_ok());
     assert!(
         eval_str("(check (list 1) (:or :int :str :bool :nil))").is_err(),
         "list should not match wide union of primitives"
@@ -539,7 +567,11 @@ fn test_contract_in_higher_order() {
 (map safe-inc (list 1 2 3))
 "#;
     let result = eval_str(code);
-    assert!(result.is_ok(), "contracted fn in map should work, got: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "contracted fn in map should work, got: {:?}",
+        result
+    );
     assert_eq!(
         result.unwrap(),
         LispVal::List(vec![LispVal::Num(2), LispVal::Num(3), LispVal::Num(4)])

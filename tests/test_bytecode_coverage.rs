@@ -3,7 +3,10 @@
 use lisp_rlm::EvalState;
 use lisp_rlm::*;
 
-fn eval_and_get_lambda(code: &str, func_name: &str) -> Result<Option<lisp_rlm::bytecode::CompiledLambda>, String> {
+fn eval_and_get_lambda(
+    code: &str,
+    func_name: &str,
+) -> Result<Option<lisp_rlm::bytecode::CompiledLambda>, String> {
     let exprs = parse_all(code)?;
     let mut env = Env::new();
     let mut state = EvalState::new();
@@ -31,27 +34,44 @@ fn eval_program(code: &str) -> Result<String, String> {
 
 #[test]
 fn test_get_default_compiles() {
-    let result = eval_and_get_lambda(r#"
+    let result = eval_and_get_lambda(
+        r#"
         (define (get-default m key default)
             (let ((v (dict/get m key)))
                 (if (nil? v) default v)))
-    "#, "get-default");
-    let cl = result.unwrap().expect("get-default should compile to bytecode");
-    let has_call_captured = cl.code.iter().any(|op| matches!(op, lisp_rlm::bytecode::Op::CallCaptured(_, _)));
-    assert!(!has_call_captured, "get-default should not have CallCaptured ops");
+    "#,
+        "get-default",
+    );
+    let cl = result
+        .unwrap()
+        .expect("get-default should compile to bytecode");
+    let has_call_captured = cl
+        .code
+        .iter()
+        .any(|op| matches!(op, lisp_rlm::bytecode::Op::CallCaptured(_, _)));
+    assert!(
+        !has_call_captured,
+        "get-default should not have CallCaptured ops"
+    );
 }
 
 #[test]
 fn test_get_default_no_call_captured() {
-    let result = eval_and_get_lambda(r#"
+    let result = eval_and_get_lambda(
+        r#"
         (define (get-default m key default)
             (let ((v (dict/get m key)))
                 (if (nil? v) default v)))
-    "#, "get-default");
+    "#,
+        "get-default",
+    );
     let cl = result.unwrap().expect("get-default must compile");
     for op in &cl.code {
         if let lisp_rlm::bytecode::Op::CallCaptured(_, _) = op {
-            panic!("get-default should not have CallCaptured, found: {:?}", cl.code);
+            panic!(
+                "get-default should not have CallCaptured, found: {:?}",
+                cl.code
+            );
         }
     }
     assert!(!cl.code.is_empty(), "should have some ops");
@@ -59,7 +79,8 @@ fn test_get_default_no_call_captured() {
 
 #[test]
 fn test_harness_score_intention_compiles() {
-    let result = eval_and_get_lambda(r#"
+    let result = eval_and_get_lambda(
+        r#"
         (define (get-default m key default)
             (let ((v (dict/get m key)))
                 (if (nil? v) default v)))
@@ -69,9 +90,15 @@ fn test_harness_score_intention_compiles() {
                   (confidence (get-default intent "confidence" 0.5)))
               (+ (* (get-default (dict "critical" 10 "high" 7 "medium" 4 "low" 1) urgency 4) confidence)
                  (/ 1.0 (+ cost 1)))))
-    "#, "score-intention");
+    "#,
+        "score-intention",
+    );
     if let Some(cl) = result.unwrap() {
-        let op_names: Vec<String> = cl.code.iter().map(|op| format!("{:?}", op).split('(').next().unwrap().to_string()).collect();
+        let op_names: Vec<String> = cl
+            .code
+            .iter()
+            .map(|op| format!("{:?}", op).split('(').next().unwrap().to_string())
+            .collect();
         eprintln!("score-intention ops: {:?}", op_names);
     }
 }
@@ -174,7 +201,11 @@ fn test_full_harness_scoring() {
     "#;
     let result = eval_program(code).unwrap();
     assert!(result.contains("score"), "expected score in: {}", result);
-    assert!(result.contains("overdue"), "expected overdue in: {}", result);
+    assert!(
+        result.contains("overdue"),
+        "expected overdue in: {}",
+        result
+    );
 }
 
 #[test]
@@ -198,30 +229,38 @@ fn test_harness_style_pipeline() {
     assert_eq!(result, "(10 1 7)");
 }
 
-
 #[test]
 fn test_fib_compiles_with_fallback() {
     // Recursive fib compiles, but self-calls go through BuiltinCall("fib")
     // which fails at runtime. The eval fallback handles it correctly.
-    let result = eval_and_get_lambda(r#"
+    let result = eval_and_get_lambda(
+        r#"
         (define (fib n)
             (if (<= n 1) n
                 (+ (fib (- n 1)) (fib (- n 2)))))
-    "#, "fib");
+    "#,
+        "fib",
+    );
     let cl = result.unwrap().expect("fib should compile");
-    assert!(cl.captured.is_empty(), "fib captures nothing (self-reference via BuiltinCall)");
+    assert!(
+        cl.captured.is_empty(),
+        "fib captures nothing (self-reference via BuiltinCall)"
+    );
     // Correctness: eval fallback produces correct results
-    let output = eval_program(r#"
+    let output = eval_program(
+        r#"
         (define (fib n) (if (<= n 1) n (+ (fib (- n 1)) (fib (- n 2)))))
         (fib 10)
-    "#).unwrap();
+    "#,
+    )
+    .unwrap();
     assert_eq!(output, "55");
 }
 
-
 #[test]
 fn test_scheduler_run_compiles_with_closure() {
-    let result = eval_and_get_lambda(r#"
+    let result = eval_and_get_lambda(
+        r#"
         (define (get-default m key default)
             (let ((v (dict/get m key)))
                 (if (nil? v) default v)))
@@ -249,7 +288,9 @@ fn test_scheduler_run_compiles_with_closure() {
                     (let ((result (execute-action intent)))
                         (handle-result intent result)))
                     ranked)))
-    "#, "scheduler-run");
+    "#,
+        "scheduler-run",
+    );
     let cl = result.unwrap().expect("scheduler-run should compile");
     assert_eq!(cl.code.len(), 7);
     assert_eq!(cl.closures.len(), 1);
@@ -259,20 +300,25 @@ fn test_scheduler_run_compiles_with_closure() {
     assert!(inner.captured.iter().any(|(k, _)| k == "handle-result"));
 }
 
-
 #[test]
 fn test_rank_intentions_compiles() {
-    let result = eval_and_get_lambda(r#"
+    let result = eval_and_get_lambda(
+        r#"
         (define (score-intention intent) (+ 1 2))
         (define (rank-intentions intentions) (map score-intention intentions))
-    "#, "rank-intentions");
+    "#,
+        "rank-intentions",
+    );
     let cl = result.unwrap().expect("rank-intentions should compile");
     assert!(cl.captured.iter().any(|(k, _)| k == "score-intention"));
     // Correctness: map over list with compiled lambda
-    let output = eval_program(r#"
+    let output = eval_program(
+        r#"
         (define (score-intention intent) (+ 1 2))
         (define (rank-intentions intentions) (map score-intention intentions))
         (rank-intentions (list (dict "x" 1) (dict "x" 2)))
-    "#).unwrap();
+    "#,
+    )
+    .unwrap();
     assert_eq!(output, "(3 3)");
 }

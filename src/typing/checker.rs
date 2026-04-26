@@ -9,8 +9,8 @@
 //! The `pure` form extracts the type signature, checks the body against it,
 //! and only registers the define if type-checking passes.
 
-use crate::types::LispVal;
 use super::types::{Scheme, TcCon, TcEnv, TcType};
+use crate::types::LispVal;
 
 // ---------------------------------------------------------------------------
 // Substitution & Unification
@@ -38,10 +38,7 @@ impl Subst {
             ),
             TcType::Forall(vars, body) => {
                 // Don't substitute bound vars
-                TcType::Forall(
-                    vars.clone(),
-                    Box::new(self.apply(body)),
-                )
+                TcType::Forall(vars.clone(), Box::new(self.apply(body)))
             }
         }
     }
@@ -169,7 +166,11 @@ fn unify_con(c1: &TcCon, c2: &TcCon) -> UnifyResult {
             }
             Ok(subst)
         }
-        _ => Err(format!("type mismatch: {} ≠ {}", TcType::Con(c1.clone()), TcType::Con(c2.clone()))),
+        _ => Err(format!(
+            "type mismatch: {} ≠ {}",
+            TcType::Con(c1.clone()),
+            TcType::Con(c2.clone())
+        )),
     }
 }
 
@@ -177,9 +178,7 @@ fn occurs(var: u32, ty: &TcType) -> bool {
     match ty {
         TcType::Var(v) => *v == var,
         TcType::Con(c) => occurs_con(var, c),
-        TcType::Arrow(args, ret) => {
-            args.iter().any(|a| occurs(var, a)) || occurs(var, ret)
-        }
+        TcType::Arrow(args, ret) => args.iter().any(|a| occurs(var, a)) || occurs(var, ret),
         TcType::Forall(vars, body) => {
             if vars.contains(&var) {
                 false // bound variable, not free
@@ -234,7 +233,10 @@ pub fn parse_type_annotation(ann: &LispVal) -> Result<TcType, String> {
     match ann {
         LispVal::Sym(s) => parse_type_sym(s),
         LispVal::List(elems) => parse_type_list(elems),
-        other => Err(format!("type annotation: expected symbol or list, got {}", other)),
+        other => Err(format!(
+            "type annotation: expected symbol or list, got {}",
+            other
+        )),
     }
 }
 
@@ -304,9 +306,7 @@ fn parse_type_list(elems: &[LispVal]) -> Result<TcType, String> {
     // Last arrow separates args from return
     let last_arrow = *arrow_positions.last().unwrap();
     let ret_slice: Vec<LispVal> = elems[last_arrow + 1..].to_vec();
-    let ret = parse_type_annotation(
-        ret_slice.first().ok_or("arrow type: missing return type")?
-    )?;
+    let ret = parse_type_annotation(ret_slice.first().ok_or("arrow type: missing return type")?)?;
 
     // Everything before last arrow could be multiple arrows (curried)
     // For now, treat everything before last -> as arg types
@@ -376,14 +376,16 @@ pub fn check_pure_define(args: &[LispVal]) -> Result<PureCheckResult, String> {
     }
 }
 
-fn check_function_define(
-    sig: &[LispVal],
-    rest: &[LispVal],
-) -> Result<PureCheckResult, String> {
+fn check_function_define(sig: &[LispVal], rest: &[LispVal]) -> Result<PureCheckResult, String> {
     // sig = [name, param1, param2, ...]
     let name = match sig.first() {
         Some(LispVal::Sym(s)) => s.clone(),
-        other => return Err(format!("pure define: expected function name, got {:?}", other)),
+        other => {
+            return Err(format!(
+                "pure define: expected function name, got {:?}",
+                other
+            ))
+        }
     };
 
     let params: Vec<String> = sig[1..]
@@ -409,7 +411,7 @@ fn check_function_define(
                 // Last element is the body
                 let body = rest.last().cloned().unwrap();
                 // Everything between :: and body is the type
-                let type_parts: Vec<LispVal> = rest[1..rest.len()-1].to_vec();
+                let type_parts: Vec<LispVal> = rest[1..rest.len() - 1].to_vec();
                 let ann_type = parse_type_annotation(&LispVal::List(type_parts))?;
                 (Some(ann_type), body)
             }
@@ -485,9 +487,8 @@ fn check_function_define(
 
     // Check against annotation if provided
     if let Some(ann_ty) = annotated_type {
-        let s = unify(&inferred, &ann_ty).map_err(|e| {
-            format!("pure define {}: type error — {}", name, e)
-        })?;
+        let s = unify(&inferred, &ann_ty)
+            .map_err(|e| format!("pure define {}: type error — {}", name, e))?;
         subst = s.compose(subst);
     }
 
@@ -586,7 +587,9 @@ fn infer(
                 LispVal::Sym(s) if s == "or" => infer_or(&list[1..], env, supply, subst),
                 LispVal::Sym(s) if s == "cond" => infer_cond(&list[1..], env, supply, subst),
                 LispVal::Sym(s) if s == "quote" => Ok(TcType::Con(TcCon::Any)), // quoted data is opaque
-                LispVal::Sym(s) if s == "list" => infer_list_literal(&list[1..], env, supply, subst),
+                LispVal::Sym(s) if s == "list" => {
+                    infer_list_literal(&list[1..], env, supply, subst)
+                }
                 _ => infer_application(list, env, supply, subst),
             }
         }
@@ -722,9 +725,8 @@ fn infer_if(
     if let Some(else_expr) = else_branch {
         let else_type = infer(else_expr, env, supply, subst)?;
         // Unify branches
-        let s = unify(&then_type, &else_type).map_err(|e| {
-            format!("if: branch types disagree — {}", e)
-        })?;
+        let s = unify(&then_type, &else_type)
+            .map_err(|e| format!("if: branch types disagree — {}", e))?;
         *subst = s.compose(subst.clone());
     }
 
@@ -784,7 +786,12 @@ fn infer_let_star(
         };
         let name = match &pair[0] {
             LispVal::Sym(s) => s.clone(),
-            other => return Err(format!("let*: binding name must be symbol, got {:?}", other)),
+            other => {
+                return Err(format!(
+                    "let*: binding name must be symbol, got {:?}",
+                    other
+                ))
+            }
         };
         let val_type = infer(&pair[1], &new_env, supply, subst)?;
         new_env.insert_mono(name, subst.apply(&val_type));
@@ -862,9 +869,8 @@ fn infer_cond(
         match result_type {
             None => result_type = Some(branch_type),
             Some(ref rt) => {
-                let s = unify(rt, &branch_type).map_err(|e| {
-                    format!("cond: branch types disagree — {}", e)
-                })?;
+                let s = unify(rt, &branch_type)
+                    .map_err(|e| format!("cond: branch types disagree — {}", e))?;
                 *subst = s.compose(subst.clone());
             }
         }
@@ -889,9 +895,7 @@ fn infer_list_literal(
     for elem in &elems[1..] {
         let t = infer(elem, env, supply, subst)?;
         let t = subst.apply(&t);
-        let s = unify(&elem_type, &t).map_err(|e| {
-            format!("list: heterogeneous types — {}", e)
-        })?;
+        let s = unify(&elem_type, &t).map_err(|e| format!("list: heterogeneous types — {}", e))?;
         *subst = s.compose(subst.clone());
         elem_type = subst.apply(&elem_type);
     }

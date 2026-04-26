@@ -107,16 +107,18 @@ pub fn parse_type(t: &LispVal) -> Result<RlType, String> {
                 ":fn" | "fn" => {
                     // (:fn :int :str → :bool) or (:fn → :bool) or (:fn :int)
                     // Find the arrow separator
-                    let arrow_pos = elems[1..].iter().position(|e| {
-                        matches!(e, LispVal::Sym(s) if s == "->" || s == "→")
-                    });
+                    let arrow_pos = elems[1..]
+                        .iter()
+                        .position(|e| matches!(e, LispVal::Sym(s) if s == "->" || s == "→"));
                     match arrow_pos {
                         Some(pos) => {
-                            let param_types: Result<Vec<RlType>, String> =
-                                elems[1..=pos].iter().filter(|e| {
-                                    !matches!(e, LispVal::Sym(s) if s == "->" || s == "→")
-                                }).map(parse_type).collect();
-                            let ret = elems.get(1 + pos + 1)
+                            let param_types: Result<Vec<RlType>, String> = elems[1..=pos]
+                                .iter()
+                                .filter(|e| !matches!(e, LispVal::Sym(s) if s == "->" || s == "→"))
+                                .map(parse_type)
+                                .collect();
+                            let ret = elems
+                                .get(1 + pos + 1)
                                 .ok_or("(:fn ... → T) needs return type after →")?;
                             Ok(RlType::Arrow(param_types?, Box::new(parse_type(ret)?)))
                         }
@@ -180,9 +182,11 @@ pub fn type_matches(value: &LispVal, t: &RlType) -> bool {
         RlType::Sym => matches!(value, LispVal::Sym(_)),
         RlType::List => matches!(value, LispVal::List(_)),
         RlType::Map => matches!(value, LispVal::Map(_)),
-        RlType::Fn => matches!(value, LispVal::Lambda { .. })
-            || matches!(value, LispVal::CaseLambda { .. })
-            || matches!(value, LispVal::Memoized { .. }),
+        RlType::Fn => {
+            matches!(value, LispVal::Lambda { .. })
+                || matches!(value, LispVal::CaseLambda { .. })
+                || matches!(value, LispVal::Memoized { .. })
+        }
         RlType::Arrow(_, _) => {
             // Structural check: value must be a callable
             matches!(value, LispVal::Lambda { .. })
@@ -322,7 +326,10 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             // (infer-type f) — probe a pure lambda with sample inputs to infer its type
             let func = args.first().ok_or("infer-type: need a function")?;
             match func {
-                LispVal::Lambda { pure_type: Some(ref pt), .. } => {
+                LispVal::Lambda {
+                    pure_type: Some(ref pt),
+                    ..
+                } => {
                     // Already has a pure type — return it
                     let sig = pt.clone();
                     Ok(Some(LispVal::Str(sig)))
@@ -331,9 +338,14 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
                     // Probe it
                     let mut probe_env = Env::new();
                     let mut probe_state = EvalState::new();
-                    match crate::typing::probe::probe_function(func, &mut probe_env, &mut probe_state) {
+                    match crate::typing::probe::probe_function(
+                        func,
+                        &mut probe_env,
+                        &mut probe_state,
+                    ) {
                         Ok((param_types, return_type)) => {
-                            let sig = crate::typing::probe::format_signature(&param_types, &return_type);
+                            let sig =
+                                crate::typing::probe::format_signature(&param_types, &return_type);
                             Ok(Some(LispVal::Str(sig)))
                         }
                         Err(e) => Err(format!("infer-type probe failed: {}", e)),
@@ -347,9 +359,10 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             // (pure-type f) — return the pure type annotation if present, nil otherwise
             let func = args.first().ok_or("pure-type: need a function")?;
             match func {
-                LispVal::Lambda { pure_type: Some(ref pt), .. } => {
-                    Ok(Some(LispVal::Str(pt.clone())))
-                }
+                LispVal::Lambda {
+                    pure_type: Some(ref pt),
+                    ..
+                } => Ok(Some(LispVal::Str(pt.clone()))),
                 _ => Ok(Some(LispVal::Nil)),
             }
         }

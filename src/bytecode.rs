@@ -197,9 +197,18 @@ impl LoopCompiler {
             LispVal::Sym(name) => {
                 // Literal booleans and nil — don't capture as variables
                 match name.as_str() {
-                    "true" => { self.code.push(Op::PushBool(true)); return true; }
-                    "false" => { self.code.push(Op::PushBool(false)); return true; }
-                    "nil" => { self.code.push(Op::PushNil); return true; }
+                    "true" => {
+                        self.code.push(Op::PushBool(true));
+                        return true;
+                    }
+                    "false" => {
+                        self.code.push(Op::PushBool(false));
+                        return true;
+                    }
+                    "nil" => {
+                        self.code.push(Op::PushNil);
+                        return true;
+                    }
                     _ => {}
                 }
                 if let Some(slot) = self.slot_of(name) {
@@ -465,7 +474,9 @@ impl LoopCompiler {
                                                 break;
                                             }
                                             // Check if this name already has a slot (shadowing)
-                                            if let Some(existing) = self.slot_map.iter().position(|s| s == name) {
+                                            if let Some(existing) =
+                                                self.slot_map.iter().position(|s| s == name)
+                                            {
                                                 self.code.push(Op::StoreSlot(existing));
                                                 shadowed.push((name.clone(), existing));
                                             } else {
@@ -493,14 +504,20 @@ impl LoopCompiler {
                         }
                         // when: (when test body...) → if test (begin body...)
                         "when" => {
-                            if list.len() < 3 { return false; }
+                            if list.len() < 3 {
+                                return false;
+                            }
                             let test = &list[1];
-                            if !self.compile_expr(test, outer_env) { return false; }
+                            if !self.compile_expr(test, outer_env) {
+                                return false;
+                            }
                             let jf_idx = self.code.len();
                             self.code.push(Op::JumpIfFalse(0));
                             // Compile body as implicit begin
                             for (i, arg) in list[2..].iter().enumerate() {
-                                if !self.compile_expr(arg, outer_env) { return false; }
+                                if !self.compile_expr(arg, outer_env) {
+                                    return false;
+                                }
                                 if i + 1 < list.len() - 2 {
                                     self.code.push(Op::Pop);
                                 }
@@ -510,14 +527,20 @@ impl LoopCompiler {
                         }
                         // unless: (unless test body...) → if (not test) (begin body...)
                         "unless" => {
-                            if list.len() < 3 { return false; }
+                            if list.len() < 3 {
+                                return false;
+                            }
                             let test = &list[1];
-                            if !self.compile_expr(test, outer_env) { return false; }
+                            if !self.compile_expr(test, outer_env) {
+                                return false;
+                            }
                             let jt_idx = self.code.len();
                             self.code.push(Op::JumpIfTrue(0));
                             // Compile body as implicit begin
                             for (i, arg) in list[2..].iter().enumerate() {
-                                if !self.compile_expr(arg, outer_env) { return false; }
+                                if !self.compile_expr(arg, outer_env) {
+                                    return false;
+                                }
                                 if i + 1 < list.len() - 2 {
                                     self.code.push(Op::Pop);
                                 }
@@ -526,7 +549,9 @@ impl LoopCompiler {
                             true
                         }
                         "set!" => {
-                            if list.len() != 3 { return false; }
+                            if list.len() != 3 {
+                                return false;
+                            }
                             let name = match &list[1] {
                                 LispVal::Sym(s) => s.clone(),
                                 _ => return false,
@@ -540,23 +565,32 @@ impl LoopCompiler {
                                 Some(s) => s,
                                 None => return false,
                             };
-                            if !self.compile_expr(&list[2], outer_env) { return false; }
+                            if !self.compile_expr(&list[2], outer_env) {
+                                return false;
+                            }
                             self.code.push(Op::StoreSlot(slot));
                             self.code.push(Op::LoadSlot(slot)); // set! returns the new value
                             true
                         }
                         "lambda" => {
                             // (lambda (params...) body...)
-                            if list.len() < 3 { return false; }
+                            if list.len() < 3 {
+                                return false;
+                            }
                             let params: Vec<String> = match list.get(1) {
-                                Some(LispVal::List(ps)) => ps.iter().filter_map(|p| match p {
-                                    LispVal::Sym(s) => Some(s.clone()),
-                                    _ => None,
-                                }).collect(),
+                                Some(LispVal::List(ps)) => ps
+                                    .iter()
+                                    .filter_map(|p| match p {
+                                        LispVal::Sym(s) => Some(s.clone()),
+                                        _ => None,
+                                    })
+                                    .collect(),
                                 Some(LispVal::Sym(s)) => vec![s.clone()],
                                 _ => return false,
                             };
-                            if params.is_empty() { return false; }
+                            if params.is_empty() {
+                                return false;
+                            }
                             // Compile lambda body in a new compiler
                             let mut inner = LoopCompiler::new(params.clone());
                             let body = &list[2..];
@@ -567,20 +601,29 @@ impl LoopCompiler {
                                     break;
                                 }
                             }
-                            if !ok { return false; }
+                            if !ok {
+                                return false;
+                            }
+                            inner.code.push(Op::Return);
                             // Compute total_slots
                             let base = params.len();
                             let mut max_slot = base;
                             for op in &inner.code {
                                 match op {
                                     Op::LoadSlot(s) | Op::StoreSlot(s) => {
-                                        if *s >= max_slot { max_slot = *s + 1; }
+                                        if *s >= max_slot {
+                                            max_slot = *s + 1;
+                                        }
                                     }
                                     Op::SlotAddImm(s, _) | Op::SlotMulImm(s, _) => {
-                                        if *s >= max_slot { max_slot = *s + 1; }
+                                        if *s >= max_slot {
+                                            max_slot = *s + 1;
+                                        }
                                     }
                                     Op::CallCaptured(s, _) => {
-                                        if *s >= max_slot { max_slot = *s + 1; }
+                                        if *s >= max_slot {
+                                            max_slot = *s + 1;
+                                        }
                                     }
                                     _ => {}
                                 }
@@ -1280,7 +1323,8 @@ pub fn num_val_ref(v: &LispVal) -> i64 {
 
 /// Polymorphic arithmetic: if either operand is Float, use float arithmetic.
 fn num_arith(
-    a: &LispVal, b: &LispVal,
+    a: &LispVal,
+    b: &LispVal,
     int_op: impl Fn(i64, i64) -> i64,
     float_op: impl Fn(f64, f64) -> f64,
 ) -> LispVal {
@@ -1498,13 +1542,21 @@ pub fn eval_builtin(name: &str, args: &[LispVal]) -> Result<LispVal, String> {
             Ok(LispVal::Bool(!is_truthy(v)))
         }
         "string?" => Ok(LispVal::Bool(matches!(args.get(0), Some(LispVal::Str(_))))),
-        "number?" => Ok(LispVal::Bool(matches!(args.get(0), Some(LispVal::Num(_)) | Some(LispVal::Float(_))))),
+        "number?" => Ok(LispVal::Bool(matches!(
+            args.get(0),
+            Some(LispVal::Num(_)) | Some(LispVal::Float(_))
+        ))),
         "boolean?" => Ok(LispVal::Bool(matches!(args.get(0), Some(LispVal::Bool(_))))),
         "list?" => Ok(LispVal::Bool(matches!(args.get(0), Some(LispVal::List(_))))),
-        "pair?" => Ok(LispVal::Bool(matches!(args.get(0), Some(LispVal::List(l)) if l.len() >= 2))),
+        "pair?" => Ok(LispVal::Bool(
+            matches!(args.get(0), Some(LispVal::List(l)) if l.len() >= 2),
+        )),
         "symbol?" => Ok(LispVal::Bool(matches!(args.get(0), Some(LispVal::Sym(_))))),
         "int?" => Ok(LispVal::Bool(matches!(args.get(0), Some(LispVal::Num(_))))),
-        "float?" => Ok(LispVal::Bool(matches!(args.get(0), Some(LispVal::Float(_))))),
+        "float?" => Ok(LispVal::Bool(matches!(
+            args.get(0),
+            Some(LispVal::Float(_))
+        ))),
         "reverse" => match args.get(0) {
             Some(LispVal::List(l)) => Ok(LispVal::List(l.iter().rev().cloned().collect())),
             _ => Ok(LispVal::Nil),
@@ -1526,15 +1578,17 @@ pub fn eval_builtin(name: &str, args: &[LispVal]) -> Result<LispVal, String> {
             _ => Ok(LispVal::Nil),
         },
         "butlast" => match args.get(0) {
-            Some(LispVal::List(l)) if l.len() > 1 => {
-                Ok(LispVal::List(l[..l.len()-1].to_vec()))
-            }
+            Some(LispVal::List(l)) if l.len() > 1 => Ok(LispVal::List(l[..l.len() - 1].to_vec())),
             _ => Ok(LispVal::Nil),
         },
         "range" => {
             let start = num_val(args.get(0).cloned().unwrap_or(LispVal::Nil));
             let end = num_val(args.get(1).cloned().unwrap_or(LispVal::Nil));
-            let step = if args.len() > 2 { num_val(args.get(2).cloned().unwrap_or(LispVal::Nil)) } else { 1 };
+            let step = if args.len() > 2 {
+                num_val(args.get(2).cloned().unwrap_or(LispVal::Nil))
+            } else {
+                1
+            };
             let mut result = Vec::new();
             let mut i = start;
             if step > 0 {
@@ -1559,39 +1613,31 @@ pub fn eval_builtin(name: &str, args: &[LispVal]) -> Result<LispVal, String> {
             let exp = num_val(args.get(1).cloned().unwrap_or(LispVal::Nil));
             Ok(LispVal::Float((base as f64).powf(exp as f64)))
         }
-        "dict/get" | "dict-ref" => {
-            match (args.get(0), args.get(1)) {
-                (Some(LispVal::Map(m)), Some(LispVal::Str(key))) => {
-                    Ok(m.get(key).cloned().unwrap_or(LispVal::Nil))
-                }
-                _ => Ok(LispVal::Nil),
+        "dict/get" | "dict-ref" => match (args.get(0), args.get(1)) {
+            (Some(LispVal::Map(m)), Some(LispVal::Str(key))) => {
+                Ok(m.get(key).cloned().unwrap_or(LispVal::Nil))
             }
-        }
-        "dict/set" | "dict-set" => {
-            match (args.get(0), args.get(1), args.get(2)) {
-                (Some(LispVal::Map(m)), Some(LispVal::Str(key)), Some(val)) => {
-                    Ok(LispVal::Map(m.update(key.clone(), val.clone())))
-                }
-                _ => Err("dict/set: need (map key value)".into()),
+            _ => Ok(LispVal::Nil),
+        },
+        "dict/set" | "dict-set" => match (args.get(0), args.get(1), args.get(2)) {
+            (Some(LispVal::Map(m)), Some(LispVal::Str(key)), Some(val)) => {
+                Ok(LispVal::Map(m.update(key.clone(), val.clone())))
             }
-        }
-        "dict/has?" => {
-            match (args.get(0), args.get(1)) {
-                (Some(LispVal::Map(m)), Some(LispVal::Str(key))) => {
-                    Ok(LispVal::Bool(m.contains_key(key)))
-                }
-                _ => Ok(LispVal::Bool(false)),
+            _ => Err("dict/set: need (map key value)".into()),
+        },
+        "dict/has?" => match (args.get(0), args.get(1)) {
+            (Some(LispVal::Map(m)), Some(LispVal::Str(key))) => {
+                Ok(LispVal::Bool(m.contains_key(key)))
             }
-        }
-        "dict/keys" => {
-            match args.get(0) {
-                Some(LispVal::Map(m)) => {
-                    let keys: Vec<LispVal> = m.keys().map(|k| LispVal::Str(k.clone())).collect();
-                    Ok(LispVal::List(keys))
-                }
-                _ => Ok(LispVal::List(vec![])),
+            _ => Ok(LispVal::Bool(false)),
+        },
+        "dict/keys" => match args.get(0) {
+            Some(LispVal::Map(m)) => {
+                let keys: Vec<LispVal> = m.keys().map(|k| LispVal::Str(k.clone())).collect();
+                Ok(LispVal::List(keys))
             }
-        }
+            _ => Ok(LispVal::List(vec![])),
+        },
         // --- String operations (not in existing builtins) ---
         "string-append" => {
             let mut result = String::new();
@@ -1607,61 +1653,51 @@ pub fn eval_builtin(name: &str, args: &[LispVal]) -> Result<LispVal, String> {
             }
             Ok(LispVal::Str(result))
         }
-        "str-ends-with" | "string-suffix?" => {
-            match (args.get(0), args.get(1)) {
-                (Some(LispVal::Str(s)), Some(LispVal::Str(suffix))) => {
-                    Ok(LispVal::Bool(s.ends_with(suffix.as_str())))
-                }
-                _ => Ok(LispVal::Bool(false)),
+        "str-ends-with" | "string-suffix?" => match (args.get(0), args.get(1)) {
+            (Some(LispVal::Str(s)), Some(LispVal::Str(suffix))) => {
+                Ok(LispVal::Bool(s.ends_with(suffix.as_str())))
             }
-        }
-        "str-starts-with" | "string-prefix?" => {
-            match (args.get(0), args.get(1)) {
-                (Some(LispVal::Str(s)), Some(LispVal::Str(prefix))) => {
-                    Ok(LispVal::Bool(s.starts_with(prefix.as_str())))
-                }
-                _ => Ok(LispVal::Bool(false)),
+            _ => Ok(LispVal::Bool(false)),
+        },
+        "str-starts-with" | "string-prefix?" => match (args.get(0), args.get(1)) {
+            (Some(LispVal::Str(s)), Some(LispVal::Str(prefix))) => {
+                Ok(LispVal::Bool(s.starts_with(prefix.as_str())))
             }
-        }
-        "substring" => {
-            match (args.get(0), args.get(1), args.get(2)) {
-                (Some(LispVal::Str(s)), Some(LispVal::Num(start)), None) => {
-                    let start = (*start as usize).min(s.len());
-                    Ok(LispVal::Str(s[start..].to_string()))
-                }
-                (Some(LispVal::Str(s)), Some(LispVal::Num(start)), Some(LispVal::Num(end))) => {
-                    let start = (*start as usize).min(s.len());
-                    let end = (*end as usize).min(s.len());
-                    if start < end {
-                        Ok(LispVal::Str(s[start..end].to_string()))
-                    } else {
-                        Ok(LispVal::Str(String::new()))
-                    }
-                }
-                _ => Ok(LispVal::Str(String::new())),
+            _ => Ok(LispVal::Bool(false)),
+        },
+        "substring" => match (args.get(0), args.get(1), args.get(2)) {
+            (Some(LispVal::Str(s)), Some(LispVal::Num(start)), None) => {
+                let start = (*start as usize).min(s.len());
+                Ok(LispVal::Str(s[start..].to_string()))
             }
-        }
-        "str->num" | "string->number" => {
-            match args.get(0) {
-                Some(LispVal::Str(s)) => {
-                    if let Ok(n) = s.parse::<i64>() {
-                        Ok(LispVal::Num(n))
-                    } else if let Ok(f) = s.parse::<f64>() {
-                        Ok(LispVal::Float(f))
-                    } else {
-                        Ok(LispVal::Nil)
-                    }
+            (Some(LispVal::Str(s)), Some(LispVal::Num(start)), Some(LispVal::Num(end))) => {
+                let start = (*start as usize).min(s.len());
+                let end = (*end as usize).min(s.len());
+                if start < end {
+                    Ok(LispVal::Str(s[start..end].to_string()))
+                } else {
+                    Ok(LispVal::Str(String::new()))
                 }
-                _ => Ok(LispVal::Nil),
             }
-        }
-        "num->str" | "number->string" => {
-            match args.get(0) {
-                Some(LispVal::Num(n)) => Ok(LispVal::Str(n.to_string())),
-                Some(LispVal::Float(f)) => Ok(LispVal::Str(f.to_string())),
-                _ => Ok(LispVal::Str("0".to_string())),
+            _ => Ok(LispVal::Str(String::new())),
+        },
+        "str->num" | "string->number" => match args.get(0) {
+            Some(LispVal::Str(s)) => {
+                if let Ok(n) = s.parse::<i64>() {
+                    Ok(LispVal::Num(n))
+                } else if let Ok(f) = s.parse::<f64>() {
+                    Ok(LispVal::Float(f))
+                } else {
+                    Ok(LispVal::Nil)
+                }
             }
-        }
+            _ => Ok(LispVal::Nil),
+        },
+        "num->str" | "number->string" => match args.get(0) {
+            Some(LispVal::Num(n)) => Ok(LispVal::Str(n.to_string())),
+            Some(LispVal::Float(f)) => Ok(LispVal::Str(f.to_string())),
+            _ => Ok(LispVal::Str("0".to_string())),
+        },
         // --- Time ---
         "now" => {
             let ts = std::time::SystemTime::now()
@@ -1670,40 +1706,33 @@ pub fn eval_builtin(name: &str, args: &[LispVal]) -> Result<LispVal, String> {
                 .unwrap_or(0.0);
             Ok(LispVal::Float(ts))
         }
-        "elapsed" => {
-            match args.get(0) {
-                Some(v) => {
-                    let since = crate::helpers::as_float(v).unwrap_or(0.0);
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_secs_f64())
-                        .unwrap_or(0.0);
-                    Ok(LispVal::Float(now - since))
-                }
-                None => Ok(LispVal::Float(0.0)),
+        "elapsed" => match args.get(0) {
+            Some(v) => {
+                let since = crate::helpers::as_float(v).unwrap_or(0.0);
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs_f64())
+                    .unwrap_or(0.0);
+                Ok(LispVal::Float(now - since))
             }
-        }
+            None => Ok(LispVal::Float(0.0)),
+        },
         // --- Type conversions ---
-        "float" => {
-            match args.get(0) {
-                Some(LispVal::Num(n)) => Ok(LispVal::Float(*n as f64)),
-                Some(v) => {
-                    Ok(crate::helpers::as_float(v).map(LispVal::Float)
-                        .unwrap_or(LispVal::Float(0.0)))
-                }
-                None => Ok(LispVal::Float(0.0)),
-            }
-        }
-        "integer" => {
-            match args.get(0) {
-                Some(LispVal::Float(f)) => Ok(LispVal::Num(*f as i64)),
-                Some(LispVal::Num(n)) => Ok(LispVal::Num(*n)),
-                _ => Ok(LispVal::Num(0)),
-            }
-        }
-        "boolean" => {
-            Ok(LispVal::Bool(crate::helpers::is_truthy(args.get(0).unwrap_or(&LispVal::Nil))))
-        }
+        "float" => match args.get(0) {
+            Some(LispVal::Num(n)) => Ok(LispVal::Float(*n as f64)),
+            Some(v) => Ok(crate::helpers::as_float(v)
+                .map(LispVal::Float)
+                .unwrap_or(LispVal::Float(0.0))),
+            None => Ok(LispVal::Float(0.0)),
+        },
+        "integer" => match args.get(0) {
+            Some(LispVal::Float(f)) => Ok(LispVal::Num(*f as i64)),
+            Some(LispVal::Num(n)) => Ok(LispVal::Num(*n)),
+            _ => Ok(LispVal::Num(0)),
+        },
+        "boolean" => Ok(LispVal::Bool(crate::helpers::is_truthy(
+            args.get(0).unwrap_or(&LispVal::Nil),
+        ))),
         // --- Error ---
         "error" => {
             let msg = match args.get(0) {
@@ -1755,13 +1784,24 @@ pub fn try_compile_lambda(
     for op in &code {
         match op {
             Op::StoreSlot(s) | Op::LoadSlot(s) => max_slot = max_slot.max(*s + 1),
-            Op::SlotAddImm(s, _) | Op::SlotSubImm(s, _) | Op::SlotMulImm(s, _) | Op::SlotDivImm(s, _) => {
+            Op::SlotAddImm(s, _)
+            | Op::SlotSubImm(s, _)
+            | Op::SlotMulImm(s, _)
+            | Op::SlotDivImm(s, _) => {
                 max_slot = max_slot.max(*s + 1);
             }
-            Op::SlotEqImm(s, _) | Op::SlotLtImm(s, _) | Op::SlotLeImm(s, _) | Op::SlotGtImm(s, _) | Op::SlotGeImm(s, _) => {
+            Op::SlotEqImm(s, _)
+            | Op::SlotLtImm(s, _)
+            | Op::SlotLeImm(s, _)
+            | Op::SlotGtImm(s, _)
+            | Op::SlotGeImm(s, _) => {
                 max_slot = max_slot.max(*s + 1);
             }
-            Op::JumpIfSlotLtImm(s, _, _) | Op::JumpIfSlotLeImm(s, _, _) | Op::JumpIfSlotGtImm(s, _, _) | Op::JumpIfSlotGeImm(s, _, _) | Op::JumpIfSlotEqImm(s, _, _) => {
+            Op::JumpIfSlotLtImm(s, _, _)
+            | Op::JumpIfSlotLeImm(s, _, _)
+            | Op::JumpIfSlotGtImm(s, _, _)
+            | Op::JumpIfSlotGeImm(s, _, _)
+            | Op::JumpIfSlotEqImm(s, _, _) => {
                 max_slot = max_slot.max(*s + 1);
             }
             Op::RecurIncAccum(a, b, _, _, _) => max_slot = max_slot.max(*a.max(b) + 1),
@@ -1800,6 +1840,14 @@ pub fn run_compiled_lambda(
         ops += 1;
         if ops > LAMBDA_BUDGET {
             return Err("compiled lambda: budget exceeded (possible infinite loop)".into());
+        }
+        if pc >= code.len() {
+            return Err(format!(
+                "compiled lambda: pc {} out of bounds (code len {}, ops {})",
+                pc,
+                code.len(),
+                ops
+            ));
         }
         match &code[pc] {
             Op::LoadSlot(s) => {
@@ -1977,18 +2025,38 @@ pub fn run_compiled_lambda(
                             }
                         };
                         let mut result = Vec::with_capacity(vals.len());
-                        if let LispVal::Lambda { rest_param: None, compiled: Some(ref cl2), .. } = func {
+                        if let LispVal::Lambda {
+                            rest_param: None,
+                            compiled: Some(ref cl2),
+                            ..
+                        } = func
+                        {
                             let comp_cl = cl2.clone();
                             for v in vals.iter() {
-                                match run_compiled_lambda(&comp_cl, &[v.clone()], outer_env, state) {
+                                match run_compiled_lambda(&comp_cl, &[v.clone()], outer_env, state)
+                                {
                                     Ok(r) => result.push(r),
                                     Err(_) => {
                                         let mut env_clone = outer_env.clone();
-                                        match crate::eval::call_val(func, &[v.clone()], &mut env_clone, state) {
-                                            Ok(crate::eval::continuation::EvalResult::Value(r)) => result.push(r),
-                                            Ok(crate::eval::continuation::EvalResult::TailCall { expr, env: tail_env }) => {
+                                        match crate::eval::call_val(
+                                            func,
+                                            &[v.clone()],
+                                            &mut env_clone,
+                                            state,
+                                        ) {
+                                            Ok(crate::eval::continuation::EvalResult::Value(r)) => {
+                                                result.push(r)
+                                            }
+                                            Ok(
+                                                crate::eval::continuation::EvalResult::TailCall {
+                                                    expr,
+                                                    env: tail_env,
+                                                },
+                                            ) => {
                                                 let mut e2 = tail_env;
-                                                result.push(crate::eval::lisp_eval(&expr, &mut e2, state)?);
+                                                result.push(crate::eval::lisp_eval(
+                                                    &expr, &mut e2, state,
+                                                )?);
                                             }
                                             Err(e) => return Err(e),
                                         }
@@ -1998,9 +2066,19 @@ pub fn run_compiled_lambda(
                         } else {
                             for v in vals.iter() {
                                 let mut env_clone = outer_env.clone();
-                                match crate::eval::call_val(func, &[v.clone()], &mut env_clone, state) {
-                                    Ok(crate::eval::continuation::EvalResult::Value(r)) => result.push(r),
-                                    Ok(crate::eval::continuation::EvalResult::TailCall { expr, env: tail_env }) => {
+                                match crate::eval::call_val(
+                                    func,
+                                    &[v.clone()],
+                                    &mut env_clone,
+                                    state,
+                                ) {
+                                    Ok(crate::eval::continuation::EvalResult::Value(r)) => {
+                                        result.push(r)
+                                    }
+                                    Ok(crate::eval::continuation::EvalResult::TailCall {
+                                        expr,
+                                        env: tail_env,
+                                    }) => {
                                         let mut e2 = tail_env;
                                         result.push(crate::eval::lisp_eval(&expr, &mut e2, state)?);
                                     }
@@ -2022,30 +2100,58 @@ pub fn run_compiled_lambda(
                             }
                         };
                         let mut result = Vec::new();
-                        if let LispVal::Lambda { rest_param: None, compiled: Some(ref cl2), .. } = func {
+                        if let LispVal::Lambda {
+                            rest_param: None,
+                            compiled: Some(ref cl2),
+                            ..
+                        } = func
+                        {
                             let comp_cl = cl2.clone();
                             for v in vals.iter() {
-                                let keep = match run_compiled_lambda(&comp_cl, &[v.clone()], outer_env, state) {
+                                let keep = match run_compiled_lambda(
+                                    &comp_cl,
+                                    &[v.clone()],
+                                    outer_env,
+                                    state,
+                                ) {
                                     Ok(LispVal::Bool(b)) => b,
                                     Ok(_) => true,
                                     Err(_) => {
                                         let mut env_clone = outer_env.clone();
-                                        match crate::eval::call_val(func, &[v.clone()], &mut env_clone, state) {
-                                            Ok(crate::eval::continuation::EvalResult::Value(LispVal::Bool(b))) => b,
+                                        match crate::eval::call_val(
+                                            func,
+                                            &[v.clone()],
+                                            &mut env_clone,
+                                            state,
+                                        ) {
+                                            Ok(crate::eval::continuation::EvalResult::Value(
+                                                LispVal::Bool(b),
+                                            )) => b,
                                             _ => false,
                                         }
                                     }
                                 };
-                                if keep { result.push(v.clone()); }
+                                if keep {
+                                    result.push(v.clone());
+                                }
                             }
                         } else {
                             for v in vals.iter() {
                                 let mut env_clone = outer_env.clone();
-                                let keep = match crate::eval::call_val(func, &[v.clone()], &mut env_clone, state) {
-                                    Ok(crate::eval::continuation::EvalResult::Value(LispVal::Bool(b))) => b,
+                                let keep = match crate::eval::call_val(
+                                    func,
+                                    &[v.clone()],
+                                    &mut env_clone,
+                                    state,
+                                ) {
+                                    Ok(crate::eval::continuation::EvalResult::Value(
+                                        LispVal::Bool(b),
+                                    )) => b,
                                     _ => false,
                                 };
-                                if keep { result.push(v.clone()); }
+                                if keep {
+                                    result.push(v.clone());
+                                }
                             }
                         }
                         stack.push(LispVal::List(result));
@@ -2061,15 +2167,26 @@ pub fn run_compiled_lambda(
                                 continue;
                             }
                         };
-                        if let LispVal::Lambda { rest_param: None, compiled: Some(ref cl2), .. } = func {
+                        if let LispVal::Lambda {
+                            rest_param: None,
+                            compiled: Some(ref cl2),
+                            ..
+                        } = func
+                        {
                             let comp_cl = cl2.clone();
                             for v in vals.iter() {
-                                let _ = run_compiled_lambda(&comp_cl, &[v.clone()], outer_env, state);
+                                let _ =
+                                    run_compiled_lambda(&comp_cl, &[v.clone()], outer_env, state);
                             }
                         } else {
                             for v in vals.iter() {
                                 let mut env_clone = outer_env.clone();
-                                let _ = crate::eval::call_val(func, &[v.clone()], &mut env_clone, state);
+                                let _ = crate::eval::call_val(
+                                    func,
+                                    &[v.clone()],
+                                    &mut env_clone,
+                                    state,
+                                );
                             }
                         }
                         stack.push(LispVal::Nil);
@@ -2085,10 +2202,20 @@ pub fn run_compiled_lambda(
                                 continue;
                             }
                         };
-                        if let LispVal::Lambda { rest_param: None, compiled: Some(ref cl2), .. } = comparator {
+                        if let LispVal::Lambda {
+                            rest_param: None,
+                            compiled: Some(ref cl2),
+                            ..
+                        } = comparator
+                        {
                             let comp_cl = cl2.clone();
                             vals.sort_by(|a, b| {
-                                match run_compiled_lambda(&comp_cl, &[a.clone(), b.clone()], outer_env, state) {
+                                match run_compiled_lambda(
+                                    &comp_cl,
+                                    &[a.clone(), b.clone()],
+                                    outer_env,
+                                    state,
+                                ) {
                                     Ok(LispVal::Bool(true)) => std::cmp::Ordering::Less,
                                     Ok(LispVal::Bool(false)) => std::cmp::Ordering::Greater,
                                     _ => std::cmp::Ordering::Equal,
@@ -2098,9 +2225,18 @@ pub fn run_compiled_lambda(
                             let func = comparator.clone();
                             vals.sort_by(|a, b| {
                                 let mut env_clone = outer_env.clone();
-                                match crate::eval::call_val(&func, &[a.clone(), b.clone()], &mut env_clone, state) {
-                                    Ok(crate::eval::continuation::EvalResult::Value(LispVal::Bool(true))) => std::cmp::Ordering::Less,
-                                    Ok(crate::eval::continuation::EvalResult::Value(LispVal::Bool(false))) => std::cmp::Ordering::Greater,
+                                match crate::eval::call_val(
+                                    &func,
+                                    &[a.clone(), b.clone()],
+                                    &mut env_clone,
+                                    state,
+                                ) {
+                                    Ok(crate::eval::continuation::EvalResult::Value(
+                                        LispVal::Bool(true),
+                                    )) => std::cmp::Ordering::Less,
+                                    Ok(crate::eval::continuation::EvalResult::Value(
+                                        LispVal::Bool(false),
+                                    )) => std::cmp::Ordering::Greater,
                                     _ => std::cmp::Ordering::Equal,
                                 }
                             });
@@ -2120,16 +2256,33 @@ pub fn run_compiled_lambda(
                             }
                         };
                         let mut acc = init;
-                        if let LispVal::Lambda { rest_param: None, compiled: Some(ref cl2), .. } = func {
+                        if let LispVal::Lambda {
+                            rest_param: None,
+                            compiled: Some(ref cl2),
+                            ..
+                        } = func
+                        {
                             let comp_cl = cl2.clone();
                             for v in vals.iter() {
                                 let acc_clone = acc.clone();
-                                acc = match run_compiled_lambda(&comp_cl, &[acc_clone, v.clone()], outer_env, state) {
+                                acc = match run_compiled_lambda(
+                                    &comp_cl,
+                                    &[acc_clone, v.clone()],
+                                    outer_env,
+                                    state,
+                                ) {
                                     Ok(r) => r,
                                     Err(_) => {
                                         let mut env_clone = outer_env.clone();
-                                        match crate::eval::call_val(func, &[acc.clone(), v.clone()], &mut env_clone, state) {
-                                            Ok(crate::eval::continuation::EvalResult::Value(r)) => r,
+                                        match crate::eval::call_val(
+                                            func,
+                                            &[acc.clone(), v.clone()],
+                                            &mut env_clone,
+                                            state,
+                                        ) {
+                                            Ok(crate::eval::continuation::EvalResult::Value(r)) => {
+                                                r
+                                            }
                                             _ => acc,
                                         }
                                     }
@@ -2138,7 +2291,12 @@ pub fn run_compiled_lambda(
                         } else {
                             for v in vals.iter() {
                                 let mut env_clone = outer_env.clone();
-                                acc = match crate::eval::call_val(func, &[acc.clone(), v.clone()], &mut env_clone, state) {
+                                acc = match crate::eval::call_val(
+                                    func,
+                                    &[acc.clone(), v.clone()],
+                                    &mut env_clone,
+                                    state,
+                                ) {
                                     Ok(crate::eval::continuation::EvalResult::Value(r)) => r,
                                     _ => acc,
                                 };
@@ -2161,16 +2319,32 @@ pub fn run_compiled_lambda(
                     cargs.push(stack.pop().unwrap_or(LispVal::Nil));
                 }
                 cargs.reverse();
-                if let LispVal::Lambda { rest_param: None, compiled: Some(ref cl2), .. } = func {
+                if let LispVal::Lambda {
+                    rest_param: None,
+                    compiled: Some(ref cl2),
+                    ..
+                } = func
+                {
                     match run_compiled_lambda(cl2, &cargs, outer_env, state) {
-                        Ok(v) => { stack.push(v); }
+                        Ok(v) => {
+                            stack.push(v);
+                        }
                         Err(_) => {
                             let mut env_clone = outer_env.clone();
                             match crate::eval::call_val(&func, &cargs, &mut env_clone, state)? {
-                                crate::eval::continuation::EvalResult::Value(v) => { stack.push(v); }
-                                crate::eval::continuation::EvalResult::TailCall { expr, env: tail_env } => {
+                                crate::eval::continuation::EvalResult::Value(v) => {
+                                    stack.push(v);
+                                }
+                                crate::eval::continuation::EvalResult::TailCall {
+                                    expr,
+                                    env: tail_env,
+                                } => {
                                     env_clone = tail_env;
-                                    stack.push(crate::eval::lisp_eval(&expr, &mut env_clone, state)?);
+                                    stack.push(crate::eval::lisp_eval(
+                                        &expr,
+                                        &mut env_clone,
+                                        state,
+                                    )?);
                                 }
                             }
                         }
@@ -2178,8 +2352,13 @@ pub fn run_compiled_lambda(
                 } else {
                     let mut env_clone = outer_env.clone();
                     match crate::eval::call_val(&func, &cargs, &mut env_clone, state)? {
-                        crate::eval::continuation::EvalResult::Value(v) => { stack.push(v); }
-                        crate::eval::continuation::EvalResult::TailCall { expr, env: tail_env } => {
+                        crate::eval::continuation::EvalResult::Value(v) => {
+                            stack.push(v);
+                        }
+                        crate::eval::continuation::EvalResult::TailCall {
+                            expr,
+                            env: tail_env,
+                        } => {
                             env_clone = tail_env;
                             stack.push(crate::eval::lisp_eval(&expr, &mut env_clone, state)?);
                         }
@@ -2194,16 +2373,32 @@ pub fn run_compiled_lambda(
                     cargs.push(stack.pop().unwrap_or(LispVal::Nil));
                 }
                 cargs.reverse();
-                if let LispVal::Lambda { rest_param: None, compiled: Some(ref cl2), .. } = func {
+                if let LispVal::Lambda {
+                    rest_param: None,
+                    compiled: Some(ref cl2),
+                    ..
+                } = func
+                {
                     match run_compiled_lambda(cl2, &cargs, outer_env, state) {
-                        Ok(v) => { stack.push(v); }
+                        Ok(v) => {
+                            stack.push(v);
+                        }
                         Err(_) => {
                             let mut env_clone = outer_env.clone();
                             match crate::eval::call_val(&func, &cargs, &mut env_clone, state)? {
-                                crate::eval::continuation::EvalResult::Value(v) => { stack.push(v); }
-                                crate::eval::continuation::EvalResult::TailCall { expr, env: tail_env } => {
+                                crate::eval::continuation::EvalResult::Value(v) => {
+                                    stack.push(v);
+                                }
+                                crate::eval::continuation::EvalResult::TailCall {
+                                    expr,
+                                    env: tail_env,
+                                } => {
                                     env_clone = tail_env;
-                                    stack.push(crate::eval::lisp_eval(&expr, &mut env_clone, state)?);
+                                    stack.push(crate::eval::lisp_eval(
+                                        &expr,
+                                        &mut env_clone,
+                                        state,
+                                    )?);
                                 }
                             }
                         }
@@ -2211,8 +2406,13 @@ pub fn run_compiled_lambda(
                 } else {
                     let mut env_clone = outer_env.clone();
                     match crate::eval::call_val(&func, &cargs, &mut env_clone, state)? {
-                        crate::eval::continuation::EvalResult::Value(v) => { stack.push(v); }
-                        crate::eval::continuation::EvalResult::TailCall { expr, env: tail_env } => {
+                        crate::eval::continuation::EvalResult::Value(v) => {
+                            stack.push(v);
+                        }
+                        crate::eval::continuation::EvalResult::TailCall {
+                            expr,
+                            env: tail_env,
+                        } => {
                             env_clone = tail_env;
                             stack.push(crate::eval::lisp_eval(&expr, &mut env_clone, state)?);
                         }

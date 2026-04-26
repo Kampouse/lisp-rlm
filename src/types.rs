@@ -376,7 +376,7 @@ impl Clone for EvalState {
             rlm_iteration: self.rlm_iteration,
             llm_provider: None, // providers are not cloned
             call_trace: self.call_trace.clone(),
-            pending_pure_type: None,  // Don't propagate pure type to forks
+            pending_pure_type: None, // Don't propagate pure type to forks
             call_trace_max: self.call_trace_max,
         }
     }

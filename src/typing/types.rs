@@ -28,10 +28,10 @@ pub enum TcCon {
     Bool,
     Int,
     Float,
-    Num,       // int | float (for polymorphic arithmetic)
+    Num, // int | float (for polymorphic arithmetic)
     Str,
     Sym,
-    List(Box<TcType>),     // homogeneous list
+    List(Box<TcType>),             // homogeneous list
     Map(Box<TcType>, Box<TcType>), // key → val
     Tuple(Vec<TcType>),
     Any, // escape hatch
@@ -140,10 +140,7 @@ impl TcEnv {
             "cons".to_string(),
             Scheme {
                 vars: vec![0],
-                ty: TcType::Arrow(
-                    vec![a2.clone(), list_a2.clone()],
-                    Box::new(list_a2.clone()),
-                ),
+                ty: TcType::Arrow(vec![a2.clone(), list_a2.clone()], Box::new(list_a2.clone())),
             },
         );
 
@@ -179,10 +176,7 @@ impl TcEnv {
             "append".to_string(),
             Scheme {
                 vars: vec![0],
-                ty: TcType::Arrow(
-                    vec![list_a5.clone(), list_a5.clone()],
-                    Box::new(list_a5),
-                ),
+                ty: TcType::Arrow(vec![list_a5.clone(), list_a5.clone()], Box::new(list_a5)),
             },
         );
 
@@ -228,10 +222,7 @@ impl TcEnv {
                 vars: vec![0, 1],
                 ty: TcType::Arrow(
                     vec![
-                        TcType::Arrow(
-                            vec![a8.clone(), b8.clone()],
-                            Box::new(a8.clone()),
-                        ),
+                        TcType::Arrow(vec![a8.clone(), b8.clone()], Box::new(a8.clone())),
                         a8.clone(),
                         TcType::Con(TcCon::List(Box::new(b8))),
                     ],
@@ -241,7 +232,9 @@ impl TcEnv {
         );
 
         // Predicates
-        for name in &["nil?", "null?", "list?", "pair?", "number?", "string?", "bool?", "boolean?", "empty?"] {
+        for name in &[
+            "nil?", "null?", "list?", "pair?", "number?", "string?", "bool?", "boolean?", "empty?",
+        ] {
             let a = TcType::Var(0);
             env.insert(
                 name.to_string(),

@@ -34,49 +34,38 @@ fn test_map_multi_param_adds_index() {
 
 #[test]
 fn test_reduce_sum() {
-    let result = eval(
-        r#"(reduce (lambda (acc x) (+ acc x)) 0 (list 1 2 3 4 5))"#,
-    );
+    let result = eval(r#"(reduce (lambda (acc x) (+ acc x)) 0 (list 1 2 3 4 5))"#);
     assert_eq!(result, "15");
 }
 
 #[test]
 fn test_reduce_product() {
-    let result = eval(
-        r#"(reduce (lambda (acc x) (* acc x)) 1 (list 1 2 3 4 5))"#,
-    );
+    let result = eval(r#"(reduce (lambda (acc x) (* acc x)) 1 (list 1 2 3 4 5))"#);
     assert_eq!(result, "120");
 }
 
 #[test]
 fn test_reduce_string_concat() {
-    let result = eval(
-        r#"(reduce (lambda (acc x) (str-concat acc (to-string x))) "" (list 1 2 3))"#,
-    );
+    let result =
+        eval(r#"(reduce (lambda (acc x) (str-concat acc (to-string x))) "" (list 1 2 3))"#);
     assert_eq!(result, "\"123\"");
 }
 
 #[test]
 fn test_reduce_with_let() {
-    let result = eval(
-        r#"(reduce (lambda (acc x) (let ((s (+ acc x))) s)) 0 (list 10 20 30))"#,
-    );
+    let result = eval(r#"(reduce (lambda (acc x) (let ((s (+ acc x))) s)) 0 (list 10 20 30))"#);
     assert_eq!(result, "60");
 }
 
 #[test]
 fn test_reduce_empty_list() {
-    let result = eval(
-        r#"(reduce (lambda (a x) (+ a x)) 42 (list))"#,
-    );
+    let result = eval(r#"(reduce (lambda (a x) (+ a x)) 42 (list))"#);
     assert_eq!(result, "42");
 }
 
 #[test]
 fn test_reduce_max() {
-    let result = eval(
-        r#"(reduce (lambda (acc x) (if (> x acc) x acc)) 0 (list 3 7 2 9 5))"#,
-    );
+    let result = eval(r#"(reduce (lambda (acc x) (if (> x acc) x acc)) 0 (list 3 7 2 9 5))"#);
     assert_eq!(result, "9");
 }
 
@@ -84,25 +73,19 @@ fn test_reduce_max() {
 
 #[test]
 fn test_find_even() {
-    let result = eval(
-        r#"(find (lambda (x) (= (mod x 2) 0)) (list 1 3 4 5 6))"#,
-    );
+    let result = eval(r#"(find (lambda (x) (= (mod x 2) 0)) (list 1 3 4 5 6))"#);
     assert_eq!(result, "4");
 }
 
 #[test]
 fn test_find_none() {
-    let result = eval(
-        r#"(find (lambda (x) (> x 100)) (list 1 2 3))"#,
-    );
+    let result = eval(r#"(find (lambda (x) (> x 100)) (list 1 2 3))"#);
     assert_eq!(result, "nil");
 }
 
 #[test]
 fn test_find_empty() {
-    let result = eval(
-        r#"(find (lambda (x) true) (list))"#,
-    );
+    let result = eval(r#"(find (lambda (x) true) (list))"#);
     assert_eq!(result, "nil");
 }
 
@@ -110,17 +93,13 @@ fn test_find_empty() {
 
 #[test]
 fn test_some_even() {
-    let result = eval(
-        r#"(some (lambda (x) (= (mod x 2) 0)) (list 1 3 5 4))"#,
-    );
+    let result = eval(r#"(some (lambda (x) (= (mod x 2) 0)) (list 1 3 5 4))"#);
     assert_eq!(result, "true");
 }
 
 #[test]
 fn test_some_none() {
-    let result = eval(
-        r#"(some (lambda (x) (> x 100)) (list 1 2 3))"#,
-    );
+    let result = eval(r#"(some (lambda (x) (> x 100)) (list 1 2 3))"#);
     assert_eq!(result, "false");
 }
 
@@ -128,25 +107,19 @@ fn test_some_none() {
 
 #[test]
 fn test_every_positive() {
-    let result = eval(
-        r#"(every (lambda (x) (> x 0)) (list 1 2 3 4))"#,
-    );
+    let result = eval(r#"(every (lambda (x) (> x 0)) (list 1 2 3 4))"#);
     assert_eq!(result, "true");
 }
 
 #[test]
 fn test_every_not_all() {
-    let result = eval(
-        r#"(every (lambda (x) (> x 3)) (list 1 2 3 4 5))"#,
-    );
+    let result = eval(r#"(every (lambda (x) (> x 3)) (list 1 2 3 4 5))"#);
     assert_eq!(result, "false");
 }
 
 #[test]
 fn test_every_empty() {
-    let result = eval(
-        r#"(every (lambda (x) false) (list))"#,
-    );
+    let result = eval(r#"(every (lambda (x) false) (list))"#);
     assert_eq!(result, "true");
 }
 
@@ -154,9 +127,7 @@ fn test_every_empty() {
 
 #[test]
 fn test_partition_even_odd() {
-    let result = eval(
-        r#"(partition (lambda (x) (= (mod x 2) 0)) (list 1 2 3 4 5 6))"#,
-    );
+    let result = eval(r#"(partition (lambda (x) (= (mod x 2) 0)) (list 1 2 3 4 5 6))"#);
     assert_eq!(result, "((2 4 6) (1 3 5))");
 }
 
@@ -164,17 +135,14 @@ fn test_partition_even_odd() {
 
 #[test]
 fn test_fold_left_sum() {
-    let result = eval(
-        r#"(fold-left (lambda (acc x) (+ acc x)) 0 (list 1 2 3 4))"#,
-    );
+    let result = eval(r#"(fold-left (lambda (acc x) (+ acc x)) 0 (list 1 2 3 4))"#);
     assert_eq!(result, "10");
 }
 
 #[test]
 fn test_fold_left_build_list() {
-    let result = eval(
-        r#"(fold-left (lambda (acc x) (append acc (list (* x 2)))) (list) (list 1 2 3))"#,
-    );
+    let result =
+        eval(r#"(fold-left (lambda (acc x) (append acc (list (* x 2)))) (list) (list 1 2 3))"#);
     assert_eq!(result, "(2 4 6)");
 }
 
@@ -182,9 +150,7 @@ fn test_fold_left_build_list() {
 
 #[test]
 fn test_fold_right_cons() {
-    let result = eval(
-        r#"(fold-right (lambda (x acc) (cons x acc)) (list) (list 1 2 3))"#,
-    );
+    let result = eval(r#"(fold-right (lambda (x acc) (cons x acc)) (list) (list 1 2 3))"#);
     assert_eq!(result, "(1 2 3)");
 }
 
@@ -192,9 +158,7 @@ fn test_fold_right_cons() {
 
 #[test]
 fn test_for_each_returns_nil() {
-    let result = eval(
-        r#"(for-each (lambda (x) x) (list 1 2 3))"#,
-    );
+    let result = eval(r#"(for-each (lambda (x) x) (list 1 2 3))"#);
     assert_eq!(result, "nil");
 }
 
@@ -214,9 +178,7 @@ fn test_reduce_filter_via_lambda() {
 
 #[test]
 fn test_reduce_nested_arithmetic() {
-    let result = eval(
-        r#"(reduce (lambda (acc x) (+ (* acc 2) x)) 0 (list 1 2 3))"#,
-    );
+    let result = eval(r#"(reduce (lambda (acc x) (+ (* acc 2) x)) 0 (list 1 2 3))"#);
     // acc=0: 0*2+1=1, acc=1: 1*2+2=4, acc=4: 4*2+3=11
     assert_eq!(result, "11");
 }
@@ -238,9 +200,7 @@ fn test_reduce_calls_user_fn() {
 
 #[test]
 fn test_find_greater_than() {
-    let result = eval(
-        r#"(find (lambda (x) (>= x 5)) (list 1 3 5 2 7))"#,
-    );
+    let result = eval(r#"(find (lambda (x) (>= x 5)) (list 1 3 5 2 7))"#);
     // First element >= 5 is 5
     assert_eq!(result, "5");
 }

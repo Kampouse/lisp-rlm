@@ -29,9 +29,8 @@ fn test_set_in_lambda_basic() {
 #[test]
 fn test_set_in_let_lambda() {
     // set! on a let-bound variable inside a lambda
-    let result = eval(
-        r#"(map (lambda (x) (let ((acc x)) (set! acc (+ acc 100)) acc)) (list 1 2 3))"#,
-    );
+    let result =
+        eval(r#"(map (lambda (x) (let ((acc x)) (set! acc (+ acc 100)) acc)) (list 1 2 3))"#);
     assert_eq!(result, "(101 102 103)");
 }
 
@@ -39,9 +38,7 @@ fn test_set_in_let_lambda() {
 fn test_set_let_shadow_preserves_param() {
     // set! on a let-shadowed variable should not affect the original param
     // after let scope ends
-    let result = eval(
-        r#"(map (lambda (x) (let ((x 0)) (set! x 99)) x) (list 1 2 3))"#,
-    );
+    let result = eval(r#"(map (lambda (x) (let ((x 0)) (set! x 99)) x) (list 1 2 3))"#);
     // The let shadows x, set! writes 99 to the shadow, but after let scope
     // x reverts to the param value... actually in our impl, set! stores into
     // whatever slot the name resolves to. With shadowing, set! writes to the
@@ -87,17 +84,13 @@ fn test_builtin_dec_in_lambda() {
 
 #[test]
 fn test_builtin_first_rest_in_lambda() {
-    let result = eval(
-        r#"(map (lambda (x) (first x)) (list (list 1 2 3) (list 4 5) (list 9)))"#,
-    );
+    let result = eval(r#"(map (lambda (x) (first x)) (list (list 1 2 3) (list 4 5) (list 9)))"#);
     assert_eq!(result, "(1 4 9)");
 }
 
 #[test]
 fn test_builtin_rest_in_lambda() {
-    let result = eval(
-        r#"(map (lambda (x) (rest x)) (list (list 1 2 3) (list 4 5) (list 9)))"#,
-    );
+    let result = eval(r#"(map (lambda (x) (rest x)) (list (list 1 2 3) (list 4 5) (list 9)))"#);
     assert_eq!(result, "((2 3) (5) nil)");
 }
 
@@ -109,9 +102,7 @@ fn test_builtin_equal_in_lambda() {
 
 #[test]
 fn test_builtin_not_in_lambda() {
-    let result = eval(
-        r#"(map (lambda (x) (not (> x 2))) (list 1 2 3 4))"#,
-    );
+    let result = eval(r#"(map (lambda (x) (not (> x 2))) (list 1 2 3 4))"#);
     assert_eq!(result, "(true true false false)");
 }
 
@@ -126,25 +117,19 @@ fn test_builtin_type_predicates_in_lambda() {
 
 #[test]
 fn test_builtin_reverse_in_lambda() {
-    let result = eval(
-        r#"(map (lambda (x) (reverse x)) (list (list 1 2 3) (list 4 5)))"#,
-    );
+    let result = eval(r#"(map (lambda (x) (reverse x)) (list (list 1 2 3) (list 4 5)))"#);
     assert_eq!(result, "((3 2 1) (5 4))");
 }
 
 #[test]
 fn test_builtin_take_drop_in_lambda() {
-    let result = eval(
-        r#"(map (lambda (x) (take 2 x)) (list (list 1 2 3 4 5) (list 10 20 30)))"#,
-    );
+    let result = eval(r#"(map (lambda (x) (take 2 x)) (list (list 1 2 3 4 5) (list 10 20 30)))"#);
     assert_eq!(result, "((1 2) (10 20))");
 }
 
 #[test]
 fn test_builtin_last_in_lambda() {
-    let result = eval(
-        r#"(map (lambda (x) (last x)) (list (list 1 2 3) (list 99)))"#,
-    );
+    let result = eval(r#"(map (lambda (x) (last x)) (list (list 1 2 3) (list 99)))"#);
     assert_eq!(result, "(3 99)");
 }
 
@@ -182,9 +167,7 @@ fn test_builtin_int_float_predicates() {
 
 #[test]
 fn test_builtin_pair_pred() {
-    let result = eval(
-        r#"(map (lambda (x) (pair? x)) (list (list 1 2) (list 1) nil 42))"#,
-    );
+    let result = eval(r#"(map (lambda (x) (pair? x)) (list (list 1 2) (list 1) nil 42))"#);
     assert_eq!(result, "(true false false false)");
 }
 
@@ -214,16 +197,18 @@ fn test_float_multiplication_in_lambda() {
 fn test_float_both_operands() {
     let result = eval(r#"(map (lambda (x) (+ x 1.1)) (list 0.5 1.5))"#);
     // 0.5+1.1=1.6, 1.5+1.1=2.6
-    assert!(result.contains("1.6") || result.contains("2.6"), "expected float results in: {}", result);
+    assert!(
+        result.contains("1.6") || result.contains("2.6"),
+        "expected float results in: {}",
+        result
+    );
 }
 
 // --- combined features ---
 
 #[test]
 fn test_set_with_do_in_lambda() {
-    let result = eval(
-        r#"(map (lambda (x) (do (set! x (* x 2)) (+ x 1))) (list 1 2 3))"#,
-    );
+    let result = eval(r#"(map (lambda (x) (do (set! x (* x 2)) (+ x 1))) (list 1 2 3))"#);
     // x *= 2, then x + 1: 2+1=3, 4+1=5, 6+1=7
     assert_eq!(result, "(3 5 7)");
 }
@@ -244,17 +229,13 @@ fn test_let_set_do_combined() {
 
 #[test]
 fn test_filter_with_not_builtin() {
-    let result = eval(
-        r#"(filter (lambda (x) (not (zero? (mod x 2)))) (list 1 2 3 4 5))"#,
-    );
+    let result = eval(r#"(filter (lambda (x) (not (zero? (mod x 2)))) (list 1 2 3 4 5))"#);
     // Keep odd numbers
     assert_eq!(result, "(1 3 5)");
 }
 
 #[test]
 fn test_filter_with_type_predicate() {
-    let result = eval(
-        r#"(filter (lambda (x) (number? x)) (list 1 "two" 3 nil 5 (list 6)))"#,
-    );
+    let result = eval(r#"(filter (lambda (x) (number? x)) (list 1 "two" 3 nil 5 (list 6)))"#);
     assert_eq!(result, "(1 3 5)");
 }

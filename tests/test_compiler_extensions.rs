@@ -40,18 +40,14 @@ fn test_map_lambda_with_let() {
 
 #[test]
 fn test_map_lambda_with_nested_let() {
-    let result = eval(
-        r#"(map (lambda (x) (let ((a (+ x 1)) (b (* x 2))) (+ a b))) (list 1 2 3))"#,
-    );
+    let result = eval(r#"(map (lambda (x) (let ((a (+ x 1)) (b (* x 2))) (+ a b))) (list 1 2 3))"#);
     // x=1: a=2, b=2 → 4; x=2: a=3, b=4 → 7; x=3: a=4, b=6 → 10
     assert_eq!(result, "(4 7 10)");
 }
 
 #[test]
 fn test_filter_lambda_with_let() {
-    let result = eval(
-        r#"(filter (lambda (x) (let ((d (* x 2))) (> d 5))) (list 1 2 3 4 5))"#,
-    );
+    let result = eval(r#"(filter (lambda (x) (let ((d (* x 2))) (> d 5))) (list 1 2 3 4 5))"#);
     // x=1: d=2 no; x=2: d=4 no; x=3: d=6 yes; x=4: d=8 yes; x=5: d=10 yes
     assert_eq!(result, "(3 4 5)");
 }
@@ -59,9 +55,7 @@ fn test_filter_lambda_with_let() {
 #[test]
 fn test_map_lambda_with_let_star() {
     // let*: second binding sees first
-    let result = eval(
-        r#"(map (lambda (x) (let* ((a (+ x 1)) (b (* a 2))) b)) (list 1 2 3))"#,
-    );
+    let result = eval(r#"(map (lambda (x) (let* ((a (+ x 1)) (b (* a 2))) b)) (list 1 2 3))"#);
     // x=1: a=2, b=4; x=2: a=3, b=6; x=3: a=4, b=8
     assert_eq!(result, "(4 6 8)");
 }
@@ -70,27 +64,21 @@ fn test_map_lambda_with_let_star() {
 
 #[test]
 fn test_map_lambda_with_when() {
-    let result = eval(
-        r#"(map (lambda (x) (if (> x 2) (* x 10) x)) (list 1 2 3 4))"#,
-    );
+    let result = eval(r#"(map (lambda (x) (if (> x 2) (* x 10) x)) (list 1 2 3 4))"#);
     assert_eq!(result, "(1 2 30 40)");
 }
 
 #[test]
 fn test_filter_lambda_with_when_body() {
     // when inside a lambda
-    let result = eval(
-        r#"(map (lambda (x) (when (> x 2) (+ x 100))) (list 1 2 3 4))"#,
-    );
+    let result = eval(r#"(map (lambda (x) (when (> x 2) (+ x 100))) (list 1 2 3 4))"#);
     // when is false → nil, when is true → result
     assert_eq!(result, "(nil nil 103 104)");
 }
 
 #[test]
 fn test_map_lambda_with_unless() {
-    let result = eval(
-        r#"(map (lambda (x) (unless (> x 2) (+ x 100))) (list 1 2 3 4))"#,
-    );
+    let result = eval(r#"(map (lambda (x) (unless (> x 2) (+ x 100))) (list 1 2 3 4))"#);
     // unless condition is true (x>2) → nil, false → body
     assert_eq!(result, "(101 102 nil nil)");
 }
@@ -118,7 +106,11 @@ fn test_map_lambda_calling_user_function_complex() {
     );
     // 10+1.3=11.3, 20+2.6=22.6, 30+3.9=33.9
     // Float arithmetic in bytecode
-    assert!(result.contains("11.3"), "expected 11.3 in output, got: {}", result);
+    assert!(
+        result.contains("11.3"),
+        "expected 11.3 in output, got: {}",
+        result
+    );
 }
 
 #[test]
@@ -180,26 +172,21 @@ fn test_loop_with_let_in_body() {
 #[test]
 fn test_let_shadowing_in_lambda() {
     // let-bound x should shadow param x inside the body
-    let result = eval(
-        r#"(map (lambda (x) (let ((x 42)) x)) (list 1 2 3))"#,
-    );
+    let result = eval(r#"(map (lambda (x) (let ((x 42)) x)) (list 1 2 3))"#);
     assert_eq!(result, "(42 42 42)");
 }
 
 #[test]
 fn test_nested_let_in_lambda() {
-    let result = eval(
-        r#"(map (lambda (x) (let ((a (+ x 1))) (let ((b (* a 2))) b))) (list 1 2 3))"#,
-    );
+    let result =
+        eval(r#"(map (lambda (x) (let ((a (+ x 1))) (let ((b (* a 2))) b))) (list 1 2 3))"#);
     // x=1: a=2, b=4; x=2: a=3, b=6; x=3: a=4, b=8
     assert_eq!(result, "(4 6 8)");
 }
 
 #[test]
 fn test_when_with_multiple_body_forms() {
-    let result = eval(
-        r#"(map (lambda (x) (when (> x 2) (+ x 1) (* x 10))) (list 1 2 3 4))"#,
-    );
+    let result = eval(r#"(map (lambda (x) (when (> x 2) (+ x 1) (* x 10))) (list 1 2 3 4))"#);
     // when false → nil; when true, last form value: (* x 10)
     assert_eq!(result, "(nil nil 30 40)");
 }

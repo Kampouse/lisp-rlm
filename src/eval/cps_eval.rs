@@ -26,10 +26,23 @@ fn make_lambda(
     let compiled = crate::bytecode::try_compile_lambda(
         &params,
         &body,
-        &closed_env.read().unwrap().clone().into_iter().collect::<Vec<_>>(),
+        &closed_env
+            .read()
+            .unwrap()
+            .clone()
+            .into_iter()
+            .collect::<Vec<_>>(),
         outer_env,
-    ).map(|cl| Box::new(cl));
-    LispVal::Lambda { params, rest_param, body, closed_env, pure_type, compiled }
+    )
+    .map(|cl| Box::new(cl));
+    LispVal::Lambda {
+        params,
+        rest_param,
+        body,
+        closed_env,
+        pure_type,
+        compiled,
+    }
 }
 
 /// Evaluate a single expression (no recursion).
@@ -135,22 +148,22 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                         let args = &list[1..];
                         match crate::typing::check_pure_define(args) {
                             Ok(result) => {
-                                eprintln!(
-                                    "[pure] {} :: {} ✓",
-                                    result.name, result.inferred_type
-                                );
+                                eprintln!("[pure] {} :: {} ✓", result.name, result.inferred_type);
                                 state.pending_pure_type = Some(result.inferred_type.to_string());
                                 // Build a clean define without the :: type annotation
                                 let define_list = match list.get(1) {
                                     Some(LispVal::List(dl)) => dl.clone(),
-                                    other => return Err(format!("pure: expected define form, got {:?}", other)),
+                                    other => {
+                                        return Err(format!(
+                                            "pure: expected define form, got {:?}",
+                                            other
+                                        ))
+                                    }
                                 };
                                 let clean = strip_type_annotation(&define_list);
                                 eval_step(&LispVal::List(clean), env, state)
                             }
-                            Err(type_err) => {
-                                Err(format!("pure type error: {}", type_err))
-                            }
+                            Err(type_err) => Err(format!("pure type error: {}", type_err)),
                         }
                     }
 
@@ -1860,17 +1873,13 @@ pub fn handle_cont(
             Ok(Step::Done(LispVal::Bool(true)))
         }
 
-        Cont::Memoize => {
-            match val {
-                f @ LispVal::Lambda { .. } => {
-                    Ok(Step::Done(LispVal::Memoized {
-                        func: Box::new(f),
-                        cache: Arc::new(RwLock::new(im::HashMap::new())),
-                    }))
-                }
-                _ => Err("memoize: expected lambda".into()),
-            }
-        }
+        Cont::Memoize => match val {
+            f @ LispVal::Lambda { .. } => Ok(Step::Done(LispVal::Memoized {
+                func: Box::new(f),
+                cache: Arc::new(RwLock::new(im::HashMap::new())),
+            })),
+            _ => Err("memoize: expected lambda".into()),
+        },
     }
 }
 
@@ -2017,13 +2026,13 @@ fn parse_contract_sig(sig: &LispVal) -> Result<(Vec<String>, Vec<RlType>, Option
 /// Output: [define, (f x y), (body)]
 fn strip_type_annotation(dl: &[LispVal]) -> Vec<LispVal> {
     let mut clean = vec![dl[0].clone()]; // "define"
-    
+
     if dl.len() < 2 {
         return dl.to_vec();
     }
-    
+
     clean.push(dl[1].clone()); // name or (name params...)
-    
+
     // Find :: and skip until body
     let mut i = 2;
     while i < dl.len() {
@@ -2032,7 +2041,7 @@ fn strip_type_annotation(dl: &[LispVal]) -> Vec<LispVal> {
                 // Skip :: and all following type tokens until we hit the body
                 // The body is the last element
                 let _ = i; // assignment below is dead but we keep the loop structure
-                // Skip type tokens (everything until the last element)
+                           // Skip type tokens (everything until the last element)
                 let body = dl.last().cloned().unwrap_or(LispVal::Nil);
                 clean.push(body);
                 return clean;
@@ -2042,6 +2051,6 @@ fn strip_type_annotation(dl: &[LispVal]) -> Vec<LispVal> {
         clean.push(dl[i].clone());
         i += 1;
     }
-    
+
     clean
 }

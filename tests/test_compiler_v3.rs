@@ -40,20 +40,24 @@ fn test_reduce_compiled_lambda() {
 
 #[test]
 fn test_nested_compiled_calls() {
-    let result = eval(r#"
+    let result = eval(
+        r#"
         (define (add1 x) (+ x 1))
         (define (double x) (* x 2))
         (map (lambda (x) (double (add1 x))) (list 1 2 3))
-    "#);
+    "#,
+    );
     assert_eq!(result, "(4 6 8)");
 }
 
 #[test]
 fn test_compiled_lambda_with_let_and_call() {
-    let result = eval(r#"
+    let result = eval(
+        r#"
         (define (wrap x) (list x x))
         (map (lambda (x) (let ((doubled (* x 2))) (wrap doubled))) (list 1 2 3))
-    "#);
+    "#,
+    );
     assert_eq!(result, "((2 2) (4 4) (6 6))");
 }
 
@@ -97,28 +101,34 @@ fn test_fold_right_compiled_lambda() {
 
 #[test]
 fn test_dict_get_in_lambda() {
-    let result = eval(r#"
+    let result = eval(
+        r#"
         (define d (dict "a" 1 "b" 2 "c" 3))
         (map (lambda (k) (dict/get d k)) (list "a" "b" "c"))
-    "#);
+    "#,
+    );
     assert_eq!(result, "(1 2 3)");
 }
 
 #[test]
 fn test_dict_get_missing_key() {
-    let result = eval(r#"
+    let result = eval(
+        r#"
         (define d (dict "a" 1))
         (map (lambda (k) (dict/get d k)) (list "a" "z"))
-    "#);
+    "#,
+    );
     assert_eq!(result, "(1 nil)");
 }
 
 #[test]
 fn test_dict_set_basic() {
-    let result = eval(r#"
+    let result = eval(
+        r#"
         (define d (dict "x" 10))
         (dict/set d "y" 20)
-    "#);
+    "#,
+    );
     let normalized = result.replace('"', "'");
     assert!(normalized.contains("'x'") && normalized.contains("10"));
     assert!(normalized.contains("'y'") && normalized.contains("20"));
@@ -126,19 +136,23 @@ fn test_dict_set_basic() {
 
 #[test]
 fn test_dict_has_in_lambda() {
-    let result = eval(r#"
+    let result = eval(
+        r#"
         (define d (dict "a" 1 "b" 2))
         (list (dict/has? d "a") (dict/has? d "z"))
-    "#);
+    "#,
+    );
     assert_eq!(result, "(true false)");
 }
 
 #[test]
 fn test_dict_keys_basic() {
-    let result = eval(r#"
+    let result = eval(
+        r#"
         (define d (dict "x" 1 "y" 2))
         (sort (dict/keys d) string<?)
-    "#);
+    "#,
+    );
     let normalized = result.replace('"', "'");
     assert_eq!(normalized, "('x' 'y')");
 }
@@ -147,7 +161,8 @@ fn test_dict_keys_basic() {
 
 #[test]
 fn test_harness_style_filter_with_dict() {
-    let result = eval(r#"
+    let result = eval(
+        r#"
         (define intentions
             (list
                 (dict "id" "a" "priority" 3)
@@ -155,20 +170,23 @@ fn test_harness_style_filter_with_dict() {
                 (dict "id" "c" "priority" 5)))
         (map (lambda (i) (dict/get i "id"))
             (filter (lambda (i) (> (dict/get i "priority") 2)) intentions))
-    "#);
+    "#,
+    );
     let normalized = result.replace('"', "'");
     assert_eq!(normalized, "('a' 'c')");
 }
 
 #[test]
 fn test_multi_level_compiled_dispatch() {
-    let result = eval(r#"
+    let result = eval(
+        r#"
         (define (process x)
             (let ((y (* x 2)))
                 (+ y 1)))
         (define (batch items)
             (map process items))
         (batch (list 1 2 3 4 5))
-    "#);
+    "#,
+    );
     assert_eq!(result, "(3 5 7 9 11)");
 }

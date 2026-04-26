@@ -274,12 +274,18 @@ pub fn handle(
             {
                 if !lst.is_empty() {
                     if let Ok(first_result) = crate::bytecode::run_compiled_lambda(
-                        cl, &[init_acc.clone(), lst[0].clone()], env, state,
+                        cl,
+                        &[init_acc.clone(), lst[0].clone()],
+                        env,
+                        state,
                     ) {
                         let mut acc = first_result;
                         for elem in &lst[1..] {
                             acc = crate::bytecode::run_compiled_lambda(
-                                cl, &[acc.clone(), elem.clone()], env, state,
+                                cl,
+                                &[acc.clone(), elem.clone()],
+                                env,
+                                state,
                             )?;
                         }
                         return Ok(Some(acc));
@@ -318,15 +324,18 @@ pub fn handle(
                 if lst.is_empty() {
                     return Ok(Some(LispVal::Nil));
                 }
-                if let Ok(first_res) = crate::bytecode::run_compiled_lambda(
-                    cl, &[lst[0].clone()], env, state,
-                ) {
+                if let Ok(first_res) =
+                    crate::bytecode::run_compiled_lambda(cl, &[lst[0].clone()], env, state)
+                {
                     if is_truthy(&first_res) {
                         return Ok(Some(lst[0].clone()));
                     }
                     for elem in &lst[1..] {
                         if is_truthy(&crate::bytecode::run_compiled_lambda(
-                            cl, &[elem.clone()], env, state,
+                            cl,
+                            &[elem.clone()],
+                            env,
+                            state,
                         )?) {
                             return Ok(Some(elem.clone()));
                         }
@@ -359,15 +368,18 @@ pub fn handle(
                 if lst.is_empty() {
                     return Ok(Some(LispVal::Bool(false)));
                 }
-                if let Ok(first_res) = crate::bytecode::run_compiled_lambda(
-                    cl, &[lst[0].clone()], env, state,
-                ) {
+                if let Ok(first_res) =
+                    crate::bytecode::run_compiled_lambda(cl, &[lst[0].clone()], env, state)
+                {
                     if is_truthy(&first_res) {
                         return Ok(Some(LispVal::Bool(true)));
                     }
                     for elem in &lst[1..] {
                         if is_truthy(&crate::bytecode::run_compiled_lambda(
-                            cl, &[elem.clone()], env, state,
+                            cl,
+                            &[elem.clone()],
+                            env,
+                            state,
                         )?) {
                             return Ok(Some(LispVal::Bool(true)));
                         }
@@ -400,15 +412,18 @@ pub fn handle(
                 if lst.is_empty() {
                     return Ok(Some(LispVal::Bool(true)));
                 }
-                if let Ok(first_res) = crate::bytecode::run_compiled_lambda(
-                    cl, &[lst[0].clone()], env, state,
-                ) {
+                if let Ok(first_res) =
+                    crate::bytecode::run_compiled_lambda(cl, &[lst[0].clone()], env, state)
+                {
                     if !is_truthy(&first_res) {
                         return Ok(Some(LispVal::Bool(false)));
                     }
                     for elem in &lst[1..] {
                         if !is_truthy(&crate::bytecode::run_compiled_lambda(
-                            cl, &[elem.clone()], env, state,
+                            cl,
+                            &[elem.clone()],
+                            env,
+                            state,
                         )?) {
                             return Ok(Some(LispVal::Bool(false)));
                         }
@@ -579,9 +594,9 @@ pub fn handle(
                         LispVal::List(vec![]),
                     ])));
                 }
-                if let Ok(first_res) = crate::bytecode::run_compiled_lambda(
-                    cl, &[lst[0].clone()], env, state,
-                ) {
+                if let Ok(first_res) =
+                    crate::bytecode::run_compiled_lambda(cl, &[lst[0].clone()], env, state)
+                {
                     let mut yes = Vec::new();
                     let mut no = Vec::new();
                     if is_truthy(&first_res) {
@@ -591,7 +606,10 @@ pub fn handle(
                     }
                     for elem in &lst[1..] {
                         if is_truthy(&crate::bytecode::run_compiled_lambda(
-                            cl, &[elem.clone()], env, state,
+                            cl,
+                            &[elem.clone()],
+                            env,
+                            state,
                         )?) {
                             yes.push(elem.clone());
                         } else {
@@ -635,12 +653,18 @@ pub fn handle(
             {
                 if !lst.is_empty() {
                     if let Ok(first_result) = crate::bytecode::run_compiled_lambda(
-                        cl, &[init_acc.clone(), lst[0].clone()], env, state,
+                        cl,
+                        &[init_acc.clone(), lst[0].clone()],
+                        env,
+                        state,
                     ) {
                         let mut acc = first_result;
                         for elem in &lst[1..] {
                             acc = crate::bytecode::run_compiled_lambda(
-                                cl, &[acc.clone(), elem.clone()], env, state,
+                                cl,
+                                &[acc.clone(), elem.clone()],
+                                env,
+                                state,
                             )?;
                         }
                         return Ok(Some(acc));
@@ -671,12 +695,18 @@ pub fn handle(
                 let rev: Vec<_> = lst.iter().rev().cloned().collect();
                 if !rev.is_empty() {
                     if let Ok(first_result) = crate::bytecode::run_compiled_lambda(
-                        cl, &[rev[0].clone(), init.clone()], env, state,
+                        cl,
+                        &[rev[0].clone(), init.clone()],
+                        env,
+                        state,
                     ) {
                         let mut acc = first_result;
                         for elem in &rev[1..] {
                             acc = crate::bytecode::run_compiled_lambda(
-                                cl, &[elem.clone(), acc.clone()], env, state,
+                                cl,
+                                &[elem.clone(), acc.clone()],
+                                env,
+                                state,
                             )?;
                         }
                         return Ok(Some(acc));
