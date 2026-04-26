@@ -376,3 +376,9 @@ fn test_float_peephole_in_arithmetic() {
     let result2 = eval_program("(define (tfs x) (- 1.0 x)) (tfs 0.3)").unwrap();
     assert_eq!(result2, "0.7");
 }
+
+
+
+
+
+

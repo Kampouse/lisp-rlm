@@ -287,7 +287,7 @@ impl LoopCompiler {
     }
 
     /// Maximum number of ops in a callee to be eligible for inlining.
-    const INLINE_THRESHOLD: usize = 30;
+    const INLINE_THRESHOLD: usize = 80;
 
     /// Extract a constant LispVal from an Op, if it's a pure constant push.
     fn const_val(op: &Op) -> Option<LispVal> {
