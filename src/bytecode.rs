@@ -105,6 +105,8 @@ pub enum Op {
     LoadCaptured(usize),
     /// Call captured function from cl.captured[idx] with N args (no slot copy)
     CallCapturedRef(usize, usize),
+    /// Sort list with comparator: pop comparator from captured[idx], pop list from stack, push sorted list
+    SortWithComparator(usize),
 }
 
 /// Compiled loop representation.
@@ -532,6 +534,21 @@ impl LoopCompiler {
                             self.code.push(Op::StoreSlot(slot));
                             self.code.push(Op::LoadSlot(slot)); // set! returns the new value
                             true
+                        }
+                        "sort" if list.len() == 3 => {
+                            // (sort list-expr comparator)
+                            if !self.compile_expr(&list[1], outer_env) { return false; }
+                            // Check if comparator is a captured symbol
+                            if let Some(LispVal::Sym(ref name)) = list.get(2) {
+                                if let Some(idx) = self.captured_idx(name) {
+                                    self.code.push(Op::SortWithComparator(idx));
+                                    return true;
+                                }
+                            }
+                            // Comparator is an expression — compile it and use SortByStack
+                            self.code.pop(); // remove compiled list from stack
+                            // Can't handle arbitrary comparator expression yet
+                            false
                         }
                         _ => {
                             // Function call: captured var or assumed builtin
@@ -1188,7 +1205,7 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
                 stack.push(result);
                 pc += 1;
             }
-            Op::CallCaptured(_, _) | Op::CallCapturedRef(_, _) => {
+            Op::CallCaptured(_, _) | Op::CallCapturedRef(_, _) | Op::SortWithComparator(_) => {
                 return Err("loop VM: CallCaptured not supported in loop body".into());
             }
         }
@@ -1959,6 +1976,47 @@ pub fn run_compiled_lambda(
                         }
                     }
                 }
+                pc += 1;
+            }
+            Op::SortWithComparator(captured_idx) => {
+                // Pop list from stack, get comparator from cl.captured
+                let list_val = stack.pop().unwrap_or(LispVal::Nil);
+                let comparator = cl.captured[*captured_idx].1.clone();
+                let mut vals = match list_val {
+                    LispVal::List(l) => l,
+                    LispVal::Nil => vec![],
+                    _ => {
+                        stack.push(LispVal::Nil);
+                        pc += 1;
+                        continue;
+                    }
+                };
+                // Fast path: comparator has compiled bytecode
+                if let LispVal::Lambda { rest_param: None, compiled: Some(ref cl2), .. } = comparator {
+                    let comp_cl = cl2.clone();
+                    vals.sort_by(|a, b| {
+                        match run_compiled_lambda(&comp_cl, &[a.clone(), b.clone()], outer_env, state) {
+                            Ok(LispVal::Bool(true)) => std::cmp::Ordering::Less,
+                            Ok(LispVal::Bool(false)) => std::cmp::Ordering::Greater,
+                            Ok(LispVal::Num(n)) if n > 0 => std::cmp::Ordering::Less,
+                            Ok(LispVal::Num(n)) if n < 0 => std::cmp::Ordering::Greater,
+                            _ => std::cmp::Ordering::Equal,
+                        }
+                    });
+                } else {
+                    let func = comparator.clone();
+                    vals.sort_by(|a, b| {
+                        let result = crate::eval::call_val(&func, &[a.clone(), b.clone()], &mut outer_env.clone(), state);
+                        match result {
+                            Ok(crate::eval::continuation::EvalResult::Value(LispVal::Bool(true))) => std::cmp::Ordering::Less,
+                            Ok(crate::eval::continuation::EvalResult::Value(LispVal::Bool(false))) => std::cmp::Ordering::Greater,
+                            Ok(crate::eval::continuation::EvalResult::Value(LispVal::Num(n))) if n > 0 => std::cmp::Ordering::Less,
+                            Ok(crate::eval::continuation::EvalResult::Value(LispVal::Num(n))) if n < 0 => std::cmp::Ordering::Greater,
+                            _ => std::cmp::Ordering::Equal,
+                        }
+                    });
+                }
+                stack.push(LispVal::List(vals));
                 pc += 1;
             }
             Op::Return => {

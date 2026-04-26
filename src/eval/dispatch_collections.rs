@@ -112,8 +112,24 @@ pub fn handle(
                 Some(LispVal::List(l)) => l.clone(),
                 Some(LispVal::Nil) => vec![],
                 Some(other) => return Err(format!("sort: expected list, got {}", other)),
-                None => return Err("sort: need 1 argument".into()),
+                None => return Err("sort: need at least 1 argument".into()),
             };
+            // 2-arg: (sort list comparator) — use comparator for ordering
+            if let Some(func) = args.get(1) {
+                let func = func.clone();
+                vals.sort_by(|a, b| {
+                    let result = call_val(&func, &[a.clone(), b.clone()], env, state);
+                    match result {
+                        Ok(LispVal::Bool(true)) => std::cmp::Ordering::Less,
+                        Ok(LispVal::Bool(false)) => std::cmp::Ordering::Greater,
+                        Ok(LispVal::Num(n)) if n > 0 => std::cmp::Ordering::Less,
+                        Ok(LispVal::Num(n)) if n < 0 => std::cmp::Ordering::Greater,
+                        _ => std::cmp::Ordering::Equal,
+                    }
+                });
+                return Ok(Some(LispVal::List(vals)));
+            }
+            // 1-arg: (sort list) — natural ordering
             vals.sort_by(|a, b| match (a, b) {
                 (LispVal::Str(sa), LispVal::Str(sb)) => sa.cmp(sb),
                 _ => {

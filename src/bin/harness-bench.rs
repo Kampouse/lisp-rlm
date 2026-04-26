@@ -40,8 +40,7 @@ fn main() {
                 (dict/set intent "score" score)))
 
         (define (rank-intentions intentions)
-            (sort (map score-intention intentions)
-                  (lambda (a b) (> (get-default a "score" 0) (get-default b "score" 0)))))
+            (map score-intention intentions))
 
         (define (execute-action intent)
             (get-default intent "id" "?"))
