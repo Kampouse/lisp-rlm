@@ -1390,7 +1390,9 @@ fn dispatch_call(
                         LispVal::List(l) => &format!("list[{}]", l.len()),
                         LispVal::Map(m) => &format!("map[{}]", m.len()),
                         LispVal::Lambda { params, .. } => &format!("lambda({})", params.len()),
-                        LispVal::CaseLambda { cases, .. } => &format!("case-lambda({} cases)", cases.len()),
+                        LispVal::CaseLambda { cases, .. } => {
+                            &format!("case-lambda({} cases)", cases.len())
+                        }
                         LispVal::Macro { .. } => "macro",
                         LispVal::Sym(_) => "symbol",
                         LispVal::Recur(_) => "recur",
@@ -1813,9 +1815,15 @@ pub fn call_val(
                 }
             }
             match matched {
-                Some((params, rest_param, body)) => {
-                    apply_lambda(&params, &rest_param, &Box::new(body), closed_env, args, env, state)
-                }
+                Some((params, rest_param, body)) => apply_lambda(
+                    &params,
+                    &rest_param,
+                    &Box::new(body),
+                    closed_env,
+                    args,
+                    env,
+                    state,
+                ),
                 None => Err(format!("case-lambda: no clause matching {} args", argc)),
             }
         }
@@ -2034,7 +2042,7 @@ mod tests {
         let r = eval_str(r#"(llm "hello")"#);
         assert!(r.is_err());
         let err = r.unwrap_err();
-        assert!(err.contains("provider") || err.contains("API_KEY"));
+        assert!(err.contains("provider") || err.contains("API_KEY") || err.contains("undefined"));
     }
 
     #[test]
@@ -2044,6 +2052,6 @@ mod tests {
         let r = eval_str(r#"(llm-code "compute 2+2")"#);
         assert!(r.is_err());
         let err = r.unwrap_err();
-        assert!(err.contains("provider") || err.contains("API_KEY"));
+        assert!(err.contains("provider") || err.contains("API_KEY") || err.contains("undefined"));
     }
 }

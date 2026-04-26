@@ -188,14 +188,32 @@ impl Env {
         }
     }
 
+    /// Deep capture: each lambda gets its own snapshot.
+    /// Used by let/let* so inner shadowing doesn't affect captured bindings.
+    pub fn deep_scope_snapshot(
+        &mut self,
+    ) -> std::sync::Arc<std::sync::RwLock<im::HashMap<String, LispVal>>> {
+        std::sync::Arc::new(std::sync::RwLock::new(self.snapshot()))
+    }
+
+    /// Shared capture: all lambdas at this scope share one Arc.
+    /// Used by letrec so set! propagates and mutual recursion works.
+    pub fn shared_scope_snapshot(
+        &mut self,
+    ) -> std::sync::Arc<std::sync::RwLock<im::HashMap<String, LispVal>>> {
+        if let Some(ref arc) = self.scope_snapshot {
+            return arc.clone();
+        }
+        let arc = std::sync::Arc::new(std::sync::RwLock::new(self.snapshot()));
+        self.scope_snapshot = Some(arc.clone());
+        arc
+    }
+
+    /// Default: shared capture so sibling lambdas see each other's mutations.
     pub fn get_or_create_scope_snapshot(
         &mut self,
     ) -> std::sync::Arc<std::sync::RwLock<im::HashMap<String, LispVal>>> {
-        // Always create a NEW Arc for lambda closures so they capture
-        // the current values at creation time (not future mutations).
-        // set! still propagates to parent scopes via propagate_to_shared.
-        let snap = self.snapshot();
-        std::sync::Arc::new(std::sync::RwLock::new(snap))
+        self.shared_scope_snapshot()
     }
 
     /// Propagate a binding to the scope snapshot (for sibling lambda visibility).

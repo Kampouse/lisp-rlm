@@ -193,7 +193,9 @@ pub fn handle(
         }
         "exact-integer-sqrt" => {
             let n = as_num(args.first().ok_or("exact-integer-sqrt: need number")?)?;
-            if n < 0 { return Err("exact-integer-sqrt: need non-negative".into()); }
+            if n < 0 {
+                return Err("exact-integer-sqrt: need non-negative".into());
+            }
             let s = (n as f64).sqrt().floor() as i64;
             let r = n - s * s;
             Ok(Some(LispVal::List(vec![LispVal::Num(s), LispVal::Num(r)])))
@@ -202,37 +204,27 @@ pub fn handle(
             let n = as_num(args.first().ok_or("exp: need number")?)?;
             Ok(Some(LispVal::Float((n as f64).exp())))
         }
-        "rational?" => {
-            match args.first() {
-                Some(LispVal::Num(_)) | Some(LispVal::Float(_)) => Ok(Some(LispVal::Bool(true))),
-                _ => Ok(Some(LispVal::Bool(false))),
-            }
-        }
-        "real?" => {
-            match args.first() {
-                Some(LispVal::Num(_)) | Some(LispVal::Float(_)) => Ok(Some(LispVal::Bool(true))),
-                _ => Ok(Some(LispVal::Bool(false))),
-            }
-        }
-        "complex?" => {
-            match args.first() {
-                Some(LispVal::Num(_)) | Some(LispVal::Float(_)) => Ok(Some(LispVal::Bool(true))),
-                _ => Ok(Some(LispVal::Bool(false))),
-            }
-        }
-        "integer?" => {
-            match args.first() {
-                Some(LispVal::Num(_)) => Ok(Some(LispVal::Bool(true))),
-                Some(LispVal::Float(f)) if f.fract() == 0.0 => Ok(Some(LispVal::Bool(true))),
-                _ => Ok(Some(LispVal::Bool(false))),
-            }
-        }
-        "exact-integer?" => {
-            match args.first() {
-                Some(LispVal::Num(_)) => Ok(Some(LispVal::Bool(true))),
-                _ => Ok(Some(LispVal::Bool(false))),
-            }
-        }
+        "rational?" => match args.first() {
+            Some(LispVal::Num(_)) | Some(LispVal::Float(_)) => Ok(Some(LispVal::Bool(true))),
+            _ => Ok(Some(LispVal::Bool(false))),
+        },
+        "real?" => match args.first() {
+            Some(LispVal::Num(_)) | Some(LispVal::Float(_)) => Ok(Some(LispVal::Bool(true))),
+            _ => Ok(Some(LispVal::Bool(false))),
+        },
+        "complex?" => match args.first() {
+            Some(LispVal::Num(_)) | Some(LispVal::Float(_)) => Ok(Some(LispVal::Bool(true))),
+            _ => Ok(Some(LispVal::Bool(false))),
+        },
+        "integer?" => match args.first() {
+            Some(LispVal::Num(_)) => Ok(Some(LispVal::Bool(true))),
+            Some(LispVal::Float(f)) if f.fract() == 0.0 => Ok(Some(LispVal::Bool(true))),
+            _ => Ok(Some(LispVal::Bool(false))),
+        },
+        "exact-integer?" => match args.first() {
+            Some(LispVal::Num(_)) => Ok(Some(LispVal::Bool(true))),
+            _ => Ok(Some(LispVal::Bool(false))),
+        },
         "exact?" => match args.first() {
             Some(LispVal::Num(_)) => Ok(Some(LispVal::Bool(true))),
             _ => Ok(Some(LispVal::Bool(false))),
@@ -287,21 +279,28 @@ pub fn handle(
             let n = as_num(args.first().ok_or("numerator: need number")?)?;
             Ok(Some(LispVal::Num(n)))
         }
-        "denominator" => {
-            Ok(Some(LispVal::Num(1)))
-        }
+        "denominator" => Ok(Some(LispVal::Num(1))),
         "truncate/" | "floor/" => {
             let a = as_num(args.first().ok_or("need 2 args")?)?;
             let b = as_num(args.get(1).ok_or("need 2 args")?)?;
-            if b == 0 { return Err("division by zero".into()); }
+            if b == 0 {
+                return Err("division by zero".into());
+            }
             let q = a / b;
             let r = a - q * b;
             Ok(Some(LispVal::List(vec![LispVal::Num(q), LispVal::Num(r)])))
         }
         "string" => {
-            let chars: String = args.iter().filter_map(|a| {
-                if let LispVal::Str(s) = a { Some(s.as_str()) } else { None }
-            }).collect();
+            let chars: String = args
+                .iter()
+                .filter_map(|a| {
+                    if let LispVal::Str(s) = a {
+                        Some(s.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
             Ok(Some(LispVal::Str(chars)))
         }
         "make-string" => {

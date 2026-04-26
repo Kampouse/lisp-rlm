@@ -17,7 +17,10 @@ fn call_val(
 ) -> Result<LispVal, String> {
     match super::call_val(func, args, env, state)? {
         EvalResult::Value(v) => Ok(v),
-        EvalResult::TailCall { expr, env: tail_env } => {
+        EvalResult::TailCall {
+            expr,
+            env: tail_env,
+        } => {
             *env = tail_env;
             super::lisp_eval(&expr, env, state)
         }
@@ -534,7 +537,9 @@ pub fn handle(
         // ── Promises (delay/force) ──
         "force" => {
             match args.first() {
-                Some(LispVal::List(l)) if l.len() >= 2 && matches!(&l[0], LispVal::Sym(s) if s == "promise") => {
+                Some(LispVal::List(l))
+                    if l.len() >= 2 && matches!(&l[0], LispVal::Sym(s) if s == "promise") =>
+                {
                     let expr = l[1].clone();
                     // Eval the expression directly
                     super::lisp_eval(&expr, env, state).map(Some)
@@ -544,21 +549,26 @@ pub fn handle(
         }
         "make-promise" => {
             // (make-promise expr) → evaluate expr and wrap as already-forced promise
-            let val = call_val(args.first().ok_or("make-promise: need arg")?, &[], env, state)?;
+            let val = call_val(
+                args.first().ok_or("make-promise: need arg")?,
+                &[],
+                env,
+                state,
+            )?;
             Ok(Some(LispVal::List(vec![
                 LispVal::Sym("promise".into()),
                 val,
                 LispVal::Bool(true),
             ])))
         }
-        "promise?" => {
-            match args.first() {
-                Some(LispVal::List(l)) if l.len() >= 3 && matches!(&l[0], LispVal::Sym(s) if s == "promise") => {
-                    Ok(Some(LispVal::Bool(true)))
-                }
-                _ => Ok(Some(LispVal::Bool(false))),
+        "promise?" => match args.first() {
+            Some(LispVal::List(l))
+                if l.len() >= 3 && matches!(&l[0], LispVal::Sym(s) if s == "promise") =>
+            {
+                Ok(Some(LispVal::Bool(true)))
             }
-        }
+            _ => Ok(Some(LispVal::Bool(false))),
+        },
         // R7RS multiple values (simplified: returns list, call-with-values unpacks)
         "values" => {
             if args.len() == 1 {
@@ -568,8 +578,12 @@ pub fn handle(
             }
         }
         "call-with-values" => {
-            let producer = args.first().ok_or("call-with-values: need producer consumer")?;
-            let consumer = args.get(1).ok_or("call-with-values: need producer consumer")?;
+            let producer = args
+                .first()
+                .ok_or("call-with-values: need producer consumer")?;
+            let consumer = args
+                .get(1)
+                .ok_or("call-with-values: need producer consumer")?;
             let produced = call_val(producer, &[], env, state)?;
             let vals = match &produced {
                 LispVal::List(l) => l.clone(),

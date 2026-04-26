@@ -71,7 +71,10 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
         "boolean?" => handle("bool?", args),
         "pair?" => handle("list?", args),
         "symbol?" => Ok(Some(LispVal::Bool(matches!(&args[0], LispVal::Sym(_))))),
-        "procedure?" => Ok(Some(LispVal::Bool(matches!(&args[0], LispVal::Lambda { .. })))),
+        "procedure?" => Ok(Some(LispVal::Bool(matches!(
+            &args[0],
+            LispVal::Lambda { .. }
+        )))),
         "exact" => Ok(Some(args[0].clone())), // identity for integers
         "inexact" => match &args[0] {
             LispVal::Num(n) => Ok(Some(LispVal::Float(*n as f64))),
