@@ -185,6 +185,90 @@ impl LoopCompiler {
         false
     }
 
+    /// Maximum number of ops in a callee to be eligible for inlining.
+    const INLINE_THRESHOLD: usize = 30;
+
+    /// Try to inline a call to a captured pure compiled lambda.
+    /// Returns true if inlined (caller should not emit CallCapturedRef/CallCaptured).
+    /// `n_args` = number of args already compiled onto the stack.
+    fn try_inline_call(&mut self, idx: usize, n_args: usize) -> bool {
+        let callee = match &self.captured.get(idx).map(|(_, v)| v) {
+            Some(LispVal::Lambda {
+                compiled: Some(ref cl),
+                rest_param: None,
+                ..
+            }) => cl.clone(),
+            _ => return false,
+        };
+
+        // Don't inline if callee is too large
+        if callee.code.len() > Self::INLINE_THRESHOLD {
+            return false;
+        }
+        // Don't inline if callee has CallSelf (recursive) — would need special handling
+        if callee.code.iter().any(|op| matches!(op, Op::CallSelf(_))) {
+            return false;
+        }
+        // Don't inline if callee has PushClosure — closures complicate inlining
+        if callee
+            .code
+            .iter()
+            .any(|op| matches!(op, Op::PushClosure(_)))
+        {
+            return false;
+        }
+        // Don't inline if callee has CallCaptured/CallCapturedRef/BuiltinCall
+        // that call non-inlinable things — deep inlining is risky
+        // Actually, we CAN inline these — they'll just stay as call ops.
+        // But skip if arg count doesn't match
+        if n_args != callee.num_param_slots {
+            return false;
+        }
+
+        // Slot remapping: callee slots 0..N map to caller slots base..base+N
+        let base = self.slot_map.len();
+
+        // Extend slot map to cover ALL callee slots (params + let bindings + temporaries).
+        // This prevents collisions between callee's internal slots and caller's slots.
+        for i in 0..callee.total_slots {
+            self.slot_map.push(format!("__inline_{}_{}", idx, base + i));
+        }
+
+        // Store args from stack into remapped callee param slots (reverse order — stack is LIFO)
+        for i in (0..n_args).rev() {
+            self.code.push(Op::StoreSlot(base + i));
+        }
+
+        // Merge callee's captured vars into caller's captured list.
+        // Build a mapping: callee captured idx → caller captured idx
+        let mut captured_remap: Vec<usize> = Vec::new();
+        for (name, val) in &callee.captured {
+            if let Some(existing_idx) = self.captured_idx(name) {
+                // Already captured by caller
+                captured_remap.push(existing_idx);
+            } else {
+                // Add to caller's captured list
+                let new_idx = self.captured.len();
+                self.captured.push((name.clone(), val.clone()));
+                captured_remap.push(new_idx);
+            }
+        }
+
+        // Emit callee ops with slot offset + captured remap + jump target offset
+        let code_start = self.code.len();
+        let callee_code_len = callee.code.len();
+
+        for (i, op) in callee.code.iter().enumerate() {
+            if i == callee_code_len - 1 && matches!(op, Op::Return) {
+                break;
+            }
+            self.code
+                .push(remap_op(op, base, &captured_remap, code_start));
+        }
+
+        true
+    }
+
     /// Try to compile an expression. Returns false if unsupported.
     fn compile_expr(&mut self, expr: &LispVal, outer_env: &Env) -> bool {
         match expr {
@@ -759,12 +843,19 @@ impl LoopCompiler {
                                 }
                             }
                             if let Some(idx) = self.captured_idx(op) {
-                                self.code.push(Op::CallCapturedRef(idx, n_args));
+                                // Try to inline pure compiled lambdas first
+                                if !self.try_inline_call(idx, n_args) {
+                                    self.code.push(Op::CallCapturedRef(idx, n_args));
+                                }
                             } else if let Some(slot) = self.slot_of(op) {
+                                // Slot-bound calls: can't inline at compile time (slot value unknown)
                                 self.code.push(Op::CallCaptured(slot, n_args));
                             } else if self.try_capture(op, outer_env) {
                                 let idx = self.captured_idx(op).unwrap();
-                                self.code.push(Op::CallCapturedRef(idx, n_args));
+                                // Try to inline the just-captured pure lambda
+                                if !self.try_inline_call(idx, n_args) {
+                                    self.code.push(Op::CallCapturedRef(idx, n_args));
+                                }
                             } else {
                                 self.code.push(Op::BuiltinCall(op.clone(), n_args));
                             }
@@ -966,6 +1057,75 @@ impl LoopCompiler {
             });
         }
         None
+    }
+}
+
+/// Remap an op from a callee's context into the caller's context.
+/// - `slot_offset`: add to all slot references
+/// - `captured_remap`: remap captured var indices
+/// - `jump_offset`: add to all jump targets
+fn remap_op(op: &Op, slot_offset: usize, captured_remap: &[usize], jump_offset: usize) -> Op {
+    match op {
+        // Slot-reading ops — offset slot index
+        Op::LoadSlot(s) => Op::LoadSlot(s + slot_offset),
+        Op::StoreSlot(s) => Op::StoreSlot(s + slot_offset),
+        Op::SlotAddImm(s, imm) => Op::SlotAddImm(s + slot_offset, *imm),
+        Op::SlotSubImm(s, imm) => Op::SlotSubImm(s + slot_offset, *imm),
+        Op::SlotMulImm(s, imm) => Op::SlotMulImm(s + slot_offset, *imm),
+        Op::SlotDivImm(s, imm) => Op::SlotDivImm(s + slot_offset, *imm),
+        Op::SlotEqImm(s, imm) => Op::SlotEqImm(s + slot_offset, *imm),
+        Op::SlotLtImm(s, imm) => Op::SlotLtImm(s + slot_offset, *imm),
+        Op::SlotLeImm(s, imm) => Op::SlotLeImm(s + slot_offset, *imm),
+        Op::SlotGtImm(s, imm) => Op::SlotGtImm(s + slot_offset, *imm),
+        Op::SlotGeImm(s, imm) => Op::SlotGeImm(s + slot_offset, *imm),
+
+        // Super-fused compare+jump — offset both slot and jump target
+        Op::JumpIfSlotLtImm(s, imm, addr) => {
+            Op::JumpIfSlotLtImm(s + slot_offset, *imm, addr + jump_offset)
+        }
+        Op::JumpIfSlotLeImm(s, imm, addr) => {
+            Op::JumpIfSlotLeImm(s + slot_offset, *imm, addr + jump_offset)
+        }
+        Op::JumpIfSlotGtImm(s, imm, addr) => {
+            Op::JumpIfSlotGtImm(s + slot_offset, *imm, addr + jump_offset)
+        }
+        Op::JumpIfSlotGeImm(s, imm, addr) => {
+            Op::JumpIfSlotGeImm(s + slot_offset, *imm, addr + jump_offset)
+        }
+        Op::JumpIfSlotEqImm(s, imm, addr) => {
+            Op::JumpIfSlotEqImm(s + slot_offset, *imm, addr + jump_offset)
+        }
+
+        // Mega-fused — offset slots and jump target
+        Op::RecurIncAccum(a, b, step, limit, addr) => Op::RecurIncAccum(
+            a + slot_offset,
+            b + slot_offset,
+            *step,
+            *limit,
+            addr + jump_offset,
+        ),
+
+        // Jump ops — offset target
+        Op::JumpIfTrue(addr) => Op::JumpIfTrue(addr + jump_offset),
+        Op::JumpIfFalse(addr) => Op::JumpIfFalse(addr + jump_offset),
+        Op::Jump(addr) => Op::Jump(addr + jump_offset),
+
+        // Captured var access — remap captured index
+        Op::LoadCaptured(idx) => {
+            Op::LoadCaptured(captured_remap.get(*idx).copied().unwrap_or(*idx))
+        }
+        Op::CallCapturedRef(idx, n) => {
+            Op::CallCapturedRef(captured_remap.get(*idx).copied().unwrap_or(*idx), *n)
+        }
+
+        // DictMutSet — offset slot
+        Op::DictMutSet(s) => Op::DictMutSet(s + slot_offset),
+
+        // CallCaptured — offset slot
+        Op::CallCaptured(s, n) => Op::CallCaptured(s + slot_offset, *n),
+
+        // Everything else — no remapping needed
+        _ => op.clone(),
     }
 }
 
@@ -1434,7 +1594,9 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
             | Op::PushClosure(_)
             | Op::CallSelf(_)
             | Op::DictMutSet(_) => {
-                return Err("loop VM: CallCaptured/CallSelf/DictMutSet not supported in loop body".into());
+                return Err(
+                    "loop VM: CallCaptured/CallSelf/DictMutSet not supported in loop body".into(),
+                );
             }
         }
     }

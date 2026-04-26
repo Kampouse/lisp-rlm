@@ -39,7 +39,9 @@ fn make_lambda(
     .map(|cl| Box::new(cl));
     // Auto-memoize: attach cache for pure compiled lambdas
     let memo_cache = if pure_type.is_some() && compiled.is_some() {
-        Some(std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())))
+        Some(std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )))
     } else {
         None
     };

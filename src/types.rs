@@ -462,7 +462,8 @@ pub enum LispVal {
         /// (unsupported forms) or not yet attempted.
         compiled: Option<Box<crate::bytecode::CompiledLambda>>,
         /// Fast memoization cache for pure compiled lambdas. Shared across clones.
-        memo_cache: Option<std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, LispVal>>>>,
+        memo_cache:
+            Option<std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, LispVal>>>>,
     },
     /// case-lambda: dispatches based on arg count
     CaseLambda {
@@ -588,7 +589,13 @@ pub fn hash_args(args: &[LispVal]) -> u64 {
         h ^= match arg {
             LispVal::Num(n) => *n as u64,
             LispVal::Float(f) => f.to_bits(),
-            LispVal::Bool(b) => if *b { 1 } else { 0 },
+            LispVal::Bool(b) => {
+                if *b {
+                    1
+                } else {
+                    0
+                }
+            }
             LispVal::Nil => 0xDEAD,
             LispVal::Str(s) => {
                 // Simple string hash

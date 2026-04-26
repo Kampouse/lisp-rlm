@@ -1,7 +1,7 @@
+use lisp_rlm::{lisp_eval, parse_all, Env, EvalState, LispVal};
 /// Comparative benchmark: lisp-rlm vs Guile baseline
 /// cargo run --release --bin bench-compare
 use std::time::Instant;
-use lisp_rlm::{lisp_eval, parse_all, Env, EvalState, LispVal};
 
 fn time_it<F: FnMut()>(label: &str, mut thunk: F, iterations: usize) -> f64 {
     thunk(); // warmup
@@ -64,46 +64,100 @@ fn main() {
     );
 
     // fib(28)
-    time_it("fib(28)", || { eval_all("(fib 28)", &mut env); }, 3);
+    time_it(
+        "fib(28)",
+        || {
+            eval_all("(fib 28)", &mut env);
+        },
+        3,
+    );
 
     // get-default — PARSE ONCE, call lisp_eval repeatedly
-    eval_all("(define test-dict (dict \"a\" 1 \"b\" 2 \"c\" 3))", &mut env);
+    eval_all(
+        "(define test-dict (dict \"a\" 1 \"b\" 2 \"c\" 3))",
+        &mut env,
+    );
     let gd_parsed = parse_all("(get-default test-dict \"b\" 0)").unwrap();
     let gd_expr = &gd_parsed[0];
-    time_it("get-default", || { lisp_eval(gd_expr, &mut env, &mut state).unwrap(); }, 1_000_000);
+    time_it(
+        "get-default",
+        || {
+            lisp_eval(gd_expr, &mut env, &mut state).unwrap();
+        },
+        1_000_000,
+    );
 
     // score-intention — PARSE ONCE
-    eval_all("(define test-item (dict \"urgency\" 0.8 \"cost\" 0.5))", &mut env);
+    eval_all(
+        "(define test-item (dict \"urgency\" 0.8 \"cost\" 0.5))",
+        &mut env,
+    );
     let si_parsed = parse_all("(score-intention test-item)").unwrap();
     let si_expr = &si_parsed[0];
-    time_it("score-intention", || { lisp_eval(si_expr, &mut env, &mut state).unwrap(); }, 100_000);
+    time_it(
+        "score-intention",
+        || {
+            lisp_eval(si_expr, &mut env, &mut state).unwrap();
+        },
+        100_000,
+    );
 
     // map(100-elem)
     eval_all("(define test-list (range 0 100))", &mut env);
     let map_parsed = parse_all("(map-test test-list)").unwrap();
     let map_expr = &map_parsed[0];
-    time_it("map(100-elem)", || { lisp_eval(map_expr, &mut env, &mut state).unwrap(); }, 10_000);
+    time_it(
+        "map(100-elem)",
+        || {
+            lisp_eval(map_expr, &mut env, &mut state).unwrap();
+        },
+        10_000,
+    );
 
     // filter(100-elem)
     let filt_parsed = parse_all("(filter-test test-list)").unwrap();
     let filt_expr = &filt_parsed[0];
-    time_it("filter(100-elem)", || { lisp_eval(filt_expr, &mut env, &mut state).unwrap(); }, 10_000);
+    time_it(
+        "filter(100-elem)",
+        || {
+            lisp_eval(filt_expr, &mut env, &mut state).unwrap();
+        },
+        10_000,
+    );
 
     // sort(100-elem)
     eval_all("(define test-sort-list (reverse (range 0 100)))", &mut env);
     let sort_parsed = parse_all("(sort-test test-sort-list)").unwrap();
     let sort_expr = &sort_parsed[0];
-    time_it("sort(100-elem)", || { lisp_eval(sort_expr, &mut env, &mut state).unwrap(); }, 10_000);
+    time_it(
+        "sort(100-elem)",
+        || {
+            lisp_eval(sort_expr, &mut env, &mut state).unwrap();
+        },
+        10_000,
+    );
 
     // loop-sum(1000)
     let ls_parsed = parse_all("(loop-sum 1000)").unwrap();
     let ls_expr = &ls_parsed[0];
-    time_it("loop-sum(1000)", || { lisp_eval(ls_expr, &mut env, &mut state).unwrap(); }, 10_000);
+    time_it(
+        "loop-sum(1000)",
+        || {
+            lisp_eval(ls_expr, &mut env, &mut state).unwrap();
+        },
+        10_000,
+    );
 
     // dict-chain(100)
     let dc_parsed = parse_all("(dict-chain 100)").unwrap();
     let dc_expr = &dc_parsed[0];
-    time_it("dict-chain(100)", || { lisp_eval(dc_expr, &mut env, &mut state).unwrap(); }, 10_000);
+    time_it(
+        "dict-chain(100)",
+        || {
+            lisp_eval(dc_expr, &mut env, &mut state).unwrap();
+        },
+        10_000,
+    );
 
     println!("\n=== Done ===");
 }
