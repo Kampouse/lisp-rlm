@@ -283,5 +283,53 @@ fn main() {
                  n, ms, ticks_per_sec, ms / n as f64);
     }
 
+
+    // --- Benchmark 13: raw run_compiled_lambda throughput ---
+    {
+        // Get score-intention as a compiled lambda
+        let score_cl = match env.get("score-intention") {
+            Some(LispVal::Lambda { compiled: Some(ref cl), .. }) => (**cl).clone(),
+            _ => panic!("score-intention should be compiled"),
+        };
+        let mut fresh_state = EvalState::new();
+        let intent = {
+            let code = r#"(dict "id" "bench" "type" "completable" "cost" 5 "deadline" 1)"#;
+            let exprs = parse_all(code).unwrap();
+            lisp_eval(&exprs[0], &mut env, &mut fresh_state).unwrap()
+        };
+
+        let n = 10000;
+        let start = std::time::Instant::now();
+        for _ in 0..n {
+            let mut fresh_state = EvalState::new();
+            let _ = lisp_rlm::bytecode::run_compiled_lambda(&score_cl, &[intent.clone()], &env, &mut fresh_state);
+        }
+        let ms = elapsed_ms(start);
+        println!("score-intention (raw compiled): {} calls in {:.1}ms ({:.0} calls/sec)", n, ms, n as f64 / (ms / 1000.0));
+    }
+
+    // --- Benchmark 14: get-default raw compiled ---
+    {
+        let gd_cl = match env.get("get-default") {
+            Some(LispVal::Lambda { compiled: Some(ref cl), .. }) => (**cl).clone(),
+            _ => panic!("get-default should be compiled"),
+        };
+        let mut fresh_state2 = EvalState::new();
+        let m = {
+            let code = r#"(dict "a" 1 "b" 2 "c" 3)"#;
+            let exprs = parse_all(code).unwrap();
+            lisp_eval(&exprs[0], &mut env, &mut fresh_state2).unwrap()
+        };
+
+        let n = 100000;
+        let start = std::time::Instant::now();
+        for _ in 0..n {
+            let mut fresh_state = EvalState::new();
+            let _ = lisp_rlm::bytecode::run_compiled_lambda(&gd_cl, &[m.clone(), LispVal::Str("a".to_string()), LispVal::Num(99)], &env, &mut fresh_state);
+        }
+        let ms = elapsed_ms(start);
+        println!("get-default (raw compiled): {} calls in {:.1}ms ({:.0} calls/sec)", n, ms, n as f64 / (ms / 1000.0));
+    }
+
     println!("\n=== Done ===");
 }

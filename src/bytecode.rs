@@ -101,6 +101,10 @@ pub enum Op {
     RecurIncAccum(usize, usize, i64, i64, usize),
     /// Call a captured function from slot with N args from stack
     CallCaptured(usize, usize),
+    /// Push captured var value from cl.captured[idx] (no slot copy)
+    LoadCaptured(usize),
+    /// Call captured function from cl.captured[idx] with N args (no slot copy)
+    CallCapturedRef(usize, usize),
 }
 
 /// Compiled loop representation.
@@ -126,18 +130,14 @@ struct LoopCompiler {
     code: Vec<Op>,
     /// Outer env variables captured at compile time (name, value)
     captured: Vec<(String, LispVal)>,
-    /// Number of param slots (fixed). Captured vars start at this offset.
-    num_param_slots: usize,
 }
 
 impl LoopCompiler {
     fn new(slot_names: Vec<String>) -> Self {
-        let nps = slot_names.len();
         Self {
             slot_map: slot_names,
             code: Vec::new(),
             captured: Vec::new(),
-            num_param_slots: nps,
         }
     }
 
@@ -146,17 +146,17 @@ impl LoopCompiler {
         if let Some(idx) = self.slot_map.iter().position(|s| s == name) {
             return Some(idx);
         }
-        if let Some(idx) = self.captured.iter().position(|(s, _)| s == name) {
-            // Captured vars are always at fixed positions after param slots.
-            // NOT slot_map.len() — that shifts as let bindings are added/removed.
-            return Some(self.num_param_slots + idx);
-        }
         None
+    }
+
+    /// Return the captured var index (into self.captured) for a name.
+    fn captured_idx(&self, name: &str) -> Option<usize> {
+        self.captured.iter().position(|(s, _)| s == name)
     }
 
     /// Try to capture an unknown symbol from outer env. Returns true if captured.
     fn try_capture(&mut self, name: &str, outer_env: &Env) -> bool {
-        if self.slot_of(name).is_some() {
+        if self.slot_of(name).is_some() || self.captured_idx(name).is_some() {
             return true;
         }
         if let Some(val) = outer_env.get(name) {
@@ -193,9 +193,13 @@ impl LoopCompiler {
                 if let Some(slot) = self.slot_of(name) {
                     self.code.push(Op::LoadSlot(slot));
                     true
+                } else if let Some(idx) = self.captured_idx(name) {
+                    self.code.push(Op::LoadCaptured(idx));
+                    true
                 } else if self.try_capture(name, outer_env) {
-                    let slot = self.slot_of(name).unwrap();
-                    self.code.push(Op::LoadSlot(slot));
+                    // Just captured — must be in captured_idx now
+                    let idx = self.captured_idx(name).unwrap();
+                    self.code.push(Op::LoadCaptured(idx));
                     true
                 } else {
                     false
@@ -537,7 +541,9 @@ impl LoopCompiler {
                                     return false;
                                 }
                             }
-                            if let Some(slot) = self.slot_of(op) {
+                            if let Some(idx) = self.captured_idx(op) {
+                                self.code.push(Op::CallCapturedRef(idx, n_args));
+                            } else if let Some(slot) = self.slot_of(op) {
                                 self.code.push(Op::CallCaptured(slot, n_args));
                             } else {
                                 self.code.push(Op::BuiltinCall(op.clone(), n_args));
@@ -922,6 +928,13 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
                 }
                 pc += 1;
             }
+            Op::LoadCaptured(idx) => {
+                // Note: in run_compiled_loop, captured is in slots. In run_compiled_lambda, it's in cl.captured.
+                // The loop VM pre-fills captured into slots, so this op shouldn't appear there.
+                // If it does, fall through to error.
+                stack.push(cl.captured[*idx].1.clone());
+                pc += 1;
+            }
             Op::PushI64(n) => {
                 stack.push(LispVal::Num(*n));
                 pc += 1;
@@ -1175,7 +1188,7 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
                 stack.push(result);
                 pc += 1;
             }
-            Op::CallCaptured(_, _) => {
+            Op::CallCaptured(_, _) | Op::CallCapturedRef(_, _) => {
                 return Err("loop VM: CallCaptured not supported in loop body".into());
             }
         }
@@ -1669,8 +1682,9 @@ pub fn try_compile_lambda(
     peephole_optimize(&mut code);
     peephole_optimize(&mut code);
     peephole_optimize(&mut code);
-    // Compute total slots: params + captured + any let-binding slots used in code
-    let base_slots = param_names.len() + compiler.captured.len();
+    // Compute total slots: params + any let-binding slots used in code
+    // Captured vars are accessed via LoadCaptured/CallCapturedRef, not slots
+    let base_slots = param_names.len();
     let mut max_slot = base_slots;
     for op in &code {
         match op {
@@ -1704,18 +1718,10 @@ pub fn run_compiled_lambda(
     outer_env: &Env,
     state: &mut EvalState,
 ) -> Result<LispVal, String> {
-    let mut slots: Vec<LispVal> = Vec::with_capacity(cl.total_slots);
-    // Fill param slots
+    let mut slots: Vec<LispVal> = vec![LispVal::Nil; cl.total_slots];
+    // Fill param slots only — captured vars accessed via LoadCaptured/CallCapturedRef
     for i in 0..cl.num_param_slots {
-        slots.push(args.get(i).cloned().unwrap_or(LispVal::Nil));
-    }
-    // Fill captured env slots
-    for (_, val) in &cl.captured {
-        slots.push(val.clone());
-    }
-    // Fill remaining let-binding slots with Nil
-    while slots.len() < cl.total_slots {
-        slots.push(LispVal::Nil);
+        slots[i] = args.get(i).cloned().unwrap_or(LispVal::Nil);
     }
     let mut stack: Vec<LispVal> = Vec::with_capacity(8);
     let code = &cl.code;
@@ -1735,6 +1741,13 @@ pub fn run_compiled_lambda(
                     LispVal::Num(n) => stack.push(LispVal::Num(*n)),
                     _ => stack.push(slot_ref.clone()),
                 }
+                pc += 1;
+            }
+            Op::LoadCaptured(idx) => {
+                // Note: in run_compiled_loop, captured is in slots. In run_compiled_lambda, it's in cl.captured.
+                // The loop VM pre-fills captured into slots, so this op shouldn't appear there.
+                // If it does, fall through to error.
+                stack.push(cl.captured[*idx].1.clone());
                 pc += 1;
             }
             Op::PushI64(n) => {
@@ -1889,43 +1902,60 @@ pub fn run_compiled_lambda(
                     cargs.push(stack.pop().unwrap_or(LispVal::Nil));
                 }
                 cargs.reverse();
-                // Fast path: if the function has pre-compiled bytecode, call it directly.
-                if let LispVal::Lambda {
-                    rest_param: None,
-                    compiled: Some(ref cl),
-                    ..
-                } = func
-                {
-                    match run_compiled_lambda(cl, &cargs, outer_env, state) {
-                        Ok(v) => {
-                            stack.push(v);
-                        }
+                if let LispVal::Lambda { rest_param: None, compiled: Some(ref cl2), .. } = func {
+                    match run_compiled_lambda(cl2, &cargs, outer_env, state) {
+                        Ok(v) => { stack.push(v); }
                         Err(_) => {
-                            // Compiled path failed — fall back to full eval
                             let mut env_clone = outer_env.clone();
                             match crate::eval::call_val(&func, &cargs, &mut env_clone, state)? {
-                                crate::eval::continuation::EvalResult::Value(v) => {
-                                    stack.push(v);
-                                }
+                                crate::eval::continuation::EvalResult::Value(v) => { stack.push(v); }
                                 crate::eval::continuation::EvalResult::TailCall { expr, env: tail_env } => {
                                     env_clone = tail_env;
-                                    let result = crate::eval::lisp_eval(&expr, &mut env_clone, state)?;
-                                    stack.push(result);
+                                    stack.push(crate::eval::lisp_eval(&expr, &mut env_clone, state)?);
                                 }
                             }
                         }
                     }
                 } else {
-                    // No compiled version — full dispatch
                     let mut env_clone = outer_env.clone();
                     match crate::eval::call_val(&func, &cargs, &mut env_clone, state)? {
-                        crate::eval::continuation::EvalResult::Value(v) => {
-                            stack.push(v);
-                        }
+                        crate::eval::continuation::EvalResult::Value(v) => { stack.push(v); }
                         crate::eval::continuation::EvalResult::TailCall { expr, env: tail_env } => {
                             env_clone = tail_env;
-                            let result = crate::eval::lisp_eval(&expr, &mut env_clone, state)?;
-                            stack.push(result);
+                            stack.push(crate::eval::lisp_eval(&expr, &mut env_clone, state)?);
+                        }
+                    }
+                }
+                pc += 1;
+            }
+            Op::CallCapturedRef(idx, n_args) => {
+                let func = cl.captured[*idx].1.clone();
+                let mut cargs: Vec<LispVal> = Vec::with_capacity(*n_args);
+                for _ in 0..*n_args {
+                    cargs.push(stack.pop().unwrap_or(LispVal::Nil));
+                }
+                cargs.reverse();
+                if let LispVal::Lambda { rest_param: None, compiled: Some(ref cl2), .. } = func {
+                    match run_compiled_lambda(cl2, &cargs, outer_env, state) {
+                        Ok(v) => { stack.push(v); }
+                        Err(_) => {
+                            let mut env_clone = outer_env.clone();
+                            match crate::eval::call_val(&func, &cargs, &mut env_clone, state)? {
+                                crate::eval::continuation::EvalResult::Value(v) => { stack.push(v); }
+                                crate::eval::continuation::EvalResult::TailCall { expr, env: tail_env } => {
+                                    env_clone = tail_env;
+                                    stack.push(crate::eval::lisp_eval(&expr, &mut env_clone, state)?);
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    let mut env_clone = outer_env.clone();
+                    match crate::eval::call_val(&func, &cargs, &mut env_clone, state)? {
+                        crate::eval::continuation::EvalResult::Value(v) => { stack.push(v); }
+                        crate::eval::continuation::EvalResult::TailCall { expr, env: tail_env } => {
+                            env_clone = tail_env;
+                            stack.push(crate::eval::lisp_eval(&expr, &mut env_clone, state)?);
                         }
                     }
                 }
