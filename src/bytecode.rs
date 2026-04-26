@@ -1592,6 +1592,57 @@ pub fn eval_builtin(name: &str, args: &[LispVal]) -> Result<LispVal, String> {
                 _ => Ok(LispVal::Str("0".to_string())),
             }
         }
+        // --- Time ---
+        "now" => {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs_f64())
+                .unwrap_or(0.0);
+            Ok(LispVal::Float(ts))
+        }
+        "elapsed" => {
+            match args.get(0) {
+                Some(v) => {
+                    let since = crate::helpers::as_float(v).unwrap_or(0.0);
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs_f64())
+                        .unwrap_or(0.0);
+                    Ok(LispVal::Float(now - since))
+                }
+                None => Ok(LispVal::Float(0.0)),
+            }
+        }
+        // --- Type conversions ---
+        "float" => {
+            match args.get(0) {
+                Some(LispVal::Num(n)) => Ok(LispVal::Float(*n as f64)),
+                Some(v) => {
+                    Ok(crate::helpers::as_float(v).map(LispVal::Float)
+                        .unwrap_or(LispVal::Float(0.0)))
+                }
+                None => Ok(LispVal::Float(0.0)),
+            }
+        }
+        "integer" => {
+            match args.get(0) {
+                Some(LispVal::Float(f)) => Ok(LispVal::Num(*f as i64)),
+                Some(LispVal::Num(n)) => Ok(LispVal::Num(*n)),
+                _ => Ok(LispVal::Num(0)),
+            }
+        }
+        "boolean" => {
+            Ok(LispVal::Bool(crate::helpers::is_truthy(args.get(0).unwrap_or(&LispVal::Nil))))
+        }
+        // --- Error ---
+        "error" => {
+            let msg = match args.get(0) {
+                Some(LispVal::Str(s)) => s.clone(),
+                Some(v) => v.to_string(),
+                None => "error".to_string(),
+            };
+            Err(msg)
+        }
         _ => Err(format!("loop bytecode: unknown builtin '{}'", name)),
     }
 }
