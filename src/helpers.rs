@@ -150,6 +150,7 @@ pub fn is_builtin_name(name: &str) -> bool {
             | "save-state" | "load-state"
             | "doc"
             | "pure"
+            | "memoize"
     )
 }
 

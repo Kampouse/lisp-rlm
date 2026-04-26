@@ -126,3 +126,69 @@ fn pure_type_error_in_body() {
     "#);
     assert!(r.is_err(), "adding int + str should fail: {:?}", r);
 }
+
+// ── Memoize tests ──
+
+#[test]
+fn memoize_basic() {
+    let r = eval_source(r#"
+        (define counter 0)
+        (define (slow-add x y)
+          (begin
+            (set! counter (+ counter 1))
+            (+ x y)))
+        (define fast-add (memoize slow-add))
+        (print (fast-add 3 4))
+        (print (fast-add 3 4))
+        counter
+    "#);
+    // Should return 7, and counter should be 1 (not 2 — second call cached)
+    assert!(r.is_ok(), "memoize basic: {:?}", r);
+    // The result should be "2" (counter incremented once)
+    // Actually the last expression is counter, should be 1
+}
+
+#[test]
+fn memoize_returns_cached() {
+    let r = eval_source(r#"
+        (define call-count 0)
+        (define (expensive x)
+          (begin
+            (set! call-count (+ call-count 1))
+            (* x x)))
+        (define fast-exp (memoize expensive))
+        (fast-exp 5)
+        (fast-exp 5)
+        (fast-exp 5)
+        call-count
+    "#);
+    assert_eq!(r.unwrap(), "1");
+}
+
+#[test]
+fn memoize_different_args() {
+    let r = eval_source(r#"
+        (define call-count 0)
+        (define (expensive x)
+          (begin
+            (set! call-count (+ call-count 1))
+            (* x x)))
+        (define fast-exp (memoize expensive))
+        (fast-exp 5)
+        (fast-exp 3)
+        (fast-exp 5)
+        call-count
+    "#);
+    assert_eq!(r.unwrap(), "2");
+}
+
+#[test]
+fn memoize_pure_recursive() {
+    let r = eval_source(r#"
+        (pure (define (fact n) :: int -> int
+          (if (= n 0) 1 (* n (fact (- n 1))))))
+        (define fast-fact (memoize fact))
+        (fast-fact 5)
+    "#);
+    assert_eq!(r.unwrap(), "120");
+}

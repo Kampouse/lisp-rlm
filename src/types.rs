@@ -1,6 +1,6 @@
 use std::sync::{
     atomic::{AtomicU64, Ordering},
-    Arc,
+    Arc, RwLock,
 };
 
 const MATH_STDLIB: &str = r#"
@@ -470,6 +470,11 @@ pub enum LispVal {
     Recur(Vec<LispVal>),
     /// String-keyed dictionary backed by an `im::HashMap` (persistent, O(1) clone).
     Map(im::HashMap<String, LispVal>),
+    /// Memoized function — wraps a lambda with an argument→result cache.
+    Memoized {
+        func: Box<LispVal>,
+        cache: Arc<RwLock<im::HashMap<String, LispVal>>>,
+    },
 }
 
 impl PartialEq for LispVal {
@@ -513,6 +518,7 @@ impl PartialEq for LispVal {
                     ..
                 },
             ) => pa == pb && ra == rb && ba == bb,
+            (Memoized { func: a, .. }, Memoized { func: b, .. }) => a == b,
             _ => false,
         }
     }
@@ -553,6 +559,10 @@ impl std::fmt::Display for LispVal {
                 let entries: Vec<String> =
                     m.iter().map(|(k, v)| format!("\"{}\": {}", k, v)).collect();
                 write!(f, "{{{}}}", entries.join(", "))
+            }
+            LispVal::Memoized { func, cache } => {
+                let cache_len = cache.read().map(|c| c.len()).unwrap_or(0);
+                write!(f, "#<memoized {} entries>", cache_len)
             }
         }
     }

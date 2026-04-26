@@ -5,6 +5,7 @@
 use crate::helpers::{is_builtin_name, is_truthy, match_pattern, parse_params};
 use crate::parser::parse_all;
 use crate::types::{get_stdlib_code, Env, EvalState, LispVal};
+use std::sync::{Arc, RwLock};
 
 use super::continuation::{Cont, EvalResult, Step};
 use super::dispatch_types::{format_type, parse_type, RlType};
@@ -23,7 +24,8 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
         | LispVal::Lambda { .. }
         | LispVal::CaseLambda { .. }
         | LispVal::Macro { .. }
-        | LispVal::Map(_) => Ok(Step::Done(expr.clone())),
+        | LispVal::Map(_)
+        | LispVal::Memoized { .. } => Ok(Step::Done(expr.clone())),
 
         LispVal::Recur(_) => Err("recur outside loop".into()),
 
@@ -584,6 +586,18 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                             body: Box::new(body.clone()),
                             closed_env: env.get_or_create_scope_snapshot(),
                         }))
+                    }
+
+                    // ── memoize ──
+                    "memoize" => {
+                        // (memoize f) — returns a memoized version of f
+                        // Eval the argument to get a lambda, then wrap it
+                        let func_expr = list.get(1).ok_or("memoize: need a function")?;
+                        Ok(Step::EvalNext {
+                            expr: func_expr.clone(),
+                            conts: vec![Cont::Memoize],
+                            new_env: None,
+                        })
                     }
 
                     // ── case-lambda ──
@@ -1814,6 +1828,18 @@ pub fn handle_cont(
         Cont::RlmSetVal { name } => {
             state.rlm_state.insert(name, val);
             Ok(Step::Done(LispVal::Bool(true)))
+        }
+
+        Cont::Memoize => {
+            match val {
+                f @ LispVal::Lambda { .. } => {
+                    Ok(Step::Done(LispVal::Memoized {
+                        func: Box::new(f),
+                        cache: Arc::new(RwLock::new(im::HashMap::new())),
+                    }))
+                }
+                _ => Err("memoize: expected lambda".into()),
+            }
         }
     }
 }

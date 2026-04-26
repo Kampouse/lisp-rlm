@@ -128,4 +128,5 @@ pub enum Cont {
     RlmSetVal {
         name: String,
     },
+    Memoize,
 }

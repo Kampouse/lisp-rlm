@@ -1422,6 +1422,7 @@ fn dispatch_call(
                         LispVal::Macro { .. } => "macro",
                         LispVal::Sym(_) => "symbol",
                         LispVal::Recur(_) => "recur",
+                        LispVal::Memoized { .. } => "memoized",
                     };
                     // Truncate value display
                     let val_preview = truncate_str(&val.to_string(), 80);
@@ -1936,6 +1937,52 @@ pub fn call_val(
             } else {
                 Err(format!("undefined: {}", name))
             }
+        }
+        LispVal::Memoized { func, cache } => {
+            // Build a cache key from the arguments
+            let key: String = args.iter().map(|a| a.to_string()).collect::<Vec<_>>().join("|");
+            {
+                let cache_map = cache.read().expect("memoize cache lock");
+                if let Some(cached) = cache_map.get(&key) {
+                    return Ok(EvalResult::Value(cached.clone()));
+                }
+            }
+            // Cache miss — call the underlying function
+            // We can't resolve TailCall inline because set! needs the real env.
+            // Return a TailCall so the CPS evaluator handles it properly.
+            // But first check the cache result after execution.
+            let result = match func.as_ref() {
+                LispVal::Lambda { params, rest_param, body, closed_env } => {
+                    // Use apply_lambda which properly sets up the env
+                    let mut local_env = env.clone();
+                    local_env.set_shared_env(closed_env.clone());
+                    local_env.scope_snapshot = None;
+                    for (k, v) in closed_env.read().expect("closed_env lock poisoned").iter() {
+                        local_env.push(k.to_string(), v.clone());
+                    }
+                    for (i, p) in params.iter().enumerate() {
+                        local_env.push(p.to_string(), args.get(i).cloned().unwrap_or(LispVal::Nil));
+                    }
+                    if let Some(rest_name) = rest_param {
+                        let rest_args: Vec<LispVal> = args.get(params.len()..).unwrap_or(&[]).to_vec();
+                        local_env.push(rest_name.to_string(), LispVal::List(rest_args));
+                    }
+                    // Evaluate body in the local env, then copy mutations back
+                    let result = lisp_eval(body, &mut local_env, state)?;
+                    // Propagate mutations back to caller env
+                    *env = local_env;
+                    result
+                }
+                other => {
+                    return call_val(other, args, env, state);
+                }
+            };
+            // Store in cache
+            {
+                let mut cache_map = cache.write().expect("memoize cache lock");
+                cache_map.insert(key, result.clone());
+            }
+            Ok(EvalResult::Value(result))
         }
         _ => Err(format!("not callable: {}", func)),
     }

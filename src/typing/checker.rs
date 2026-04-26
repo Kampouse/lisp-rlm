@@ -448,7 +448,7 @@ fn check_function_define(
     // Add params with fresh type vars or from annotation
     let param_types: Vec<TcType> = if let Some(ref ann_ty) = annotated_type {
         match ann_ty {
-            TcType::Arrow(args, _ret) => {
+            TcType::Arrow(args, ret) => {
                 if args.len() != params.len() {
                     return Err(format!(
                         "pure define {}: annotation has {} params, function has {}",
@@ -457,6 +457,9 @@ fn check_function_define(
                         params.len()
                     ));
                 }
+                // Put the function itself in scope for self-reference
+                let self_type = TcType::Arrow(args.clone(), ret.clone());
+                env.insert_mono(name.clone(), self_type);
                 args.clone()
             }
             other => {
@@ -467,7 +470,12 @@ fn check_function_define(
             }
         }
     } else {
-        params.iter().map(|_| supply.fresh()).collect()
+        // No annotation — give the function a fresh type var for the return
+        let ret_var = supply.fresh();
+        let arg_vars: Vec<TcType> = params.iter().map(|_| supply.fresh()).collect();
+        let self_type = TcType::Arrow(arg_vars.clone(), Box::new(ret_var));
+        env.insert_mono(name.clone(), self_type);
+        arg_vars
     };
 
     for (p, t) in params.iter().zip(param_types.iter()) {
@@ -599,7 +607,8 @@ fn infer(
         | LispVal::CaseLambda { .. }
         | LispVal::Macro { .. }
         | LispVal::Map(_)
-        | LispVal::Recur(_) => Ok(TcType::Con(TcCon::Any)),
+        | LispVal::Recur(_)
+        | LispVal::Memoized { .. } => Ok(TcType::Con(TcCon::Any)),
     }
 }
 
