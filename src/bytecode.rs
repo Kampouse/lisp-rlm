@@ -99,6 +99,8 @@ enum Op {
     /// else: accum += counter; counter += step_imm; jump to loop_start (pc=0)
     /// Covers: (loop ((i 0) (sum 0)) (if (>= i N) sum (recur (+ i 1) (+ sum i))))
     RecurIncAccum(usize, usize, i64, i64, usize),
+    /// Call a captured function from slot with N args from stack
+    CallCaptured(usize, usize),
 }
 
 /// Compiled loop representation.
@@ -417,8 +419,102 @@ impl LoopCompiler {
                             }
                             true
                         }
+                        // let: (let ((x init) ...) body)
+                        "let" | "let*" => {
+                            let bindings = match list.get(1) {
+                                Some(LispVal::List(b)) => b,
+                                _ => return false,
+                            };
+                            let body = match list.get(2) {
+                                Some(b) => b,
+                                _ => return false,
+                            };
+                            // Track slots that need cleanup (only newly allocated ones)
+                            let let_start = self.slot_map.len();
+                            // Track slots we shadow so we can restore them
+                            let mut shadowed: Vec<(String, usize)> = Vec::new();
+                            let mut all_ok = true;
+                            for binding in bindings {
+                                match binding {
+                                    LispVal::List(pair) if pair.len() >= 2 => {
+                                        if let LispVal::Sym(name) = &pair[0] {
+                                            if !self.compile_expr(&pair[1], outer_env) {
+                                                all_ok = false;
+                                                break;
+                                            }
+                                            // Check if this name already has a slot (shadowing)
+                                            if let Some(existing) = self.slot_map.iter().position(|s| s == name) {
+                                                self.code.push(Op::StoreSlot(existing));
+                                                shadowed.push((name.clone(), existing));
+                                            } else {
+                                                let slot_idx = self.slot_map.len();
+                                                self.slot_map.push(name.clone());
+                                                self.code.push(Op::StoreSlot(slot_idx));
+                                            }
+                                        } else {
+                                            all_ok = false;
+                                            break;
+                                        }
+                                    }
+                                    _ => {
+                                        all_ok = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            if all_ok {
+                                all_ok = self.compile_expr(body, outer_env);
+                            }
+                            // Remove any newly added slot names (not shadows)
+                            self.slot_map.truncate(let_start);
+                            all_ok
+                        }
+                        // when: (when test body...) → if test (begin body...)
+                        "when" => {
+                            if list.len() < 3 { return false; }
+                            let test = &list[1];
+                            if !self.compile_expr(test, outer_env) { return false; }
+                            let jf_idx = self.code.len();
+                            self.code.push(Op::JumpIfFalse(0));
+                            // Compile body as implicit begin
+                            for (i, arg) in list[2..].iter().enumerate() {
+                                if !self.compile_expr(arg, outer_env) { return false; }
+                                if i + 1 < list.len() - 2 {
+                                    self.code.push(Op::Pop);
+                                }
+                            }
+                            self.code[jf_idx] = Op::JumpIfFalse(self.code.len());
+                            true
+                        }
+                        // unless: (unless test body...) → if (not test) (begin body...)
+                        "unless" => {
+                            if list.len() < 3 { return false; }
+                            let test = &list[1];
+                            if !self.compile_expr(test, outer_env) { return false; }
+                            let jt_idx = self.code.len();
+                            self.code.push(Op::JumpIfTrue(0));
+                            // Compile body as implicit begin
+                            for (i, arg) in list[2..].iter().enumerate() {
+                                if !self.compile_expr(arg, outer_env) { return false; }
+                                if i + 1 < list.len() - 2 {
+                                    self.code.push(Op::Pop);
+                                }
+                            }
+                            self.code[jt_idx] = Op::JumpIfTrue(self.code.len());
+                            true
+                        }
                         _ => {
-                            if list.len() > 1 {
+                            // Try as a captured function call first
+                            if let Some(slot) = self.slot_of(op) {
+                                let n_args = list.len() - 1;
+                                for arg in &list[1..] {
+                                    if !self.compile_expr(arg, outer_env) {
+                                        return false;
+                                    }
+                                }
+                                self.code.push(Op::CallCaptured(slot, n_args));
+                                true
+                            } else if list.len() > 1 {
                                 let n_args = list.len() - 1;
                                 for arg in &list[1..] {
                                     if !self.compile_expr(arg, outer_env) {
@@ -1062,6 +1158,9 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
                 stack.push(result);
                 pc += 1;
             }
+            Op::CallCaptured(_, _) => {
+                return Err("loop VM: CallCaptured not supported in loop body".into());
+            }
         }
     }
 }
@@ -1263,6 +1362,7 @@ pub fn eval_builtin(name: &str, args: &[LispVal]) -> Result<LispVal, String> {
 /// Used for fast-path map/filter/reduce — avoids env push/pop per element.
 pub struct CompiledLambda {
     num_param_slots: usize,
+    total_slots: usize,
     code: Vec<Op>,
     captured: Vec<(String, LispVal)>,
 }
@@ -1288,16 +1388,42 @@ pub fn try_compile_lambda(
     peephole_optimize(&mut code);
     peephole_optimize(&mut code);
     peephole_optimize(&mut code);
+    // Compute total slots: params + captured + any let-binding slots used in code
+    let base_slots = param_names.len() + compiler.captured.len();
+    let mut max_slot = base_slots;
+    for op in &code {
+        match op {
+            Op::StoreSlot(s) | Op::LoadSlot(s) => max_slot = max_slot.max(*s + 1),
+            Op::SlotAddImm(s, _) | Op::SlotSubImm(s, _) | Op::SlotMulImm(s, _) | Op::SlotDivImm(s, _) => {
+                max_slot = max_slot.max(*s + 1);
+            }
+            Op::SlotEqImm(s, _) | Op::SlotLtImm(s, _) | Op::SlotLeImm(s, _) | Op::SlotGtImm(s, _) | Op::SlotGeImm(s, _) => {
+                max_slot = max_slot.max(*s + 1);
+            }
+            Op::JumpIfSlotLtImm(s, _, _) | Op::JumpIfSlotLeImm(s, _, _) | Op::JumpIfSlotGtImm(s, _, _) | Op::JumpIfSlotGeImm(s, _, _) | Op::JumpIfSlotEqImm(s, _, _) => {
+                max_slot = max_slot.max(*s + 1);
+            }
+            Op::RecurIncAccum(a, b, _, _, _) => max_slot = max_slot.max(*a.max(b) + 1),
+            Op::CallCaptured(s, _) => max_slot = max_slot.max(*s + 1),
+            _ => {}
+        }
+    }
     Some(CompiledLambda {
         num_param_slots: param_names.len(),
+        total_slots: max_slot,
         code,
         captured: compiler.captured,
     })
 }
 
 /// Run a compiled lambda with the given arguments. Returns the result directly.
-pub fn run_compiled_lambda(cl: &CompiledLambda, args: &[LispVal]) -> Result<LispVal, String> {
-    let mut slots: Vec<LispVal> = Vec::with_capacity(cl.num_param_slots + cl.captured.len());
+pub fn run_compiled_lambda(
+    cl: &CompiledLambda,
+    args: &[LispVal],
+    outer_env: &mut Env,
+    state: &mut EvalState,
+) -> Result<LispVal, String> {
+    let mut slots: Vec<LispVal> = Vec::with_capacity(cl.total_slots);
     // Fill param slots
     for i in 0..cl.num_param_slots {
         slots.push(args.get(i).cloned().unwrap_or(LispVal::Nil));
@@ -1305,6 +1431,10 @@ pub fn run_compiled_lambda(cl: &CompiledLambda, args: &[LispVal]) -> Result<Lisp
     // Fill captured env slots
     for (_, val) in &cl.captured {
         slots.push(val.clone());
+    }
+    // Fill remaining let-binding slots with Nil
+    while slots.len() < cl.total_slots {
+        slots.push(LispVal::Nil);
     }
     let mut stack: Vec<LispVal> = Vec::with_capacity(8);
     let code = &cl.code;
@@ -1470,8 +1600,71 @@ pub fn run_compiled_lambda(cl: &CompiledLambda, args: &[LispVal]) -> Result<Lisp
                 stack.push(result);
                 pc += 1;
             }
+            Op::CallCaptured(slot, n_args) => {
+                let func = slots[*slot].clone();
+                let mut cargs: Vec<LispVal> = Vec::with_capacity(*n_args);
+                for _ in 0..*n_args {
+                    cargs.push(stack.pop().unwrap_or(LispVal::Nil));
+                }
+                cargs.reverse();
+                // Save env, call function, restore env (lambda VM uses its own slots)
+                let saved_env = outer_env.clone();
+                match crate::eval::call_val(&func, &cargs, outer_env, state)? {
+                    crate::eval::continuation::EvalResult::Value(v) => {
+                        stack.push(v);
+                    }
+                    crate::eval::continuation::EvalResult::TailCall { expr, env: tail_env } => {
+                        *outer_env = tail_env;
+                        let result = crate::eval::lisp_eval(&expr, outer_env, state)?;
+                        stack.push(result);
+                    }
+                }
+                *outer_env = saved_env;
+                pc += 1;
+            }
             Op::Return => {
                 return Ok(stack.pop().unwrap_or(LispVal::Nil));
+            }
+            Op::StoreSlot(s) => {
+                if *s < slots.len() {
+                    slots[*s] = stack.pop().unwrap_or(LispVal::Nil);
+                } else {
+                    // Extend slots for let-bound vars
+                    while slots.len() <= *s {
+                        slots.push(LispVal::Nil);
+                    }
+                    slots[*s] = stack.pop().unwrap_or(LispVal::Nil);
+                }
+                pc += 1;
+            }
+            Op::Dup => {
+                if let Some(top) = stack.last() {
+                    stack.push(top.clone());
+                }
+                pc += 1;
+            }
+            Op::Pop => {
+                stack.pop();
+                pc += 1;
+            }
+            Op::JumpIfFalse(addr) => {
+                let val = stack.pop().unwrap_or(LispVal::Nil);
+                if !is_truthy(&val) {
+                    pc = *addr;
+                } else {
+                    pc += 1;
+                }
+            }
+            Op::JumpIfTrue(addr) => {
+                let val = stack.pop().unwrap_or(LispVal::Nil);
+                if is_truthy(&val) {
+                    pc = *addr;
+                } else {
+                    pc += 1;
+                }
+            }
+            Op::Jump(addr) => {
+                pc = *addr;
             }
             // Unsupported ops for lambda body — shouldn't appear but handle gracefully
             _ => return Err("compiled lambda: unsupported op".into()),

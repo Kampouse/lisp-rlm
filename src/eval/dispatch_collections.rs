@@ -187,7 +187,7 @@ pub fn handle(
                             return Ok(Some(LispVal::List(vec![])));
                         }
                         if let Ok(first_result) =
-                            crate::bytecode::run_compiled_lambda(&cl, &[lst[0].clone()])
+                            crate::bytecode::run_compiled_lambda(&cl, &[lst[0].clone()], env, state)
                         {
                             let mut result = Vec::with_capacity(lst.len());
                             result.push(first_result);
@@ -195,6 +195,8 @@ pub fn handle(
                                 result.push(crate::bytecode::run_compiled_lambda(
                                     &cl,
                                     &[elem.clone()],
+                                    env,
+                                    state,
                                 )?);
                             }
                             return Ok(Some(LispVal::List(result)));
@@ -240,7 +242,7 @@ pub fn handle(
                             return Ok(Some(LispVal::List(vec![])));
                         }
                         if let Ok(first_result) =
-                            crate::bytecode::run_compiled_lambda(&cl, &[lst[0].clone()])
+                            crate::bytecode::run_compiled_lambda(&cl, &[lst[0].clone()], env, state)
                         {
                             let mut result = Vec::new();
                             if is_truthy(&first_result) {
@@ -250,6 +252,8 @@ pub fn handle(
                                 if is_truthy(&crate::bytecode::run_compiled_lambda(
                                     &cl,
                                     &[elem.clone()],
+                                    env,
+                                    state,
                                 )?) {
                                     result.push(elem.clone());
                                 }
