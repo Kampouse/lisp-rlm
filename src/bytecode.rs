@@ -111,6 +111,8 @@ pub enum Op {
     DictGet,
     /// DictSet: pop val, pop key, pop map, push map with key=val
     DictSet,
+    /// DictMutSet(slot): pop val, pop key, mutate dict in slot in-place (no clone)
+    DictMutSet(usize),
     /// CallSelf: call this compiled lambda recursively with N args from stack
     CallSelf(usize),
 }
@@ -714,6 +716,28 @@ impl LoopCompiler {
                                 }
                             } else if op == "dict/set" || op == "dict-set" {
                                 if n_args == 3 {
+                                    // Check if first arg is a loop var — emit DictMutSet for in-place mutation
+                                    let mut dict_mut_slot: Option<usize> = None;
+                                    if let Some(LispVal::Sym(name)) = list.get(1) {
+                                        if let Some((_, ref var_slots)) = self.loop_stack.last() {
+                                            if let Some(slot) = self.slot_of(name) {
+                                                if var_slots.contains(&slot) {
+                                                    dict_mut_slot = Some(slot);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if let Some(slot) = dict_mut_slot {
+                                        // Compile key and val (skip the map arg — it's in the slot)
+                                        if !self.compile_expr(&list[2], outer_env) {
+                                            return false;
+                                        }
+                                        if !self.compile_expr(&list[3], outer_env) {
+                                            return false;
+                                        }
+                                        self.code.push(Op::DictMutSet(slot));
+                                        return true;
+                                    }
                                     for arg in &list[1..] {
                                         if !self.compile_expr(arg, outer_env) {
                                             return false;
@@ -1408,8 +1432,9 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
             Op::CallCaptured(_, _)
             | Op::CallCapturedRef(_, _)
             | Op::PushClosure(_)
-            | Op::CallSelf(_) => {
-                return Err("loop VM: CallCaptured/CallSelf not supported in loop body".into());
+            | Op::CallSelf(_)
+            | Op::DictMutSet(_) => {
+                return Err("loop VM: CallCaptured/CallSelf/DictMutSet not supported in loop body".into());
             }
         }
     }
@@ -2638,6 +2663,24 @@ pub fn run_compiled_lambda(
                     _ => return Err("dict/set: need (map key value)".into()),
                 };
                 stack.push(result);
+                pc += 1;
+            }
+            Op::DictMutSet(slot_idx) => {
+                let val = stack.pop().unwrap_or(LispVal::Nil);
+                let key = stack.pop().unwrap_or(LispVal::Nil);
+                // Mutate the dict in the slot directly — no clone
+                match &mut slots[*slot_idx] {
+                    LispVal::Map(ref mut m) => {
+                        if let LispVal::Str(k) = &key {
+                            m.insert(k.clone(), val);
+                        } else {
+                            return Err("dict-mut-set: key must be string".into());
+                        }
+                    }
+                    _ => return Err("dict-mut-set: slot is not a map".into()),
+                }
+                // Push the mutated dict (same reference) for the result
+                stack.push(slots[*slot_idx].clone());
                 pc += 1;
             }
             Op::CallSelf(n_args) => {
