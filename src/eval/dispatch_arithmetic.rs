@@ -208,6 +208,130 @@ pub fn handle(
                 _ => Ok(Some(LispVal::Bool(false))),
             }
         }
+        "real?" => {
+            match args.first() {
+                Some(LispVal::Num(_)) | Some(LispVal::Float(_)) => Ok(Some(LispVal::Bool(true))),
+                _ => Ok(Some(LispVal::Bool(false))),
+            }
+        }
+        "complex?" => {
+            match args.first() {
+                Some(LispVal::Num(_)) | Some(LispVal::Float(_)) => Ok(Some(LispVal::Bool(true))),
+                _ => Ok(Some(LispVal::Bool(false))),
+            }
+        }
+        "integer?" => {
+            match args.first() {
+                Some(LispVal::Num(_)) => Ok(Some(LispVal::Bool(true))),
+                Some(LispVal::Float(f)) if f.fract() == 0.0 => Ok(Some(LispVal::Bool(true))),
+                _ => Ok(Some(LispVal::Bool(false))),
+            }
+        }
+        "exact-integer?" => {
+            match args.first() {
+                Some(LispVal::Num(_)) => Ok(Some(LispVal::Bool(true))),
+                _ => Ok(Some(LispVal::Bool(false))),
+            }
+        }
+        "exact?" => match args.first() {
+            Some(LispVal::Num(_)) => Ok(Some(LispVal::Bool(true))),
+            _ => Ok(Some(LispVal::Bool(false))),
+        },
+        "inexact?" => match args.first() {
+            Some(LispVal::Float(_)) => Ok(Some(LispVal::Bool(true))),
+            _ => Ok(Some(LispVal::Bool(false))),
+        },
+        "finite?" => match args.first() {
+            Some(LispVal::Float(f)) => Ok(Some(LispVal::Bool(f.is_finite()))),
+            Some(LispVal::Num(_)) => Ok(Some(LispVal::Bool(true))),
+            _ => Ok(Some(LispVal::Bool(false))),
+        },
+        "infinite?" => match args.first() {
+            Some(LispVal::Float(f)) => Ok(Some(LispVal::Bool(f.is_infinite()))),
+            _ => Ok(Some(LispVal::Bool(false))),
+        },
+        "nan?" => match args.first() {
+            Some(LispVal::Float(f)) => Ok(Some(LispVal::Bool(f.is_nan()))),
+            _ => Ok(Some(LispVal::Bool(false))),
+        },
+        "sin" => {
+            let n = as_num(args.first().ok_or("sin: need number")?)?;
+            Ok(Some(LispVal::Float((n as f64).sin())))
+        }
+        "cos" => {
+            let n = as_num(args.first().ok_or("cos: need number")?)?;
+            Ok(Some(LispVal::Float((n as f64).cos())))
+        }
+        "tan" => {
+            let n = as_num(args.first().ok_or("tan: need number")?)?;
+            Ok(Some(LispVal::Float((n as f64).tan())))
+        }
+        "asin" => {
+            let n = as_num(args.first().ok_or("asin: need number")?)?;
+            Ok(Some(LispVal::Float((n as f64).asin())))
+        }
+        "acos" => {
+            let n = as_num(args.first().ok_or("acos: need number")?)?;
+            Ok(Some(LispVal::Float((n as f64).acos())))
+        }
+        "log" => {
+            let n = as_num(args.first().ok_or("log: need number")?)?;
+            Ok(Some(LispVal::Float((n as f64).ln())))
+        }
+        "truncate" => {
+            let n = as_num(args.first().ok_or("truncate: need number")?)?;
+            Ok(Some(LispVal::Num(n)))
+        }
+        "truncate/" | "floor/" => {
+            let a = as_num(args.first().ok_or("need 2 args")?)?;
+            let b = as_num(args.get(1).ok_or("need 2 args")?)?;
+            if b == 0 { return Err("division by zero".into()); }
+            let q = a / b;
+            let r = a - q * b;
+            Ok(Some(LispVal::List(vec![LispVal::Num(q), LispVal::Num(r)])))
+        }
+        "string" => {
+            let chars: String = args.iter().filter_map(|a| {
+                if let LispVal::Str(s) = a { Some(s.as_str()) } else { None }
+            }).collect();
+            Ok(Some(LispVal::Str(chars)))
+        }
+        "make-string" => {
+            let n = as_num(args.first().ok_or("make-string: need count")?)? as usize;
+            let ch = match args.get(1) {
+                Some(LispVal::Str(s)) => s.chars().next().unwrap_or(' '),
+                _ => ' ',
+            };
+            Ok(Some(LispVal::Str(ch.to_string().repeat(n))))
+        }
+        "string-ref" => {
+            let s = match args.first() {
+                Some(LispVal::Str(s)) => s.clone(),
+                _ => return Err("string-ref: need string".into()),
+            };
+            let i = as_num(args.get(1).ok_or("string-ref: need index")?)? as usize;
+            match s.chars().nth(i) {
+                Some(c) => Ok(Some(LispVal::Str(c.to_string()))),
+                None => Err("string-ref: index out of range".into()),
+            }
+        }
+        "make-list" => {
+            let n = as_num(args.first().ok_or("make-list: need count")?)? as usize;
+            let fill = args.get(1).cloned().unwrap_or(LispVal::Nil);
+            Ok(Some(LispVal::List(vec![fill; n])))
+        }
+        "list-tail" => {
+            let lst = match args.first() {
+                Some(LispVal::List(l)) => l.clone(),
+                _ => return Err("list-tail: need list".into()),
+            };
+            let i = as_num(args.get(1).ok_or("list-tail: need index")?)? as usize;
+            Ok(Some(LispVal::List(lst[i..].to_vec())))
+        }
+        "cadr" => match args.first() {
+            Some(LispVal::List(l)) if l.len() >= 2 => Ok(Some(l[1].clone())),
+            _ => Err("cadr: need list with 2+ elements".into()),
+        },
         // R7RS arithmetic aliases
         "zero?" => match args.first() {
             Some(LispVal::Num(n)) => Ok(Some(LispVal::Bool(*n == 0))),

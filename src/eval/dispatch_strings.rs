@@ -234,6 +234,109 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             Some(LispVal::Str(s)) => Ok(Some(LispVal::Str(s.to_lowercase()))),
             _ => Err("string-foldcase: need string".into()),
         },
+        // ── Character predicates (chars are strings in lisp-rlm) ──
+        "char?" => match args.first() {
+            Some(LispVal::Str(s)) if s.chars().count() == 1 => Ok(Some(LispVal::Bool(true))),
+            _ => Ok(Some(LispVal::Bool(false))),
+        },
+        "char=?" | "char<?" | "char>?" | "char<=?" | "char>=?" => {
+            let a = match args.first() {
+                Some(LispVal::Str(s)) if s.chars().count() == 1 => s.chars().next().unwrap(),
+                _ => return Ok(Some(LispVal::Bool(false))),
+            };
+            let b = match args.get(1) {
+                Some(LispVal::Str(s)) if s.chars().count() == 1 => s.chars().next().unwrap(),
+                _ => return Ok(Some(LispVal::Bool(false))),
+            };
+            let eq = match name {
+                "char=?" => a == b,
+                "char<?" => a < b,
+                "char>?" => a > b,
+                "char<=?" => a <= b,
+                "char>=?" => a >= b,
+                _ => false,
+            };
+            Ok(Some(LispVal::Bool(eq)))
+        }
+        "char-ci=?" | "char-ci<?" | "char-ci>?" | "char-ci<=?" | "char-ci>=?" => {
+            let a = match args.first() {
+                Some(LispVal::Str(s)) if s.chars().count() == 1 => s.to_lowercase().chars().next().unwrap(),
+                _ => return Ok(Some(LispVal::Bool(false))),
+            };
+            let b = match args.get(1) {
+                Some(LispVal::Str(s)) if s.chars().count() == 1 => s.to_lowercase().chars().next().unwrap(),
+                _ => return Ok(Some(LispVal::Bool(false))),
+            };
+            let eq = match name {
+                "char-ci=?" => a == b,
+                "char-ci<?" => a < b,
+                "char-ci>?" => a > b,
+                "char-ci<=?" => a <= b,
+                "char-ci>=?" => a >= b,
+                _ => false,
+            };
+            Ok(Some(LispVal::Bool(eq)))
+        }
+        "char-alphabetic?" => match args.first() {
+            Some(LispVal::Str(s)) if s.chars().count() == 1 => Ok(Some(LispVal::Bool(s.chars().next().unwrap().is_alphabetic()))),
+            _ => Ok(Some(LispVal::Bool(false))),
+        },
+        "char-numeric?" => match args.first() {
+            Some(LispVal::Str(s)) if s.chars().count() == 1 => Ok(Some(LispVal::Bool(s.chars().next().unwrap().is_numeric()))),
+            _ => Ok(Some(LispVal::Bool(false))),
+        },
+        "char-whitespace?" => match args.first() {
+            Some(LispVal::Str(s)) if s.chars().count() == 1 => Ok(Some(LispVal::Bool(s.chars().next().unwrap().is_whitespace()))),
+            _ => Ok(Some(LispVal::Bool(false))),
+        },
+        "char-upper-case?" => match args.first() {
+            Some(LispVal::Str(s)) if s.chars().count() == 1 => Ok(Some(LispVal::Bool(s.chars().next().unwrap().is_uppercase()))),
+            _ => Ok(Some(LispVal::Bool(false))),
+        },
+        "char-lower-case?" => match args.first() {
+            Some(LispVal::Str(s)) if s.chars().count() == 1 => Ok(Some(LispVal::Bool(s.chars().next().unwrap().is_lowercase()))),
+            _ => Ok(Some(LispVal::Bool(false))),
+        },
+        "char-upcase" => match args.first() {
+            Some(LispVal::Str(s)) if s.chars().count() == 1 => {
+                let c = s.chars().next().unwrap().to_uppercase().collect::<String>();
+                Ok(Some(LispVal::Str(c)))
+            }
+            _ => Err("char-upcase: need char".into()),
+        },
+        "char-downcase" => match args.first() {
+            Some(LispVal::Str(s)) if s.chars().count() == 1 => {
+                let c = s.chars().next().unwrap().to_lowercase().collect::<String>();
+                Ok(Some(LispVal::Str(c)))
+            }
+            _ => Err("char-downcase: need char".into()),
+        },
+        "char-foldcase" => match args.first() {
+            Some(LispVal::Str(s)) if s.chars().count() == 1 => {
+                let c = s.chars().next().unwrap().to_lowercase().collect::<String>();
+                Ok(Some(LispVal::Str(c)))
+            }
+            _ => Err("char-foldcase: need char".into()),
+        },
+        "digit-value" => match args.first() {
+            Some(LispVal::Str(s)) if s.chars().count() == 1 => {
+                let c = s.chars().next().unwrap();
+                Ok(Some(LispVal::Num(c.to_digit(10).map(|d| d as i64).unwrap_or(-1))))
+            }
+            _ => Err("digit-value: need char".into()),
+        },
+        "char->integer" => match args.first() {
+            Some(LispVal::Str(s)) if s.chars().count() == 1 => {
+                Ok(Some(LispVal::Num(s.chars().next().unwrap() as i64)))
+            }
+            _ => Err("char->integer: need char".into()),
+        },
+        "integer->char" => match args.first() {
+            Some(LispVal::Num(n)) if *n >= 0 && *n <= 0x10ffff => {
+                Ok(Some(LispVal::Str(char::from_u32(*n as u32).unwrap_or('\0').to_string())))
+            }
+            _ => Err("integer->char: need non-negative integer".into()),
+        },
         "display" => handle("print", args),
         "newline" => { println!(); Ok(Some(LispVal::Nil)) }
         "write" => handle("inspect", args),
