@@ -120,6 +120,13 @@ pub enum Op {
     /// result = if dict/get(slots[map_slot], slots[key_slot]) is nil
     ///          then slots[default_slot] else dict/get result
     GetDefaultSlot(usize, usize, usize, usize),
+    /// StoreAndLoadSlot: pop from stack into slot, then push slot value back.
+    /// Fuses StoreSlot(N) + LoadSlot(N) — the slot gets updated and the value
+    /// stays on the stack, avoiding a separate load dispatch.
+    StoreAndLoadSlot(usize),
+    /// ReturnSlot: return the value in slot N directly, no stack push/pop.
+    /// Fuses LoadSlot(N) + Return.
+    ReturnSlot(usize),
 }
 
 /// Compiled loop representation.
@@ -336,7 +343,12 @@ impl LoopCompiler {
         let callee_code_len = callee.code.len();
 
         for (i, op) in callee.code.iter().enumerate() {
-            if i == callee_code_len - 1 && matches!(op, Op::Return) {
+            if i == callee_code_len - 1 && matches!(op, Op::Return | Op::ReturnSlot(_)) {
+                // If ReturnSlot(s), push the value onto the stack before breaking
+                // (the inlined callee should leave its result on the stack, not return)
+                if let Op::ReturnSlot(s) = op {
+                    self.code.push(Op::LoadSlot(base + s));
+                }
                 break;
             }
             self.code
@@ -1213,6 +1225,12 @@ fn remap_op(op: &Op, slot_offset: usize, captured_remap: &[usize], jump_offset: 
             r + slot_offset,
         ),
 
+        // StoreAndLoadSlot — offset slot
+        Op::StoreAndLoadSlot(s) => Op::StoreAndLoadSlot(s + slot_offset),
+
+        // ReturnSlot — offset slot
+        Op::ReturnSlot(s) => Op::ReturnSlot(s + slot_offset),
+
         // Everything else — no remapping needed
         _ => op.clone(),
     }
@@ -1222,6 +1240,16 @@ fn remap_op(op: &Op, slot_offset: usize, captured_remap: &[usize], jump_offset: 
 /// convert small Recur → RecurDirect, fuse SlotCmpImm + JumpIfFalse,
 /// and remap jump targets.
 fn peephole_optimize(code: &mut Vec<Op>) {
+    // Pre-compute set of jump targets — positions that are jumped to from elsewhere.
+    // Used to prevent fusing ops at jump targets (which would break fallthrough semantics).
+    let jump_targets: std::collections::HashSet<usize> = code
+        .iter()
+        .filter_map(|op| match op {
+            Op::Jump(t) | Op::JumpIfTrue(t) | Op::JumpIfFalse(t) => Some(*t),
+            _ => None,
+        })
+        .collect();
+
     let mut i = 0;
     let mut new_code = Vec::with_capacity(code.len());
     // Build old_pc → new_pc mapping so jump targets stay valid
@@ -1390,6 +1418,93 @@ fn peephole_optimize(code: &mut Vec<Op>) {
                         *result_slot,
                     ));
                     i += 11;
+                    continue;
+                }
+            }
+        }
+        // Fuse standalone get-default pattern (10 ops → 1):
+        // Same as above but ends with Return instead of StoreSlot
+        // Result is pushed onto stack (not stored in a slot)
+        if i + 9 < code.len() {
+            if let (
+                Op::LoadSlot(m_slot),
+                Op::LoadSlot(k_slot),
+                Op::DictGet,
+                Op::StoreSlot(tmp_slot),
+                Op::LoadSlot(ls4),
+                Op::BuiltinCall(name, 1),
+                Op::JumpIfFalse(else_addr),
+                Op::LoadSlot(default_slot),
+                Op::Jump(end_addr),
+                Op::LoadSlot(ls9),
+            ) = (
+                &code[i],
+                &code[i + 1],
+                &code[i + 2],
+                &code[i + 3],
+                &code[i + 4],
+                &code[i + 5],
+                &code[i + 6],
+                &code[i + 7],
+                &code[i + 8],
+                &code[i + 9],
+            ) {
+                if name == "nil?"
+                    && ls4 == tmp_slot
+                    && ls9 == tmp_slot
+                    && *else_addr == i + 9
+                    && *end_addr == i + 10
+                {
+                    // 10 ops → push default onto stack, skip Return
+                    for _ in 0..9 {
+                        index_map.push(new_code.len());
+                    }
+                    // Reuse GetDefaultSlot but we need to push result onto stack.
+                    // Use a temp: store to a dummy slot, then load it.
+                    // Actually, just emit the fused op with result going to the tmp slot,
+                    // then LoadSlot to push it.
+                    new_code.push(Op::GetDefaultSlot(
+                        *m_slot,
+                        *k_slot,
+                        *default_slot,
+                        *tmp_slot,
+                    ));
+                    new_code.push(Op::LoadSlot(*tmp_slot));
+                    i += 10; // consume 10 ops (excluding the Return after)
+                    continue;
+                }
+            }
+        }
+        // Fuse StoreSlot(N) + LoadSlot(N) → StoreAndLoadSlot(N)
+        // Only if i+1 is not a jump target (the LoadSlot must be reachable only from StoreSlot)
+        if i + 1 < code.len() && !jump_targets.contains(&(i + 1)) {
+            if let (Op::StoreSlot(s1), Op::LoadSlot(s2)) = (&code[i], &code[i + 1]) {
+                if s1 == s2 {
+                    index_map.push(new_code.len());
+                    new_code.push(Op::StoreAndLoadSlot(*s1));
+                    i += 2;
+                    continue;
+                }
+            }
+        }
+        // Fuse LoadSlot(N) + Return → ReturnSlot(N)
+        // Only if i is not a jump target (the LoadSlot must be reachable only from predecessor)
+        if i + 1 < code.len() && !jump_targets.contains(&i) {
+            if let (Op::LoadSlot(s), Op::Return) = (&code[i], &code[i + 1]) {
+                index_map.push(new_code.len());
+                new_code.push(Op::ReturnSlot(*s));
+                i += 2;
+                continue;
+            }
+        }
+        // Eliminate LoadSlot(N) + StoreSlot(N) — loads value then stores it back, a no-op.
+        // Only if i+1 is not a jump target.
+        if i + 1 < code.len() && !jump_targets.contains(&(i + 1)) {
+            if let (Op::LoadSlot(s1), Op::StoreSlot(s2)) = (&code[i], &code[i + 1]) {
+                if s1 == s2 {
+                    index_map.push(new_code.len());
+                    // Both ops are a no-op — skip them
+                    i += 2;
                     continue;
                 }
             }
@@ -1730,14 +1845,24 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
                 stack.push(result);
                 pc += 1;
             }
+            Op::StoreAndLoadSlot(s) => {
+                let val = stack.pop().unwrap_or(LispVal::Nil);
+                slots[*s] = val;
+                match &slots[*s] {
+                    LispVal::Num(n) => stack.push(LispVal::Num(*n)),
+                    _ => stack.push(slots[*s].clone()),
+                }
+                pc += 1;
+            }
             Op::CallCaptured(_, _)
             | Op::CallCapturedRef(_, _)
             | Op::PushClosure(_)
             | Op::CallSelf(_)
             | Op::DictMutSet(_)
-            | Op::GetDefaultSlot(_, _, _, _) => {
+            | Op::GetDefaultSlot(_, _, _, _)
+            | Op::ReturnSlot(_) => {
                 return Err(
-                    "loop VM: CallCaptured/CallSelf/DictMutSet/GetDefaultSlot not supported in loop body".into(),
+                    "loop VM: CallCaptured/CallSelf/DictMutSet/GetDefaultSlot/ReturnSlot not supported in loop body".into(),
                 );
             }
         }
@@ -3011,6 +3136,10 @@ pub fn run_compiled_lambda(
             }
             Op::GetDefaultSlot(map_slot, key_slot, default_slot, result_slot) => {
                 // Fused: result = dict/get(slots[map], slots[key]) ?? slots[default]
+                // Ensure result_slot exists
+                while slots.len() <= *result_slot {
+                    slots.push(LispVal::Nil);
+                }
                 let map_val = &slots[*map_slot];
                 let key_val = &slots[*key_slot];
                 let result = if let (LispVal::Map(ref m), LispVal::Str(ref k)) = (map_val, key_val)
@@ -3024,6 +3153,43 @@ pub fn run_compiled_lambda(
                 };
                 slots[*result_slot] = result;
                 pc += 1;
+            }
+            Op::StoreAndLoadSlot(s) => {
+                let val = stack.pop().unwrap_or(LispVal::Nil);
+                if *s < slots.len() {
+                    slots[*s] = val;
+                    // Push Num without clone, clone everything else
+                    match &slots[*s] {
+                        LispVal::Num(n) => stack.push(LispVal::Num(*n)),
+                        _ => stack.push(slots[*s].clone()),
+                    }
+                } else {
+                    while slots.len() <= *s {
+                        slots.push(LispVal::Nil);
+                    }
+                    slots[*s] = val;
+                    stack.push(slots[*s].clone());
+                }
+                pc += 1;
+            }
+            Op::ReturnSlot(s) => {
+                // Flush slot and return directly — no stack push/pop
+                let slot_ref = &slots[*s];
+                let retval = match slot_ref {
+                    LispVal::Num(n) => LispVal::Num(*n),
+                    LispVal::Float(f) => LispVal::Float(*f),
+                    LispVal::Bool(b) => LispVal::Bool(*b),
+                    LispVal::Nil => LispVal::Nil,
+                    _ => slot_ref.clone(),
+                };
+                if let Some(frame) = frames.pop() {
+                    slots = frame.slots;
+                    stack = frame.stack;
+                    stack.push(retval);
+                    pc = frame.pc;
+                } else {
+                    return Ok(retval);
+                }
             }
             // Unsupported ops for lambda body — shouldn't appear but handle gracefully
             _ => return Err("compiled lambda: unsupported op".into()),
