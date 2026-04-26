@@ -680,7 +680,19 @@ pub fn handle(
                 Some(LispVal::Nil) => return Ok(Some(LispVal::Nil)),
                 _ => return Err("for-each: need list as second arg".into()),
             };
-            // No bytecode fast path: for-each discards results (no gain over slow path).
+            // Fast path: use pre-compiled bytecode (avoids call_val dispatch per element)
+            if let LispVal::Lambda {
+                rest_param: None,
+                compiled: Some(ref cl),
+                ..
+            } = func
+            {
+                for elem in &lst {
+                    let _ = crate::bytecode::run_compiled_lambda(cl, &[elem.clone()], env, state);
+                }
+                return Ok(Some(LispVal::Nil));
+            }
+            // Slow path
             for elem in &lst {
                 call_val(func, &[elem.clone()], env, state)?;
             }

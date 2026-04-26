@@ -1522,6 +1522,76 @@ pub fn eval_builtin(name: &str, args: &[LispVal]) -> Result<LispVal, String> {
                 _ => Ok(LispVal::List(vec![])),
             }
         }
+        // --- String operations (not in existing builtins) ---
+        "string-append" => {
+            let mut result = String::new();
+            for arg in args {
+                match arg {
+                    LispVal::Str(s) => result.push_str(&s),
+                    LispVal::Num(n) => result.push_str(&n.to_string()),
+                    LispVal::Float(f) => result.push_str(&f.to_string()),
+                    LispVal::Bool(b) => result.push_str(&b.to_string()),
+                    LispVal::Nil => result.push_str("nil"),
+                    other => result.push_str(&other.to_string()),
+                }
+            }
+            Ok(LispVal::Str(result))
+        }
+        "str-ends-with" | "string-suffix?" => {
+            match (args.get(0), args.get(1)) {
+                (Some(LispVal::Str(s)), Some(LispVal::Str(suffix))) => {
+                    Ok(LispVal::Bool(s.ends_with(suffix.as_str())))
+                }
+                _ => Ok(LispVal::Bool(false)),
+            }
+        }
+        "str-starts-with" | "string-prefix?" => {
+            match (args.get(0), args.get(1)) {
+                (Some(LispVal::Str(s)), Some(LispVal::Str(prefix))) => {
+                    Ok(LispVal::Bool(s.starts_with(prefix.as_str())))
+                }
+                _ => Ok(LispVal::Bool(false)),
+            }
+        }
+        "substring" => {
+            match (args.get(0), args.get(1), args.get(2)) {
+                (Some(LispVal::Str(s)), Some(LispVal::Num(start)), None) => {
+                    let start = (*start as usize).min(s.len());
+                    Ok(LispVal::Str(s[start..].to_string()))
+                }
+                (Some(LispVal::Str(s)), Some(LispVal::Num(start)), Some(LispVal::Num(end))) => {
+                    let start = (*start as usize).min(s.len());
+                    let end = (*end as usize).min(s.len());
+                    if start < end {
+                        Ok(LispVal::Str(s[start..end].to_string()))
+                    } else {
+                        Ok(LispVal::Str(String::new()))
+                    }
+                }
+                _ => Ok(LispVal::Str(String::new())),
+            }
+        }
+        "str->num" | "string->number" => {
+            match args.get(0) {
+                Some(LispVal::Str(s)) => {
+                    if let Ok(n) = s.parse::<i64>() {
+                        Ok(LispVal::Num(n))
+                    } else if let Ok(f) = s.parse::<f64>() {
+                        Ok(LispVal::Float(f))
+                    } else {
+                        Ok(LispVal::Nil)
+                    }
+                }
+                _ => Ok(LispVal::Nil),
+            }
+        }
+        "num->str" | "number->string" => {
+            match args.get(0) {
+                Some(LispVal::Num(n)) => Ok(LispVal::Str(n.to_string())),
+                Some(LispVal::Float(f)) => Ok(LispVal::Str(f.to_string())),
+                _ => Ok(LispVal::Str("0".to_string())),
+            }
+        }
         _ => Err(format!("loop bytecode: unknown builtin '{}'", name)),
     }
 }
