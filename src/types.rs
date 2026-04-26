@@ -116,6 +116,11 @@ impl Env {
         self.insert_mut(name, val);
     }
 
+    /// Remove a binding by name (for LetRestore).
+    pub fn pop(&mut self, name: &str) {
+        self.bindings.remove(name);
+    }
+
     /// Look up a binding by name, returning `None` if not found.
     pub fn get(&self, name: &str) -> Option<&LispVal> {
         self.bindings.get(name)
@@ -183,18 +188,14 @@ impl Env {
         }
     }
 
-    /// Get or create the scope's shared snapshot Arc.
-    /// All lambdas defined at this scope level share the same Arc.
-    /// The snapshot is mutable — `define` and `set!` propagate to it.
     pub fn get_or_create_scope_snapshot(
         &mut self,
     ) -> std::sync::Arc<std::sync::RwLock<im::HashMap<String, LispVal>>> {
-        if let Some(ref arc) = self.scope_snapshot {
-            return arc.clone();
-        }
-        let arc = std::sync::Arc::new(std::sync::RwLock::new(self.snapshot()));
-        self.scope_snapshot = Some(arc.clone());
-        arc
+        // Always create a NEW Arc for lambda closures so they capture
+        // the current values at creation time (not future mutations).
+        // set! still propagates to parent scopes via propagate_to_shared.
+        let snap = self.snapshot();
+        std::sync::Arc::new(std::sync::RwLock::new(snap))
     }
 
     /// Propagate a binding to the scope snapshot (for sibling lambda visibility).

@@ -1148,37 +1148,28 @@ fn eval_cond_clauses(clauses: Vec<LispVal>, _env: &mut Env) -> Result<Step, Stri
 fn eval_let(
     pairs: Vec<(String, LispVal)>,
     body_exprs: Vec<LispVal>,
-    env: &mut Env,
+    _env: &mut Env,
 ) -> Result<Step, String> {
     if pairs.is_empty() {
-        let snap = env.snapshot();
-        // Push restore cont, then eval body as begin
         if body_exprs.is_empty() {
             return Ok(Step::Done(LispVal::Nil));
         }
         return Ok(Step::EvalNext {
             expr: body_exprs[0].clone(),
-            conts: {
-                let mut cs: Vec<Cont> = Vec::new();
-                if body_exprs.len() > 1 {
-                    cs.push(Cont::BeginSeq {
-                        remaining: body_exprs[1..].to_vec(),
-                    });
-                }
-                cs.push(Cont::LetRestore { snapshot: snap });
-                cs
-            },
+            conts: vec![],
             new_env: None,
         });
     }
     let (name, val_expr) = &pairs[0];
     let remaining = pairs[1..].to_vec();
+    let all_names: Vec<String> = pairs.iter().map(|(n, _)| n.clone()).collect();
     Ok(Step::EvalNext {
         expr: val_expr.clone(),
         conts: vec![Cont::LetBind {
             name: name.clone(),
             remaining_pairs: remaining,
             body_exprs,
+            bound_keys: all_names,
         }],
         new_env: None,
     })
@@ -1368,14 +1359,16 @@ pub fn handle_cont(
             name,
             remaining_pairs,
             body_exprs,
+            bound_keys,
         } => {
-            env.push(name, val);
+            let mut all_bound = bound_keys.clone();
+            env.push(name.clone(), val);
+            all_bound.push(name.clone());
             if remaining_pairs.is_empty() {
                 // All bindings done, eval body
                 if body_exprs.is_empty() {
                     return Ok(Step::Done(LispVal::Nil));
                 }
-                let snap = env.snapshot();
                 Ok(Step::EvalNext {
                     expr: body_exprs[0].clone(),
                     conts: {
@@ -1385,7 +1378,7 @@ pub fn handle_cont(
                                 remaining: body_exprs[1..].to_vec(),
                             });
                         }
-                        cs.push(Cont::LetRestore { snapshot: snap });
+                        cs.push(Cont::LetRestore { bound_keys: all_bound });
                         cs
                     },
                     new_env: None,
@@ -1398,14 +1391,18 @@ pub fn handle_cont(
                         name: next_name.clone(),
                         remaining_pairs: remaining_pairs[1..].to_vec(),
                         body_exprs,
+                        bound_keys: all_bound,
                     }],
                     new_env: None,
                 })
             }
         }
 
-        Cont::LetRestore { snapshot } => {
-            env.restore(snapshot);
+        Cont::LetRestore { bound_keys } => {
+            // Only remove the keys that this let introduced (don't wipe entire env)
+            for key in &bound_keys {
+                env.pop(key);
+            }
             Ok(Step::Done(val))
         }
 

@@ -68,9 +68,10 @@ pub enum Cont {
         name: String,
         remaining_pairs: Vec<(String, LispVal)>,
         body_exprs: Vec<LispVal>,
+        bound_keys: Vec<String>,
     },
     LetRestore {
-        snapshot: im::HashMap<String, LispVal>,
+        bound_keys: Vec<String>,
     },
     MatchScrutinee {
         val: LispVal,
