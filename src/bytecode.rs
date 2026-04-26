@@ -195,6 +195,13 @@ impl LoopCompiler {
                 true
             }
             LispVal::Sym(name) => {
+                // Literal booleans and nil — don't capture as variables
+                match name.as_str() {
+                    "true" => { self.code.push(Op::PushBool(true)); return true; }
+                    "false" => { self.code.push(Op::PushBool(false)); return true; }
+                    "nil" => { self.code.push(Op::PushNil); return true; }
+                    _ => {}
+                }
                 if let Some(slot) = self.slot_of(name) {
                     self.code.push(Op::LoadSlot(slot));
                     true
@@ -589,12 +596,6 @@ impl LoopCompiler {
                             self.code.push(Op::PushClosure(idx));
                             true
                         }
-                        "map" | "filter" | "reduce" | "find" | "some" | "every"
-                        | "partition" | "fold-left" | "fold-right" | "for-each"
-                        | "sort" => {
-                            // HOFs need env/state to call lambda args — can't compile as BuiltinCall
-                            false
-                        }
                         _ => {
                             // Function call: captured var or assumed builtin
                             let n_args = list.len() - 1;
@@ -607,6 +608,9 @@ impl LoopCompiler {
                                 self.code.push(Op::CallCapturedRef(idx, n_args));
                             } else if let Some(slot) = self.slot_of(op) {
                                 self.code.push(Op::CallCaptured(slot, n_args));
+                            } else if self.try_capture(op, outer_env) {
+                                let idx = self.captured_idx(op).unwrap();
+                                self.code.push(Op::CallCapturedRef(idx, n_args));
                             } else {
                                 self.code.push(Op::BuiltinCall(op.clone(), n_args));
                             }
@@ -1730,14 +1734,12 @@ pub struct CompiledLambda {
 pub fn try_compile_lambda(
     param_names: &[String],
     body: &LispVal,
-    closed_env: &[(String, LispVal)],
+    _closed_env: &[(String, LispVal)],
     outer_env: &Env,
 ) -> Option<CompiledLambda> {
     let mut compiler = LoopCompiler::new(param_names.to_vec());
-    // Pre-register captured env from the lambda closure
-    for (name, val) in closed_env {
-        compiler.captured.push((name.clone(), val.clone()));
-    }
+    // Don't pre-populate captured — try_capture will pull in only what's needed from outer_env.
+    // closed_env contains the ENTIRE scope snapshot (all builtins, etc) — most are unused.
     if !compiler.compile_expr(body, outer_env) {
         return None;
     }
@@ -1956,8 +1958,161 @@ pub fn run_compiled_lambda(
                     bargs.push(stack.pop().unwrap_or(LispVal::Nil));
                 }
                 bargs.reverse();
-                let result = eval_builtin(name, &bargs)?;
-                stack.push(result);
+                // Inline HOF handling — map/filter/for-each/reduce/sort need to call lambdas
+                match name.as_str() {
+                    "map" if bargs.len() == 2 => {
+                        let func = &bargs[0];
+                        let list = &bargs[1];
+                        let vals = match list {
+                            LispVal::List(l) => l,
+                            LispVal::Nil => {
+                                stack.push(LispVal::Nil);
+                                pc += 1;
+                                continue;
+                            }
+                            _ => {
+                                stack.push(LispVal::Nil);
+                                pc += 1;
+                                continue;
+                            }
+                        };
+                        let mut result = Vec::with_capacity(vals.len());
+                        if let LispVal::Lambda { rest_param: None, compiled: Some(ref cl2), .. } = func {
+                            let comp_cl = cl2.clone();
+                            for v in vals.iter() {
+                                match run_compiled_lambda(&comp_cl, &[v.clone()], outer_env, state) {
+                                    Ok(r) => result.push(r),
+                                    Err(_) => {
+                                        let mut env_clone = outer_env.clone();
+                                        match crate::eval::call_val(func, &[v.clone()], &mut env_clone, state) {
+                                            Ok(crate::eval::continuation::EvalResult::Value(r)) => result.push(r),
+                                            Ok(crate::eval::continuation::EvalResult::TailCall { expr, env: tail_env }) => {
+                                                let mut e2 = tail_env;
+                                                result.push(crate::eval::lisp_eval(&expr, &mut e2, state)?);
+                                            }
+                                            Err(e) => return Err(e),
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            for v in vals.iter() {
+                                let mut env_clone = outer_env.clone();
+                                match crate::eval::call_val(func, &[v.clone()], &mut env_clone, state) {
+                                    Ok(crate::eval::continuation::EvalResult::Value(r)) => result.push(r),
+                                    Ok(crate::eval::continuation::EvalResult::TailCall { expr, env: tail_env }) => {
+                                        let mut e2 = tail_env;
+                                        result.push(crate::eval::lisp_eval(&expr, &mut e2, state)?);
+                                    }
+                                    Err(e) => return Err(e),
+                                }
+                            }
+                        }
+                        stack.push(LispVal::List(result));
+                    }
+                    "filter" if bargs.len() == 2 => {
+                        let func = &bargs[0];
+                        let list = &bargs[1];
+                        let vals = match list {
+                            LispVal::List(l) => l,
+                            _ => {
+                                stack.push(LispVal::Nil);
+                                pc += 1;
+                                continue;
+                            }
+                        };
+                        let mut result = Vec::new();
+                        if let LispVal::Lambda { rest_param: None, compiled: Some(ref cl2), .. } = func {
+                            let comp_cl = cl2.clone();
+                            for v in vals.iter() {
+                                let keep = match run_compiled_lambda(&comp_cl, &[v.clone()], outer_env, state) {
+                                    Ok(LispVal::Bool(b)) => b,
+                                    Ok(_) => true,
+                                    Err(_) => {
+                                        let mut env_clone = outer_env.clone();
+                                        match crate::eval::call_val(func, &[v.clone()], &mut env_clone, state) {
+                                            Ok(crate::eval::continuation::EvalResult::Value(LispVal::Bool(b))) => b,
+                                            _ => false,
+                                        }
+                                    }
+                                };
+                                if keep { result.push(v.clone()); }
+                            }
+                        } else {
+                            for v in vals.iter() {
+                                let mut env_clone = outer_env.clone();
+                                let keep = match crate::eval::call_val(func, &[v.clone()], &mut env_clone, state) {
+                                    Ok(crate::eval::continuation::EvalResult::Value(LispVal::Bool(b))) => b,
+                                    _ => false,
+                                };
+                                if keep { result.push(v.clone()); }
+                            }
+                        }
+                        stack.push(LispVal::List(result));
+                    }
+                    "for-each" if bargs.len() == 2 => {
+                        let func = &bargs[0];
+                        let list = &bargs[1];
+                        let vals = match list {
+                            LispVal::List(l) => l,
+                            _ => {
+                                stack.push(LispVal::Nil);
+                                pc += 1;
+                                continue;
+                            }
+                        };
+                        if let LispVal::Lambda { rest_param: None, compiled: Some(ref cl2), .. } = func {
+                            let comp_cl = cl2.clone();
+                            for v in vals.iter() {
+                                let _ = run_compiled_lambda(&comp_cl, &[v.clone()], outer_env, state);
+                            }
+                        } else {
+                            for v in vals.iter() {
+                                let mut env_clone = outer_env.clone();
+                                let _ = crate::eval::call_val(func, &[v.clone()], &mut env_clone, state);
+                            }
+                        }
+                        stack.push(LispVal::Nil);
+                    }
+                    "sort" if bargs.len() == 2 => {
+                        let comparator = bargs[0].clone();
+                        let mut vals = match &bargs[1] {
+                            LispVal::List(l) => l.clone(),
+                            LispVal::Nil => vec![],
+                            _ => {
+                                stack.push(bargs[1].clone());
+                                pc += 1;
+                                continue;
+                            }
+                        };
+                        if let LispVal::Lambda { rest_param: None, compiled: Some(ref cl2), .. } = comparator {
+                            let comp_cl = cl2.clone();
+                            vals.sort_by(|a, b| {
+                                match run_compiled_lambda(&comp_cl, &[a.clone(), b.clone()], outer_env, state) {
+                                    Ok(LispVal::Bool(true)) => std::cmp::Ordering::Less,
+                                    Ok(LispVal::Bool(false)) => std::cmp::Ordering::Greater,
+                                    _ => std::cmp::Ordering::Equal,
+                                }
+                            });
+                        } else {
+                            let func = comparator.clone();
+                            vals.sort_by(|a, b| {
+                                let mut env_clone = outer_env.clone();
+                                match crate::eval::call_val(&func, &[a.clone(), b.clone()], &mut env_clone, state) {
+                                    Ok(crate::eval::continuation::EvalResult::Value(LispVal::Bool(true))) => std::cmp::Ordering::Less,
+                                    Ok(crate::eval::continuation::EvalResult::Value(LispVal::Bool(false))) => std::cmp::Ordering::Greater,
+                                    _ => std::cmp::Ordering::Equal,
+                                }
+                            });
+                        }
+                        stack.push(LispVal::List(vals));
+                    }
+                    _ => {
+                        // Regular builtin — no lambda args needed
+                        let result = eval_builtin(name, &bargs)?;
+                        stack.push(result);
+                    }
+                }
                 pc += 1;
             }
             Op::CallCaptured(slot, n_args) => {
