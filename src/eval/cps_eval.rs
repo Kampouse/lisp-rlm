@@ -511,7 +511,7 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                         // Named let: (let loop ((v1 i1) ...) body)
                         // We don't have named let, so use loop/recur pattern
                         // Actually, just desugar to a recursive lambda
-                        let params: Vec<String> = var_names
+                        let _params: Vec<String> = var_names
                             .iter()
                             .filter_map(|v| {
                                 if let LispVal::Sym(s) = v {
@@ -534,8 +534,8 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                         // ((lambda (v1 v2 ...) (if test result (begin body... ((lambda ...))))) init1 init2 ...)
                         // Too complex. Use Y-combinator? No, just use set! approach.
                         // Simpler: desugar to loop/recur
-                        let loop_body_expr = if_expr;
-                        let mut result_expr = LispVal::List(
+                        let _loop_body_expr = if_expr;
+                        let _result_expr = LispVal::List(
                             vec![LispVal::Sym("loop".into())]
                                 .into_iter()
                                 .chain(init_vals.clone())
@@ -2007,7 +2007,7 @@ fn strip_type_annotation(dl: &[LispVal]) -> Vec<LispVal> {
             if s == "::" {
                 // Skip :: and all following type tokens until we hit the body
                 // The body is the last element
-                i += 1;
+                let _ = i; // assignment below is dead but we keep the loop structure
                 // Skip type tokens (everything until the last element)
                 let body = dl.last().cloned().unwrap_or(LispVal::Nil);
                 clean.push(body);

@@ -268,7 +268,7 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
 
             if type_matches(val, &t) {
                 // Check custom predicate if present
-                if let RlType::Predicate(fn_name) = &t {
+                if let RlType::Predicate(_fn_name) = &t {
                     // Custom predicates need eval — return a marker
                     // The caller should use check-pred for custom predicates
                     return Ok(Some(val.clone()));
@@ -314,7 +314,7 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             let type_desc = args.first().ok_or("valid-type?: need type descriptor")?;
             match parse_type(type_desc) {
                 Ok(t) => Ok(Some(LispVal::Str(format_type(&t)))),
-                Err(e) => Ok(Some(LispVal::Bool(false))),
+                Err(_e) => Ok(Some(LispVal::Bool(false))),
             }
         }
 
@@ -322,12 +322,12 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             // (infer-type f) — probe a pure lambda with sample inputs to infer its type
             let func = args.first().ok_or("infer-type: need a function")?;
             match func {
-                LispVal::Lambda { pure_type: Some(ref pt), params, .. } => {
+                LispVal::Lambda { pure_type: Some(ref pt), .. } => {
                     // Already has a pure type — return it
                     let sig = pt.clone();
                     Ok(Some(LispVal::Str(sig)))
                 }
-                LispVal::Lambda { params, .. } => {
+                LispVal::Lambda { .. } => {
                     // Probe it
                     let mut probe_env = Env::new();
                     let mut probe_state = EvalState::new();

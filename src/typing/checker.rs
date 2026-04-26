@@ -55,6 +55,7 @@ impl Subst {
         }
     }
 
+    #[allow(dead_code)]
     fn apply_scheme(&self, scheme: &Scheme) -> Scheme {
         // Don't substitute bound vars
         Scheme {
@@ -126,15 +127,6 @@ fn unify(t1: &TcType, t2: &TcType) -> UnifyResult {
             Ok(s.compose(subst))
         }
 
-        // Any matches everything
-        (TcType::Con(TcCon::Any), _) | (_, TcType::Con(TcCon::Any)) => Ok(Subst::new()),
-
-        // Num unifies with Int or Float
-        (TcType::Con(TcCon::Num), TcType::Con(TcCon::Int))
-        | (TcType::Con(TcCon::Int), TcType::Con(TcCon::Num))
-        | (TcType::Con(TcCon::Num), TcType::Con(TcCon::Float))
-        | (TcType::Con(TcCon::Float), TcType::Con(TcCon::Num)) => Ok(Subst::new()),
-
         _ => Err(format!("type mismatch: {} ≠ {}", t1, t2)),
     }
 }
@@ -154,7 +146,7 @@ fn unify_con(c1: &TcCon, c2: &TcCon) -> UnifyResult {
         (TcCon::List(a), TcCon::List(b)) => unify(a, b),
         (TcCon::Map(k1, v1), TcCon::Map(k2, v2)) => {
             let s1 = unify(k1, k2)?;
-            let k2_sub = apply_subst(&s1, k2);
+            let _k2_sub = apply_subst(&s1, k2);
             let v1_sub = apply_subst(&s1, v1);
             let v2_sub = apply_subst(&s1, v2);
             let s2 = unify(&v1_sub, &v2_sub)?;
@@ -532,7 +524,7 @@ fn check_value_define(parts: &[LispVal]) -> Result<PureCheckResult, String> {
         return Err("pure define: missing value".into());
     };
 
-    let mut env = TcEnv::with_pure_builtins();
+    let env = TcEnv::with_pure_builtins();
     let mut supply = VarSupply::new();
     let mut subst = Subst::new();
 

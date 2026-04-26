@@ -17,6 +17,7 @@ pub enum TcType {
     /// Function type: argument types → return type.
     Arrow(Vec<TcType>, Box<TcType>),
     /// forall-quantified type (polymorphic).
+    #[allow(dead_code)]
     Forall(Vec<TVarId>, Box<TcType>),
 }
 

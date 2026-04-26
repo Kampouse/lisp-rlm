@@ -567,7 +567,7 @@ impl std::fmt::Display for LispVal {
                     m.iter().map(|(k, v)| format!("\"{}\": {}", k, v)).collect();
                 write!(f, "{{{}}}", entries.join(", "))
             }
-            LispVal::Memoized { func, cache } => {
+            LispVal::Memoized { func: _, cache } => {
                 let cache_len = cache.read().map(|c| c.len()).unwrap_or(0);
                 write!(f, "#<memoized {} entries>", cache_len)
             }

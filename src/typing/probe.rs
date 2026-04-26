@@ -54,7 +54,7 @@ pub fn probe_function(
     env: &mut Env,
     state: &mut EvalState,
 ) -> Result<(Vec<String>, String), String> {
-    let (params, _rest, body, closed_env) = match func {
+    let (params, _rest, _body, _closed_env) = match func {
         LispVal::Lambda { params, rest_param, body, closed_env, .. } => {
             (params.clone(), rest_param.clone(), body.clone(), closed_env.clone())
         }

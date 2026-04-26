@@ -68,7 +68,7 @@ CPS (continuation-passing style) iterative evaluator with explicit `Cont` stack.
 
 ## Test Suite Status
 
-- 268 tests, 0 failed, 2 ignored (doc tests), 0 warnings from source
+- 454 tests, 0 failed, 1 ignored (doc test), 0 warnings
 - All fib/fibonacci tests pass (fib(15) = 610) — no stack overflow
 - All budget tests pass — infinite loops caught by budget, not stack overflow
 

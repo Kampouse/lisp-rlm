@@ -133,7 +133,7 @@ pub fn is_builtin_name(name: &str) -> bool {
             | "eqv?" | "boolean=?"
             | "string-length" | "string-append" | "substring" | "string-contains"
             | "string-upcase" | "string-downcase" | "string-copy"
-            | "string=?" | "string<?" | "string>?" | "string<=?" | "string>=?"
+            | "string=?" | "string>?" | "string<=?" | "string>=?"
             | "exact-integer-sqrt" | "exp" | "rational?"
             | "string-ci=?" | "string-ci<?" | "string-ci>?" | "string-ci<=?" | "string-ci>=?"
             | "string-foldcase" | "string-ref" | "string-replace"

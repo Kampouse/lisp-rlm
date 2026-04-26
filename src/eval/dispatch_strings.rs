@@ -213,19 +213,7 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
                 })
                 .unwrap_or(false),
         ))),
-        "string<?" => Ok(Some(LispVal::Bool(
-            args.get(0)
-                .and_then(|a| {
-                    args.get(1).map(|b| {
-                        if let (LispVal::Str(a), LispVal::Str(b)) = (a, b) {
-                            a < b
-                        } else {
-                            false
-                        }
-                    })
-                })
-                .unwrap_or(false),
-        ))),
+        // Note: string<? handled above (line 171)
         "string>?" => Ok(Some(LispVal::Bool(
             args.get(0)
                 .and_then(|a| {
