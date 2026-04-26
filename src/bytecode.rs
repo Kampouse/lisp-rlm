@@ -105,8 +105,8 @@ pub enum Op {
     LoadCaptured(usize),
     /// Call captured function from cl.captured[idx] with N args (no slot copy)
     CallCapturedRef(usize, usize),
-    /// Sort list with comparator: pop comparator from captured[idx], pop list from stack, push sorted list
-    SortWithComparator(usize),
+    /// Push a pre-compiled closure from cl.closures[idx] onto the stack
+    PushClosure(usize),
 }
 
 /// Compiled loop representation.
@@ -132,6 +132,8 @@ struct LoopCompiler {
     code: Vec<Op>,
     /// Outer env variables captured at compile time (name, value)
     captured: Vec<(String, LispVal)>,
+    /// Pre-compiled inner lambdas
+    closures: Vec<CompiledLambda>,
 }
 
 impl LoopCompiler {
@@ -140,6 +142,7 @@ impl LoopCompiler {
             slot_map: slot_names,
             code: Vec::new(),
             captured: Vec::new(),
+            closures: Vec::new(),
         }
     }
 
@@ -535,19 +538,61 @@ impl LoopCompiler {
                             self.code.push(Op::LoadSlot(slot)); // set! returns the new value
                             true
                         }
-                        "sort" if list.len() == 3 => {
-                            // (sort list-expr comparator)
-                            if !self.compile_expr(&list[1], outer_env) { return false; }
-                            // Check if comparator is a captured symbol
-                            if let Some(LispVal::Sym(ref name)) = list.get(2) {
-                                if let Some(idx) = self.captured_idx(name) {
-                                    self.code.push(Op::SortWithComparator(idx));
-                                    return true;
+                        "lambda" => {
+                            // (lambda (params...) body...)
+                            if list.len() < 3 { return false; }
+                            let params: Vec<String> = match list.get(1) {
+                                Some(LispVal::List(ps)) => ps.iter().filter_map(|p| match p {
+                                    LispVal::Sym(s) => Some(s.clone()),
+                                    _ => None,
+                                }).collect(),
+                                Some(LispVal::Sym(s)) => vec![s.clone()],
+                                _ => return false,
+                            };
+                            if params.is_empty() { return false; }
+                            // Compile lambda body in a new compiler
+                            let mut inner = LoopCompiler::new(params.clone());
+                            let body = &list[2..];
+                            let mut ok = true;
+                            for expr in body {
+                                if !inner.compile_expr(expr, outer_env) {
+                                    ok = false;
+                                    break;
                                 }
                             }
-                            // Comparator is an expression — compile it and use SortByStack
-                            self.code.pop(); // remove compiled list from stack
-                            // Can't handle arbitrary comparator expression yet
+                            if !ok { return false; }
+                            // Compute total_slots
+                            let base = params.len();
+                            let mut max_slot = base;
+                            for op in &inner.code {
+                                match op {
+                                    Op::LoadSlot(s) | Op::StoreSlot(s) => {
+                                        if *s >= max_slot { max_slot = *s + 1; }
+                                    }
+                                    Op::SlotAddImm(s, _) | Op::SlotMulImm(s, _) => {
+                                        if *s >= max_slot { max_slot = *s + 1; }
+                                    }
+                                    Op::CallCaptured(s, _) => {
+                                        if *s >= max_slot { max_slot = *s + 1; }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            let idx = self.closures.len();
+                            self.closures.push(CompiledLambda {
+                                num_param_slots: params.len(),
+                                total_slots: max_slot,
+                                code: inner.code,
+                                captured: inner.captured,
+                                closures: inner.closures,
+                            });
+                            self.code.push(Op::PushClosure(idx));
+                            true
+                        }
+                        "map" | "filter" | "reduce" | "find" | "some" | "every"
+                        | "partition" | "fold-left" | "fold-right" | "for-each"
+                        | "sort" => {
+                            // HOFs need env/state to call lambda args — can't compile as BuiltinCall
                             false
                         }
                         _ => {
@@ -1205,7 +1250,7 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
                 stack.push(result);
                 pc += 1;
             }
-            Op::CallCaptured(_, _) | Op::CallCapturedRef(_, _) | Op::SortWithComparator(_) => {
+            Op::CallCaptured(_, _) | Op::CallCapturedRef(_, _) | Op::PushClosure(_) => {
                 return Err("loop VM: CallCaptured not supported in loop body".into());
             }
         }
@@ -1676,6 +1721,8 @@ pub struct CompiledLambda {
     pub total_slots: usize,
     pub code: Vec<Op>,
     pub captured: Vec<(String, LispVal)>,
+    /// Pre-compiled inner lambdas (closures). Indexed by PushClosure(N).
+    pub closures: Vec<CompiledLambda>,
 }
 
 /// Try to compile a lambda body for fast inline evaluation.
@@ -1725,6 +1772,7 @@ pub fn try_compile_lambda(
         total_slots: max_slot,
         code,
         captured: compiler.captured,
+        closures: compiler.closures,
     })
 }
 
@@ -1978,45 +2026,24 @@ pub fn run_compiled_lambda(
                 }
                 pc += 1;
             }
-            Op::SortWithComparator(captured_idx) => {
-                // Pop list from stack, get comparator from cl.captured
-                let list_val = stack.pop().unwrap_or(LispVal::Nil);
-                let comparator = cl.captured[*captured_idx].1.clone();
-                let mut vals = match list_val {
-                    LispVal::List(l) => l,
-                    LispVal::Nil => vec![],
-                    _ => {
-                        stack.push(LispVal::Nil);
-                        pc += 1;
-                        continue;
+            Op::PushClosure(idx) => {
+                let inner = &cl.closures[*idx];
+                let closed_env = {
+                    let mut map = im::HashMap::new();
+                    for (name, val) in &inner.captured {
+                        map.insert(name.clone(), val.clone());
                     }
+                    std::sync::Arc::new(std::sync::RwLock::new(map))
                 };
-                // Fast path: comparator has compiled bytecode
-                if let LispVal::Lambda { rest_param: None, compiled: Some(ref cl2), .. } = comparator {
-                    let comp_cl = cl2.clone();
-                    vals.sort_by(|a, b| {
-                        match run_compiled_lambda(&comp_cl, &[a.clone(), b.clone()], outer_env, state) {
-                            Ok(LispVal::Bool(true)) => std::cmp::Ordering::Less,
-                            Ok(LispVal::Bool(false)) => std::cmp::Ordering::Greater,
-                            Ok(LispVal::Num(n)) if n > 0 => std::cmp::Ordering::Less,
-                            Ok(LispVal::Num(n)) if n < 0 => std::cmp::Ordering::Greater,
-                            _ => std::cmp::Ordering::Equal,
-                        }
-                    });
-                } else {
-                    let func = comparator.clone();
-                    vals.sort_by(|a, b| {
-                        let result = crate::eval::call_val(&func, &[a.clone(), b.clone()], &mut outer_env.clone(), state);
-                        match result {
-                            Ok(crate::eval::continuation::EvalResult::Value(LispVal::Bool(true))) => std::cmp::Ordering::Less,
-                            Ok(crate::eval::continuation::EvalResult::Value(LispVal::Bool(false))) => std::cmp::Ordering::Greater,
-                            Ok(crate::eval::continuation::EvalResult::Value(LispVal::Num(n))) if n > 0 => std::cmp::Ordering::Less,
-                            Ok(crate::eval::continuation::EvalResult::Value(LispVal::Num(n))) if n < 0 => std::cmp::Ordering::Greater,
-                            _ => std::cmp::Ordering::Equal,
-                        }
-                    });
-                }
-                stack.push(LispVal::List(vals));
+                // Build a dummy body (Nil) — compiled path never reads it
+                stack.push(LispVal::Lambda {
+                    params: Vec::new(), // params baked into CompiledLambda
+                    rest_param: None,
+                    body: Box::new(LispVal::Nil),
+                    closed_env,
+                    pure_type: None,
+                    compiled: Some(Box::new(inner.clone())),
+                });
                 pc += 1;
             }
             Op::Return => {

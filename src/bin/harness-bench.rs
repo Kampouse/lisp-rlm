@@ -78,6 +78,8 @@ fn main() {
     // Setup
     let mut env = Env::new();
     let mut state = EvalState::new();
+    state.eval_budget = 100_000_000; // 100M for benchmarks
+    state.eval_budget = 0; // unlimited for benchmarks
     let exprs = parse_all(harness_code).unwrap();
     for expr in &exprs {
         lisp_eval(expr, &mut env, &mut state).unwrap();
@@ -99,7 +101,7 @@ fn main() {
 
     // --- Benchmark 1: score-intention (single intent) ---
     {
-        let n = 10000;
+        let n = 1000;
         let prog = r#"(score-intention (dict "id" "bench" "type" "completable" "cost" 5 "deadline" 1))"#;
         let exprs = parse_all(prog).unwrap();
         let start = std::time::Instant::now();
@@ -112,7 +114,7 @@ fn main() {
 
     // --- Benchmark 2: get-default in isolation ---
     {
-        let n = 100000;
+        let n = 10000;
         let prog = r#"(get-default (dict "a" 1 "b" 2 "c" 3) "b" 99)"#;
         let exprs = parse_all(prog).unwrap();
         let start = std::time::Instant::now();
@@ -153,7 +155,7 @@ fn main() {
 
     // --- Benchmark 5: map HOF fast path (10-elem list) ---
     {
-        let n = 10000;
+        let n = 1000;
         let prog = r#"(map (lambda (x) (+ x 1)) (list 1 2 3 4 5 6 7 8 9 10))"#;
         let exprs = parse_all(prog).unwrap();
         let start = std::time::Instant::now();
@@ -167,7 +169,7 @@ fn main() {
 
     // --- Benchmark 6: filter HOF fast path ---
     {
-        let n = 10000;
+        let n = 1000;
         let prog = r#"(filter (lambda (x) (> x 5)) (list 1 2 3 4 5 6 7 8 9 10))"#;
         let exprs = parse_all(prog).unwrap();
         let start = std::time::Instant::now();
@@ -180,7 +182,7 @@ fn main() {
 
     // --- Benchmark 7: for-each HOF fast path ---
     {
-        let n = 10000;
+        let n = 1000;
         let prog = r#"(for-each (lambda (x) (+ x 1)) (list 1 2 3 4 5 6 7 8 9 10))"#;
         let exprs = parse_all(prog).unwrap();
         let start = std::time::Instant::now();
@@ -193,7 +195,7 @@ fn main() {
 
     // --- Benchmark 8: dict/get raw ---
     {
-        let n = 100000;
+        let n = 10000;
         let prog = r#"(dict/get (dict "x" 42) "x")"#;
         let exprs = parse_all(prog).unwrap();
         let start = std::time::Instant::now();
@@ -206,7 +208,7 @@ fn main() {
 
     // --- Benchmark 9: urgency alone ---
     {
-        let n = 10000;
+        let n = 1000;
         let prog = r#"(urgency (dict "id" "bench" "deadline" 1 "cost" 5))"#;
         let exprs = parse_all(prog).unwrap();
         let start = std::time::Instant::now();
@@ -219,7 +221,7 @@ fn main() {
 
     // --- Benchmark 10: cost-efficiency alone ---
     {
-        let n = 10000;
+        let n = 1000;
         let prog = r#"(cost-efficiency (dict "id" "bench" "cost" 5))"#;
         let exprs = parse_all(prog).unwrap();
         let start = std::time::Instant::now();
@@ -232,7 +234,7 @@ fn main() {
 
     // --- Benchmark 11: handle-result ---
     {
-        let n = 10000;
+        let n = 1000;
         let prog = r#"(handle-result (dict "id" "bench" "type" "one-shot" "cost" 5) "ok")"#;
         let exprs = parse_all(prog).unwrap();
         let start = std::time::Instant::now();
