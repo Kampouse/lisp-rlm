@@ -2313,7 +2313,7 @@ pub fn run_compiled_lambda(
                 pc += 1;
             }
             Op::CallCaptured(slot, n_args) => {
-                let func = slots[*slot].clone();
+                let slot_ref = &slots[*slot];
                 let mut cargs: Vec<LispVal> = Vec::with_capacity(*n_args);
                 for _ in 0..*n_args {
                     cargs.push(stack.pop().unwrap_or(LispVal::Nil));
@@ -2323,13 +2323,14 @@ pub fn run_compiled_lambda(
                     rest_param: None,
                     compiled: Some(ref cl2),
                     ..
-                } = func
+                } = slot_ref
                 {
                     match run_compiled_lambda(cl2, &cargs, outer_env, state) {
                         Ok(v) => {
                             stack.push(v);
                         }
                         Err(_) => {
+                            let func = slot_ref.clone();
                             let mut env_clone = outer_env.clone();
                             match crate::eval::call_val(&func, &cargs, &mut env_clone, state)? {
                                 crate::eval::continuation::EvalResult::Value(v) => {
@@ -2350,6 +2351,7 @@ pub fn run_compiled_lambda(
                         }
                     }
                 } else {
+                    let func = slot_ref.clone();
                     let mut env_clone = outer_env.clone();
                     match crate::eval::call_val(&func, &cargs, &mut env_clone, state)? {
                         crate::eval::continuation::EvalResult::Value(v) => {
@@ -2367,7 +2369,7 @@ pub fn run_compiled_lambda(
                 pc += 1;
             }
             Op::CallCapturedRef(idx, n_args) => {
-                let func = cl.captured[*idx].1.clone();
+                let captured_ref = &cl.captured[*idx].1;
                 let mut cargs: Vec<LispVal> = Vec::with_capacity(*n_args);
                 for _ in 0..*n_args {
                     cargs.push(stack.pop().unwrap_or(LispVal::Nil));
@@ -2377,13 +2379,14 @@ pub fn run_compiled_lambda(
                     rest_param: None,
                     compiled: Some(ref cl2),
                     ..
-                } = func
+                } = captured_ref
                 {
                     match run_compiled_lambda(cl2, &cargs, outer_env, state) {
                         Ok(v) => {
                             stack.push(v);
                         }
                         Err(_) => {
+                            let func = captured_ref.clone();
                             let mut env_clone = outer_env.clone();
                             match crate::eval::call_val(&func, &cargs, &mut env_clone, state)? {
                                 crate::eval::continuation::EvalResult::Value(v) => {
@@ -2404,6 +2407,7 @@ pub fn run_compiled_lambda(
                         }
                     }
                 } else {
+                    let func = captured_ref.clone();
                     let mut env_clone = outer_env.clone();
                     match crate::eval::call_val(&func, &cargs, &mut env_clone, state)? {
                         crate::eval::continuation::EvalResult::Value(v) => {
