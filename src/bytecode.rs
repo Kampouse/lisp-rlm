@@ -158,6 +158,11 @@ struct LoopCompiler {
     self_name: Option<String>,
     /// Active loops: (jump_target_pc, var_slot_indices)
     loop_stack: Vec<(usize, Vec<usize>)>,
+    /// Outer function's slot_map — for closure capture of parent parameters/let-bindings.
+    /// When compiling an inner lambda, this tells us which parent slots to capture at runtime.
+    parent_slots: Vec<String>,
+    /// Runtime captures: (name, outer_slot_index) — read from caller's slots at PushClosure time
+    runtime_captures: Vec<(String, usize)>,
 }
 
 impl LoopCompiler {
@@ -169,6 +174,8 @@ impl LoopCompiler {
             closures: Vec::new(),
             self_name: None,
             loop_stack: Vec::new(),
+            parent_slots: Vec::new(),
+            runtime_captures: Vec::new(),
         }
     }
 
@@ -192,6 +199,19 @@ impl LoopCompiler {
         }
         if let Some(val) = outer_env.get(name) {
             self.captured.push((name.to_string(), val.clone()));
+            return true;
+        }
+        // Check if name is a slot in the parent (outer function's parameters/let-bindings)
+        if let Some(parent_slot) = self.parent_slots.iter().position(|s| s == name) {
+            // Record as a runtime capture — will be read from caller's slots at PushClosure time
+            if self.runtime_captures.iter().all(|(n, _)| n != name) {
+                self.runtime_captures.push((name.to_string(), parent_slot));
+            }
+            // Also add to captured list with a Nil placeholder so captured_idx() can find it.
+            // The real value will be filled in at PushClosure time from the runtime slots.
+            if self.captured_idx(name).is_none() {
+                self.captured.push((name.to_string(), LispVal::Nil));
+            }
             return true;
         }
         false
@@ -827,6 +847,7 @@ impl LoopCompiler {
                             }
                             // Compile lambda body in a new compiler
                             let mut inner = LoopCompiler::new(params.clone());
+                            inner.parent_slots = self.slot_map.clone();
                             let body = &list[2..];
                             let mut ok = true;
                             for expr in body {
@@ -869,6 +890,7 @@ impl LoopCompiler {
                                 code: inner.code,
                                 captured: inner.captured,
                                 closures: inner.closures,
+                                runtime_captures: inner.runtime_captures,
                             });
                             self.code.push(Op::PushClosure(idx));
                             true
@@ -2322,6 +2344,10 @@ pub struct CompiledLambda {
     pub captured: Vec<(String, LispVal)>,
     /// Pre-compiled inner lambdas (closures). Indexed by PushClosure(N).
     pub closures: Vec<CompiledLambda>,
+    /// Outer slot indices that must be captured at runtime (from caller's slots array).
+    /// Paired with names in order — at PushClosure time, read slots[i] for each entry
+    /// and add to the closure's captured list.
+    pub runtime_captures: Vec<(String, usize)>,
 }
 
 /// Try to compile a lambda body for fast inline evaluation.
@@ -2383,6 +2409,7 @@ pub fn try_compile_lambda(
         code,
         captured: compiler.captured,
         closures: compiler.closures,
+        runtime_captures: compiler.runtime_captures,
     })
 }
 
@@ -3006,16 +3033,55 @@ pub fn run_compiled_lambda(
                     for (name, val) in &inner.captured {
                         map.insert(name.clone(), val.clone());
                     }
+                    // Runtime captures: read values from current slots array
+                    for (name, slot_idx) in &inner.runtime_captures {
+                        let val = if *slot_idx < slots.len() {
+                            slots[*slot_idx].clone()
+                        } else {
+                            LispVal::Nil
+                        };
+                        map.insert(name.clone(), val);
+                    }
                     std::sync::Arc::new(std::sync::RwLock::new(map))
                 };
-                // Build a dummy body (Nil) — compiled path never reads it
+                // Build the inner lambda's captured list for the compiled path
+                let mut inner_cloned = inner.clone();
+                // Merge runtime captures into captured list so the compiled inner lambda
+                // can find them via captured_idx
+                for (name, slot_idx) in &inner.runtime_captures {
+                    let val = if *slot_idx < slots.len() {
+                        slots[*slot_idx].clone()
+                    } else {
+                        LispVal::Nil
+                    };
+                    if inner_cloned.captured.iter().all(|(n, _)| n != name) {
+                        inner_cloned.captured.push((name.clone(), val));
+                    } else {
+                        // Update existing captured value with runtime value
+                        if let Some(entry) =
+                            inner_cloned.captured.iter_mut().find(|(n, _)| n == name)
+                        {
+                            entry.1 = val;
+                        }
+                    }
+                }
+                // Recompute total_slots to account for any new captured entries
+                let captured_start = inner_cloned.num_param_slots;
+                let needed = captured_start + inner_cloned.captured.len();
+                if needed > inner_cloned.total_slots {
+                    inner_cloned.total_slots = needed;
+                }
+                // params from the closure's CompiledLambda
+                let param_count = inner_cloned.num_param_slots;
+                let param_names: Vec<String> =
+                    (0..param_count).map(|i| format!("p{}", i)).collect();
                 stack.push(LispVal::Lambda {
-                    params: Vec::new(), // params baked into CompiledLambda
+                    params: param_names,
                     rest_param: None,
                     body: Box::new(LispVal::Nil),
                     closed_env,
                     pure_type: None,
-                    compiled: Some(Box::new(inner.clone())),
+                    compiled: Some(Box::new(inner_cloned)),
                     memo_cache: None,
                 });
                 pc += 1;

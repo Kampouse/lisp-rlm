@@ -1504,7 +1504,7 @@ pub fn handle_cont(
                     pure_type,
                     closed_env,
                     ..
-                } => {
+                } if !matches!(body.as_ref(), LispVal::Nil) => {
                     // Recompile with the function name for CallSelf support
                     let new_compiled = crate::bytecode::try_compile_lambda(
                         params,
