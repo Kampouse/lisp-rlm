@@ -25,7 +25,7 @@
 //! - [`bytecode`] — compiled fast path for higher-order list operations
 //! - [`helpers`] — utility predicates (`is_truthy`, `is_builtin_name`)
 
-mod bytecode;
+pub mod bytecode;
 mod eval;
 mod helpers;
 mod parser;

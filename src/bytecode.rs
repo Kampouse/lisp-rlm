@@ -22,7 +22,7 @@ use crate::types::{Env, EvalState, LispVal};
 /// Bytecode opcodes for the loop VM.
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
-enum Op {
+pub enum Op {
     /// Push binding slot value onto stack
     LoadSlot(usize),
     /// Push a literal i64
@@ -1600,10 +1600,10 @@ pub fn eval_builtin(name: &str, args: &[LispVal]) -> Result<LispVal, String> {
 /// Used for fast-path map/filter/reduce — avoids env push/pop per element.
 #[derive(Clone, Debug)]
 pub struct CompiledLambda {
-    num_param_slots: usize,
-    total_slots: usize,
-    code: Vec<Op>,
-    captured: Vec<(String, LispVal)>,
+    pub num_param_slots: usize,
+    pub total_slots: usize,
+    pub code: Vec<Op>,
+    pub captured: Vec<(String, LispVal)>,
 }
 
 /// Try to compile a lambda body for fast inline evaluation.
