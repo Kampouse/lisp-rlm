@@ -102,6 +102,30 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                         _ => Err("define: need symbol".into()),
                     },
 
+                    // ── pure ──
+                    "pure" => {
+                        // Type-check a pure define, then evaluate a cleaned version
+                        let args = &list[1..];
+                        match crate::typing::check_pure_define(args) {
+                            Ok(result) => {
+                                eprintln!(
+                                    "[pure] {} :: {} ✓",
+                                    result.name, result.inferred_type
+                                );
+                                // Build a clean define without the :: type annotation
+                                let define_list = match list.get(1) {
+                                    Some(LispVal::List(dl)) => dl.clone(),
+                                    other => return Err(format!("pure: expected define form, got {:?}", other)),
+                                };
+                                let clean = strip_type_annotation(&define_list);
+                                eval_step(&LispVal::List(clean), env, state)
+                            }
+                            Err(type_err) => {
+                                Err(format!("pure type error: {}", type_err))
+                            }
+                        }
+                    }
+
                     // ── set! ──
                     "set!" => {
                         let name = match list.get(1) {
@@ -1930,4 +1954,38 @@ fn parse_contract_sig(sig: &LispVal) -> Result<(Vec<String>, Vec<RlType>, Option
     };
 
     Ok((params, param_types, ret_type))
+}
+
+/// Strip `:: type-annotation` from a define form, returning a clean list.
+/// Input: [define, (f x y), ::, int, ->, int, ->, int, (body)]
+/// Output: [define, (f x y), (body)]
+fn strip_type_annotation(dl: &[LispVal]) -> Vec<LispVal> {
+    let mut clean = vec![dl[0].clone()]; // "define"
+    
+    if dl.len() < 2 {
+        return dl.to_vec();
+    }
+    
+    clean.push(dl[1].clone()); // name or (name params...)
+    
+    // Find :: and skip until body
+    let mut i = 2;
+    while i < dl.len() {
+        if let LispVal::Sym(s) = &dl[i] {
+            if s == "::" {
+                // Skip :: and all following type tokens until we hit the body
+                // The body is the last element
+                i += 1;
+                // Skip type tokens (everything until the last element)
+                let body = dl.last().cloned().unwrap_or(LispVal::Nil);
+                clean.push(body);
+                return clean;
+            }
+        }
+        // If no :: found, keep as-is
+        clean.push(dl[i].clone());
+        i += 1;
+    }
+    
+    clean
 }

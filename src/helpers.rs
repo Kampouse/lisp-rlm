@@ -149,6 +149,7 @@ pub fn is_builtin_name(name: &str) -> bool {
             | "now" | "elapsed" | "sleep"
             | "save-state" | "load-state"
             | "doc"
+            | "pure"
     )
 }
 

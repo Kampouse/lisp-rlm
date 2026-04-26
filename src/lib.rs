@@ -30,6 +30,7 @@ mod eval;
 mod helpers;
 mod parser;
 mod types;
+mod typing;
 
 pub use bytecode::{exec_compiled_loop, run_compiled_lambda, try_compile_lambda, try_compile_loop};
 pub use eval::llm_provider::{GenericProvider, LlmProvider, LlmResponse};
