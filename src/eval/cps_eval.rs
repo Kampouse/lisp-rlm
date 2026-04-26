@@ -291,6 +291,85 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                         })
                     }
 
+                    // ── delay/force (lazy evaluation) ──
+                    "delay" => {
+                        // (delay expr) → create a promise (thunk)
+                        let body = list.get(1).ok_or("delay: need expression")?;
+                        Ok(Step::Done(LispVal::List(vec![
+                            LispVal::Sym("promise".into()),
+                            body.clone(),
+                            LispVal::Bool(false), // not yet forced
+                        ])))
+                    }
+
+                    // ── define-values ──
+                    "define-values" => {
+                        // (define-values (a b c) expr)
+                        let names = match list.get(1) {
+                            Some(LispVal::List(n)) => n.iter().filter_map(|v| {
+                                if let LispVal::Sym(s) = v { Some(s.clone()) } else { None }
+                            }).collect::<Vec<_>>(),
+                            _ => return Err("define-values: need name list".into()),
+                        };
+                        let expr = list.get(2).ok_or("define-values: need expression")?;
+                        // Eval expr, then bind names to results
+                        Ok(Step::EvalNext {
+                            expr: expr.clone(),
+                            conts: vec![Cont::DefineValues { names }],
+                            new_env: None,
+                        })
+                    }
+
+                    // ── let-values ──
+                    "let-values" | "let*-values" => {
+                        // (let-values (((a b) expr)) body...)
+                        // Simplified: eval each binding, destructure, then eval body
+                        let bindings = match list.get(1) {
+                            Some(LispVal::List(b)) => b,
+                            _ => return Err("let-values: need bindings".into()),
+                        };
+                        let body_exprs: Vec<LispVal> = list[2..].to_vec();
+                        // Collect all names and exprs
+                        let mut all_names: Vec<Vec<String>> = Vec::new();
+                        let mut all_exprs: Vec<LispVal> = Vec::new();
+                        for b in bindings {
+                            if let LispVal::List(pair) = b {
+                                if pair.len() == 2 {
+                                    let names = match &pair[0] {
+                                        LispVal::List(n) => n.iter().filter_map(|v| {
+                                            if let LispVal::Sym(s) = v { Some(s.clone()) } else { None }
+                                        }).collect(),
+                                        LispVal::Sym(s) => vec![s.clone()],
+                                        _ => vec![],
+                                    };
+                                    all_names.push(names);
+                                    all_exprs.push(pair[1].clone());
+                                }
+                            }
+                        }
+                        // Eval each expr, bind results, then body
+                        if all_exprs.is_empty() {
+                            return Ok(Step::EvalNext {
+                                expr: LispVal::List(
+                                    vec![LispVal::Sym("begin".into())].into_iter().chain(body_exprs).collect()
+                                ),
+                                conts: vec![],
+                                new_env: None,
+                            });
+                        }
+                        // Desugar to: eval first expr, bind, then let-values for rest
+                        Ok(Step::EvalNext {
+                            expr: all_exprs[0].clone(),
+                            conts: vec![Cont::LetValuesBind {
+                                names: all_names,
+                                remaining_exprs: all_exprs[1..].to_vec(),
+                                body_exprs,
+                                current_idx: 0,
+                            }],
+                            new_env: None,
+                        })
+                    }
+
                     // ── do ──
                     "do" => {
                         // (do ((var init step) ...) (test result...) body...)
@@ -981,9 +1060,12 @@ fn eval_cond_clauses(clauses: Vec<LispVal>, _env: &mut Env) -> Result<Step, Stri
             // Check for else clause
             if let LispVal::Sym(kw) = &parts[0] {
                 if kw == "else" {
-                    if let Some(body) = parts.get(1) {
+                    if parts.len() > 1 {
+                        let body: Vec<LispVal> = parts[1..].to_vec();
                         return Ok(Step::EvalNext {
-                            expr: body.clone(),
+                            expr: LispVal::List(
+                                vec![LispVal::Sym("begin".into())].into_iter().chain(body).collect()
+                            ),
                             conts: vec![],
                             new_env: None,
                         });
@@ -991,15 +1073,21 @@ fn eval_cond_clauses(clauses: Vec<LispVal>, _env: &mut Env) -> Result<Step, Stri
                     return Ok(Step::Done(LispVal::Nil));
                 }
             }
-            // Evaluate test
+            // Check for (test => proc) form
+            let result_expr = if parts.len() >= 3 && matches!(&parts[1], LispVal::Sym(s) if s == "=>") {
+                Some(LispVal::List(vec![parts[2].clone(), LispVal::Sym("__cond_val__".into())]))
+            } else {
+                parts.get(1).cloned()
+            };
             let test_expr = parts[0].clone();
-            let result_expr = parts.get(1).cloned();
             let remaining: Vec<LispVal> = clauses[i + 1..].to_vec();
+            let has_arrow = parts.len() >= 3 && matches!(&parts[1], LispVal::Sym(s) if s == "=>");
             return Ok(Step::EvalNext {
                 expr: test_expr,
                 conts: vec![Cont::CondTest {
                     result_expr,
                     remaining,
+                    is_arrow: has_arrow,
                 }],
                 new_env: None,
             });
@@ -1075,14 +1163,21 @@ pub fn handle_cont(
         Cont::CondTest {
             result_expr,
             remaining,
+            is_arrow,
         } => {
             if is_truthy(&val) {
                 match result_expr {
-                    Some(e) => Ok(Step::EvalNext {
-                        expr: e,
-                        conts: vec![],
-                        new_env: None,
-                    }),
+                    Some(e) => {
+                        if is_arrow {
+                            // For (test => proc), bind __cond_val__ and eval (proc __cond_val__)
+                            env.push("__cond_val__".into(), val);
+                        }
+                        Ok(Step::EvalNext {
+                            expr: e,
+                            conts: vec![],
+                            new_env: None,
+                        })
+                    }
                     None => Ok(Step::Done(val)),
                 }
             } else if remaining.is_empty() {
@@ -1096,6 +1191,58 @@ pub fn handle_cont(
             env.push(name.clone(), val.clone());
             env.propagate_to_scope_snapshot(&name, &val);
             Ok(Step::Done(LispVal::Nil))
+        }
+
+        Cont::DefineValues { names } => {
+            // val is the result — if it's a list (from values), destructure
+            let vals: Vec<LispVal> = match &val {
+                LispVal::List(l) => l.clone(),
+                other => vec![other.clone()],
+            };
+            for (name, v) in names.iter().zip(vals.iter()) {
+                env.push(name.clone(), v.clone());
+            }
+            Ok(Step::Done(LispVal::Nil))
+        }
+
+        Cont::LetValuesBind {
+            names,
+            remaining_exprs,
+            body_exprs,
+            current_idx,
+        } => {
+            // Bind the current result to names[current_idx]
+            let vals: Vec<LispVal> = match &val {
+                LispVal::List(l) => l.clone(),
+                other => vec![other.clone()],
+            };
+            if let Some(current_names) = names.get(current_idx) {
+                for (name, v) in current_names.iter().zip(vals.iter()) {
+                    env.push(name.clone(), v.clone());
+                }
+            }
+            if remaining_exprs.is_empty() {
+                // All bound — eval body
+                Ok(Step::EvalNext {
+                    expr: LispVal::List(
+                        vec![LispVal::Sym("begin".into())].into_iter().chain(body_exprs.clone()).collect()
+                    ),
+                    conts: vec![],
+                    new_env: None,
+                })
+            } else {
+                // Eval next binding expression
+                Ok(Step::EvalNext {
+                    expr: remaining_exprs[0].clone(),
+                    conts: vec![Cont::LetValuesBind {
+                        names: names.clone(),
+                        remaining_exprs: remaining_exprs[1..].to_vec(),
+                        body_exprs: body_exprs.clone(),
+                        current_idx: current_idx + 1,
+                    }],
+                    new_env: None,
+                })
+            }
         }
 
         Cont::SetVal { name } => {

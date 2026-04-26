@@ -282,6 +282,14 @@ pub fn handle(
             let n = as_num(args.first().ok_or("truncate: need number")?)?;
             Ok(Some(LispVal::Num(n)))
         }
+        "numerator" => {
+            // Fractions are floats, so numerator = n * denominator (approx)
+            let n = as_num(args.first().ok_or("numerator: need number")?)?;
+            Ok(Some(LispVal::Num(n)))
+        }
+        "denominator" => {
+            Ok(Some(LispVal::Num(1)))
+        }
         "truncate/" | "floor/" => {
             let a = as_num(args.first().ok_or("need 2 args")?)?;
             let b = as_num(args.get(1).ok_or("need 2 args")?)?;

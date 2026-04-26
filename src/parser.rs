@@ -214,6 +214,17 @@ fn parse(tokens: &[String], pos: &mut usize) -> Result<LispVal, String> {
             if s == "-inf.0" || s == "-inf.0f" || s == "-inf" {
                 return Ok(LispVal::Float(f64::NEG_INFINITY));
             }
+            // Fraction literal: 3/4 → 0.75
+            if s.contains('/') && !s.starts_with('/') {
+                let parts: Vec<&str> = s.split('/').collect();
+                if parts.len() == 2 {
+                    if let (Ok(num), Ok(den)) = (parts[0].parse::<f64>(), parts[1].parse::<f64>()) {
+                        if den != 0.0 {
+                            return Ok(LispVal::Float(num / den));
+                        }
+                    }
+                }
+            }
             if let Ok(n) = s.parse::<i64>() {
                 Ok(LispVal::Num(n))
             } else if s.contains('.') {

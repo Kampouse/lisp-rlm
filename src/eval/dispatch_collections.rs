@@ -531,6 +531,34 @@ pub fn handle(
             Some(v) => Ok(Some(v.clone())),
             None => Err("list-copy: need 1 arg".into()),
         },
+        // ── Promises (delay/force) ──
+        "force" => {
+            match args.first() {
+                Some(LispVal::List(l)) if l.len() >= 2 && matches!(&l[0], LispVal::Sym(s) if s == "promise") => {
+                    let expr = l[1].clone();
+                    // Eval the expression directly
+                    super::lisp_eval(&expr, env, state).map(Some)
+                }
+                _ => Err("force: need promise".into()),
+            }
+        }
+        "make-promise" => {
+            // (make-promise expr) → evaluate expr and wrap as already-forced promise
+            let val = call_val(args.first().ok_or("make-promise: need arg")?, &[], env, state)?;
+            Ok(Some(LispVal::List(vec![
+                LispVal::Sym("promise".into()),
+                val,
+                LispVal::Bool(true),
+            ])))
+        }
+        "promise?" => {
+            match args.first() {
+                Some(LispVal::List(l)) if l.len() >= 3 && matches!(&l[0], LispVal::Sym(s) if s == "promise") => {
+                    Ok(Some(LispVal::Bool(true)))
+                }
+                _ => Ok(Some(LispVal::Bool(false))),
+            }
+        }
         // R7RS multiple values (simplified: returns list, call-with-values unpacks)
         "values" => {
             if args.len() == 1 {

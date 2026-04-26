@@ -46,6 +46,7 @@ pub enum Cont {
     CondTest {
         result_expr: Option<LispVal>,
         remaining: Vec<LispVal>,
+        is_arrow: bool,
     },
     DefineSet {
         name: String,
@@ -100,6 +101,15 @@ pub enum Cont {
     },
     CaseMatch {
         clauses: Vec<LispVal>,
+    },
+    DefineValues {
+        names: Vec<String>,
+    },
+    LetValuesBind {
+        names: Vec<Vec<String>>,
+        remaining_exprs: Vec<LispVal>,
+        body_exprs: Vec<LispVal>,
+        current_idx: usize,
     },
     /// Collect function arguments one at a time, then dispatch the call
     ArgCollect {

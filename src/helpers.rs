@@ -139,6 +139,8 @@ pub fn is_builtin_name(name: &str) -> bool {
             | "modulo" | "remainder" | "quotient" | "expt" | "atan"
             | "list-ref" | "list-tail" | "list-copy"
             | "values" | "call-with-values"
+            | "force" | "make-promise" | "promise?"
+            | "delay" | "define-values" | "let-values" | "let*-values"
             | "assv" | "assq" | "memv" | "memq"
             | "char->integer" | "integer->char"
             | "exact" | "inexact" | "exact->inexact" | "inexact->exact"
@@ -185,6 +187,7 @@ pub fn lisp_equal(a: &LispVal, b: &LispVal) -> bool {
 pub fn as_num(v: &LispVal) -> Result<i64, String> {
     match v {
         LispVal::Num(n) => Ok(*n),
+        LispVal::Float(f) => Ok(*f as i64),
         _ => Err(format!("expected number, got {}", v)),
     }
 }
@@ -217,7 +220,11 @@ pub fn do_arith(
     op_float: fn(f64, f64) -> f64,
 ) -> Result<LispVal, String> {
     if args.len() < 2 {
-        return Err("arith needs 2+ args".into());
+        // Allow 1-arg: (+ x) = x, (* x) = x, etc
+        if args.len() == 1 {
+            return Ok(args[0].clone());
+        }
+        return Err("arith needs 1+ args".into());
     }
     if any_float(args) {
         let init = as_float(&args[0])?;
