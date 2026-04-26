@@ -264,6 +264,8 @@ pub struct EvalState {
     pub call_trace: Vec<String>,
     /// Maximum call trace depth to keep (ring buffer).
     pub call_trace_max: usize,
+    /// Pending pure type annotation from `(pure ...)`. Consumed by the next lambda creation.
+    pub pending_pure_type: Option<String>,
 }
 
 impl EvalState {
@@ -281,6 +283,7 @@ impl EvalState {
             llm_provider: None,
             call_trace: Vec::new(),
             call_trace_max: 64,
+            pending_pure_type: None,
         }
     }
 
@@ -307,6 +310,7 @@ impl EvalState {
             llm_provider: provider,
             call_trace: Vec::new(),
             call_trace_max: self.call_trace_max,
+            pending_pure_type: None,
         }
     }
 
@@ -372,6 +376,7 @@ impl Clone for EvalState {
             rlm_iteration: self.rlm_iteration,
             llm_provider: None, // providers are not cloned
             call_trace: self.call_trace.clone(),
+            pending_pure_type: None,  // Don't propagate pure type to forks
             call_trace_max: self.call_trace_max,
         }
     }
@@ -452,6 +457,8 @@ pub enum LispVal {
         /// Captured lexical environment — `Rc` so cloning a Lambda is O(1)
         /// instead of exponentially expensive when closures capture other closures.
         closed_env: std::sync::Arc<std::sync::RwLock<im::HashMap<String, LispVal>>>,
+        /// Inferred type from `(pure ...)` type checker. `None` for regular lambdas.
+        pure_type: Option<String>,
     },
     /// case-lambda: dispatches based on arg count
     CaseLambda {

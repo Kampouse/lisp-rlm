@@ -1778,6 +1778,7 @@ DO NOT wrap code in markdown fences. DO NOT add explanations."#;
         rest_param,
         body,
         closed_env,
+        ..
     } = head
     {
         apply_lambda(params, &rest_param, body, closed_env, &args, env, state)
@@ -1800,6 +1801,7 @@ pub fn call_val(
             rest_param,
             body,
             closed_env,
+            ..
         } => apply_lambda(params, rest_param, body, closed_env, args, env, state),
         LispVal::Macro {
             params,
@@ -1952,7 +1954,7 @@ pub fn call_val(
             // Return a TailCall so the CPS evaluator handles it properly.
             // But first check the cache result after execution.
             let result = match func.as_ref() {
-                LispVal::Lambda { params, rest_param, body, closed_env } => {
+                LispVal::Lambda { params, rest_param, body, closed_env, .. } => {
                     // Use apply_lambda which properly sets up the env
                     let mut local_env = env.clone();
                     local_env.set_shared_env(closed_env.clone());

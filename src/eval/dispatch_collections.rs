@@ -168,6 +168,7 @@ pub fn handle(
                 rest_param: None,
                 body,
                 closed_env,
+                ..
             } = func
             {
                 if params.len() == 1 {
@@ -220,6 +221,7 @@ pub fn handle(
                 rest_param: None,
                 body,
                 closed_env,
+                ..
             } = func
             {
                 if params.len() == 1 {

@@ -98,6 +98,8 @@ pub fn is_builtin_name(name: &str) -> bool {
             | "defschema"
             | "validate"
             | "schema"
+            | "infer-type"
+            | "pure-type"
             | "snapshot"
             | "rollback"
             | "rollback-to"
@@ -507,6 +509,8 @@ pub fn get_doc(name: &str) -> Option<&'static str> {
         "eval" => "(eval expr) — Evaluate a Lisp expression.",
         "error" => "(error msg) — Raise an error.",
         "type-of" => "(type-of x) — Return type name as string.",
+        "infer-type" => "(infer-type f) — Probe a pure lambda to infer its type signature.",
+        "pure-type" => "(pure-type f) — Return the pure type annotation, or nil.",
 
         // Runtime
         "now" => "(now) — Current Unix timestamp (milliseconds).",

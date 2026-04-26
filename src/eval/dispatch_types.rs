@@ -11,7 +11,7 @@
 //! - Union: (:or :int :str)
 //! - Custom predicate: any function value (checked by calling it with the value)
 
-use crate::types::LispVal;
+use crate::types::{Env, EvalState, LispVal};
 use std::collections::HashMap as StdHashMap;
 
 // ─────────────────────────────────────────────────────
@@ -39,6 +39,8 @@ pub enum RlType {
     Tuple(Vec<RlType>),              // (:tuple :int :str :bool)
     // Union
     Or(Vec<RlType>), // (:or :int :str)
+    // Arrow — function type with parameter and return types
+    Arrow(Vec<RlType>, Box<RlType>), // (:fn :int :str → :bool)
     // Custom predicate — name of a function to call
     Predicate(String),
 }
@@ -102,6 +104,30 @@ pub fn parse_type(t: &LispVal) -> Result<RlType, String> {
                     }
                     Ok(RlType::Or(inner?))
                 }
+                ":fn" | "fn" => {
+                    // (:fn :int :str → :bool) or (:fn → :bool) or (:fn :int)
+                    // Find the arrow separator
+                    let arrow_pos = elems[1..].iter().position(|e| {
+                        matches!(e, LispVal::Sym(s) if s == "->" || s == "→")
+                    });
+                    match arrow_pos {
+                        Some(pos) => {
+                            let param_types: Result<Vec<RlType>, String> =
+                                elems[1..=pos].iter().filter(|e| {
+                                    !matches!(e, LispVal::Sym(s) if s == "->" || s == "→")
+                                }).map(parse_type).collect();
+                            let ret = elems.get(1 + pos + 1)
+                                .ok_or("(:fn ... → T) needs return type after →")?;
+                            Ok(RlType::Arrow(param_types?, Box::new(parse_type(ret)?)))
+                        }
+                        None => {
+                            // No arrow — just param types, return :any
+                            let param_types: Result<Vec<RlType>, String> =
+                                elems[1..].iter().map(parse_type).collect();
+                            Ok(RlType::Arrow(param_types?, Box::new(RlType::Any)))
+                        }
+                    }
+                }
                 other => Err(format!("unknown compound type: {}", other)),
             }
         }
@@ -123,6 +149,10 @@ pub fn format_type(t: &RlType) -> String {
         RlType::Map => ":map".into(),
         RlType::Fn => ":fn".into(),
         RlType::Any => ":any".into(),
+        RlType::Arrow(params, ret) => {
+            let ps: Vec<String> = params.iter().map(format_type).collect();
+            format!("(:fn {} → {})", ps.join(" "), format_type(ret))
+        }
         RlType::ListOf(inner) => format!("(:list {})", format_type(inner)),
         RlType::MapOf(k, v) => format!("(:map {} {})", format_type(k), format_type(v)),
         RlType::Tuple(elems) => {
@@ -150,7 +180,15 @@ pub fn type_matches(value: &LispVal, t: &RlType) -> bool {
         RlType::Sym => matches!(value, LispVal::Sym(_)),
         RlType::List => matches!(value, LispVal::List(_)),
         RlType::Map => matches!(value, LispVal::Map(_)),
-        RlType::Fn => matches!(value, LispVal::Lambda { .. }),
+        RlType::Fn => matches!(value, LispVal::Lambda { .. })
+            || matches!(value, LispVal::CaseLambda { .. })
+            || matches!(value, LispVal::Memoized { .. }),
+        RlType::Arrow(_, _) => {
+            // Structural check: value must be a callable
+            matches!(value, LispVal::Lambda { .. })
+                || matches!(value, LispVal::CaseLambda { .. })
+                || matches!(value, LispVal::Memoized { .. })
+        }
         RlType::ListOf(inner) => match value {
             LispVal::List(elems) => elems.iter().all(|e| type_matches(e, inner)),
             _ => false,
@@ -277,6 +315,42 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             match parse_type(type_desc) {
                 Ok(t) => Ok(Some(LispVal::Str(format_type(&t)))),
                 Err(e) => Ok(Some(LispVal::Bool(false))),
+            }
+        }
+
+        "infer-type" => {
+            // (infer-type f) — probe a pure lambda with sample inputs to infer its type
+            let func = args.first().ok_or("infer-type: need a function")?;
+            match func {
+                LispVal::Lambda { pure_type: Some(ref pt), params, .. } => {
+                    // Already has a pure type — return it
+                    let sig = pt.clone();
+                    Ok(Some(LispVal::Str(sig)))
+                }
+                LispVal::Lambda { params, .. } => {
+                    // Probe it
+                    let mut probe_env = Env::new();
+                    let mut probe_state = EvalState::new();
+                    match crate::typing::probe::probe_function(func, &mut probe_env, &mut probe_state) {
+                        Ok((param_types, return_type)) => {
+                            let sig = crate::typing::probe::format_signature(&param_types, &return_type);
+                            Ok(Some(LispVal::Str(sig)))
+                        }
+                        Err(e) => Err(format!("infer-type probe failed: {}", e)),
+                    }
+                }
+                _ => Err("infer-type: expected lambda".into()),
+            }
+        }
+
+        "pure-type" => {
+            // (pure-type f) — return the pure type annotation if present, nil otherwise
+            let func = args.first().ok_or("pure-type: need a function")?;
+            match func {
+                LispVal::Lambda { pure_type: Some(ref pt), .. } => {
+                    Ok(Some(LispVal::Str(pt.clone())))
+                }
+                _ => Ok(Some(LispVal::Nil)),
             }
         }
 

@@ -82,6 +82,7 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                                     rest_param: None,
                                     body: Box::new(body),
                                     closed_env: env.get_or_create_scope_snapshot(),
+                                    pure_type: state.pending_pure_type.take(),
                                 };
                                 env.push(name.clone(), lam.clone());
                                 env.propagate_to_scope_snapshot(&name, &lam);
@@ -106,7 +107,9 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
 
                     // ── pure ──
                     "pure" => {
-                        // Type-check a pure define, then evaluate a cleaned version
+                        // Type-check a pure define, then evaluate a cleaned version.
+                        // The inferred type is stored in state.pending_pure_type so
+                        // the subsequent define/lambda creation picks it up.
                         let args = &list[1..];
                         match crate::typing::check_pure_define(args) {
                             Ok(result) => {
@@ -114,6 +117,7 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                                     "[pure] {} :: {} ✓",
                                     result.name, result.inferred_type
                                 );
+                                state.pending_pure_type = Some(result.inferred_type.to_string());
                                 // Build a clean define without the :: type annotation
                                 let define_list = match list.get(1) {
                                     Some(LispVal::List(dl)) => dl.clone(),
@@ -585,6 +589,7 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                             rest_param,
                             body: Box::new(body.clone()),
                             closed_env: env.get_or_create_scope_snapshot(),
+                            pure_type: state.pending_pure_type.take(),
                         }))
                     }
 
@@ -815,6 +820,7 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                             rest_param: None,
                             body: Box::new(body_expr.clone()),
                             closed_env: env.get_or_create_scope_snapshot(),
+                            pure_type: None,
                         };
 
                         // Wrap in a Contract value
