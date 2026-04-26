@@ -1390,6 +1390,7 @@ fn dispatch_call(
                         LispVal::List(l) => &format!("list[{}]", l.len()),
                         LispVal::Map(m) => &format!("map[{}]", m.len()),
                         LispVal::Lambda { params, .. } => &format!("lambda({})", params.len()),
+                        LispVal::CaseLambda { cases, .. } => &format!("case-lambda({} cases)", cases.len()),
                         LispVal::Macro { .. } => "macro",
                         LispVal::Sym(_) => "symbol",
                         LispVal::Recur(_) => "recur",
@@ -1794,6 +1795,29 @@ pub fn call_val(
             // Now eval the expanded code in the CALLER's env (preserved)
             let result = lisp_eval(&expanded_val, env, state)?;
             Ok(EvalResult::Value(result))
+        }
+        LispVal::CaseLambda { cases, closed_env } => {
+            // Find matching case by arg count
+            let argc = args.len();
+            let mut matched = None;
+            for (params, rest_param, body) in cases {
+                if let Some(rest) = rest_param {
+                    // Has rest param: match if argc >= params.len()
+                    if argc >= params.len() {
+                        matched = Some((params.clone(), Some(rest.clone()), body.clone()));
+                        break;
+                    }
+                } else if argc == params.len() {
+                    matched = Some((params.clone(), None, body.clone()));
+                    break;
+                }
+            }
+            match matched {
+                Some((params, rest_param, body)) => {
+                    apply_lambda(&params, &rest_param, &Box::new(body), closed_env, args, env, state)
+                }
+                None => Err(format!("case-lambda: no clause matching {} args", argc)),
+            }
         }
         LispVal::List(ll) if ll.len() >= 3 => {
             let (params, rest_param) = parse_params(&ll[1])?;

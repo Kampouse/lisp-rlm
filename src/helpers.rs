@@ -141,6 +141,7 @@ pub fn is_builtin_name(name: &str) -> bool {
             | "values" | "call-with-values"
             | "force" | "make-promise" | "promise?"
             | "delay" | "define-values" | "let-values" | "let*-values"
+            | "case-lambda"
             | "assv" | "assq" | "memv" | "memq"
             | "char->integer" | "integer->char"
             | "exact" | "inexact" | "exact->inexact" | "inexact->exact"

@@ -21,6 +21,7 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
         | LispVal::Float(_)
         | LispVal::Str(_)
         | LispVal::Lambda { .. }
+        | LispVal::CaseLambda { .. }
         | LispVal::Macro { .. }
         | LispVal::Map(_) => Ok(Step::Done(expr.clone())),
 
@@ -474,6 +475,53 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                             params,
                             rest_param,
                             body: Box::new(body.clone()),
+                            closed_env: env.get_or_create_scope_snapshot(),
+                        }))
+                    }
+
+                    // ── case-lambda ──
+                    "case-lambda" => {
+                        // (case-lambda (() 'zero) ((x) x) ((x y) (cons x y)) (args (cons 'many args)))
+                        // Last form: single symbol catches all args (rest)
+                        let cases: Vec<(Vec<String>, Option<String>, LispVal)> = list[1..]
+                            .iter()
+                            .filter_map(|clause| {
+                                if let LispVal::List(parts) = clause {
+                                    if parts.is_empty() { return None; }
+                                    // Check if params is a single symbol (catch-all)
+                                    if let LispVal::Sym(s) = &parts[0] {
+                                        // Single symbol = rest param, catches all args
+                                        let body = if parts.len() > 1 {
+                                            LispVal::List(
+                                                vec![LispVal::Sym("begin".into())]
+                                                    .into_iter()
+                                                    .chain(parts[1..].iter().cloned())
+                                                    .collect()
+                                            )
+                                        } else {
+                                            LispVal::Nil
+                                        };
+                                        return Some((vec![], Some(s.clone()), body));
+                                    }
+                                    let (params, rest) = parse_params(&parts[0]).ok()?;
+                                    let body = if parts.len() > 1 {
+                                        LispVal::List(
+                                            vec![LispVal::Sym("begin".into())]
+                                                .into_iter()
+                                                .chain(parts[1..].iter().cloned())
+                                                .collect()
+                                        )
+                                    } else {
+                                        LispVal::Nil
+                                    };
+                                    Some((params, rest, body))
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        Ok(Step::Done(LispVal::CaseLambda {
+                            cases,
                             closed_env: env.get_or_create_scope_snapshot(),
                         }))
                     }

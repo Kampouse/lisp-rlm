@@ -357,6 +357,11 @@ pub enum LispVal {
         /// instead of exponentially expensive when closures capture other closures.
         closed_env: std::sync::Arc<std::sync::RwLock<im::HashMap<String, LispVal>>>,
     },
+    /// case-lambda: dispatches based on arg count
+    CaseLambda {
+        cases: Vec<(Vec<String>, Option<String>, LispVal)>,
+        closed_env: std::sync::Arc<std::sync::RwLock<im::HashMap<String, LispVal>>>,
+    },
     /// Macro (like `Lambda` but receives *unevaluated* arguments).
     Macro {
         params: Vec<String>,
@@ -437,6 +442,9 @@ impl std::fmt::Display for LispVal {
             }
             LispVal::Lambda { params, .. } => {
                 write!(f, "#<lambda ({})>", params.join(" "))
+            }
+            LispVal::CaseLambda { cases, .. } => {
+                write!(f, "#<case-lambda {} cases>", cases.len())
             }
             LispVal::Macro { params, .. } => {
                 write!(f, "#<macro ({})>", params.join(" "))
