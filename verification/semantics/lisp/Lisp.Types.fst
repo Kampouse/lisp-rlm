@@ -5,82 +5,73 @@
 *)
 module Lisp.Types
 
-// === LispVal ===
-// The universal value type. Every runtime value is one of these.
+// === Abstract float type ===
+// F* doesn't have native IEEE754 floats. Following vWasm's approach
+// (semantics/wasm/Wasm.F32.fst): use an abstract type with assumed operations.
 
-type lisp_val =
-  | Num    of int           (* i64 integer   — Rust: LispVal::Num(i64)     *)
-  | Float  of float         (* f64 float     — Rust: LispVal::Float(f64)   *)
-  | Bool   of bool          (* boolean       — Rust: LispVal::Bool(bool)   *)
-  | Nil                     (* unit/void     — Rust: LispVal::Nil          *)
-  | Str    of string        (* string        — Rust: LispVal::Str(String)  *)
-  | Pair   of lisp_val * lisp_val  (* cons cell — Rust: LispVal::List(Vec) *)
-  | Dict   of list (string * lisp_val) (* hashmap  — Rust: LispVal::Dict(HashMap) *)
+type ffloat                                    (* abstract float type *)
+
+assume val ff_of_int : int -> Tot ffloat
+assume val ff_to_int : ffloat -> Tot int
+assume val ff_add : ffloat -> ffloat -> Tot ffloat
+assume val ff_sub : ffloat -> ffloat -> Tot ffloat
+assume val ff_mul : ffloat -> ffloat -> Tot ffloat
+assume val ff_div : ffloat -> ffloat -> Tot ffloat
+assume val ff_gt  : ffloat -> ffloat -> Tot bool
+assume val ff_lt  : ffloat -> ffloat -> Tot bool
+assume val ff_ge  : ffloat -> ffloat -> Tot bool
+assume val ff_le  : ffloat -> ffloat -> Tot bool
+assume val ff_eq  : ffloat -> ffloat -> Tot bool
+
+// === LispVal ===
+noeq type lisp_val =
+  | Num    of int
+  | Float  of ffloat
+  | Bool   of bool
+  | Nil
+  | Str    of string
+  | Pair   of lisp_val * lisp_val
+  | Dict   of list (string * lisp_val)
 
 // === BinOp ===
-// Binary operations (both polymorphic and typed).
-// Mirrors src/bytecode.rs BinOp enum.
-
 type binop =
-  | Add
-  | Sub
-  | Mul
-  | Div
-  | Mod
-  | Eq
-  | Lt
-  | Le
-  | Gt
-  | Ge
+  | Add | Sub | Mul | Div | Mod
+  | Eq | Lt | Le | Gt | Ge
 
-// === Ty ===
-// Known type annotation for typed ops.
-// Mirrors src/bytecode.rs Ty enum.
-
+// === Ty (type annotation for typed ops) ===
 type ty =
   | I64
   | F64
 
 // === Op (bytecode opcodes) ===
-// The full instruction set.
-// Mirrors src/bytecode.rs Op enum.
-
-type opcode =
+noeq type opcode =
   // Stack manipulation
-  | LoadSlot       of nat                           (* Push slot[n]            *)
-  | PushI64        of int                           (* Push integer literal    *)
-  | PushFloat      of float                         (* Push float literal      *)
-  | PushBool       of bool                          (* Push boolean literal    *)
-  | PushStr        of string                        (* Push string literal     *)
-  | PushNil                                         (* Push nil                *)
-  | MakeList       of nat                           (* Pop n, construct list   *)
-  | Dup                                             (* Duplicate TOS           *)
-  | Pop                                             (* Discard TOS             *)
-  | StoreSlot      of nat                           (* Pop into slot[n]        *)
+  | LoadSlot       of nat
+  | PushI64        of int
+  | PushFloat      of ffloat
+  | PushBool       of bool
+  | PushStr        of string
+  | PushNil
+  | MakeList       of nat
+  | Dup
+  | Pop
+  | StoreSlot      of nat
 
   // Arithmetic (polymorphic)
-  | Add
-  | Sub
-  | Mul
-  | Div
-  | Mod
+  | OpAdd | OpSub | OpMul | OpDiv | OpMod
 
   // Comparison (polymorphic)
-  | Eq
-  | Lt
-  | Le
-  | Gt
-  | Ge
+  | OpEq | OpLt | OpLe | OpGt | OpGe
 
   // Control flow
-  | JumpIfTrue     of nat                           (* Pop, jump if truthy     *)
-  | JumpIfFalse    of nat                           (* Pop, jump if falsy      *)
-  | Jump           of nat                           (* Unconditional jump      *)
-  | Return                                          (* Pop, return as result   *)
-  | Recur          of nat                           (* Pop N args, restart     *)
+  | JumpIfTrue     of nat
+  | JumpIfFalse    of nat
+  | Jump           of nat
+  | Return
+  | Recur          of nat
 
   // Builtin dispatch
-  | BuiltinCall    of string * nat                  (* Call builtin by name    *)
+  | BuiltinCall    of string * nat
 
   // Fused slot+immediate ops
   | SlotAddImm     of nat * int
@@ -111,28 +102,26 @@ type opcode =
   | PushClosure    of nat
 
   // Dict operations
-  | DictGet                                         (* Pop key, pop map, push val *)
-  | DictSet                                         (* Pop val, key, map → new map *)
-  | DictMutSet     of nat                           (* In-place dict update in slot *)
+  | DictGet
+  | DictSet
+  | DictMutSet     of nat
 
   // Self-call
   | CallSelf       of nat
 
   // Fused patterns
-  | GetDefaultSlot   of nat * nat * nat * nat       (* Fused dict/get with default *)
-  | StoreAndLoadSlot of nat                         (* StoreSlot + LoadSlot fused  *)
-  | ReturnSlot       of nat                         (* Return slot directly        *)
+  | GetDefaultSlot   of nat * nat * nat * nat
+  | StoreAndLoadSlot of nat
+  | ReturnSlot       of nat
 
-  // Typed ops (zero dynamic dispatch)
+  // Typed ops
   | TypedBinOp     of binop * ty
 
 // === VM State ===
-// The state the VM operates on. Matches the Rust runtime.
-
-type vm_state = {
-  stack : list lisp_val;        (* value stack                     *)
-  slots : list lisp_val;        (* binding slots (loop variables)  *)
-  pc    : nat;                  (* program counter                 *)
-  code  : list opcode;          (* instruction sequence            *)
-  ok    : bool;                 (* execution status flag           *)
+noeq type vm_state = {
+  stack : list lisp_val;
+  slots : list lisp_val;
+  pc    : nat;
+  code  : list opcode;
+  ok    : bool;
 }
