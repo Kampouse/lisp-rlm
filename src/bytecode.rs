@@ -1924,27 +1924,27 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
                 pc += 1;
             }
             Op::Lt => {
-                let b = num_val(stack.pop().unwrap_or(LispVal::Nil));
-                let a = num_val(stack.pop().unwrap_or(LispVal::Nil));
-                stack.push(LispVal::Bool(a < b));
+                let b = stack.pop().unwrap_or(LispVal::Nil);
+                let a = stack.pop().unwrap_or(LispVal::Nil);
+                stack.push(LispVal::Bool(num_cmp(&a, &b, |x, y| x < y, |x, y| x < y)));
                 pc += 1;
             }
             Op::Le => {
-                let b = num_val(stack.pop().unwrap_or(LispVal::Nil));
-                let a = num_val(stack.pop().unwrap_or(LispVal::Nil));
-                stack.push(LispVal::Bool(a <= b));
+                let b = stack.pop().unwrap_or(LispVal::Nil);
+                let a = stack.pop().unwrap_or(LispVal::Nil);
+                stack.push(LispVal::Bool(num_cmp(&a, &b, |x, y| x <= y, |x, y| x <= y)));
                 pc += 1;
             }
             Op::Gt => {
-                let b = num_val(stack.pop().unwrap_or(LispVal::Nil));
-                let a = num_val(stack.pop().unwrap_or(LispVal::Nil));
-                stack.push(LispVal::Bool(a > b));
+                let b = stack.pop().unwrap_or(LispVal::Nil);
+                let a = stack.pop().unwrap_or(LispVal::Nil);
+                stack.push(LispVal::Bool(num_cmp(&a, &b, |x, y| x > y, |x, y| x > y)));
                 pc += 1;
             }
             Op::Ge => {
-                let b = num_val(stack.pop().unwrap_or(LispVal::Nil));
-                let a = num_val(stack.pop().unwrap_or(LispVal::Nil));
-                stack.push(LispVal::Bool(a >= b));
+                let b = stack.pop().unwrap_or(LispVal::Nil);
+                let a = stack.pop().unwrap_or(LispVal::Nil);
+                stack.push(LispVal::Bool(num_cmp(&a, &b, |x, y| x >= y, |x, y| x >= y)));
                 pc += 1;
             }
             // Typed binary ops — zero dynamic dispatch
@@ -2229,6 +2229,17 @@ fn num_arith(
         (LispVal::Num(x), LispVal::Float(y)) => LispVal::Float(float_op(*x as f64, *y)),
         (LispVal::Num(x), LispVal::Num(y)) => LispVal::Num(int_op(*x, *y)),
         _ => LispVal::Num(0),
+    }
+}
+
+/// Polymorphic numeric comparison: returns bool, float-aware.
+fn num_cmp(a: &LispVal, b: &LispVal, op: impl Fn(f64, f64) -> bool, int_op: impl Fn(i64, i64) -> bool) -> bool {
+    match (a, b) {
+        (LispVal::Float(x), LispVal::Float(y)) => op(*x, *y),
+        (LispVal::Float(x), LispVal::Num(y)) => op(*x, *y as f64),
+        (LispVal::Num(x), LispVal::Float(y)) => op(*x as f64, *y),
+        (LispVal::Num(x), LispVal::Num(y)) => int_op(*x, *y),
+        _ => false,
     }
 }
 
@@ -2885,27 +2896,27 @@ pub fn run_compiled_lambda(
                 pc += 1;
             }
             Op::Lt => {
-                let b = num_val(stack.pop().unwrap_or(LispVal::Nil));
-                let a = num_val(stack.pop().unwrap_or(LispVal::Nil));
-                stack.push(LispVal::Bool(a < b));
+                let b = stack.pop().unwrap_or(LispVal::Nil);
+                let a = stack.pop().unwrap_or(LispVal::Nil);
+                stack.push(LispVal::Bool(num_cmp(&a, &b, |x, y| x < y, |x, y| x < y)));
                 pc += 1;
             }
             Op::Le => {
-                let b = num_val(stack.pop().unwrap_or(LispVal::Nil));
-                let a = num_val(stack.pop().unwrap_or(LispVal::Nil));
-                stack.push(LispVal::Bool(a <= b));
+                let b = stack.pop().unwrap_or(LispVal::Nil);
+                let a = stack.pop().unwrap_or(LispVal::Nil);
+                stack.push(LispVal::Bool(num_cmp(&a, &b, |x, y| x <= y, |x, y| x <= y)));
                 pc += 1;
             }
             Op::Gt => {
-                let b = num_val(stack.pop().unwrap_or(LispVal::Nil));
-                let a = num_val(stack.pop().unwrap_or(LispVal::Nil));
-                stack.push(LispVal::Bool(a > b));
+                let b = stack.pop().unwrap_or(LispVal::Nil);
+                let a = stack.pop().unwrap_or(LispVal::Nil);
+                stack.push(LispVal::Bool(num_cmp(&a, &b, |x, y| x > y, |x, y| x > y)));
                 pc += 1;
             }
             Op::Ge => {
-                let b = num_val(stack.pop().unwrap_or(LispVal::Nil));
-                let a = num_val(stack.pop().unwrap_or(LispVal::Nil));
-                stack.push(LispVal::Bool(a >= b));
+                let b = stack.pop().unwrap_or(LispVal::Nil);
+                let a = stack.pop().unwrap_or(LispVal::Nil);
+                stack.push(LispVal::Bool(num_cmp(&a, &b, |x, y| x >= y, |x, y| x >= y)));
                 pc += 1;
             }
             // Typed binary ops — zero dynamic dispatch
