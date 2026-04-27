@@ -143,10 +143,11 @@
      (if (nil? (dict/get b "score")) 0 (dict/get b "score"))))
 
 (define (pick-best lst current)
-  (if (nil? lst) current
-    (if (score-gt (car lst) current)
-      (pick-best (cdr lst) (car lst))
-      (pick-best (cdr lst) current))))
+  (cond
+    ((nil? lst) current)
+    ((> (dict/get (car lst) "score") (dict/get current "score"))
+     (pick-best (cdr lst) (car lst)))
+    (t (pick-best (cdr lst) current))))
 
 (define (scheduler-run)
   (if (nil? *intentions*) nil
