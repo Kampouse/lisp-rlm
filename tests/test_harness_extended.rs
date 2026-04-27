@@ -1,10 +1,8 @@
 //! Extended harness runtime tests — edge cases and missing coverage
 
 use lisp_rlm::*;
-use std::sync::Mutex;
 
 // Serialize with the other harness test files to avoid runtime/state conflicts
-static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn eval(code: &str, env: &mut Env, state: &mut EvalState) -> LispVal {
     let exprs = parse_all(code).unwrap();
@@ -16,6 +14,7 @@ fn eval(code: &str, env: &mut Env, state: &mut EvalState) -> LispVal {
 }
 
 fn fresh() -> (Env, EvalState) {
+    eprintln!("[fresh] NUKE runtime/state from test thread {:?}", std::thread::current().id());
     let _ = std::fs::remove_dir_all("runtime/state");
     let mut env = Env::new();
     let mut state = EvalState::new();
@@ -176,6 +175,7 @@ fn test_inbox_can_be_modified() {
 
 #[test]
 fn test_inbox_persists_through_checkpoint() {
+    eprintln!("[inbox] START from thread {:?}", std::thread::current().id());
     let (mut env, mut state) = fresh();
     eval(
         r#"
@@ -474,11 +474,13 @@ fn test_score_intention_overdue_cheap() {
 
 #[test]
 fn test_boot_loads_state_and_patches() {
+    eprintln!("[boot_loads] START from thread {:?}", std::thread::current().id());
     let _ = std::fs::remove_dir_all("runtime/state");
     let _ = std::fs::remove_dir_all("runtime/patches");
     
     // Create fresh state
     std::fs::create_dir_all("runtime/state").unwrap();
+    eprintln!("[boot_loads] WROTE intentions.json");
     std::fs::write(
         "runtime/state/intentions.json",
         r#"[{"id":"saved","type":"perpetual","cost":5}]"#,
