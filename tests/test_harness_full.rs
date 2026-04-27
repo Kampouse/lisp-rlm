@@ -283,19 +283,8 @@ fn test_budget_exhausted() {
         "#,
         &mut env, &mut state,
     );
-    let used = eval(r#"(get-default *budget* "used" 0)"#, &mut env, &mut state);
-    assert_eq!(used, LispVal::Num(10), "budget-spend should track usage");
-    
-    // NOTE: budget-remaining? may return incorrect results when compiled
-    // because *budget* global mutations aren't visible in compiled lambdas.
-    // This is a known bytecode compiler limitation with global set! + dict/get.
-    // Verify the logic works when not compiled (inline):
-    let inline_check = eval(
-        r#"(< (if (nil? (dict/get *budget* "used")) 0 (dict/get *budget* "used"))
-             (if (nil? (dict/get *budget* "daily-limit")) 1000 (dict/get *budget* "daily-limit")))"#,
-        &mut env, &mut state,
-    );
-    assert_eq!(inline_check, LispVal::Bool(false), "inline budget check should show exhausted");
+    let remaining = eval("(budget-remaining?)", &mut env, &mut state);
+    assert_eq!(remaining, LispVal::Bool(false), "budget should be exhausted after spending limit");
 }
 
 #[test]

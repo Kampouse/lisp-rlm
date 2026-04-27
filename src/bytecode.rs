@@ -127,6 +127,8 @@ pub enum Op {
     CallCaptured(usize, usize),
     /// Push captured var value from cl.captured[idx] (no slot copy)
     LoadCaptured(usize),
+    /// Look up a global variable by name from the live outer env (not frozen)
+    LoadGlobal(String),
     /// Call captured function from cl.captured[idx] with N args (no slot copy)
     CallCapturedRef(usize, usize),
     /// Push a pre-compiled closure from cl.closures[idx] onto the stack
@@ -496,6 +498,12 @@ impl LoopCompiler {
                 if let Some(slot) = self.slot_of(name) {
                     self.code.push(Op::LoadSlot(slot));
                     self.last_result_i64 = self.is_slot_i64(slot);
+                    true
+                } else if name.starts_with('*') && name.ends_with('*') && name.len() > 2 {
+                    // Global variable (*foo*): use live env lookup, not frozen capture
+                    self.code.push(Op::LoadGlobal(name.to_string()));
+                    self.last_result_i64 = false;
+                    self.last_result_f64 = false;
                     true
                 } else if let Some(idx) = self.captured_idx(name) {
                     self.code.push(Op::LoadCaptured(idx));
@@ -1344,7 +1352,7 @@ fn remap_op(op: &Op, slot_offset: usize, captured_remap: &[usize], jump_offset: 
         Op::CallCapturedRef(idx, n) => {
             Op::CallCapturedRef(captured_remap.get(*idx).copied().unwrap_or(*idx), *n)
         }
-
+        Op::LoadGlobal(name) => Op::LoadGlobal(name.clone()),
         // DictMutSet — offset slot
         Op::DictMutSet(s) => Op::DictMutSet(s + slot_offset),
 
@@ -1825,6 +1833,10 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
                 // If it does, fall through to error.
                 stack.push(cl.captured[*idx].1.clone());
                 pc += 1;
+            }
+            Op::LoadGlobal(name) => {
+                // Loop VM doesn't have outer_env access — globals shouldn't appear in loops
+                return Err(format!("LoadGlobal({}) in loop VM — not supported", name));
             }
             Op::PushI64(n) => {
                 stack.push(LispVal::Num(*n));
@@ -2790,6 +2802,14 @@ pub fn run_compiled_lambda(
                 // The loop VM pre-fills captured into slots, so this op shouldn't appear there.
                 // If it does, fall through to error.
                 stack.push(cl.captured[*idx].1.clone());
+                pc += 1;
+            }
+            Op::LoadGlobal(name) => {
+                // Live lookup from outer_env — sees set! mutations
+                match outer_env.get(name) {
+                    Some(val) => stack.push(val.clone()),
+                    None => return Err(format!("LoadGlobal: undefined {}", name)),
+                }
                 pc += 1;
             }
             Op::PushI64(n) => {
