@@ -6,7 +6,7 @@ open Lisp.Values
 open Lisp.Source
 open LispIR.Semantics
 
-// === LITERALS — should auto-prove ===
+// === LITERALS ===
 
 val test_num : n:int -> Lemma
   (match eval_expr 100 (Num n) [] with
@@ -26,7 +26,7 @@ val test_nil : unit -> Lemma
    | _ -> false)
 let test_nil () = ()
 
-// === ARITHMETIC int-int — should auto-prove ===
+// === ARITHMETIC ===
 
 val test_add : a:int -> b:int -> Lemma
   (match eval_expr 100 (List [Sym "+"; Num a; Num b]) [] with
@@ -46,7 +46,7 @@ val test_mul : a:int -> b:int -> Lemma
    | _ -> false)
 let test_mul a b = ()
 
-// === COMPARISON int-int — should auto-prove ===
+// === COMPARISON ===
 
 val test_gt : a:int -> b:int -> Lemma
   (match eval_expr 100 (List [Sym ">"; Num a; Num b]) [] with
@@ -66,7 +66,7 @@ val test_eq : a:int -> b:int -> Lemma
    | _ -> false)
 let test_eq a b = ()
 
-// === BOOLEAN OPS — should auto-prove ===
+// === BOOLEAN OPS ===
 
 val test_not_true : unit -> Lemma
   (match eval_expr 100 (List [Sym "not"; Bool true]) [] with
@@ -92,7 +92,7 @@ val test_nil_q_num : n:int -> Lemma
    | _ -> false)
 let test_nil_q_num n = ()
 
-// === SYMBOL LOOKUP — should auto-prove ===
+// === SYMBOL LOOKUP ===
 
 val test_sym : n:int -> Lemma
   (match eval_expr 100 (Sym "x") [("x", Num n)] with
@@ -100,25 +100,26 @@ val test_sym : n:int -> Lemma
    | _ -> false)
 let test_sym n = ()
 
-// === IF — probably needs admit ===
-// if branches require unfolding eval_expr twice + is_truthy
+// === IF -- source eval side, try auto-prove ===
+// NOTE: Num 0 is TRUTHY in Lisp! So (if 0 42 99) = 42, not 99.
+// Use Bool false for the falsy case.
 
 val test_if_true : unit -> Lemma
   (match eval_expr 100 (List [Sym "if"; Num 1; Num 42; Num 99]) [] with
    | Lisp.Source.Ok (Num r) -> r = 42
    | _ -> false)
-let test_if_true () = admit ()
+let test_if_true () = ()
 
 val test_if_false : unit -> Lemma
-  (match eval_expr 100 (List [Sym "if"; Num 0; Num 42; Num 99]) [] with
+  (match eval_expr 100 (List [Sym "if"; Bool false; Num 42; Num 99]) [] with
    | Lisp.Source.Ok (Num r) -> r = 99
    | _ -> false)
-let test_if_false () = admit ()
+let test_if_false () = ()
 
-// === LET — probably needs admit ===
+// === LET -- source eval side, try auto-prove ===
 
 val test_let : n:int -> Lemma
   (match eval_expr 100 (List [Sym "let"; List [List [Sym "x"; Num n]]; Sym "x"]) [] with
    | Lisp.Source.Ok (Num m) -> m = n
    | _ -> false)
-let test_let n = admit ()
+let test_let n = ()
