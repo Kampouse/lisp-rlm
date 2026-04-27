@@ -79,12 +79,14 @@
   (map score-intention intentions))
 
 ;; === Budget ===
+;; NOTE: inline dict/get + nil? checks instead of get-default (compiled lambda scope issue)
 
 (define (budget-remaining?)
-  (< (get-default *budget* "used" 0) (get-default *budget* "daily-limit" 1000)))
+  (< (if (nil? (dict/get *budget* "used")) 0 (dict/get *budget* "used"))
+     (if (nil? (dict/get *budget* "daily-limit")) 1000 (dict/get *budget* "daily-limit"))))
 
 (define (budget-spend amount)
-  (set! *budget* (dict/set *budget* "used" (+ (get-default *budget* "used" 0) amount))))
+  (set! *budget* (dict/set *budget* "used" (+ (if (nil? (dict/get *budget* "used")) 0 (dict/get *budget* "used")) amount))))
 
 ;; === Execution ===
 
