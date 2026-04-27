@@ -71,9 +71,11 @@ pub enum Cont {
         remaining_pairs: Vec<(String, LispVal)>,
         body_exprs: Vec<LispVal>,
         bound_keys: Vec<String>,
+        saved: Vec<(String, Option<LispVal>)>,
     },
     LetRestore {
         bound_keys: Vec<String>,
+        saved: Vec<(String, Option<LispVal>)>,  // old values to restore (None = didn't exist)
     },
     MatchScrutinee {
         val: LispVal,

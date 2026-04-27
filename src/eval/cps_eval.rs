@@ -122,7 +122,17 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                                         _ => "_".to_string(),
                                     })
                                     .collect();
-                                let body = list.get(2).cloned().unwrap_or(LispVal::Nil);
+                                let body = if list.len() > 3 {
+                                    // Multi-expression body: wrap in begin
+                                    LispVal::List(
+                                        vec![LispVal::Sym("begin".into())]
+                                            .into_iter()
+                                            .chain(list[2..].iter().cloned())
+                                            .collect(),
+                                    )
+                                } else {
+                                    list.get(2).cloned().unwrap_or(LispVal::Nil)
+                                };
                                 let lam = make_lambda(
                                     params,
                                     None,
@@ -631,11 +641,21 @@ pub fn eval_step(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result
                     "lambda" => {
                         let (params, rest_param) =
                             parse_params(list.get(1).ok_or("lambda: need params")?)?;
-                        let body = list.get(2).ok_or("lambda: need body")?;
+                        let body = if list.len() > 3 {
+                            // Multi-expression body: wrap in begin
+                            LispVal::List(
+                                vec![LispVal::Sym("begin".into())]
+                                    .into_iter()
+                                    .chain(list[2..].iter().cloned())
+                                    .collect(),
+                            )
+                        } else {
+                            list.get(2).ok_or("lambda: need body")?.clone()
+                        };
                         Ok(Step::Done(make_lambda(
                             params,
                             rest_param,
-                            Box::new(body.clone()),
+                            Box::new(body),
                             env.get_or_create_scope_snapshot(),
                             state.pending_pure_type.take(),
                             env,
@@ -1437,6 +1457,7 @@ fn eval_let(
             remaining_pairs: remaining,
             body_exprs,
             bound_keys: all_names,
+            saved: vec![],
         }],
         new_env: None,
     })
@@ -1672,8 +1693,11 @@ pub fn handle_cont(
             remaining_pairs,
             body_exprs,
             bound_keys,
+            mut saved,
         } => {
             let mut all_bound = bound_keys.clone();
+            let old = env.get(&name).cloned();
+            saved.push((name.clone(), old));
             env.push(name.clone(), val);
             all_bound.push(name.clone());
             if remaining_pairs.is_empty() {
@@ -1685,14 +1709,17 @@ pub fn handle_cont(
                     expr: body_exprs[0].clone(),
                     conts: {
                         let mut cs: Vec<Cont> = Vec::new();
+                        // LetRestore must be at bottom (pushed first) so it runs LAST
+                        // after all body expressions complete
+                        cs.push(Cont::LetRestore {
+                            bound_keys: all_bound,
+                            saved,
+                        });
                         if body_exprs.len() > 1 {
                             cs.push(Cont::BeginSeq {
                                 remaining: body_exprs[1..].to_vec(),
                             });
                         }
-                        cs.push(Cont::LetRestore {
-                            bound_keys: all_bound,
-                        });
                         cs
                     },
                     new_env: None,
@@ -1706,16 +1733,21 @@ pub fn handle_cont(
                         remaining_pairs: remaining_pairs[1..].to_vec(),
                         body_exprs,
                         bound_keys: all_bound,
+                        saved,
                     }],
                     new_env: None,
                 })
             }
         }
 
-        Cont::LetRestore { bound_keys } => {
-            // Only remove the keys that this let introduced (don't wipe entire env)
-            for key in &bound_keys {
+        Cont::LetRestore { bound_keys: _, saved } => {
+            // Restore shadowed bindings: for each key, either restore old value
+            // or remove if it didn't exist before the let
+            for (key, old_val) in saved.iter().rev() {
                 env.pop(key);
+                if let Some(v) = old_val {
+                    env.push(key.clone(), v.clone());
+                }
             }
             Ok(Step::Done(val))
         }

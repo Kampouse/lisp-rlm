@@ -21,22 +21,37 @@ noeq type vm_result =
   | Ok of vm_state
   | Err of string
 
-// === Helpers ===
-val list_update : list 'a -> nat -> 'a -> Tot (option (list 'a))
-let rec list_update lst idx v2 =
-  match lst, idx with
-  | [], _ -> None
-  | x :: rest, 0 -> Some (v2 :: rest)
-  | x :: rest, n -> (match list_update rest (n - 1) v2 with
-                     | Some lst -> Some (x :: lst)
-                     | None -> None)
+// === Helpers (int-indexed) ===
 
-val list_nth : list 'a -> nat -> Tot (option 'a)
+val list_nth : list 'a -> int -> Tot (option 'a)
 let rec list_nth lst n =
+  if n < 0 then None else
   match lst, n with
   | [], _ -> None
   | x :: _, 0 -> Some x
   | _ :: rest, n -> list_nth rest (n - 1)
+
+val list_update : list 'a -> int -> 'a -> Tot (option (list 'a))
+let rec list_update lst idx v2 =
+  if idx < 0 then None else
+  match lst, idx with
+  | [], _ -> None
+  | x :: rest, 0 -> Some (v2 :: rest)
+  | x :: rest, n -> (match list_update rest (n - 1) v2 with
+                       | Some lst -> Some (x :: lst)
+                       | None -> None)
+
+// Extend-or-update: if idx = len(lst), append; if idx < len, update; else None
+val list_set_or_extend : list 'a -> int -> 'a -> Tot (option (list 'a))
+let rec list_set_or_extend lst idx v2 =
+  if idx < 0 then None else
+  match lst, idx with
+  | [], 0 -> Some [v2]
+  | [], _ -> None
+  | x :: rest, 0 -> Some (v2 :: rest)
+  | x :: rest, n -> (match list_set_or_extend rest (n - 1) v2 with
+                       | Some lst -> Some (x :: lst)
+                       | None -> None)
 
 val val_of_dict : lisp_val -> Tot (list (string * lisp_val))
 let val_of_dict v =
@@ -78,7 +93,7 @@ let eval_op op s =
     | None -> Err "LoadSlot: index out of bounds")
 
   | StoreSlot idx -> (match s.stack with
-    | v :: rest -> (match list_update s.slots idx v with
+    | v :: rest -> (match list_set_or_extend s.slots idx v with
       | Some slots' -> Ok {s with stack = rest; slots = slots'; pc = s.pc + 1}
       | None -> Err "StoreSlot: index out of bounds")
     | [] -> Err "StoreSlot: stack underflow")

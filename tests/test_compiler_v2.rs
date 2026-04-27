@@ -37,14 +37,10 @@ fn test_set_in_let_lambda() {
 #[test]
 fn test_set_let_shadow_preserves_param() {
     // set! on a let-shadowed variable should not affect the original param
-    // after let scope ends
+    // after let scope ends. The fix saves/restores shadowed slot values.
     let result = eval(r#"(map (lambda (x) (let ((x 0)) (set! x 99)) x) (list 1 2 3))"#);
-    // The let shadows x, set! writes 99 to the shadow, but after let scope
-    // x reverts to the param value... actually in our impl, set! stores into
-    // whatever slot the name resolves to. With shadowing, set! writes to the
-    // existing slot (which is the param slot during shadow). So x=99 for all.
-    // This tests that set! correctly targets the active binding.
-    assert_eq!(result, "(99 99 99)");
+    // After let scope exits, the shadow is restored and x has its original value.
+    assert_eq!(result, "(1 2 3)");
 }
 
 // --- do in lambda (bytecode) ---

@@ -30,6 +30,8 @@ noeq type lisp_val =
   | Bool   of bool
   | Nil
   | Str    of string
+  | Sym    of string
+  | List   of list lisp_val
   | Pair   of lisp_val * lisp_val
   | Dict   of list (string * lisp_val)
 
@@ -46,7 +48,7 @@ type ty =
 // === Op (bytecode opcodes) ===
 noeq type opcode =
   // Stack manipulation
-  | LoadSlot       of nat
+  | LoadSlot       of int
   | PushI64        of int
   | PushFloat      of ffloat
   | PushBool       of bool
@@ -55,7 +57,7 @@ noeq type opcode =
   | MakeList       of nat
   | Dup
   | Pop
-  | StoreSlot      of nat
+  | StoreSlot      of int
 
   // Arithmetic (polymorphic)
   | OpAdd | OpSub | OpMul | OpDiv | OpMod

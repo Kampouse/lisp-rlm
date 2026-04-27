@@ -774,8 +774,12 @@ impl LoopCompiler {
                             };
                             // Track slots that need cleanup (only newly allocated ones)
                             let let_start = self.slot_map.len();
+                            // Save area: beyond all slots this let could allocate.
+                            // Worst case: all bindings are new, each gets one slot.
+                            let save_base = let_start + bindings.len();
                             // Track slots we shadow so we can restore them
-                            let mut shadowed: Vec<(String, usize)> = Vec::new();
+                            let mut shadowed: Vec<usize> = Vec::new(); // (original_slot, save at save_base+i)
+                            let mut shadow_idx = 0usize;
                             let mut all_ok = true;
                             for binding in bindings {
                                 match binding {
@@ -791,8 +795,14 @@ impl LoopCompiler {
                                             if let Some(existing) =
                                                 self.slot_map.iter().position(|s| s == name)
                                             {
+                                                // Save old value to a temporary slot
+                                                let save_slot = save_base + shadow_idx;
+                                                self.code.push(Op::LoadSlot(existing)); // push old value
+                                                self.code.push(Op::StoreSlot(save_slot)); // save it
+                                                // Now store the new value
                                                 self.code.push(Op::StoreSlot(existing));
-                                                shadowed.push((name.clone(), existing));
+                                                shadowed.push(existing);
+                                                shadow_idx += 1;
                                                 if val_is_i64 {
                                                     self.mark_slot_i64(existing);
                                                 }
@@ -823,6 +833,12 @@ impl LoopCompiler {
                             }
                             if all_ok {
                                 all_ok = self.compile_expr(body, outer_env);
+                            }
+                            // Restore shadowed slots (reverse order)
+                            for (i, &original_slot) in shadowed.iter().enumerate().rev() {
+                                let save_slot = save_base + i;
+                                self.code.push(Op::LoadSlot(save_slot));
+                                self.code.push(Op::StoreSlot(original_slot));
                             }
                             // Remove any newly added slot names (not shadows)
                             self.slot_map.truncate(let_start);
@@ -955,16 +971,21 @@ impl LoopCompiler {
                             if params.is_empty() {
                                 return false;
                             }
+                            eprintln!("[SHADOW-DBG] compiling lambda with params {:?}", params);
                             // Compile lambda body in a new compiler
                             let mut inner = LoopCompiler::new(params.clone());
                             inner.parent_slots = self.slot_map.clone();
                             let body = &list[2..];
                             let mut ok = true;
-                            for expr in body {
+                            for (bi, expr) in body.iter().enumerate() {
                                 if !inner.compile_expr(expr, outer_env) {
+                                    eprintln!("[SHADOW-DBG] lambda body expr {} FAILED to compile: {:?}", bi, expr);
                                     ok = false;
                                     break;
                                 }
+                            }
+                            if ok {
+                                eprintln!("[SHADOW-DBG] lambda compiled OK, code: {:?}", inner.code);
                             }
                             if !ok {
                                 return false;

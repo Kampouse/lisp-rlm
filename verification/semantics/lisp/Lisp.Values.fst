@@ -109,11 +109,12 @@ let rec dict_get key m =
   | [] -> Nil
   | (k, v) :: rest -> if k = key then v else dict_get key rest
 
+val dict_remove : key:string -> m:list (string * lisp_val) -> Tot (list (string * lisp_val))
+let rec dict_remove key m =
+  match m with
+  | [] -> []
+  | (k, v) :: rest -> if k = key then dict_remove key rest
+                       else (k, v) :: dict_remove key rest
+
 val dict_set : key:string -> v:lisp_val -> m:list (string * lisp_val) -> Tot (list (string * lisp_val))
-let dict_set key v m =
-  let rec filter f lst =
-    match lst with
-    | [] -> []
-    | x :: rest -> if f x then x :: filter f rest else filter f rest
-  in
-  (key, v) :: filter (fun (k, _) -> k <> key) m
+let dict_set key v m = (key, v) :: dict_remove key m
