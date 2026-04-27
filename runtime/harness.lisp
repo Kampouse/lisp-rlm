@@ -3,8 +3,12 @@
 ;;; Loaded by the Rust kernel on boot.
 ;;; Provides the intent loop: score -> rank -> execute -> checkpoint.
 ;;; Intention-specific code lives in patches/ and is loaded after this.
+;;;
+;;; Note: Compiled lambdas can't call user-defined functions (get-default etc.)
+;;; from inside map/sort/filter. All helpers used in HOF callbacks are inlined.
 
 ;; === Helpers ===
+;; get-default is kept for top-level use but NOT used inside compiled lambdas
 
 (define (get-default m key default)
   (let ((v (dict/get m key)))
@@ -29,22 +33,22 @@
   intent)
 
 ;; === Priority Scoring ===
+;; NOTE: urgency/cost-efficiency use dict/get + nil? directly (not get-default)
+;; because they may be called from compiled lambdas inside map
 
 (define (urgency intent)
-  (let ((deadline (get-default intent "deadline" nil))
-        (last (get-default intent "last-acted" nil))
+  (let ((deadline (dict/get intent "deadline"))
+        (last (dict/get intent "last-acted"))
         (t0 (now)))
     (cond
-      ;; Overdue: deadline is a future timestamp, we're past it
       ((and deadline (> t0 deadline)) 1.0)
-      ;; Due soon: within 1 hour of deadline
       ((and deadline (< (- deadline t0) 3600000)) 0.9)
-      ;; Stale: not acted on in over 1 hour
       ((and last (> (elapsed last) 3600000)) 0.7)
       (t 0.3))))
 
 (define (cost-efficiency intent)
-  (let ((cost (get-default intent "cost" 1)))
+  (let ((cost-raw (dict/get intent "cost"))
+        (cost (if (nil? cost-raw) 1 cost-raw)))
     (cond
       ((= cost 0) 1.0)
       ((< cost 10) 0.9)
@@ -57,7 +61,21 @@
         (score (+ (* 0.7 u) (* 0.3 e))))
     (dict/set intent "score" score)))
 
+;; Select highest-priority intention (no full sort needed for scheduler)
+(define (find-best intentions)
+  (if (nil? intentions) nil
+    (if (nil? (cdr intentions)) (car intentions)
+      (let ((head (car intentions))
+            (tail-best (find-best (cdr intentions))))
+        (let ((hs (dict/get head "score"))
+              (ts (dict/get tail-best "score")))
+          (if (> (if (nil? hs) 0 hs) (if (nil? ts) 0 ts))
+            head
+            tail-best))))))
+
 (define (rank-intentions intentions)
+  ;; Score all intentions (sets "score" key on each)
+  ;; No full sort — scheduler just picks best each tick
   (map score-intention intentions))
 
 ;; === Budget ===
@@ -75,35 +93,67 @@
     (if action
       (begin
         (budget-spend (get-default intent "cost" 1))
-        (action))
+        (try
+          (action)
+          (catch err
+            (println (str-concat "ERROR in action " (get-default intent "id" "?") ": " (to-string err))))))
       (println (str-concat "no action for: " (get-default intent "id" "?"))))))
 
 ;; === Intention Lifecycle ===
 
+;; Helper: update an intent in *intentions* by id, applying key-value pairs
+;; Uses map to return new list instead of mutating inside lambda
+(define (apply-updates intent updates)
+  (cond
+    ((nil? updates) intent)
+    (t (apply-updates
+         (dict/set intent (car (car updates)) (car (cdr (car updates))))
+         (cdr updates)))))
+
+(define (update-intention intent-id updates)
+  (set! *intentions*
+    (map (lambda (i)
+           (if (equal? (dict/get i "id") intent-id)
+             (apply-updates i updates)
+             i))
+         *intentions*)))
+
 (define (handle-result intent result)
-  (let ((itype (get-default intent "type" "one-shot")))
+  (let ((itype (get-default intent "type" "one-shot"))
+        (intent-id (get-default intent "id" nil)))
     (cond
       ((equal? itype "perpetual")
-       (dict/set intent "last-acted" (now)))
+       (update-intention intent-id (list (list "last-acted" (now)))))
       ((equal? itype "completable")
-       (dict/set intent "last-acted" (now)))
+       (update-intention intent-id (list (list "last-acted" (now)))))
       ((equal? itype "one-shot")
        (set! *intentions*
-             (filter (lambda (i) (not (equal? (get-default i "id" nil) (get-default intent "id" nil))))
+             (filter (lambda (i) (not (equal? (dict/get i "id") intent-id)))
                      *intentions*)))
       ((equal? itype "recurring")
-       (dict/set intent "last-run" (now))))))
+       (update-intention intent-id (list (list "last-run" (now))))))))
 
 ;; === Scheduler ===
+;; All helpers defined at top level so bytecode compiler handles them correctly
+
+(define (score-gt a b)
+  (> (if (nil? (dict/get a "score")) 0 (dict/get a "score"))
+     (if (nil? (dict/get b "score")) 0 (dict/get b "score"))))
+
+(define (pick-best lst current)
+  (if (nil? lst) current
+    (if (score-gt (car lst) current)
+      (pick-best (cdr lst) (car lst))
+      (pick-best (cdr lst) current))))
 
 (define (scheduler-run)
-  (let ((ranked (rank-intentions *intentions*)))
-    (for-each
-      (lambda (intent)
-        (if (budget-remaining?)
-          (let ((result (execute-action intent)))
-            (handle-result intent result))))
-      ranked)))
+  (if (nil? *intentions*) nil
+    (begin
+      (define best (find-best (rank-intentions *intentions*)))
+      (if (budget-remaining?)
+        (begin
+          (define result (execute-action best))
+          (handle-result best result))))))
 
 ;; === Persistence ===
 

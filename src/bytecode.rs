@@ -57,6 +57,8 @@ pub enum Op {
     PushStr(String),
     /// Push nil
     PushNil,
+    /// Pop n values, construct a list, push it
+    MakeList(usize),
     /// Duplicate top of stack
     Dup,
     /// Pop and discard top of stack
@@ -1042,6 +1044,16 @@ impl LoopCompiler {
                                     return true;
                                 }
                             }
+                            // Fast path: (list e1 e2 ...) → MakeList(n)
+                            if op == "list" {
+                                for arg in &list[1..] {
+                                    if !self.compile_expr(arg, outer_env) {
+                                        return false;
+                                    }
+                                }
+                                self.code.push(Op::MakeList(n_args));
+                                return true;
+                            }
                             for arg in &list[1..] {
                                 if !self.compile_expr(arg, outer_env) {
                                     return false;
@@ -1832,6 +1844,15 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
             }
             Op::PushNil => {
                 stack.push(LispVal::Nil);
+                pc += 1;
+            }
+            Op::MakeList(n) => {
+                let mut items = Vec::with_capacity(*n);
+                for _ in 0..*n {
+                    items.push(stack.pop().unwrap());
+                }
+                items.reverse();
+                stack.push(LispVal::List(items));
                 pc += 1;
             }
             Op::Dup => {
@@ -2731,11 +2752,20 @@ pub fn run_compiled_lambda(
     let code = &cl.code;
     let mut pc: usize = 0;
     let mut ops: u32 = 0;
-    const LAMBDA_BUDGET: u32 = 10_000_000;
+    // Use eval_budget from state (0 = unlimited), fallback to 10M
+    let lambda_budget = if state.eval_budget > 0 { state.eval_budget as u32 } else { 10_000_000 };
 
     loop {
         ops += 1;
-        if ops > LAMBDA_BUDGET {
+        state.eval_count += 1;
+        // Also check CPS-level budget (non-zero means limited)
+        if state.eval_budget > 0 && state.eval_count > state.eval_budget {
+            return Err(format!(
+                "execution budget exceeded ({} iterations, limit: {})",
+                state.eval_count, state.eval_budget
+            ));
+        }
+        if ops > lambda_budget {
             return Err("compiled lambda: budget exceeded (possible infinite loop)".into());
         }
         if pc >= code.len() {
@@ -2780,6 +2810,15 @@ pub fn run_compiled_lambda(
             }
             Op::PushNil => {
                 stack.push(LispVal::Nil);
+                pc += 1;
+            }
+            Op::MakeList(n) => {
+                let mut items = Vec::with_capacity(*n);
+                for _ in 0..*n {
+                    items.push(stack.pop().unwrap());
+                }
+                items.reverse();
+                stack.push(LispVal::List(items));
                 pc += 1;
             }
             Op::Add => {
