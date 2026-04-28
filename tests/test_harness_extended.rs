@@ -119,9 +119,9 @@ fn test_cost_efficiency_missing_cost() {
 }
 
 // === pick-best, find-best, score-gt ===
-// NOTE: pick-best with 3+ items and find-best with 3+ items produce incorrect results
-// when compiled due to a bytecode compiler bug with recursive > comparison on dict/get values.
-// These tests verify the comparison logic works correctly and find-best works with 2 items.
+// The float comparison bug (num_val truncating Float(0.9) to i64(0)) was fixed in commit c047117
+// with the num_cmp() helper. Both find-best and pick-best now compile to bytecode correctly
+// with 3+ items. These tests cover the edge cases and verify correct behavior.
 
 #[test]
 fn test_score_comparison_works() {

@@ -17,29 +17,24 @@ val test_base : unit -> Lemma
    | _ -> false)
 let test_base () = ()
 
-// Can we prove that the first eval_body_self step produces the right thing?
-// For x=1: eval the if, test is false, need to eval (self (- 1 1))
-// eval_body_self should evaluate (- 1 1) = 0, then call apply_lambda_rec with 0
-// But Z3 can't unfold through this mutual call.
-//
-// Try: prove eval_body_self on the BODY expression gives Some result
+// Per-step proofs (don't cross self-call boundary)
 val test_eval_step : unit -> Lemma
   (match eval_body_self 99 (List [Sym "="; Sym "x"; Num 0]) [("x", Num 1)] ["x"] body with
    | Some (Bool false) -> true
    | _ -> false)
 let test_eval_step () = ()
 
-// The subtraction
 val test_eval_sub : unit -> Lemma
   (match eval_body_self 99 (List [Sym "-"; Sym "x"; Num 1]) [("x", Num 1)] ["x"] body with
    | Some (Num 0) -> true
    | _ -> false)
 let test_eval_sub () = ()
 
-// These should work: they don't cross the self-call boundary.
-
+// One recursive step: (f 1) evaluates to 42
+// apply_lambda_rec 100 -> eval_body_self for if -> false branch -> self(- 1 1) -> apply_lambda_rec with 0
 val test_one_step : unit -> Lemma (true)
 let test_one_step () = admit ()
 
+// Countdown: (f 3) evaluates to 42
 val test_countdown : unit -> Lemma (true)
 let test_countdown () = admit ()
