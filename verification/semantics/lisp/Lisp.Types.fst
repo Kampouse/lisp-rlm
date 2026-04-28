@@ -1,15 +1,13 @@
-(** Lisp Runtime Types — F* Formal Specification
+(** Lisp Runtime Types -- F* Formal Specification
 
     Mirrors src/types.rs LispVal enum and src/bytecode.rs Op/BinOp/Ty enums.
-    Following vWasm's pattern: semantics/wasm/Wasm.Types.fst + Wasm.Values.fst
+    Following vWasm pattern: semantics/wasm/Wasm.Types.fst + Wasm.Values.fst
 *)
 module Lisp.Types
 
 // === Abstract float type ===
-// F* doesn't have native IEEE754 floats. Following vWasm's approach
-// (semantics/wasm/Wasm.F32.fst): use an abstract type with assumed operations.
 
-type ffloat                                    (* abstract float type *)
+type ffloat
 
 assume val ff_of_int : int -> Tot ffloat
 assume val ff_to_int : ffloat -> Tot int
@@ -34,6 +32,7 @@ noeq type lisp_val =
   | List   of list lisp_val
   | Pair   of lisp_val * lisp_val
   | Dict   of list (string * lisp_val)
+  | Lambda of list string * lisp_val * list (string * lisp_val)  (* params, body, env *)
 
 // === BinOp ===
 type binop =
