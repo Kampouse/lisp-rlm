@@ -74,7 +74,7 @@ val mul_correct : a:int -> b:int -> Lemma
   (match eval_steps 100 (fresh_vm [PushI64 a; PushI64 b; OpMul; Return]) with
    | LispIR.Semantics.Ok s' -> (match s'.stack with Num r :: _ -> r = int_mul a b | _ -> false)
    | _ -> false)
-let mul_correct a b = admit ()
+let mul_correct a b = ()
 
 // === COMPARISON (AUTO-PROVED -- compile_lambda unfolds for these) ===
 
