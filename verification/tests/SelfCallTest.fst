@@ -27,8 +27,17 @@ val test_eval_sub : unit -> Lemma
    | _ -> false)
 let test_eval_sub () = ()
 
-val test_one_step : unit -> Lemma (true)
-let test_one_step () = admit ()
+val test_one_step : unit -> Lemma
+  (match apply_lambda_rec 100 ["x"] body [Num 1] [] with
+   | Some (Num 42) -> true
+   | _ -> false)
+let test_one_step () = ()
 
-val test_countdown : unit -> Lemma (true)
-let test_countdown () = admit ()
+val test_countdown : unit -> Lemma
+  (match apply_lambda_rec 100 ["x"] body [Num 3] [] with
+   | Some (Num 42) -> true
+   | _ -> false)
+let test_countdown () =
+  assert_norm (match apply_lambda_rec 100 ["x"] body [Num 3] [] with
+   | Some (Num 42) -> true
+   | _ -> false)
