@@ -1013,7 +1013,6 @@ impl LoopCompiler {
                                 fixed_params.clone()
                             };
                             let n_fixed = fixed_params.len();
-                            eprintln!("[SHADOW-DBG] compiling lambda with params {:?}, rest={:?}", params, rest_param);
                             // Compile lambda body in a new compiler
                             let mut inner = LoopCompiler::new(params.clone());
                             inner.parent_slots = self.slot_map.clone();
@@ -1026,13 +1025,11 @@ impl LoopCompiler {
                             let mut ok = true;
                             for (bi, expr) in body.iter().enumerate() {
                                 if !inner.compile_expr(expr, outer_env) {
-                                    eprintln!("[SHADOW-DBG] lambda body expr {} FAILED to compile: {:?}", bi, expr);
                                     ok = false;
                                     break;
                                 }
                             }
                             if ok {
-                                eprintln!("[SHADOW-DBG] lambda compiled OK, code: {:?}", inner.code);
                             }
                             if !ok {
                                 return false;
@@ -2867,6 +2864,19 @@ pub fn try_compile_lambda(
 ) -> Option<CompiledLambda> {
     let mut compiler = LoopCompiler::new(param_names.to_vec());
     compiler.self_name = func_name.map(|s| s.to_string());
+    // If the body is a lambda, set pending_lambda_name so the inner compiler
+    // picks it up and enables CallSelf for recursive calls.
+    if func_name.is_some() {
+        if let LispVal::List(ref l) = body {
+            if !l.is_empty() {
+                if let LispVal::Sym(ref s) = l[0] {
+                    if s == "lambda" {
+                        compiler.pending_lambda_name = func_name.map(|s| s.to_string());
+                    }
+                }
+            }
+        }
+    }
 
     // Parse pure_type to mark parameter slots as i64.
     // Format: "int -> int", "int -> int -> int", etc.

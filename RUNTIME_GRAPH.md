@@ -1,0 +1,249 @@
+# lisp-rlm Runtime Architecture
+
+```
+╔══════════════════════════════════════════════════════════════════════════╗
+║  ENTRY: rlm.rs (REPL)  /  run_program(&exprs, &mut env, &mut state)  ║
+╚══════════════════════════════════════════════════════════════════════════╝
+        │
+        ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│  1. PARSER                                             [260 lines]  │
+│                                                                      │
+│  "(+ 1 (fib 3))" ──► [Sym(+), Num(1), List(Sym(fib), Num(3))]      │
+│                                                                      │
+│  Handles: quote 'x, #\char, 3/4 fractions, +inf.0, string escapes   │
+│  Output: Vec<LispVal>                                                │
+└──────────────────────────────────────┬───────────────────────────────┘
+                                       │
+                                       ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│  2. PROGRAM DESUGAR                                   [613 lines]  │
+│                         (program.rs)                                 │
+│                                                                      │
+│  ┌──────────────┐  ┌───────────────┐  ┌─────────────────────────┐  │
+│  │ Flatten      │  │ Pre-process   │  │ Desugar into            │  │
+│  │ begin/progn  │─▶│ defmacro      │─▶│ (lambda () <body>)      │  │
+│  │ into flat    │  │ require       │  │                          │  │
+│  │ form list    │  │ export / pure │  │ define → let bindings   │  │
+│  └──────────────┘  └───────────────┘  │ Forward-ref collection  │  │
+│                                         └──────────┬──────────────┘  │
+│                                                    │                 │
+│  pure annotations preserved: ("int -> int")        │                 │
+│  → enables typed ops + const folding later          │                 │
+└────────────────────────────────────────────────────┼─────────────────┘
+                                                     │
+                                                     ▼
+╔════════════════════════════════════════════════════════════════════════╗
+║  3. BYTECODE COMPILER                               [3676 lines]   ║
+║                         (bytecode.rs)                                 ║
+║                                                                       ║
+║  Input:  (lambda () <body>)                                          ║
+║  Output: CompiledLambda { code: Vec<Op>, slots, captured, closures } ║
+║                                                                       ║
+║  ┌─────────────────────────────────────────────────────────────────┐ ║
+║  │                    COMPILER PIPELINE                            │ ║
+║  │                                                                 │ ║
+║  │  compile_expr() walks AST, emits Op::*:                        │ ║
+║  │                                                                 │ ║
+║  │  ┌─────────────────┐    ┌──────────────────┐                   │ ║
+║  │  │ AST Pattern     │    │ Emitted Ops       │                   │ ║
+║  │  ├─────────────────┤    ├──────────────────┤                   │ ║
+║  │  │ Num(42)         │───▶│ PushI64(42)       │                   │ ║
+║  │  │ Symbol "x"      │───▶│ LoadSlot(n)       │                   │ ║
+║  │  │ (if test a b)   │───▶│ <test> JmpIfFalse │ <a> Jump │ <b>   │ ║
+║  │  │ (let ((x e)) b) │───▶│ <e> StoreSlot(n)  │ <b>              │ ║
+║  │  │ (set! x e)      │───▶│ <e> StoreSlot(n)              │      │ ║
+║  │  │ (begin a b c)   │───▶│ <a> Pop <b> Pop <c>           │      │ ║
+║  │  │ (loop/recur)    │───▶│ tight loop with Recur op      │      │ ║
+║  │  │ (f arg1 arg2)   │───▶│ <args> Call*                  │      │ ║
+║  │  │ (map f lst)     │───▶│ <lst> <f> BuiltinCall "map"   │      │ ║
+║  │  │ (dict/get m k)  │───▶│ DictGet or DictGetSlot         │      │ ║
+║  │  └─────────────────┘    └──────────────────┘                   │ ║
+║  │                                                                 │ ║
+║  │  OPTIMIZATION PASSES (at compile time):                        │ ║
+║  │                                                                 │ ║
+║  │  ┌──────────────────────────────────────────────────────────┐  │ ║
+║  │  │ 1. FUSED OPS                                            │  │ ║
+║  │  │    (+ i 1) with slot i ──▶ SlotAddImm(slot, 1)         │  │ ║
+║  │  │    (>= i N) with slot i ──▶ SlotGeImm(slot, N)         │  │ ║
+║  │  │    Eliminates LoadSlot + PushI64 + Arith + StoreSlot    │  │ ║
+║  │  │                                                          │  │ ║
+║  │  │ 2. SUPER-FUSED OPS                                      │  │ ║
+║  │  │    (if (>= i N) ...) ──▶ JumpIfSlotGeImm(s, N, addr)   │  │ ║
+║  │  │    Zero stack traffic — reads slot, compares, jumps     │  │ ║
+║  │  │                                                          │  │ ║
+║  │  │ 3. MEGA-FUSED OPS                                       │  │ ║
+║  │  │    (loop ((i 0) (sum 0)) (if (>= i N) sum (recur...)))  │  │ ║
+║  │  │    ──▶ single RecurIncAccum(counter, accum, step, lim)  │  │ ║
+║  │  │    Entire loop body = ONE opcode per iteration           │  │ ║
+║  │  │                                                          │  │ ║
+║  │  │ 4. CONSTANT FOLDING                                     │  │ ║
+║  │  │    pure fn with all-const args ──▶ eval at compile time  │  │ ║
+║  │  │    (square 5) ──▶ PushI64(25)                           │  │ ║
+║  │  │                                                          │  │ ║
+║  │  │ 5. INLINE EXPANSION                                     │  │ ║
+║  │  │    Small compiled lambdas (< threshold) ──▶ paste body  │  │ ║
+║  │  │    Avoids CallCaptured overhead for small functions      │  │ ║
+║  │  │                                                          │  │ ║
+║  │  │ 6. TYPE INFERENCE                                       │  │ ║
+║  │  │    (pure "int -> int") annotation ──▶ TypedBinOp(I64)   │  │ ║
+║  │  │    Avoids dynamic type dispatch in hot loops             │  │ ║
+║  │  └──────────────────────────────────────────────────────────┘  │ ║
+║  │                                                                 │ ║
+║  │  CLOSURE CAPTURE:                                               │ ║
+║  │    try_capture() pulls needed vars from outer_env               │ ║
+║  │    PushClosure stores pre-compiled inner lambdas                │ ║
+║  │    runtime_captures link parent slots to closure slots          │ ║
+║  └─────────────────────────────────────────────────────────────────┘ ║
+╚═══════════════════════════════════════════════════════════════════════╝
+                                     │
+                                     ▼
+╔════════════════════════════════════════════════════════════════════════╗
+║  4. STACK VM                                            (bytecode)  ║
+║                                                                       ║
+║  ┌───────────────────────────────────────────────────────────┐       ║
+║  │  State: slots[Vec<LispVal>] + stack[Vec<LispVal>] + PC   │       ║
+║  │  + frames[Vec<Frame>] (for iterative CallSelf)           │       ║
+║  │                                                          │       ║
+║  │  EXECUTION LOOP:                                         │       ║
+║  │  ┌──────────────────────────────────────────────┐        │       ║
+║  │  │ loop {                                        │        │       ║
+║  │  │   ops++; state.eval_count++;                  │        │       ║
+║  │  │   budget_check();                             │        │       ║
+║  │  │   match code[pc] {                            │        │       ║
+║  │  │     LoadSlot(s)    → stack.push(slots[s])     │        │       ║
+║  │  │     StoreSlot(s)  → slots[s] = stack.pop()    │        │       ║
+║  │  │     PushI64(n)    → stack.push(Num(n))        │        │       ║
+║  │  │     Add/Sub/Mul   → b = pop; a = pop; push    │        │       ║
+║  │  │     JumpIfTrue(a) → if pop { pc = a }         │        │       ║
+║  │  │     Recur(n)      → pop n → slots; pc = 0     │        │       ║
+║  │  │     RecurIncAccum → ONE OPCODE LOOP BODY       │        │       ║
+║  │  │     CallSelf(n)   → push frame, re-enter VM    │        │       ║
+║  │  │     CallCaptured  → call compiled lambda       │        │       ║
+║  │  │     CallDynamic   → call value from stack      │        │       ║
+║  │  │     Return        → pop result, return          │       ║
+║  │  │     ReturnSlot(s) → return slots[s] directly   │        │       ║
+║  │  │     DictGet       → pop key,map; push map[key] │        │       ║
+║  │  │     DictMutSet(s) → mutate dict in-place       │        │       ║
+║  │  │     ...                                        │        │       ║
+║  │  │   }                                           │        │       ║
+║  │  │ }                                             │        │       ║
+║  │  └──────────────────────────────────────────────┘        │       ║
+║  │                                                          │       ║
+║  │  OPTIMIZATION LEVELS (by opcode):                        │       ║
+║  │                                                          │       ║
+║  │  ┌─────────────────────────────────────────────┐         │       ║
+║  │  │ Level 0: Basic ops                          │         │       ║
+║  │  │   LoadSlot + PushI64 + Add + StoreSlot      │ 4 ops   │       ║
+║  │  │                                             │         │       ║
+║  │  │ Level 1: Fused                              │         │       ║
+║  │  │   SlotAddImm(slot, imm)                     │ 1 op    │       ║
+║  │  │   read + add + writeback + push in 1 match  │         │       ║
+║  │  │                                             │         │       ║
+║  │  │ Level 2: Super-fused                        │         │       ║
+║  │  │   JumpIfSlotGeImm(s, imm, addr)             │ 1 op    │       ║
+║  │  │   compare + branch, zero stack traffic      │         │       ║
+║  │  │                                             │         │       ║
+║  │  │ Level 3: Mega-fused                         │         │       ║
+║  │  │   RecurIncAccum(counter, accum, step, lim)  │ 1 op    │       ║
+║  │  │   ENTIRE LOOP ITERATION = 1 opcode dispatch │         │       ║
+║  │  │   check limit, accumulate, increment, jump  │         │       ║
+║  │  └─────────────────────────────────────────────┘         │       ║
+║  └───────────────────────────────────────────────────────────┘       ║
+╚═══════════════════════════════════════════════════════════════════════╝
+                                     │
+          ┌──────────────────────────┼──────────────────────────┐
+          ▼                          ▼                          ▼
+┌──────────────────┐  ┌──────────────────────┐  ┌──────────────────┐
+│ BUILTINS         │  │ BUILTINS             │  │ BUILTINS         │
+│ dispatch_arith   │  │ dispatch_collections │  │ dispatch_state   │
+│ dispatch_strings │  │ dispatch_types       │  │ dispatch_http    │
+│ dispatch_json    │  │ dispatch_predicates  │  │ crypto           │
+│                  │  │                      │  │ llm_provider     │
+│ Called via:      │  │ map filter sort      │  │                  │
+│ BuiltinCall op   │  │ cons car cdr append  │  │ rlm/llm/sub-rlm │
+│ or direct match  │  │ reduce member assoc  │  │ http-get/post    │
+│ in VM            │  │ range list-copy      │  │ json-parse/build │
+│                  │  │ for-each make-list   │  │ shell read-file  │
+│ + - * / mod abs  │  │ list-tail nth        │  │ write-file      │
+│ sqrt floor ceil  │  │                      │  │ sha256 keccak   │
+│ expt sin cos tan │  │ Dict ops:            │  │ snapshot/rollback│
+│ min max          │  │  dict/get dict/set   │  │ rlm-set/get     │
+│ atan log truncate│  │  dict/has? dict/keys │  │                  │
+└──────────────────┘  │  dict/remove dict/merge│ └──────────────────┘
+                       └──────────────────────┘
+
+═════════════════════════════════════════════════════════════════════════
+
+                     RLM AGENT LOOP
+              (eval/mod.rs + llm_provider.rs)
+
+  ┌───────────────────────────────────────────────────────────┐
+  │  (rlm "task description")                                 │
+  │                       │                                   │
+  │                       ▼                                   │
+  │  ┌────────────┐  ┌──────────┐  ┌──────────┐  ┌────────┐ │
+  │  │ Build      │─▶│ LLM Call │─▶│ Parse as │─▶│ Eval   │ │
+  │  │ Context    │  │ (GLM-5)  │  │ LispVal  │  │ via VM │ │
+  │  │ + history  │  │          │  │          │  │        │ │
+  │  └────────────┘  └──────────┘  └──────────┘  └───┬────┘ │
+  │                                                    │      │
+  │  ┌────────────────────────────────────────────────┘      │
+  │  │                                                       │
+  │  │  On error:                                            │
+  │  │  ┌─────────┐    ┌──────────┐    ┌────────────────┐   │
+  │  │  │ Snapshot │───▶│ Rollback │───▶│ Retry with fix │   │
+  │  │  │ env      │    │ env      │    │ prompt to LLM  │   │
+  │  │  └─────────┘    └──────────┘    └────────────────┘   │
+  │  │                                                       │
+  │  │  On success or max iterations (10):                   │
+  │  └──────────────────▶ Return result                     │
+  └───────────────────────────────────────────────────────────┘
+
+═════════════════════════════════════════════════════════════════════════
+
+               COMPILATION EXAMPLE
+
+  Source:
+    (loop ((i 0) (sum 0)) (if (>= i 100000) sum (recur (+ i 1) (+ sum i))))
+
+  Compiled bytecode (Level 0):
+    PushI64(0), StoreSlot(0),          ;; i = 0
+    PushI64(0), StoreSlot(1),          ;; sum = 0
+    LoadSlot(0), PushI64(100000),      ;; i, 100000
+    Ge, JumpIfFalse(10),               ;; if i < 100000
+    LoadSlot(1), Jump(19),             ;;   return sum
+    LoadSlot(0), PushI64(1), Add,      ;;   i + 1
+    LoadSlot(1), LoadSlot(0), Add,     ;;   sum + i
+    StoreSlot(1), StoreSlot(0),        ;;   update sum, i
+    Jump(4)                            ;;   loop back
+
+  Optimized (Level 2-3 fused):
+    PushI64(0), StoreSlot(0),          ;; i = 0
+    PushI64(0), StoreSlot(1),          ;; sum = 0
+    JumpIfSlotGeImm(0, 100000, exit),  ;; super-fused compare
+    SlotAddImm(0, 1),                  ;; fused i += 1
+    SlotAddImm(1, i_val),              ;; fused sum += i
+    Jump(2)                            ;; loop back
+
+  Mega-fused (Level 3):
+    RecurIncAccum(0, 1, 1, 100000)    ;; ONE opcode per iteration
+
+═════════════════════════════════════════════════════════════════════════
+
+              CODE SIZE BREAKDOWN
+           ~17,600 lines total (Rust)
+
+  bytecode.rs       ████████████████████████  3676  (21%)
+  typing/checker.rs  ██████████                945   (5%)
+  types.rs           ████████                  624   (4%)
+  dispatch_coll      ██████                    807   (5%)
+  dispatch_types     ██████                    624   (4%)
+  dispatch_str       █████                     452   (3%)
+  program.rs         █████                     613   (3%)
+  helpers.rs         ████                      446   (3%)
+  eval/mod.rs        ████                      431   (2%)
+  dispatch_state     ███                       354   (2%)
+  llm_provider       ███                       266   (2%)
+  parser.rs          ███                       260   (1%)
+  Other              ██████████████████████    7802  (44%)

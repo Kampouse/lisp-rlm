@@ -109,18 +109,87 @@ pub fn run_program(
         }
     }
 
-    // ── Phase 3: Desugar ──
-    let desugared = desugar_program(&preprocessed);
+    // ── Phase 3: Separate defines from expressions ──
+    // Defines must be executed imperatively (writing to env) so that
+    // subsequent code and nested run_program calls (require) can see them.
+    let mut defines: Vec<(String, LispVal)> = Vec::new();
+    let mut exprs: Vec<&LispVal> = Vec::new();
+    let mut in_defines = true;
 
-    // ── Phase 4: Compile as zero-param lambda ──
-    // Build: (lambda () <desugared-body>)
-    let closed_env =
-        std::sync::Arc::new(std::sync::RwLock::new(env.snapshot()));
-    let lambda_body = desugared;
 
+    for form in &preprocessed {
+        if in_defines {
+            if let Some(binding) = desugar_define_to_pair(form) {
+                defines.push(binding);
+                continue;
+            }
+            in_defines = false;
+        }
+        exprs.push(form);
+    }
+
+    // ── Phase 4: Execute defines imperatively ──
+    // Each define's value expression is compiled and run separately.
+    // The result is stored in env so subsequent defines/expressions can see it.
+    for (name, val_expr) in &defines {
+        // For function defines (lambda values), pass the name so self_name
+        // is set for recursive calls via CallSelf.
+        let func_name = if matches!(
+            val_expr,
+            LispVal::List(ref l) if !l.is_empty() && matches!(&l[0], LispVal::Sym(s) if s == "lambda")
+        ) {
+            Some(name.as_str())
+        } else {
+            None
+        };
+
+        let closed_env =
+            std::sync::Arc::new(std::sync::RwLock::new(env.snapshot()));
+        let cl = try_compile_lambda(
+            &[],
+            val_expr,
+            &closed_env
+                .read()
+                .unwrap()
+                .clone()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            env,
+            func_name,
+            None,
+        )
+        .ok_or_else(|| {
+            format!(
+                "run_program: compilation failed for define '{}' = {:?}",
+                name, val_expr
+            )
+        })?;
+
+        let value = run_compiled_lambda(&cl, &[], env, state)?;
+        env.insert_mut(name.clone(), value);
+    }
+
+    // ── Phase 5: Evaluate remaining expressions ──
+    if exprs.is_empty() {
+        return Ok(LispVal::Nil);
+    }
+
+
+    // Build body: single expr or (begin expr1 expr2 ...)
+    let body = if exprs.len() == 1 {
+        (*exprs[0]).clone()
+    } else {
+        LispVal::List(
+            std::iter::once(LispVal::Sym("begin".into()))
+                .chain(exprs.iter().map(|e| (*e).clone()))
+                .collect(),
+        )
+    };
+
+    let closed_env = std::sync::Arc::new(std::sync::RwLock::new(env.snapshot()));
     let cl = try_compile_lambda(
-        &[], // zero params
-        &lambda_body,
+        &[],
+        &body,
         &closed_env
             .read()
             .unwrap()
@@ -128,19 +197,16 @@ pub fn run_program(
             .into_iter()
             .collect::<Vec<_>>(),
         env,
-        None, // no func_name
-        None, // no pure_type
+        None,
+        None,
     )
     .ok_or_else(|| {
         format!(
-            "run_program: compilation failed for desugared program. \
-             Forms may contain unsupported constructs."
+            "run_program: compilation failed for body expression(s)"
         )
     })?;
 
-    // ── Phase 5: Run through VM ──
     let result = run_compiled_lambda(&cl, &[], env, state)?;
-
     Ok(result)
 }
 
@@ -287,7 +353,7 @@ fn desugar_program(forms: &[&LispVal]) -> LispVal {
         if let LispVal::List(list) = form {
             if let Some(LispVal::Sym(name)) = list.first() {
                 if name.as_str() == "define" {
-                    if let Some(binding) = desugar_define(list) {
+                    if let Some(binding) = desugar_define_to_pair(form) {
                         defines.push(binding);
                         continue;
                     }
@@ -314,8 +380,29 @@ fn desugar_program(forms: &[&LispVal]) -> LispVal {
     wrap_in_lets(defines, body)
 }
 
+/// Desugar a single `(define ...)` form (passed as &LispVal) into a (name, value_expr) pair.
+/// Used by run_program to extract define bindings for imperative execution.
+fn desugar_define_to_pair(form: &LispVal) -> Option<(String, LispVal)> {
+    if let LispVal::List(list) = form {
+        desugar_define(list)
+    } else {
+        None
+    }
+}
+
 /// Desugar a single `(define ...)` form into a (name, value_expr) pair.
 fn desugar_define(list: &[LispVal]) -> Option<(String, LispVal)> {
+    // Must start with "define"
+    if list.is_empty() {
+        return None;
+    }
+    if let LispVal::Sym(ref s) = list[0] {
+        if s != "define" {
+            return None;
+        }
+    } else {
+        return None;
+    }
     if list.len() < 2 {
         return None;
     }
