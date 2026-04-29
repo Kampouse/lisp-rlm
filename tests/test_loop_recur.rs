@@ -2,11 +2,9 @@ use lisp_rlm::EvalState;
 use lisp_rlm::*;
 
 fn run_program(code: &str, env: &mut Env, state: &mut EvalState) -> Result<String, String> {
-    let exprs = parse_all(code)?;
-    let mut result = LispVal::Nil;
-    for expr in &exprs {
-        result = lisp_eval(&expr, env, state)?;
-    }
+    let result = lisp_rlm::program::run_program(
+        &parse_all(code)?, env, state
+    )?;
     Ok(result.to_string())
 }
 

@@ -1,4 +1,4 @@
-use lisp_rlm::{lisp_eval, parse_all, Env, EvalState, LispVal};
+use lisp_rlm::{run_program, parse_all, Env, EvalState, LispVal};
 /// Comparative benchmark: lisp-rlm vs Guile baseline
 /// cargo run --release --bin bench-compare
 use std::time::Instant;
@@ -26,11 +26,7 @@ fn main() {
         let parsed = parse_all(code).unwrap();
         let mut state = EvalState::new();
         state.eval_budget = 100_000_000;
-        let mut result = LispVal::Nil;
-        for form in parsed {
-            result = lisp_eval(&form, env, &mut state).unwrap();
-        }
-        result
+        run_program(&parsed, env, &mut state).unwrap()
     }
 
     let mut env = Env::new();
@@ -72,7 +68,7 @@ fn main() {
         3,
     );
 
-    // get-default — PARSE ONCE, call lisp_eval repeatedly
+    // get-default — PARSE ONCE, call run_program repeatedly
     eval_all(
         "(define test-dict (dict \"a\" 1 \"b\" 2 \"c\" 3))",
         &mut env,
@@ -82,7 +78,7 @@ fn main() {
     time_it(
         "get-default",
         || {
-            lisp_eval(gd_expr, &mut env, &mut state).unwrap();
+            run_program(std::slice::from_ref(gd_expr), &mut env, &mut state).unwrap();
         },
         1_000_000,
     );
@@ -97,7 +93,7 @@ fn main() {
     time_it(
         "score-intention",
         || {
-            lisp_eval(si_expr, &mut env, &mut state).unwrap();
+            run_program(std::slice::from_ref(si_expr), &mut env, &mut state).unwrap();
         },
         100_000,
     );
@@ -109,7 +105,7 @@ fn main() {
     time_it(
         "map(100-elem)",
         || {
-            lisp_eval(map_expr, &mut env, &mut state).unwrap();
+            run_program(std::slice::from_ref(map_expr), &mut env, &mut state).unwrap();
         },
         10_000,
     );
@@ -120,7 +116,7 @@ fn main() {
     time_it(
         "filter(100-elem)",
         || {
-            lisp_eval(filt_expr, &mut env, &mut state).unwrap();
+            run_program(std::slice::from_ref(filt_expr), &mut env, &mut state).unwrap();
         },
         10_000,
     );
@@ -132,7 +128,7 @@ fn main() {
     time_it(
         "sort(100-elem)",
         || {
-            lisp_eval(sort_expr, &mut env, &mut state).unwrap();
+            run_program(std::slice::from_ref(sort_expr), &mut env, &mut state).unwrap();
         },
         10_000,
     );
@@ -143,7 +139,7 @@ fn main() {
     time_it(
         "loop-sum(1000)",
         || {
-            lisp_eval(ls_expr, &mut env, &mut state).unwrap();
+            run_program(std::slice::from_ref(ls_expr), &mut env, &mut state).unwrap();
         },
         10_000,
     );
@@ -154,7 +150,7 @@ fn main() {
     time_it(
         "dict-chain(100)",
         || {
-            lisp_eval(dc_expr, &mut env, &mut state).unwrap();
+            run_program(std::slice::from_ref(dc_expr), &mut env, &mut state).unwrap();
         },
         10_000,
     );

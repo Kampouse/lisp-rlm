@@ -81,9 +81,7 @@ fn main() {
     state.eval_budget = 100_000_000; // 100M for benchmarks
     state.eval_budget = 0; // unlimited for benchmarks
     let exprs = parse_all(harness_code).unwrap();
-    for expr in &exprs {
-        lisp_eval(expr, &mut env, &mut state).unwrap();
-    }
+    run_program(&exprs, &mut env, &mut state).unwrap();
 
     println!("=== Harness Benchmark ===\n");
 
@@ -119,7 +117,7 @@ fn main() {
         let exprs = parse_all(prog).unwrap();
         let start = std::time::Instant::now();
         for _ in 0..n {
-            let _ = lisp_eval(&exprs[0], &mut env, &mut state);
+            let _ = run_program(&exprs, &mut env, &mut state);
         }
         let ms = elapsed_ms(start);
         println!(
@@ -137,7 +135,7 @@ fn main() {
         let exprs = parse_all(prog).unwrap();
         let start = std::time::Instant::now();
         for _ in 0..n {
-            let _ = lisp_eval(&exprs[0], &mut env, &mut state);
+            let _ = run_program(&exprs, &mut env, &mut state);
         }
         let ms = elapsed_ms(start);
         println!(
@@ -155,7 +153,7 @@ fn main() {
         let exprs = parse_all(prog).unwrap();
         let start = std::time::Instant::now();
         for _ in 0..n {
-            let _ = lisp_eval(&exprs[0], &mut env, &mut state);
+            let _ = run_program(&exprs, &mut env, &mut state);
         }
         let ms = elapsed_ms(start);
         println!(
@@ -173,7 +171,7 @@ fn main() {
         let exprs = parse_all(prog).unwrap();
         let start = std::time::Instant::now();
         for _ in 0..n {
-            let _ = lisp_eval(&exprs[0], &mut env, &mut state);
+            let _ = run_program(&exprs, &mut env, &mut state);
         }
         let ms = elapsed_ms(start);
         let ticks_per_sec = n as f64 / (ms / 1000.0);
@@ -193,7 +191,7 @@ fn main() {
         let exprs = parse_all(prog).unwrap();
         let start = std::time::Instant::now();
         for _ in 0..n {
-            let _ = lisp_eval(&exprs[0], &mut env, &mut state);
+            let _ = run_program(&exprs, &mut env, &mut state);
         }
         let ms = elapsed_ms(start);
         let total_elems = n * 10;
@@ -212,7 +210,7 @@ fn main() {
         let exprs = parse_all(prog).unwrap();
         let start = std::time::Instant::now();
         for _ in 0..n {
-            let _ = lisp_eval(&exprs[0], &mut env, &mut state);
+            let _ = run_program(&exprs, &mut env, &mut state);
         }
         let ms = elapsed_ms(start);
         println!(
@@ -230,7 +228,7 @@ fn main() {
         let exprs = parse_all(prog).unwrap();
         let start = std::time::Instant::now();
         for _ in 0..n {
-            let _ = lisp_eval(&exprs[0], &mut env, &mut state);
+            let _ = run_program(&exprs, &mut env, &mut state);
         }
         let ms = elapsed_ms(start);
         println!(
@@ -248,7 +246,7 @@ fn main() {
         let exprs = parse_all(prog).unwrap();
         let start = std::time::Instant::now();
         for _ in 0..n {
-            let _ = lisp_eval(&exprs[0], &mut env, &mut state);
+            let _ = run_program(&exprs, &mut env, &mut state);
         }
         let ms = elapsed_ms(start);
         println!(
@@ -266,7 +264,7 @@ fn main() {
         let exprs = parse_all(prog).unwrap();
         let start = std::time::Instant::now();
         for _ in 0..n {
-            let _ = lisp_eval(&exprs[0], &mut env, &mut state);
+            let _ = run_program(&exprs, &mut env, &mut state);
         }
         let ms = elapsed_ms(start);
         println!(
@@ -284,7 +282,7 @@ fn main() {
         let exprs = parse_all(prog).unwrap();
         let start = std::time::Instant::now();
         for _ in 0..n {
-            let _ = lisp_eval(&exprs[0], &mut env, &mut state);
+            let _ = run_program(&exprs, &mut env, &mut state);
         }
         let ms = elapsed_ms(start);
         println!(
@@ -302,7 +300,7 @@ fn main() {
         let exprs = parse_all(prog).unwrap();
         let start = std::time::Instant::now();
         for _ in 0..n {
-            let _ = lisp_eval(&exprs[0], &mut env, &mut state);
+            let _ = run_program(&exprs, &mut env, &mut state);
         }
         let ms = elapsed_ms(start);
         println!(
@@ -335,16 +333,14 @@ fn main() {
         // Store as *big-intentions*
         let store_code = format!("(define *big-intentions* {})", intent_code);
         let store_exprs = parse_all(&store_code).unwrap();
-        for expr in &store_exprs {
-            let _ = lisp_eval(expr, &mut env, &mut state);
-        }
+        let _ = run_program(&store_exprs, &mut env, &mut state);
 
         let n = 500;
         let prog = r#"(scheduler-run *big-intentions*)"#;
         let exprs = parse_all(prog).unwrap();
         let start = std::time::Instant::now();
         for _ in 0..n {
-            let _ = lisp_eval(&exprs[0], &mut env, &mut state);
+            let _ = run_program(&exprs, &mut env, &mut state);
         }
         let ms = elapsed_ms(start);
         let ticks_per_sec = n as f64 / (ms / 1000.0);
@@ -371,7 +367,7 @@ fn main() {
         let intent = {
             let code = r#"(dict "id" "bench" "type" "completable" "cost" 5 "deadline" 1)"#;
             let exprs = parse_all(code).unwrap();
-            lisp_eval(&exprs[0], &mut env, &mut fresh_state).unwrap()
+            run_program(&exprs, &mut env, &mut fresh_state).unwrap()
         };
 
         let n = 10000;
@@ -407,7 +403,7 @@ fn main() {
         let m = {
             let code = r#"(dict "a" 1 "b" 2 "c" 3)"#;
             let exprs = parse_all(code).unwrap();
-            lisp_eval(&exprs[0], &mut env, &mut fresh_state2).unwrap()
+            run_program(&exprs, &mut env, &mut fresh_state2).unwrap()
         };
 
         let n = 100000;

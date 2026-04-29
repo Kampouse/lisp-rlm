@@ -10,9 +10,7 @@ fn eval_and_get_lambda(
     let exprs = parse_all(code)?;
     let mut env = Env::new();
     let mut state = EvalState::new();
-    for expr in &exprs {
-        let _ = lisp_eval(expr, &mut env, &mut state)?;
-    }
+    let _ = lisp_rlm::program::run_program(&exprs, &mut env, &mut state)?;
     match env.get(func_name) {
         Some(LispVal::Lambda { compiled, .. }) => Ok(compiled.clone().map(|b| *b)),
         _ => Ok(None),
@@ -25,7 +23,7 @@ fn eval_program(code: &str) -> Result<String, String> {
     let mut state = EvalState::new();
     let mut result = LispVal::Nil;
     for expr in &exprs {
-        result = lisp_eval(expr, &mut env, &mut state)?;
+        result = lisp_rlm::program::run_program(&[expr.clone()], &mut env, &mut state)?;
     }
     Ok(result.to_string())
 }

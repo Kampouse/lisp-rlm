@@ -7,7 +7,7 @@ fn run_program(code: &str) -> Result<String, String> {
     let mut state = EvalState::new();
     let mut result = LispVal::Nil;
     for expr in &exprs {
-        result = lisp_eval(expr, &mut env, &mut state)?;
+        result = lisp_rlm::program::run_program(&[expr.clone()], &mut env, &mut state)?;
     }
     Ok(result.to_string())
 }

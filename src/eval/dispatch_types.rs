@@ -231,6 +231,7 @@ pub fn type_of(value: &LispVal) -> &'static str {
         LispVal::Map(_) => ":map",
         LispVal::Lambda { .. } | LispVal::CaseLambda { .. } => ":fn",
         LispVal::Memoized { .. } => ":fn",
+        LispVal::BuiltinFn(_) => ":builtin",
         LispVal::Macro { .. } => ":macro",
         LispVal::Recur(_) => ":recur",
     }

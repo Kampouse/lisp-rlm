@@ -1,5 +1,5 @@
 use lisp_rlm::EvalState;
-use lisp_rlm::{lisp_eval, parse_all, Env, GenericProvider, LispVal};
+use lisp_rlm::{run_program, parse_all, Env, GenericProvider, LispVal};
 use std::env;
 use std::time::Instant;
 
@@ -161,16 +161,14 @@ fn handle_repl_command(line: &str, env: &mut Env, state: &mut EvalState) -> bool
             let code = &trimmed[6..];
             match parse_all(code) {
                 Ok(exprs) => {
-                    for expr in &exprs {
-                        let start = Instant::now();
-                        match lisp_eval(expr, env, state) {
-                            Ok(val) => {
-                                let elapsed = start.elapsed();
-                                print_value(&val);
-                                println!("{}({:.2?}){}", color::DIM, elapsed, color::RESET);
-                            }
-                            Err(e) => print_error(&e, state),
+                    let start = Instant::now();
+                    match run_program(&exprs, env, state) {
+                        Ok(val) => {
+                            let elapsed = start.elapsed();
+                            print_value(&val);
+                            println!("{}({:.2?}){}", color::DIM, elapsed, color::RESET);
                         }
+                        Err(e) => print_error(&e, state),
                     }
                 }
                 Err(e) => eprintln!("{}PARSE ERROR:{} {}", color::RED, color::RESET, e),
@@ -200,12 +198,12 @@ fn real_main() {
         state.llm_provider = Some(Box::new(provider));
     }
 
-    // Load stdlib (skip list — recursive defs may hang on eval budget)
+    // Load stdlib
     for module in &["math", "list", "string"] {
         if let Some(code) = lisp_rlm::get_stdlib_code(module) {
             if let Ok(exprs) = parse_all(code) {
-                for expr in &exprs {
-                    let _ = lisp_eval(expr, &mut env, &mut state);
+                if let Err(e) = run_program(&exprs, &mut env, &mut state) {
+                    eprintln!("{}STDLOAD ERROR ({}):{} {}", color::RED, module, color::RESET, e);
                 }
             }
         }
@@ -218,21 +216,17 @@ fn real_main() {
         let path = &args[1];
         match std::fs::read_to_string(path) {
             Ok(code) => match parse_all(&code) {
-                Ok(exprs) => {
-                    for expr in &exprs {
-                        match lisp_eval(expr, &mut env, &mut state) {
-                            Ok(val) => {
-                                if !matches!(val, LispVal::Nil) {
-                                    println!("{}", val);
-                                }
-                            }
-                            Err(e) => {
-                                print_error(&e, &state);
-                                std::process::exit(1);
-                            }
+                Ok(exprs) => match run_program(&exprs, &mut env, &mut state) {
+                    Ok(val) => {
+                        if !matches!(val, LispVal::Nil) {
+                            println!("{}", val);
                         }
                     }
-                }
+                    Err(e) => {
+                        print_error(&e, &state);
+                        std::process::exit(1);
+                    }
+                },
                 Err(e) => {
                     eprintln!(
                         "{}{}PARSE ERROR:{} {}",
@@ -269,18 +263,14 @@ fn real_main() {
                 }
 
                 match parse_all(&line) {
-                    Ok(exprs) => {
-                        for expr in &exprs {
-                            match lisp_eval(expr, &mut env, &mut state) {
-                                Ok(val) => {
-                                    if !matches!(val, LispVal::Nil) {
-                                        print_value(&val);
-                                    }
-                                }
-                                Err(e) => print_error(&e, &state),
+                    Ok(exprs) => match run_program(&exprs, &mut env, &mut state) {
+                        Ok(val) => {
+                            if !matches!(val, LispVal::Nil) {
+                                print_value(&val);
                             }
                         }
-                    }
+                        Err(e) => print_error(&e, &state),
+                    },
                     Err(e) => {
                         eprintln!(
                             "{}{}PARSE ERROR:{} {}",

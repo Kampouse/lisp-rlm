@@ -11,7 +11,8 @@ open Lisp.Values
 let op_int_add (x:int) (y:int) : int = x + y
 let op_int_sub (x:int) (y:int) : int = x - y
 let int_mul (x:int) (y:int) : Tot int = Prims.op_Multiply x y
-assume val int_div : int -> int -> Tot int
+val int_div : x:int -> y:int -> Tot int
+let int_div x y = if y = 0 then 0 else x / y
 let op_int_lt  (x:int) (y:int) : bool = x < y
 let op_int_le  (x:int) (y:int) : bool = x <= y
 let op_int_gt  (x:int) (y:int) : bool = x > y

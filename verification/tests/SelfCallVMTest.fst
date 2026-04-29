@@ -1,4 +1,4 @@
-(** Self-call VM step-by-step proofs *)
+(** Self-call VM step-by-step proofs — Frame Stack Model *)
 module SelfCallVMTest
 
 open Lisp.Types
@@ -21,12 +21,14 @@ let chunk_code = [
   Return             // 10
 ]
 
+// Base case: x=0, LoadSlot pushes Num 0
 val self_base_step : unit -> Lemma
   (let s = { stack = []; slots = [Num 0]; pc = 0;
              code = chunk_code;
              ok = true;
              code_table = [];
-             ret_pc = 99; ret_code = [PushNil] } in
+             frames = [];
+             num_slots = 1; captured = []; closure_envs = [] } in
    let s1 = closure_eval_op s in
    match s1.stack with
    | Num 0 :: [] -> true
@@ -38,7 +40,8 @@ val self_base_push_zero : unit -> Lemma
              code = chunk_code;
              ok = true;
              code_table = [];
-             ret_pc = 99; ret_code = [PushNil] } in
+             frames = [];
+             num_slots = 1; captured = []; closure_envs = [] } in
    let s1 = closure_eval_op s in
    match s1.stack with
    | Num 0 :: Num 0 :: [] -> true
@@ -50,7 +53,8 @@ val self_base_eq : unit -> Lemma
              code = chunk_code;
              ok = true;
              code_table = [];
-             ret_pc = 99; ret_code = [PushNil] } in
+             frames = [];
+             num_slots = 1; captured = []; closure_envs = [] } in
    let s1 = closure_eval_op s in
    match s1.stack with
    | Bool true :: [] -> true
@@ -69,16 +73,19 @@ val pop_bind_one : unit -> Lemma
    | _ -> false)
 let pop_bind_one () = ()
 
+// CallSelf: pushes frame, resets pc=0, binds arg to slots
+// Uses extracted handler directly to bypass 54-arm dispatch
 val self_call_op : unit -> Lemma
-  (let s = { stack = [Num 4]; slots = [Num 5]; pc = 0;
-             code = [CallSelf 1];
+  (let s = { stack = [Num 4]; slots = [Num 5]; pc = 9;
+             code = [CallSelf 1; Return];
              ok = true;
              code_table = [];
-             ret_pc = 99; ret_code = [PushNil] } in
-   let s' = closure_eval_op s in
-   match s'.pc, s'.stack, s'.slots with
-   | 0, [], [Num 4] -> true
-   | _ -> false)
+             frames = [];
+             num_slots = 1; captured = []; closure_envs = [] } in
+   let s' = callself_handler 1 s 10 in
+   s'.pc = 0 && s'.ok = true &&
+   (match s'.stack with | [] -> true | _ -> false) &&
+   (match s'.slots with | [Num 4] -> true | _ -> false))
 let self_call_op () = ()
 
 val self_rec_path : unit -> Lemma (true)

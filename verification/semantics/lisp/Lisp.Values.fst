@@ -103,18 +103,34 @@ let lisp_eq a b =
   | _, _                -> false
 
 // === Dict operations ===
-val dict_get : key:string -> m:list (string * lisp_val) -> Tot lisp_val
-let rec dict_get key m =
+// Non-recursive wrappers around recursive helpers.
+// This lets Z3 unfold the first match case of dict_get/dict_remove.
+
+val dict_get_rest : string -> list (string * lisp_val) -> Tot lisp_val
+let rec dict_get_rest key m =
   match m with
   | [] -> Nil
-  | (k, v) :: rest -> if k = key then v else dict_get key rest
+  | (k, v) :: rest -> if k = key then v else dict_get_rest key rest
 
-val dict_remove : key:string -> m:list (string * lisp_val) -> Tot (list (string * lisp_val))
-let rec dict_remove key m =
+val dict_remove_rest : string -> list (string * lisp_val) -> Tot (list (string * lisp_val))
+let rec dict_remove_rest key m =
   match m with
   | [] -> []
-  | (k, v) :: rest -> if k = key then dict_remove key rest
-                       else (k, v) :: dict_remove key rest
+  | (k, v) :: rest -> if k = key then dict_remove_rest key rest
+                       else (k, v) :: dict_remove_rest key rest
+
+val dict_get : key:string -> m:list (string * lisp_val) -> Tot lisp_val
+let dict_get key m =
+  match m with
+  | [] -> Nil
+  | (k, v) :: rest -> if k = key then v else dict_get_rest key rest
+
+val dict_remove : key:string -> m:list (string * lisp_val) -> Tot (list (string * lisp_val))
+let dict_remove key m =
+  match m with
+  | [] -> []
+  | (k, v) :: rest -> if k = key then dict_remove_rest key rest
+                       else (k, v) :: dict_remove_rest key rest
 
 val dict_set : key:string -> v:lisp_val -> m:list (string * lisp_val) -> Tot (list (string * lisp_val))
 let dict_set key v m = (key, v) :: dict_remove key m

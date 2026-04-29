@@ -1,6 +1,6 @@
 //! Tests for the pure type checker.
 
-use lisp_rlm::{lisp_eval, parse_all, Env, EvalState};
+use lisp_rlm::{parse_all, Env, EvalState};
 
 fn eval_source(src: &str) -> Result<String, String> {
     let exprs = parse_all(src).map_err(|e| e.to_string())?;
@@ -8,7 +8,7 @@ fn eval_source(src: &str) -> Result<String, String> {
     let mut state = EvalState::new();
     let mut result = String::new();
     for expr in &exprs {
-        let val = lisp_eval(expr, &mut env, &mut state)?;
+        let val = lisp_rlm::program::run_program(&[expr.clone()], &mut env, &mut state)?;
         result = val.to_string();
     }
     Ok(result)

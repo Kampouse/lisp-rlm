@@ -8,7 +8,7 @@ fn eval(code: &str) -> Result<LispVal, String> {
     let exprs = parse_all(code).map_err(|e| e.to_string())?;
     let mut result = LispVal::Nil;
     for expr in &exprs {
-        result = lisp_eval(expr, &mut env, &mut state)?;
+        result = lisp_rlm::program::run_program(&[expr.clone()], &mut env, &mut state)?;
     }
     Ok(result)
 }
@@ -21,7 +21,7 @@ fn eval_with_budget(code: &str, budget: u64) -> Result<LispVal, String> {
     let exprs = parse_all(code).map_err(|e| e.to_string())?;
     let mut result = LispVal::Nil;
     for expr in &exprs {
-        result = lisp_eval(expr, &mut env, &mut state)?;
+        result = lisp_rlm::program::run_program(&[expr.clone()], &mut env, &mut state)?;
     }
     Ok(result)
 }
@@ -137,7 +137,7 @@ fn test_budget_counter_increments() {
     state.eval_budget = 100; // non-zero to enable counting
 
     let exprs = parse_all("(+ 1 2)").unwrap();
-    lisp_eval(&exprs[0], &mut env, &mut state).unwrap();
+    lisp_rlm::program::run_program(&exprs[0..1], &mut env, &mut state).unwrap();
 
     assert!(state.eval_count > 0, "eval_count should have incremented");
     // (+ 1 2) = 1 top-level eval + 1 for the + dispatch = at least 2
@@ -154,7 +154,7 @@ fn test_budget_resets_on_new_env() {
     let mut state = EvalState::new();
     state.eval_budget = 100;
     let exprs = parse_all("(+ 1 2)").unwrap();
-    lisp_eval(&exprs[0], &mut env, &mut state).unwrap();
+    lisp_rlm::program::run_program(&exprs[0..1], &mut env, &mut state).unwrap();
     assert!(state.eval_count > 0);
 
     let env2 = Env::new();
@@ -204,7 +204,7 @@ fn test_budget_large_computation_completes() {
     let exprs = parse_all(code).unwrap();
     let mut result = LispVal::Nil;
     for expr in &exprs {
-        result = lisp_eval(expr, &mut env, &mut state).unwrap();
+        result = lisp_rlm::program::run_program(&[expr.clone()], &mut env, &mut state).unwrap();
     }
     // Sum 1..5000 = 12_502_500
     assert_eq!(result, LispVal::Num(12_502_500));

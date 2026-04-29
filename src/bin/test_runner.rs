@@ -6,9 +6,7 @@ fn main() {
     eprintln!("loading math...");
     if let Some(code) = lisp_rlm::get_stdlib_code("math") {
         if let Ok(exprs) = lisp_rlm::parse_all(code) {
-            for expr in &exprs {
-                let _ = lisp_rlm::lisp_eval(expr, &mut env, &mut state);
-            }
+            let _ = lisp_rlm::run_program(&exprs, &mut env, &mut state);
         }
     }
     eprintln!("math ok");
@@ -16,9 +14,7 @@ fn main() {
     eprintln!("loading list...");
     if let Some(code) = lisp_rlm::get_stdlib_code("list") {
         if let Ok(exprs) = lisp_rlm::parse_all(code) {
-            for expr in &exprs {
-                let _ = lisp_rlm::lisp_eval(expr, &mut env, &mut state);
-            }
+            let _ = lisp_rlm::run_program(&exprs, &mut env, &mut state);
         }
     }
     eprintln!("list ok");
@@ -26,9 +22,7 @@ fn main() {
     eprintln!("loading string...");
     if let Some(code) = lisp_rlm::get_stdlib_code("string") {
         if let Ok(exprs) = lisp_rlm::parse_all(code) {
-            for expr in &exprs {
-                let _ = lisp_rlm::lisp_eval(expr, &mut env, &mut state);
-            }
+            let _ = lisp_rlm::run_program(&exprs, &mut env, &mut state);
         }
     }
     eprintln!("string ok");

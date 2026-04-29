@@ -6,9 +6,7 @@ fn main() {
     for module in &["math", "list"] {
         if let Some(code) = lisp_rlm::get_stdlib_code(module) {
             if let Ok(exprs) = lisp_rlm::parse_all(code) {
-                for expr in &exprs {
-                    let _ = lisp_rlm::lisp_eval(expr, &mut env, &mut state);
-                }
+                let _ = lisp_rlm::run_program(&exprs, &mut env, &mut state);
             }
         }
     }
@@ -18,15 +16,9 @@ fn main() {
     if let Some(code) = lisp_rlm::get_stdlib_code("string") {
         if let Ok(exprs) = lisp_rlm::parse_all(code) {
             eprintln!("string has {} exprs", exprs.len());
-            for (i, expr) in exprs.iter().enumerate() {
-                eprintln!("  eval [{}]...", i);
-                match lisp_rlm::lisp_eval(expr, &mut env, &mut state) {
-                    Ok(v) => eprintln!("  [{}] = {}", i, v),
-                    Err(e) => {
-                        eprintln!("  [{}] ERR: {}", i, e);
-                        break;
-                    }
-                }
+            match lisp_rlm::run_program(&exprs, &mut env, &mut state) {
+                Ok(v) => eprintln!("string loaded, last result: {}", v),
+                Err(e) => eprintln!("string ERR: {}", e),
             }
         }
     }

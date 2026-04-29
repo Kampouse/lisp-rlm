@@ -1,11 +1,11 @@
 
-use lisp_rlm::{lisp_eval, LispVal, Env, EvalState, parse_all};
+use lisp_rlm::{LispVal, Env, EvalState, parse_all};
 
 fn eval(src: &str, env: &mut Env, state: &mut EvalState) -> LispVal {
     let exprs = parse_all(src).unwrap();
     let mut result = LispVal::Nil;
     for expr in exprs {
-        result = lisp_eval(&expr, env, state).unwrap();
+        result = lisp_rlm::program::run_program(&[expr.clone()], env, state).unwrap();
     }
     result
 }

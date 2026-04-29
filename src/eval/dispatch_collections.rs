@@ -3,28 +3,18 @@
 //!
 //! par-map and par-filter propagate the LLM provider into cloned envs.
 
-use super::continuation::EvalResult;
 use crate::helpers::*;
 use crate::types::{Env, EvalState, LispVal};
 
 /// Helper: call a function value with given args in the given env.
-/// Single lisp_eval call — the trampoline resolves everything iteratively.
+/// Call a function value — delegates to the VM.
 fn call_val(
     func: &LispVal,
     args: &[LispVal],
     env: &mut Env,
     state: &mut EvalState,
 ) -> Result<LispVal, String> {
-    match super::call_val(func, args, env, state)? {
-        EvalResult::Value(v) => Ok(v),
-        EvalResult::TailCall {
-            expr,
-            env: tail_env,
-        } => {
-            *env = tail_env;
-            super::lisp_eval(&expr, env, state)
-        }
-    }
+    super::call_val(func, args, env, state)
 }
 
 pub fn handle(
@@ -466,16 +456,7 @@ pub fn handle(
                     );
                     tasks.push(tokio::spawn(async move {
                         tokio::task::yield_now().await;
-                        match super::call_val(&f, &[elem], &mut task_env, &mut task_state)? {
-                            EvalResult::Value(v) => Ok(v),
-                            EvalResult::TailCall {
-                                expr,
-                                env: tail_env,
-                            } => {
-                                let mut e = tail_env;
-                                super::lisp_eval(&expr, &mut e, &mut task_state)
-                            }
-                        }
+                        super::call_val(&f, &[elem], &mut task_env, &mut task_state)
                     }));
                 }
                 let mut out = Vec::with_capacity(tasks.len());
@@ -518,17 +499,7 @@ pub fn handle(
                     let e = elem.clone();
                     tasks.push(tokio::spawn(async move {
                         tokio::task::yield_now().await;
-                        let result =
-                            match super::call_val(&f, &[e], &mut task_env, &mut task_state)? {
-                                EvalResult::Value(v) => v,
-                                EvalResult::TailCall {
-                                    expr,
-                                    env: tail_env,
-                                } => {
-                                    let mut env = tail_env;
-                                    super::lisp_eval(&expr, &mut env, &mut task_state)?
-                                }
-                            };
+                        let result = super::call_val(&f, &[e], &mut task_env, &mut task_state)?;
                         Ok::<bool, String>(super::is_truthy(&result))
                     }));
                 }

@@ -8,7 +8,7 @@ fn eval(code: &str) -> String {
     let mut state = EvalState::new();
     let mut result = LispVal::Nil;
     for expr in &exprs {
-        result = lisp_eval(expr, &mut env, &mut state).unwrap();
+        result = lisp_rlm::program::run_program(&[expr.clone()], &mut env, &mut state).unwrap();
     }
     result.to_string()
 }

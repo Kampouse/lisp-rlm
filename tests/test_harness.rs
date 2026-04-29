@@ -4,11 +4,7 @@ use lisp_rlm::*;
 
 fn eval(code: &str, env: &mut Env, state: &mut EvalState) -> LispVal {
     let exprs = parse_all(code).unwrap();
-    let mut result = LispVal::Nil;
-    for expr in &exprs {
-        result = lisp_eval(expr, env, state).unwrap();
-    }
-    result
+    lisp_rlm::program::run_program(&exprs, env, state).unwrap()
 }
 
 #[test]

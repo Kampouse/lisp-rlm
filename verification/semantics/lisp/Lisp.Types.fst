@@ -8,6 +8,7 @@ module Lisp.Types
 // === Abstract float type ===
 
 type ffloat
+assume val ff_eq  : ffloat -> ffloat -> Tot bool
 
 assume val ff_of_int : int -> Tot ffloat
 assume val ff_to_int : ffloat -> Tot int
@@ -19,7 +20,6 @@ assume val ff_gt  : ffloat -> ffloat -> Tot bool
 assume val ff_lt  : ffloat -> ffloat -> Tot bool
 assume val ff_ge  : ffloat -> ffloat -> Tot bool
 assume val ff_le  : ffloat -> ffloat -> Tot bool
-assume val ff_eq  : ffloat -> ffloat -> Tot bool
 
 // === LispVal ===
 noeq type lisp_val =

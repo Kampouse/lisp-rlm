@@ -3,7 +3,7 @@
 //! Given a pure lambda, probe each parameter with representative values of each type,
 //! observe which inputs succeed and what type the output is. Build an inferred signature.
 
-use crate::eval::lisp_eval;
+use crate::program::run_program;
 use crate::parser::parse_all;
 use crate::types::{Env, EvalState, LispVal};
 
@@ -171,11 +171,7 @@ fn call_with_args(
 
     let mut state = EvalState::new();
     let exprs = parse_all(&call_expr).map_err(|e| e.to_string())?;
-    let mut result = LispVal::Nil;
-    for expr in &exprs {
-        result = lisp_eval(expr, &mut env, &mut state)?;
-    }
-    Ok(result)
+    run_program(&exprs, &mut env, &mut state)
 }
 
 /// Format a probe result as a Lisp-readable type signature string.

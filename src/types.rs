@@ -89,6 +89,11 @@ impl Env {
         env.insert_mut("t".to_string(), LispVal::Bool(true));
         env.insert_mut("true".to_string(), LispVal::Bool(true));
         env.insert_mut("false".to_string(), LispVal::Bool(false));
+        // First-class builtin function references.
+        // Allows builtins to be captured and passed as values (e.g., to map, compose).
+        for &name in crate::helpers::BUILTIN_NAMES {
+            env.bindings.insert(name.to_string(), LispVal::BuiltinFn(name.to_string()));
+        }
         env
     }
 
@@ -487,6 +492,10 @@ pub enum LispVal {
         func: Box<LispVal>,
         cache: Arc<RwLock<im::HashMap<String, LispVal>>>,
     },
+    /// First-class builtin function reference.
+    /// Stores the builtin name so it can be dispatched via eval_builtin.
+    /// Created when a builtin is used as a value (e.g., passed to map/filter).
+    BuiltinFn(String),
 }
 
 impl PartialEq for LispVal {
@@ -576,6 +585,7 @@ impl std::fmt::Display for LispVal {
                 let cache_len = cache.read().map(|c| c.len()).unwrap_or(0);
                 write!(f, "#<memoized {} entries>", cache_len)
             }
+            LispVal::BuiltinFn(name) => write!(f, "#<builtin {}>", name),
         }
     }
 }

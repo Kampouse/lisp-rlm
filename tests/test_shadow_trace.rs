@@ -6,7 +6,7 @@ fn eval(code: &str) -> String {
     eprintln!("Parsed: {:?}", exprs[0]);
     let mut env = Env::new();
     let mut state = EvalState::new();
-    let r = lisp_eval(&exprs[0], &mut env, &mut state);
+    let r = lisp_rlm::program::run_program(&exprs[..1], &mut env, &mut state);
     format!("{:?}", r)
 }
 

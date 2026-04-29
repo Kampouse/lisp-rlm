@@ -11,7 +11,7 @@
 //! hangs inside dispatch_collections::handle but works fine in direct calls.
 
 use lisp_rlm::EvalState;
-use lisp_rlm::{lisp_eval, parse_all, Env, LispVal};
+use lisp_rlm::{parse_all, Env, LispVal};
 
 fn eval_val(code: &str) -> LispVal {
     let mut env = Env::new();
@@ -19,22 +19,16 @@ fn eval_val(code: &str) -> LispVal {
     for module in &["math", "list", "string"] {
         if let Some(mcode) = lisp_rlm::get_stdlib_code(module) {
             if let Ok(exprs) = parse_all(mcode) {
-                for expr in &exprs {
-                    let _ = lisp_eval(expr, &mut env, &mut state);
-                }
+                let _ = lisp_rlm::program::run_program(&exprs, &mut env, &mut state);
             }
         }
     }
     match parse_all(code) {
         Ok(exprs) => {
-            let mut result = LispVal::Nil;
-            for expr in &exprs {
-                match lisp_eval(expr, &mut env, &mut state) {
-                    Ok(v) => result = v,
-                    Err(e) => return LispVal::Str(format!("ERROR: {}", e)),
-                }
+            match lisp_rlm::program::run_program(&exprs, &mut env, &mut state) {
+                Ok(v) => v,
+                Err(e) => LispVal::Str(format!("ERROR: {}", e)),
             }
-            result
         }
         Err(e) => LispVal::Str(format!("PARSE ERROR: {}", e)),
     }

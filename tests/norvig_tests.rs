@@ -30,7 +30,7 @@ fn run(code: &str, env: &mut Env, state: &mut EvalState) -> String {
     };
     let mut result = LispVal::Nil;
     for expr in &exprs {
-        match lisp_eval(expr, env, state) {
+        match lisp_rlm::program::run_program(&[expr.clone()], env, state) {
             Ok(v) => result = v,
             Err(e) => return format!("ERROR: {}", e),
         }

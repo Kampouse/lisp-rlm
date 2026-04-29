@@ -9,18 +9,14 @@ static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn eval(code: &str, env: &mut Env, state: &mut EvalState) -> LispVal {
     let exprs = parse_all(code).unwrap();
-    let mut result = LispVal::Nil;
-    for expr in &exprs {
-        result = lisp_eval(expr, env, state).unwrap();
-    }
-    result
+    lisp_rlm::program::run_program(&exprs, env, state).unwrap()
 }
 
 fn eval_ok(code: &str, env: &mut Env, state: &mut EvalState) -> LispVal {
     let exprs = parse_all(code).unwrap();
     let mut result = LispVal::Nil;
     for expr in &exprs {
-        result = match lisp_eval(expr, env, state) {
+        result = match lisp_rlm::program::run_program(&[expr.clone()], env, state) {
             Ok(v) => v,
             Err(e) => panic!("eval failed: {} — code: {}", e, code),
         };

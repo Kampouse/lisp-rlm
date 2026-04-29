@@ -1,159 +1,81 @@
 use crate::types::LispVal;
 
+/// All builtin function names recognized by the VM and tree-walker.
+pub const BUILTIN_NAMES: &[&str] = &[
+    "+", "-", "*", "/", "mod",
+    "=", "==", "!=", "/=", "<", ">", "<=", ">=",
+    "list", "car", "cdr", "cons", "len", "append", "nth",
+    "str-concat", "str-contains", "to-string", "str-length",
+    "str-substring", "str-split", "str-split-exact", "str-trim",
+    "str-index-of", "str-upcase", "str-downcase",
+    "str-starts-with", "str-ends-with", "str=", "str!=",
+    "nil?", "list?", "number?", "string?", "map?", "bool?",
+    "to-float", "to-int", "to-num", "type?",
+    "dict", "dict/get", "dict/set", "dict/has?", "dict/keys", "dict/vals",
+    "dict/remove", "dict/merge",
+    "error", "empty?", "range", "reverse", "sort", "zip",
+    "map", "filter", "reduce", "find", "some", "every",
+    "print", "println",
+    "file/read", "file/write", "file/exists?", "file/list",
+    "env/get",
+    "rlm/signature", "rlm/format-prompt", "rlm/trace", "rlm/config",
+    "write-file", "read-file", "append-file", "file-exists?",
+    "shell", "shell-bg", "shell-kill",
+    "http-get", "http-post", "http-get-json",
+    "llm", "llm-code",
+    "check", "check!", "matches?", "valid-type?", "type-of",
+    "defschema", "validate", "schema", "infer-type", "pure-type",
+    "snapshot", "rollback", "rollback-to",
+    "rlm", "read-all", "load-file", "sub-rlm",
+    "rlm-tokens", "rlm-calls", "show-vars",
+    "str-chunk", "str-join", "llm-batch", "show-context",
+    "final", "final-var",
+    // Tier 1: Scheme stdlib
+    "abs", "min", "max", "floor", "ceiling", "round", "sqrt",
+    "number->string",
+    "zero?", "positive?", "negative?", "even?", "odd?",
+    "equal?", "eq?", "symbol=?",
+    "procedure?", "symbol?",
+    "symbol->string", "string->symbol",
+    "member", "assoc", "partition",
+    "fold-left", "fold-right", "for-each", "cons*",
+    "string->list", "list->string", "string<?", "string->number",
+    "apply", "eval",
+    "delete-file",
+    // R7RS aliases
+    "null?", "boolean?", "pair?", "length",
+    "eqv?", "boolean=?",
+    "string-length", "string-append", "substring", "string-contains",
+    "string-upcase", "string-downcase", "string-copy",
+    "string=?", "string>?", "string<=?", "string>=?",
+    "exact-integer-sqrt", "exp", "rational?",
+    "string-ci=?", "string-ci<?", "string-ci>?", "string-ci<=?", "string-ci>=?",
+    "string-foldcase", "string-ref", "string-replace",
+    "display", "write", "newline",
+    "modulo", "remainder", "quotient", "expt", "atan",
+    "list-ref", "list-tail", "list-copy",
+    "values", "call-with-values",
+    "force", "make-promise", "promise?",
+    "delay", "define-values", "let-values", "let*-values",
+    "case-lambda",
+    "assv", "assq", "memv", "memq",
+    "char->integer", "integer->char",
+    "exact", "inexact", "exact->inexact", "inexact->exact",
+    // Runtime
+    "now", "elapsed", "sleep",
+    "save-state", "load-state",
+    "doc", "pure", "memoize",
+    // Additional builtins for bytecode VM
+    "inc", "dec", "first", "rest",
+    "int?", "float?",
+    "take", "drop", "last", "butlast",
+    "pow", "dict-ref", "dict-set",
+    "string-suffix?", "string-prefix?",
+    "str->num",
+];
+
 pub fn is_builtin_name(name: &str) -> bool {
-    matches!(
-        name,
-        "+" | "-"
-            | "*"
-            | "/"
-            | "mod"
-            | "="
-            | "=="
-            | "!="
-            | "/="
-            | "<"
-            | ">"
-            | "<="
-            | ">="
-            | "list"
-            | "car"
-            | "cdr"
-            | "cons"
-            | "len"
-            | "append"
-            | "nth"
-            | "str-concat"
-            | "str-contains"
-            | "to-string"
-            | "str-length"
-            | "str-substring"
-            | "str-split"
-            | "str-split-exact"
-            | "str-trim"
-            | "str-index-of"
-            | "str-upcase"
-            | "str-downcase"
-            | "str-starts-with"
-            | "str-ends-with"
-            | "str="
-            | "str!="
-            | "nil?"
-            | "list?"
-            | "number?"
-            | "string?"
-            | "map?"
-            | "bool?"
-            | "to-float"
-            | "to-int"
-            | "to-num"
-            | "type?"
-            | "dict"
-            | "dict/get"
-            | "dict/set"
-            | "dict/has?"
-            | "dict/keys"
-            | "dict/vals"
-            | "dict/remove"
-            | "dict/merge"
-            | "error"
-            | "empty?"
-            | "range"
-            | "reverse"
-            | "sort"
-            | "zip"
-            | "map"
-            | "filter"
-            | "reduce"
-            | "find"
-            | "some"
-            | "every"
-            | "print"
-            | "println"
-            | "file/read"
-            | "file/write"
-            | "file/exists?"
-            | "file/list"
-            | "env/get"
-            | "rlm/signature"
-            | "rlm/format-prompt"
-            | "rlm/trace"
-            | "rlm/config"
-            | "write-file"
-            | "read-file"
-            | "append-file"
-            | "file-exists?"
-            | "shell"
-            | "shell-bg"
-            | "shell-kill"
-            | "http-get"
-            | "http-post"
-            | "http-get-json"
-            | "llm"
-            | "llm-code"
-            | "check"
-            | "check!"
-            | "matches?"
-            | "valid-type?"
-            | "type-of"
-            | "defschema"
-            | "validate"
-            | "schema"
-            | "infer-type"
-            | "pure-type"
-            | "snapshot"
-            | "rollback"
-            | "rollback-to"
-            | "rlm"
-            | "read-all"
-            | "load-file"
-            | "sub-rlm"
-            | "rlm-tokens"
-            | "rlm-calls"
-            | "show-vars"
-            | "str-chunk"
-            | "str-join"
-            | "llm-batch"
-            | "show-context"
-            | "final"
-            | "final-var"
-            // -- Tier 1: Scheme stdlib --
-            | "abs" | "min" | "max" | "floor" | "ceiling" | "round" | "sqrt"
-            | "number->string"
-            | "zero?" | "positive?" | "negative?" | "even?" | "odd?"
-            | "equal?" | "eq?" | "symbol=?"
-            | "procedure?" | "symbol?"
-            | "symbol->string" | "string->symbol"
-            | "member" | "assoc" | "partition"
-            | "fold-left" | "fold-right" | "for-each" | "cons*"
-            | "string->list" | "list->string" | "string<?" | "string->number"
-            | "apply" | "eval"
-            | "delete-file"
-            // -- R7RS aliases --
-            | "null?" | "boolean?" | "pair?" | "length"
-            | "eqv?" | "boolean=?"
-            | "string-length" | "string-append" | "substring" | "string-contains"
-            | "string-upcase" | "string-downcase" | "string-copy"
-            | "string=?" | "string>?" | "string<=?" | "string>=?"
-            | "exact-integer-sqrt" | "exp" | "rational?"
-            | "string-ci=?" | "string-ci<?" | "string-ci>?" | "string-ci<=?" | "string-ci>=?"
-            | "string-foldcase" | "string-ref" | "string-replace"
-            | "display" | "write" | "newline"
-            | "modulo" | "remainder" | "quotient" | "expt" | "atan"
-            | "list-ref" | "list-tail" | "list-copy"
-            | "values" | "call-with-values"
-            | "force" | "make-promise" | "promise?"
-            | "delay" | "define-values" | "let-values" | "let*-values"
-            | "case-lambda"
-            | "assv" | "assq" | "memv" | "memq"
-            | "char->integer" | "integer->char"
-            | "exact" | "inexact" | "exact->inexact" | "inexact->exact"
-            // -- Runtime --
-            | "now" | "elapsed" | "sleep"
-            | "save-state" | "load-state"
-            | "doc"
-            | "pure"
-            | "memoize"
-    )
+    BUILTIN_NAMES.contains(&name)
 }
 
 pub fn is_truthy(v: &LispVal) -> bool {
