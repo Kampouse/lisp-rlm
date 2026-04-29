@@ -162,6 +162,17 @@ pub enum Op {
     /// Push a first-class builtin function reference onto the stack.
     /// Used when a builtin name is referenced as a value (not in call position).
     PushBuiltin(String),
+    // --- Sum-type primitives (deftype) ---
+    /// ConstructTag(type_name, variant_id, n_fields): pop n_fields values from stack,
+    /// construct a Tagged { type_name, variant_id, fields }, push it.
+    ConstructTag(String, u16, u8),
+    /// TagTest(type_name, variant_id): peek at stack top, push Bool(true) if it's
+    /// a Tagged value matching both type_name and variant_id, else Bool(false).
+    /// Does NOT pop the value — use Dup + TagTest + Pop or just TagTest + consume.
+    TagTest(String, u16),
+    /// GetField(idx): pop a Tagged value, push its fields[idx].
+    /// Panics if TOS is not Tagged or idx is out of bounds.
+    GetField(u8),
 }
 
 /// Compiled loop representation.
@@ -529,6 +540,20 @@ impl LoopCompiler {
                     self.last_result_i64 = false;
                     self.last_result_f64 = false;
                     true
+                } else if let Some(ctor) = crate::helpers::lookup_constructor(name) {
+                    // Nullary type constructor used as a value (e.g., None)
+                    if ctor.n_fields == 0 {
+                        self.code.push(Op::ConstructTag(
+                            ctor.type_name.clone(),
+                            ctor.variant_id,
+                            0,
+                        ));
+                        true
+                    } else {
+                        // N-ary constructor used as a value — push as callable
+                        // For now, compilation fails (constructors must be called directly)
+                        false
+                    }
                 } else {
                     false
                 }
@@ -978,7 +1003,7 @@ impl LoopCompiler {
                             self.code.push(Op::LoadSlot(slot)); // set! returns the new value
                             true
                         }
-                        "lambda" => {
+                        "lambda" | "fn" => {
                             // (lambda (params...) body...) or (lambda (a b &rest rest) body...)
                             if list.len() < 3 {
                                 return false;
@@ -1159,6 +1184,18 @@ impl LoopCompiler {
                                     self.code.push(Op::CallCapturedRef(idx, n_args));
                                 }
                             } else {
+                                // Check if it's a registered type constructor (deftype)
+                                if let Some(ctor) = crate::helpers::lookup_constructor(op) {
+                                    if n_args == ctor.n_fields as usize {
+                                        // Args already compiled at line 1157 — just emit ConstructTag
+                                        self.code.push(Op::ConstructTag(
+                                            ctor.type_name.clone(),
+                                            ctor.variant_id,
+                                            ctor.n_fields,
+                                        ));
+                                        return true;
+                                    }
+                                }
                                 self.code.push(Op::BuiltinCall(op.clone(), n_args));
                             }
                             true
@@ -1168,7 +1205,7 @@ impl LoopCompiler {
                     // Inline lambda call: ((lambda (params...) body...) args...)
                     if !callee.is_empty() {
                         if let LispVal::Sym(ref s) = callee[0] {
-                            if s == "lambda" {
+                            if s == "lambda" || s == "fn" {
                                 let n_args = list.len() - 1;
                                 // Compile arguments FIRST, then lambda (so lambda is on top of stack)
                                 for arg in &list[1..] {
@@ -2282,7 +2319,10 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
             | Op::CallDynamic(_)
             | Op::DictMutSet(_)
             | Op::GetDefaultSlot(_, _, _, _)
-            | Op::ReturnSlot(_) => {
+            | Op::ReturnSlot(_)
+            | Op::ConstructTag(_, _, _)
+            | Op::TagTest(_, _)
+            | Op::GetField(_) => {
                 return Err(
                     "loop VM: CallCaptured/CallSelf/DictMutSet/GetDefaultSlot/ReturnSlot not supported in loop body".into(),
                 );
@@ -2345,6 +2385,12 @@ pub fn lisp_eq(a: &LispVal, b: &LispVal) -> bool {
         (LispVal::Bool(x), LispVal::Bool(y)) => x == y,
         (LispVal::Str(x), LispVal::Str(y)) => x == y,
         (LispVal::Nil, LispVal::Nil) => true,
+        // Structural equality for complex types
+        (LispVal::List(a), LispVal::List(b)) => a == b,
+        (LispVal::Tagged { type_name: ta, variant_id: va, fields: fa },
+         LispVal::Tagged { type_name: tb, variant_id: vb, fields: fb }) => {
+            ta == tb && va == vb && fa == fb
+        }
         _ => false,
     }
 }
@@ -2870,7 +2916,7 @@ pub fn try_compile_lambda(
         if let LispVal::List(ref l) = body {
             if !l.is_empty() {
                 if let LispVal::Sym(ref s) = l[0] {
-                    if s == "lambda" {
+                    if s == "lambda" || s == "fn" {
                         compiler.pending_lambda_name = func_name.map(|s| s.to_string());
                     }
                 }
@@ -3456,6 +3502,44 @@ pub fn run_compiled_lambda(
             }
             Op::PushBuiltin(ref name) => {
                 stack.push(LispVal::BuiltinFn(name.clone()));
+                pc += 1;
+            }
+            // --- Sum-type primitives ---
+            Op::ConstructTag(ref type_name, variant_id, n_fields) => {
+                let n = *n_fields as usize;
+                let mut fields = Vec::with_capacity(n);
+                for _ in 0..n {
+                    fields.push(stack.pop().unwrap_or(LispVal::Nil));
+                }
+                fields.reverse();
+                stack.push(LispVal::Tagged {
+                    type_name: type_name.clone(),
+                    variant_id: *variant_id,
+                    fields,
+                });
+                pc += 1;
+            }
+            Op::TagTest(ref type_name, variant_id) => {
+                let matches = match stack.last() {
+                    Some(LispVal::Tagged { type_name: tn, variant_id: vid, .. }) => {
+                        tn == type_name && *vid == *variant_id
+                    }
+                    _ => false,
+                };
+                stack.push(LispVal::Bool(matches));
+                pc += 1;
+            }
+            Op::GetField(idx) => {
+                let val = stack.pop().unwrap_or(LispVal::Nil);
+                match val {
+                    LispVal::Tagged { fields, .. } => {
+                        let field = fields.get(*idx as usize).cloned().unwrap_or(LispVal::Nil);
+                        stack.push(field);
+                    }
+                    _ => {
+                        return Err(format!("get-field: expected tagged value, got {}", val));
+                    }
+                }
                 pc += 1;
             }
             Op::Return => {

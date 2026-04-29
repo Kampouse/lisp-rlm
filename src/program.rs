@@ -81,6 +81,12 @@ pub fn run_program(
                         preprocessed.push(form);
                         continue;
                     }
+                    "deftype" => {
+                        // (deftype (Name param1 param2 ...) Variant1 Variant2 ...)
+                        // (deftype Name Variant1 Variant2 ...)  — simplified, no params
+                        process_deftype(list)?;
+                        continue;
+                    }
                     _ => {}
                 }
             }
@@ -229,6 +235,68 @@ fn process_defmacro(list: &[LispVal], env: &mut Env) -> Result<(), String> {
             closed_env: snap,
         },
     );
+    Ok(())
+}
+
+/// Process a `(deftype (Name ...) Variant1 Variant2 ...)` or `(deftype Name Variant1 ...)` form.
+fn process_deftype(list: &[LispVal]) -> Result<(), String> {
+    if list.len() < 2 {
+        return Err("deftype: need type name and at least one variant".into());
+    }
+
+    // Determine type name and where variants start
+    let type_name: String;
+    let variants_start: usize;
+
+    match &list[1] {
+        LispVal::List(type_spec) => {
+            // (deftype (Name param1 param2 ...) Variant1 Variant2 ...)
+            if type_spec.is_empty() {
+                return Err("deftype: type spec cannot be empty".into());
+            }
+            match &type_spec[0] {
+                LispVal::Sym(s) => type_name = s.clone(),
+                _ => return Err("deftype: type name must be a symbol".into()),
+            }
+            variants_start = 2;
+        }
+        LispVal::Sym(s) => {
+            // (deftype Name Variant1 Variant2 ...) — simplified syntax
+            type_name = s.clone();
+            variants_start = 2;
+        }
+        _ => return Err("deftype: second arg must be a symbol or (Name params...) list".into()),
+    }
+
+    if list.len() < variants_start + 1 {
+        return Err("deftype: need at least one variant".into());
+    }
+
+    // Parse variant specs: (VariantName field1 field2 ...) or just VariantName
+    let mut variants: Vec<(&str, u8)> = Vec::new();
+    for item in &list[variants_start..] {
+        match item {
+            LispVal::List(v) => {
+                if v.is_empty() {
+                    return Err("deftype: variant spec cannot be empty".into());
+                }
+                match &v[0] {
+                    LispVal::Sym(name) => {
+                        let n_fields = (v.len() - 1) as u8;
+                        variants.push((name, n_fields));
+                    }
+                    _ => return Err("deftype: variant name must be a symbol".into()),
+                }
+            }
+            LispVal::Sym(name) => {
+                // Nullary variant
+                variants.push((name, 0));
+            }
+            _ => return Err("deftype: variant must be a symbol or (Name fields...) list".into()),
+        }
+    }
+
+    crate::helpers::register_type(&type_name, &variants);
     Ok(())
 }
 

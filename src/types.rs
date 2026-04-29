@@ -496,6 +496,14 @@ pub enum LispVal {
     /// Stores the builtin name so it can be dispatched via eval_builtin.
     /// Created when a builtin is used as a value (e.g., passed to map/filter).
     BuiltinFn(String),
+    /// Sum-type value created by `deftype` constructors.
+    /// `type_name` is the type (e.g. "Option"), `variant_id` is the variant index,
+    /// `fields` are the payload values.
+    Tagged {
+        type_name: String,
+        variant_id: u16,
+        fields: Vec<LispVal>,
+    },
 }
 
 impl PartialEq for LispVal {
@@ -540,6 +548,10 @@ impl PartialEq for LispVal {
                 },
             ) => pa == pb && ra == rb && ba == bb,
             (Memoized { func: a, .. }, Memoized { func: b, .. }) => a == b,
+            (
+                Tagged { type_name: ta, variant_id: va, fields: fa },
+                Tagged { type_name: tb, variant_id: vb, fields: fb },
+            ) => ta == tb && va == vb && fa == fb,
             _ => false,
         }
     }
@@ -586,6 +598,14 @@ impl std::fmt::Display for LispVal {
                 write!(f, "#<memoized {} entries>", cache_len)
             }
             LispVal::BuiltinFn(name) => write!(f, "#<builtin {}>", name),
+            LispVal::Tagged { type_name, variant_id, fields } => {
+                if fields.is_empty() {
+                    write!(f, "#<{}::{}>", type_name, variant_id)
+                } else {
+                    let parts: Vec<String> = fields.iter().map(|v| v.to_string()).collect();
+                    write!(f, "({}::{} {})", type_name, variant_id, parts.join(" "))
+                }
+            }
         }
     }
 }

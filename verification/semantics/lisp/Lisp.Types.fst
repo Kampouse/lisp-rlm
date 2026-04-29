@@ -33,6 +33,7 @@ noeq type lisp_val =
   | Pair   of lisp_val * lisp_val
   | Dict   of list (string * lisp_val)
   | Lambda of list string * lisp_val * list (string * lisp_val)  (* params, body, env *)
+  | BuiltinFn of string
 
 // === BinOp ===
 type binop =
@@ -109,6 +110,11 @@ noeq type opcode =
 
   // Self-call
   | CallSelf       of nat
+
+  // Dynamic builtin
+  | PushBuiltin    of string
+  | CallDynamic    of nat
+  | RecurDirect    of nat
 
   // Fused patterns
   | GetDefaultSlot   of nat * nat * nat * nat

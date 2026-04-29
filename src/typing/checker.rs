@@ -564,6 +564,7 @@ fn infer(
         LispVal::Str(_) => Ok(TcType::Con(TcCon::Str)),
         LispVal::Sym(s) if s.starts_with(':') => Ok(TcType::Con(TcCon::Sym)), // keywords
         LispVal::BuiltinFn(_) => Ok(TcType::Con(TcCon::Any)), // builtin fn is callable
+        LispVal::Tagged { .. } => Ok(TcType::Con(TcCon::Any)), // tagged value is opaque data
 
         // Symbol lookup
         LispVal::Sym(name) => {

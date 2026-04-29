@@ -46,10 +46,9 @@ val vm_let : n:int -> Lemma
 let vm_let n = ()
 
 // not true: [PushBool true; JumpIfFalse 4; PushBool false; Jump 5; PushBool true; Return]
-// Trace: PushBool true → [true]; JIF4 not taken (truthy) → []; PushBool false → [false]; Jump 5 → Return
+// truthy test → doesn't take else branch → result = false
 val vm_not_true : unit -> Lemma
-  (let s0 = { stack = []; slots = []; pc = 0; code = [PushBool true; JumpIfFalse 4; PushBool false; Jump 5; PushBool true; Return]; ok = true } in
-   match eval_steps 6 s0 with
+  (match eval_steps 100 (fresh_vm [PushBool true; JumpIfFalse 4; PushBool false; Jump 5; PushBool true; Return]) with
    | LispIR.Semantics.Ok s' -> (match s'.stack with
      | Bool r :: _ -> r = false
      | _ -> false)
@@ -67,9 +66,24 @@ let vm_not_false () = ()
 
 // not nil: takes else branch → true (is_truthy Nil = false, so JumpIfFalse taken)
 val vm_not_nil : unit -> Lemma
-  (match eval_steps 100 (fresh_vm [PushNil; JumpIfFalse 4; PushBool false; Jump 5; PushBool true; Return]) with
-   | LispIR.Semantics.Ok s' -> (match s'.stack with
-     | Bool r :: _ -> r = true
-     | _ -> false)
-   | _ -> false)
+  (let s0 = fresh_vm [PushNil; JumpIfFalse 4; PushBool false; Jump 5; PushBool true; Return] in
+   // Step 1: PushNil → stack=[Nil], pc=1
+   let s1 = eval_steps 1 s0 in
+   (match s1 with
+    | LispIR.Semantics.Ok s1' ->
+      (match s1'.stack with
+       | Nil :: _ ->
+         // Step 2: JumpIfFalse 4 → Nil falsy → pc=6
+         let s2 = eval_steps 1 s1' in
+         (match s2 with
+          | LispIR.Semantics.Ok s2' ->
+            // Steps 3-4: PushBool true + Return → stack=[Bool true]
+            let s4 = eval_steps 2 s2' in
+            (match s4 with
+             | LispIR.Semantics.Ok s4' ->
+               (match s4'.stack with | Bool r :: _ -> r = true | _ -> false)
+             | _ -> false)
+          | _ -> false)
+       | _ -> false)
+    | _ -> false))
 let vm_not_nil () = ()

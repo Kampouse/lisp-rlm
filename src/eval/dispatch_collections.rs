@@ -802,6 +802,83 @@ pub fn handle(
         "assq" => handle("assoc", args, env, state),
         "memv" => handle("member", args, env, state),
         "memq" => handle("member", args, env, state),
+
+        // Sum-type builtins (deftype support)
+        "tag-test" => {
+            // (tag-test value "Type::Variant") → Bool
+            // Also supports (tag-test value "Type" variant-id)
+            let val = args.get(0).cloned().unwrap_or(LispVal::Nil);
+            let matches = if args.len() >= 2 {
+                // Parse "Type::Variant" string format
+                if let LispVal::Str(spec) = &args[1] {
+                    let parts: Vec<&str> = spec.splitn(2, "::").collect();
+                    if parts.len() == 2 {
+                        let tn = parts[0];
+                        let vn = parts[1];
+                        // Look up variant by name
+                        if let Some(ctor) = crate::helpers::lookup_constructor(vn) {
+                            if ctor.type_name == tn {
+                                matches!(
+                                    &val,
+                                    LispVal::Tagged {
+                                        type_name,
+                                        variant_id,
+                                        ..
+                                    } if type_name == tn && *variant_id == ctor.variant_id
+                                )
+                            } else {
+                                false
+                            }
+                        } else {
+                            // Try interpreting variant part as numeric id
+                            if let Ok(vid) = vn.parse::<u16>() {
+                                matches!(
+                                    &val,
+                                    LispVal::Tagged {
+                                        type_name,
+                                        variant_id,
+                                        ..
+                                    } if type_name == tn && *variant_id == vid
+                                )
+                            } else {
+                                false
+                            }
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            Ok(Some(LispVal::Bool(matches)))
+        }
+        "get-field" => {
+            // (get-field tagged-value field-index) → field value
+            let val = args.get(0).cloned().unwrap_or(LispVal::Nil);
+            let idx = match args.get(1) {
+                Some(LispVal::Num(n)) => *n as usize,
+                Some(LispVal::Float(f)) => *f as usize,
+                _ => return Err("get-field: second arg must be a number".into()),
+            };
+            match &val {
+                LispVal::Tagged { fields, .. } => {
+                    if idx < fields.len() {
+                        Ok(Some(fields[idx].clone()))
+                    } else {
+                        Err(format!(
+                            "get-field: index {} out of bounds ({} fields)",
+                            idx,
+                            fields.len()
+                        ))
+                    }
+                }
+                _ => Err("get-field: first arg must be a tagged value".into()),
+            }
+        }
+
         _ => Ok(None),
     }
 }

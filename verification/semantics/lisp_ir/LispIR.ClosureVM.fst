@@ -678,6 +678,27 @@ let closure_eval_op s =
        | Some (Num n) -> if n = imm then { s with pc = addr } else { s with pc = pc }
        | _ -> { s with ok = false })
 
+    // PushBuiltin: push a builtin function reference
+    | PushBuiltin name -> { s with stack = BuiltinFn name :: s.stack; pc = pc }
+
+    // CallDynamic: pop func + n_args, invoke if BuiltinFn
+    | CallDynamic n_args ->
+      (match s.stack with
+       | func :: rest ->
+         let (remaining, args) = pop_and_bind n_args rest [] in
+         (match func with
+          | BuiltinFn name ->
+            let result = builtin_result name args in
+            { s with stack = result :: remaining; pc = pc }
+          | _ -> { s with ok = false })
+       | _ -> { s with ok = false })
+
+    // RecurDirect: same as Recur but for small N (no Vec allocation)
+    | RecurDirect n ->
+      let (stk, vals) = pop_and_bind n s.stack [] in
+      let new_slots = fill_slots s.num_slots vals in
+      { s with slots = new_slots; stack = stk; pc = 0 }
+
     // Catch-all: unknown opcode
 
     | _ -> { s with pc = pc }

@@ -72,6 +72,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "pow", "dict-ref", "dict-set",
     "string-suffix?", "string-prefix?",
     "str->num",
+    "tag-test", "get-field",
 ];
 
 pub fn is_builtin_name(name: &str) -> bool {
@@ -443,4 +444,48 @@ pub fn get_doc(name: &str) -> Option<&'static str> {
 
         _ => return None,
     })
+}
+
+// ─────────────────────────────────────────────────────
+// Sum-type registry (deftype)
+// ─────────────────────────────────────────────────────
+
+use std::collections::HashMap;
+use std::sync::LazyLock;
+use std::sync::Mutex;
+
+/// A registered variant constructor.
+#[derive(Clone, Debug)]
+pub struct TypeVariant {
+    pub type_name: String,
+    pub variant_id: u16,
+    pub n_fields: u8,
+}
+
+/// Type registry: constructor name → type info.
+static TYPE_REGISTRY: LazyLock<Mutex<HashMap<String, TypeVariant>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Register a type definition. Silently ignores duplicate constructor names
+/// (needed because tests may run in parallel sharing the global registry).
+pub fn register_type(type_name: &str, variants: &[(&str, u8)]) {
+    let mut reg = TYPE_REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
+    for (i, (name, n_fields)) in variants.iter().enumerate() {
+        let variant = TypeVariant {
+            type_name: type_name.to_string(),
+            variant_id: i as u16,
+            n_fields: *n_fields,
+        };
+        reg.entry(name.to_string()).or_insert(variant);
+    }
+}
+
+/// Look up a constructor. Returns None if not a registered constructor.
+pub fn lookup_constructor(name: &str) -> Option<TypeVariant> {
+    TYPE_REGISTRY.lock().unwrap_or_else(|e| e.into_inner()).get(name).cloned()
+}
+
+/// Clear all registered types. Used by tests.
+pub fn clear_type_registry() {
+    TYPE_REGISTRY.lock().unwrap_or_else(|e| e.into_inner()).clear();
 }
