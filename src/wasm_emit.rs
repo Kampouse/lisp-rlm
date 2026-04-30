@@ -406,17 +406,25 @@ impl WasmEmitter {
             "while" => {
                 let id = self.while_id.get(); self.while_id.set(id+1);
                 let mut v = Vec::new();
+                // block $exit (result i64)
                 v.push(Instruction::Block(BlockType::Result(ValType::I64)));
+                // loop $loop
                 v.push(Instruction::Loop(BlockType::Empty));
+                // cond
                 v.extend(self.expr(&a[0])?); v.push(Instruction::I32WrapI64); v.push(Instruction::I32Eqz);
-                v.push(Instruction::If(BlockType::Result(ValType::I64)));
-                v.push(Instruction::I64Const(0)); v.push(Instruction::Br(1));
-                v.push(Instruction::Else);
+                // if !cond → exit with 0
+                v.push(Instruction::If(BlockType::Empty));
+                // Push current value of last expression for the block result
+                // Actually while returns 0 by spec, just use i64.const 0
+                v.push(Instruction::I64Const(0)); v.push(Instruction::Br(2)); // br $exit with i64
+                v.push(Instruction::End); // if — no else needed
+                // body
                 for x in &a[1..] { v.extend(self.expr(x)?); v.push(Instruction::Drop); }
-                v.push(Instruction::Br(0)); v.push(Instruction::I64Const(0));
-                v.push(Instruction::End); // if
+                // loop back
+                v.push(Instruction::Br(0)); // br $loop
                 v.push(Instruction::End); // loop
-                v.push(Instruction::I64Const(0));
+                // unreachable — loop either exits via br 1 or loops forever
+                v.push(Instruction::I64Const(0)); // fallback (unreachable in practice)
                 v.push(Instruction::End); // block
                 Ok(v)
             }
