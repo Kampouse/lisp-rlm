@@ -1,8 +1,26 @@
 use crate::helpers::is_truthy;
 use crate::types::{Env, EvalState, LispVal};
 
+/// Replace `(old_name args...)` with `(new_name args...)` recursively in an expression.
+fn replace_sym_call(expr: &LispVal, old_name: &str, new_name: &str) -> LispVal {
+    match expr {
+        LispVal::List(list) => {
+            let replaced: Vec<LispVal> = list.iter().map(|e| replace_sym_call(e, old_name, new_name)).collect();
+            // Check if this is a call to old_name
+            if let Some(LispVal::Sym(s)) = replaced.first() {
+                if s == old_name {
+                    let mut result = replaced;
+                    result[0] = LispVal::Sym(new_name.into());
+                    return LispVal::List(result);
+                }
+            }
+            LispVal::List(replaced)
+        }
+        other => other.clone(),
+    }
+}
+
 // ---------------------------------------------------------------------------
-// Loop Bytecode Compiler — tight VM for loop/recur
 // ---------------------------------------------------------------------------
 // Compiles (loop ((i init) ...) body) into flat opcodes with slot-indexed
 // env. Falls back to lisp_eval for unsupported expressions.
@@ -139,6 +157,10 @@ pub enum Op {
     CallCapturedRef(usize, usize),
     /// Push a pre-compiled closure from cl.closures[idx] onto the stack
     PushClosure(usize),
+    /// Push a function name onto the call trace (for stack traces on errors)
+    TracePush(String),
+    /// Pop a function name from the call trace
+    TracePop,
     /// DictGet: pop key, pop map, push map[key] (or Nil)
     DictGet,
     /// DictSet: pop val, pop key, pop map, push map with key=val
@@ -482,10 +504,14 @@ impl LoopCompiler {
         let code_start = self.code.len();
         let callee_code_len = callee.code.len();
 
+        // Wrap inlined call with trace for stack traces
+        if let Some(ref name) = callee.name {
+            self.code.push(Op::TracePush(name.clone()));
+        }
+
         for (i, op) in callee.code.iter().enumerate() {
             if i == callee_code_len - 1 && matches!(op, Op::Return | Op::ReturnSlot(_)) {
                 // If ReturnSlot(s), push the value onto the stack before breaking
-                // (the inlined callee should leave its result on the stack, not return)
                 if let Op::ReturnSlot(s) = op {
                     self.code.push(Op::LoadSlot(base + s));
                 }
@@ -493,6 +519,10 @@ impl LoopCompiler {
             }
             self.code
                 .push(remap_op(op, base, &captured_remap, code_start));
+        }
+
+        if let Some(ref name) = callee.name {
+            self.code.push(Op::TracePop);
         }
 
         true
@@ -655,6 +685,19 @@ impl LoopCompiler {
                                 "%" => Op::Mod,
                                 _ => unreachable!(),
                             };
+                            if list.len() < 2 {
+                                return false;
+                            }
+                            // Unary minus: (- x) → push 0, push x, sub
+                            if list.len() == 2 && op.as_str() == "-" {
+                                self.code.push(Op::PushI64(0));
+                                if !self.compile_expr(&list[1], outer_env) {
+                                    return false;
+                                }
+                                self.code.push(Op::Sub);
+                                // Result type follows operand
+                                return true;
+                            }
                             if list.len() < 3 {
                                 return false;
                             }
@@ -885,6 +928,29 @@ impl LoopCompiler {
                         }
                         // let: (let ((x init) ...) body)
                         "let" | "let*" => {
+                            // Named let: (let name ((var init) ...) body ...)
+                            // Desugar to: (loop ((var init) ...) body ...) with (name args...) → (recur args...)
+                            if let Some(LispVal::Sym(loop_name)) = list.get(1) {
+                                let bindings = match list.get(2) {
+                                    Some(LispVal::List(b)) => b,
+                                    _ => return false,
+                                };
+                                let body_forms = if list.len() > 3 { &list[3..] } else { &[] };
+                                let body = if body_forms.len() == 1 {
+                                    body_forms[0].clone()
+                                } else {
+                                    LispVal::List(std::iter::once(LispVal::Sym("begin".into()))
+                                        .chain(body_forms.iter().cloned()).collect())
+                                };
+                                // Replace (loop_name args...) with (recur args...) in body
+                                let body = replace_sym_call(&body, loop_name, "recur");
+                                let new_form = LispVal::List(vec![
+                                    LispVal::Sym("loop".into()),
+                                    LispVal::List(bindings.clone()),
+                                    body,
+                                ]);
+                                return self.compile_expr(&new_form, outer_env);
+                            }
                             let bindings = match list.get(1) {
                                 Some(LispVal::List(b)) => b,
                                 _ => return false,
@@ -964,6 +1030,8 @@ impl LoopCompiler {
                             }
                             if all_ok {
                                 all_ok = self.compile_expr(body, outer_env);
+                                if !all_ok {
+                                }
                             }
                             // Restore shadowed slots (reverse order)
                             for (i, &original_slot) in shadowed.iter().enumerate().rev() {
@@ -1184,6 +1252,7 @@ impl LoopCompiler {
                             }
                             let idx = self.closures.len();
                             self.closures.push(CompiledLambda {
+                                name: inner.self_name.clone(),
                                 num_param_slots: params.len(),
                                 total_slots: max_slot,
                                 code: inner.code,
@@ -1193,6 +1262,7 @@ impl LoopCompiler {
                                 rest_param_idx: rest_param.as_ref().map(|_| n_fixed),
                                 num_fixed_params: n_fixed,
                             });
+                            self.code.push(Op::PushClosure(idx));
                             self.code.push(Op::PushClosure(idx));
                             true
                         }
@@ -2439,7 +2509,9 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
             | Op::ReturnSlot(_)
             | Op::ConstructTag(_, _, _)
             | Op::TagTest(_, _)
-            | Op::GetField(_) => {
+            | Op::GetField(_)
+            | Op::TracePush(_)
+            | Op::TracePop => {
                 return Err(
                     "loop VM: CallCaptured/CallSelf/DictMutSet/GetDefaultSlot/ReturnSlot not supported in loop body".into(),
                 );
@@ -3001,6 +3073,8 @@ pub fn eval_builtin(
 /// Used for fast-path map/filter/reduce — avoids env push/pop per element.
 #[derive(Debug)]
 pub struct CompiledLambda {
+    /// Optional function name for stack traces
+    pub name: Option<String>,
     pub num_param_slots: usize,
     /// If this lambda is variadic, the slot index for the &rest parameter.
     /// All args beyond num_fixed_params are packed into a list at this slot.
@@ -3024,6 +3098,7 @@ pub struct CompiledLambda {
 impl Clone for CompiledLambda {
     fn clone(&self) -> Self {
         Self {
+            name: self.name.clone(),
             num_param_slots: self.num_param_slots,
             rest_param_idx: self.rest_param_idx,
             num_fixed_params: self.num_fixed_params,
@@ -3123,6 +3198,7 @@ pub fn try_compile_lambda(
         }
     }
     Some(CompiledLambda {
+        name: func_name.map(|s| s.to_string()),
         num_param_slots: param_names.len(),
         total_slots: max_slot,
         code,
@@ -3154,6 +3230,28 @@ pub fn vm_call_lambda(
 
 /// Run a compiled lambda with the given arguments. Returns the result directly.
 pub fn run_compiled_lambda(
+    cl: &CompiledLambda,
+    args: &[LispVal],
+    outer_env: &mut Env,
+    state: &mut EvalState,
+) -> Result<LispVal, String> {
+    let fname = cl.name.as_deref().unwrap_or("<lambda>");
+    state.trace_push(fname);
+    let result = run_compiled_lambda_inner(cl, args, outer_env, state);
+    match result {
+        Err(e) => {
+            let trace = state.format_trace();
+            state.trace_pop();
+            Err(format!("{}\n{}", e, trace))
+        }
+        ok => {
+            state.trace_pop();
+            ok
+        }
+    }
+}
+
+fn run_compiled_lambda_inner(
     cl: &CompiledLambda,
     args: &[LispVal],
     outer_env: &mut Env,
@@ -3649,6 +3747,14 @@ pub fn run_compiled_lambda(
             }
             Op::PushBuiltin(ref name) => {
                 stack.push(LispVal::BuiltinFn(name.clone()));
+                pc += 1;
+            }
+            Op::TracePush(ref name) => {
+                state.trace_push(name);
+                pc += 1;
+            }
+            Op::TracePop => {
+                state.trace_pop();
                 pc += 1;
             }
             Op::PushLiteral(ref val) => {

@@ -3854,6 +3854,42 @@ pub fn compile_near(source: &str) -> Result<Vec<u8>, String> {
     Ok(parse_and_compile(source, true)?.finish("_run"))
 }
 
+/// Compile pre-parsed LispVal expressions to NEAR WASM
+pub fn compile_near_from_exprs(exprs: &[LispVal]) -> Result<Vec<u8>, String> {
+    let mut em = WasmEmitter::new();
+    for e in exprs {
+        if let LispVal::List(items) = e {
+            if items.is_empty() { continue; }
+            if items.len() >= 3 {
+                if let (LispVal::Sym(s), LispVal::List(sig)) = (&items[0], &items[1]) {
+                    if s == "define" && !sig.is_empty() {
+                        if let LispVal::Sym(name) = &sig[0] {
+                            let params: Vec<String> = sig[1..].iter().map(|p| match p {
+                                LispVal::Sym(s) => Ok(s.clone()), _ => Err("param must be symbol".into()),
+                            }).collect::<Result<_, String>>()?;
+                            let body = if items.len() > 3 {
+                                let mut b = vec![LispVal::Sym("begin".into())];
+                                b.extend(items[2..].iter().cloned());
+                                LispVal::List(b)
+                            } else {
+                                items[2].clone()
+                            };
+                            em.emit_define(name, &params, &body)?;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(em.finish("_run"))
+}
+
+/// Compile pre-parsed LispVal expressions to NEAR WAT
+pub fn compile_near_to_wat_from_exprs(exprs: &[LispVal]) -> Result<String, String> {
+    let b = compile_near_from_exprs(exprs)?;
+    wasmprinter::print_bytes(&b).map_err(|e| e.to_string())
+}
+
 pub fn compile_pure_to_wat(source: &str) -> Result<String, String> {
     let b = compile_pure(source)?;
     wasmprinter::print_bytes(&b).map_err(|e| e.to_string())

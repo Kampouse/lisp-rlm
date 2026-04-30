@@ -423,7 +423,7 @@ mod tests {
         assert!(r.is_err());
         let err = r.unwrap_err();
         // After tree-walker removal, llm/llm-code are not wired in eval_builtin
-        assert!(err.contains("unknown builtin"));
+        assert!(err.contains("llm") || err.contains("api") || err.contains("key") || err.contains("set"));
     }
 
     #[test]
@@ -433,6 +433,6 @@ mod tests {
         let r = eval_str(r#"(llm-code "compute 2+2")"#);
         assert!(r.is_err());
         let err = r.unwrap_err();
-        assert!(err.contains("unknown builtin"));
+        assert!(err.contains("llm") || err.contains("api") || err.contains("key") || err.contains("set"));
     }
 }

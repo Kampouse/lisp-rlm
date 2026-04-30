@@ -37,6 +37,7 @@ pub mod program;
 pub mod wasm_emit;
 
 pub use bytecode::{exec_compiled_loop, run_compiled_lambda, try_compile_lambda, try_compile_loop};
+pub use wasm_emit::{compile_near_from_exprs, compile_near_to_wat_from_exprs};
 #[cfg(not(target_arch = "wasm32"))]
 pub use eval::llm_provider::{GenericProvider, LlmProvider, LlmResponse};
 #[cfg(not(target_arch = "wasm32"))]
