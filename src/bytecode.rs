@@ -3185,6 +3185,29 @@ pub fn eval_builtin(
             }
         }
         _ => {
+            // Intercept load-file: use run_program (VM) instead of lisp_eval (tree-walker)
+            if name == "load-file" {
+                if let (Some(e), Some(s)) = (env, state) {
+                    let path = match args.get(0) {
+                        Some(LispVal::Str(p)) => p.clone(),
+                        _ => return Err("load-file: expected string path".into()),
+                    };
+                    let code =
+                        std::fs::read_to_string(&path).map_err(|e| format!("load-file: {}", e))?;
+                    let forms = crate::parser::parse_all(&code)
+                        .map_err(|e| format!("load-file: parse error: {}", e))?;
+                    let mut result = LispVal::Nil;
+                    for form in &forms {
+                        result = crate::program::run_program(
+                            &[form.clone()],
+                            e,
+                            s,
+                        )?;
+                    }
+                    return Ok(result);
+                }
+                return Err("load-file: no env/state available".into());
+            }
             // Try dispatch modules for builtins not hardcoded above
             if let (Some(e), Some(s)) = (env, state) {
                 let mut env_clone = e.clone();
