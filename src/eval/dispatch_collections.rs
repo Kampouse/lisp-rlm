@@ -429,92 +429,129 @@ pub fn handle(
             Ok(Some(LispVal::Bool(true)))
         }
         "par-map" => {
-            let func = args.first().ok_or("par-map: need (f list)")?;
-            let lst = match args.get(1) {
-                Some(LispVal::List(l)) => l.clone(),
-                Some(LispVal::Nil) => return Ok(Some(LispVal::List(vec![]))),
-                Some(other) => return Err(format!("par-map: expected list, got {}", other)),
-                None => return Err("par-map: need (f list)".into()),
-            };
-            if lst.is_empty() {
-                return Ok(Some(LispVal::List(vec![])));
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let func = args.first().ok_or("par-map: need (f list)")?;
+                let lst = match args.get(1) {
+                    Some(LispVal::List(l)) => l.clone(),
+                    Some(LispVal::Nil) => return Ok(Some(LispVal::List(vec![]))),
+                    Some(other) => return Err(format!("par-map: expected list, got {}", other)),
+                    None => return Err("par-map: need (f list)".into()),
+                };
+                if lst.is_empty() {
+                    return Ok(Some(LispVal::List(vec![])));
+                }
+
+                use std::sync::Arc;
+                let func = Arc::new(func.clone());
+                let provider = state.llm_provider.as_ref().map(|p| p.box_clone());
+                let rt = &crate::eval::llm_provider::SHARED_RUNTIME;
+
+                let results: Result<Vec<LispVal>, String> = rt.block_on(async {
+                    let mut tasks = Vec::with_capacity(lst.len());
+                    for elem in lst {
+                        let f = Arc::clone(&func);
+                        let mut task_env = env.clone();
+                        let mut task_state = crate::types::EvalState::fork_for_parallel(
+                            &state,
+                            provider.as_ref().map(|p| p.box_clone()),
+                        );
+                        tasks.push(tokio::spawn(async move {
+                            tokio::task::yield_now().await;
+                            super::call_val(&f, &[elem], &mut task_env, &mut task_state)
+                        }));
+                    }
+                    let mut out = Vec::with_capacity(tasks.len());
+                    for task in tasks {
+                        out.push(
+                            task.await
+                                .map_err(|e| format!("par-map: task failed: {}", e))??,
+                        );
+                    }
+                    Ok(out)
+                });
+                Ok(Some(LispVal::List(results?)))
             }
-
-            use std::sync::Arc;
-            let func = Arc::new(func.clone());
-            let provider = state.llm_provider.as_ref().map(|p| p.box_clone());
-            let rt = &crate::eval::llm_provider::SHARED_RUNTIME;
-
-            let results: Result<Vec<LispVal>, String> = rt.block_on(async {
-                let mut tasks = Vec::with_capacity(lst.len());
-                for elem in lst {
-                    let f = Arc::clone(&func);
-                    let mut task_env = env.clone();
-                    let mut task_state = crate::types::EvalState::fork_for_parallel(
-                        &state,
-                        provider.as_ref().map(|p| p.box_clone()),
-                    );
-                    tasks.push(tokio::spawn(async move {
-                        tokio::task::yield_now().await;
-                        super::call_val(&f, &[elem], &mut task_env, &mut task_state)
-                    }));
-                }
-                let mut out = Vec::with_capacity(tasks.len());
-                for task in tasks {
-                    out.push(
-                        task.await
-                            .map_err(|e| format!("par-map: task failed: {}", e))??,
-                    );
-                }
-                Ok(out)
-            });
-            Ok(Some(LispVal::List(results?)))
+            #[cfg(target_arch = "wasm32")]
+            {
+                // Fall back to sequential map on WASM
+                let func = args.first().ok_or("par-map: need (f list)")?;
+                let lst = match args.get(1) {
+                    Some(LispVal::List(l)) => l.clone(),
+                    Some(LispVal::Nil) => return Ok(Some(LispVal::List(vec![]))),
+                    Some(other) => return Err(format!("par-map: expected list, got {}", other)),
+                    None => return Err("par-map: need (f list)".into()),
+                };
+                let results: Result<Vec<LispVal>, String> = lst.iter().map(|elem| super::call_val(func, &[elem.clone()], env, state)).collect();
+                Ok(Some(LispVal::List(results?)))
+            }
         }
         "par-filter" => {
-            let func = args.first().ok_or("par-filter: need (pred list)")?;
-            let lst = match args.get(1) {
-                Some(LispVal::List(l)) => l.clone(),
-                Some(LispVal::Nil) => return Ok(Some(LispVal::List(vec![]))),
-                Some(other) => return Err(format!("par-filter: expected list, got {}", other)),
-                None => return Err("par-filter: need (pred list)".into()),
-            };
-            if lst.is_empty() {
-                return Ok(Some(LispVal::List(vec![])));
-            }
-
-            use std::sync::Arc;
-            let func = Arc::new(func.clone());
-            let provider = state.llm_provider.as_ref().map(|p| p.box_clone());
-            let rt = &crate::eval::llm_provider::SHARED_RUNTIME;
-
-            let results: Result<Vec<LispVal>, String> = rt.block_on(async {
-                let mut tasks = Vec::with_capacity(lst.len());
-                for elem in &lst {
-                    let f = Arc::clone(&func);
-                    let mut task_env = env.clone();
-                    let mut task_state = crate::types::EvalState::fork_for_parallel(
-                        &state,
-                        provider.as_ref().map(|p| p.box_clone()),
-                    );
-                    let e = elem.clone();
-                    tasks.push(tokio::spawn(async move {
-                        tokio::task::yield_now().await;
-                        let result = super::call_val(&f, &[e], &mut task_env, &mut task_state)?;
-                        Ok::<bool, String>(super::is_truthy(&result))
-                    }));
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let func = args.first().ok_or("par-filter: need (pred list)")?;
+                let lst = match args.get(1) {
+                    Some(LispVal::List(l)) => l.clone(),
+                    Some(LispVal::Nil) => return Ok(Some(LispVal::List(vec![]))),
+                    Some(other) => return Err(format!("par-filter: expected list, got {}", other)),
+                    None => return Err("par-filter: need (pred list)".into()),
+                };
+                if lst.is_empty() {
+                    return Ok(Some(LispVal::List(vec![])));
                 }
+
+                use std::sync::Arc;
+                let func = Arc::new(func.clone());
+                let provider = state.llm_provider.as_ref().map(|p| p.box_clone());
+                let rt = &crate::eval::llm_provider::SHARED_RUNTIME;
+
+                let results: Result<Vec<LispVal>, String> = rt.block_on(async {
+                    let mut tasks = Vec::with_capacity(lst.len());
+                    for elem in &lst {
+                        let f = Arc::clone(&func);
+                        let mut task_env = env.clone();
+                        let mut task_state = crate::types::EvalState::fork_for_parallel(
+                            &state,
+                            provider.as_ref().map(|p| p.box_clone()),
+                        );
+                        let e = elem.clone();
+                        tasks.push(tokio::spawn(async move {
+                            tokio::task::yield_now().await;
+                            let result = super::call_val(&f, &[e], &mut task_env, &mut task_state)?;
+                            Ok::<bool, String>(super::is_truthy(&result))
+                        }));
+                    }
+                    let mut out = Vec::new();
+                    for (i, task) in tasks.into_iter().enumerate() {
+                        let keep = task
+                            .await
+                            .map_err(|e| format!("par-filter: task failed: {}", e))??;
+                        if keep {
+                            out.push(lst[i].clone());
+                        }
+                    }
+                    Ok(out)
+                });
+                Ok(Some(LispVal::List(results?)))
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                // Fall back to sequential filter on WASM
+                let func = args.first().ok_or("par-filter: need (pred list)")?;
+                let lst = match args.get(1) {
+                    Some(LispVal::List(l)) => l.clone(),
+                    Some(LispVal::Nil) => return Ok(Some(LispVal::List(vec![]))),
+                    Some(other) => return Err(format!("par-filter: expected list, got {}", other)),
+                    None => return Err("par-filter: need (pred list)".into()),
+                };
                 let mut out = Vec::new();
-                for (i, task) in tasks.into_iter().enumerate() {
-                    let keep = task
-                        .await
-                        .map_err(|e| format!("par-filter: task failed: {}", e))??;
-                    if keep {
-                        out.push(lst[i].clone());
+                for elem in lst {
+                    if super::is_truthy(&super::call_val(func, &[elem.clone()], env, state)?) {
+                        out.push(elem);
                     }
                 }
-                Ok(out)
-            });
-            Ok(Some(LispVal::List(results?)))
+                Ok(Some(LispVal::List(out)))
+            }
         }
 
         // ── Tier 1: List operations ──

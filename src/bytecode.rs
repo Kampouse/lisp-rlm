@@ -1,8 +1,5 @@
 use crate::helpers::is_truthy;
 use crate::types::{Env, EvalState, LispVal};
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static NEXT_DEBUG_ID: AtomicU64 = AtomicU64::new(1);
 
 // ---------------------------------------------------------------------------
 // Loop Bytecode Compiler — tight VM for loop/recur
@@ -130,9 +127,13 @@ pub enum Op {
     CallCaptured(usize, usize),
     /// Push captured var value from cl.captured[idx] (no slot copy)
     LoadCaptured(usize),
+    /// StoreCaptured(idx): pop value, write to cl.captured[idx], push value back.
+    /// Used for set! on variables captured from enclosing let-bindings.
     StoreCaptured(usize),
     /// Look up a global variable by name from the live outer env (not frozen)
     LoadGlobal(String),
+    /// StoreGlobal(name): pop value, write to outer_env[name], push value back.
+    /// Used for set! on top-level/captured variables.
     StoreGlobal(String),
     /// Call captured function from cl.captured[idx] with N args (no slot copy)
     CallCapturedRef(usize, usize),
@@ -167,8 +168,8 @@ pub enum Op {
     /// Push a first-class builtin function reference onto the stack.
     /// Used when a builtin name is referenced as a value (not in call position).
     PushBuiltin(String),
-    /// Push an arbitrary literal value onto the stack.
-    /// Used for (quote x) and (quasiquote ...) expansion.
+    /// PushLiteral(val): push an arbitrary LispVal onto the stack.
+    /// Used for quote and other compile-time constant expressions.
     PushLiteral(LispVal),
     // --- Sum-type primitives (deftype) ---
     /// ConstructTag(type_name, variant_id, n_fields): pop n_fields values from stack,
@@ -217,6 +218,13 @@ struct LoopCompiler {
     parent_slots: Vec<String>,
     /// Runtime captures: (name, outer_slot_index) — read from caller's slots at PushClosure time
     runtime_captures: Vec<(String, usize)>,
+    /// Forward-referenced captures: names captured from outer env as Nil (pre-populated defines).
+    /// These need LoadGlobal at runtime instead of LoadCaptured.
+    forward_captures: Vec<String>,
+    /// Variables that have set! in this scope — use LoadGlobal/StoreGlobal for them
+    /// instead of LoadCaptured, since StoreGlobal writes to outer_env but LoadCaptured
+    /// reads frozen captured values.
+    set_target_globals: std::collections::HashSet<String>,
     /// Per-slot type info: true if slot is known to always hold Num(i64)
     slot_is_i64: Vec<bool>,
     /// Per-slot type info: true if slot is known to always hold Float(f64)
@@ -230,15 +238,6 @@ struct LoopCompiler {
     /// When compiling a let-binding whose value is a lambda, this holds the binding name.
     /// The inner lambda compiler reads this to set self_name for recursive calls.
     pending_lambda_name: Option<String>,
-    /// Symbols that are targets of set! — reads should use LoadGlobal instead of LoadCaptured
-    /// to see mutations from StoreCaptured/StoreGlobal.
-    set_target_globals: std::collections::HashSet<String>,
-    /// Forward-referenced top-level defines — captured as Nil at compile time, resolved at runtime
-    /// via LoadGlobal. Distinct from parent-slot captures.
-    forward_captures: std::collections::HashSet<String>,
-    /// Names captured from outer_env (not from parent slots). set! on these should use
-    /// StoreGlobal so mutations propagate back to outer_env.
-    env_captures: std::collections::HashSet<String>,
 }
 
 impl LoopCompiler {
@@ -252,14 +251,13 @@ impl LoopCompiler {
             loop_stack: Vec::new(),
             parent_slots: Vec::new(),
             runtime_captures: Vec::new(),
+            forward_captures: Vec::new(),
+            set_target_globals: std::collections::HashSet::new(),
             slot_is_i64: Vec::new(),
             slot_is_f64: Vec::new(),
             last_result_i64: false,
             last_result_f64: false,
             pending_lambda_name: None,
-            set_target_globals: std::collections::HashSet::new(),
-            forward_captures: std::collections::HashSet::new(),
-            env_captures: std::collections::HashSet::new(),
         }
     }
 
@@ -313,10 +311,14 @@ impl LoopCompiler {
             return true;
         }
         if let Some(val) = outer_env.get(name) {
-            // Captured from outer_env — use LoadGlobal at runtime (not LoadCaptured)
-            // so reads always see the latest value from env, including StoreGlobal mutations.
-            // Don't add to captured — prevents PushClosure from rewriting LoadGlobal→LoadCaptured.
-            self.env_captures.insert(name.to_string());
+            // Check if this is a forward reference (Nil in env from pre-population)
+            // vs a legitimate Nil value. We mark forward refs specially.
+            let is_forward_ref = matches!(val, LispVal::Nil) && !name.starts_with('*');
+            self.captured.push((name.to_string(), val.clone()));
+            // If forward ref, also record the name for late-binding check
+            if is_forward_ref {
+                self.forward_captures.push(name.to_string());
+            }
             return true;
         }
         // Check if name is a slot in the parent (outer function's parameters/let-bindings)
@@ -439,15 +441,6 @@ impl LoopCompiler {
         {
             return false;
         }
-        // Don't inline if callee has StoreCaptured — mutations must persist
-        // on the original CompiledLambda's captured vec, not an inlined copy.
-        if callee
-            .code
-            .iter()
-            .any(|op| matches!(op, Op::StoreCaptured(_)))
-        {
-            return false;
-        }
         // Don't inline if callee has CallCaptured/CallCapturedRef/BuiltinCall
         // that call non-inlinable things — deep inlining is risky
         // Actually, we CAN inline these — they'll just stay as call ops.
@@ -559,26 +552,30 @@ impl LoopCompiler {
                     self.last_result_i64 = false;
                     self.last_result_f64 = false;
                     true
-                } else if self.captured_idx(name).is_some() {
-                    let idx = self.captured_idx(name).unwrap();
-                    self.code.push(Op::LoadCaptured(idx));
-                    true
-                } else if self.try_capture(name, outer_env) {
-                    // Just captured — check if from outer_env (LoadGlobal) or parent_slots (LoadCaptured)
-                    if self.env_captures.contains(name) {
+                } else if let Some(idx) = self.captured_idx(name) {
+                    // Check if this is a forward-referenced capture or set! target — use LoadGlobal
+                    if self.forward_captures.contains(&name.to_string())
+                        || self.set_target_globals.contains(name)
+                    {
                         self.code.push(Op::LoadGlobal(name.to_string()));
                         self.last_result_i64 = false;
                         self.last_result_f64 = false;
-                    } else {
-                        let idx = self.captured_idx(name).unwrap();
-                        self.code.push(Op::LoadCaptured(idx));
+                        return true;
                     }
+                    self.code.push(Op::LoadCaptured(idx));
                     true
-                } else if self.set_target_globals.contains(name) {
-                    // set! target that's not captured — use LoadGlobal to see StoreGlobal mutations.
-                    self.code.push(Op::LoadGlobal(name.to_string()));
-                    self.last_result_i64 = false;
-                    self.last_result_f64 = false;
+                } else if self.try_capture(name, outer_env) {
+                    // Just captured — check if it's a forward reference or set! target
+                    if self.forward_captures.contains(&name.to_string())
+                        || self.set_target_globals.contains(name)
+                    {
+                        self.code.push(Op::LoadGlobal(name.to_string()));
+                        self.last_result_i64 = false;
+                        self.last_result_f64 = false;
+                        return true;
+                    }
+                    let idx = self.captured_idx(name).unwrap();
+                    self.code.push(Op::LoadCaptured(idx));
                     true
                 } else if crate::helpers::is_builtin_name(name) {
                     self.code.push(Op::PushBuiltin(name.to_string()));
@@ -599,15 +596,16 @@ impl LoopCompiler {
                         // For now, compilation fails (constructors must be called directly)
                         false
                     }
-                } else {
-                    // Unknown symbol — emit LoadGlobal as fallback.
-                    // PushClosure will rewrite to LoadCaptured if the name is found in the
-                    // captured vec at closure creation time. Runtime error if truly undefined.
-                    self.forward_captures.insert(name.to_string());
+                } else if self.set_target_globals.contains(name) {
+                    // Variable targeted by set! but not in local slots or captured —
+                    // it's a runtime capture (let-bound in enclosing lambda).
+                    // Emit LoadGlobal; will be resolved from outer_env at runtime.
                     self.code.push(Op::LoadGlobal(name.to_string()));
                     self.last_result_i64 = false;
                     self.last_result_f64 = false;
                     true
+                } else {
+                    false
                 }
             }
             LispVal::List(list) if list.is_empty() => {
@@ -617,6 +615,36 @@ impl LoopCompiler {
             LispVal::List(list) => {
                 if let LispVal::Sym(op) = &list[0] {
                     match op.as_str() {
+                        // quote: return the datum unevaluated
+                        "quote" => {
+                            if list.len() != 2 {
+                                return false;
+                            }
+                            // Push the quoted value as a literal
+                            self.code.push(Op::PushLiteral(list[1].clone()));
+                            self.last_result_i64 = false;
+                            self.last_result_f64 = false;
+                            true
+                        }
+                        // begin/progn: evaluate all forms, return last value
+                        "begin" | "progn" => {
+                            if list.is_empty() {
+                                self.code.push(Op::PushNil);
+                                self.last_result_i64 = false;
+                                self.last_result_f64 = false;
+                                return true;
+                            }
+                            for (i, form) in list[1..].iter().enumerate() {
+                                if !self.compile_expr(form, outer_env) {
+                                    return false;
+                                }
+                                // Pop all but last result
+                                if i < list.len() - 2 {
+                                    self.code.push(Op::Pop);
+                                }
+                            }
+                            true
+                        }
                         // Variadic arithmetic: chain binary ops
                         "+" | "-" | "*" | "/" | "%" => {
                             let opcode = match op.as_str() {
@@ -1039,56 +1067,39 @@ impl LoopCompiler {
                                 LispVal::Sym(s) => s.clone(),
                                 _ => return false,
                             };
-                            // Compile value FIRST so that try_capture runs for any
-                            // symbols in the value expression, populating captured_idx.
-                            if !self.compile_expr(&list[2], outer_env) {
-                                return false;
-                            }
-                            // 4-way dispatch: local slot, captured (not forward), forward/global, unknown
+                            // Check if it's a local slot (param/let)
                             if let Some(slot) = self.slot_of(&name) {
+                                if !self.compile_expr(&list[2], outer_env) {
+                                    return false;
+                                }
                                 self.code.push(Op::StoreSlot(slot));
-                                self.code.push(Op::LoadSlot(slot));
+                                self.code.push(Op::LoadSlot(slot)); // set! returns the new value
                                 true
                             } else if let Some(idx) = self.captured_idx(&name) {
+                                // Captured variable — use StoreCaptured for let-bound captures,
+                                // or StoreGlobal for forward-referenced top-level defines
                                 self.set_target_globals.insert(name.clone());
+                                if !self.compile_expr(&list[2], outer_env) {
+                                    return false;
+                                }
                                 if self.forward_captures.contains(&name) {
-                                    // Forward ref — not yet in captured. Use StoreGlobal/LoadGlobal.
-                                    // PushClosure rewrite will fix these to StoreCaptured/LoadCaptured.
                                     self.code.push(Op::StoreGlobal(name.clone()));
                                     self.code.push(Op::LoadGlobal(name));
                                 } else {
-                                    // Captured from parent slots (runtime capture) — mutate
-                                    // the captured vec directly via StoreCaptured.
                                     self.code.push(Op::StoreCaptured(idx));
                                     self.code.push(Op::LoadCaptured(idx));
                                 }
                                 true
                             } else {
-                                // Unknown — runtime capture or top-level. Emit StoreGlobal fallback.
-                                // At PushClosure time, these get rewritten to StoreCaptured if the name
-                                // is found in the captured vec.
+                                // Unknown variable — might be a runtime capture (let-bound in enclosing lambda)
+                                // or a top-level define. Emit StoreGlobal/LoadGlobal as fallback.
                                 self.set_target_globals.insert(name.clone());
+                                if !self.compile_expr(&list[2], outer_env) {
+                                    return false;
+                                }
                                 self.code.push(Op::StoreGlobal(name.clone()));
                                 self.code.push(Op::LoadGlobal(name));
                                 true
-                            }
-                        }
-                        "quote" => {
-                            if list.len() != 2 {
-                                return false;
-                            }
-                            self.code.push(Op::PushLiteral(list[1].clone()));
-                            true
-                        }
-                        "quasiquote" => {
-                            if list.len() != 2 {
-                                return false;
-                            }
-                            // Expand quasiquote into (list ...)/(append ...)/(quote ...) calls,
-                            // then compile the result.
-                            match crate::eval::quasiquote::expand_quasiquote(&list[1]) {
-                                Ok(expanded) => self.compile_expr(&expanded, outer_env),
-                                Err(_) => false,
                             }
                         }
                         "lambda" | "fn" => {
@@ -1176,12 +1187,11 @@ impl LoopCompiler {
                                 num_param_slots: params.len(),
                                 total_slots: max_slot,
                                 code: inner.code,
-                                captured: std::sync::Arc::new(std::sync::RwLock::new(inner.captured)),
+                                captured: std::sync::RwLock::new(inner.captured.clone()),
                                 closures: inner.closures,
                                 runtime_captures: inner.runtime_captures,
                                 rest_param_idx: rest_param.as_ref().map(|_| n_fixed),
                                 num_fixed_params: n_fixed,
-                                debug_id: NEXT_DEBUG_ID.fetch_add(1, Ordering::Relaxed),
                             });
                             self.code.push(Op::PushClosure(idx));
                             true
@@ -1255,6 +1265,12 @@ impl LoopCompiler {
                                 }
                             }
                             if let Some(idx) = self.captured_idx(op) {
+                                // Check if forward-referenced capture — use LoadGlobal + CallDynamic
+                                if self.forward_captures.contains(&op.to_string()) {
+                                    self.code.push(Op::LoadGlobal(op.to_string()));
+                                    self.code.push(Op::CallDynamic(n_args));
+                                    return true;
+                                }
                                 // Try const fold (pure + all-const args → eval at compile time)
                                 // Then try inline (small compiled lambda → paste body)
                                 // Otherwise emit call
@@ -1266,18 +1282,17 @@ impl LoopCompiler {
                             } else if let Some(slot) = self.slot_of(op) {
                                 self.code.push(Op::CallCaptured(slot, n_args));
                             } else if self.try_capture(op, outer_env) {
-                                if self.env_captures.contains(op) {
-                                    // From outer_env — LoadGlobal + CallDynamic
+                                let idx = self.captured_idx(op).unwrap();
+                                // Check if just-captured is a forward reference
+                                if self.forward_captures.contains(&op.to_string()) {
                                     self.code.push(Op::LoadGlobal(op.to_string()));
                                     self.code.push(Op::CallDynamic(n_args));
-                                } else {
-                                    // From parent_slots (runtime capture)
-                                    let idx = self.captured_idx(op).unwrap();
-                                    if !self.try_const_fold(idx, n_args)
-                                        && !self.try_inline_call(idx, n_args)
-                                    {
-                                        self.code.push(Op::CallCapturedRef(idx, n_args));
-                                    }
+                                    return true;
+                                }
+                                if !self.try_const_fold(idx, n_args)
+                                    && !self.try_inline_call(idx, n_args)
+                                {
+                                    self.code.push(Op::CallCapturedRef(idx, n_args));
                                 }
                             } else {
                                 // Check if it's a registered type constructor (deftype)
@@ -1298,52 +1313,23 @@ impl LoopCompiler {
                         }
                     }
                 } else if let LispVal::List(ref callee) = list[0] {
-                    // Computed call where callee is a list expression.
-                    if callee.is_empty() {
-                        false
-                    } else if let LispVal::Sym(ref s) = callee[0] {
-                        if s == "lambda" || s == "fn" {
-                            let n_args = list.len() - 1;
-                            // Compile arguments FIRST, then lambda (so lambda is on top of stack)
-                            for arg in &list[1..] {
-                                if !self.compile_expr(arg, outer_env) {
-                                    return false;
-                                }
-                            }
-                            if !self.compile_expr(&list[0], outer_env) {
-                                return false;
-                            }
-                            // Stack: [arg1, arg2, ..., lambda] — lambda on top
-                            self.code.push(Op::CallDynamic(n_args));
-                            true
-                        } else {
-                            // General computed call: ((compose list twice) 5)
-                            let n_args = list.len() - 1;
-                            for arg in &list[1..] {
-                                if !self.compile_expr(arg, outer_env) {
-                                    return false;
-                                }
-                            }
-                            if !self.compile_expr(&list[0], outer_env) {
-                                return false;
-                            }
-                            self.code.push(Op::CallDynamic(n_args));
-                            true
-                        }
-                    } else {
-                        // Callee is a list but first element isn't a symbol — general computed call
-                        let n_args = list.len() - 1;
-                        for arg in &list[1..] {
-                            if !self.compile_expr(arg, outer_env) {
-                                return false;
-                            }
-                        }
-                        if !self.compile_expr(&list[0], outer_env) {
+                    // Computed function call: ((expr) args...)
+                    // CallDynamic expects: [..., arg1, ..., argN, func]
+                    // So compile args first, then callee.
+                    let n_args = list.len() - 1;
+                    // Compile arguments first
+                    for arg in &list[1..] {
+                        if !self.compile_expr(arg, outer_env) {
                             return false;
                         }
-                        self.code.push(Op::CallDynamic(n_args));
-                        true
                     }
+                    // Compile callee (pushes function on stack top)
+                    if !self.compile_expr(&list[0], outer_env) {
+                        return false;
+                    }
+                    // Stack: [arg1, ..., argN, func]
+                    self.code.push(Op::CallDynamic(n_args));
+                    return true;
                 } else {
                     false
                 }
@@ -2079,15 +2065,19 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
                 pc += 1;
             }
             Op::LoadCaptured(idx) => {
-                // Note: in run_compiled_loop, captured is in slots. In run_compiled_lambda, it's in cl.captured.
-                // The loop VM pre-fills captured into slots, so this op shouldn't appear there.
-                // If it does, fall through to error.
                 stack.push(cl.captured[*idx].1.clone());
                 pc += 1;
+            }
+            Op::StoreCaptured(idx) => {
+                // CompiledLoop uses plain Vec — StoreCaptured shouldn't appear in loops
+                return Err(format!("StoreCaptured({}) in loop VM — not supported", idx));
             }
             Op::LoadGlobal(name) => {
                 // Loop VM doesn't have outer_env access — globals shouldn't appear in loops
                 return Err(format!("LoadGlobal({}) in loop VM — not supported", name));
+            }
+            Op::StoreGlobal(name) => {
+                return Err(format!("StoreGlobal({}) in loop VM — not supported", name));
             }
             Op::PushI64(n) => {
                 stack.push(LispVal::Num(*n));
@@ -2439,17 +2429,17 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
             | Op::CallCapturedRef(_, _)
             | Op::PushClosure(_)
             | Op::PushBuiltin(_)
+            | Op::PushLiteral(_)
             | Op::CallSelf(_)
             | Op::CallDynamic(_)
+            | Op::StoreCaptured(_)
+            | Op::StoreGlobal(_)
             | Op::DictMutSet(_)
             | Op::GetDefaultSlot(_, _, _, _)
             | Op::ReturnSlot(_)
             | Op::ConstructTag(_, _, _)
             | Op::TagTest(_, _)
-            | Op::GetField(_)
-            | Op::StoreCaptured(_)
-            | Op::StoreGlobal(_)
-            | Op::PushLiteral(_) => {
+            | Op::GetField(_) => {
                 return Err(
                     "loop VM: CallCaptured/CallSelf/DictMutSet/GetDefaultSlot/ReturnSlot not supported in loop body".into(),
                 );
@@ -2975,6 +2965,7 @@ pub fn eval_builtin(
                     Ok(None) => {}
                 }
                 // dispatch_state needs env and state
+                #[cfg(not(target_arch = "wasm32"))]
                 match crate::eval::dispatch_state::handle(name, args, &mut env_clone, s) {
                     Ok(Some(result)) => return Ok(result),
                     Err(e) => return Err(e),
@@ -2990,9 +2981,11 @@ pub fn eval_builtin(
             if let Ok(Some(result)) = crate::eval::dispatch_predicates::handle(name, args) {
                 return Ok(result);
             }
+            #[cfg(not(target_arch = "wasm32"))]
             if let Ok(Some(result)) = crate::eval::dispatch_json::handle(name, args) {
                 return Ok(result);
             }
+            #[cfg(not(target_arch = "wasm32"))]
             if let Ok(Some(result)) = crate::eval::dispatch_http::handle(name, args) {
                 return Ok(result);
             }
@@ -3006,7 +2999,7 @@ pub fn eval_builtin(
 
 /// Compiled lambda: a flat bytecode program with N param slots + captured env slots.
 /// Used for fast-path map/filter/reduce — avoids env push/pop per element.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct CompiledLambda {
     pub num_param_slots: usize,
     /// If this lambda is variadic, the slot index for the &rest parameter.
@@ -3016,17 +3009,31 @@ pub struct CompiledLambda {
     pub num_fixed_params: usize,
     pub total_slots: usize,
     pub code: Vec<Op>,
-    /// Captured environment variables. Arc<RwLock> so Clone shares mutable state —
+    /// Captured environment variables. Wrapped in RwLock for interior mutability —
     /// StoreCaptured needs to persist mutations across calls (counter pattern).
-    pub captured: std::sync::Arc<std::sync::RwLock<Vec<(String, LispVal)>>>,
-    /// Unique ID for debugging — survives clones
-    pub debug_id: u64,
+    /// RwLock (not RwLock) because CompiledLambda is shared across threads via Arc.
+    pub captured: std::sync::RwLock<Vec<(String, LispVal)>>,
     /// Pre-compiled inner lambdas (closures). Indexed by PushClosure(N).
     pub closures: Vec<CompiledLambda>,
     /// Outer slot indices that must be captured at runtime (from caller's slots array).
     /// Paired with names in order — at PushClosure time, read slots[i] for each entry
     /// and add to the closure's captured list.
     pub runtime_captures: Vec<(String, usize)>,
+}
+
+impl Clone for CompiledLambda {
+    fn clone(&self) -> Self {
+        Self {
+            num_param_slots: self.num_param_slots,
+            rest_param_idx: self.rest_param_idx,
+            num_fixed_params: self.num_fixed_params,
+            total_slots: self.total_slots,
+            code: self.code.clone(),
+            captured: std::sync::RwLock::new(self.captured.read().unwrap().clone()),
+            closures: self.closures.clone(),
+            runtime_captures: self.runtime_captures.clone(),
+        }
+    }
 }
 
 /// Try to compile a lambda body for fast inline evaluation.
@@ -3119,12 +3126,11 @@ pub fn try_compile_lambda(
         num_param_slots: param_names.len(),
         total_slots: max_slot,
         code,
-        captured: std::sync::Arc::new(std::sync::RwLock::new(compiler.captured)),
+        captured: std::sync::RwLock::new(compiler.captured),
         closures: compiler.closures,
         runtime_captures: compiler.runtime_captures,
         rest_param_idx: None,
         num_fixed_params: param_names.len(),
-        debug_id: NEXT_DEBUG_ID.fetch_add(1, Ordering::Relaxed),
     })
 }
 
@@ -3148,15 +3154,6 @@ pub fn vm_call_lambda(
 
 /// Run a compiled lambda with the given arguments. Returns the result directly.
 pub fn run_compiled_lambda(
-    cl: &CompiledLambda,
-    args: &[LispVal],
-    outer_env: &mut Env,
-    state: &mut EvalState,
-) -> Result<LispVal, String> {
-    run_compiled_lambda_inner(cl, args, outer_env, state)
-}
-
-fn run_compiled_lambda_inner(
     cl: &CompiledLambda,
     args: &[LispVal],
     outer_env: &mut Env,
@@ -3218,9 +3215,6 @@ fn run_compiled_lambda_inner(
                 pc += 1;
             }
             Op::LoadCaptured(idx) => {
-                // Note: in run_compiled_loop, captured is in slots. In run_compiled_lambda, it's in cl.captured.
-                // The loop VM pre-fills captured into slots, so this op shouldn't appear there.
-                // If it does, fall through to error.
                 stack.push(cl.captured.read().unwrap()[*idx].1.clone());
                 pc += 1;
             }
@@ -3231,27 +3225,16 @@ fn run_compiled_lambda_inner(
                 pc += 1;
             }
             Op::LoadGlobal(name) => {
-                // Use global_env (shared via Arc) when available so nested
-                // run_compiled_lambda calls see each other's StoreGlobal mutations.
-                // Fall back to outer_env for standalone calls (tests, eval_builtin, etc.).
-                let val = if let Some(ref arc_env) = state.global_env {
-                    arc_env.read().unwrap().get(name).cloned()
-                } else {
-                    outer_env.get(name).cloned()
-                };
-                match val {
-                    Some(v) => stack.push(v),
+                // Live lookup from outer_env — sees set! mutations
+                match outer_env.get(name) {
+                    Some(val) => stack.push(val.clone()),
                     None => return Err(format!("LoadGlobal: undefined {}", name)),
                 }
                 pc += 1;
             }
             Op::StoreGlobal(name) => {
                 let val = stack.pop().unwrap_or(LispVal::Nil);
-                if let Some(ref arc_env) = state.global_env {
-                    arc_env.write().unwrap().insert_mut(name.clone(), val.clone());
-                } else {
-                    outer_env.insert_mut(name.clone(), val.clone());
-                }
+                outer_env.insert_mut(name.clone(), val.clone());
                 stack.push(val);
                 pc += 1;
             }
@@ -3624,12 +3607,6 @@ fn run_compiled_lambda_inner(
                 };
                 // Build the inner lambda's captured list for the compiled path
                 let mut inner_cloned = inner.clone();
-                // CRITICAL: deep-clone the captured Arc so we don't corrupt the
-                // template in cl.closures[idx]. inner.clone() shares the Arc.
-                {
-                    let snapshot = inner_cloned.captured.read().unwrap().clone();
-                    inner_cloned.captured = std::sync::Arc::new(std::sync::RwLock::new(snapshot));
-                }
                 // Merge runtime captures into captured list so the compiled inner lambda
                 // can find them via captured_idx
                 for (name, slot_idx) in &inner.runtime_captures {
@@ -3642,35 +3619,10 @@ fn run_compiled_lambda_inner(
                         inner_cloned.captured.write().unwrap().push((name.clone(), val));
                     } else {
                         // Update existing captured value with runtime value
-                        let mut cap = inner_cloned.captured.write().unwrap();
-                        if let Some(entry) = cap.iter_mut().find(|(n, _)| n == name) {
+                        if let Some(entry) =
+                            inner_cloned.captured.write().unwrap().iter_mut().find(|(n, _)| n == name)
+                        {
                             entry.1 = val;
-                        }
-                    }
-                }
-                // Rewrite LoadGlobal/StoreGlobal → LoadCaptured/StoreCaptured for runtime captures
-                {
-                    let captured_map: std::collections::HashMap<String, usize> = inner_cloned
-                        .captured
-                        .read()
-                        .unwrap()
-                        .iter()
-                        .enumerate()
-                        .map(|(i, (n, _))| (n.clone(), i))
-                        .collect();
-                    for op in &mut inner_cloned.code {
-                        match op {
-                            Op::LoadGlobal(name) => {
-                                if let Some(&idx) = captured_map.get(name) {
-                                    *op = Op::LoadCaptured(idx);
-                                }
-                            }
-                            Op::StoreGlobal(name) => {
-                                if let Some(&idx) = captured_map.get(name) {
-                                    *op = Op::StoreCaptured(idx);
-                                }
-                            }
-                            _ => {}
                         }
                     }
                 }
@@ -3690,7 +3642,7 @@ fn run_compiled_lambda_inner(
                     body: Box::new(LispVal::Nil),
                     closed_env,
                     pure_type: None,
-                    compiled: Some(std::sync::Arc::new(inner_cloned)),
+                    compiled: Some(Box::new(inner_cloned)),
                     memo_cache: None,
                 });
                 pc += 1;

@@ -263,6 +263,8 @@ pub struct EvalState {
     /// RLM iteration counter (incremented by the rlm builtin each iteration)
     pub rlm_iteration: usize,
     /// Pluggable LLM provider — when `None`, LLM builtins return an error.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub llm_provider: Option<Box<dyn crate::eval::llm_provider::LlmProvider>>,
     /// Call trace ring buffer — last N function calls for error reporting.
     pub call_trace: Vec<String>,
@@ -288,6 +290,8 @@ impl EvalState {
             llm_calls: Arc::new(AtomicU64::new(0)),
             rlm_depth: 0,
             rlm_iteration: 0,
+            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(not(target_arch = "wasm32"))]
             llm_provider: None,
             call_trace: Vec::new(),
             call_trace_max: 64,
@@ -297,12 +301,16 @@ impl EvalState {
     }
 
     /// Set the LLM provider for this state.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn set_llm_provider(&mut self, provider: Box<dyn crate::eval::llm_provider::LlmProvider>) {
         self.llm_provider = Some(provider);
     }
 
     /// Create a forked state for parallel execution.
     /// Shares token/LLM counters with the parent, but has fresh eval budget and trace.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn fork_for_parallel(
         &self,
         provider: Option<Box<dyn crate::eval::llm_provider::LlmProvider>>,
@@ -316,6 +324,7 @@ impl EvalState {
             llm_calls: Arc::clone(&self.llm_calls),
             rlm_depth: self.rlm_depth,
             rlm_iteration: self.rlm_iteration,
+#[cfg(not(target_arch = "wasm32"))]
             llm_provider: provider,
             call_trace: Vec::new(),
             call_trace_max: self.call_trace_max,
@@ -384,6 +393,8 @@ impl Clone for EvalState {
             llm_calls: Arc::clone(&self.llm_calls),
             rlm_depth: self.rlm_depth,
             rlm_iteration: self.rlm_iteration,
+            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(not(target_arch = "wasm32"))]
             llm_provider: None, // providers are not cloned
             call_trace: self.call_trace.clone(),
             pending_pure_type: None, // Don't propagate pure type to forks
@@ -402,7 +413,7 @@ impl std::fmt::Debug for EvalState {
             .field("llm_calls", &self.llm_calls.load(Ordering::Relaxed))
             .field("rlm_depth", &self.rlm_depth)
             .field("rlm_iteration", &self.rlm_iteration)
-            .field("llm_provider", &self.llm_provider.is_some())
+            .field("llm_provider", &cfg!(not(target_arch = "wasm32")))
             .finish()
     }
 }

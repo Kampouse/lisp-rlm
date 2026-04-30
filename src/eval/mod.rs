@@ -1,4 +1,6 @@
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::Ordering;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
 use crate::helpers::*;
@@ -6,19 +8,24 @@ use crate::parser::parse_all;
 use crate::types::{Env, EvalState, LispVal};
 pub mod crypto;
 pub mod helpers;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod llm_provider;
 pub mod quasiquote;
 
 pub mod dispatch_arithmetic;
 // Domain-specific dispatch modules (v0.2 god-function split)
 pub mod dispatch_collections;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod dispatch_http;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod dispatch_json;
 pub mod dispatch_predicates;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod dispatch_state;
 pub mod dispatch_strings;
 pub mod dispatch_types;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub use llm_provider::*;
 
 use crypto::{builtin_keccak256, builtin_sha256};
