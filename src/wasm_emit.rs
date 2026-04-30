@@ -1845,25 +1845,17 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0)); Ok(v)
             }
 
-            // ── tick_to_price64: Q64.64 tick math via binary exponentiation ──
+            // ── tick_to_price64: Q64.64 via Q32.32 + shift ──
             // (tick_to_price64 addr tick) — writes Q64.64 1.0001^tick to mem[addr..addr+15]
-            // Uses locals for result/base during loop, stores to memory at end
+            // Uses proven Q32.32 binary exponentiation, then shifts left by 32 for Q64.64
             "tick_to_price64" => {
                 let addr_expr = self.expr(&a[0])?;
                 let tick = self.expr(&a[1])?;
                 let addr_i = self.local_idx("__tp64_a");
                 let t_i = self.local_idx("__tp64_t");
                 let neg_i = self.local_idx("__tp64_neg");
-                // result: rh=high, rl=low
-                let rl = self.local_idx("__tp64_rl");
-                let rh = self.local_idx("__tp64_rh");
-                // base: bh=high, bl=low
-                let bl = self.local_idx("__tp64_bl");
-                let bh = self.local_idx("__tp64_bh");
-                // temps for Q64.64 mul
-                let mid = self.local_idx("__tp64_mid");
-                let carry = self.local_idx("__tp64_c");
-                let tmp = self.local_idx("__tp64_tmp");
+                let r_i = self.local_idx("__tp64_r");
+                let b_i = self.local_idx("__tp64_b");
                 let mut v = Vec::new();
                 v.extend(addr_expr); v.push(Instruction::LocalSet(addr_i));
                 v.extend(tick); v.push(Instruction::LocalSet(t_i));
@@ -1875,93 +1867,68 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(t_i)); v.push(Instruction::I64Const(-1i64)); v.push(Instruction::I64Mul);
                 v.push(Instruction::LocalSet(t_i));
                 v.push(Instruction::End);
-                // result = 1.0 in Q64.64: {low=0, high=1}
-                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(rl));
-                v.push(Instruction::I64Const(1)); v.push(Instruction::LocalSet(rh));
-                // base = 1.0001 in Q64.64: {low=1844674407370955, high=1}
-                // 0.0001 * 2^64 = 1844674407370955
-                v.push(Instruction::I64Const(1844674407370955i64)); v.push(Instruction::LocalSet(bl));
-                v.push(Instruction::I64Const(1)); v.push(Instruction::LocalSet(bh));
-                // Binary exponentiation loop
+                // result = 1.0 in Q32.32 = 1 << 32
+                v.push(Instruction::I64Const(1)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl); v.push(Instruction::LocalSet(r_i));
+                // base = 1.0001 in Q32.32 = 0x100068DB8
+                v.push(Instruction::I64Const(0x100068DB8)); v.push(Instruction::LocalSet(b_i));
+                // Binary exponentiation loop (same proven Q32.32 mul with 16-bit split)
                 v.push(Instruction::Block(BlockType::Empty));
                 v.push(Instruction::Loop(BlockType::Empty));
-                // if t == 0: break
                 v.push(Instruction::LocalGet(t_i)); v.push(Instruction::I64Const(0)); v.push(Instruction::I64Eq);
                 v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
-                // if tick & 1: result *= base (Q64.64 mul using locals)
+                // if tick & 1: r *= b
                 v.push(Instruction::LocalGet(t_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64And);
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::If(BlockType::Empty));
-                // Q64.64 mul: rl,rh *= bl,bh
-                // mid = rh*bl + rl*bh
-                v.push(Instruction::LocalGet(rh)); v.push(Instruction::LocalGet(bl)); v.push(Instruction::I64Mul);
-                v.push(Instruction::LocalSet(tmp)); // tmp = rh*bl
-                v.push(Instruction::LocalGet(rl)); v.push(Instruction::LocalGet(bh)); v.push(Instruction::I64Mul);
-                v.push(Instruction::LocalGet(tmp)); v.push(Instruction::I64Add);
-                // carry if mid < tmp (i.e. rh*bl)
-                v.push(Instruction::LocalTee(mid));
-                v.push(Instruction::LocalGet(tmp));
-                v.push(Instruction::I64LtU);
-                v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(carry));
-                // new_rl = mid + (rl*bl >> 64)
-                v.push(Instruction::LocalGet(rl)); v.push(Instruction::LocalGet(bl)); v.push(Instruction::I64Mul);
-                v.push(Instruction::I64Const(64)); v.push(Instruction::I64ShrU); // rl*bl >> 64
-                v.push(Instruction::LocalGet(mid)); v.push(Instruction::I64Add); // new_rl = mid + ...
-                // carry2 if new_rl < mid
-                v.push(Instruction::LocalTee(rl)); // store new rl
-                v.push(Instruction::LocalGet(mid));
-                v.push(Instruction::I64LtU);
-                v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::LocalGet(carry)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(carry));
-                // new_rh = rh*bh + carry
-                v.push(Instruction::LocalGet(rh)); v.push(Instruction::LocalGet(bh)); v.push(Instruction::I64Mul);
-                v.push(Instruction::LocalGet(carry)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(rh));
-                v.push(Instruction::End); // end if tick&1
-                // base *= base (Q64.64 square, same mul with rl=rh=bl=bh)
-                // mid = bh*bl + bl*bh = 2*(bh*bl)
-                v.push(Instruction::LocalGet(bh)); v.push(Instruction::LocalGet(bl)); v.push(Instruction::I64Mul);
-                v.push(Instruction::LocalSet(tmp));
-                v.push(Instruction::LocalGet(tmp)); v.push(Instruction::LocalGet(tmp)); v.push(Instruction::I64Add); // 2*bh*bl
-                v.push(Instruction::LocalTee(mid));
-                v.push(Instruction::LocalGet(tmp));
-                v.push(Instruction::I64LtU); // carry if mid < bh*bl (overflow)
-                v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(carry));
-                // new_bl = mid + (bl*bl >> 64)
-                v.push(Instruction::LocalGet(bl)); v.push(Instruction::LocalGet(bl)); v.push(Instruction::I64Mul);
-                v.push(Instruction::I64Const(64)); v.push(Instruction::I64ShrU);
-                v.push(Instruction::LocalGet(mid)); v.push(Instruction::I64Add);
-                v.push(Instruction::LocalTee(bl));
-                v.push(Instruction::LocalGet(mid));
-                v.push(Instruction::I64LtU);
-                v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::LocalGet(carry)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(carry));
-                // new_bh = bh*bh + carry
-                v.push(Instruction::LocalGet(bh)); v.push(Instruction::LocalGet(bh)); v.push(Instruction::I64Mul);
-                v.push(Instruction::LocalGet(carry)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(bh));
+                // Q32.32 mul: r = (r_hi * b_hi) + ((r_hi * b_lo) >> 16) + ((r_lo * b_hi) >> 16)
+                v.push(Instruction::LocalGet(r_i)); v.push(Instruction::I64Const(16)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalGet(b_i)); v.push(Instruction::I64Const(16)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Mul);
+                v.push(Instruction::LocalGet(r_i)); v.push(Instruction::I64Const(16)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalGet(b_i)); v.push(Instruction::I64Const(0xFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::I64Mul); v.push(Instruction::I64Const(16)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalGet(r_i)); v.push(Instruction::I64Const(0xFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::LocalGet(b_i)); v.push(Instruction::I64Const(16)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Mul); v.push(Instruction::I64Const(16)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(r_i));
+                v.push(Instruction::End);
+                // b *= b (Q32.32 square)
+                v.push(Instruction::LocalGet(b_i)); v.push(Instruction::I64Const(16)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalGet(b_i)); v.push(Instruction::I64Const(16)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Mul);
+                v.push(Instruction::LocalGet(b_i)); v.push(Instruction::I64Const(16)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalGet(b_i)); v.push(Instruction::I64Const(0xFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::I64Mul); v.push(Instruction::I64Const(16)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalGet(b_i)); v.push(Instruction::I64Const(0xFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::LocalGet(b_i)); v.push(Instruction::I64Const(16)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Mul); v.push(Instruction::I64Const(16)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(b_i));
                 // tick >>= 1
-                v.push(Instruction::LocalGet(t_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64ShrU);
-                v.push(Instruction::LocalSet(t_i));
+                v.push(Instruction::LocalGet(t_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64ShrU); v.push(Instruction::LocalSet(t_i));
                 v.push(Instruction::Br(0));
                 v.push(Instruction::End); // loop
                 v.push(Instruction::End); // block
-                // Invert if negative: approximate reciprocal for values near 1.0
+                // Invert if negative
                 v.push(Instruction::LocalGet(neg_i)); v.push(Instruction::I32WrapI64);
                 v.push(Instruction::If(BlockType::Empty));
-                // For values near 1.0: reciprocal ≈ (1<<32) / (rh+1) << 32
-                v.push(Instruction::I64Const(1)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl); // 1<<32
-                v.push(Instruction::LocalGet(rh)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); // avoid div-by-zero
-                v.push(Instruction::I64DivU);
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl); // back to Q64.64 scale
-                v.push(Instruction::LocalSet(rl));
-                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(rh));
+                v.push(Instruction::I64Const(1)); v.push(Instruction::I64Const(48)); v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalGet(r_i)); v.push(Instruction::I64DivU);
+                v.push(Instruction::I64Const(16)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(r_i));
                 v.push(Instruction::End);
-                // Store result to memory
+                // Convert Q32.32 → Q64.64: shift left by 32
+                // Store lo = (r << 32) at addr
                 v.push(Instruction::LocalGet(addr_i)); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::LocalGet(rl));
+                v.push(Instruction::LocalGet(r_i)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                // Store hi = (r >> 32) at addr+8
                 v.push(Instruction::LocalGet(addr_i)); v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I32Const(8)); v.push(Instruction::I32Add);
-                v.push(Instruction::LocalGet(rh));
+                v.push(Instruction::LocalGet(r_i)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
                 v.push(Instruction::I64Const(0)); Ok(v)
             }
