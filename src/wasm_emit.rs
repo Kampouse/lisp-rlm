@@ -181,6 +181,9 @@ impl WasmEmitter {
             "near/promise_results_count" => self.need_host(33),
             "near/promise_return" => self.need_host(35),
             "near/abort" => self.need_host(26),
+            "near/iter_prefix" => { self.need_host(36); self.need_host(2); self.need_host(0); self.need_host(1); }
+            "near/iter_range" => { self.need_host(37); self.need_host(2); self.need_host(0); self.need_host(1); }
+            "near/iter_next" => { self.need_host(38); self.need_host(0); self.need_host(1); }
             _ => {}
         }
     }
@@ -884,6 +887,78 @@ impl WasmEmitter {
                 Ok(v)
             }
 
+            // ── Iterator support ──
+
+            // (near/iter_prefix prefix_ptr prefix_len) → iterator_id: i64
+            // storage_iter_prefix writes prefix to register, then calls host(36)
+            "near/iter_prefix" => {
+                let prefix = self.expr(&a[0])?;
+                let prefix_len = self.expr(&a[1])?;
+                let mut v = Vec::new();
+                // write_register(register_id=0, prefix_ptr, prefix_len)
+                // Store prefix data at mem[0] first — prefix is a packed string or raw ptr+len
+                // For packed string input: extract ptr and len
+                // prefix is packed (low32=ptr, high32=len), prefix_len is explicit
+                // Actually: prefix_ptr and prefix_len are separate args
+                // Write prefix data to register: write_register(register_id=0, len=prefix_len, ptr=prefix_ptr)
+                // write_register(idx 2): (register_id, data_len, data_ptr)
+                v.push(Instruction::I64Const(0)); // register_id = 0
+                v.extend(prefix_len.clone());
+                v.extend(prefix);
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // ptr as i64
+                // Swap to get (register_id, data_ptr, data_len) — nope, write_register is (register_id, data_len, data_ptr)
+                // Actually HOST_FUNCS[2] = write_register: (I64, I64, I64) = (register_id, data_len, data_ptr)
+                // We pushed: reg_id=0, prefix_len, prefix_ptr. That's correct order.
+                v.push(Self::host_call(2)); // write_register — returns void, no drop
+                // storage_iter_prefix(prefix_len, register_id=0) — idx 36
+                // But wait: HOST_FUNCS[36] = storage_iter_prefix: (I64, I64) = (prefix_len, register_id)
+                // We need to pass the length again and register_id
+                v.extend(prefix_len.clone());
+                v.push(Instruction::I64Const(0)); // register_id = 0
+                v.push(Self::host_call(36));
+                Ok(v)
+            }
+
+            // (near/iter_range start_ptr start_len end_ptr end_len) → iterator_id: i64
+            "near/iter_range" => {
+                let start = self.expr(&a[0])?;
+                let start_len = self.expr(&a[1])?;
+                let end = self.expr(&a[2])?;
+                let end_len = self.expr(&a[3])?;
+                let mut v = Vec::new();
+                // Write start to register 0
+                v.push(Instruction::I64Const(0)); // register_id
+                v.extend(start_len.clone());
+                v.extend(start); v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Self::host_call(2)); // write_register — void
+                // Write end to register 1
+                v.push(Instruction::I64Const(1)); // register_id
+                v.extend(end_len.clone());
+                v.extend(end); v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Self::host_call(2)); // write_register — void
+                // storage_iter_range(start_len, register_id=0, end_len, register_id=1) — idx 37
+                v.extend(start_len);
+                v.push(Instruction::I64Const(0));
+                v.extend(end_len);
+                v.push(Instruction::I64Const(1));
+                v.push(Self::host_call(37));
+                Ok(v)
+            }
+
+            // (near/iter_next iter_id key_ptr val_ptr) → i64 (1 if found, 0 if done)
+            "near/iter_next" => {
+                let iter_id = self.expr(&a[0])?;
+                let key_ptr = self.expr(&a[1])?;
+                let val_ptr = self.expr(&a[2])?;
+                let mut v = Vec::new();
+                // storage_iter_next(iter_id, key_register_id, value_register_id) — idx 38
+                v.extend(iter_id);
+                v.extend(key_ptr);
+                v.extend(val_ptr);
+                v.push(Self::host_call(38));
+                Ok(v)
+            }
+
             // ── u128 Arithmetic (two i64s: low at addr, high at addr+8) ──
             // Scratch area: 128-191 (4 i64 slots at offsets 128,136,144,152)
 
@@ -1527,6 +1602,80 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::End);
                 Ok(v)
+            }
+
+            // (fp64/sub dst_addr src_addr) — dst -= src (Q64.64, subtract with borrow)
+            "fp64/sub" => {
+                let da = self.expr(&a[0])?;
+                let sa = self.expr(&a[1])?;
+                let dl = self.local_idx("__fp64s_dl");
+                let dh = self.local_idx("__fp64s_dh");
+                let sl = self.local_idx("__fp64s_sl");
+                let sh = self.local_idx("__fp64s_sh");
+                let borrow = self.local_idx("__fp64s_b");
+                let mut v = Vec::new();
+                // Load src
+                v.extend(sa.clone()); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 })); v.push(Instruction::LocalSet(sl));
+                v.extend(sa); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 })); v.push(Instruction::LocalSet(sh));
+                // Load dst low
+                v.extend(da.clone()); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 })); v.push(Instruction::LocalSet(dl));
+                // borrow = dl < sl (unsigned)
+                v.push(Instruction::LocalGet(dl)); v.push(Instruction::LocalGet(sl)); v.push(Instruction::I64LtU);
+                v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(borrow));
+                // dst_low -= src_low
+                v.push(Instruction::LocalGet(dl)); v.push(Instruction::LocalGet(sl)); v.push(Instruction::I64Sub);
+                v.push(Instruction::LocalSet(dl));
+                // Load dst high
+                v.extend(da.clone()); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 })); v.push(Instruction::LocalSet(dh));
+                // dst_high = dst_high - src_high - borrow
+                v.push(Instruction::LocalGet(dh));
+                v.push(Instruction::LocalGet(sh)); v.push(Instruction::I64Sub);
+                v.push(Instruction::LocalGet(borrow)); v.push(Instruction::I64Sub);
+                v.push(Instruction::LocalSet(dh));
+                // Store dst
+                v.extend(da.clone()); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(dl));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.extend(da); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(8)); v.push(Instruction::I32Add);
+                v.push(Instruction::LocalGet(dh));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Const(0)); Ok(v)
+            }
+
+            // (fp64/div dst_addr src_addr) — dst /= src (APPROXIMATE: integer division of high parts only)
+            // For CLMM prices where high word carries the integer part, this is sufficient.
+            // result_hi = dst_hi / src_hi, result_lo = 0
+            // TODO: full 128-bit division for precise results
+            "fp64/div" => {
+                let da = self.expr(&a[0])?;
+                let sa = self.expr(&a[1])?;
+                let dh = self.local_idx("__fp64d_dh");
+                let sh = self.local_idx("__fp64d_sh");
+                let rh = self.local_idx("__fp64d_rh");
+                let mut v = Vec::new();
+                // Load dst high
+                v.extend(da.clone()); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 })); v.push(Instruction::LocalSet(dh));
+                // Load src high
+                v.extend(sa); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 })); v.push(Instruction::LocalSet(sh));
+                // result_hi = dst_hi / src_hi (unsigned)
+                v.push(Instruction::LocalGet(dh)); v.push(Instruction::LocalGet(sh)); v.push(Instruction::I64DivU);
+                v.push(Instruction::LocalSet(rh));
+                // Store: low = 0, high = result
+                v.extend(da.clone()); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.extend(da); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(8)); v.push(Instruction::I32Add);
+                v.push(Instruction::LocalGet(rh));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Const(0)); Ok(v)
             }
 
             // tick_to_price64: TODO — needs helper method for inline Q64.64 mul
@@ -2347,7 +2496,7 @@ impl WasmEmitter {
 
             // User function call
             _ => {
-                let pos = self.funcs.iter().position(|f| f.name == op).ok_or_else(|| format!("unknown function: {}", op))?;
+                let pos = self.funcs.iter().position(|f| f.name == op).ok_or_else(|| format!("in {}: unknown function '{}'", self.current_func.as_deref().unwrap_or("top"), op))?;
                 let mut v = Vec::new();
                 for x in a { v.extend(self.expr(x)?); }
                 v.push(Instruction::Call(USER_BASE | pos as u32));
