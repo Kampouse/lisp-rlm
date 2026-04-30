@@ -3642,7 +3642,7 @@ pub fn run_compiled_lambda(
                     body: Box::new(LispVal::Nil),
                     closed_env,
                     pure_type: None,
-                    compiled: Some(Box::new(inner_cloned)),
+                    compiled: Some(std::sync::Arc::new(inner_cloned)),
                     memo_cache: None,
                 });
                 pc += 1;

@@ -591,6 +591,111 @@ impl WasmEmitter {
             }
             "near/random_seed" => self.read_to_register(23, a),
 
+            // ── Promises / Cross-contract calls ──
+
+            // (near/promise_create account_id method args amount gas) → promise_index: i64
+            // All args are packed strings except amount (i64) and gas (i64)
+            "near/promise_create" => {
+                // promise_create(account_id_len, account_id_ptr, method_name_len, method_name_ptr,
+                //                arguments_len, arguments_ptr, amount_ptr, gas) → i64  (idx 30)
+                let account = self.expr(&a[0])?;
+                let method = self.expr(&a[1])?;
+                let args = self.expr(&a[2])?;
+                let amount = self.expr(&a[3])?;
+                let gas = self.expr(&a[4])?;
+                let mut v = Vec::new();
+                // account_id: len >> 32, ptr & 0xFFFF_FFFF
+                v.extend(account.clone()); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(account); v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                // method_name: len >> 32, ptr
+                v.extend(method.clone()); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(method); v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                // arguments: len >> 32, ptr
+                v.extend(args.clone()); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(args); v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                // amount: store at mem[0], pass ptr=0
+                v.push(Instruction::I32Const(0)); v.extend(amount);
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Const(0)); // amount_ptr
+                v.extend(gas);
+                v.push(Self::host_call(30)); // returns promise_index
+                Ok(v)
+            }
+
+            // (near/promise_then promise_idx account_id method args amount gas) → new_promise_idx
+            "near/promise_then" => {
+                let pidx = self.expr(&a[0])?;
+                let account = self.expr(&a[1])?;
+                let method = self.expr(&a[2])?;
+                let args = self.expr(&a[3])?;
+                let amount = self.expr(&a[4])?;
+                let gas = self.expr(&a[5])?;
+                let mut v = Vec::new();
+                v.extend(pidx);
+                v.extend(account.clone()); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(account); v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(method.clone()); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(method); v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(args.clone()); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(args); v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I32Const(0)); v.extend(amount);
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Const(0));
+                v.extend(gas);
+                v.push(Self::host_call(31));
+                Ok(v)
+            }
+
+            // (near/promise_and promise_idx1 promise_idx2 ...) → combined_promise_idx
+            "near/promise_and" => {
+                // promise_and(promise_idx_ptr, promise_idx_count) → i64  (idx 32)
+                // Store all promise indices at mem offset 64, then pass ptr+count
+                let mut v = Vec::new();
+                for (i, x) in a.iter().enumerate() {
+                    v.push(Instruction::I32Const((64 + i * 8) as i32));
+                    v.extend(self.expr(x)?);
+                    v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                }
+                v.push(Instruction::I64Const(64)); // ptr
+                v.push(Instruction::I64Const(a.len() as i64)); // count
+                v.push(Self::host_call(32));
+                Ok(v)
+            }
+
+            // (near/promise_results_count) → count: i64
+            "near/promise_results_count" => {
+                Ok(vec![Self::host_call(33)])
+            }
+
+            // (near/promise_result idx) → packed result string
+            // promise_result(result_idx, register_id=0) → void, then read_register
+            "near/promise_result" => {
+                self.need_host(34); self.need_host(0); self.need_host(1);
+                let idx = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                v.extend(idx);
+                v.push(Instruction::I64Const(0)); // register_id
+                v.push(Self::host_call(34));
+                // Read register to TEMP_MEM, get length, return packed
+                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Self::host_call(0)); // read_register(0, TEMP_MEM)
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(1)); // register_len(0)
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TEMP_MEM as i64)); v.push(Instruction::I64Or);
+                Ok(v)
+            }
+
+            // (near/promise_return promise_idx) — return promise result to caller
+            "near/promise_return" => {
+                let idx = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                v.extend(idx);
+                v.push(Self::host_call(35));
+                v.push(Instruction::I64Const(0));
+                Ok(v)
+            }
+
             // User function call
             _ => {
                 let pos = self.funcs.iter().position(|f| f.name == op).ok_or_else(|| format!("unknown function: {}", op))?;
