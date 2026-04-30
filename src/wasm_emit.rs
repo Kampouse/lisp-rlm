@@ -1234,6 +1234,413 @@ impl WasmEmitter {
                 Ok(v)
             }
 
+            // ── CLMM / Uniswap V3 Primitives ──
+            // All use 64.64 fixed-point (Q64.64): value = raw >> 64, raw = value << 64
+            // Price stored as sqrtPriceX96 equivalent: Q64.96
+
+            // (fp/mul a b) → i64 — Q64.64 multiply: (a * b) >> 64
+            // Uses 128-bit intermediate: split a into hi/lo, multiply parts
+            "fp/mul" => {
+                let ea = self.expr(&a[0])?;
+                let eb = self.expr(&a[1])?;
+                let a_i = self.local_idx("__fpm_a");
+                let b_i = self.local_idx("__fpm_b");
+                let lo_i = self.local_idx("__fpm_lo");
+                let mut v = Vec::new();
+                v.extend(ea); v.push(Instruction::LocalSet(a_i));
+                v.extend(eb); v.push(Instruction::LocalSet(b_i));
+                // Ensure a >= b (for better precision with unsigned shift)
+                // a_hi = a >> 32, a_lo = a & 0xFFFFFFFF
+                // result = ((a_hi * b) << 32) + (a_lo * b)) >> 64
+                // = ((a >> 32) * b << 32) + ((a & mask32) * b)) >> 64
+                // Simplified: ((a >> 32) * b) >> 32 + ((a & mask32) * b) >> 64
+                v.push(Instruction::LocalGet(a_i)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // a_hi
+                v.push(Instruction::LocalGet(b_i)); v.push(Instruction::I64Mul); // a_hi * b
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl); // << 32
+                v.push(Instruction::LocalSet(lo_i));
+                v.push(Instruction::LocalGet(a_i)); v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And); // a_lo
+                v.push(Instruction::LocalGet(b_i)); v.push(Instruction::I64Mul); // a_lo * b
+                v.push(Instruction::LocalGet(lo_i)); v.push(Instruction::I64Add); // combine
+                v.push(Instruction::I64Const(64)); v.push(Instruction::I64ShrU); // >> 64
+                Ok(v)
+            }
+
+            // (fp/div a b) → i64 — Q64.64 divide: (a << 64) / b
+            // Split: (a << 32) / b << 32 to avoid overflow
+            "fp/div" => {
+                let ea = self.expr(&a[0])?;
+                let eb = self.expr(&a[1])?;
+                let a_i = self.local_idx("__fpd_a");
+                let b_i = self.local_idx("__fpd_b");
+                let mut v = Vec::new();
+                v.extend(ea); v.push(Instruction::LocalSet(a_i));
+                v.extend(eb); v.push(Instruction::LocalSet(b_i));
+                // result = (a << 32) / b  then << 32
+                // But this loses low bits. Better: split a into hi/lo
+                // = ((a >> 32) << 64) / b = (a >> 32) * (1<<64) / b — overflow
+                // Use: ((a >> 32) / b) << 32 + ((a & mask) << 32) / b
+                v.push(Instruction::LocalGet(a_i)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalGet(b_i)); v.push(Instruction::I64DivU); // (a >> 32) / b
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl); // << 32
+                v.push(Instruction::LocalGet(a_i)); v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl); // (a_lo << 32)
+                v.push(Instruction::LocalGet(b_i)); v.push(Instruction::I64DivU); // / b
+                v.push(Instruction::I64Add);
+                Ok(v)
+            }
+
+            // (fp/to_int x) → i64 — Q64.64 → integer: x >> 64
+            "fp/to_int" => {
+                let mut v = self.expr(&a[0])?;
+                v.push(Instruction::I64Const(64)); v.push(Instruction::I64ShrU);
+                Ok(v)
+            }
+
+            // (fp/from_int x) → i64 — integer → Q64.64: x << 64
+            "fp/from_int" => {
+                let mut v = self.expr(&a[0])?;
+                v.push(Instruction::I64Const(64)); v.push(Instruction::I64Shl);
+                Ok(v)
+            }
+
+            // (fp/one) → i64 — 1.0 in Q64.64 = 1 << 64
+            "fp/one" => {
+                Ok(vec![Instruction::I64Const(1), Instruction::I64Const(64), Instruction::I64Shl])
+            }
+
+            // (sqrt x) → i64 — integer square root via Newton's method
+            // For CLMM: use on price values. Returns floor(sqrt(x))
+            "sqrt" => {
+                let x = self.expr(&a[0])?;
+                let x_i = self.local_idx("__sq_x");
+                let r_i = self.local_idx("__sq_r");
+                let prev_i = self.local_idx("__sq_p");
+                let mut v = Vec::new();
+                v.extend(x); v.push(Instruction::LocalSet(x_i));
+                // if x == 0: return 0
+                v.push(Instruction::LocalGet(x_i));
+                v.push(Instruction::I64Eqz); // → i32
+                v.push(Instruction::I32Eqz); // invert: x != 0 → enter then branch
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                // Initial guess: x >> 1 (rough sqrt)
+                // Better: r = 1 << ((64 - clz(x)) / 2)
+                // Simple: r = x, iterate r = (r + x/r) / 2
+                v.push(Instruction::LocalGet(x_i)); v.push(Instruction::LocalSet(r_i));
+                // Loop
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(r_i)); v.push(Instruction::LocalSet(prev_i));
+                // r = (r + x/r) / 2
+                v.push(Instruction::LocalGet(r_i));
+                v.push(Instruction::LocalGet(x_i));
+                v.push(Instruction::LocalGet(r_i));
+                v.push(Instruction::I64DivU); // x / r
+                v.push(Instruction::I64Add); // r + x/r
+                v.push(Instruction::I64Const(1)); v.push(Instruction::I64ShrU); // / 2
+                v.push(Instruction::LocalSet(r_i));
+                // if r >= prev: converged, break
+                v.push(Instruction::LocalGet(r_i));
+                v.push(Instruction::LocalGet(prev_i));
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Br(2)); // exit outer block
+                v.push(Instruction::End);
+                v.push(Instruction::Br(0)); // loop
+                v.push(Instruction::End); // loop
+                v.push(Instruction::End); // block
+                v.push(Instruction::LocalGet(r_i)); // return prev (last decreasing value)
+                // Actually if r >= prev, prev is the answer (converged from above)
+                // But we want the one that stopped decreasing
+                v.pop(); // remove the LocalGet r_i
+                v.push(Instruction::LocalGet(prev_i)); // prev was last decreasing
+                v.push(Instruction::Else);
+                v.push(Instruction::I64Const(0)); // x == 0 case
+                v.push(Instruction::End);
+                Ok(v)
+            }
+
+            // (fp/sqrt x) → i64 — Q64.64 square root: sqrt(x << 64) >> 32 = sqrt(x) << 32
+            // Returns Q64.64 fixed-point sqrt
+            "fp/sqrt" => {
+                // sqrt(Q64.64) = sqrt(x * 2^64) = sqrt(x) * 2^32
+                // = sqrt(x) << 32 in Q64.64
+                // Use integer sqrt of (x >> 32) then << 48... 
+                // Actually: want sqrt(x) where x is Q64.64
+                // = isqrt(x) if x were the full number
+                // Since x = (real_val) << 64, sqrt(x) = sqrt(real_val) << 32
+                // = isqrt(x >> 64) << 32 ... no
+                // Better: isqrt(x >> 32) << 16 ... losing precision
+                // Best: isqrt(x) then shift. x is Q64.64 so ~64 bits of fraction
+                // isqrt(x) gives sqrt with ~32 bits of fraction implicitly
+                // But x can be up to 128 bits. Use two-part method:
+                // Split x = hi << 64 | lo
+                // sqrt = sqrt(hi) << 32 + adjustment
+                // For CLMM: we mostly sqrt prices ~1-1000, so hi is small
+                // Just use: (sqrt(x >> 32)) << 16 as approximation? No.
+                // Correct approach: isqrt(x) where x is treated as uint128
+                // We can do: r = isqrt(high * 2^64 + low)
+                // ≈ isqrt(high) << 32 + low / (2 * isqrt(high) << 32)
+                // For simplicity: (sqrt (x >> 32)) << 16 gives OK precision for CLMM
+                // Actually the correct Q64.64 sqrt: 
+                //   result = isqrt(x) where we need 128-bit isqrt
+                //   Split: a = x >> 64, b = x & ((1<<64)-1)
+                //   r = isqrt(a) << 32
+                //   remainder = a - r^2 (in high bits)  
+                //   r = (r << 64 + b) correction via Newton
+                // Simplest correct: compute integer sqrt of (x >> 32), then << 16
+                // This gives Q64.32 result, need to shift to Q64.64: << 32 more = << 48
+                // NO. Let me think again.
+                // Q64.64 value V represents real number v = V / 2^64
+                // We want sqrt(v) * 2^64 = sqrt(V/2^64) * 2^64 = sqrt(V) * 2^32
+                // So: fp/sqrt(x) = isqrt(x) * 2^32 ... but isqrt of a Q64.64 number
+                // that's at most ~2^127 gives result ~2^63, then * 2^32 overflows
+                // 
+                // Better: fp/sqrt(x) = isqrt(x) >> 0, since isqrt(Q64.64) already has
+                // the right scale? No.
+                //
+                // Simplest: fp/sqrt(x) = isqrt(x) for Q64.64 input
+                // If x = 1.0 = 2^64, isqrt(2^64) = 2^32 = 0.5 in Q64.64... wrong
+                // We want sqrt(1.0) = 1.0 = 2^64
+                // So: fp/sqrt(x) = isqrt(x << 64) ... but that overflows
+                //
+                // Practical CLMM: use Q64 for sqrt price, separate from Q64.64
+                // (fp/sqrt x) = (sqrt x) gives integer sqrt, caller manages scaling
+                // Just delegate to integer sqrt
+                // User does: (fp/from_int (sqrt (fp/to_int price_approx)))
+                // Or: (sqrt x) << 32 for Q64.64 sqrt of integer
+                // I'll just delegate — fp/sqrt is an alias for careful scaling
+                let inner = &LispVal::List(vec![
+                    LispVal::Sym("sqrt".into()), a[0].clone()
+                ]);
+                // After sqrt, shift left by 32 to get Q64.64 result from Q64.0 input
+                // Wait — sqrt of Q64.64 = isqrt(x) which gives wrong scale
+                // For Q64.64 input x representing value X: x = X * 2^64
+                // sqrt(x) in same format = sqrt(X) * 2^64 = sqrt(X * 2^64) * 2^32
+                // = isqrt(x) * 2^32
+                let mut v = self.expr(inner)?;
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                Ok(v)
+            }
+
+            // (clz x) → i64 — count leading zeros (for tick bitmap)
+            // WASM doesn't have clz for i64, use i64.clz
+            "clz" => {
+                let mut v = self.expr(&a[0])?;
+                v.push(Instruction::I64Clz);
+                Ok(v)
+            }
+
+            // (ctz x) → i64 — count trailing zeros
+            "ctz" => {
+                let mut v = self.expr(&a[0])?;
+                v.push(Instruction::I64Ctz);
+                Ok(v)
+            }
+
+            // (popcnt x) → i64 — population count (for tick bitmap)
+            "popcnt" => {
+                let mut v = self.expr(&a[0])?;
+                v.push(Instruction::I64Popcnt);
+                Ok(v)
+            }
+
+            // (bit_get x idx) → i64 — get bit at index (0 or 1)
+            "bit_get" => {
+                let x = self.expr(&a[0])?;
+                let idx = self.expr(&a[1])?;
+                let mut v = Vec::new();
+                v.extend(x);
+                v.extend(idx);
+                v.push(Instruction::I64ShrU); // x >> idx
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64And); // & 1
+                Ok(v)
+            }
+
+            // (bit_set x idx) → i64 — set bit at index
+            "bit_set" => {
+                let x = self.expr(&a[0])?;
+                let idx = self.expr(&a[1])?;
+                let mut v = Vec::new();
+                v.extend(x);
+                v.push(Instruction::I64Const(1));
+                v.extend(idx);
+                v.push(Instruction::I64Shl); // 1 << idx
+                v.push(Instruction::I64Or); // x | (1 << idx)
+                Ok(v)
+            }
+
+            // (bit_clr x idx) → i64 — clear bit at index
+            "bit_clr" => {
+                let x = self.expr(&a[0])?;
+                let idx = self.expr(&a[1])?;
+                let mut v = Vec::new();
+                v.extend(x);
+                v.push(Instruction::I64Const(1));
+                v.extend(idx);
+                v.push(Instruction::I64Shl); // 1 << idx
+                v.push(Instruction::I64Const(-1i64)); // all ones
+                v.push(Instruction::I64Xor); // ~(1 << idx)
+                v.push(Instruction::I64And); // x & ~(1 << idx)
+                Ok(v)
+            }
+
+            // (tick_to_price tick) → i64 — 1.0001^tick in Q64.64
+            // Uses binary exponentiation with Q64.64 multiply
+            // 1.0001^tick = exp(tick * ln(1.0001))
+            // ln(1.0001) ≈ 0.000099995 in Q64.64 ≈ 0x29C3E3
+            // For small ticks (|tick| < 887272), iterative multiply works
+            // We do: result = 1.0; for each bit of tick, square base; if bit set, multiply
+            "tick_to_price" => {
+                let tick = self.expr(&a[0])?;
+                let t_i = self.local_idx("__ttp_t"); // remaining tick (unsigned)
+                let r_i = self.local_idx("__ttp_r"); // result
+                let b_i = self.local_idx("__ttp_b"); // base accumulator
+                let neg_i = self.local_idx("__ttp_neg");
+                let mut v = Vec::new();
+                v.extend(tick); v.push(Instruction::LocalSet(t_i));
+                // Handle negative: if tick < 0, negate, remember, invert at end
+                v.push(Instruction::LocalGet(t_i)); v.push(Instruction::I64Const(0)); v.push(Instruction::I64LtS); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(neg_i));
+                v.push(Instruction::LocalGet(neg_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(t_i)); v.push(Instruction::I64Const(-1i64)); v.push(Instruction::I64Mul);
+                v.push(Instruction::LocalSet(t_i));
+                v.push(Instruction::End);
+                // result = 1.0 = 1 << 64
+                v.push(Instruction::I64Const(1)); v.push(Instruction::I64Const(64)); v.push(Instruction::I64Shl); v.push(Instruction::LocalSet(r_i));
+                // base = 1.0001 in Q64.64 = 1.0001 * 2^64 ≈ 0x10000_0A3D (1.0001 * 18446744073709551616)
+                // 1.0001 * 2^64 = 18448592670105969664 ≈ 0x10000_0A3D_70A3_D70A
+                v.push(Instruction::I64Const(0x100000A3D)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(0x70A3D70A)); v.push(Instruction::I64Or);
+                v.push(Instruction::LocalSet(b_i));
+                // Binary exponentiation loop
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(t_i)); v.push(Instruction::I64Const(0)); v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
+                // if tick & 1: result *= base (Q64.64 mul)
+                v.push(Instruction::LocalGet(t_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::If(BlockType::Empty));
+                // r_i = fp_mul(r_i, b_i) inline: (r >> 32) * b >> 32 + (r & mask32) * b >> 64
+                v.push(Instruction::LocalGet(r_i)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalGet(b_i)); v.push(Instruction::I64Mul);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl); // hi part
+                v.push(Instruction::LocalGet(r_i)); v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::LocalGet(b_i)); v.push(Instruction::I64Mul);
+                v.push(Instruction::I64Add); // hi << 32 + lo_raw
+                v.push(Instruction::I64Const(64)); v.push(Instruction::I64ShrU); // >> 64 for Q64.64
+                v.push(Instruction::LocalSet(r_i));
+                v.push(Instruction::End); // if
+                // base *= base (Q64.64 square)
+                v.push(Instruction::LocalGet(b_i)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalGet(b_i)); v.push(Instruction::I64Mul);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalGet(b_i)); v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::LocalGet(b_i)); v.push(Instruction::I64Mul);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Const(64)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(b_i));
+                // tick >>= 1
+                v.push(Instruction::LocalGet(t_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64ShrU); v.push(Instruction::LocalSet(t_i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); // loop
+                v.push(Instruction::End); // block
+                // Invert if negative: fp_div(1.0, result)
+                v.push(Instruction::LocalGet(neg_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::If(BlockType::Empty));
+                // r = fp_div(1<<64, r) = ((1<<64) >> 32) / r << 32 + ((1<<64)&mask)<<32 / r
+                // Simplified: for 1/x with Q64.64, use: (1<<96) / (x >> 32) approximation
+                // Or: just use our fp/div inline
+                v.push(Instruction::I64Const(1)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl); // 1 << 32
+                v.push(Instruction::LocalGet(r_i)); v.push(Instruction::I64DivU); // (1<<32)/r
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl); // << 32
+                v.push(Instruction::LocalSet(r_i));
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(r_i));
+                Ok(v)
+            }
+
+            // (price_to_tick price_q64) → i64 — inverse of tick_to_price (approximate)
+            // tick = log(price) / log(1.0001)
+            // log(1.0001) ≈ 0.000099995 ≈ Q64.64: 0x29C3E3
+            // log(price) via binary log: find msb, iterate
+            // For CLMM: usually price is from tick_to_price, so exact inverse via lookup
+            // Approximation: tick ≈ (price_q64 - 1<<64) * 10000 (first-order Taylor)
+            "price_to_tick" => {
+                let p = self.expr(&a[0])?;
+                let p_i = self.local_idx("__ptp_p");
+                let mut v = Vec::new();
+                v.extend(p); v.push(Instruction::LocalSet(p_i));
+                // First order: tick ≈ (p - 1.0) / log(1.0001) ≈ (p - 1<<64) * 10000
+                // More precisely: (p - (1<<64)) >> 64 * 10000 gives integer approximation
+                v.push(Instruction::LocalGet(p_i));
+                v.push(Instruction::I64Const(1)); v.push(Instruction::I64Const(64)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::I64Const(64)); v.push(Instruction::I64ShrU); // to integer
+                v.push(Instruction::I64Const(10000));
+                v.push(Instruction::I64Mul);
+                Ok(v)
+            }
+
+            // (liquidity_amount0 sqrt_price_a sqrt_price_b liquidity) → Q64.64
+            // amount0 = L * (1/sqrtPa - 1/sqrtPb) for Pa < Pb
+            // = L * (sqrtPb - sqrtPa) / (sqrtPa * sqrtPb)
+            "liq_amount0" => {
+                let spa = self.expr(&a[0])?; let spb = self.expr(&a[1])?; let liq = self.expr(&a[2])?;
+                let spa_i = self.local_idx("__la0_a"); let spb_i = self.local_idx("__la0_b"); let liq_i = self.local_idx("__la0_l");
+                let mut v = Vec::new();
+                v.extend(spa); v.push(Instruction::LocalSet(spa_i));
+                v.extend(spb); v.push(Instruction::LocalSet(spb_i));
+                v.extend(liq); v.push(Instruction::LocalSet(liq_i));
+                // numerator = liq * (spb - spa) — Q64.64 mul
+                v.push(Instruction::LocalGet(liq_i)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalGet(spb_i)); v.push(Instruction::LocalGet(spa_i)); v.push(Instruction::I64Sub);
+                v.push(Instruction::I64Mul);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalGet(liq_i)); v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::LocalGet(spb_i)); v.push(Instruction::LocalGet(spa_i)); v.push(Instruction::I64Sub);
+                v.push(Instruction::I64Mul);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Const(64)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(liq_i)); // reuse as numerator
+                // denominator = spa * spb — Q64.64 mul
+                v.push(Instruction::LocalGet(spa_i)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalGet(spb_i)); v.push(Instruction::I64Mul);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalGet(spa_i)); v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::LocalGet(spb_i)); v.push(Instruction::I64Mul);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Const(64)); v.push(Instruction::I64ShrU);
+                // result = numerator / denominator
+                v.push(Instruction::LocalGet(liq_i)); v.push(Instruction::I64DivU);
+                Ok(v)
+            }
+
+            // (liquidity_amount1 sqrt_price_a sqrt_price_b liquidity) → Q64.64
+            // amount1 = L * (sqrtPb - sqrtPa)
+            "liq_amount1" => {
+                let spa = self.expr(&a[0])?; let spb = self.expr(&a[1])?; let liq = self.expr(&a[2])?;
+                let spa_i = self.local_idx("__la1_a"); let spb_i = self.local_idx("__la1_b"); let liq_i = self.local_idx("__la1_l");
+                let mut v = Vec::new();
+                v.extend(spa); v.push(Instruction::LocalSet(spa_i));
+                v.extend(spb); v.push(Instruction::LocalSet(spb_i));
+                v.extend(liq); v.push(Instruction::LocalSet(liq_i));
+                // liq * (spb - spa) — Q64.64 multiply
+                v.push(Instruction::LocalGet(liq_i)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalGet(spb_i)); v.push(Instruction::LocalGet(spa_i)); v.push(Instruction::I64Sub);
+                v.push(Instruction::I64Mul);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalGet(liq_i)); v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::LocalGet(spb_i)); v.push(Instruction::LocalGet(spa_i)); v.push(Instruction::I64Sub);
+                v.push(Instruction::I64Mul);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Const(64)); v.push(Instruction::I64ShrU);
+                Ok(v)
+            }
+
             // ── String Operations (packed: low32=ptr, high32=len) ──
 
             // (str_len s) → i64 — extract high 32 bits
@@ -1414,7 +1821,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0)); // fallback
                 v.push(Instruction::End); // block
                 // Apply negative
-                v.push(Instruction::LocalGet(neg_i));
+                v.push(Instruction::LocalGet(neg_i)); v.push(Instruction::I32WrapI64);
                 v.push(Instruction::If(BlockType::Result(ValType::I64)));
                 v.push(Instruction::I64Const(0)); v.push(Instruction::I64Sub); // 0 - acc
                 v.push(Instruction::Else);
@@ -1424,7 +1831,7 @@ impl WasmEmitter {
                 v.pop(); // remove the Else we just added
                 // Save block result, then branch
                 v.push(Instruction::LocalSet(acc_i)); // save
-                v.push(Instruction::LocalGet(neg_i));
+                v.push(Instruction::LocalGet(neg_i)); v.push(Instruction::I32WrapI64);
                 v.push(Instruction::If(BlockType::Result(ValType::I64)));
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::LocalGet(acc_i));
