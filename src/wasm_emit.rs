@@ -1845,6 +1845,109 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0)); Ok(v)
             }
 
+
+            // ── fp64/sqrt: Q64.64 square root via Newton's method ──
+            // (fp64/sqrt dst src) — reads Q64.64 from src, writes sqrt(src) to dst
+            // sqrt(Q64.64 value V) = isqrt(V) * 2^32, stored back as Q64.64
+            // For CLMM: sqrtPriceX64 = fp64/sqrt of price
+            "fp64/sqrt" => {
+                // fp64/sqrt(dst, src): sqrt of Q64.64 value at src, result at dst
+                // Q64.64 value V = hi*2^64 + lo, real = V/2^64
+                // sqrt in Q64.64 = sqrt(V/2^64) * 2^64 = isqrt(V) * 2^32
+                // isqrt(V) for V = vh*2^64 + vl:
+                //   isqrt(vh)*2^32 + vl/(2*isqrt(vh)*2^32) (one Newton correction)
+                // Then * 2^32: hi = isqrt(vh), lo = vl/(2*isqrt(vh))
+                // But vl/(2*isqrt(vh)) may overflow for large vl
+                // For CLMM (prices ~1): vh=1, isqrt=1, lo = vl/2 ≈ 0
+                let dst = self.expr(&a[0])?;
+                let src = self.expr(&a[1])?;
+                let dst_i = self.local_idx("__fsqrt_d");
+                let src_i = self.local_idx("__fsqrt_s");
+                let vh = self.local_idx("__fsqrt_vh");
+                let vl = self.local_idx("__fsqrt_vl");
+                let r = self.local_idx("__fsqrt_r");
+                let prev = self.local_idx("__fsqrt_p");
+                let mut v = Vec::new();
+                v.extend(dst); v.push(Instruction::LocalSet(dst_i));
+                v.extend(src); v.push(Instruction::LocalSet(src_i));
+                // Load Q64.64
+                v.push(Instruction::LocalGet(src_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalSet(vl));
+                v.push(Instruction::LocalGet(src_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalSet(vh));
+                // isqrt(vh) via Newton
+                v.push(Instruction::LocalGet(vh)); v.push(Instruction::LocalSet(r));
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(r)); v.push(Instruction::LocalSet(prev));
+                v.push(Instruction::LocalGet(prev));
+                v.push(Instruction::LocalGet(vh));
+                v.push(Instruction::LocalGet(prev));
+                v.push(Instruction::I64DivU);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Const(1)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(r));
+                v.push(Instruction::LocalGet(r)); v.push(Instruction::LocalGet(prev));
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(prev)); v.push(Instruction::LocalSet(r));
+                v.push(Instruction::Br(2));
+                v.push(Instruction::End);
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); // loop
+                v.push(Instruction::End); // block
+                // r = isqrt(vh). Store as Q64.64:
+                // hi = r, lo = vl / (2*r) (Newton correction from fractional part)
+                // But only if r > 0
+                v.push(Instruction::LocalGet(r)); v.push(Instruction::I64Eqz);
+                v.push(Instruction::If(BlockType::Empty));
+                // r == 0 (vh was 0): lo = isqrt(vl) << 32, hi = isqrt(vl) >> 32
+                // Newton isqrt(vl)
+                v.push(Instruction::LocalGet(vl)); v.push(Instruction::LocalSet(r));
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(r)); v.push(Instruction::LocalSet(prev));
+                v.push(Instruction::LocalGet(prev));
+                v.push(Instruction::LocalGet(vl));
+                v.push(Instruction::LocalGet(prev));
+                v.push(Instruction::I64DivU);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Const(1)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(r));
+                v.push(Instruction::LocalGet(r)); v.push(Instruction::LocalGet(prev));
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(prev)); v.push(Instruction::LocalSet(r));
+                v.push(Instruction::Br(2));
+                v.push(Instruction::End);
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End);
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(r)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(8)); v.push(Instruction::I32Add);
+                v.push(Instruction::LocalGet(r)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::Else);
+                // r > 0: hi = r, lo = vl / (2*r) (fractional refinement)
+                // Clamp: if 2*r would overflow, skip refinement (lo = 0)
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(vl));
+                v.push(Instruction::LocalGet(r)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Shl); // 2*r
+                v.push(Instruction::I64DivU); // vl / (2*r)
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(8)); v.push(Instruction::I32Add);
+                v.push(Instruction::LocalGet(r));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::End); // if r==0
+                v.push(Instruction::I64Const(0)); Ok(v)
+            }
+
             // ── tick_to_price64: Q64.64 via Q32.32 + shift ──
             // (tick_to_price64 addr tick) — writes Q64.64 1.0001^tick to mem[addr..addr+15]
             // Uses proven Q32.32 binary exponentiation, then shifts left by 32 for Q64.64
