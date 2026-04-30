@@ -270,6 +270,10 @@ pub struct EvalState {
     pub call_trace_max: usize,
     /// Pending pure type annotation from `(pure ...)`. Consumed by the next lambda creation.
     pub pending_pure_type: Option<String>,
+    /// Shared global env — the canonical env from run_program. All nested
+    /// run_compiled_lambda calls share this via Arc, so StoreGlobal mutations
+    /// are visible to LoadGlobal in any nesting depth.
+    pub global_env: Option<std::sync::Arc<std::sync::RwLock<Env>>>,
 }
 
 impl EvalState {
@@ -288,6 +292,7 @@ impl EvalState {
             call_trace: Vec::new(),
             call_trace_max: 64,
             pending_pure_type: None,
+            global_env: None,
         }
     }
 
@@ -315,6 +320,7 @@ impl EvalState {
             call_trace: Vec::new(),
             call_trace_max: self.call_trace_max,
             pending_pure_type: None,
+            global_env: None,
         }
     }
 
@@ -382,6 +388,7 @@ impl Clone for EvalState {
             call_trace: self.call_trace.clone(),
             pending_pure_type: None, // Don't propagate pure type to forks
             call_trace_max: self.call_trace_max,
+            global_env: None, // Don't share global_env with forks
         }
     }
 }
@@ -465,7 +472,9 @@ pub enum LispVal {
         pure_type: Option<String>,
         /// Pre-compiled bytecode (cached at define-time). `None` if compilation failed
         /// (unsupported forms) or not yet attempted.
-        compiled: Option<Box<crate::bytecode::CompiledLambda>>,
+        /// Uses Arc (not Box) so cloning the LispVal shares the same CompiledLambda
+        /// — critical for StoreCaptured to persist mutations across calls.
+        compiled: Option<std::sync::Arc<crate::bytecode::CompiledLambda>>,
         /// Fast memoization cache for pure compiled lambdas. Shared across clones.
         memo_cache:
             Option<std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, LispVal>>>>,

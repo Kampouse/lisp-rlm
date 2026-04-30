@@ -38,10 +38,12 @@ pub fn run_program(
     }
 
     // ── Phase 1: Flatten progn/begin + pre-processing ──
+    // Flatten begin/progn so defines inside them get processed by Phase 2/3.
+    // Non-define expressions are re-grouped into (begin ...) by Phase 5,
+    // so set_target_globals persists across set! and subsequent reads.
     let mut remaining: Vec<&LispVal> = Vec::new();
 
     for form in forms {
-        // Flatten progn/begin at top level — their contents become top-level forms
         if let LispVal::List(list) = form {
             if let Some(LispVal::Sym(name)) = list.first() {
                 if name.as_str() == "progn" || name.as_str() == "begin" {
@@ -206,13 +208,18 @@ pub fn run_program(
         None,
         None,
     )
-    .ok_or_else(|| {
-        format!(
-            "run_program: compilation failed for body expression(s)"
-        )
-    })?;
+        .ok_or_else(|| {
+            format!(
+                "run_program: compilation failed for body expression(s): {:?}",
+                body
+            )
+        })?;
 
+    // Share the live env via Arc so nested run_compiled_lambda calls (e.g., for-each
+    // calling inner lambdas) can see each other's StoreGlobal mutations.
+    state.global_env = Some(std::sync::Arc::new(std::sync::RwLock::new(env.clone())));
     let result = run_compiled_lambda(&cl, &[], env, state)?;
+    state.global_env = None;
     Ok(result)
 }
 
@@ -384,16 +391,24 @@ fn collect_define_names(forms: &[&LispVal]) -> Vec<String> {
     for form in forms {
         if let LispVal::List(list) = form {
             if let Some(LispVal::Sym(name)) = list.first() {
-                if name.as_str() == "define" && list.len() >= 2 {
-                    match &list[1] {
-                        LispVal::Sym(s) => names.push(s.clone()),
-                        LispVal::List(inner) if !inner.is_empty() => {
-                            if let LispVal::Sym(s) = &inner[0] {
-                                names.push(s.clone());
+                match name.as_str() {
+                    "define" if list.len() >= 2 => {
+                        match &list[1] {
+                            LispVal::Sym(s) => names.push(s.clone()),
+                            LispVal::List(inner) if !inner.is_empty() => {
+                                if let LispVal::Sym(s) = &inner[0] {
+                                    names.push(s.clone());
+                                }
                             }
+                            _ => {}
                         }
-                        _ => {}
                     }
+                    "progn" | "begin" => {
+                        // Recurse into progn/begin to find nested defines
+                        let inner_refs: Vec<&LispVal> = list[1..].iter().collect();
+                        names.extend(collect_define_names(&inner_refs));
+                    }
+                    _ => {}
                 }
             }
         }

@@ -1,0 +1,16 @@
+* Warning 241 at semantics/lisp/Lisp.Types.fst(0,0-0,0):
+  - Unable to load build/cache/Lisp.Types.fst.checked since checked file
+    build/cache/Lisp.Types.fst.checked does not exist; will recheck
+    /Users/asil/.openclaw/workspace/lisp-rlm/verification/semantics/lisp/Lisp.Types.fst
+    (suppressing this warning for further modules)
+
+* Warning 239 at semantics/lisp/Lisp.Types.fst(10,5-10,11):
+  - Adding an implicit 'assume new' qualifier on Lisp.Types.ffloat
+
+* Warning 274 at semantics/lisp/Lisp.Values.fst(136,0-136,52):
+  - Implicitly opening namespace 'lispir.' shadows module 'stackheight' in file
+    "/Users/asil/.openclaw/workspace/lisp-rlm/verification/tests/StackHeight.fst".
+  - Rename
+    "/Users/asil/.openclaw/workspace/lisp-rlm/verification/tests/StackHeight.fst"
+    to avoid conflicts.
+

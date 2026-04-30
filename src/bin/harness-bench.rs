@@ -377,7 +377,7 @@ fn main() {
             let _ = lisp_rlm::bytecode::run_compiled_lambda(
                 &score_cl,
                 &[intent.clone()],
-                &env,
+                &mut env,
                 &mut fresh_state,
             );
         }
@@ -413,7 +413,7 @@ fn main() {
             let _ = lisp_rlm::bytecode::run_compiled_lambda(
                 &gd_cl,
                 &[m.clone(), LispVal::Str("a".to_string()), LispVal::Num(99)],
-                &env,
+                &mut env,
                 &mut fresh_state,
             );
         }

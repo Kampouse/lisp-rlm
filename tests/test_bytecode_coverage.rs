@@ -12,7 +12,7 @@ fn eval_and_get_lambda(
     let mut state = EvalState::new();
     let _ = lisp_rlm::program::run_program(&exprs, &mut env, &mut state)?;
     match env.get(func_name) {
-        Some(LispVal::Lambda { compiled, .. }) => Ok(compiled.clone().map(|b| *b)),
+        Some(LispVal::Lambda { compiled, .. }) => Ok(compiled.clone().map(|arc| (*arc).clone())),
         _ => Ok(None),
     }
 }
@@ -242,7 +242,7 @@ fn test_fib_compiles_with_fallback() {
     );
     let cl = result.unwrap().expect("fib should compile");
     assert!(
-        cl.captured.is_empty(),
+        cl.captured.read().unwrap().is_empty(),
         "fib captures nothing (self-reference via BuiltinCall)"
     );
     // Correctness: eval fallback produces correct results
@@ -300,8 +300,8 @@ fn test_scheduler_run_compiles_with_closure() {
     assert_eq!(cl.closures.len(), 1);
     // Inner closure captures execute-action and handle-result
     let inner = &cl.closures[0];
-    assert!(inner.captured.iter().any(|(k, _)| k == "execute-action"));
-    assert!(inner.captured.iter().any(|(k, _)| k == "handle-result"));
+    assert!(inner.captured.read().unwrap().iter().any(|(k, _)| k == "execute-action"));
+    assert!(inner.captured.read().unwrap().iter().any(|(k, _)| k == "handle-result"));
 }
 
 #[test]
@@ -314,7 +314,7 @@ fn test_rank_intentions_compiles() {
         "rank-intentions",
     );
     let cl = result.unwrap().expect("rank-intentions should compile");
-    assert!(cl.captured.iter().any(|(k, _)| k == "score-intention"));
+    assert!(cl.captured.read().unwrap().iter().any(|(k, _)| k == "score-intention"));
     // Correctness: map over list with compiled lambda
     let output = eval_program(
         r#"

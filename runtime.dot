@@ -1,0 +1,130 @@
+digraph runtime {
+    rankdir=TB;
+    bgcolor="#0d1117";
+    fontname="Helvetica";
+    nodesep=0.4;
+    ranksep=0.5;
+    compound=true;
+    
+    node [fontname="Helvetica" fontsize=11 shape=box style="rounded,filled"];
+    edge [fontname="Helvetica" fontsize=9];
+    
+    // ── ENTRY ──
+    source [label="(source)" shape=none fontcolor="#8b949e" fontsize=10];
+    entry [label="rlm.rs\nREPL / run_program()" fillcolor="#1c2128" fontcolor="#c9d1d9"];
+    source -> entry;
+    
+    // ── PARSER ──
+    subgraph cluster_parser {
+        style=filled; color="#238636"; fontcolor="#3fb950"; label="① PARSER";
+        parse [label="parse_all()\n\"(+ 1 2)\" → [Sym(+), Num(1), Num(2)]" fillcolor="#0d1117" fontcolor="#c9d1d9"];
+    }
+    entry -> parse;
+    
+    // ── DESUGAR ──
+    subgraph cluster_desugar {
+        style=filled; color="#1f6feb"; fontcolor="#58a6ff"; label="② DESUGAR + PROGRAM";
+        desugar [label="Flatten begin/progn\nProcess defmacro/require/export\nDesugar define → let → (lambda () body)\nCollect forward refs\nPreserve pure annotations" fillcolor="#0d1117" fontcolor="#c9d1d9"];
+    }
+    parse -> desugar;
+    
+    // ── COMPILER ──
+    subgraph cluster_compiler {
+        style=filled; color="#8957e5"; fontcolor="#d2a8ff"; label="③ BYTECODE COMPILER";
+        
+        compile [label="compile_expr()\nWalk AST → emit Op::*" fillcolor="#1c1254" fontcolor="#d2a8ff"];
+        
+        subgraph cluster_opts {
+            style=filled; color="#1c1254"; fontcolor="#d2a8ff"; label="Optimizations";
+            opt1 [label="FUSED OPS\nSlotAddImm(s, n)\n= LoadSlot+PushI64+Add+StoreSlot" fillcolor="#2d1a69" fontcolor="#d2a8ff"];
+            opt2 [label="SUPER-FUSED\nJumpIfSlotGeImm\n= compare+branch\nzero stack traffic" fillcolor="#2d1a69" fontcolor="#d2a8ff"];
+            opt3 [label="🔥 MEGA-FUSED\nRecurIncAccum\nENTIRE LOOP BODY\n= 1 opcode/iteration" fillcolor="#2d1a69" fontcolor="#f778ba"];
+            opt4 [label="CONST FOLD\npure + const args\n→ eval at compile time" fillcolor="#2d1a69" fontcolor="#d2a8ff"];
+            opt5 [label="INLINE\nsmall lambdas\n→ paste body" fillcolor="#2d1a69" fontcolor="#d2a8ff"];
+            opt6 [label="TYPE INFER\n\"int → int\"\n→ TypedBinOp(I64)" fillcolor="#2d1a69" fontcolor="#d2a8ff"];
+        }
+        
+        compile -> opt1 -> opt2 -> opt3 -> opt4 -> opt5 -> opt6 [style=invis];
+        
+        compiled [label="CompiledLambda\n{ code: Vec<Op>, slots,\n  captured, closures }" fillcolor="#161b22" fontcolor="#f778ba"];
+        compile -> compiled;
+    }
+    desugar -> compile;
+    
+    // ── VM ──
+    subgraph cluster_vm {
+        style=filled; color="#da3633"; fontcolor="#ff7b72"; label="④ STACK VM";
+        
+        vm [label="loop {\n  match code[pc] {\n    LoadSlot(s) → stack.push\n    StoreSlot(s) → slots[s] = pop\n    Add/Sub/Mul → pop2, push result\n    JumpIfTrue(addr) → branch\n    Return → pop result\n    Recur(n) → pop n to slots, pc=0\n    CallSelf(n) → push frame\n    CallDynamic → call stack value\n    DictGet/MutSet → dict ops\n    ...\n  }\n}" fillcolor="#0d1117" fontcolor="#ffa198"];
+        
+        subgraph cluster_vmstate {
+            style=filled; color="#2d1214"; fontcolor="#ffa198"; label="State";
+            state [label="slots[Vec<LispVal>]\nstack[Vec<LispVal>]\npc: usize\nframes[Vec<Frame>]\nbudget: 1M ops" fillcolor="#4a1418" fontcolor="#ffa198"];
+        }
+        
+        vm -> state [style=dotted];
+    }
+    compiled -> vm [color="#f778ba" penwidth=2];
+    
+    // ── HOT PATH ──
+    subgraph cluster_hot {
+        style=filled; color="#b62324"; fontcolor="#ff7b72"; label="🔥 Tight Loop Hot Path";
+        h1 [label="LoadSlot(i)" fillcolor="#6e1518" fontcolor="#ffa198"];
+        h2 [label="SlotGeImm(i, N)" fillcolor="#6e1518" fontcolor="#ffa198"];
+        h3 [label="JumpIf...(exit)" fillcolor="#6e1518" fontcolor="#ffa198"];
+        h4 [label="SlotAddImm(sum, i)" fillcolor="#6e1518" fontcolor="#ffa198"];
+        h5 [label="SlotAddImm(i, 1)" fillcolor="#6e1518" fontcolor="#ffa198"];
+        h6 [label="Jump(loop_start)" fillcolor="#6e1518" fontcolor="#ffa198"];
+        h1 -> h2 -> h3 -> h4 -> h5 -> h6 -> h1 [color="#ff7b72" penwidth=1.5];
+    }
+    vm -> h1 [style=dashed color="#ff7b72"];
+    
+    // ── BUILTINS ──
+    subgraph cluster_builtins {
+        style=filled; color="#1f6feb"; fontcolor="#58a6ff"; label="BUILTINS";
+        b1 [label="Arithmetic\n+ - * / mod sqrt\nsin cos tan expt" fillcolor="#0d1117" fontcolor="#79c0ff"];
+        b2 [label="Collections\nmap filter sort\nreduce append cons\ncar cdr nth len" fillcolor="#0d1117" fontcolor="#79c0ff"];
+        b3 [label="Strings (30+)\nconcat split trim\nupcase downcase\nregex" fillcolor="#0d1117" fontcolor="#79c0ff"];
+        b4 [label="Dict\ndict/get dict/set\ndict/has? dict/keys\nDictMutSet" fillcolor="#0d1117" fontcolor="#79c0ff"];
+        b5 [label="Types/Predicates\nnumber? string? list?\nboolean=? promise?" fillcolor="#0d1117" fontcolor="#79c0ff"];
+    }
+    vm -> b1 [style=dashed color="#58a6ff"];
+    vm -> b2 [style=dashed color="#58a6ff"];
+    vm -> b3 [style=dashed color="#58a6ff"];
+    vm -> b4 [style=dashed color="#58a6ff"];
+    vm -> b5 [style=dashed color="#58a6ff"];
+    
+    // ── EXTERNAL ──
+    subgraph cluster_ext {
+        style=filled; color="#238636"; fontcolor="#3fb950"; label="EXTERNAL I/O";
+        e1 [label="File I/O\nread-file write-file\nshell exec" fillcolor="#0d1117" fontcolor="#7ee787"];
+        e2 [label="HTTP\nhttp-get http-post\nhttp-get-json" fillcolor="#0d1117" fontcolor="#7ee787"];
+        e3 [label="JSON\njson-parse json-build\njson-get json-get-in" fillcolor="#0d1117" fontcolor="#7ee787"];
+        e4 [label="Crypto\nsha256 keccak256" fillcolor="#0d1117" fontcolor="#7ee787"];
+    }
+    vm -> e1 [style=dashed color="#3fb950"];
+    vm -> e2 [style=dashed color="#3fb950"];
+    vm -> e3 [style=dashed color="#3fb950"];
+    vm -> e4 [style=dashed color="#3fb950"];
+    
+    // ── RLM LOOP ──
+    subgraph cluster_rlm {
+        style=filled; color="#8957e5"; fontcolor="#d2a8ff"; label="RLM AGENT LOOP (rlm \"task\")";
+        r1 [label="Build Context\n+ history" fillcolor="#1c1254" fontcolor="#d2a8ff"];
+        r2 [label="LLM Call\nGLM-5" fillcolor="#1c1254" fontcolor="#d2a8ff"];
+        r3 [label="Parse Response\nas LispVal" fillcolor="#1c1254" fontcolor="#d2a8ff"];
+        r4 [label="Eval via VM\n(snapshot env first)" fillcolor="#1c1254" fontcolor="#d2a8ff"];
+        r5 [label="Error?\nRollback + retry\nwith fix prompt" fillcolor="#1c1254" fontcolor="#f778ba"];
+        r6 [label="Done?\nReturn result" fillcolor="#2d1a69" fontcolor="#f778ba"];
+        
+        r1 -> r2 -> r3 -> r4 -> r5;
+        r5 -> r1 [label="retry" color="#d2a8ff"];
+        r5 -> r6 [label="success / max 10 iter"];
+    }
+    vm -> r1 [style=dashed color="#d2a8ff"];
+    
+    // ── RESULT ──
+    result [label="LispVal (result)" fillcolor="#161b22" fontcolor="#3fb950" shape=box style="rounded,filled,bold"];
+    vm -> result [color="#3fb950" penwidth=2];
+    r6 -> result [color="#3fb950"];
+}
