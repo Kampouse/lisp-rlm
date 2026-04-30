@@ -1311,6 +1311,227 @@ impl WasmEmitter {
                 Ok(vec![Instruction::I64Const(1), Instruction::I64Const(32), Instruction::I64Shl])
             }
 
+            // ── Q64.64 fixed-point (NEAR standard, dual-i64 in memory) ──
+            // Layout: mem[addr] = low 64 bits, mem[addr+8] = high 64 bits
+            // Value = (high << 64 | low) / 2^64 = high + low/2^64
+
+            // (fp64/set_int addr val) — store integer as Q64.64
+            "fp64/set_int" => {
+                let addr = self.expr(&a[0])?;
+                let val = self.expr(&a[1])?;
+                let mut v = Vec::new();
+                // mem[addr] = 0 (low)
+                v.extend(addr.clone()); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                // mem[addr+8] = val (high)
+                v.extend(addr); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(8)); v.push(Instruction::I32Add);
+                v.extend(val);
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Const(0)); Ok(v)
+            }
+
+            // (fp64/get_int addr) → i64 — integer part = mem[addr+8]
+            "fp64/get_int" => {
+                let mut v = self.expr(&a[0])?;
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 }));
+                Ok(v)
+            }
+
+            // (fp64/get_frac addr) → i64 — fractional part = mem[addr]
+            "fp64/get_frac" => {
+                let mut v = self.expr(&a[0])?;
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                Ok(v)
+            }
+
+            // (fp64/set addr lo hi) — store raw Q64.64 parts
+            "fp64/set" => {
+                let addr = self.expr(&a[0])?;
+                let lo = self.expr(&a[1])?;
+                let hi = self.expr(&a[2])?;
+                let mut v = Vec::new();
+                v.extend(addr.clone()); v.push(Instruction::I32WrapI64);
+                v.extend(lo);
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.extend(addr); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(8)); v.push(Instruction::I32Add);
+                v.extend(hi);
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Const(0)); Ok(v)
+            }
+
+            // (fp64/add dst_addr src_addr) — dst += src (both Q64.64 in memory)
+            "fp64/add" => {
+                let da = self.expr(&a[0])?;
+                let sa = self.expr(&a[1])?;
+                let dl = self.local_idx("__fp64_dl");
+                let dh = self.local_idx("__fp64_dh");
+                let sl = self.local_idx("__fp64_sl");
+                let sh = self.local_idx("__fp64_sh");
+                let carry = self.local_idx("__fp64_c");
+                let mut v = Vec::new();
+                // Load src
+                v.extend(sa.clone()); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 })); v.push(Instruction::LocalSet(sl));
+                v.extend(sa); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 })); v.push(Instruction::LocalSet(sh));
+                // Load dst low
+                v.extend(da.clone()); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 })); v.push(Instruction::LocalSet(dl));
+                // dst_low += src_low, detect carry
+                v.push(Instruction::LocalGet(sl)); v.push(Instruction::LocalGet(dl)); v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(dl));
+                // carry = 1 if dl < sl (overflow)
+                v.push(Instruction::LocalGet(dl)); v.push(Instruction::LocalGet(sl)); v.push(Instruction::I64LtU);
+                v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(carry));
+                // Load dst high
+                v.extend(da.clone()); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 })); v.push(Instruction::LocalSet(dh));
+                // dst_high += src_high + carry
+                v.push(Instruction::LocalGet(sh)); v.push(Instruction::LocalGet(dh)); v.push(Instruction::I64Add);
+                v.push(Instruction::LocalGet(carry)); v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(dh));
+                // Store dst
+                v.extend(da.clone()); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(dl));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.extend(da); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(8)); v.push(Instruction::I32Add);
+                v.push(Instruction::LocalGet(dh));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Const(0)); Ok(v)
+            }
+
+            // (fp64/mul dst_addr src_addr) — dst *= src (Q64.64, 128-bit intermediate)
+            // result = (dst_hi*2^64+dst_lo) * (src_hi*2^64+src_lo) >> 64
+            // = dst_hi*src_hi*2^64 + (dst_hi*src_lo + dst_lo*src_hi) + dst_lo*src_lo>>64
+            "fp64/mul" => {
+                let da = self.expr(&a[0])?;
+                let sa = self.expr(&a[1])?;
+                let dl = self.local_idx("__fm_dl");
+                let dh = self.local_idx("__fm_dh");
+                let sl = self.local_idx("__fm_sl");
+                let sh = self.local_idx("__fm_sh");
+                let mid = self.local_idx("__fm_mid");
+                let carry = self.local_idx("__fm_c");
+                let rl = self.local_idx("__fm_rl");
+                let rh = self.local_idx("__fm_rh");
+                let mut v = Vec::new();
+                // Load dst
+                v.extend(da.clone()); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 })); v.push(Instruction::LocalSet(dl));
+                v.extend(da.clone()); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 })); v.push(Instruction::LocalSet(dh));
+                // Load src
+                v.extend(sa.clone()); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 })); v.push(Instruction::LocalSet(sl));
+                v.extend(sa); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 })); v.push(Instruction::LocalSet(sh));
+                // mid = dh*sl + dl*sh (with carry detection)
+                v.push(Instruction::LocalGet(dh)); v.push(Instruction::LocalGet(sl)); v.push(Instruction::I64Mul);
+                v.push(Instruction::LocalSet(mid));
+                v.push(Instruction::LocalGet(dl)); v.push(Instruction::LocalGet(sh)); v.push(Instruction::I64Mul);
+                // mid += dl*sh, detect carry
+                v.push(Instruction::LocalGet(mid)); // save for carry check
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalTee(mid)); // mid = dh*sl + dl*sh
+                // carry if mid < old_mid (which is on stack below the add result... need to restructure)
+                v.pop(); // remove tee
+                // Redo: compute tmp = dl*sh, then mid = dh*sl + tmp, carry = mid < dh*sl
+                v.push(Instruction::LocalSet(carry)); // carry = dl*sh temporarily
+                v.push(Instruction::LocalGet(mid)); // mid = dh*sl
+                v.push(Instruction::LocalGet(carry));
+                v.push(Instruction::I64Add); // mid = dh*sl + dl*sh
+                v.push(Instruction::LocalTee(mid));
+                v.push(Instruction::LocalGet(mid)); // dh*sl
+                v.push(Instruction::I64LtU); // carry if sum < dh*sl
+                v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(carry));
+                // result_lo = mid + (dl*sl >> 64), with carry
+                v.push(Instruction::LocalGet(mid));
+                v.push(Instruction::LocalGet(dl)); v.push(Instruction::LocalGet(sl)); v.push(Instruction::I64Mul);
+                v.push(Instruction::I64Const(64)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalTee(rl));
+                v.push(Instruction::LocalGet(mid));
+                v.push(Instruction::I64LtU); // if rl < mid, another carry
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalGet(carry)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(carry));
+                v.push(Instruction::LocalGet(mid));
+                v.push(Instruction::LocalGet(rl));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(rl));
+                // result_hi = dh*sh + carry
+                v.push(Instruction::LocalGet(dh)); v.push(Instruction::LocalGet(sh)); v.push(Instruction::I64Mul);
+                v.push(Instruction::LocalGet(carry)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(rh));
+                // Store result to dst
+                v.extend(da.clone()); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(rl));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.extend(da); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(8)); v.push(Instruction::I32Add);
+                v.push(Instruction::LocalGet(rh));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Const(0)); Ok(v)
+            }
+
+            // (fp64/lt addr1 addr2) → i64 — compare Q64.64 values
+            "fp64/lt" => {
+                let a1 = self.expr(&a[0])?;
+                let a2 = self.expr(&a[1])?;
+                let h1 = self.local_idx("__fplt_h1");
+                let h2 = self.local_idx("__fplt_h2");
+                let mut v = Vec::new();
+                // Compare high parts first
+                v.extend(a1.clone()); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 })); v.push(Instruction::LocalSet(h1));
+                v.extend(a2.clone()); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 })); v.push(Instruction::LocalSet(h2));
+                // if h1 < h2: return 1
+                v.push(Instruction::LocalGet(h1)); v.push(Instruction::LocalGet(h2)); v.push(Instruction::I64LtU);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::Else);
+                // if h1 > h2: return 0
+                v.push(Instruction::LocalGet(h1)); v.push(Instruction::LocalGet(h2)); v.push(Instruction::I64GtU);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::Else);
+                // High equal, compare low
+                v.extend(a1); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.extend(a2); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64LtU); // returns i32
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::End); // inner if
+                v.push(Instruction::End); // outer if
+                Ok(v)
+            }
+
+            // (fp64/is_zero addr) → i64
+            "fp64/is_zero" => {
+                let addr = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                v.extend(addr.clone()); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 }));
+                // high == 0?
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.extend(addr); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::Else);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::End);
+                Ok(v)
+            }
+
+            // tick_to_price64: TODO — needs helper method for inline Q64.64 mul
+            // Use tick_to_price (Q32.32) + fp64/set for now
+
             // (sqrt x) → i64 — integer square root via Newton's method
             // For CLMM: use on price values. Returns floor(sqrt(x))
             "sqrt" => {
