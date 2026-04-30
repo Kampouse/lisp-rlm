@@ -69,6 +69,18 @@ const HOST_FUNCS: &[(&str, &[ValType], &[ValType])] = &[
     ("storage_iter_prefix",         &[ValType::I64, ValType::I64], &[ValType::I64]), // 36
     ("storage_iter_range",          &[ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]), // 37
     ("storage_iter_next",           &[ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]), // 38
+    // Promise batch
+    ("promise_batch_create",        &[ValType::I64, ValType::I64], &[ValType::I64]),              // 39
+    ("promise_batch_then",          &[ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]), // 40
+    ("promise_batch_action_create_account", &[ValType::I64], &[]),                                // 41
+    ("promise_batch_action_deploy_contract", &[ValType::I64, ValType::I64, ValType::I64], &[]),    // 42
+    ("promise_batch_action_function_call", &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[]), // 43
+    ("promise_batch_action_transfer", &[ValType::I64, ValType::I64, ValType::I64], &[]),            // 44
+    ("promise_batch_action_stake",  &[ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[]), // 45
+    ("promise_batch_action_add_key_with_full_access", &[ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[]), // 46
+    ("promise_batch_action_add_key_with_function_call", &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[]), // 47
+    ("promise_batch_action_delete_key", &[ValType::I64, ValType::I64, ValType::I64], &[]),          // 48
+    ("promise_batch_action_delete_account", &[ValType::I64, ValType::I64, ValType::I64], &[]),      // 49
 ];
 
 const HOST_BASE: u32 = 0xFF00_0000;
@@ -180,6 +192,17 @@ impl WasmEmitter {
             "near/promise_and" => self.need_host(32),
             "near/promise_results_count" => self.need_host(33),
             "near/promise_return" => self.need_host(35),
+            "near/promise_batch_create" => self.need_host(39),
+            "near/promise_batch_then" => self.need_host(40),
+            "near/promise_batch_action_create_account" => self.need_host(41),
+            "near/promise_batch_action_deploy_contract" => self.need_host(42),
+            "near/promise_batch_action_function_call" => self.need_host(43),
+            "near/promise_batch_action_transfer" => self.need_host(44),
+            "near/promise_batch_action_stake" => self.need_host(45),
+            "near/promise_batch_action_add_key_with_full_access" => self.need_host(46),
+            "near/promise_batch_action_add_key_with_function_call" => self.need_host(47),
+            "near/promise_batch_action_delete_key" => self.need_host(48),
+            "near/promise_batch_action_delete_account" => self.need_host(49),
             "near/abort" => self.need_host(26),
             "near/iter_prefix" => { self.need_host(36); self.need_host(2); self.need_host(0); self.need_host(1); }
             "near/iter_range" => { self.need_host(37); self.need_host(2); self.need_host(0); self.need_host(1); }
@@ -883,6 +906,150 @@ impl WasmEmitter {
                 let mut v = Vec::new();
                 v.extend(idx);
                 v.push(Self::host_call(35));
+                v.push(Instruction::I64Const(0));
+                Ok(v)
+            }
+
+            // ── Promise batch actions (host funcs 39-49) ──
+
+            // (near/promise_batch_create account_ptr account_len) → promise_id
+            "near/promise_batch_create" => {
+                let ptr = self.expr(&a[0])?;
+                let len = self.expr(&a[1])?;
+                let mut v = Vec::new();
+                v.extend(len); v.extend(ptr);
+                v.push(Self::host_call(39));
+                Ok(v)
+            }
+
+            // (near/promise_batch_then promise_idx account_ptr account_len) → promise_id
+            "near/promise_batch_then" => {
+                let idx = self.expr(&a[0])?;
+                let ptr = self.expr(&a[1])?;
+                let len = self.expr(&a[2])?;
+                let mut v = Vec::new();
+                v.extend(idx); v.extend(len); v.extend(ptr);
+                v.push(Self::host_call(40));
+                Ok(v)
+            }
+
+            // (near/promise_batch_action_create_account promise_idx)
+            "near/promise_batch_action_create_account" => {
+                let idx = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                v.extend(idx);
+                v.push(Self::host_call(41));
+                v.push(Instruction::I64Const(0));
+                Ok(v)
+            }
+
+            // (near/promise_batch_action_deploy_contract promise_idx code_ptr code_len)
+            "near/promise_batch_action_deploy_contract" => {
+                let idx = self.expr(&a[0])?;
+                let code_ptr = self.expr(&a[1])?;
+                let code_len = self.expr(&a[2])?;
+                let mut v = Vec::new();
+                v.extend(idx); v.extend(code_len); v.extend(code_ptr);
+                v.push(Self::host_call(42));
+                v.push(Instruction::I64Const(0));
+                Ok(v)
+            }
+
+            // (near/promise_batch_action_function_call promise_idx method_ptr method_len args_ptr args_len amount_ptr gas)
+            "near/promise_batch_action_function_call" => {
+                let idx = self.expr(&a[0])?;
+                let method_ptr = self.expr(&a[1])?;
+                let method_len = self.expr(&a[2])?;
+                let args_ptr = self.expr(&a[3])?;
+                let args_len = self.expr(&a[4])?;
+                let amount_ptr = self.expr(&a[5])?;
+                let gas = self.expr(&a[6])?;
+                let mut v = Vec::new();
+                v.extend(idx); v.extend(method_len); v.extend(method_ptr);
+                v.extend(args_len); v.extend(args_ptr);
+                v.extend(amount_ptr); v.extend(gas);
+                v.push(Self::host_call(43));
+                v.push(Instruction::I64Const(0));
+                Ok(v)
+            }
+
+            // (near/promise_batch_action_transfer promise_idx amount_ptr amount_len)
+            "near/promise_batch_action_transfer" => {
+                let idx = self.expr(&a[0])?;
+                let amount_ptr = self.expr(&a[1])?;
+                let amount_len = self.expr(&a[2])?;
+                let mut v = Vec::new();
+                v.extend(idx); v.extend(amount_ptr); v.extend(amount_len);
+                v.push(Self::host_call(44));
+                v.push(Instruction::I64Const(0));
+                Ok(v)
+            }
+
+            // (near/promise_batch_action_stake promise_idx amount_ptr amount_len pk_ptr pk_len)
+            "near/promise_batch_action_stake" => {
+                let idx = self.expr(&a[0])?;
+                let amount_ptr = self.expr(&a[1])?;
+                let amount_len = self.expr(&a[2])?;
+                let pk_ptr = self.expr(&a[3])?;
+                let pk_len = self.expr(&a[4])?;
+                let mut v = Vec::new();
+                v.extend(idx); v.extend(amount_ptr); v.extend(amount_len);
+                v.extend(pk_ptr); v.extend(pk_len);
+                v.push(Self::host_call(45));
+                v.push(Instruction::I64Const(0));
+                Ok(v)
+            }
+
+            // (near/promise_batch_action_add_key_with_full_access promise_idx pk_ptr pk_len nonce)
+            "near/promise_batch_action_add_key_with_full_access" => {
+                let idx = self.expr(&a[0])?;
+                let pk_ptr = self.expr(&a[1])?;
+                let pk_len = self.expr(&a[2])?;
+                let nonce = self.expr(&a[3])?;
+                let mut v = Vec::new();
+                v.extend(idx); v.extend(pk_ptr); v.extend(pk_len); v.extend(nonce);
+                v.push(Self::host_call(46));
+                v.push(Instruction::I64Const(0));
+                Ok(v)
+            }
+
+            // (near/promise_batch_action_add_key_with_function_call promise_idx pk_ptr pk_len nonce method_ptr method_len allowance)
+            "near/promise_batch_action_add_key_with_function_call" => {
+                let idx = self.expr(&a[0])?;
+                let pk_ptr = self.expr(&a[1])?;
+                let pk_len = self.expr(&a[2])?;
+                let nonce = self.expr(&a[3])?;
+                let method_ptr = self.expr(&a[4])?;
+                let method_len = self.expr(&a[5])?;
+                let allowance = self.expr(&a[6])?;
+                let mut v = Vec::new();
+                v.extend(idx); v.extend(pk_ptr); v.extend(pk_len); v.extend(nonce);
+                v.extend(method_ptr); v.extend(method_len); v.extend(allowance);
+                v.push(Self::host_call(47));
+                v.push(Instruction::I64Const(0));
+                Ok(v)
+            }
+
+            // (near/promise_batch_action_delete_key promise_idx pk_ptr pk_len)
+            "near/promise_batch_action_delete_key" => {
+                let idx = self.expr(&a[0])?;
+                let pk_ptr = self.expr(&a[1])?;
+                let pk_len = self.expr(&a[2])?;
+                let mut v = Vec::new();
+                v.extend(idx); v.extend(pk_ptr); v.extend(pk_len);
+                v.push(Self::host_call(48));
+                v.push(Instruction::I64Const(0));
+                Ok(v)
+            }
+
+            // (near/promise_batch_action_delete_account promise_idx beneficiary_ptr beneficiary_len)
+            "near/promise_batch_action_delete_account" => {
+                let idx = self.expr(&a[0])?;
+                let ptr = self.expr(&a[1])?;
+                let len = self.expr(&a[2])?;
+                let mut v = Vec::new();
+                v.extend(idx); v.extend(ptr); v.extend(len);
+                v.push(Self::host_call(49));
                 v.push(Instruction::I64Const(0));
                 Ok(v)
             }
