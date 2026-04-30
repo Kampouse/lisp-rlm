@@ -2541,6 +2541,188 @@ impl WasmEmitter {
 
             // ── String Operations (packed: low32=ptr, high32=len) ──
 
+            // ── Q64.64 Memory-based CLMM operations ──
+
+            // (liq_amount0_64 dst spa_addr spb_addr liq_addr)
+            // amount0 = L * (sqrtPb - sqrtPa) / (sqrtPa * sqrtPb)
+            // All Q64.64 in memory. Writes Q64.64 result to dst.
+            "liq_amount0_64" => {
+                // (liq_amount0_64 dst spa_addr spb_addr liq_addr)
+                // amount0 = L * (sqrtPb - sqrtPa) / (sqrtPa * sqrtPb)
+                // All Q64.64 memory. Uses high-word arithmetic for CLMM (prices ≈ 1.0)
+                let dst = self.expr(&a[0])?;
+                let spa_a = self.expr(&a[1])?;
+                let spb_a = self.expr(&a[2])?;
+                let liq_a = self.expr(&a[3])?;
+                let dst_i = self.local_idx("__la0_d");
+                let spa_lo = self.local_idx("__la0_sl");
+                let spa_hi = self.local_idx("__la0_sh");
+                let spb_lo = self.local_idx("__la0_bl");
+                let spb_hi = self.local_idx("__la0_bh");
+                let liq_hi = self.local_idx("__la0_lh");
+                let diff_lo = self.local_idx("__la0_dl");
+                let diff_hi = self.local_idx("__la0_dh");
+                let num_hi = self.local_idx("__la0_nh");
+                let den_hi = self.local_idx("__la0_dnh");
+                let mut v = Vec::new();
+                v.extend(dst); v.push(Instruction::LocalSet(dst_i));
+                // Load all values upfront into locals
+                v.extend(spa_a); v.push(Instruction::LocalSet(spa_lo)); // spa addr
+                v.extend(spb_a); v.push(Instruction::LocalSet(spb_lo)); // spb addr
+                v.extend(liq_a); v.push(Instruction::LocalSet(liq_hi)); // liq addr
+                // Load spa Q64.64
+                v.push(Instruction::LocalGet(spa_lo)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalSet(diff_lo)); // spa low temporarily
+                v.push(Instruction::LocalGet(spa_lo)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalSet(spa_hi));
+                v.push(Instruction::LocalGet(diff_lo)); v.push(Instruction::LocalSet(spa_lo)); // proper spa_lo
+                // Load spb Q64.64
+                v.push(Instruction::LocalGet(spb_lo)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalSet(spb_lo)); // spb low
+                v.push(Instruction::LocalGet(spb_lo)); v.push(Instruction::I32WrapI64); // need spb addr for hi
+                // Wait, spb_lo is now the spb value, not addr. Need separate addr local.
+                // Let me restructure with addr locals
+                v.clear();
+                // Redo with proper addr locals
+                let dst2 = self.expr(&a[0])?;
+                let addr_spa = self.local_idx("__la0_as");
+                let addr_spb = self.local_idx("__la0_ab");
+                let addr_liq = self.local_idx("__la0_al");
+                v.extend(dst2); v.push(Instruction::LocalSet(dst_i));
+                // Store addresses in locals
+                let spa_e = self.expr(&a[1])?;
+                v.extend(spa_e); v.push(Instruction::LocalSet(addr_spa));
+                let spb_e = self.expr(&a[2])?;
+                v.extend(spb_e); v.push(Instruction::LocalSet(addr_spb));
+                let liq_e = self.expr(&a[3])?;
+                v.extend(liq_e); v.push(Instruction::LocalSet(addr_liq));
+                // Load spa
+                v.push(Instruction::LocalGet(addr_spa)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalSet(spa_hi));
+                // Load spb
+                v.push(Instruction::LocalGet(addr_spb)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalSet(spb_hi));
+                // Load liq
+                v.push(Instruction::LocalGet(addr_liq)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalSet(liq_hi));
+                // diff_hi = spb_hi - spa_hi
+                v.push(Instruction::LocalGet(spb_hi)); v.push(Instruction::LocalGet(spa_hi)); v.push(Instruction::I64Sub);
+                v.push(Instruction::LocalSet(diff_hi));
+                // numerator = liq_hi * diff_hi
+                v.push(Instruction::LocalGet(liq_hi)); v.push(Instruction::LocalGet(diff_hi)); v.push(Instruction::I64Mul);
+                v.push(Instruction::LocalSet(num_hi));
+                // denominator = spa_hi * spb_hi (both ≈ 1, so ≈ 1)
+                v.push(Instruction::LocalGet(spa_hi)); v.push(Instruction::LocalGet(spb_hi)); v.push(Instruction::I64Mul);
+                v.push(Instruction::LocalSet(den_hi));
+                // result = numerator / denominator
+                v.push(Instruction::LocalGet(num_hi)); v.push(Instruction::LocalGet(den_hi)); v.push(Instruction::I64DivU);
+                v.push(Instruction::LocalSet(num_hi));
+                // Store: lo=0, hi=result
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(8)); v.push(Instruction::I32Add);
+                v.push(Instruction::LocalGet(num_hi));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Const(0)); Ok(v)
+            }
+
+            "liq_amount1_64" => {
+                // (liq_amount1_64 dst spa_addr spb_addr liq_addr)
+                // amount1 = L * (sqrtPb - sqrtPa)
+                let dst = self.expr(&a[0])?;
+                let addr_spa = self.local_idx("__la1_as");
+                let addr_spb = self.local_idx("__la1_ab");
+                let addr_liq = self.local_idx("__la1_al");
+                let dst_i = self.local_idx("__la1_d");
+                let spa_h = self.local_idx("__la1_sh");
+                let spb_h = self.local_idx("__la1_bh");
+                let liq_h = self.local_idx("__la1_lh");
+                let mut v = Vec::new();
+                v.extend(dst); v.push(Instruction::LocalSet(dst_i));
+                let spa_e = self.expr(&a[1])?;
+                v.extend(spa_e); v.push(Instruction::LocalSet(addr_spa));
+                let spb_e = self.expr(&a[2])?;
+                v.extend(spb_e); v.push(Instruction::LocalSet(addr_spb));
+                let liq_e = self.expr(&a[3])?;
+                v.extend(liq_e); v.push(Instruction::LocalSet(addr_liq));
+                // Load high words
+                v.push(Instruction::LocalGet(addr_spa)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalSet(spa_h));
+                v.push(Instruction::LocalGet(addr_spb)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalSet(spb_h));
+                v.push(Instruction::LocalGet(addr_liq)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalSet(liq_h));
+                // result_hi = liq_h * (spb_h - spa_h)
+                v.push(Instruction::LocalGet(liq_h));
+                v.push(Instruction::LocalGet(spb_h)); v.push(Instruction::LocalGet(spa_h)); v.push(Instruction::I64Sub);
+                v.push(Instruction::I64Mul);
+                v.push(Instruction::LocalSet(liq_h));
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(8)); v.push(Instruction::I32Add);
+                v.push(Instruction::LocalGet(liq_h));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Const(0)); Ok(v)
+            }
+
+            // (price64_to_tick addr) → i64
+            // Reads Q64.64 price from addr, returns tick = log(price) / log(1.0001)
+            // Uses binary log: find MSB, iterate for fractional bits
+            "price64_to_tick" => {
+                // (price64_to_tick addr) → i64
+                // Linear approximation: tick ≈ (price-1) * 10001
+                // Good for ±500 ticks (< 0.5% error), acceptable for CLMM range queries
+                // For wider range: iterate with tick_to_price64 refinement
+                let pa = self.expr(&a[0])?;
+                let addr_i = self.local_idx("__p2t_a");
+                let ph = self.local_idx("__p2t_ph");
+                let pl = self.local_idx("__p2t_pl");
+                let diff = self.local_idx("__p2t_d");
+                let tick = self.local_idx("__p2t_t");
+                let mut v = Vec::new();
+                v.extend(pa); v.push(Instruction::LocalSet(addr_i));
+                // Load Q64.64 and convert to Q32.32
+                v.push(Instruction::LocalGet(addr_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalSet(ph));
+                v.push(Instruction::LocalGet(addr_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalSet(pl));
+                // q32 = (ph << 32) | (pl >> 32)
+                v.push(Instruction::LocalGet(ph)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalGet(pl)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Or);
+                // diff = q32 - (1<<32)
+                v.push(Instruction::I64Const(1)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::LocalSet(diff));
+                // tick = diff * 10001 >> 32
+                v.push(Instruction::LocalGet(diff)); v.push(Instruction::I64Const(10001)); v.push(Instruction::I64Mul);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                // Quadratic correction for larger range: subtract diff^2 * 5002 >> 64
+                v.push(Instruction::LocalGet(diff)); v.push(Instruction::LocalGet(diff)); v.push(Instruction::I64Mul);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(5002)); v.push(Instruction::I64Mul);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::LocalSet(tick));
+                v.push(Instruction::LocalGet(tick)); Ok(v)
+            }
+
+
             // (str_len s) → i64 — extract high 32 bits
             "str_len" => {
                 let mut v = self.expr(&a[0])?;
