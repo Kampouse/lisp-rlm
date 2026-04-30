@@ -12,8 +12,8 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use wasm_encoder::{
     BlockType, ConstExpr, DataSection, EntityType, ExportKind, ExportSection, Function,
-    FunctionSection, ImportSection, Instruction, MemorySection, MemoryType, Module,
-    TypeSection, ValType,
+    FunctionSection, GlobalSection, GlobalType, ImportSection, Instruction, MemorySection,
+    MemoryType, Module, TypeSection, ValType,
 };
 
 // ── NEAR host functions (name, params, results) ──
@@ -86,6 +86,9 @@ const HOST_FUNCS: &[(&str, &[ValType], &[ValType])] = &[
 const HOST_BASE: u32 = 0xFF00_0000;
 const USER_BASE: u32 = 0xFF01_0000;
 const TEMP_MEM: i64 = 64;
+const GAS_LIMIT: i64 = 10_000_000;
+const DEPTH_LIMIT: i64 = 512;
+const DEPTH_GLOBAL: u32 = 0; // mutable i64 global for call depth
 
 struct FuncDef {
     name: String,
@@ -106,6 +109,7 @@ pub struct WasmEmitter {
     data_segments: Vec<(u32, Vec<u8>)>,
     next_data_offset: u32,
     host_needed: HashSet<usize>,
+    gas_local: Option<u32>, // index of the gas counter local (i64)
 }
 
 impl WasmEmitter {
@@ -114,6 +118,7 @@ impl WasmEmitter {
             locals: HashMap::new(), next_local: 0, current_func: None, current_param_count: 0,
             while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 1, exports: Vec::new(),
             data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(),
+            gas_local: None,
         }
     }
 
@@ -220,15 +225,95 @@ impl WasmEmitter {
         self.current_param_count = params.len();
         self.while_id.set(0);
         self.scan_host(body);
+
+        // Allocate gas local and return-value local
+        let gas_local = self.local_idx("__gas");
+        let ret_local = self.local_idx("__ret");
+        self.gas_local = Some(gas_local);
+
         // Pre-insert placeholder so self-recursion resolves
         let placeholder_idx = self.funcs.len();
         self.funcs.push(FuncDef { name: name.into(), param_count: params.len(), local_count: 0, instrs: Vec::new() });
+
         let tc = self.has_tc(body);
-        let instrs = if tc { self.tc_body(body)? } else { self.expr(body)? };
+
+        // Build prologue: init gas + depth increment/check
+        let mut prologue = Vec::new();
+        // gas = GAS_LIMIT
+        prologue.push(Instruction::I64Const(GAS_LIMIT));
+        prologue.push(Instruction::LocalSet(gas_local));
+        // depth++
+        prologue.push(Instruction::GlobalGet(DEPTH_GLOBAL));
+        prologue.push(Instruction::I64Const(1));
+        prologue.push(Instruction::I64Add);
+        prologue.push(Instruction::GlobalSet(DEPTH_GLOBAL));
+        // if depth > DEPTH_LIMIT: trap
+        prologue.push(Instruction::GlobalGet(DEPTH_GLOBAL));
+        prologue.push(Instruction::I64Const(DEPTH_LIMIT));
+        prologue.push(Instruction::I64GtS);
+        // I64GtS produces i32, use directly for If
+        prologue.push(Instruction::If(BlockType::Empty));
+        prologue.push(Instruction::Unreachable);
+        prologue.push(Instruction::End);
+
+        // Build body
+        let mut body_instrs = if tc { self.tc_body(body)? } else { self.expr(body)? };
+
+        // Epilogue: save return, depth--, restore return
+        let mut epilogue = Vec::new();
+        epilogue.push(Instruction::LocalSet(ret_local));
+        // depth--
+        epilogue.push(Instruction::GlobalGet(DEPTH_GLOBAL));
+        epilogue.push(Instruction::I64Const(1));
+        epilogue.push(Instruction::I64Sub);
+        epilogue.push(Instruction::GlobalSet(DEPTH_GLOBAL));
+        epilogue.push(Instruction::LocalGet(ret_local));
+
+        // Combine: prologue + body + epilogue
+        let mut instrs = prologue;
+        instrs.append(&mut body_instrs);
+        instrs.append(&mut epilogue);
+
+        // Inject gas checks before every Br(0) back-edge and host_call
+        let instrs = Self::inject_gas_checks(instrs, gas_local);
+
         let total = self.next_local as usize;
         self.current_func = None;
+        self.gas_local = None;
         self.funcs[placeholder_idx] = FuncDef { name: name.into(), param_count: params.len(), local_count: total, instrs };
         Ok(())
+    }
+
+    /// Generate gas check instructions: gas -= 1; if gas <= 0: unreachable
+    fn gas_check_instrs(gas_local: u32) -> Vec<Instruction<'static>> {
+        vec![
+            Instruction::LocalGet(gas_local),
+            Instruction::I64Const(1),
+            Instruction::I64Sub,
+            Instruction::LocalTee(gas_local),
+            Instruction::I64Const(0),
+            Instruction::I64LeS,
+            // I64LeS produces i32, use directly for If
+            Instruction::If(BlockType::Empty),
+            Instruction::Unreachable,
+            Instruction::End,
+        ]
+    }
+
+    /// Post-process: inject gas check before every Br(0) back-edge and host_call
+    fn inject_gas_checks(instrs: Vec<Instruction<'static>>, gas_local: u32) -> Vec<Instruction<'static>> {
+        let check = Self::gas_check_instrs(gas_local);
+        let mut out = Vec::with_capacity(instrs.len() * 2);
+        for i in &instrs {
+            match i {
+                Instruction::Br(0) => { out.extend(check.iter().cloned()); out.push(i.clone()); }
+                Instruction::Call(idx) if *idx >= HOST_BASE && *idx < USER_BASE => {
+                    out.extend(check.iter().cloned()); out.push(i.clone());
+                }
+                _ => out.push(i.clone()),
+            }
+        }
+        out
     }
 
     pub fn set_memory(&mut self, p: u32) { self.memory_pages = p; }
@@ -3633,6 +3718,14 @@ impl WasmEmitter {
         let mut mems = MemorySection::new();
         mems.memory(MemoryType { minimum: self.memory_pages.max(1) as u64, maximum: None, memory64: false, shared: false, page_size_log2: None });
         m.section(&mems);
+
+        // Global section: mutable i64 for call depth tracking
+        let mut globals = GlobalSection::new();
+        globals.global(
+            GlobalType { val_type: ValType::I64, mutable: true, shared: false },
+            &ConstExpr::i64_const(0),
+        );
+        m.section(&globals);
 
         // Exports
         let mut exps = ExportSection::new();
