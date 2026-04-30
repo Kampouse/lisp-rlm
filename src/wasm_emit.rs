@@ -86,7 +86,8 @@ const HOST_FUNCS: &[(&str, &[ValType], &[ValType])] = &[
 const HOST_BASE: u32 = 0xFF00_0000;
 const USER_BASE: u32 = 0xFF01_0000;
 const TEMP_MEM: i64 = 64;
-const GAS_LIMIT: i64 = 10_000_000;
+// ~300 Tgas on NEAR ≈ ~10B simple ops. Cap at 1B to be safe (stops runaway, still uses full NEAR runtime).
+const GAS_LIMIT: i64 = 1_000_000_000;
 const DEPTH_LIMIT: i64 = 512;
 const DEPTH_GLOBAL: u32 = 0; // mutable i64 global for call depth
 
