@@ -436,6 +436,155 @@ impl WasmEmitter {
             }
 
             // Memory
+            // ── Higher-order loop macros (expand to while loops) ──
+
+            // (range start end) → returns start as initial counter, used with map/filter/reduce
+            // Actually: (for i start end body) — like a for loop
+            "for" => {
+                // (for var start end body...)
+                if a.len() < 4 { return Err("for: need (for var start end body...)".into()); }
+                let LispVal::Sym(var) = &a[0] else { return Err("for: var must be symbol".into()) };
+                let idx = self.local_idx(var);
+                let mut v = Vec::new();
+                // init: var = start
+                v.extend(self.expr(&a[1])?);
+                v.push(Instruction::LocalSet(idx));
+                // block (result i64) { loop { if (>= var end) break; body...; var += 1; br loop } }
+                v.push(Instruction::Block(BlockType::Result(ValType::I64)));
+                v.push(Instruction::Loop(BlockType::Empty));
+                // condition: var >= end → exit
+                v.push(Instruction::LocalGet(idx));
+                v.extend(self.expr(&a[2])?);
+                v.push(Instruction::I64GeS);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::Br(2)); // exit block
+                v.push(Instruction::End);
+                // body expressions (drop all but last)
+                for (i, x) in a[3..].iter().enumerate() {
+                    v.extend(self.expr(x)?);
+                    if i < a.len() - 4 { v.push(Instruction::Drop); }
+                }
+                v.push(Instruction::Drop); // drop body result
+                // increment: var += 1
+                v.push(Instruction::LocalGet(idx));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(idx));
+                v.push(Instruction::Br(0)); // loop
+                v.push(Instruction::End); // loop
+                v.push(Instruction::I64Const(0)); // fallback
+                v.push(Instruction::End); // block
+                Ok(v)
+            }
+
+            // (reduce init start end accumulator body)
+            // accumulator is a symbol, body can reference `it` (current) and accumulator
+            // (reduce 0 1 100 acc (+ acc it))
+            "reduce" => {
+                if a.len() < 5 { return Err("reduce: need (reduce init start end acc_var body)".into()) }
+                let LispVal::Sym(acc_var) = &a[3] else { return Err("reduce: acc must be symbol".into()) };
+                let acc_idx = self.local_idx(acc_var);
+                let it_idx = self.local_idx("__it");
+                // acc = init, it = start, while it < end: acc = body, it += 1
+                let mut v = Vec::new();
+                // acc = init
+                v.extend(self.expr(&a[0])?);
+                v.push(Instruction::LocalSet(acc_idx));
+                // it = start
+                v.extend(self.expr(&a[1])?);
+                v.push(Instruction::LocalSet(it_idx));
+                // while loop
+                v.push(Instruction::Block(BlockType::Result(ValType::I64)));
+                v.push(Instruction::Loop(BlockType::Empty));
+                // it >= end → exit with acc
+                v.push(Instruction::LocalGet(it_idx));
+                v.extend(self.expr(&a[2])?);
+                v.push(Instruction::I64GeS);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(acc_idx)); v.push(Instruction::Br(2));
+                v.push(Instruction::End);
+                // acc = body
+                v.extend(self.expr(&a[4])?);
+                v.push(Instruction::LocalSet(acc_idx));
+                // it += 1
+                v.push(Instruction::LocalGet(it_idx));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(it_idx));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); // loop
+                v.push(Instruction::I64Const(0)); // fallback
+                v.push(Instruction::End); // block
+                Ok(v)
+            }
+
+            // (map-into mem_offset start end body)
+            // Writes (body it) into memory at mem_offset + (it-start)*8
+            // Returns count
+            "map-into" => {
+                if a.len() < 4 { return Err("map-into: need (map-into offset start end body)".into()) }
+                let it_idx = self.local_idx("__it");
+                let off_idx = self.local_idx("__off");
+                let count_idx = self.local_idx("__count");
+                let mut v = Vec::new();
+                // off = mem_offset, it = start, count = 0
+                v.extend(self.expr(&a[0])?); v.push(Instruction::LocalSet(off_idx));
+                v.extend(self.expr(&a[1])?); v.push(Instruction::LocalSet(it_idx));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(count_idx));
+                v.push(Instruction::Block(BlockType::Result(ValType::I64)));
+                v.push(Instruction::Loop(BlockType::Empty));
+                // it >= end → exit
+                v.push(Instruction::LocalGet(it_idx));
+                v.extend(self.expr(&a[2])?);
+                v.push(Instruction::I64GeS);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(count_idx)); v.push(Instruction::Br(2));
+                v.push(Instruction::End);
+                // mem[off] = body(it)
+                v.push(Instruction::LocalGet(off_idx));
+                v.push(Instruction::I32WrapI64);
+                v.extend(self.expr(&a[3])?);
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                // off += 8, it += 1, count += 1
+                v.push(Instruction::LocalGet(off_idx)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(off_idx));
+                v.push(Instruction::LocalGet(it_idx)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(it_idx));
+                v.push(Instruction::LocalGet(count_idx)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(count_idx));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); // loop
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::End); // block
+                Ok(v)
+            }
+
+            // (filter-count start end pred) — count items where pred(it) is truthy
+            "filter-count" => {
+                if a.len() < 3 { return Err("filter-count: need (filter-count start end pred)".into()) }
+                let it_idx = self.local_idx("__it");
+                let count_idx = self.local_idx("__count");
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?); v.push(Instruction::LocalSet(it_idx));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(count_idx));
+                v.push(Instruction::Block(BlockType::Result(ValType::I64)));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(it_idx));
+                v.extend(self.expr(&a[1])?);
+                v.push(Instruction::I64GeS);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(count_idx)); v.push(Instruction::Br(2));
+                v.push(Instruction::End);
+                // if pred(it): count += 1
+                v.extend(self.expr(&a[2])?);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(count_idx)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(count_idx));
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(it_idx)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(it_idx));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); // loop
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::End); // block
+                Ok(v)
+            }
             "mem-set8!" => {
                 let mut v = Vec::new();
                 v.extend(self.expr(&a[0])?); v.push(Instruction::I32WrapI64);
