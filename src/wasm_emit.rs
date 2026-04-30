@@ -137,7 +137,7 @@ impl WasmEmitter {
         if Some(op.as_str()) == self.current_func.as_deref() && a.len() == self.current_param_count { return true }
         if op == "if" { return self.has_tc(&a[1]) || (a.len() > 2 && self.has_tc(&a[2])) }
         if op == "begin" && !a.is_empty() { return self.has_tc(items.last().unwrap()) }
-        if op == "let" && a.len() > 1 { return self.has_tc(&a[1]) }
+        if op == "let" && a.len() > 1 { return a[1..].iter().any(|x| self.has_tc(x)) }
         false
     }
 
@@ -168,7 +168,8 @@ impl WasmEmitter {
             "near/block_index" => self.need_host(8),
             "near/block_timestamp" => self.need_host(9),
             "near/epoch_height" => self.need_host(10),
-            "near/attached_deposit" => { self.need_host(14); self.need_host(0); self.need_host(1); }
+            "near/attached_deposit" => { self.need_host(14); self.need_host(0); }
+            "near/attached_deposit_high" => { self.need_host(14); self.need_host(0); }
             "near/prepaid_gas" => self.need_host(15),
             "near/used_gas" => self.need_host(16),
             "near/account_balance" => { self.need_host(12); self.need_host(0); self.need_host(1); }
@@ -179,6 +180,7 @@ impl WasmEmitter {
             "near/promise_and" => self.need_host(32),
             "near/promise_results_count" => self.need_host(33),
             "near/promise_return" => self.need_host(35),
+            "near/abort" => self.need_host(26),
             _ => {}
         }
     }
@@ -242,7 +244,8 @@ impl WasmEmitter {
                 v.push(Instruction::Br(0));
                 Ok(v)
             }
-            _ => self.expr(e),
+            // Any other expression inside TC loop: evaluate and exit block via Br(2)
+            _ => { let mut v = self.expr(e)?; v.push(Instruction::Br(2)); Ok(v) }
         }
     }
 
@@ -254,7 +257,12 @@ impl WasmEmitter {
                 v.extend(self.expr(&p[1])?); v.push(Instruction::LocalSet(idx));
             }}}}
         }
-        v.extend(self.tc(&a[1])?); Ok(v)
+        // Implicit begin in let body
+        for (i, x) in a[1..].iter().enumerate() {
+            if i < a.len() - 2 { v.extend(self.expr(x)?); v.push(Instruction::Drop); }
+            else { v.extend(self.tc(x)?); }
+        }
+        Ok(v)
     }
 
     fn tc_if(&mut self, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
@@ -273,19 +281,32 @@ impl WasmEmitter {
             (true, false) => {
                 v.push(Instruction::I32Eqz);
                 v.push(Instruction::If(BlockType::Empty));
-                v.extend(self.expr(e)?); v.push(Instruction::Br(1));
+                v.extend(self.expr(e)?); v.push(Instruction::Br(2)); // exit block
                 v.push(Instruction::End);
-                v.extend(self.self_sets(t)?); v.push(Instruction::Br(0));
+                v.extend(self.self_sets(t)?); v.push(Instruction::Br(0)); // loop
             }
             (false, true) => {
                 v.push(Instruction::If(BlockType::Empty));
-                v.extend(self.expr(t)?); v.push(Instruction::Br(1));
+                v.extend(self.expr(t)?); v.push(Instruction::Br(2)); // exit block
                 v.push(Instruction::End);
-                v.extend(self.self_sets(e)?); v.push(Instruction::Br(0));
+                v.extend(self.self_sets(e)?); v.push(Instruction::Br(0)); // loop
             }
             (false, false) => {
-                v.push(Instruction::If(BlockType::Result(ValType::I64)));
-                v.extend(self.tc(t)?); v.push(Instruction::Else); v.extend(self.tc(e)?); v.push(Instruction::End);
+                // Inside TC loop: must either Br(0) loop or Br(2) exit — never fall through
+                v.push(Instruction::If(BlockType::Empty));
+                // Check if then-branch is a self-call
+                if self.is_self(t) {
+                    v.extend(self.self_sets(t)?); v.push(Instruction::Br(0));
+                } else {
+                    v.extend(self.expr(t)?); v.push(Instruction::Br(2)); // exit block with value
+                }
+                v.push(Instruction::Else);
+                if self.is_self(e) {
+                    v.extend(self.self_sets(e)?); v.push(Instruction::Br(0));
+                } else {
+                    v.extend(self.expr(e)?); v.push(Instruction::Br(2)); // exit block with value
+                }
+                v.push(Instruction::End);
             }
         }
         Ok(v)
@@ -401,7 +422,12 @@ impl WasmEmitter {
                         let idx = self.local_idx(n); v.extend(self.expr(&p[1])?); v.push(Instruction::LocalSet(idx));
                     }}}}
                 }
-                v.extend(self.expr(&a[1])?); Ok(v)
+                // Implicit begin: evaluate all body expressions, drop intermediates, keep last
+                for (i, x) in a[1..].iter().enumerate() {
+                    v.extend(self.expr(x)?);
+                    if i < a.len() - 2 { v.push(Instruction::Drop); }
+                }
+                Ok(v)
             }
             "while" => {
                 let id = self.while_id.get(); self.while_id.set(id+1);
@@ -715,6 +741,10 @@ impl WasmEmitter {
                 v.push(Self::host_call(27));
                 v.push(Instruction::I64Const(0)); Ok(v)
             }
+            "near/abort" => {
+                // panic() — idx 26, traps unconditionally
+                Ok(vec![Self::host_call(26), Instruction::I64Const(0)])
+            }
             "near/current_account_id" => self.read_to_register(3, a),
             "near/signer_account_id" => self.read_to_register(4, a),
             "near/predecessor_account_id" => self.read_to_register(6, a),
@@ -724,8 +754,9 @@ impl WasmEmitter {
             "near/epoch_height" => Ok(vec![Self::host_call(10)]),
             "near/prepaid_gas" => Ok(vec![Self::host_call(15)]),
             "near/used_gas" => Ok(vec![Self::host_call(16)]),
-            "near/attached_deposit" => self.read_to_mem(14, a),
-            "near/account_balance" => self.read_to_mem(12, a),
+            "near/attached_deposit" => self.read_u128_low(14),
+            "near/attached_deposit_high" => self.read_u128_high(14),
+            "near/account_balance" => self.read_u128_low(12),
             "near/sha256" => {
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
@@ -884,17 +915,32 @@ impl WasmEmitter {
         Ok(v)
     }
 
-    // Helper: call host(register_id=0) writing u128 to register, read_register(0, 0), return low i64
-    fn read_to_mem(&mut self, host_idx: usize, _a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
+    // Helper: call host(register_id=0) writing u128 to register, read to mem, return low 64 bits
+    fn read_u128_low(&mut self, host_idx: usize) -> Result<Vec<Instruction<'static>>, String> {
         let mut v = Vec::new();
         v.push(Instruction::I64Const(0)); // register_id=0
         v.push(Self::host_call(host_idx));
-        // read_register(0, 0) — copy 16 bytes to mem[0]
+        // read_register(0, 0) — copy 16 bytes to mem[0..16]
         v.push(Instruction::I64Const(0));
         v.push(Instruction::I64Const(0));
         v.push(Self::host_call(0));
-        // Load low 8 bytes as i64
+        // Load low 8 bytes (bytes 0..7) as i64
         v.push(Instruction::I32Const(0));
+        v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+        Ok(v)
+    }
+
+    // Helper: same but return high 64 bits of u128
+    fn read_u128_high(&mut self, host_idx: usize) -> Result<Vec<Instruction<'static>>, String> {
+        let mut v = Vec::new();
+        v.push(Instruction::I64Const(0)); // register_id=0
+        v.push(Self::host_call(host_idx));
+        // read_register(0, 0) — copy 16 bytes to mem[0..16]
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::I64Const(0));
+        v.push(Self::host_call(0));
+        // Load high 8 bytes (bytes 8..15) as i64
+        v.push(Instruction::I32Const(8));
         v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
         Ok(v)
     }
@@ -1046,7 +1092,14 @@ fn parse_and_compile(source: &str, near: bool) -> Result<WasmEmitter, String> {
                             let params: Vec<String> = sig[1..].iter().map(|p| match p {
                                 LispVal::Sym(s) => Ok(s.clone()), _ => Err("param must be symbol".into()),
                             }).collect::<Result<_, String>>()?;
-                            em.emit_define(name, &params, &items[2])?;
+                            // Implicit begin: wrap multiple body expressions
+                            let body = if items.len() > 3 {
+                                LispVal::List(std::iter::once(LispVal::Sym("begin".into()))
+                                    .chain(items[2..].iter().cloned()).collect())
+                            } else {
+                                items[2].clone()
+                            };
+                            em.emit_define(name, &params, &body)?;
                         }
                     }
                 }
@@ -1114,5 +1167,51 @@ mod tests {
         assert!(!wasm.is_empty());
         let wat = wasmprinter::print_bytes(&wasm).unwrap();
         println!("Fib WAT:\n{}", wat);
+    }
+
+    #[test]
+    fn test_tc_count() {
+        // Tail-recursive count — must use loop, not recursive call
+        let src = "(define (count n) (if (= n 0) 0 (count (- n 1))))";
+        let wasm = compile_pure(src).unwrap();
+        let wat = wasmprinter::print_bytes(&wasm).unwrap();
+        println!("Count WAT:\n{}", wat);
+        // The body should contain a loop (TC optimization) and no call to self
+        assert!(wat.contains("loop"), "TC should generate a loop");
+        // Count "call 0" occurrences — should be 0 inside the function body
+        // (only the wrapper calls func 0)
+        let lines: Vec<&str> = wat.lines().collect();
+        let func_start = lines.iter().position(|l| l.contains("(func (;0;)")).unwrap();
+        let func_end = lines.iter().rposition(|l| l.contains("(func (;1;)")).unwrap();
+        let func_body = &lines[func_start..func_end];
+        let call_count = func_body.iter().filter(|l| l.trim().starts_with("call")).count();
+        assert_eq!(call_count, 0, "TC body should not contain any call instructions, found {}", call_count);
+    }
+
+    #[test]
+    fn test_tc_nested_if() {
+        // TC with nested if where neither branch is directly a self-call
+        let src = "(define (f n) (if (= n 0) 0 (if (= n 1) 1 (f (- n 2)))))";
+        let wasm = compile_pure(src).unwrap();
+        let wat = wasmprinter::print_bytes(&wasm).unwrap();
+        println!("Nested IF WAT:\n{}", wat);
+        assert!(wat.contains("loop"), "TC should generate a loop");
+    }
+
+    #[test]
+    fn test_implicit_begin_let() {
+        let src = "(define (f x) (let ((y 1)) (set! y 2) y))";
+        let wasm = compile_pure(src).unwrap();
+        let wat = wasmprinter::print_bytes(&wasm).unwrap();
+        println!("Implicit begin let WAT:\n{}", wat);
+        // Should compile without error — multiple body exprs in let
+    }
+
+    #[test]
+    fn test_implicit_begin_define() {
+        let src = r#"(define (f x) (set! x (+ x 1)) x)"#;
+        let wasm = compile_pure(src).unwrap();
+        let wat = wasmprinter::print_bytes(&wasm).unwrap();
+        println!("Implicit begin define WAT:\n{}", wat);
     }
 }
