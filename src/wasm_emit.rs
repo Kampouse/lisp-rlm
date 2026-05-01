@@ -4727,13 +4727,14 @@ impl WasmEmitter {
         v.push(Instruction::LocalGet(si)); v.push(Instruction::LocalGet(dc));
         v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
         v.push(Instruction::Br(2)); v.push(Instruction::End);
-        // Load byte from ib+ptr+si
+        // Push dst addr first (deeper), then load byte (top) for I32Store8
+        v.push(Instruction::I64Const(ib + prefix_len)); v.push(Instruction::LocalGet(si));
+        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        // Stack: [dst_addr]
         v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(ptr)); v.push(Instruction::I64Add);
         v.push(Instruction::LocalGet(si)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
         v.push(Instruction::I32Load8U(ma8.clone()));
-        // Store to ib+prefix_len+si
-        v.push(Instruction::I64Const(ib + prefix_len)); v.push(Instruction::LocalGet(si));
-        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        // Stack: [dst_addr, loaded_byte] — I32Store8 pops value=byte, addr=dst_addr
         v.push(Instruction::I32Store8(ma8.clone()));
         v.push(Instruction::LocalGet(si)); v.push(Instruction::I64Const(1));
         v.push(Instruction::I64Add); v.push(Instruction::LocalSet(si));
