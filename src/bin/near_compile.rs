@@ -149,11 +149,8 @@ fn do_build(project_dir: &str) -> Result<(ProjectConfig, Vec<u8>), String> {
     let wasm_bytes = lisp_rlm_wasm::wasm_emit::compile_near(&source)?;
     let func_names: Vec<String> = extract_func_names(&source).unwrap_or_default();
 
-    // Validate
-    let mut validator = wasmparser::Validator::new();
-    if let Err(e) = validator.validate_all(&wasm_bytes) {
-        return Err(format!("WASM validation error: {}", e));
-    }
+    // Validate with function-name error mapping
+    validate_wasm(&wasm_bytes, &func_names).map_err(|e| format!("WASM validation: {}", e))?;
 
     // Write output
     let out_path = Path::new(project_dir).join(&config.output);
