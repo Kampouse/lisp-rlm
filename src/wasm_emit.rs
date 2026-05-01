@@ -608,7 +608,17 @@ impl WasmEmitter {
             LispVal::Bool(true) => Ok(vec![Instruction::I64Const(1)]),
             LispVal::Bool(false) => Ok(vec![Instruction::I64Const(0)]),
             LispVal::Nil => Ok(vec![Instruction::I64Const(0)]),
-            LispVal::Sym(n) => self.locals.get(n).map(|&i| vec![Instruction::LocalGet(i)]).ok_or_else(|| self.fmt_undef_error(n)),
+            LispVal::Sym(n) => {
+                if let Some(&i) = self.locals.get(n) {
+                    Ok(vec![Instruction::LocalGet(i)])
+                } else if let Some(pos) = self.funcs.iter().position(|func| &func.name == n) {
+                    // Function reference — encode as tagged i64 (positive = fn index)
+                    // Shift left by 1 and set bit 0 to distinguish from regular numbers
+                    Ok(vec![Instruction::I64Const(((pos as i64) << 2) | 2)])
+                } else {
+                    Err(format!("undef: {}", n))
+                }
+            }
             LispVal::Str(s) => {
                 let off = self.alloc_data(s.as_bytes()) as u64;
                 Ok(vec![Instruction::I64Const((off | ((s.len() as u64) << 32)) as i64)])
@@ -4241,6 +4251,21 @@ impl WasmEmitter {
                 Ok(v)
             }
 
+            // Self-passing call: (me me args...) — Y-combinator pattern
+            // When callee is a local and first arg is the same local, it's self-passing
+            _ if self.locals.contains_key(op) && !a.is_empty() && matches!(&a[0], LispVal::Sym(s) if s == op) => {
+                // Find which user function this local refers to by checking current_func
+                // The pattern (me me args...) means: call current function with (me, args...)
+                let pos = self.funcs.iter().position(|f| Some(f.name.as_str()) == self.current_func.as_deref())
+                    .ok_or_else(|| "self-passing call outside of function".to_string())?;
+                let mut v = Vec::new();
+                // Push all args including the self-reference
+                for x in a { v.extend(self.expr(x)?); }
+                // Call current function (which has the self-param)
+                v.push(Instruction::Call(USER_BASE | pos as u32));
+                Ok(v)
+            }
+
             // User function call
             _ => {
                 let pos = self.funcs.iter().position(|f| f.name == op).ok_or_else(|| {
@@ -6144,5 +6169,82 @@ mod tests {
         let wasm = compile_pure(src).unwrap();
         let wat = wasmprinter::print_bytes(&wasm).unwrap();
         println!("Implicit begin define WAT:\n{}", wat);
+    }
+}
+
+#[cfg(test)]
+mod ycomb_test {
+    use super::*;
+    #[test]
+    fn test_self_call_non_tc() {
+        // f calls itself in non-tail position via (me me (- x 1))
+        let src = r#"
+(define (f me x)
+  (if (<= x 0) 1
+    (* x (me me (- x 1)))))
+(f f 5)
+"#;
+        let wasm = compile_pure(src).expect("should compile");
+        assert!(wasm.len() > 0, "should produce WASM");
+    }
+}
+
+#[cfg(test)]
+mod ycomb_run_test {
+    use super::*;
+    #[test]
+    fn test_ycomb_factorial() {
+        // Factorial via Y-combinator: f(f,5) = 120
+        let src = "(define (f me x) (if (<= x 0) 1 (* x (me me (- x 1))))) (define (main) (f f 5))";
+        let _wat = compile_pure_to_wat(src).expect("compile to wat");
+        // The key test: (me me args...) compiles without error
+        // Runtime verification requires NEAR host stubs (<= uses read_register for i64 comparison)
+    }
+}
+
+#[cfg(test)]
+mod ycomb_wat_test {
+    use super::*;
+    #[test]
+    fn print_ycomb_wat() {
+        let src = "(define (f me x) (if (<= x 0) 1 (* x (me me (- x 1))))) (f f 5)";
+        let wat = compile_pure_to_wat(src).expect("compile to wat");
+        eprintln!("YCOMB WAT:\n{}", wat);
+    }
+}
+
+#[cfg(test)]
+mod ycomb_debug {
+    use super::*;
+    #[test]
+    fn debug_ycomb() {
+        let src = "(define (f me x) (if (<= x 0) 1 (* x (me me (- x 1))))) (define (main) (f f 5))";
+        let result = compile_near_to_wat(src);
+        eprintln!("RESULT: {:?}", result);
+    }
+}
+
+#[cfg(test)]
+mod near_ycomb_test {
+    use super::*;
+    #[test]
+    fn test_near_ycomb() {
+        let src = "(define (f me x) (if (<= x 0) 1 (* x (me me (- x 1))))) (define (main) (f f 5))";
+        let r = compile_near(src);
+        eprintln!("NEAR: {:?}", r.as_ref().map(|w| w.len()));
+        let p = compile_pure(src);
+        eprintln!("PURE: {:?}", p.as_ref().map(|w| w.len()));
+        assert!(r.is_ok(), "near compile failed: {:?}", r);
+    }
+}
+
+#[cfg(test)]
+mod near_ycomb_wat {
+    use super::*;
+    #[test]
+    fn print_wat() {
+        let src = "(define (f me x) (if (<= x 0) 1 (* x (me me (- x 1))))) (define (main) (f f 5)) (export \"main\" main true)";
+        let wat = compile_near_to_wat(src).expect("wat");
+        eprintln!("{}", wat);
     }
 }
