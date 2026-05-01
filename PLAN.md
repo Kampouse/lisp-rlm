@@ -24,12 +24,12 @@ lisp-rlm/
 └── README.md
 ```
 
-## Phase 1: Workspace Setup
-- [ ] Create workspace `Cargo.toml` at repo root
-- [ ] Create `crates/lisp-core/` with empty lib
-- [ ] Move `parser.rs`, `types.rs`, `helpers.rs` into `lisp-core`
-- [ ] Verify `lisp-core` compiles standalone
-- [ ] Verify `lisp-core` compiles to `wasm32-unknown-unknown`
+## Phase 1: Workspace Setup ✅ DONE (commit 8f432a4)
+- [x] Create workspace `Cargo.toml` at repo root
+- [x] Create `crates/lisp-core/` with parser, types, helpers
+- [x] Feature-gate eval/bytecode deps behind `#[cfg(feature = "full")]`
+- [x] `lisp-core` compiles standalone
+- [x] `lisp-core` compiles to `wasm32-unknown-unknown` ✅
 
 ## Phase 2: WASM Emitter Split
 - [ ] Create `crates/lisp-wasm/` with empty lib
