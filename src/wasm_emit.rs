@@ -4284,6 +4284,8 @@ impl WasmEmitter {
         let res = self.local_idx("__js_res");
         let ng = self.local_idx("__js_ng");
         let dg = self.local_idx("__js_dg");
+        let prev_byte = self.local_idx("__js_prev");
+        let ws_byte = self.local_idx("__js_ws_byte");
         let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
         let ib = INPUT_BUF;
         let mut v = Vec::new();
@@ -4329,7 +4331,39 @@ impl WasmEmitter {
         v.push(Instruction::I64Add); v.push(Instruction::LocalSet(jj));
         v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End); // inner loop/block
 
-        // If mi==1: found, break outer
+        // If mi==1: check preceding byte boundary
+        v.push(Instruction::LocalGet(mi)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        // pos > 0 → check preceding byte
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(0));
+        v.push(Instruction::I64GtS);
+        v.push(Instruction::If(BlockType::Empty));
+        // Load byte at INPUT_BUF[pos-1]
+        v.push(Instruction::I64Const(ib));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Sub); v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::LocalSet(prev_byte));
+        // Valid if prev_byte in {0x7B '{', 0x2C ',', 0x20 ' ', 0x09 '\t', 0x0A '\n'}
+        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x7B)); v.push(Instruction::I64Eq);
+        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x2C)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x20)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x09)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x0A)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        // If NOT valid boundary, reset mi
+        v.push(Instruction::I32Eqz);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(mi));
+        v.push(Instruction::End);
+        v.push(Instruction::End); // end pos > 0 check
+        v.push(Instruction::End); // end mi==1 check
+        // Now check mi again — if still 1, break outer
         v.push(Instruction::LocalGet(mi)); v.push(Instruction::I64Const(1));
         v.push(Instruction::I64Eq);
         v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
@@ -4338,11 +4372,16 @@ impl WasmEmitter {
         v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
         v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End); // outer loop/block
 
+        // Wrap parse section: if pos >= ilen (key not found), skip parsing; res stays 0
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
+        v.push(Instruction::I64LtS);
+        v.push(Instruction::If(BlockType::Empty)); // if pos < ilen → parse
+
         // pos at match. Value at pos + pat_len
         v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(pat_len));
         v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
 
-        // Skip whitespace
+        // Skip whitespace (space, tab, LF, CR)
         v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
         v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
         v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
@@ -4350,7 +4389,15 @@ impl WasmEmitter {
         v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
         v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
         v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
-        v.push(Instruction::I64Const(0x20)); v.push(Instruction::I64Eq);
+        v.push(Instruction::LocalSet(ws_byte));
+        // byte == ' ' || byte == '\t' || byte == '\n' || byte == '\r'
+        v.push(Instruction::LocalGet(ws_byte)); v.push(Instruction::I64Const(0x20)); v.push(Instruction::I64Eq);
+        v.push(Instruction::LocalGet(ws_byte)); v.push(Instruction::I64Const(0x09)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalGet(ws_byte)); v.push(Instruction::I64Const(0x0A)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalGet(ws_byte)); v.push(Instruction::I64Const(0x0D)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
         v.push(Instruction::If(BlockType::Empty));
         v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
         v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
@@ -4411,13 +4458,15 @@ impl WasmEmitter {
         v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
         v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
 
-        // Apply negative
+        // Apply negative → store to res
         v.push(Instruction::LocalGet(ng)); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::If(BlockType::Result(ValType::I64)));
+        v.push(Instruction::If(BlockType::Empty));
         v.push(Instruction::I64Const(0)); v.push(Instruction::LocalGet(res)); v.push(Instruction::I64Sub);
-        v.push(Instruction::Else);
+        v.push(Instruction::LocalSet(res));
+        v.push(Instruction::End); // end if neg
+        v.push(Instruction::End); // end if pos < ilen (parse section)
+        // Return res (0 if key not found, parsed value otherwise)
         v.push(Instruction::LocalGet(res));
-        v.push(Instruction::End);
         Ok(v)
     }
 
@@ -4434,6 +4483,8 @@ impl WasmEmitter {
         let mi = self.local_idx("__jss_mi");
         let jj = self.local_idx("__jss_j");
         let slen = self.local_idx("__jss_slen");
+        let prev_byte = self.local_idx("__jss_prev");
+        let ws_byte = self.local_idx("__jss_ws_byte");
         let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
         let ib = INPUT_BUF;
         let mut v = Vec::new();
@@ -4472,6 +4523,34 @@ impl WasmEmitter {
         v.push(Instruction::I64Add); v.push(Instruction::LocalSet(jj));
         v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
 
+        // If mi==1: check preceding byte boundary
+        v.push(Instruction::LocalGet(mi)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(0));
+        v.push(Instruction::I64GtS);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::I64Const(ib));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Sub); v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::LocalSet(prev_byte));
+        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x7B)); v.push(Instruction::I64Eq);
+        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x2C)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x20)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x09)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x0A)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::I32Eqz);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(mi));
+        v.push(Instruction::End);
+        v.push(Instruction::End);
+        v.push(Instruction::End);
         v.push(Instruction::LocalGet(mi)); v.push(Instruction::I64Const(1));
         v.push(Instruction::I64Eq);
         v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
@@ -4479,11 +4558,16 @@ impl WasmEmitter {
         v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
         v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
 
+        // If pos >= ilen, key not found — return 0 (packed as 0)
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
+        v.push(Instruction::I64LtS);
+        v.push(Instruction::If(BlockType::Result(ValType::I64)));
+
         // Value at pos + pat_len
         v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(pat_len));
         v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
 
-        // Skip whitespace
+        // Skip whitespace (space, tab, LF, CR)
         v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
         v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
         v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
@@ -4491,7 +4575,14 @@ impl WasmEmitter {
         v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
         v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
         v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
-        v.push(Instruction::I64Const(0x20)); v.push(Instruction::I64Eq);
+        v.push(Instruction::LocalSet(ws_byte));
+        v.push(Instruction::LocalGet(ws_byte)); v.push(Instruction::I64Const(0x20)); v.push(Instruction::I64Eq);
+        v.push(Instruction::LocalGet(ws_byte)); v.push(Instruction::I64Const(0x09)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalGet(ws_byte)); v.push(Instruction::I64Const(0x0A)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalGet(ws_byte)); v.push(Instruction::I64Const(0x0D)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
         v.push(Instruction::If(BlockType::Empty));
         v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
         v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
@@ -4522,6 +4613,10 @@ impl WasmEmitter {
         v.push(Instruction::LocalGet(slen)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
         v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Add);
         v.push(Instruction::I64Or);
+        v.push(Instruction::Else);
+        // Key not found: return 0
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::End); // end if pos < ilen
         Ok(v)
     }
 
