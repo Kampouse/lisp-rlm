@@ -18,7 +18,7 @@ sha2 = "0.10"
 sha3 = "0.10"
 wat = "1.0"
 wasm-encoder = "0.248.0"
-wasmparser = "0.248.0"
+wasmparser = { version = "0.228.0", features = ["simd"] }
 wasmprinter = "0.248.0"
 finite-wasm = "0.6"
 

@@ -1,8 +1,17 @@
-//! NEAR gas estimation by counting WASM instructions.
+//! NEAR gas estimation using finite-wasm — same analysis as nearcore's prepare step.
 
-use wasmparser::{Parser, Payload, OperatorsReader};
+use finite_wasm::{Analysis, Fee, max_stack, prefix_sum_vec::PrefixSumVec};
+use finite_wasm::wasmparser as wp;
 
-const MAX_STACK_HEIGHT: u64 = 16 * 1024;
+/// Calibrated from on-chain benchmark:
+/// 100K tight loop (2.2M executed ops) = 2.452 Tgas receipt gas
+/// ≈ 1,115 gas per raw WASM instruction after instrumentation
+const GAS_PER_RAW_OP: u64 = 1_115;
+/// Fixed overhead per contract call (compilation + receipt processing)
+/// From benchmark: 2.452 Tgas - (2.2M × 1,115) ≈ 0 Tgas
+/// The per-op cost already includes instrumentation overhead.
+/// But there's a ~0.3 Tgas receipt overhead from NEAR runtime.
+const RECEIPT_OVERHEAD_GAS: u64 = 300_000_000_000; // 0.3 Tgas
 
 #[derive(Debug)]
 pub struct GasEstimate {
@@ -15,6 +24,7 @@ pub struct GasEstimate {
 pub struct FuncDetail {
     pub instructions: usize,
     pub locals: usize,
+    pub stack_bytes: u64,
 }
 
 impl std::fmt::Display for GasEstimate {
@@ -25,46 +35,107 @@ impl std::fmt::Display for GasEstimate {
         if !self.function_details.is_empty() {
             writeln!(f, "  Per function:")?;
             for (i, fd) in self.function_details.iter().enumerate() {
-                writeln!(f, "    [{}] {} ops, {} locals",
-                    i, fd.instructions, fd.locals)?;
+                writeln!(f, "    [{}] {} ops, {} locals, {}B stack",
+                    i, fd.instructions, fd.locals, fd.stack_bytes)?;
             }
         }
-        // NEAR charges ~100 gas per WASM instruction (rough)
-        let estimated_tgas = self.total_instructions as f64 * 100.0 / 1_000_000_000_000.0;
-        writeln!(f, "  Est. gas:   ~{:.3} Tgas", estimated_tgas.max(0.001))?;
+        // Static ops × gas_per_op + receipt overhead
+        let total_gas = self.total_instructions as u64 * GAS_PER_RAW_OP + RECEIPT_OVERHEAD_GAS;
+        let tgas = total_gas as f64 / 1e12;
+        writeln!(f, "  Est. gas:   ~{:.3} Tgas (static analysis × {} gas/op + {:.1} Tgas overhead)",
+            tgas, GAS_PER_RAW_OP, RECEIPT_OVERHEAD_GAS as f64 / 1e12)?;
         Ok(())
     }
 }
 
+/// Stack size config: each value type has a known byte size
+struct StackSizeConfig;
+
+impl max_stack::SizeConfig for StackSizeConfig {
+    fn size_of_value(&self, ty: wp::ValType) -> u8 {
+        match ty {
+            wp::ValType::I32 | wp::ValType::F32 => 4,
+            wp::ValType::I64 | wp::ValType::F64 => 8,
+            wp::ValType::V128 => 16,
+            wp::ValType::Ref(_) => 4,
+            _ => 0,
+        }
+    }
+    fn size_of_function_activation(&self, _locals: &PrefixSumVec<wp::ValType, u32>) -> u64 {
+        16
+    }
+}
+
+/// Uniform gas cost model using finite-wasm's wasmparser.
+/// Implements VisitOperator (required) + VisitSimdOperator (needed by finite-wasm Config trait).
+/// Uniform gas cost model using finite-wasm's wasmparser.
+struct UniformCost;
+
+macro_rules! define_dispatch {
+    ($(@$faction:tt $method:ident $({ $($arg:ident: $ty:ty),* })? => $visit:ident ($($ann:tt)*))*) => {
+        impl<'a> wp::VisitOperator<'a> for UniformCost {
+            type Output = Fee;
+            $(
+                #[allow(unused_variables)]
+                fn $visit(&mut self $(, $($arg: $ty),*)?) -> Self::Output {
+                    // finite-wasm requires end = ZERO, everything else = 1
+                    Fee::constant(if stringify!($visit) == "visit_end" { 0 } else { 1 })
+                }
+            )*
+        }
+    }
+}
+
+wp::for_each_visit_operator!(define_dispatch);
+
+// Also implement VisitSimdOperator for finite-wasm's Config trait
+macro_rules! uniform_cost_simd_impl {
+    ($(@$faction:tt $method:ident $({ $($arg:ident: $ty:ty),* })? => $visit:ident ($($ann:tt)*))*) => {
+        impl<'a> wp::VisitSimdOperator<'a> for UniformCost {
+            $(
+                #[allow(unused_variables)]
+                fn $visit(&mut self $(, $($arg: $ty),*)?) -> Self::Output {
+                    Fee::constant(1)
+                }
+            )*
+        }
+    }
+}
+
+wp::for_each_visit_simd_operator!(uniform_cost_simd_impl);
+
 pub fn estimate_gas(wasm: &[u8]) -> Result<GasEstimate, String> {
-    let parser = Parser::new(0);
-    let mut func_details: Vec<FuncDetail> = Vec::new();
+    let mut analysis = Analysis::new()
+        .with_stack(StackSizeConfig)
+        .with_gas(UniformCost);
+
+    let outcome = analysis.analyze(wasm)
+        .map_err(|e| format!("gas analysis failed: {:?}", e))?;
+
+    let mut details = Vec::new();
     let mut total_instructions = 0;
 
-    for payload in parser.parse_all(wasm) {
-        let payload = payload.map_err(|e| format!("parse error: {}", e))?;
-        if let Payload::CodeSectionEntry(func_body) = payload {
-            let locals_count: usize = func_body.get_locals_reader()
-                .map(|r| r.into_iter().count())
-                .unwrap_or(0);
+    for i in 0..outcome.function_frame_sizes.len() {
+        let frame = outcome.function_frame_sizes.get(i).copied().unwrap_or(0);
+        let ops = outcome.function_operand_stack_sizes.get(i).copied().unwrap_or(0);
+        let stack = frame + ops;
 
-            let ops_reader: OperatorsReader = func_body.get_operators_reader()
-                .map_err(|e| format!("ops reader: {}", e))?;
+        // Sum gas costs for this function
+        let costs: u64 = outcome.gas_costs.get(i)
+            .map(|c| c.iter().map(|f| f.constant).sum::<u64>())
+            .unwrap_or(0);
 
-            let count = ops_reader.into_iter()
-                .count();
-
-            total_instructions += count;
-            func_details.push(FuncDetail {
-                instructions: count,
-                locals: locals_count,
-            });
-        }
+        total_instructions += costs as usize;
+        details.push(FuncDetail {
+            instructions: costs as usize,
+            locals: 0, // not directly available from analysis
+            stack_bytes: stack,
+        });
     }
 
     Ok(GasEstimate {
-        num_functions: func_details.len(),
+        num_functions: outcome.function_frame_sizes.len(),
         total_instructions,
-        function_details: func_details,
+        function_details: details,
     })
 }
