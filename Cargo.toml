@@ -39,3 +39,7 @@ wat = "1.0"
 [[bin]]
 name = "lisp-run"
 path = "src/bin/lisp_run.rs"
+
+[[bin]]
+name = "near-compile"
+path = "src/bin/near_compile.rs"

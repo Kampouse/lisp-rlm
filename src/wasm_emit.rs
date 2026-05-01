@@ -86,6 +86,9 @@ const HOST_FUNCS: &[(&str, &[ValType], &[ValType])] = &[
 const HOST_BASE: u32 = 0xFF00_0000;
 const USER_BASE: u32 = 0xFF01_0000;
 const TEMP_MEM: i64 = 64;
+const INPUT_BUF: i64 = 16384;  // 16KB for input JSON args
+const STORAGE_BUF: i64 = 8192;  // 8 bytes for storage read/write buffer
+const STORAGE_U128_BUF: i64 = 8208;  // 16 bytes for u128 storage ops
 const HEAP_START: i64 = 4096; // heap starts at page 0 offset 4096 (after data segments)
 const FN_REF_TAG: i64 = 2;  // (fn_idx << 2) | 2
 const CLOSURE_TAG: i64 = 3; // (mem_ptr << 2) | 3
@@ -155,7 +158,80 @@ impl WasmEmitter {
         Instruction::Call(HOST_BASE | idx as u32)
     }
 
+    /// Extract (lambda (param) body) → (param_name, body)
+    fn extract_lambda(form: &LispVal) -> Result<(String, LispVal), String> {
+        match form {
+            LispVal::List(items) if items.len() >= 3 => {
+                if let LispVal::Sym(s) = &items[0] {
+                    if s == "lambda" || s == "fn" {
+                        if let LispVal::List(params) = &items[1] {
+                            if let Some(LispVal::Sym(p)) = params.first() {
+                                let body = if items.len() > 3 {
+                                    LispVal::List(std::iter::once(LispVal::Sym("begin".into()))
+                                        .chain(items[2..].iter().cloned()).collect())
+                                } else { items[2].clone() };
+                                return Ok((p.clone(), body));
+                            }
+                        }
+                        if let LispVal::Sym(p) = &items[1] {
+                            let body = if items.len() > 3 {
+                                LispVal::List(std::iter::once(LispVal::Sym("begin".into()))
+                                    .chain(items[2..].iter().cloned()).collect())
+                            } else { items[2].clone() };
+                            return Ok((p.clone(), body));
+                        }
+                    }
+                }
+                Err(format!("hof: expected (lambda (param) body), got {:?}", form))
+            }
+            _ => Err(format!("hof: expected lambda form, got {:?}", form)),
+        }
+    }
+
+    /// Extract (lambda (p1 p2) body) → (vec![p1, p2], body)
+    fn extract_lambda_2param(form: &LispVal) -> Result<(Vec<String>, LispVal), String> {
+        match form {
+            LispVal::List(items) if items.len() >= 3 => {
+                if let LispVal::Sym(s) = &items[0] {
+                    if s == "lambda" || s == "fn" {
+                        if let LispVal::List(params) = &items[1] {
+                            let names: Vec<String> = params.iter()
+                                .filter_map(|p| if let LispVal::Sym(s) = p { Some(s.clone()) } else { None })
+                                .collect();
+                            if names.len() == 2 {
+                                let body = if items.len() > 3 {
+                                    LispVal::List(std::iter::once(LispVal::Sym("begin".into()))
+                                        .chain(items[2..].iter().cloned()).collect())
+                                } else { items[2].clone() };
+                                return Ok((names, body));
+                            }
+                        }
+                    }
+                }
+                Err(format!("hof/reduce: expected (lambda (acc x) body), got {:?}", form))
+            }
+            _ => Err(format!("hof/reduce: expected lambda form, got {:?}", form)),
+        }
+    }
+
     // ── Tail-call detection ──
+
+    fn parse_u128(s: &str) -> Result<(i64, i64), String> {
+        let mut lo: u64 = 0;
+        let mut hi: u64 = 0;
+        for ch in s.chars() {
+            if ch == '_' { continue; }
+            if ch < '0' || ch > '9' { return Err(format!("invalid digit in u128 literal: '{}'", ch)); }
+            let digit = ch as u64 - '0' as u64;
+            let old_hi = hi as u128;
+            let old_lo = lo as u128;
+            let new_val = old_hi * (1u128 << 64) + old_lo;
+            let new_val = new_val * 10 + digit as u128;
+            lo = new_val as u64;
+            hi = (new_val >> 64) as u64;
+        }
+        Ok((lo as i64, hi as i64))
+    }
 
     fn has_tc(&self, e: &LispVal) -> bool {
         let LispVal::List(items) = e else { return false };
@@ -364,6 +440,15 @@ impl WasmEmitter {
             "near/promise_batch_action_delete_key" => self.need_host(48),
             "near/promise_batch_action_delete_account" => self.need_host(49),
             "near/abort" => self.need_host(26),
+            "near/storage_set" => { self.need_host(17); }
+            "near/storage_get" => { self.need_host(18); self.need_host(0); }
+            "near/storage_has" => { self.need_host(20); }
+            "near/storage_remove" => { self.need_host(19); }
+            "near/log_num" => self.need_host(28),
+            "near/json_get_int" | "near/json_get_str" | "near/json_get_u128" => { self.need_host(7); self.need_host(0); self.need_host(1); }
+            "u128/store_storage" => { self.need_host(17); }
+            "u128/load_storage" => { self.need_host(18); self.need_host(0); }
+            "near/json_return_int" | "near/json_return_str" => self.need_host(25),
             "near/iter_prefix" => { self.need_host(36); self.need_host(2); self.need_host(0); self.need_host(1); }
             "near/iter_range" => { self.need_host(37); self.need_host(2); self.need_host(0); self.need_host(1); }
             "near/iter_next" => { self.need_host(38); self.need_host(0); self.need_host(1); }
@@ -995,11 +1080,14 @@ impl WasmEmitter {
             "near/return" => {
                 let val = self.expr(&a[0])?;
                 let mut v = Vec::new();
-                v.push(Instruction::I32Const(0)); v.extend(val);
+                v.push(Instruction::I32Const(TEMP_MEM as i32)); v.extend(val);
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                // value_return(len=8, ptr=0) — idx 25
-                v.push(Instruction::I64Const(8)); v.push(Instruction::I64Const(0));
+                // value_return(len=8, ptr=TEMP_MEM) — idx 25
+                v.push(Instruction::I64Const(8)); v.push(Instruction::I64Const(TEMP_MEM));
                 v.push(Self::host_call(25));
+                // Set return flag so export wrapper skips its value_return
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::GlobalSet(1));
                 v.push(Instruction::I64Const(0)); Ok(v)
             }
             // (near/return_str packed_string) — returns variable-length string bytes
@@ -1017,15 +1105,126 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0)); Ok(v)
             }
             "near/log" => {
-                let msg = self.expr(&a[0])?;
-                let mut v = Vec::new();
-                v.extend(msg.clone());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(msg);
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
-                // log_utf8(len, ptr) — idx 28
-                v.push(Self::host_call(28));
-                v.push(Instruction::I64Const(0)); Ok(v)
+                // (near/log "string") — log string
+                // (near/log "prefix" num) — log string then number (two separate log calls)
+                if a.len() == 1 {
+                    let msg = self.expr(&a[0])?;
+                    let mut v = Vec::new();
+                    v.extend(msg.clone());
+                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                    v.extend(msg);
+                    v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                    v.push(Self::host_call(28));
+                    v.push(Instruction::I64Const(0)); Ok(v)
+                } else {
+                    // Two separate log calls: first the string, then the number
+                    let msg = self.expr(&a[0])?;
+                    let num_expr = self.expr(&a[1])?;
+                    let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+                    let abs_val = self.local_idx("__logn_abs");
+                    let digit_count = self.local_idx("__logn_digits");
+                    let is_neg = self.local_idx("__logn_neg");
+                    let tmp_digit = self.local_idx("__logn_d");
+                    let ptr = self.local_idx("__logn_ptr");
+                    let mut v = Vec::new();
+                    // First: log the string
+                    v.extend(msg.clone());
+                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                    v.extend(msg);
+                    v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                    v.push(Self::host_call(28));
+                    // Second: log the number (same technique as near/log_num)
+                    v.extend(num_expr);
+                    v.push(Instruction::LocalSet(abs_val));
+                    v.push(Instruction::LocalGet(abs_val));
+                    v.push(Instruction::I64Const(0));
+                    v.push(Instruction::I64LtS);
+                    v.push(Instruction::I64ExtendI32U);
+                    v.push(Instruction::LocalSet(is_neg));
+                    v.push(Instruction::LocalGet(is_neg));
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                    v.push(Instruction::I64Const(0));
+                    v.push(Instruction::LocalGet(abs_val));
+                    v.push(Instruction::I64Sub);
+                    v.push(Instruction::Else);
+                    v.push(Instruction::LocalGet(abs_val));
+                    v.push(Instruction::End);
+                    v.push(Instruction::LocalSet(abs_val));
+                    v.push(Instruction::I64Const(4184));
+                    v.push(Instruction::LocalSet(ptr));
+                    v.push(Instruction::I64Const(0));
+                    v.push(Instruction::LocalSet(digit_count));
+                    v.push(Instruction::Block(BlockType::Empty));
+                    v.push(Instruction::Loop(BlockType::Empty));
+                    v.push(Instruction::LocalGet(abs_val));
+                    v.push(Instruction::I64Eqz);
+                    v.push(Instruction::If(BlockType::Empty));
+                    v.push(Instruction::Br(2));
+                    v.push(Instruction::End);
+                    v.push(Instruction::LocalGet(abs_val));
+                    v.push(Instruction::I64Const(10));
+                    v.push(Instruction::I64RemS);
+                    v.push(Instruction::LocalSet(tmp_digit));
+                    v.push(Instruction::LocalGet(abs_val));
+                    v.push(Instruction::I64Const(10));
+                    v.push(Instruction::I64DivS);
+                    v.push(Instruction::LocalSet(abs_val));
+                    v.push(Instruction::LocalGet(ptr));
+                    v.push(Instruction::I64Const(1));
+                    v.push(Instruction::I64Sub);
+                    v.push(Instruction::LocalSet(ptr));
+                    v.push(Instruction::LocalGet(ptr));
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::LocalGet(tmp_digit));
+                    v.push(Instruction::I64Const(48));
+                    v.push(Instruction::I64Add);
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::I32Store8(ma8));
+                    v.push(Instruction::LocalGet(digit_count));
+                    v.push(Instruction::I64Const(1));
+                    v.push(Instruction::I64Add);
+                    v.push(Instruction::LocalSet(digit_count));
+                    v.push(Instruction::Br(0));
+                    v.push(Instruction::End);
+                    v.push(Instruction::End);
+                    // Zero special case
+                    v.push(Instruction::LocalGet(digit_count));
+                    v.push(Instruction::I64Eqz);
+                    v.push(Instruction::If(BlockType::Empty));
+                    v.push(Instruction::I64Const(4183));
+                    v.push(Instruction::LocalSet(ptr));
+                    v.push(Instruction::I64Const(4183));
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::I64Const(48));
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::I32Store8(ma8));
+                    v.push(Instruction::I64Const(1));
+                    v.push(Instruction::LocalSet(digit_count));
+                    v.push(Instruction::End);
+                    // Negative prefix
+                    v.push(Instruction::LocalGet(is_neg));
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::If(BlockType::Empty));
+                    v.push(Instruction::LocalGet(ptr));
+                    v.push(Instruction::I64Const(1));
+                    v.push(Instruction::I64Sub);
+                    v.push(Instruction::LocalSet(ptr));
+                    v.push(Instruction::LocalGet(ptr));
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::I64Const(45));
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::I32Store8(ma8));
+                    v.push(Instruction::LocalGet(digit_count));
+                    v.push(Instruction::I64Const(1));
+                    v.push(Instruction::I64Add);
+                    v.push(Instruction::LocalSet(digit_count));
+                    v.push(Instruction::End);
+                    v.push(Instruction::LocalGet(digit_count));
+                    v.push(Instruction::LocalGet(ptr));
+                    v.push(Self::host_call(28));
+                    v.push(Instruction::I64Const(0)); Ok(v)
+                }
             }
             "near/panic" => {
                 let msg = self.expr(&a[0])?;
@@ -1041,6 +1240,315 @@ impl WasmEmitter {
             "near/abort" => {
                 // panic() — idx 26, traps unconditionally
                 Ok(vec![Self::host_call(26), Instruction::I64Const(0)])
+            }
+            // (near/log_num expr) — converts i64 to decimal string and logs via env.log_utf8
+            "near/log_num" => {
+                self.need_host(28);
+                let num_expr = self.expr(&a[0])?;
+                let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+                let abs_val = self.local_idx("__logn_abs");
+                let digit_count = self.local_idx("__logn_digits");
+                let is_neg = self.local_idx("__logn_neg");
+                let tmp_digit = self.local_idx("__logn_d");
+                let ptr = self.local_idx("__logn_ptr");
+                let mut v = Vec::new();
+                v.extend(num_expr);
+                v.push(Instruction::LocalSet(abs_val));
+                v.push(Instruction::LocalGet(abs_val));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64LtS);
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(is_neg));
+                v.push(Instruction::LocalGet(is_neg));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalGet(abs_val));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::Else);
+                v.push(Instruction::LocalGet(abs_val));
+                v.push(Instruction::End);
+                v.push(Instruction::LocalSet(abs_val));
+                v.push(Instruction::I64Const(4184));
+                v.push(Instruction::LocalSet(ptr));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalSet(digit_count));
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(abs_val));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Br(2));
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(abs_val));
+                v.push(Instruction::I64Const(10));
+                v.push(Instruction::I64RemS);
+                v.push(Instruction::LocalSet(tmp_digit));
+                v.push(Instruction::LocalGet(abs_val));
+                v.push(Instruction::I64Const(10));
+                v.push(Instruction::I64DivS);
+                v.push(Instruction::LocalSet(abs_val));
+                v.push(Instruction::LocalGet(ptr));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::LocalSet(ptr));
+                v.push(Instruction::LocalGet(ptr));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(tmp_digit));
+                v.push(Instruction::I64Const(48));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Store8(ma8));
+                v.push(Instruction::LocalGet(digit_count));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(digit_count));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End);
+                v.push(Instruction::End);
+                // Zero special case
+                v.push(Instruction::LocalGet(digit_count));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::I64Const(4183));
+                v.push(Instruction::LocalSet(ptr));
+                v.push(Instruction::I64Const(4183));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(48));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Store8(ma8));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::LocalSet(digit_count));
+                v.push(Instruction::End);
+                // Negative prefix
+                v.push(Instruction::LocalGet(is_neg));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(ptr));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::LocalSet(ptr));
+                v.push(Instruction::LocalGet(ptr));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(45));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Store8(ma8));
+                v.push(Instruction::LocalGet(digit_count));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(digit_count));
+                v.push(Instruction::End);
+                // log_utf8(count, ptr)
+                v.push(Instruction::LocalGet(digit_count));
+                v.push(Instruction::LocalGet(ptr));
+                v.push(Self::host_call(28));
+                v.push(Instruction::I64Const(0));
+                Ok(v)
+            }
+            // --- storage aliases (near/storage_*) using STORAGE_BUF at offset 8192 ---
+            "near/storage_set" => {
+                let key_expr = self.expr(&a[0])?;
+                let val_expr = self.expr(&a[1])?;
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let mut v = Vec::new();
+                v.push(Instruction::I32Const(STORAGE_BUF as i32));
+                v.extend(val_expr);
+                v.push(Instruction::I64Store(ma));
+                v.extend(key_expr.clone());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(key_expr);
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(8));
+                v.push(Instruction::I64Const(STORAGE_BUF));
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(17));
+                v.push(Instruction::Drop);
+                v.push(Instruction::I64Const(0));
+                Ok(v)
+            }
+            "near/storage_get" => {
+                let key_expr = self.expr(&a[0])?;
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let mut v = Vec::new();
+                v.extend(key_expr.clone());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(key_expr);
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(18));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::If(wasm_encoder::BlockType::Result(ValType::I64)));
+                    v.push(Instruction::I64Const(0));
+                    v.push(Instruction::I64Const(STORAGE_BUF));
+                    v.push(Self::host_call(0));
+                    v.push(Instruction::I32Const(STORAGE_BUF as i32));
+                    v.push(Instruction::I64Load(ma));
+                v.push(Instruction::Else);
+                    v.push(Instruction::I64Const(0));
+                v.push(Instruction::End);
+                Ok(v)
+            }
+            "near/storage_has" => {
+                let key_expr = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                v.extend(key_expr.clone());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(key_expr);
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Self::host_call(20));
+                Ok(v)
+            }
+            "near/storage_remove" => {
+                let key_expr = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                v.extend(key_expr.clone());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(key_expr);
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(19));
+                Ok(v)
+            }
+            // (hof/map (lambda (x) body) start end [offset])
+            "hof/map" => {
+                if a.len() < 3 { return Err("hof/map: need (hof/map (lambda (x) body) start end [offset])".into()); }
+                let (param, body) = Self::extract_lambda(&a[0])?;
+                let param_idx = self.local_idx(&param);
+                let it_idx = self.local_idx("__hof_it");
+                let count_idx = self.local_idx("__hof_count");
+                let out_offset = if a.len() > 3 {
+                    match &a[3] { LispVal::Num(n) => *n as i64, _ => return Err("hof/map: offset must be number".into()) }
+                } else { 2048i64 };
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let tmp = self.local_idx("__hof_tmp");
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[1])?); v.push(Instruction::LocalSet(it_idx));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(count_idx));
+                v.push(Instruction::Block(BlockType::Result(ValType::I64)));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(it_idx));
+                v.extend(self.expr(&a[2])?); v.push(Instruction::I64GeS);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(count_idx)); v.push(Instruction::Br(2));
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(it_idx)); v.push(Instruction::LocalSet(param_idx));
+                v.extend(self.expr(&body)?); v.push(Instruction::LocalSet(tmp));
+                v.push(Instruction::I64Const(out_offset));
+                v.push(Instruction::LocalGet(count_idx));
+                v.push(Instruction::I64Const(8)); v.push(Instruction::I64Mul); v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(tmp));
+                v.push(Instruction::I64Store(ma));
+                v.push(Instruction::LocalGet(count_idx));
+                v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(count_idx));
+                v.push(Instruction::LocalGet(it_idx));
+                v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(it_idx));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::End);
+                Ok(v)
+            }
+            // (hof/filter (lambda (x) pred) start end [offset])
+            "hof/filter" => {
+                if a.len() < 3 { return Err("hof/filter: need (hof/filter (lambda (x) pred) start end [offset])".into()); }
+                let (param, body) = Self::extract_lambda(&a[0])?;
+                let param_idx = self.local_idx(&param);
+                let it_idx = self.local_idx("__hof_it");
+                let count_idx = self.local_idx("__hof_count");
+                let out_offset = if a.len() > 3 {
+                    match &a[3] { LispVal::Num(n) => *n as i64, _ => return Err("hof/filter: offset must be number".into()) }
+                } else { 2048i64 };
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[1])?); v.push(Instruction::LocalSet(it_idx));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(count_idx));
+                v.push(Instruction::Block(BlockType::Result(ValType::I64)));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(it_idx));
+                v.extend(self.expr(&a[2])?); v.push(Instruction::I64GeS);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(count_idx)); v.push(Instruction::Br(2));
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(it_idx)); v.push(Instruction::LocalSet(param_idx));
+                v.extend(self.expr(&body)?);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::I64Const(out_offset));
+                v.push(Instruction::LocalGet(count_idx));
+                v.push(Instruction::I64Const(8)); v.push(Instruction::I64Mul); v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(it_idx));
+                v.push(Instruction::I64Store(ma));
+                v.push(Instruction::LocalGet(count_idx));
+                v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(count_idx));
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(it_idx));
+                v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(it_idx));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::End);
+                Ok(v)
+            }
+            // (hof/reduce (lambda (acc x) body) init start end)
+            "hof/reduce" => {
+                if a.len() < 4 { return Err("hof/reduce: need (hof/reduce (lambda (acc x) body) init start end)".into()); }
+                let (params, body) = Self::extract_lambda_2param(&a[0])?;
+                let acc_idx = self.local_idx(&params[0]);
+                let param_idx = self.local_idx(&params[1]);
+                let it_idx = self.local_idx("__hof_it");
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[1])?); v.push(Instruction::LocalSet(acc_idx));
+                v.extend(self.expr(&a[2])?); v.push(Instruction::LocalSet(it_idx));
+                v.push(Instruction::Block(BlockType::Result(ValType::I64)));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(it_idx));
+                v.extend(self.expr(&a[3])?); v.push(Instruction::I64GeS);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(acc_idx)); v.push(Instruction::Br(2));
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(it_idx)); v.push(Instruction::LocalSet(param_idx));
+                v.extend(self.expr(&body)?); v.push(Instruction::LocalSet(acc_idx));
+                v.push(Instruction::LocalGet(it_idx));
+                v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(it_idx));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::End);
+                Ok(v)
+            }
+            "near/json_get_int" => {
+                if a.is_empty() { return Err("near/json_get_int requires a string key argument".into()); }
+                match &a[0] {
+                    LispVal::Str(key) => self.json_get_int(key),
+                    _ => Err("near/json_get_int key must be a string literal".into()),
+                }
+            }
+            "near/json_get_u128" => {
+                if a.len() < 2 { return Err("near/json_get_u128 requires a string key and offset argument".into()); }
+                match &a[0] {
+                    LispVal::Str(key) => {
+                        let offset_expr = self.expr(&a[1])?;
+                        self.json_get_u128(key, offset_expr)
+                    }
+                    _ => Err("near/json_get_u128 key must be a string literal".into()),
+                }
+            }
+            "near/json_get_str" => {
+                if a.is_empty() { return Err("near/json_get_str requires a string key argument".into()); }
+                match &a[0] {
+                    LispVal::Str(key) => self.json_get_str(key),
+                    _ => Err("near/json_get_str key must be a string literal".into()),
+                }
+            }
+            "near/json_return_int" => {
+                let val_expr = self.expr(&a[0])?;
+                self.json_return_int(val_expr)
+            }
+            "near/json_return_str" => {
+                let packed_expr = self.expr(&a[0])?;
+                self.json_return_str(packed_expr)
             }
             "near/current_account_id" => self.read_to_register(3, a),
             "near/signer_account_id" => self.read_to_register(4, a),
@@ -1744,6 +2252,123 @@ impl WasmEmitter {
                 v.push(Instruction::Else);
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::End);
+                Ok(v)
+            }
+
+            // (u128/from_yocto "amount" offset) — compile-time parse, store hi:lo, return offset
+            "u128/from_yocto" => {
+                if a.len() != 2 { return Err("u128/from_yocto: expected (\"amount\" offset)".into()); }
+                let offset_expr = self.expr(&a[1])?;
+                let (lo, hi) = match &a[0] {
+                    LispVal::Str(s) => Self::parse_u128(s)?,
+                    _ => return Err("u128/from_yocto: first arg must be a string literal".into()),
+                };
+                let off = self.local_idx("__u128_off");
+                let mut v = Vec::new();
+                v.extend(offset_expr); v.push(Instruction::LocalSet(off));
+                v.push(Instruction::LocalGet(off)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(lo));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalGet(off)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(hi));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalGet(off));
+                Ok(v)
+            }
+
+            "u128/new" => {
+                if a.len() != 3 { return Err("u128/new: expected (hi lo offset)".into()); }
+                let hi_e = self.expr(&a[0])?;
+                let lo_e = self.expr(&a[1])?;
+                let off_e = self.expr(&a[2])?;
+                let off = self.local_idx("__u128_off");
+                let mut v = Vec::new();
+                v.extend(off_e); v.push(Instruction::LocalSet(off));
+                v.extend(lo_e);
+                v.push(Instruction::LocalGet(off)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.extend(hi_e);
+                v.push(Instruction::LocalGet(off)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalGet(off));
+                Ok(v)
+            }
+
+            "u128/from_i64" => {
+                if a.len() != 2 { return Err("u128/from_i64: expected (n offset)".into()); }
+                let n_e = self.expr(&a[0])?;
+                let off_e = self.expr(&a[1])?;
+                let off = self.local_idx("__u128_off");
+                let mut v = Vec::new();
+                v.extend(off_e); v.push(Instruction::LocalSet(off));
+                v.extend(n_e);
+                v.push(Instruction::LocalGet(off)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalGet(off)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalGet(off));
+                Ok(v)
+            }
+
+            "u128/to_i64" => {
+                let mut v = self.expr(&a[0])?;
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                Ok(v)
+            }
+
+            "u128/store_storage" => {
+                if a.len() != 2 { return Err("u128/store_storage: expected (\"key\" src)".into()); }
+                let key = self.expr(&a[0])?;
+                let src = self.expr(&a[1])?;
+                let os = self.local_idx("__u128_s");
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let mut v = Vec::new();
+                v.extend(src); v.push(Instruction::LocalSet(os));
+                v.push(Instruction::LocalGet(os)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(ma));
+                v.push(Instruction::I32Const(STORAGE_U128_BUF as i32));
+                v.push(Instruction::I64Store(ma));
+                v.push(Instruction::LocalGet(os)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(ma));
+                v.push(Instruction::I32Const((STORAGE_U128_BUF + 8) as i32));
+                v.push(Instruction::I64Store(ma));
+                v.extend(key.clone());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(key);
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(16)); v.push(Instruction::I64Const(STORAGE_U128_BUF)); v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(17)); v.push(Instruction::Drop);
+                v.push(Instruction::I64Const(0));
+                Ok(v)
+            }
+
+            "u128/load_storage" => {
+                if a.len() != 2 { return Err("u128/load_storage: expected (\"key\" dst)".into()); }
+                let key = self.expr(&a[0])?;
+                let dst = self.expr(&a[1])?;
+                let od = self.local_idx("__u128_d");
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let mut v = Vec::new();
+                v.extend(dst); v.push(Instruction::LocalSet(od));
+                v.extend(key.clone());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(key);
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(18)); v.push(Instruction::Drop);
+                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(STORAGE_U128_BUF));
+                v.push(Self::host_call(0)); v.push(Instruction::Drop);
+                v.push(Instruction::I32Const(STORAGE_U128_BUF as i32));
+                v.push(Instruction::I64Load(ma));
+                v.push(Instruction::LocalGet(od)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Store(ma));
+                v.push(Instruction::I32Const((STORAGE_U128_BUF + 8) as i32));
+                v.push(Instruction::I64Load(ma));
+                v.push(Instruction::LocalGet(od)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Store(ma));
+                v.push(Instruction::LocalGet(od));
                 Ok(v)
             }
 
@@ -3951,9 +4576,1002 @@ impl WasmEmitter {
         v.push(op); v.push(Instruction::I64ExtendI32U); Ok(v)
     }
 
+    // ── JSON parsing methods ──
+
+    fn json_get_int(&mut self, key: &str) -> Result<Vec<Instruction<'static>>, String> {
+        self.need_host(7); self.need_host(0); self.need_host(1);
+        let mut pattern = vec![b'"'];
+        pattern.extend(key.as_bytes());
+        pattern.extend_from_slice(b"\":");
+        let pat_off = self.alloc_data(&pattern);
+        let pat_len = pattern.len() as i64;
+        let pos = self.local_idx("__js_pos");
+        let ilen = self.local_idx("__js_ilen");
+        let mi = self.local_idx("__js_mi");
+        let jj = self.local_idx("__js_j");
+        let res = self.local_idx("__js_res");
+        let ng = self.local_idx("__js_ng");
+        let dg = self.local_idx("__js_dg");
+        let prev_byte = self.local_idx("__js_prev");
+        let ws_byte = self.local_idx("__js_ws_byte");
+        let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+        let ib = INPUT_BUF;
+        let mut v = Vec::new();
+
+        // Read input to INPUT_BUF
+        v.push(Instruction::I64Const(0)); v.push(Self::host_call(7)); // input(0)
+        v.push(Instruction::I64Const(0)); v.push(Self::host_call(1)); // register_len(0)
+        v.push(Instruction::LocalSet(ilen));
+        v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(ib)); v.push(Self::host_call(0)); // read_register(0, ib)
+
+        // pos = 0, depth = 0
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(pos));
+        let depth = self.local_idx("__js_depth");
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(depth));
+
+        // Scan loop (block/loop)
+        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
+        // if pos + pat_len > ilen: break
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(pat_len));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalGet(ilen));
+        v.push(Instruction::I64GtS); v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Br(2)); v.push(Instruction::End);
+
+        // Track brace depth: load byte at INPUT_BUF+pos
+        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+        let scan_byte = self.local_idx("__js_sb");
+        v.push(Instruction::LocalSet(scan_byte));
+        // if byte == '{': depth++
+        v.push(Instruction::LocalGet(scan_byte)); v.push(Instruction::I64Const(0x7B));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(depth)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(depth));
+        v.push(Instruction::End);
+        // if byte == '}': depth--
+        v.push(Instruction::LocalGet(scan_byte)); v.push(Instruction::I64Const(0x7D));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(depth)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Sub); v.push(Instruction::LocalSet(depth));
+        v.push(Instruction::End);
+
+        // Only try to match at depth == 1 (top level)
+        v.push(Instruction::LocalGet(depth)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Ne);
+        v.push(Instruction::If(BlockType::Empty));
+        // depth != 1, skip comparison, just advance pos
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+        v.push(Instruction::Br(1)); // back to outer LOOP (skip label 0 = this if)
+        v.push(Instruction::End);
+
+        // Assume match (mi=1), compare bytes
+        v.push(Instruction::I64Const(1)); v.push(Instruction::LocalSet(mi));
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(jj));
+        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
+        v.push(Instruction::LocalGet(jj)); v.push(Instruction::I64Const(pat_len));
+        v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Br(2)); v.push(Instruction::End);
+        // Load input[ib+pos+j]
+        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Add);
+        v.push(Instruction::LocalGet(jj)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+        // Load pattern[pat_off+j]
+        v.push(Instruction::I64Const(pat_off as i64)); v.push(Instruction::LocalGet(jj)); v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64); v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+        // Compare
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty)); // match continues
+        v.push(Instruction::Else); // mismatch
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(mi));
+        v.push(Instruction::Br(2)); v.push(Instruction::End);
+        v.push(Instruction::LocalGet(jj)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(jj));
+        v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End); // inner loop/block
+
+        // If mi==1: check preceding byte boundary
+        v.push(Instruction::LocalGet(mi)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        // pos > 0 → check preceding byte
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(0));
+        v.push(Instruction::I64GtS);
+        v.push(Instruction::If(BlockType::Empty));
+        // Load byte at INPUT_BUF[pos-1]
+        v.push(Instruction::I64Const(ib));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Sub); v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::LocalSet(prev_byte));
+        // Valid if prev_byte in {0x7B '{', 0x2C ',', 0x20 ' ', 0x09 '\t', 0x0A '\n'}
+        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x7B)); v.push(Instruction::I64Eq);
+        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x2C)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x20)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x09)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x0A)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        // If NOT valid boundary, reset mi
+        v.push(Instruction::I32Eqz);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(mi));
+        v.push(Instruction::End);
+        v.push(Instruction::End); // end pos > 0 check
+        v.push(Instruction::End); // end mi==1 check
+        // Now check mi again — if still 1, break outer
+        v.push(Instruction::LocalGet(mi)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
+        // pos++
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+        v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End); // outer loop/block
+
+        // Wrap parse section: if pos >= ilen (key not found), skip parsing; res stays 0
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
+        v.push(Instruction::I64LtS);
+        v.push(Instruction::If(BlockType::Empty)); // if pos < ilen → parse
+
+        // pos at match. Value at pos + pat_len
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(pat_len));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+
+        // Skip whitespace (space, tab, LF, CR)
+        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
+        v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Br(2)); v.push(Instruction::End);
+        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::LocalSet(ws_byte));
+        // byte == ' ' || byte == '\t' || byte == '\n' || byte == '\r'
+        v.push(Instruction::LocalGet(ws_byte)); v.push(Instruction::I64Const(0x20)); v.push(Instruction::I64Eq);
+        v.push(Instruction::LocalGet(ws_byte)); v.push(Instruction::I64Const(0x09)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalGet(ws_byte)); v.push(Instruction::I64Const(0x0A)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalGet(ws_byte)); v.push(Instruction::I64Const(0x0D)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+        v.push(Instruction::Br(1)); v.push(Instruction::End);
+        v.push(Instruction::End); v.push(Instruction::End);
+
+        // Skip quote if present
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
+        v.push(Instruction::I64LtS);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::I64Const(0x22)); v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+        v.push(Instruction::End); v.push(Instruction::End);
+
+        // Check negative
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(ng));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
+        v.push(Instruction::I64LtS);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::I64Const(0x2D)); v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::I64Const(1)); v.push(Instruction::LocalSet(ng));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+        v.push(Instruction::End); v.push(Instruction::End);
+
+        // Parse digits
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(res));
+        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
+        v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Br(2)); v.push(Instruction::End);
+        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::LocalSet(dg));
+        // if dg < 0x30: break
+        v.push(Instruction::LocalGet(dg)); v.push(Instruction::I64Const(0x30));
+        v.push(Instruction::I64LtS);
+        v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
+        // if dg > 0x39: break
+        v.push(Instruction::LocalGet(dg)); v.push(Instruction::I64Const(0x39));
+        v.push(Instruction::I64GtS);
+        v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
+        // res = res*10 + (dg - 0x30)
+        v.push(Instruction::LocalGet(res)); v.push(Instruction::I64Const(10)); v.push(Instruction::I64Mul);
+        v.push(Instruction::LocalGet(dg)); v.push(Instruction::I64Const(0x30)); v.push(Instruction::I64Sub);
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(res));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+        v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
+
+        // Apply negative → store to res
+        v.push(Instruction::LocalGet(ng)); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalGet(res)); v.push(Instruction::I64Sub);
+        v.push(Instruction::LocalSet(res));
+        v.push(Instruction::End); // end if neg
+        v.push(Instruction::End); // end if pos < ilen (parse section)
+        // Return res (0 if key not found, parsed value otherwise)
+        v.push(Instruction::LocalGet(res));
+        Ok(v)
+    }
+
+    /// Emit WASM to read input JSON, scan for "key": pattern, parse decimal into u128 at offset.
+    /// Returns offset (i64). u128 stored as lo 8 bytes at offset, hi 8 bytes at offset+8.
+    fn json_get_u128(&mut self, key: &str, offset_expr: Vec<Instruction<'static>>) -> Result<Vec<Instruction<'static>>, String> {
+        self.need_host(7); self.need_host(0); self.need_host(1);
+        let mut pattern = vec![b'"'];
+        pattern.extend(key.as_bytes());
+        pattern.extend_from_slice(b"\":");
+        let pat_off = self.alloc_data(&pattern);
+        let pat_len = pattern.len() as i64;
+        let pos = self.local_idx("__ju_pos");
+        let ilen = self.local_idx("__ju_ilen");
+        let mi = self.local_idx("__ju_mi");
+        let jj = self.local_idx("__ju_j");
+        let lo = self.local_idx("__ju_lo");
+        let hi = self.local_idx("__ju_hi");
+        let dg = self.local_idx("__ju_dg");
+        let prev_byte = self.local_idx("__ju_prev");
+        let ws_byte = self.local_idx("__ju_ws_byte");
+        let scan_byte = self.local_idx("__ju_sb");
+        let depth = self.local_idx("__ju_depth");
+        let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+        let ib = INPUT_BUF;
+        let mut v = offset_expr;
+
+        // Store offset to a temp local
+        let off_local = self.local_idx("__ju_offset");
+        v.push(Instruction::LocalSet(off_local));
+
+        // Read input to INPUT_BUF
+        v.push(Instruction::I64Const(0)); v.push(Self::host_call(7));
+        v.push(Instruction::I64Const(0)); v.push(Self::host_call(1));
+        v.push(Instruction::LocalSet(ilen));
+        v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(ib)); v.push(Self::host_call(0));
+
+        // pos = 0, depth = 0
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(pos));
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(depth));
+
+        // ── Scan loop ──
+        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(pat_len));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalGet(ilen));
+        v.push(Instruction::I64GtS); v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Br(2)); v.push(Instruction::End);
+
+        // Track brace depth
+        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::LocalSet(scan_byte));
+        v.push(Instruction::LocalGet(scan_byte)); v.push(Instruction::I64Const(0x7B));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(depth)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(depth));
+        v.push(Instruction::End);
+        v.push(Instruction::LocalGet(scan_byte)); v.push(Instruction::I64Const(0x7D));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(depth)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Sub); v.push(Instruction::LocalSet(depth));
+        v.push(Instruction::End);
+
+        // Only match at depth == 1
+        v.push(Instruction::LocalGet(depth)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Ne);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+        v.push(Instruction::Br(1));
+        v.push(Instruction::End);
+
+        // Compare bytes
+        v.push(Instruction::I64Const(1)); v.push(Instruction::LocalSet(mi));
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(jj));
+        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
+        v.push(Instruction::LocalGet(jj)); v.push(Instruction::I64Const(pat_len));
+        v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Br(2)); v.push(Instruction::End);
+        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Add);
+        v.push(Instruction::LocalGet(jj)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::I64Const(pat_off as i64)); v.push(Instruction::LocalGet(jj)); v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64); v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Else);
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(mi));
+        v.push(Instruction::Br(2)); v.push(Instruction::End);
+        v.push(Instruction::LocalGet(jj)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(jj));
+        v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
+
+        // Check preceding byte boundary
+        v.push(Instruction::LocalGet(mi)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(0));
+        v.push(Instruction::I64GtS);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::I64Const(ib));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Sub); v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::LocalSet(prev_byte));
+        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x7B)); v.push(Instruction::I64Eq);
+        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x2C)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x20)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x09)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x0A)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::I32Eqz);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(mi));
+        v.push(Instruction::End);
+        v.push(Instruction::End);
+        v.push(Instruction::End);
+        v.push(Instruction::LocalGet(mi)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+        v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
+
+        // ── Parse section ──
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
+        v.push(Instruction::I64LtS);
+        v.push(Instruction::If(BlockType::Empty));
+
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(pat_len));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+
+        // Skip whitespace
+        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
+        v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Br(2)); v.push(Instruction::End);
+        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::LocalSet(ws_byte));
+        v.push(Instruction::LocalGet(ws_byte)); v.push(Instruction::I64Const(0x20)); v.push(Instruction::I64Eq);
+        v.push(Instruction::LocalGet(ws_byte)); v.push(Instruction::I64Const(0x09)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalGet(ws_byte)); v.push(Instruction::I64Const(0x0A)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalGet(ws_byte)); v.push(Instruction::I64Const(0x0D)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+        v.push(Instruction::Br(1)); v.push(Instruction::End);
+        v.push(Instruction::End); v.push(Instruction::End);
+
+        // Skip quote if present
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
+        v.push(Instruction::I64LtS);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::I64Const(0x22)); v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+        v.push(Instruction::End); v.push(Instruction::End);
+
+        // Init lo = 0, hi = 0
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(lo));
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(hi));
+
+        // ── Digit parse loop: hi:lo = hi:lo * 10 + digit ──
+        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
+        v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Br(2)); v.push(Instruction::End);
+        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::LocalSet(dg));
+        v.push(Instruction::LocalGet(dg)); v.push(Instruction::I64Const(0x30));
+        v.push(Instruction::I64LtS);
+        v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
+        v.push(Instruction::LocalGet(dg)); v.push(Instruction::I64Const(0x39));
+        v.push(Instruction::I64GtS);
+        v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
+
+        // digit = dg - 0x30
+        v.push(Instruction::LocalGet(dg)); v.push(Instruction::I64Const(0x30)); v.push(Instruction::I64Sub);
+        v.push(Instruction::LocalSet(dg));
+
+        // u128 multiply-by-10-and-add-digit using 32-bit split:
+        // lo_lo = lo & 0xFFFFFFFF, lo_hi = lo >> 32
+        // p0 = lo_lo * 10 + digit, r0 = p0 & 0xFFFFFFFF, c0 = p0 >> 32
+        // p1 = lo_hi * 10 + c0, r1 = p1 & 0xFFFFFFFF, c1 = p1 >> 32
+        // lo = r0 | (r1 << 32), hi = hi * 10 + c1
+        let lo_lo = self.local_idx("__ju_ll");
+        let lo_hi = self.local_idx("__ju_lh");
+        let p0 = self.local_idx("__ju_p0");
+        let r0 = self.local_idx("__ju_r0");
+        let c0 = self.local_idx("__ju_c0");
+        let p1 = self.local_idx("__ju_p1");
+        let r1 = self.local_idx("__ju_r1");
+        let c1 = self.local_idx("__ju_c1");
+
+        // lo_lo = lo & 0xFFFFFFFF
+        v.push(Instruction::LocalGet(lo)); v.push(Instruction::I64Const(0xFFFFFFFF));
+        v.push(Instruction::I64And); v.push(Instruction::LocalSet(lo_lo));
+        // lo_hi = lo >> 32
+        v.push(Instruction::LocalGet(lo)); v.push(Instruction::I64Const(32));
+        v.push(Instruction::I64ShrU); v.push(Instruction::LocalSet(lo_hi));
+        // p0 = lo_lo * 10 + digit
+        v.push(Instruction::LocalGet(lo_lo)); v.push(Instruction::I64Const(10));
+        v.push(Instruction::I64Mul); v.push(Instruction::LocalGet(dg));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(p0));
+        // r0 = p0 & 0xFFFFFFFF
+        v.push(Instruction::LocalGet(p0)); v.push(Instruction::I64Const(0xFFFFFFFF));
+        v.push(Instruction::I64And); v.push(Instruction::LocalSet(r0));
+        // c0 = p0 >> 32
+        v.push(Instruction::LocalGet(p0)); v.push(Instruction::I64Const(32));
+        v.push(Instruction::I64ShrU); v.push(Instruction::LocalSet(c0));
+        // p1 = lo_hi * 10 + c0
+        v.push(Instruction::LocalGet(lo_hi)); v.push(Instruction::I64Const(10));
+        v.push(Instruction::I64Mul); v.push(Instruction::LocalGet(c0));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(p1));
+        // r1 = p1 & 0xFFFFFFFF
+        v.push(Instruction::LocalGet(p1)); v.push(Instruction::I64Const(0xFFFFFFFF));
+        v.push(Instruction::I64And); v.push(Instruction::LocalSet(r1));
+        // c1 = p1 >> 32
+        v.push(Instruction::LocalGet(p1)); v.push(Instruction::I64Const(32));
+        v.push(Instruction::I64ShrU); v.push(Instruction::LocalSet(c1));
+        // lo = r0 | (r1 << 32)
+        v.push(Instruction::LocalGet(r1)); v.push(Instruction::I64Const(32));
+        v.push(Instruction::I64Shl); v.push(Instruction::LocalGet(r0));
+        v.push(Instruction::I64Or); v.push(Instruction::LocalSet(lo));
+        // hi = hi * 10 + c1
+        v.push(Instruction::LocalGet(hi)); v.push(Instruction::I64Const(10));
+        v.push(Instruction::I64Mul); v.push(Instruction::LocalGet(c1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(hi));
+
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+        v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
+
+        // ── Write lo/hi to memory at offset ──
+        let ma64 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+        v.push(Instruction::LocalGet(off_local));
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::LocalGet(lo));
+        v.push(Instruction::I64Store(ma64.clone()));
+        v.push(Instruction::LocalGet(off_local));
+        v.push(Instruction::I64Const(8)); v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::LocalGet(hi));
+        v.push(Instruction::I64Store(ma64));
+
+        v.push(Instruction::End); // end if pos < ilen
+
+        v.push(Instruction::LocalGet(off_local));
+        Ok(v)
+    }
+
+    /// Emit WASM to read input JSON, scan for "key": "value", return packed string (ptr|len<<32).
+    fn json_get_str(&mut self, key: &str) -> Result<Vec<Instruction<'static>>, String> {
+        self.need_host(7); self.need_host(0); self.need_host(1);
+        let mut pattern = vec![b'"'];
+        pattern.extend(key.as_bytes());
+        pattern.extend_from_slice(b"\":");
+        let pat_off = self.alloc_data(&pattern);
+        let pat_len = pattern.len() as i64;
+        let pos = self.local_idx("__jss_pos");
+        let ilen = self.local_idx("__jss_ilen");
+        let mi = self.local_idx("__jss_mi");
+        let jj = self.local_idx("__jss_j");
+        let slen = self.local_idx("__jss_slen");
+        let prev_byte = self.local_idx("__jss_prev");
+        let ws_byte = self.local_idx("__jss_ws_byte");
+        let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+        let ib = INPUT_BUF;
+        let mut v = Vec::new();
+
+        // Read input to INPUT_BUF
+        v.push(Instruction::I64Const(0)); v.push(Self::host_call(7));
+        v.push(Instruction::I64Const(0)); v.push(Self::host_call(1)); v.push(Instruction::LocalSet(ilen));
+        v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(ib)); v.push(Self::host_call(0));
+
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(pos));
+        let depth = self.local_idx("__jss_depth");
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(depth));
+
+        // Scan loop
+        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(pat_len));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalGet(ilen));
+        v.push(Instruction::I64GtS); v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Br(2)); v.push(Instruction::End);
+
+        // Track brace depth
+        let scan_byte = self.local_idx("__jss_sb");
+        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::LocalSet(scan_byte));
+        v.push(Instruction::LocalGet(scan_byte)); v.push(Instruction::I64Const(0x7B));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(depth)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(depth));
+        v.push(Instruction::End);
+        v.push(Instruction::LocalGet(scan_byte)); v.push(Instruction::I64Const(0x7D));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(depth)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Sub); v.push(Instruction::LocalSet(depth));
+        v.push(Instruction::End);
+        // Only match at depth == 1
+        v.push(Instruction::LocalGet(depth)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Ne);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+        v.push(Instruction::Br(1)); // back to outer LOOP (skip label 0 = this if)
+        v.push(Instruction::End);
+
+        v.push(Instruction::I64Const(1)); v.push(Instruction::LocalSet(mi));
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(jj));
+        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
+        v.push(Instruction::LocalGet(jj)); v.push(Instruction::I64Const(pat_len));
+        v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Br(2)); v.push(Instruction::End);
+        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Add);
+        v.push(Instruction::LocalGet(jj)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::I64Const(pat_off as i64)); v.push(Instruction::LocalGet(jj)); v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64); v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Else);
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(mi));
+        v.push(Instruction::Br(2)); v.push(Instruction::End);
+        v.push(Instruction::LocalGet(jj)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(jj));
+        v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
+
+        // If mi==1: check preceding byte boundary
+        v.push(Instruction::LocalGet(mi)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(0));
+        v.push(Instruction::I64GtS);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::I64Const(ib));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Sub); v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::LocalSet(prev_byte));
+        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x7B)); v.push(Instruction::I64Eq);
+        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x2C)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x20)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x09)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x0A)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::I32Eqz);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(mi));
+        v.push(Instruction::End);
+        v.push(Instruction::End);
+        v.push(Instruction::End);
+        v.push(Instruction::LocalGet(mi)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+        v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
+
+        // If pos >= ilen, key not found — return 0 (packed as 0)
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
+        v.push(Instruction::I64LtS);
+        v.push(Instruction::If(BlockType::Result(ValType::I64)));
+
+        // Value at pos + pat_len
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(pat_len));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+
+        // Skip whitespace (space, tab, LF, CR)
+        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
+        v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Br(2)); v.push(Instruction::End);
+        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::LocalSet(ws_byte));
+        v.push(Instruction::LocalGet(ws_byte)); v.push(Instruction::I64Const(0x20)); v.push(Instruction::I64Eq);
+        v.push(Instruction::LocalGet(ws_byte)); v.push(Instruction::I64Const(0x09)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalGet(ws_byte)); v.push(Instruction::I64Const(0x0A)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalGet(ws_byte)); v.push(Instruction::I64Const(0x0D)); v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+        v.push(Instruction::Br(1)); v.push(Instruction::End);
+        v.push(Instruction::End); v.push(Instruction::End);
+
+        // Skip opening quote (the quote before the string value)
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+
+        // Measure string length (scan until closing quote)
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(slen));
+        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(slen));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalGet(ilen));
+        v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Br(2)); v.push(Instruction::End);
+        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+        v.push(Instruction::LocalGet(slen)); v.push(Instruction::I64Add); v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64); v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::I64Const(0x22)); v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
+        v.push(Instruction::LocalGet(slen)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(slen));
+        v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
+
+        // Return packed: (slen << 32) | (ib + pos)
+        v.push(Instruction::LocalGet(slen)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Add);
+        v.push(Instruction::I64Or);
+        v.push(Instruction::Else);
+        // Key not found: return 0
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::End); // end if pos < ilen
+        Ok(v)
+    }
+
+    /// Emit WASM to write {"result": <digits>} to INPUT_BUF and call value_return.
+    fn json_return_int(&mut self, val_expr: Vec<Instruction<'static>>) -> Result<Vec<Instruction<'static>>, String> {
+        self.need_host(25);
+        let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+        let abs_val = self.local_idx("__jri_abs");
+        let is_neg = self.local_idx("__jri_neg");
+        let dc = self.local_idx("__jri_dc");
+        let td = self.local_idx("__jri_td");
+        let ptr = self.local_idx("__jri_ptr");
+        let ib = INPUT_BUF;
+        let mut v = Vec::new();
+
+        // Write prefix: {"result":  (with trailing space for padding-free int write)
+        let prefix: &[u8] = b"{\"result\":  ";
+        let prefix_len = prefix.len() as i64; // 12
+        let prefix_off = self.alloc_data(prefix);
+
+        // Copy prefix to INPUT_BUF
+        let ci = self.local_idx("__jri_ci");
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(ci));
+        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
+        v.push(Instruction::LocalGet(ci)); v.push(Instruction::I64Const(prefix_len));
+        v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Br(2)); v.push(Instruction::End);
+        // addr = ib + ci
+        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(ci)); v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        // val = load from prefix_off + ci
+        v.push(Instruction::I64Const(prefix_off as i64)); v.push(Instruction::LocalGet(ci)); v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64); v.push(Instruction::I32Load8U(ma8.clone()));
+        v.push(Instruction::I32Store8(ma8.clone()));
+        v.push(Instruction::LocalGet(ci)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(ci));
+        v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
+
+        // Write integer digits backwards from ib + prefix_len + 20
+        v.extend(val_expr);
+        v.push(Instruction::LocalSet(abs_val));
+
+        // Check negative
+        v.push(Instruction::LocalGet(abs_val)); v.push(Instruction::I64Const(0));
+        v.push(Instruction::I64LtS); v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::LocalSet(is_neg));
+        v.push(Instruction::LocalGet(is_neg)); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::If(BlockType::Result(ValType::I64)));
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalGet(abs_val)); v.push(Instruction::I64Sub);
+        v.push(Instruction::Else);
+        v.push(Instruction::LocalGet(abs_val));
+        v.push(Instruction::End);
+        v.push(Instruction::LocalSet(abs_val));
+
+        let digit_end = prefix_len + 21;
+        v.push(Instruction::I64Const(digit_end)); v.push(Instruction::LocalSet(ptr));
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(dc));
+
+        // Handle 0
+        v.push(Instruction::LocalGet(abs_val)); v.push(Instruction::I64Eqz);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(ptr)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Sub); v.push(Instruction::LocalSet(ptr));
+        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(ptr));
+        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I64Const(0x30)); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Store8(ma8.clone()));
+        v.push(Instruction::I64Const(1)); v.push(Instruction::LocalSet(dc));
+        v.push(Instruction::Else);
+
+        // Digit loop
+        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
+        v.push(Instruction::LocalGet(abs_val)); v.push(Instruction::I64Eqz);
+        v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
+        v.push(Instruction::LocalGet(abs_val)); v.push(Instruction::I64Const(10));
+        v.push(Instruction::I64RemS); v.push(Instruction::LocalSet(td));
+        v.push(Instruction::LocalGet(abs_val)); v.push(Instruction::I64Const(10));
+        v.push(Instruction::I64DivS); v.push(Instruction::LocalSet(abs_val));
+        v.push(Instruction::LocalGet(ptr)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Sub); v.push(Instruction::LocalSet(ptr));
+        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(ptr));
+        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::LocalGet(td)); v.push(Instruction::I64Const(0x30));
+        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Store8(ma8.clone()));
+        v.push(Instruction::LocalGet(dc)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(dc));
+        v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
+        v.push(Instruction::End); // end else
+
+        // Add minus sign
+        v.push(Instruction::LocalGet(is_neg)); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(ptr)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Sub); v.push(Instruction::LocalSet(ptr));
+        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(ptr));
+        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I64Const(0x2D)); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Store8(ma8.clone()));
+        v.push(Instruction::LocalGet(dc)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(dc));
+        v.push(Instruction::End);
+
+        // Shift digits to position prefix_len
+        let si = self.local_idx("__jri_si");
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(si));
+        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
+        v.push(Instruction::LocalGet(si)); v.push(Instruction::LocalGet(dc));
+        v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Br(2)); v.push(Instruction::End);
+        // Push dst addr first (deeper), then load byte (top) for I32Store8
+        v.push(Instruction::I64Const(ib + prefix_len)); v.push(Instruction::LocalGet(si));
+        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        // Stack: [dst_addr]
+        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(ptr)); v.push(Instruction::I64Add);
+        v.push(Instruction::LocalGet(si)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone()));
+        // Stack: [dst_addr, loaded_byte] — I32Store8 pops value=byte, addr=dst_addr
+        v.push(Instruction::I32Store8(ma8.clone()));
+        v.push(Instruction::LocalGet(si)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(si));
+        v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
+
+        // Write '}'
+        v.push(Instruction::I64Const(ib + prefix_len)); v.push(Instruction::LocalGet(dc));
+        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I64Const(b'}' as i64)); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Store8(ma8.clone()));
+
+        // total_len = prefix_len + dc + 1
+        let tl = self.local_idx("__jri_tl");
+        v.push(Instruction::I64Const(prefix_len)); v.push(Instruction::LocalGet(dc));
+        v.push(Instruction::I64Add); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(tl));
+
+        // value_return(total_len, ib)
+        v.push(Instruction::LocalGet(tl)); v.push(Instruction::I64Const(ib));
+        v.push(Self::host_call(25));
+
+        v.push(Instruction::I64Const(1)); v.push(Instruction::GlobalSet(1));
+        v.push(Instruction::I64Const(0));
+        Ok(v)
+    }
+
+    /// Emit WASM to write {"result": "str"} to INPUT_BUF and call value_return.
+    fn json_return_str(&mut self, packed_expr: Vec<Instruction<'static>>) -> Result<Vec<Instruction<'static>>, String> {
+        self.need_host(25);
+        let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+        let ib = INPUT_BUF;
+        let packed = self.local_idx("__jrs_packed");
+        let str_ptr = self.local_idx("__jrs_ptr");
+        let str_len = self.local_idx("__jrs_len");
+        let ci = self.local_idx("__jrs_ci");
+        let mut v = Vec::new();
+
+        // Write prefix: {"result": "
+        let prefix: &[u8] = b"{\"result\": \"";
+        let prefix_len = prefix.len() as i64; // 12
+        let prefix_off = self.alloc_data(prefix);
+
+        // Copy prefix
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(ci));
+        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
+        v.push(Instruction::LocalGet(ci)); v.push(Instruction::I64Const(prefix_len));
+        v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Br(2)); v.push(Instruction::End);
+        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(ci));
+        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I64Const(prefix_off as i64)); v.push(Instruction::LocalGet(ci));
+        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone()));
+        v.push(Instruction::I32Store8(ma8.clone()));
+        v.push(Instruction::LocalGet(ci)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(ci));
+        v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
+
+        // Unpack string
+        v.extend(packed_expr);
+        v.push(Instruction::LocalSet(packed));
+        v.push(Instruction::LocalGet(packed)); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(str_ptr));
+        v.push(Instruction::LocalGet(packed)); v.push(Instruction::I64Const(32));
+        v.push(Instruction::I64ShrU); v.push(Instruction::LocalSet(str_len));
+
+        // Copy string bytes to ib + prefix_len
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(ci));
+        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
+        v.push(Instruction::LocalGet(ci)); v.push(Instruction::LocalGet(str_len));
+        v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Br(2)); v.push(Instruction::End);
+        // dst
+        v.push(Instruction::I64Const(ib + prefix_len)); v.push(Instruction::LocalGet(ci));
+        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        // src
+        v.push(Instruction::LocalGet(str_ptr)); v.push(Instruction::LocalGet(ci));
+        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone()));
+        v.push(Instruction::I32Store8(ma8.clone()));
+        v.push(Instruction::LocalGet(ci)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(ci));
+        v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
+
+        // Write '"}'
+        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(str_len));
+        v.push(Instruction::I64Add); v.push(Instruction::I64Const(prefix_len));
+        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I64Const(0x22)); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Store8(ma8.clone()));
+
+        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(str_len));
+        v.push(Instruction::I64Add); v.push(Instruction::I64Const(prefix_len + 1));
+        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I64Const(b'}' as i64)); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Store8(ma8.clone()));
+
+        // value_return(prefix_len + str_len + 2, ib)
+        v.push(Instruction::I64Const(prefix_len)); v.push(Instruction::LocalGet(str_len));
+        v.push(Instruction::I64Add); v.push(Instruction::I64Const(2));
+        v.push(Instruction::I64Add); v.push(Instruction::I64Const(ib));
+        v.push(Self::host_call(25));
+
+        v.push(Instruction::I64Const(1)); v.push(Instruction::GlobalSet(1));
+        v.push(Instruction::I64Const(0));
+        Ok(v)
+    }
+
+
+    /// Remove functions not reachable from exports (tree-shaking / dead code elimination)
+
+
+    // ── Tree-shaking ──
+
+    fn tree_shake(&mut self) {
+        if self.funcs.is_empty() { return; }
+
+        // Build call graph: for each func index, which other func indices does it call?
+        let func_names: Vec<&str> = self.funcs.iter().map(|f| f.name.as_str()).collect();
+        let name_to_idx: HashMap<&str, usize> = func_names.iter().enumerate().map(|(i, &n)| (n, i)).collect();
+
+        let mut calls: Vec<Vec<usize>> = vec![vec![]; self.funcs.len()];
+        for (i, f) in self.funcs.iter().enumerate() {
+            for instr in &f.instrs {
+                if let Instruction::Call(idx) = instr {
+                    if *idx >= USER_BASE {
+                        let pos = (*idx - USER_BASE) as usize;
+                        if pos < self.funcs.len() {
+                            calls[i].push(pos);
+                        }
+                    }
+                }
+            }
+        }
+
+        // BFS from exported functions
+        let mut reachable = vec![false; self.funcs.len()];
+        let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+
+        // Seed with exported function names
+        for (fn_name, _, _) in &self.exports {
+            if let Some(&idx) = name_to_idx.get(fn_name.as_str()) {
+                if !reachable[idx] { reachable[idx] = true; queue.push_back(idx); }
+            }
+        }
+        // If no exports, keep last function (default export)
+        if self.exports.is_empty() && !self.funcs.is_empty() {
+            let last = self.funcs.len() - 1;
+            if !reachable[last] { reachable[last] = true; queue.push_back(last); }
+        }
+
+        while let Some(idx) = queue.pop_front() {
+            for &callee in &calls[idx] {
+                if !reachable[callee] {
+                    reachable[callee] = true;
+                    queue.push_back(callee);
+                }
+            }
+        }
+
+        // Build old_idx -> new_idx mapping
+        let mut old_to_new: Vec<Option<usize>> = vec![None; self.funcs.len()];
+        let mut next = 0usize;
+        for (i, r) in reachable.iter().enumerate() {
+            if *r { old_to_new[i] = Some(next); next += 1; }
+        }
+
+        // Remap Call instructions
+        for (i, f) in self.funcs.iter_mut().enumerate() {
+            if !reachable[i] { continue; }
+            for instr in &mut f.instrs {
+                if let Instruction::Call(idx) = instr {
+                    if *idx >= USER_BASE {
+                        let pos = (*idx - USER_BASE) as usize;
+                        if let Some(new_pos) = old_to_new[pos] {
+                            *idx = USER_BASE | new_pos as u32;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Remove unreachable functions
+        let before = self.funcs.len();
+        let mut new_funcs: Vec<FuncDef> = Vec::new();
+        for (i, f) in std::mem::take(&mut self.funcs).into_iter().enumerate() {
+            if reachable[i] { new_funcs.push(f); }
+        }
+        self.funcs = new_funcs;
+
+        let removed = before - self.funcs.len();
+        if removed > 0 {
+            eprintln!("Tree-shake: removed {}/{} unused functions", removed, before);
+        }
+    }
+
     // ── Module assembly ──
 
     pub fn finish(&mut self, default_export: &str) -> Vec<u8> {
+        // Tree-shake before emitting
+        self.tree_shake();
         // Ensure host functions needed by export wrappers are included
         if !self.exports.is_empty() {
             self.need_host(7);  // input
@@ -4011,8 +5629,13 @@ impl WasmEmitter {
         mems.memory(MemoryType { minimum: self.memory_pages.max(1) as u64, maximum: None, memory64: false, shared: false, page_size_log2: None });
         m.section(&mems);
 
-        // Global section: mutable i64 for call depth tracking
+        // Global section: mutable i64 for call depth tracking + return flag
         let mut globals = GlobalSection::new();
+        globals.global(
+            GlobalType { val_type: ValType::I64, mutable: true, shared: false },
+            &ConstExpr::i64_const(0),
+        );
+        // Global 1: return flag (set by near/return to skip export wrapper's value_return)
         globals.global(
             GlobalType { val_type: ValType::I64, mutable: true, shared: false },
             &ConstExpr::i64_const(0),
@@ -4419,4 +6042,41 @@ mod square_wat {
         let wat = compile_near_to_wat(src).expect("wat");
         eprintln!("{}", wat);
     }
+}
+
+/// Resolve `(module name "path")` directives — text-level #include
+pub fn resolve_modules(source: &str, base_dir: &std::path::Path) -> Result<String, String> {
+    resolve_modules_inner(source, base_dir, &mut Vec::new())
+}
+
+fn resolve_modules_inner(source: &str, base_dir: &std::path::Path, seen: &mut Vec<std::path::PathBuf>) -> Result<String, String> {
+    let mut resolved = String::new();
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("(module ") {
+            let rest = rest.strip_suffix(")").unwrap_or(rest);
+            if let Some(path_start) = rest.find('"') {
+                let path_end = rest.rfind('"').unwrap_or(rest.len());
+                if path_start + 1 < path_end {
+                    let path_str = &rest[path_start + 1..path_end];
+                    let module_path = base_dir.join(path_str).canonicalize()
+                        .map_err(|e| format!("module not found: {} — {}", path_str, e))?;
+                    if seen.contains(&module_path) {
+                        return Err(format!("circular module dependency: {}", module_path.display()));
+                    }
+                    seen.push(module_path.clone());
+                    let module_source = std::fs::read_to_string(&module_path)
+                        .map_err(|e| format!("module not found: {} — {}", module_path.display(), e))?;
+                    let module_dir = module_path.parent().unwrap_or(base_dir);
+                    let resolved_module = resolve_modules_inner(&module_source, module_dir, seen)?;
+                    resolved.push_str(&resolved_module);
+                    resolved.push('\n');
+                }
+            }
+        } else {
+            resolved.push_str(line);
+            resolved.push('\n');
+        }
+    }
+    Ok(resolved)
 }

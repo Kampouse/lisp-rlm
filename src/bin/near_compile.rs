@@ -141,7 +141,8 @@ fn do_build(project_dir: &str) -> Result<(ProjectConfig, Vec<u8>, Vec<String>), 
     let resolved = lisp_rlm_wasm::wasm_emit::resolve_modules(&source, base_dir)?;
 
     // Compile and validate
-    let (wasm_bytes, func_names) = lisp_rlm_wasm::wasm_emit::compile_near_named_from_dir(&resolved, base_dir)?;
+    let wasm_bytes = lisp_rlm_wasm::wasm_emit::compile_near(&resolved)?;
+    let func_names: Vec<String> = extract_func_names(&resolved).unwrap_or_default();
 
     // Validate
     let mut validator = wasmparser::Validator::new();
@@ -500,10 +501,11 @@ fn run_compile(args: &[String]) {
 
     let src = strip_test_forms(&src);
 
-    let (wasm_bytes, func_names) = lisp_rlm_wasm::wasm_emit::compile_near_named(&src).unwrap_or_else(|e| {
-        eprintln!("❌ Compile error: {}", e);
-        std::process::exit(1);
-    });
+    let wasm_bytes = match lisp_rlm_wasm::wasm_emit::compile_near(&src) {
+        Ok(w) => w,
+        Err(e) => { eprintln!("❌ Compile error: {}", e); std::process::exit(1); }
+    };
+    let func_names: Vec<String> = extract_func_names(&src).unwrap_or_default();
 
     if let Err(_e) = validate_wasm(&wasm_bytes, &func_names) {
         let out = positional.get(1).map(|s| s.to_string()).unwrap_or_else(|| src_path.replace(".lisp", ".wasm"));
@@ -700,6 +702,30 @@ fn validate_wasm(wasm: &[u8], func_names: &[String]) -> Result<(), String> {
     }
 }
 
+fn extract_func_names(source: &str) -> Result<Vec<String>, String> {
+    let mut names = Vec::new();
+    let mut depth = 0isize;
+    let mut current = String::new();
+    for ch in source.chars() {
+        if ch == '(' { depth += 1; current.push(ch); }
+        else if ch == ')' {
+            depth -= 1; current.push(ch);
+            if depth == 0 {
+                let trimmed = current.trim();
+                if trimmed.starts_with("(define (") {
+                    // Extract function name from (define (name params...) body)
+                    let inner = &trimmed[9..];
+                    if let Some(end) = inner.find(|c: char| c == ' ' || c == ')') {
+                        names.push(inner[..end].to_string());
+                    }
+                }
+                current.clear();
+            }
+        } else if depth > 0 { current.push(ch); }
+    }
+    Ok(names)
+}
+
 fn extract_offset(err: &str) -> Option<usize> {
     for part in err.rsplit("offset ") {
         let s = part.trim();
@@ -804,7 +830,7 @@ fn run_repl() {
                 if !defines.is_empty() {
                     let test_src = format!("{}\n{}\n(define (__repl_main) 0)\n(export \"__repl_main\" __repl_main true)\n",
                         memory_decl, defines.join("\n"));
-                    match lisp_rlm_wasm::wasm_emit::compile_near_from_dir(&test_src, base_dir) {
+                    match lisp_rlm_wasm::wasm_emit::compile_near(&test_src) {
                         Ok(_wasm) => {
                             println!("📦 Loaded {} definitions from {}", defines.len(), config.src);
                             history = defines;
