@@ -34,6 +34,10 @@ fn main() {
     } else {
         match lisp_rlm_wasm::compile_near_from_exprs(&lisp_exprs) {
             Ok(wasm_bytes) => {
+                // Validate against NEAR on-chain requirements
+                if let Err(e) = lisp_rlm_wasm::near_validate::validate_near_wasm(&wasm_bytes) {
+                    eprintln!("⚠ NEAR validation warning: {}", e);
+                }
                 let out_path = args.iter().position(|a| a == "-o")
                     .and_then(|i| args.get(i + 1))
                     .map(|s| s.as_str())

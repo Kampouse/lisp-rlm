@@ -3699,13 +3699,25 @@ impl WasmEmitter {
         }
         m.section(&types);
 
-        // Import section
+        // Import section (host functions + memory)
         let mut imports = ImportSection::new();
         let mut host_idx: HashMap<usize, u32> = HashMap::new();
         for (i, &hi) in host_list.iter().enumerate() {
             imports.import("env", HOST_FUNCS[hi].0, EntityType::Function(host_type_base + i as u32));
             host_idx.insert(hi, i as u32);
         }
+        // Memory import (NEAR requirement: no internal memory)
+        imports.import(
+            "env",
+            "memory",
+            wasm_encoder::MemoryType {
+                minimum: self.memory_pages.max(1) as u64,
+                maximum: Some(2048),
+                memory64: false,
+                shared: false,
+                page_size_log2: None,
+            },
+        );
         m.section(&imports);
 
         // Function section
@@ -3714,11 +3726,6 @@ impl WasmEmitter {
         let wrapper_count = if self.exports.is_empty() { 1 } else { self.exports.len() as u32 };
         for _ in 0..wrapper_count { funcs.function(0); }
         m.section(&funcs);
-
-        // Memory
-        let mut mems = MemorySection::new();
-        mems.memory(MemoryType { minimum: self.memory_pages.max(1) as u64, maximum: None, memory64: false, shared: false, page_size_log2: None });
-        m.section(&mems);
 
         // Global section: mutable i64 for call depth tracking
         let mut globals = GlobalSection::new();
