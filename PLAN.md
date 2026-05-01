@@ -73,6 +73,17 @@ lisp-rlm/
 - [ ] Remove old monolithic `src/` directory
 - [ ] Git history preserved — each phase is a commit
 
+## Phase 7: Memory Bounds Checking
+- [ ] Add compile-time offset validation for constant stores
+- [ ] Add runtime bounds checks for dynamic offsets (trap before out-of-bounds write)
+- [ ] Statically prove: all known offsets (TEMP_MEM, LOG_BUF, etc.) are within 4 pages
+
+## Phase 8: WASM Differential Fuzzing
+- [ ] Extend `test_differential_fuzz.rs` to also test WASM emitter output
+- [ ] Compare: Lisp source → WASM → wasmtime execution vs bytecode VM vs F* spec
+- [ ] Triple equivalence: F* spec = bytecode VM = WASM emitter
+- [ ] Run millions of random programs through all three, verify identical results
+
 ## Dependency Graph
 
 ```

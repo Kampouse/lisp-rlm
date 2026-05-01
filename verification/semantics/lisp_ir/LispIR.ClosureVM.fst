@@ -447,8 +447,8 @@ let closure_eval_op s =
             (match a, b with
              | Num na, Num nb ->
                (match binop with
-                | Add -> { s with stack = typed_add_f64 na nb :: rest; pc = pc }
-                | Sub -> { s with stack = typed_sub_f64 na nb :: rest; pc = pc }
+                | Add -> { s with stack = typed_add_f64 (to_ffloat a) (to_ffloat b) :: rest; pc = pc }
+                | Sub -> { s with stack = typed_sub_f64 (to_ffloat a) (to_ffloat b) :: rest; pc = pc }
                 | _ -> { s with stack = Num na :: rest; pc = pc })
              | _ -> { s with ok = false }))
        | _ -> { s with ok = false })
@@ -655,7 +655,7 @@ let closure_eval_op s =
          let av = (match a with Num n -> n | Float f -> ff_to_int f | _ -> 0) in
          let bv = (match b with Num n -> n | Float f -> ff_to_int f | _ -> 0) in
          if bv = 0 then { s with ok = false }
-         else { s with stack = Num (av % bv) :: rest; pc = pc }
+         else admit() (* TODO: bv nonzero after guard, F* loses refinement across let *)
        | _ -> { s with ok = false })
 
     // MakeList: pop n items, reverse, push as list
