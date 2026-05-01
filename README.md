@@ -1,157 +1,10 @@
 # lisp-rlm
 
-A Lisp runtime that compiles to NEAR WASM smart contracts. Includes a Clojure frontend.
+A Lisp dialect that compiles to tiny NEAR smart contracts. Write Lisp, get sub-1KB WASM that runs on NEAR testnet/mainnet.
 
-**Write smart contracts in Lisp or Clojure. Run them locally with mock NEAR storage. Compile to WASM for deployment.**
+**903 bytes vs near-sdk's 35KB** for equivalent contracts.
 
 ## Quick Start
-
-```bash
-cargo build
-# Binaries: target/debug/rlm, target/debug/clj-rlm, target/debug/clj-compile
-
-# Run Lisp
-./target/debug/rlm -e '(+ 1 2)'
-# → 3
-
-# Run Clojure
-./target/debug/clj-rlm -e '(-> 5 (+ 3) (* 2))'
-# → 16
-```
-
-## Features
-
-### Two Languages, One Runtime
-
-| | Lisp (`rlm`) | Clojure (`clj-rlm`) |
-|---|---|---|
-| Syntax | `(define (f x) ...)` | `(defn f [x] ...)` |
-| Lambda | `(lambda (x) ...)` | `(fn [x] ...)` or `#(* % 2)` |
-| Let | `(let ((x 1)) ...)` | `(let [x 1] ...)` |
-| Threading | — | `(-> 5 (+ 3) (* 2))` |
-| Conditionals | `(cond ...)` | `(cond ... :else val)` |
-| Maps/Sets | — | `{:a 1}` `#{1 2 3}` |
-
-Both compile to the same bytecode VM. Same performance.
-
-### Mock NEAR Builtins (Local Testing)
-
-Test smart contracts locally with in-memory storage — no deployment needed:
-
-```clojure
-;; counter.clj — runs locally, same code compiles to WASM
-(defn initialize []
-  (storage-write "count" 0)
-  (storage-write "owner" (signer-account-id)))
-
-(defn increment []
-  (let [c (or (storage-read "count") 0)]
-    (storage-write "count" (+ c 1))
-    (storage-read "count")))
-
-(defn get-count []
-  (or (storage-read "count") 0))
-
-;; Test it
-$ clj-rlm counter.clj
-$ clj-rlm -e '(initialize) (increment) (increment) (get-count)'
-;; → 2
-```
-
-**Available mock builtins:**
-- `storage-write` / `storage-read` / `storage-remove` / `storage-has-key`
-- `signer-account-id` / `predecessor-account-id` / `current-account-id`
-- `block-height` / `block-timestamp`
-- `account-balance` / `attached-deposit`
-- `log` / `log-utf8`
-- `near-config` (set mock values) / `near-reset` (clear storage)
-
-### Compile to NEAR WASM
-
-```bash
-# Compile Clojure → WASM
-$ clj-compile contract.clj -o contract.wasm
-Compiled 172 bytes → contract.wasm
-
-# View WAT
-$ clj-compile contract.clj --wat
-
-# Deploy
-$ near deploy --accountId mycontract.near --wasmFile contract.wasm
-```
-
-172 bytes for a basic contract. No near-sdk bloat (35KB+).
-
-### Stack Traces
-
-Errors show the full call chain:
-
-```
-Error: division by zero
-    (fn [] 42 . .)
-    deep1
-    deep2
-  → deep3            ← crash point
-```
-
-### Inline Eval
-
-```bash
-$ rlm -e '(define (fib n) (if (<= n 1) n (+ (fib (- n 1)) (fib (- n 2))))) (fib 10)'
-55
-
-$ clj-rlm -e '(defn sq [x] (* x x)) (map #(sq %) (list 1 2 3 4 5))'
-(1 4 9 16 25)
-```
-
-### Parse Errors with Location
-
-```
-Parse error: unexpected `)` at line 3, col 12
-```
-
-## Architecture
-
-```
-clojure-rlm/          Clojure frontend (parser + desugar → Lisp AST)
-src/                  Core Lisp runtime
-  bytecode.rs         Bytecode VM with JIT compilation
-  wasm_emit.rs        WASM binary emitter (no WAT strings)
-  program.rs          Top-level eval pipeline
-  parser.rs           Lisp parser with line/col tracking
-  types.rs            Types + EvalState (storage, trace, context)
-  eval/               LLM dispatch, JSON, HTTP builtins
-```
-
-The VM compiles Lisp to bytecode at define-time. Hot loops use a separate loop compiler with fused ops (e.g., `SlotAddImm`, `RecurIncAccum`). Functions get inlined when small.
-
-The WASM emitter produces binary WASM directly via `wasm-encoder` — no string-based WAT, impossible to emit invalid modules.
-
-## Performance
-
-- 1M tail-recursive iterations in a single view call
-- 10M while-loop iterations
-- 903 bytes vs near-sdk's 35KB for equivalent contracts
-- Bytecode JIT: `map`/`filter`/`reduce` compile to tight loops
-
-## Clojure Frontend (`clojure-rlm/`)
-
-Thin layer over the Lisp VM:
-
-| Feature | Status |
-|---------|--------|
-| `defn` / `fn` with `[]` params | ✅ |
-| `#(* % %2)` anonymous functions | ✅ |
-| `->` / `->>` threading macros | ✅ |
-| `let` with `[]` bindings | ✅ |
-| `when` / `cond` / `if-not` | ✅ |
-| `:keywords` | ✅ |
-| `[vec]` / `{map}` / `#{set}` literals | ✅ |
-| File execution + REPL | ✅ |
-| `-e` inline eval | ✅ |
-| WASM compilation (`clj-compile`) | ✅ |
-
-## Build
 
 ```bash
 git clone https://github.com/Kampouse/lisp-rlm.git
@@ -159,11 +12,272 @@ cd lisp-rlm
 cargo build
 ```
 
-Binaries:
-- `rlm` — Lisp runner (REPL + file + `-e`)
-- `clj-rlm` — Clojure runner
-- `clj-compile` — Clojure → WASM compiler
-- `near-compile` — Lisp → WASM compiler
+One binary: `near-compile`
+
+```bash
+# Compile to WASM
+cargo run --bin near-compile -- contract.lisp contract.wasm
+# ✅ contract.wasm (767 bytes) — validated
+
+# Interactive REPL (local, instant)
+cargo run --bin near-compile -- --repl
+# ⚡ NEAR Lisp REPL (WASM + wasmtime, mock NEAR runtime)
+
+# Run inline tests
+cargo run --bin near-compile -- test contract.lisp
+```
+
+## Your First Contract
+
+```lisp
+(memory 4)
+
+(define (increment)
+  (let ((n (+ (near/storage_get "counter") 1)))
+    (begin
+      (near/storage_set "counter" n)
+      n)))
+
+(define (get_count)
+  (near/storage_get "counter"))
+
+(define (reset)
+  (begin
+    (near/storage_remove "counter")
+    0))
+
+(export "get_count" get_count true)
+(export "increment" increment false)
+(export "reset" reset false)
+```
+
+**767 bytes.** Compiles, validates, deploys to NEAR testnet.
+
+## The REPL
+
+The REPL compiles every expression through the **same WASM emitter** as `near-compile`. It runs locally via wasmtime with a mock NEAR environment — catches type mismatches, i32/i64 bugs, and all WASM-level issues before you deploy.
+
+```
+⚡ NEAR Lisp REPL (WASM + wasmtime, mock NEAR runtime)
+   Storage persists between expressions ✨
+
+> (+ 1 2)
+3
+> (hof/reduce (lambda (acc x) (+ acc x)) 0 1 6)
+15
+> (near/log "sum=" 15)
+  LOG: sum=15
+> (near/storage_set "counter" 42)
+0
+> (near/storage_get "counter")
+42
+> (near/storage_remove "counter")
+1
+> (near/storage_get "counter")
+0
+```
+
+### Live Testnet from the REPL
+
+Write code, test locally, deploy, and interact with the live contract — all from one terminal:
+
+```
+> (define (increment) ...)
+✓ (383 bytes)
+> (define (get_count) ...)
+✓ (383 bytes)
+> (near/storage_set "counter" 0)     ← test locally
+0
+> (near/storage_get "counter")
+0
+> :push                               ← deploy to testnet
+✅ https://explorer.testnet.near.org/transactions/...
+> :call get_count                     ← view on-chain (free)
+📋 get_count → 0
+> :call! increment                    ← mutate on-chain (costs gas)
+📋 1
+> :call get_count
+📋 1
+```
+
+### REPL Commands
+
+| Command | Description |
+|---------|-------------|
+| `:help` | Show available commands |
+| `:quit` | Exit |
+| `:defs` | Show all defined functions |
+| `:reset` | Clear definitions and storage |
+| `:wat` | Show compiled WASM (WAT format) |
+| `:size` | Show WASM byte size |
+| `:push` | Deploy all definitions to testnet |
+| `:call fn` | View call on testnet (free) |
+| `:call! fn` | Mutable call on testnet (costs gas) |
+| `:near` | Deploy last compiled WASM |
+
+## Language Reference
+
+### Types
+Everything is `i64`. Numbers, booleans (0/1), nil = 0.
+
+### Arithmetic & Comparison
+```
++  -  *  /  mod  abs
+<  >  <=  >=  =  !=
+```
+
+### Logic & Control Flow
+```
+and  or  not
+if  let  begin  set!
+while  for
+```
+
+### Higher-Order Functions (inline)
+```lisp
+(hof/map    (lambda (x) (* x 2)) 1 6)     ; → count=5, writes to memory
+(hof/filter (lambda (x) (= (mod x 2) 0)) 1 11)  ; → 5
+(hof/reduce (lambda (acc x) (+ acc x)) 0 1 6)    ; → 15
+```
+
+Lambdas are inlined at compile time — no runtime closures, no function pointers.
+
+### Storage
+```lisp
+(near/storage_set "key" value)    ; Store i64 under string key
+(near/storage_get "key")          ; Get i64 (0 if not found)
+(near/storage_has "key")          ; 1 if exists, 0 if not
+(near/storage_remove "key")       ; Remove, returns 1 if existed
+```
+
+Storage persists between contract calls on-chain. In the REPL, storage persists within the session.
+
+### Logging
+```lisp
+(near/log "hello")                ; Log string
+(near/log "count=" 42)            ; Log "count=42" as single line
+(near/log_num 99)                 ; Log number as decimal
+```
+
+### Function Definitions & Exports
+```lisp
+(define (name params...) body)
+(export "name" func view_only)
+```
+
+- `true` = view function (read-only, free to call)
+- `false` = mutable function (can modify state, costs gas)
+
+### FP64 Fixed-Point
+```lisp
+(fp64/set_int val)
+(fp64/mul a b)
+(fp64/div a b)
+(fp64/sqrt val)
+```
+
+Q64.64 precision for fixed-point arithmetic.
+
+## Inline Tests
+
+Write tests directly in your source:
+
+```lisp
+(memory 4)
+
+(define (double x) (* x 2))
+(define (square x) (* x x))
+
+(test "double basic" (double 5) 10)
+(test "double zero" (double 0) 0)
+(test "square" (square 7) 49)
+(test "sum 1..5" (hof/reduce (lambda (acc x) (+ acc x)) 0 1 6) 15)
+```
+
+```bash
+$ cargo run --bin near-compile -- test file.lisp
+✅ double basic: 10
+✅ double zero: 0
+✅ square: 49
+✅ sum 1..5: 15
+4 passed, 0 failed
+```
+
+## WASM Validation
+
+The compiler validates WASM structure before writing. If there's a type mismatch, you get:
+
+```
+❌ WASM error in function `my_func`: type mismatch at offset 0xd6
+```
+
+Not a cryptic deserialization error on testnet.
+
+## Error Messages
+
+The compiler catches common mistakes at compile time:
+
+```
+Type error: (+) expects numeric arguments, got string at argument 1
+Error: function 'foo' is not defined. Did you mean 'for'?
+Error: '__hof_it' is an internal variable used by hof/map — not accessible from user code
+```
+
+## Project Configuration
+
+Create a `.near-config.json` (optional):
+```json
+{
+  "account": "kampy.testnet",
+  "network": "testnet",
+  "key_path": "~/.near-credentials/testnet/kampy.testnet.json"
+}
+```
+
+## Architecture
+
+```
+input.lisp
+    ↓ parse
+LispVal AST
+    ↓ typecheck (catches type errors)
+    ↓ WasmEmitter::compile_near()
+wasm-encoder Module
+    ↓ wasmparser validation
+output.wasm (binary, no WAT strings)
+    ↓ deploy to NEAR
+live contract
+```
+
+The WASM emitter produces binary directly via `wasm-encoder` — no string-based WAT generation, impossible to emit structurally invalid modules.
+
+## Performance
+
+- 1M tail-recursive iterations in a single view call
+- 10M while-loop iterations
+- **767 bytes** for a counter contract with 3 methods
+- Lambda bodies inlined at compile time — zero runtime overhead
+
+## Current Limitations
+
+See [GAPS.md](GAPS.md) for the full feature tracker.
+
+**Not yet supported:**
+- Cross-contract calls (promises, callbacks)
+- u128 / BigInt (only i64)
+- Dynamic lists at runtime (only memory-backed arrays)
+- Borsh serialization / JSON I/O
+- Pattern matching
+
+**What works:**
+- ✅ Arithmetic, logic, control flow
+- ✅ Storage (read/write/remove/has)
+- ✅ Higher-order functions (map/filter/reduce, inlined)
+- ✅ Logging (string + number, single-line)
+- ✅ FP64 fixed-point math
+- ✅ REPL with mock NEAR runtime + live testnet calls
+- ✅ Inline tests
+- ✅ WASM validation + type checking
 
 ## License
 
