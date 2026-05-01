@@ -4726,13 +4726,59 @@ pub fn compile_pure(source: &str) -> Result<Vec<u8>, String> {
     Ok(parse_and_compile(source, false)?.finish("run"))
 }
 
+/// Resolve `(module name "path")` directives at the text level before parsing.
+/// Modules are resolved relative to `base_dir`.
+pub fn resolve_modules(source: &str, base_dir: &std::path::Path) -> Result<String, String> {
+    let mut resolved = String::new();
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("(module ") {
+            let rest = rest.strip_suffix(")").unwrap_or(rest);
+            if let Some(path_start) = rest.find('"') {
+                let path_end = rest.rfind('"').unwrap_or(rest.len());
+                if path_start + 1 < path_end {
+                    let path_str = &rest[path_start + 1..path_end];
+                    let module_path = base_dir.join(path_str);
+                    let module_source = std::fs::read_to_string(&module_path)
+                        .map_err(|e| format!("module not found: {} — {}", module_path.display(), e))?;
+                    let module_dir = module_path.parent().unwrap_or(base_dir);
+                    let resolved_module = resolve_modules(&module_source, module_dir)?;
+                    resolved.push_str(&resolved_module);
+                    resolved.push('\n');
+                }
+            }
+        } else {
+            resolved.push_str(line);
+            resolved.push('\n');
+        }
+    }
+    Ok(resolved)
+}
+
+/// Compile with module resolution from a specific base directory
+pub fn compile_near_from_dir(source: &str, base_dir: &std::path::Path) -> Result<Vec<u8>, String> {
+    let resolved = resolve_modules(source, base_dir)?;
+    Ok(parse_and_compile(&resolved, true)?.finish("_run"))
+}
+
+/// Like compile_near_named but with explicit base directory for module resolution
+pub fn compile_near_named_from_dir(source: &str, base_dir: &std::path::Path) -> Result<(Vec<u8>, Vec<String>), String> {
+    let resolved = resolve_modules(source, base_dir)?;
+    let mut em = parse_and_compile(&resolved, true)?;
+    let names: Vec<String> = em.funcs.iter().map(|f| f.name.clone()).collect();
+    let wasm = em.finish("_run");
+    Ok((wasm, names))
+}
+
 pub fn compile_near(source: &str) -> Result<Vec<u8>, String> {
-    Ok(parse_and_compile(source, true)?.finish("_run"))
+    let resolved = resolve_modules(source, std::path::Path::new("."))?;
+    Ok(parse_and_compile(&resolved, true)?.finish("_run"))
 }
 
 /// Compile to NEAR WASM and return function names in code-section order (for error reporting)
 pub fn compile_near_named(source: &str) -> Result<(Vec<u8>, Vec<String>), String> {
-    let mut em = parse_and_compile(source, true)?;
+    let resolved = resolve_modules(source, std::path::Path::new("."))?;
+    let mut em = parse_and_compile(&resolved, true)?;
     let names: Vec<String> = em.funcs.iter().map(|f| f.name.clone()).collect();
     let wasm = em.finish("_run");
     Ok((wasm, names))
