@@ -3757,10 +3757,16 @@ impl WasmEmitter {
         }
         // Wrappers
         if self.exports.is_empty() {
-            if let Some(_) = self.funcs.last() {
+            if let Some(f) = self.funcs.last() {
                 let idx = internal_base + (self.funcs.len()-1) as u32;
                 let mut fb = Function::new(Vec::<(u32, ValType)>::new());
-                fb.instruction(&Instruction::Call(idx)); fb.instruction(&Instruction::Drop); fb.instruction(&Instruction::End);
+                // Pass default args: for each param, push 100000 (for tight loop benchmarking)
+                for _ in 0..f.param_count {
+                    fb.instruction(&Instruction::I64Const(100000));
+                }
+                fb.instruction(&Instruction::Call(idx));
+                fb.instruction(&Instruction::Drop);
+                fb.instruction(&Instruction::End);
                 code.function(&fb);
             }
         } else {
