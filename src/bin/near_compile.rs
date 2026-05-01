@@ -58,6 +58,13 @@ fn main() {
         "deploy" => run_deploy(args.get(2).map(|s| s.as_str())),
         "test" => run_project_test(args.get(2).map(|s| s.as_str())),
         "--repl" | "-r" => run_repl(),
+        "bench" => {
+            let file = args.get(2).map(|s| s.as_str()).unwrap_or_else(|| {
+                eprintln!("Usage: near-compile bench <file.lisp>");
+                std::process::exit(1);
+            });
+            run_bench(file);
+        }
         _ => {
             // Legacy: treat as file.lisp compile or test
             if cmd == "test" {
@@ -80,6 +87,7 @@ fn print_usage() {
     eprintln!("  near-compile deploy [dir]             Build and deploy to NEAR");
     eprintln!("  near-compile test [dir]               Build and run tests");
     eprintln!("  near-compile --repl                   Interactive REPL");
+    eprintln!("  near-compile bench <file.lisp|file.wasm>  Benchmark with fuel metering");
     eprintln!("  near-compile <file.lisp> [out.wasm]   Compile single file (legacy)");
     eprintln!("  near-compile test <file.lisp>         Run inline tests (legacy)");
 }
@@ -130,30 +138,21 @@ fn run_init(name: &str) {
 
 // ── BUILD ──
 
-fn do_build(project_dir: &str) -> Result<(ProjectConfig, Vec<u8>, Vec<String>), String> {
+fn do_build(project_dir: &str) -> Result<(ProjectConfig, Vec<u8>), String> {
     let config = load_project_config(project_dir)?;
 
     let src_path = Path::new(project_dir).join(&config.src);
     let source = fs::read_to_string(&src_path)
         .map_err(|e| format!("read {}: {}", config.src, e))?;
 
-    let base_dir = src_path.parent().unwrap_or(Path::new("."));
-    let resolved = lisp_rlm_wasm::wasm_emit::resolve_modules(&source, base_dir)?;
-
     // Compile and validate
-    let wasm_bytes = lisp_rlm_wasm::wasm_emit::compile_near(&resolved)?;
-    let func_names: Vec<String> = extract_func_names(&resolved).unwrap_or_default();
+    let wasm_bytes = lisp_rlm_wasm::wasm_emit::compile_near(&source)?;
+    let func_names: Vec<String> = extract_func_names(&source).unwrap_or_default();
 
     // Validate
     let mut validator = wasmparser::Validator::new();
     if let Err(e) = validator.validate_all(&wasm_bytes) {
-        let err_str = e.to_string();
-        let offset = extract_offset(&err_str);
-        let func_name = offset.and_then(|off| find_function_at_offset(&wasm_bytes, off, &func_names));
-        match func_name {
-            Some(name) => return Err(format!("WASM error in `{}`: {}", name, err_str)),
-            None => return Err(format!("WASM validation error: {}", err_str)),
-        }
+        return Err(format!("WASM validation error: {}", e));
     }
 
     // Write output
@@ -163,13 +162,13 @@ fn do_build(project_dir: &str) -> Result<(ProjectConfig, Vec<u8>, Vec<String>), 
     }
     fs::write(&out_path, &wasm_bytes).map_err(|e| format!("write {}: {}", config.output, e))?;
 
-    Ok((config, wasm_bytes, func_names))
+    Ok((config, wasm_bytes))
 }
 
 fn run_build(dir: Option<&str>) {
     let project_dir = dir.unwrap_or(".");
     match do_build(project_dir) {
-        Ok((config, wasm, _)) => {
+        Ok((config, wasm)) => {
             println!("✅ {} ({} bytes) — validated", config.output, wasm.len());
         }
         Err(e) => {
@@ -183,7 +182,7 @@ fn run_build(dir: Option<&str>) {
 
 fn run_deploy(dir: Option<&str>) {
     let project_dir = dir.unwrap_or(".");
-    let (config, _wasm, _) = match do_build(project_dir) {
+    let (config, _wasm) = match do_build(project_dir) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("❌ Build failed: {}", e);
@@ -245,7 +244,7 @@ fn run_project_test(dir: Option<&str>) {
     // First try project-based tests
     if let Ok(config) = load_project_config(project_dir) {
         // Build first
-        let (_, _wasm_bytes, _) = match do_build(project_dir) {
+        let (_, _wasm_bytes) = match do_build(project_dir) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("❌ Build failed: {}", e);
@@ -279,10 +278,7 @@ fn run_project_test(dir: Option<&str>) {
         // Read source for non-test definitions
         let src_path = Path::new(project_dir).join(&config.src);
         let source = fs::read_to_string(&src_path).expect("read source");
-        let base_dir = src_path.parent().unwrap_or(Path::new("."));
-        let resolved_source = lisp_rlm_wasm::wasm_emit::resolve_modules(&source, base_dir)
-            .expect("resolve modules");
-        let clean_source = strip_test_forms(&resolved_source);
+        let clean_source = strip_test_forms(&source);
 
         let mut total_passed = 0;
         let mut total_failed = 0;
@@ -500,14 +496,13 @@ fn run_compile(args: &[String]) {
     let src = fs::read_to_string(src_path).expect("read input");
 
     let src = strip_test_forms(&src);
-
     let wasm_bytes = match lisp_rlm_wasm::wasm_emit::compile_near(&src) {
         Ok(w) => w,
         Err(e) => { eprintln!("❌ Compile error: {}", e); std::process::exit(1); }
     };
     let func_names: Vec<String> = extract_func_names(&src).unwrap_or_default();
 
-    if let Err(_e) = validate_wasm(&wasm_bytes, &func_names) {
+    if let Err(_e) = wasmparser::Validator::new().validate_all(&wasm_bytes) {
         let out = positional.get(1).map(|s| s.to_string()).unwrap_or_else(|| src_path.replace(".lisp", ".wasm"));
         let _ = fs::write(&out, &wasm_bytes);
         std::process::exit(1);
@@ -780,6 +775,344 @@ fn read_leb128(data: &[u8]) -> Option<(usize, usize)> {
     None
 }
 
+// ── BENCH (fuel metering) ──
+
+fn run_bench(file: &str) {
+    use wasmtime::*;
+
+    let is_wasm = file.ends_with(".wasm");
+
+    let wasm_bytes = if is_wasm {
+        match fs::read(file) {
+            Ok(w) => w,
+            Err(e) => {
+                eprintln!("Error reading {}: {}", file, e);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        let src = match fs::read_to_string(file) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Error reading {}: {}", file, e);
+                std::process::exit(1);
+            }
+        };
+
+        println!("Compiling {}...", file);
+        match lisp_rlm_wasm::wasm_emit::compile_near(&src) {
+            Ok(w) => w,
+            Err(e) => {
+                eprintln!("Compile error: {}", e);
+                std::process::exit(1);
+            }
+        }
+    };
+
+    println!("WASM size: {} bytes", wasm_bytes.len());
+
+    // Validate
+    if let Err(e) = wasmparser::Validator::new().validate_all(&wasm_bytes) {
+        eprintln!("WASM validation failed: {}", e);
+        std::process::exit(1);
+    }
+
+    // Engine with fuel metering
+    let mut config = Config::new();
+    config.consume_fuel(true);
+    let engine = Engine::new(&config).unwrap_or_else(|e| {
+        eprintln!("Engine creation failed: {}", e);
+        std::process::exit(1);
+    });
+
+    let initial_fuel: u64 = 10_000_000_000_000; // 10 trillion fuel units
+    let mut store = Store::new(&engine, ());
+    store.set_fuel(initial_fuel).unwrap_or_else(|e| {
+        eprintln!("Failed to set fuel: {}", e);
+        std::process::exit(1);
+    });
+
+    // Parse module
+    let module = match Module::from_binary(&engine, &wasm_bytes) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("Module parse error: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    // Set up mock NEAR runtime (same as run_test_fn)
+    use std::sync::{Arc, Mutex};
+    use std::collections::HashMap;
+
+    let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let registers: Arc<Mutex<HashMap<u64, Vec<u8>>>> = Arc::new(Mutex::new(HashMap::new()));
+    let storage: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>> = Arc::new(Mutex::new(HashMap::new()));
+
+    let memory = Memory::new(&mut store, MemoryType::new(4, None)).unwrap_or_else(|e| {
+        eprintln!("Memory creation failed: {}", e);
+        std::process::exit(1);
+    });
+
+    // log_utf8
+    let logs_c = logs.clone();
+    let log_fn = Func::new(
+        &mut store,
+        FuncType::new(&engine, [ValType::I64, ValType::I64], []),
+        move |mut caller, args, _| {
+            let len = args[0].unwrap_i64() as usize;
+            let ptr = args[1].unwrap_i64() as usize;
+            if let Some(data) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                let mem = data.data(&caller);
+                if ptr + len <= mem.len() {
+                    if let Ok(s) = std::str::from_utf8(&mem[ptr..ptr + len]) {
+                        logs_c.lock().unwrap().push(s.to_string());
+                    }
+                }
+            }
+            Ok(())
+        },
+    );
+
+    let value_return_fn = Func::new(
+        &mut store,
+        FuncType::new(&engine, [ValType::I64, ValType::I64], []),
+        |_, _, _| Ok(()),
+    );
+
+    let noop1 = Func::new(&mut store, FuncType::new(&engine, [ValType::I64], []), |_, _, _| Ok(()));
+    let noop2 = Func::new(&mut store, FuncType::new(&engine, [ValType::I64, ValType::I64], []), |_, _, _| Ok(()));
+    let noop0r = Func::new(&mut store, FuncType::new(&engine, [], [ValType::I64]), |_, _, r| { r[0] = Val::I64(0); Ok(()) });
+    let panic_fn = Func::new(&mut store, FuncType::new(&engine, [], []), |_, _, _| {
+        Err(wasmtime::Error::msg("NEAR panic"))
+    });
+
+    // Storage stubs
+    let sc1 = storage.clone();
+    let rc3 = registers.clone();
+    let storage_write_fn = Func::new(
+        &mut store,
+        FuncType::new(&engine, [ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], [ValType::I64]),
+        move |mut caller, args, results| {
+            let (kl, kp, vl, vp, rid) = (
+                args[0].unwrap_i64() as usize, args[1].unwrap_i64() as usize,
+                args[2].unwrap_i64() as usize, args[3].unwrap_i64() as usize,
+                args[4].unwrap_i64() as u64,
+            );
+            if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                let md = mem.data(&caller);
+                if kp + kl <= md.len() && vp + vl <= md.len() {
+                    let key = md[kp..kp + kl].to_vec();
+                    let val = md[vp..vp + vl].to_vec();
+                    let old = sc1.lock().unwrap().insert(key, val);
+                    if rid != u64::MAX {
+                        if let Some(old) = old { rc3.lock().unwrap().insert(rid, old); }
+                    }
+                }
+            }
+            results[0] = Val::I64(0);
+            Ok(())
+        },
+    );
+
+    let sc2 = storage.clone();
+    let rc4 = registers.clone();
+    let storage_read_fn = Func::new(
+        &mut store,
+        FuncType::new(&engine, [ValType::I64, ValType::I64, ValType::I64], [ValType::I64]),
+        move |mut caller, args, results| {
+            let (kl, kp, rid) = (
+                args[0].unwrap_i64() as usize, args[1].unwrap_i64() as usize,
+                args[2].unwrap_i64() as u64,
+            );
+            if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                let md = mem.data(&caller);
+                if kp + kl <= md.len() {
+                    if let Some(val) = sc2.lock().unwrap().get(&md[kp..kp + kl]).cloned() {
+                        rc4.lock().unwrap().insert(rid, val);
+                        results[0] = Val::I64(1);
+                        return Ok(());
+                    }
+                }
+            }
+            results[0] = Val::I64(0);
+            Ok(())
+        },
+    );
+
+    let sc3 = storage.clone();
+    let rc5 = registers.clone();
+    let storage_remove_fn = Func::new(
+        &mut store,
+        FuncType::new(&engine, [ValType::I64, ValType::I64, ValType::I64], [ValType::I64]),
+        move |mut caller, args, results| {
+            let (kl, kp, rid) = (
+                args[0].unwrap_i64() as usize, args[1].unwrap_i64() as usize,
+                args[2].unwrap_i64() as u64,
+            );
+            if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                let md = mem.data(&caller);
+                if kp + kl <= md.len() {
+                    if let Some(val) = sc3.lock().unwrap().remove(&md[kp..kp + kl].to_vec()) {
+                        if rid != u64::MAX { rc5.lock().unwrap().insert(rid, val); }
+                        results[0] = Val::I64(1);
+                        return Ok(());
+                    }
+                }
+            }
+            results[0] = Val::I64(0);
+            Ok(())
+        },
+    );
+
+    let sc4 = storage.clone();
+    let storage_has_key_fn = Func::new(
+        &mut store,
+        FuncType::new(&engine, [ValType::I64, ValType::I64], [ValType::I64]),
+        move |mut caller, args, results| {
+            let (kl, kp) = (args[0].unwrap_i64() as usize, args[1].unwrap_i64() as usize);
+            if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                let md = mem.data(&caller);
+                if kp + kl <= md.len() {
+                    results[0] = Val::I64(if sc4.lock().unwrap().contains_key(&md[kp..kp + kl]) { 1 } else { 0 });
+                    return Ok(());
+                }
+            }
+            results[0] = Val::I64(0);
+            Ok(())
+        },
+    );
+
+    let noop0 = Func::new(&mut store, FuncType::new(&engine, [], []), |_, _, _| Ok(()));
+    let noop1r = Func::new(&mut store, FuncType::new(&engine, [ValType::I64], [ValType::I64]), |_, _, r| { r[0] = Val::I64(0); Ok(()) });
+
+    let noop_3i64_0 = Func::new(&mut store, FuncType::new(&engine, [ValType::I64, ValType::I64, ValType::I64], []), |_, _, _| Ok(()));
+    let noop_3i64_ret = Func::new(&mut store, FuncType::new(&engine, [ValType::I64, ValType::I64, ValType::I64], [ValType::I64]), |_, _, r| { r[0] = Val::I64(0); Ok(()) });
+    let _noop_5i64 = Func::new(&mut store, FuncType::new(&engine, [ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], [ValType::I64]), |_, _, r| { r[0] = Val::I64(0); Ok(()) });
+    let noop_6i64_0 = Func::new(&mut store, FuncType::new(&engine, [ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], []), |_, _, _| Ok(()));
+    let noop_4i64_0 = Func::new(&mut store, FuncType::new(&engine, [ValType::I64, ValType::I64, ValType::I64, ValType::I64], [ValType::I64]), |_, _, r| { r[0] = Val::I64(0); Ok(()) });
+    let noop_8i64 = Func::new(&mut store, FuncType::new(&engine, [ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], [ValType::I64]), |_, _, r| { r[0] = Val::I64(0); Ok(()) });
+    let noop_9i64 = Func::new(&mut store, FuncType::new(&engine, [ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], [ValType::I64]), |_, _, r| { r[0] = Val::I64(0); Ok(()) });
+
+    let mut linker = Linker::new(&engine);
+    linker.define(&store, "env", "log_utf8", log_fn).unwrap();
+    linker.define(&store, "env", "value_return", value_return_fn).unwrap();
+    linker.define(&store, "env", "input", noop1.clone()).unwrap();
+    linker.define(&store, "env", "read_register", noop2.clone()).unwrap();
+    let register_len_noop = Func::new(&mut store, FuncType::new(&engine, [ValType::I64], [ValType::I64]),
+        |_, _, r| { r[0] = Val::I64(0); Ok(()) });
+    linker.define(&store, "env", "register_len", register_len_noop).unwrap();
+    linker.define(&store, "env", "panic_utf8", panic_fn.clone()).unwrap();
+    linker.define(&store, "env", "panic", panic_fn).unwrap();
+    linker.define(&store, "env", "memory", memory).unwrap();
+    linker.define(&store, "env", "write_register", noop_3i64_0.clone()).unwrap();
+    linker.define(&store, "env", "current_account_id", noop1r.clone()).unwrap();
+    linker.define(&store, "env", "signer_account_id", noop1r.clone()).unwrap();
+    linker.define(&store, "env", "signer_account_pk", noop1r.clone()).unwrap();
+    linker.define(&store, "env", "predecessor_account_id", noop1r).unwrap();
+    linker.define(&store, "env", "block_index", noop0r.clone()).unwrap();
+    linker.define(&store, "env", "block_timestamp", noop0r.clone()).unwrap();
+    linker.define(&store, "env", "epoch_height", noop0r).unwrap();
+    linker.define(&store, "env", "storage_usage", noop0r.clone()).unwrap();
+    linker.define(&store, "env", "account_balance", noop0.clone()).unwrap();
+    linker.define(&store, "env", "account_locked_balance", noop0.clone()).unwrap();
+    linker.define(&store, "env", "attached_deposit", noop0).unwrap();
+    linker.define(&store, "env", "prepaid_gas", noop0r.clone()).unwrap();
+    linker.define(&store, "env", "used_gas", noop0r).unwrap();
+    linker.define(&store, "env", "storage_write", storage_write_fn).unwrap();
+    linker.define(&store, "env", "storage_read", storage_read_fn).unwrap();
+    linker.define(&store, "env", "storage_remove", storage_remove_fn).unwrap();
+    linker.define(&store, "env", "storage_has_key", storage_has_key_fn).unwrap();
+    linker.define(&store, "env", "sha256", noop_3i64_0.clone()).unwrap();
+    linker.define(&store, "env", "keccak256", noop_3i64_0).unwrap();
+    linker.define(&store, "env", "random_seed", noop1.clone()).unwrap();
+    linker.define(&store, "env", "ed25519_verify", noop_6i64_0).unwrap();
+    linker.define(&store, "env", "log_utf16", noop2.clone()).unwrap();
+    linker.define(&store, "env", "promise_create", noop_8i64).unwrap();
+    linker.define(&store, "env", "promise_then", noop_9i64).unwrap();
+    linker.define(&store, "env", "promise_and", noop2.clone()).unwrap();
+    linker.define(&store, "env", "promise_results_count", noop0r.clone()).unwrap();
+    linker.define(&store, "env", "promise_result", noop2.clone()).unwrap();
+    linker.define(&store, "env", "promise_return", noop1.clone()).unwrap();
+    linker.define(&store, "env", "storage_iter_prefix", noop2.clone()).unwrap();
+    linker.define(&store, "env", "storage_iter_range", noop_4i64_0).unwrap();
+    linker.define(&store, "env", "storage_iter_next", noop_3i64_ret.clone()).unwrap();
+    linker.define(&store, "env", "promise_batch_create", noop2.clone()).unwrap();
+    linker.define(&store, "env", "promise_batch_then", noop_3i64_ret).unwrap();
+    linker.define(&store, "env", "promise_batch_action_create_account", noop1.clone()).unwrap();
+    linker.define(&store, "env", "promise_batch_action_deploy_contract", noop2.clone()).unwrap();
+    linker.define(&store, "env", "promise_batch_action_function_call", noop_6i64_0).unwrap();
+    linker.define(&store, "env", "promise_batch_action_transfer", noop_3i64_0.clone()).unwrap();
+    linker.define(&store, "env", "promise_batch_action_stake", noop_4i64_0.clone()).unwrap();
+    linker.define(&store, "env", "promise_batch_action_add_key_with_full_access", noop_3i64_0.clone()).unwrap();
+    linker.define(&store, "env", "promise_batch_action_add_key_with_function_call", noop_6i64_0).unwrap();
+    linker.define(&store, "env", "promise_batch_action_delete_key", noop_3i64_0.clone()).unwrap();
+    linker.define(&store, "env", "promise_batch_action_delete_account", noop_3i64_0).unwrap();
+
+    let instance = linker.instantiate(&mut store, &module).unwrap_or_else(|e| {
+        eprintln!("Instantiation failed: {}", e);
+        std::process::exit(1);
+    });
+
+    // Find exported function — prefer the first exported function
+    let fn_name = module
+        .exports()
+        .find(|e| e.ty().func().is_some())
+        .map(|e| e.name().to_string())
+        .unwrap_or_else(|| "__repl_main".to_string());
+
+    let func = instance.get_func(&mut store, &fn_name).unwrap_or_else(|| {
+        eprintln!("Export '{}' not found in WASM module", fn_name);
+        std::process::exit(1);
+    });
+
+    // Run with fuel metering
+    println!("Running '{}' with fuel metering...", fn_name);
+    let result = func.call(&mut store, &[], &mut []);
+
+    // Report fuel
+    let fuel_consumed = initial_fuel - store.get_fuel().unwrap_or(0);
+    let tgas = fuel_consumed as f64 / 1_000_000.0;
+
+    match result {
+        Ok(()) => {
+            println!();
+            println!("=== Benchmark Results ===");
+            println!("  Fuel consumed:  {}", fuel_consumed);
+            println!("  Approx NEAR gas: {:.2} Tgas", tgas);
+            println!("  WASM size:      {} bytes", wasm_bytes.len());
+        }
+        Err(e) => {
+            // Check if it ran out of fuel
+            let err_str = e.to_string();
+            if err_str.contains("fuel") || err_str.contains("out of fuel") {
+                println!();
+                println!("=== Benchmark Results (fuel exhausted) ===");
+                println!("  Fuel consumed:  {} (all fuel used)", fuel_consumed);
+                println!("  Approx NEAR gas: {:.2} Tgas", tgas);
+                println!("  WASM size:      {} bytes", wasm_bytes.len());
+                println!();
+                println!("  Note: Execution ran out of fuel. The function may not have completed.");
+            } else {
+                eprintln!();
+                eprintln!("Runtime error: {}", e);
+                println!("  Fuel consumed before error: {} ({:.2} Tgas)", fuel_consumed, tgas);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // Print any logs
+    let logs = logs.lock().unwrap();
+    if !logs.is_empty() {
+        println!();
+        println!("  Logs:");
+        for l in logs.iter() {
+            println!("    {}", l);
+        }
+    }
+}
+
 // ── REPL MODE ──
 
 fn run_repl() {
@@ -802,14 +1135,14 @@ fn run_repl() {
     if let Ok(config) = load_project_config(".") {
         let src_path = Path::new(&config.src);
         if let Ok(source) = fs::read_to_string(src_path) {
-            let base_dir = src_path.parent().unwrap_or(Path::new("."));
-            if let Ok(resolved) = lisp_rlm_wasm::wasm_emit::resolve_modules(&source, base_dir) {
+            let source_clean: String = source.clone();
+            {
                 // Extract top-level forms by counting parens
                 let mut defines: Vec<String> = Vec::new();
                 let mut memory_decl = String::from("(memory 4)");
                 let mut depth = 0isize;
                 let mut current = String::new();
-                for ch in resolved.chars() {
+                for ch in source_clean.chars() {
                     if ch == '(' { depth += 1; current.push(ch); }
                     else if ch == ')' {
                         depth -= 1;
