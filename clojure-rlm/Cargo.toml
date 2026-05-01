@@ -1,0 +1,16 @@
+[package]
+name = "clojure-rlm"
+version = "0.1.0"
+edition = "2021"
+description = "Clojure frontend for Lisp-RLM"
+
+[[bin]]
+name = "clj-rlm"
+path = "src/bin/main.rs"
+
+[[bin]]
+name = "clj-compile"
+path = "src/bin/compile.rs"
+
+[dependencies]
+lisp-rlm-wasm = { path = ".." }

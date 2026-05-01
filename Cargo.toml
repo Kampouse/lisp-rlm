@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "clojure-rlm"]
+
 [package]
 name = "lisp-rlm-wasm"
 version = "0.1.0"
