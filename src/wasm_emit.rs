@@ -10,6 +10,29 @@
 use crate::types::LispVal;
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
+
+// ── Lightweight type system for typechecking ──
+
+#[derive(Debug, Clone, PartialEq)]
+enum Ty {
+    Num,
+    Bool,
+    Str,
+    Void,
+    Any,   // unknown / not checkable
+}
+
+impl std::fmt::Display for Ty {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Ty::Num => write!(f, "number"),
+            Ty::Bool => write!(f, "bool"),
+            Ty::Str => write!(f, "string"),
+            Ty::Void => write!(f, "void"),
+            Ty::Any => write!(f, "any"),
+        }
+    }
+}
 use wasm_encoder::{
     BlockType, ConstExpr, DataSection, EntityType, ExportKind, ExportSection, Function,
     FunctionSection, GlobalSection, GlobalType, ImportSection, Instruction, MemorySection,
@@ -131,6 +154,49 @@ impl WasmEmitter {
         i
     }
 
+    /// Format a helpful error for undefined variables
+    fn fmt_undef_error(&self, name: &str) -> String {
+        // Known internal variable mappings
+        let context: Option<String> = match name {
+            "__hof_it" | "__it" => Some("this is the loop variable in hof/map. Your lambda body references 'it' which maps to this.".into()),
+            "__hof_count" => Some("this is the loop count variable in hof/map.".into()),
+            n if n.starts_with("__logn_") => Some("this is an internal variable used by near/log_num, not accessible from user code.".into()),
+            n if n.starts_with("__clog_") => Some("this is an internal variable used by near/log (combined logging), not accessible from user code.".into()),
+            n if n.starts_with("__") => Some("this is an internal compiler variable, not accessible from user code.".into()),
+            _ => None,
+        };
+
+        let mut msg = format!("Undefined variable '{}'", name);
+
+        if let Some(ctx) = context {
+            msg.push_str(&format!("\n  Note: {}", ctx));
+        }
+
+        // Suggest closest matching user-visible local
+        let candidates: Vec<&str> = self.locals.keys()
+            .filter(|k| !k.starts_with("__"))
+            .map(String::as_str)
+            .collect();
+
+        if !candidates.is_empty() {
+            let mut best: Option<(&str, usize)> = None;
+            for c in &candidates {
+                let dist = levenshtein(name, c);
+                if dist <= 3 {
+                    match best {
+                        Some((_, best_dist)) if dist >= best_dist => {}
+                        _ => best = Some((c, dist)),
+                    }
+                }
+            }
+            if let Some((suggestion, _)) = best {
+                msg.push_str(&format!("\n  Did you mean '{}'?", suggestion));
+            }
+        }
+
+        msg
+    }
+
     fn alloc_data(&mut self, bytes: &[u8]) -> u32 {
         let off = self.next_data_offset;
         self.data_segments.push((off, bytes.to_vec()));
@@ -222,6 +288,17 @@ impl WasmEmitter {
         Some(op.as_str()) == self.current_func.as_deref() && items.len() - 1 == self.current_param_count
     }
 
+    // ── Lightweight typecheck pre-pass ──
+
+    /// Typecheck a function body. Called in `emit_define` before codegen.
+    /// `func_name` is the name of the function being compiled, `params` are its parameter names.
+    /// `funcs` provides the list of all defined functions so far (for checking calls).
+    pub fn typecheck_expr(funcs: &Vec<FuncDef>, params: &[String], body: &LispVal) -> Result<(), String> {
+        let mut tc = TypeChecker { funcs, local_names: params.iter().cloned().collect() };
+        tc.check(body)?;
+        Ok(())
+    }
+
     fn scan_host(&mut self, e: &LispVal) {
         let LispVal::List(items) = e else { return };
         for i in items { self.scan_host(i) }
@@ -291,6 +368,15 @@ impl WasmEmitter {
         // Pre-insert placeholder so self-recursion resolves
         let placeholder_idx = self.funcs.len();
         self.funcs.push(FuncDef { name: name.into(), param_count: params.len(), local_count: 0, instrs: Vec::new() });
+
+        // Run typecheck pre-pass (catches obvious errors before codegen)
+        if !name.starts_with("__") {
+            if let Err(e) = Self::typecheck_expr(&self.funcs, params, body) {
+                // Remove placeholder before returning error
+                self.funcs.pop();
+                return Err(format!("in function '{}': {}", name, e));
+            }
+        }
 
         let tc = self.has_tc(body);
 
@@ -497,7 +583,7 @@ impl WasmEmitter {
             LispVal::Bool(true) => Ok(vec![Instruction::I64Const(1)]),
             LispVal::Bool(false) => Ok(vec![Instruction::I64Const(0)]),
             LispVal::Nil => Ok(vec![Instruction::I64Const(0)]),
-            LispVal::Sym(n) => self.locals.get(n).map(|&i| vec![Instruction::LocalGet(i)]).ok_or_else(|| format!("undef: {}", n)),
+            LispVal::Sym(n) => self.locals.get(n).map(|&i| vec![Instruction::LocalGet(i)]).ok_or_else(|| self.fmt_undef_error(n)),
             LispVal::Str(s) => {
                 let off = self.alloc_data(s.as_bytes()) as u64;
                 Ok(vec![Instruction::I64Const((off | ((s.len() as u64) << 32)) as i64)])
@@ -3987,7 +4073,33 @@ impl WasmEmitter {
 
             // User function call
             _ => {
-                let pos = self.funcs.iter().position(|f| f.name == op).ok_or_else(|| format!("in {}: unknown function '{}'", self.current_func.as_deref().unwrap_or("top"), op))?;
+                let pos = self.funcs.iter().position(|f| f.name == op).ok_or_else(|| {
+                    let mut msg = format!("in {}: function '{}' is not defined", self.current_func.as_deref().unwrap_or("top"), op);
+                    // Suggest closest match from user-defined functions
+                    let candidates: Vec<&str> = self.funcs.iter()
+                        .filter(|f| !f.name.starts_with("__"))
+                        .map(|f| f.name.as_str())
+                        .collect();
+                    let builtins = ["+", "-", "*", "/", "mod", "abs", "=", "!=", "<", ">", "<=", ">=",
+                        "and", "or", "not", "if", "let", "begin", "while", "for", "set!", "quote",
+                        "near/log", "near/return", "near/store", "near/load", "near/log_num",
+                        "hof/map", "hof/filter", "hof/reduce"];
+                    let all_candidates: Vec<&str> = candidates.iter().chain(builtins.iter()).copied().collect();
+                    let mut best: Option<(&str, usize)> = None;
+                    for c in &all_candidates {
+                        let dist = levenshtein(op, c);
+                        if dist <= 3 {
+                            match best {
+                                Some((_, best_dist)) if dist >= best_dist => {}
+                                _ => best = Some((*c, dist)),
+                            }
+                        }
+                    }
+                    if let Some((suggestion, _)) = best {
+                        msg.push_str(&format!(". Did you mean '{}'?", suggestion));
+                    }
+                    msg
+                })?;
                 let mut v = Vec::new();
                 for x in a { v.extend(self.expr(x)?); }
                 v.push(Instruction::Call(USER_BASE | pos as u32));
@@ -4450,6 +4562,268 @@ pub fn compile_pure_to_wat(source: &str) -> Result<String, String> {
 pub fn compile_near_to_wat(source: &str) -> Result<String, String> {
     let b = compile_near(source)?;
     wasmprinter::print_bytes(&b).map_err(|e| e.to_string())
+}
+
+// ── TypeChecker: lightweight pre-pass ──
+
+struct TypeChecker<'a> {
+    funcs: &'a Vec<FuncDef>,
+    local_names: Vec<String>,
+}
+
+impl<'a> TypeChecker<'a> {
+    fn check(&mut self, e: &LispVal) -> Result<Ty, String> {
+        match e {
+            LispVal::Num(_) => Ok(Ty::Num),
+            LispVal::Bool(_) => Ok(Ty::Bool),
+            LispVal::Nil => Ok(Ty::Void),
+            LispVal::Str(_) => Ok(Ty::Str),
+            LispVal::Sym(name) => {
+                if self.local_names.contains(&name.to_string()) {
+                    Ok(Ty::Any)
+                } else {
+                    Err(format!("Undefined variable '{}'", name))
+                }
+            }
+            LispVal::List(items) if !items.is_empty() => {
+                if let LispVal::Sym(op) = &items[0] {
+                    self.check_call(op, &items[1..])
+                } else {
+                    Err(format!("expected symbol in call position, got {:?}", items[0]))
+                }
+            }
+            LispVal::List(items) if items.is_empty() => Ok(Ty::Void),
+            _ => Ok(Ty::Any),
+        }
+    }
+
+    fn check_call(&mut self, op: &str, args: &[LispVal]) -> Result<Ty, String> {
+        let numeric_binops = ["+", "-", "*", "/", "mod"];
+        let comparison_ops = ["=", "!=", "<", ">", "<=", ">="];
+        let bool_ops = ["and", "or", "not"];
+
+        if numeric_binops.contains(&op) {
+            if op != "+" && op != "*" && args.len() != 2 {
+                return Err(format!("Type error: '{}' expects exactly 2 arguments, got {}", op, args.len()));
+            }
+            // Allow + and * with 2+ args (they fold), but check each arg is numeric
+            for (i, arg) in args.iter().enumerate() {
+                let ty = self.check(arg)?;
+                match ty {
+                    Ty::Str => return Err(format!("Type error: '{}' expects numeric arguments, got string at argument {}", op, i + 1)),
+                    Ty::Void => return Err(format!("Type error: '{}' expects numeric arguments, got void at argument {}", op, i + 1)),
+                    _ => {}
+                }
+            }
+            return Ok(Ty::Num);
+        }
+
+        if comparison_ops.contains(&op) {
+            if args.len() != 2 {
+                return Err(format!("Type error: '{}' expects exactly 2 arguments, got {}", op, args.len()));
+            }
+            for (i, arg) in args.iter().enumerate() {
+                let ty = self.check(arg)?;
+                match ty {
+                    Ty::Str => return Err(format!("Type error: '{}' expects numeric arguments, got string at argument {}", op, i + 1)),
+                    Ty::Void => return Err(format!("Type error: '{}' expects numeric arguments, got void at argument {}", op, i + 1)),
+                    _ => {}
+                }
+            }
+            return Ok(Ty::Bool);
+        }
+
+        if bool_ops.contains(&op) {
+            for arg in args {
+                let ty = self.check(arg)?;
+                match ty {
+                    Ty::Str => return Err(format!("Type error: '{}' expects bool/numeric arguments, got string", op)),
+                    _ => {}
+                }
+            }
+            return Ok(Ty::Bool);
+        }
+
+        match op {
+            "abs" => {
+                if args.len() != 1 {
+                    return Err(format!("Type error: 'abs' expects 1 argument, got {}", args.len()));
+                }
+                let ty = self.check(&args[0])?;
+                match ty {
+                    Ty::Str => Err("Type error: 'abs' expects a numeric argument, got string".into()),
+                    _ => Ok(Ty::Num),
+                }
+            }
+            "if" => {
+                if args.len() < 2 {
+                    return Err("Type error: 'if' expects at least 2 arguments (condition, then, [else])".into());
+                }
+                let cond_ty = self.check(&args[0])?;
+                if cond_ty == Ty::Str {
+                    return Err("Type error: 'if' condition must be numeric or bool, got string".into());
+                }
+                let then_ty = self.check(&args[1])?;
+                if args.len() > 2 {
+                    let else_ty = self.check(&args[2])?;
+                    if then_ty != Ty::Any && else_ty != Ty::Any && then_ty != else_ty {
+                        return Err(format!("Type error: 'if' branches have mismatched types: {} vs {}", then_ty, else_ty));
+                    }
+                }
+                Ok(then_ty)
+            }
+            "begin" => {
+                if args.is_empty() { return Ok(Ty::Void); }
+                for arg in &args[..args.len()-1] { self.check(arg)?; }
+                self.check(args.last().unwrap())
+            }
+            "let" => {
+                // (let ((x val) ...) body...)
+                if args.is_empty() { return Ok(Ty::Void); }
+                let mut saved = self.local_names.clone();
+                if let LispVal::List(bindings) = &args[0] {
+                    for b in bindings {
+                        if let LispVal::List(p) = b {
+                            if p.len() == 2 {
+                                if let LispVal::Sym(n) = &p[0] {
+                                    self.local_names.push(n.clone());
+                                }
+                                self.check(&p[1])?;
+                            }
+                        }
+                    }
+                }
+                // body
+                let result = if args.len() > 1 {
+                    for arg in &args[1..args.len()-1] { self.check(arg)?; }
+                    self.check(args.last().unwrap())
+                } else {
+                    Ok(Ty::Void)
+                };
+                self.local_names = saved;
+                result
+            }
+            "while" => {
+                for arg in args { self.check(arg)?; }
+                Ok(Ty::Void)
+            }
+            "for" => {
+                if args.len() < 4 { return Ok(Ty::Any); }
+                let mut saved = self.local_names.clone();
+                if let LispVal::Sym(var) = &args[0] {
+                    self.local_names.push(var.clone());
+                }
+                self.check(&args[1])?;
+                self.check(&args[2])?;
+                for arg in &args[3..] { self.check(arg)?; }
+                self.local_names = saved;
+                Ok(Ty::Void)
+            }
+            "reduce" => {
+                for arg in args { self.check(arg)?; }
+                Ok(Ty::Any)
+            }
+            "set!" => {
+                if args.len() >= 2 { self.check(&args[1])?; }
+                Ok(Ty::Void)
+            }
+            "quote" => Ok(Ty::Any),
+            // NEAR builtins
+            "near/log" | "near/log_num" => {
+                for arg in args { self.check(arg)?; }
+                Ok(Ty::Void)
+            }
+            "near/return" | "near/return_str" => {
+                for arg in args { self.check(arg)?; }
+                Ok(Ty::Void)
+            }
+            "near/store" | "near/remove" | "near/has_key" | "near/panic" | "near/abort" => {
+                for arg in args { self.check(arg)?; }
+                Ok(Ty::Any)
+            }
+            "near/load" | "near/current_account_id" | "near/signer_account_id" |
+            "near/predecessor_account_id" | "near/input" | "near/block_index" |
+            "near/block_timestamp" | "near/epoch_height" | "near/prepaid_gas" |
+            "near/used_gas" | "near/attached_deposit" | "near/attached_deposit_high" |
+            "near/account_balance" | "near/sha256" | "near/random_seed" |
+            "near/promise_create" | "near/promise_then" | "near/promise_and" |
+            "near/promise_results_count" | "near/promise_result" | "near/promise_return" |
+            "near/promise_batch_create" | "near/promise_batch_then" => {
+                for arg in args { self.check(arg)?; }
+                Ok(Ty::Any)
+            }
+            // HOF macros
+            "hof/map" | "hof/filter" | "hof/reduce" => {
+                for arg in args { self.check(arg)?; }
+                Ok(Ty::Any)
+            }
+            // User-defined function call
+            _ => {
+                // Check if function exists
+                if let Some(func) = self.funcs.iter().find(|f| f.name == op) {
+                    if args.len() != func.param_count {
+                        return Err(format!("Type error: '{}' expects {} argument(s), got {}", op, func.param_count, args.len()));
+                    }
+                    for arg in args { self.check(arg)?; }
+                    Ok(Ty::Any)
+                } else {
+                    let suggestion = self.suggest_function(op);
+                    if let Some(s) = suggestion {
+                        Err(format!("Error: function '{}' is not defined. Did you mean '{}'?", op, s))
+                    } else {
+                        Err(format!("Error: function '{}' is not defined", op))
+                    }
+                }
+            }
+        }
+    }
+
+    fn suggest_function(&self, name: &str) -> Option<String> {
+        let mut best: Option<(String, usize)> = None;
+        for f in self.funcs {
+            // skip internal functions
+            if f.name.starts_with("__") { continue; }
+            let dist = levenshtein(name, &f.name);
+            if dist <= 3 {
+                match &best {
+                    Some((_, best_dist)) if dist >= *best_dist => {}
+                    _ => best = Some((f.name.clone(), dist)),
+                }
+            }
+        }
+        // Also check common builtins
+        let builtins = ["+", "-", "*", "/", "mod", "abs", "=", "!=", "<", ">", "<=", ">=",
+            "and", "or", "not", "if", "let", "begin", "while", "for", "set!", "quote",
+            "near/log", "near/return", "near/store", "near/load", "hof/map", "hof/filter", "hof/reduce"];
+        for b in &builtins {
+            let dist = levenshtein(name, b);
+            if dist <= 3 {
+                match &best {
+                    Some((_, best_dist)) if dist >= *best_dist => {}
+                    _ => best = Some((b.to_string(), dist)),
+                }
+            }
+        }
+        best.map(|(s, _)| s)
+    }
+}
+
+fn levenshtein(a: &str, b: &str) -> usize {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let (m, n) = (a.len(), b.len());
+    if m == 0 { return n; }
+    if n == 0 { return m; }
+    let mut prev: Vec<usize> = (0..=n).collect();
+    let mut curr: Vec<usize> = vec![0; n + 1];
+    for i in 1..=m {
+        curr[0] = i;
+        for j in 1..=n {
+            let cost = if a[i-1] == b[j-1] { 0 } else { 1 };
+            curr[j] = (prev[j] + 1).min(curr[j-1] + 1).min(prev[j-1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[n]
 }
 
 #[cfg(test)]
