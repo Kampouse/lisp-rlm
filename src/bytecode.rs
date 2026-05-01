@@ -463,6 +463,14 @@ impl LoopCompiler {
         {
             return false;
         }
+        // Don't inline if callee has BuiltinCall (storage, context ops need shared state)
+        if callee
+            .code
+            .iter()
+            .any(|op| matches!(op, Op::BuiltinCall(_, _)))
+        {
+            return false;
+        }
         // Don't inline if callee has CallCaptured/CallCapturedRef/BuiltinCall
         // that call non-inlinable things — deep inlining is risky
         // Actually, we CAN inline these — they'll just stay as call ops.
@@ -2585,12 +2593,139 @@ pub fn lisp_eq(a: &LispVal, b: &LispVal) -> bool {
 }
 
 /// Evaluate a builtin by name (for Op::BuiltinCall)
+/// Check if a name is a NEAR builtin
+fn eval_near_builtin_match(name: &str) -> bool {
+    matches!(name,
+        "storage-write" | "storage_write"
+        | "storage-read" | "storage_read"
+        | "storage-remove" | "storage_remove"
+        | "storage-has-key" | "storage_has_key"
+        | "block-height" | "block_height"
+        | "block-timestamp" | "block_timestamp"
+        | "signer-account-id" | "signer_account_id"
+        | "predecessor-account-id" | "predecessor_account_id"
+        | "current-account-id" | "current_account_id"
+        | "attached-deposit" | "attached_deposit"
+        | "account-balance" | "account_balance"
+        | "log-utf8" | "log_utf8" | "log"
+        | "near-config" | "near_config"
+        | "near-reset" | "near_reset"
+    )
+}
+
+/// Evaluate mock NEAR builtins. Returns Some(result) if handled, None otherwise.
+fn eval_near_builtin(
+    name: &str,
+    args: &[LispVal],
+    state: &mut EvalState,
+) -> Option<Result<LispVal, String>> {
+    match name {
+        "storage-write" | "storage_write" => {
+            let key = match args.get(0) {
+                Some(LispVal::Str(s)) => s.clone(),
+                Some(v) => v.to_string(),
+                None => return Some(Err("storage-write: need key".into())),
+            };
+            let val = args.get(1).cloned().unwrap_or(LispVal::Nil);
+            state.near_storage.insert(key, val);
+            Some(Ok(LispVal::Bool(true)))
+        }
+        "storage-read" | "storage_read" => {
+            let key = match args.get(0) {
+                Some(LispVal::Str(s)) => s.clone(),
+                Some(v) => v.to_string(),
+                None => return Some(Err("storage-read: need key".into())),
+            };
+            Some(Ok(state.near_storage.get(&key).cloned().unwrap_or(LispVal::Nil)))
+        }
+        "storage-remove" | "storage_remove" => {
+            let key = match args.get(0) {
+                Some(LispVal::Str(s)) => s.clone(),
+                Some(v) => v.to_string(),
+                None => return Some(Err("storage-remove: need key".into())),
+            };
+            state.near_storage.remove(&key);
+            Some(Ok(LispVal::Bool(true)))
+        }
+        "storage-has-key" | "storage_has_key" => {
+            let key = match args.get(0) {
+                Some(LispVal::Str(s)) => s.clone(),
+                Some(v) => v.to_string(),
+                None => return Some(Err("storage-has-key: need key".into())),
+            };
+            Some(Ok(LispVal::Bool(state.near_storage.contains_key(&key))))
+        }
+        "block-height" | "block_height" => {
+            Some(Ok(state.near_context.get("block_height").cloned()
+                .unwrap_or(LispVal::Num(42_000_000))))
+        }
+        "block-timestamp" | "block_timestamp" => {
+            Some(Ok(state.near_context.get("block_timestamp").cloned()
+                .unwrap_or(LispVal::Num(1_714_000_000_000_000_000))))
+        }
+        "signer-account-id" | "signer_account_id" => {
+            Some(Ok(state.near_context.get("signer_account_id").cloned()
+                .unwrap_or(LispVal::Str("alice.near".into()))))
+        }
+        "predecessor-account-id" | "predecessor_account_id" => {
+            Some(Ok(state.near_context.get("predecessor_account_id").cloned()
+                .unwrap_or(LispVal::Str("bob.near".into()))))
+        }
+        "current-account-id" | "current_account_id" => {
+            Some(Ok(state.near_context.get("current_account_id").cloned()
+                .unwrap_or(LispVal::Str("contract.near".into()))))
+        }
+        "attached-deposit" | "attached_deposit" => {
+            Some(Ok(state.near_context.get("attached_deposit").cloned()
+                .unwrap_or(LispVal::Num(0))))
+        }
+        "account-balance" | "account_balance" => {
+            Some(Ok(state.near_context.get("account_balance").cloned()
+                .unwrap_or(LispVal::Str("10000000000000000000000000".into()))))  // 10 NEAR (yocto)
+        }
+        "log-utf8" | "log_utf8" | "log" => {
+            let msg = match args.get(0) {
+                Some(LispVal::Str(s)) => s.clone(),
+                Some(v) => v.to_string(),
+                None => return Some(Ok(LispVal::Nil)),
+            };
+            eprintln!("[log] {}", msg);
+            Some(Ok(LispVal::Nil))
+        }
+        "near-config" | "near_config" => {
+            if args.len() == 2 {
+                let key = match &args[0] {
+                    LispVal::Str(s) => s.clone(),
+                    v => v.to_string(),
+                };
+                state.near_context.insert(key, args[1].clone());
+                return Some(Ok(LispVal::Bool(true)));
+            }
+            Some(Ok(LispVal::Nil))
+        }
+        "near-reset" | "near_reset" => {
+            state.near_storage.clear();
+            Some(Ok(LispVal::Bool(true)))
+        }
+        _ => None,
+    }
+}
+
 pub fn eval_builtin(
     name: &str,
     args: &[LispVal],
     env: Option<&mut Env>,
     state: Option<&mut EvalState>,
 ) -> Result<LispVal, String> {
+    // ── Mock NEAR builtins (checked first to avoid consuming state) ──
+    if eval_near_builtin_match(name) {
+        return match state {
+            Some(st) => eval_near_builtin(name, args, st)
+                .unwrap_or_else(|| Err(format!("NEAR builtin '{}' failed", name))),
+            None => Err(format!("NEAR builtin '{}' requires mutable state", name)),
+        };
+    }
+
     match name {
         "abs" => Ok(LispVal::Num(
             num_val(args.get(0).cloned().unwrap_or(LispVal::Nil)).abs(),
@@ -3064,6 +3199,7 @@ pub fn eval_builtin(
             if let Ok(Some(result)) = crate::eval::dispatch_types::handle(name, args) {
                 return Ok(result);
             }
+
             let args_str: Vec<String> = args.iter().map(|a| {
                 let s = a.to_string();
                 if s.len() > 40 { format!("{}...", &s[..37]) } else { s }

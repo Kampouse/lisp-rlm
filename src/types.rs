@@ -272,6 +272,10 @@ pub struct EvalState {
     pub call_trace_max: usize,
     /// Pending pure type annotation from `(pure ...)`. Consumed by the next lambda creation.
     pub pending_pure_type: Option<String>,
+    /// Mock NEAR storage (key-value, persisted across REPL evaluations)
+    pub near_storage: im::HashMap<String, LispVal>,
+    /// Mock NEAR context (account_id, signer, block_height, etc.)
+    pub near_context: im::HashMap<String, LispVal>,
     /// Shared global env — the canonical env from run_program. All nested
     /// run_compiled_lambda calls share this via Arc, so StoreGlobal mutations
     /// are visible to LoadGlobal in any nesting depth.
@@ -296,6 +300,8 @@ impl EvalState {
             call_trace: Vec::new(),
             call_trace_max: 64,
             pending_pure_type: None,
+            near_storage: im::HashMap::new(),
+            near_context: im::HashMap::new(),
             global_env: None,
         }
     }
@@ -329,6 +335,8 @@ impl EvalState {
             call_trace: Vec::new(),
             call_trace_max: self.call_trace_max,
             pending_pure_type: None,
+            near_storage: im::HashMap::new(),
+            near_context: im::HashMap::new(),
             global_env: None,
         }
     }
@@ -400,6 +408,8 @@ impl Clone for EvalState {
             pending_pure_type: None, // Don't propagate pure type to forks
             call_trace_max: self.call_trace_max,
             global_env: None, // Don't share global_env with forks
+            near_storage: self.near_storage.clone(),
+            near_context: self.near_context.clone(),
         }
     }
 }
