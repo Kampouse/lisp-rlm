@@ -1,10 +1,10 @@
 //! Test: boot the harness and run one scheduler tick
 
-use lisp_rlm::*;
+use lisp_rlm_wasm::*;
 
 fn eval(code: &str, env: &mut Env, state: &mut EvalState) -> LispVal {
     let exprs = parse_all(code).unwrap();
-    lisp_rlm::program::run_program(&exprs, env, state).unwrap()
+    lisp_rlm_wasm::program::run_program(&exprs, env, state).unwrap()
 }
 
 #[test]

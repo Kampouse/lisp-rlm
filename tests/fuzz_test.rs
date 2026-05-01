@@ -1,8 +1,8 @@
-use lisp_rlm::EvalState;
-use lisp_rlm::*;
+use lisp_rlm_wasm::EvalState;
+use lisp_rlm_wasm::*;
 
 fn run_program(code: &str, env: &mut Env, state: &mut EvalState) -> Result<String, String> {
-    let result = lisp_rlm::program::run_program(
+    let result = lisp_rlm_wasm::program::run_program(
         &parse_all(code)?, env, state
     )?;
     Ok(result.to_string())

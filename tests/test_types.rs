@@ -1,6 +1,6 @@
 //! Tests for the runtime type system: predicates, contracts, and schemas.
 
-use lisp_rlm::*;
+use lisp_rlm_wasm::*;
 
 fn eval_str(code: &str) -> Result<LispVal, String> {
     let mut env = Env::new();
@@ -8,7 +8,7 @@ fn eval_str(code: &str) -> Result<LispVal, String> {
     let exprs = parse_all(code).map_err(|e| e.to_string())?;
     let mut result = LispVal::Nil;
     for expr in &exprs {
-        result = lisp_rlm::program::run_program(&[expr.clone()], &mut env, &mut state)?;
+        result = lisp_rlm_wasm::program::run_program(&[expr.clone()], &mut env, &mut state)?;
     }
     Ok(result)
 }

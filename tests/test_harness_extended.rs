@@ -1,12 +1,12 @@
 //! Extended harness runtime tests — edge cases and missing coverage
 
-use lisp_rlm::*;
+use lisp_rlm_wasm::*;
 
 // Serialize with the other harness test files to avoid runtime/state conflicts
 
 fn eval(code: &str, env: &mut Env, state: &mut EvalState) -> LispVal {
     let exprs = parse_all(code).unwrap();
-    lisp_rlm::program::run_program(&exprs, env, state).unwrap()
+    lisp_rlm_wasm::program::run_program(&exprs, env, state).unwrap()
 }
 
 fn fresh() -> (Env, EvalState) {

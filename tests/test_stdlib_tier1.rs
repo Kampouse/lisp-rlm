@@ -9,7 +9,7 @@
 //! Control: apply, eval
 //! IO: delete-file
 
-use lisp_rlm::*;
+use lisp_rlm_wasm::*;
 
 fn eval_str(code: &str) -> Result<LispVal, String> {
     let mut env = Env::new();
@@ -17,7 +17,7 @@ fn eval_str(code: &str) -> Result<LispVal, String> {
     let exprs = parse_all(code).map_err(|e| e.to_string())?;
     let mut result = LispVal::Nil;
     for expr in &exprs {
-        result = lisp_rlm::program::run_program(&[expr.clone()], &mut env, &mut state)?;
+        result = lisp_rlm_wasm::program::run_program(&[expr.clone()], &mut env, &mut state)?;
     }
     Ok(result)
 }
@@ -245,10 +245,10 @@ fn test_assoc() {
     let mut env = Env::new();
     let mut state = EvalState::new();
     for expr in parse_all(code).unwrap() {
-        lisp_rlm::program::run_program(&[expr.clone()], &mut env, &mut state).unwrap();
+        lisp_rlm_wasm::program::run_program(&[expr.clone()], &mut env, &mut state).unwrap();
     }
     // Assoc finds by car
-    let r = lisp_rlm::program::run_program(
+    let r = lisp_rlm_wasm::program::run_program(
         &parse_all("(assoc \"b\" alist)").unwrap(),
         &mut env,
         &mut state,
@@ -259,7 +259,7 @@ fn test_assoc() {
         LispVal::List(vec![LispVal::Str("b".into()), LispVal::Num(2)])
     );
     // Not found
-    let r = lisp_rlm::program::run_program(
+    let r = lisp_rlm_wasm::program::run_program(
         &parse_all("(assoc \"z\" alist)").unwrap(),
         &mut env,
         &mut state,

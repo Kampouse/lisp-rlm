@@ -1,16 +1,16 @@
 //! Bytecode coverage tests — verify harness hot-path functions compile
 
-use lisp_rlm::EvalState;
-use lisp_rlm::*;
+use lisp_rlm_wasm::EvalState;
+use lisp_rlm_wasm::*;
 
 fn eval_and_get_lambda(
     code: &str,
     func_name: &str,
-) -> Result<Option<lisp_rlm::bytecode::CompiledLambda>, String> {
+) -> Result<Option<lisp_rlm_wasm::bytecode::CompiledLambda>, String> {
     let exprs = parse_all(code)?;
     let mut env = Env::new();
     let mut state = EvalState::new();
-    let _ = lisp_rlm::program::run_program(&exprs, &mut env, &mut state)?;
+    let _ = lisp_rlm_wasm::program::run_program(&exprs, &mut env, &mut state)?;
     match env.get(func_name) {
         Some(LispVal::Lambda { compiled, .. }) => Ok(compiled.clone().map(|arc| (*arc).clone())),
         _ => Ok(None),
@@ -23,7 +23,7 @@ fn eval_program(code: &str) -> Result<String, String> {
     let mut state = EvalState::new();
     let mut result = LispVal::Nil;
     for expr in &exprs {
-        result = lisp_rlm::program::run_program(&[expr.clone()], &mut env, &mut state)?;
+        result = lisp_rlm_wasm::program::run_program(&[expr.clone()], &mut env, &mut state)?;
     }
     Ok(result.to_string())
 }
@@ -46,7 +46,7 @@ fn test_get_default_compiles() {
     let has_call_captured = cl
         .code
         .iter()
-        .any(|op| matches!(op, lisp_rlm::bytecode::Op::CallCaptured(_, _)));
+        .any(|op| matches!(op, lisp_rlm_wasm::bytecode::Op::CallCaptured(_, _)));
     assert!(
         !has_call_captured,
         "get-default should not have CallCaptured ops"
@@ -65,7 +65,7 @@ fn test_get_default_no_call_captured() {
     );
     let cl = result.unwrap().expect("get-default must compile");
     for op in &cl.code {
-        if let lisp_rlm::bytecode::Op::CallCaptured(_, _) = op {
+        if let lisp_rlm_wasm::bytecode::Op::CallCaptured(_, _) = op {
             panic!(
                 "get-default should not have CallCaptured, found: {:?}",
                 cl.code
@@ -336,9 +336,9 @@ fn test_float_peephole_in_arithmetic() {
     let has_f64_mul = cl.code.iter().any(|op| {
         matches!(
             op,
-            lisp_rlm::bytecode::Op::TypedBinOp(
-                lisp_rlm::bytecode::BinOp::Mul,
-                lisp_rlm::bytecode::Ty::F64,
+            lisp_rlm_wasm::bytecode::Op::TypedBinOp(
+                lisp_rlm_wasm::bytecode::BinOp::Mul,
+                lisp_rlm_wasm::bytecode::Ty::F64,
             )
         )
     });
@@ -359,9 +359,9 @@ fn test_float_peephole_in_arithmetic() {
     let has_f64_sub = cl2.code.iter().any(|op| {
         matches!(
             op,
-            lisp_rlm::bytecode::Op::TypedBinOp(
-                lisp_rlm::bytecode::BinOp::Sub,
-                lisp_rlm::bytecode::Ty::F64,
+            lisp_rlm_wasm::bytecode::Op::TypedBinOp(
+                lisp_rlm_wasm::bytecode::BinOp::Sub,
+                lisp_rlm_wasm::bytecode::Ty::F64,
             )
         )
     });

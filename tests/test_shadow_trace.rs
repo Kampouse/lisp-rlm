@@ -1,12 +1,12 @@
-use lisp_rlm::EvalState;
-use lisp_rlm::*;
+use lisp_rlm_wasm::EvalState;
+use lisp_rlm_wasm::*;
 
 fn eval(code: &str) -> String {
     let exprs = parse_all(code).unwrap();
     eprintln!("Parsed: {:?}", exprs[0]);
     let mut env = Env::new();
     let mut state = EvalState::new();
-    let r = lisp_rlm::program::run_program(&exprs[..1], &mut env, &mut state);
+    let r = lisp_rlm_wasm::program::run_program(&exprs[..1], &mut env, &mut state);
     format!("{:?}", r)
 }
 

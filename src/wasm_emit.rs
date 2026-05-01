@@ -139,6 +139,62 @@ impl WasmEmitter {
         off
     }
 
+    /// Extract (lambda (param) body) → (param_name, body_expr)
+    fn extract_lambda(form: &LispVal) -> Result<(String, LispVal), String> {
+        match form {
+            LispVal::List(items) if items.len() >= 3 => {
+                if let LispVal::Sym(s) = &items[0] {
+                    if s == "lambda" || s == "fn" {
+                        if let LispVal::List(params) = &items[1] {
+                            if let Some(LispVal::Sym(p)) = params.first() {
+                                let body = if items.len() > 3 {
+                                    LispVal::List(std::iter::once(LispVal::Sym("begin".into()))
+                                        .chain(items[2..].iter().cloned()).collect())
+                                } else { items[2].clone() };
+                                return Ok((p.clone(), body));
+                            }
+                        }
+                        if let LispVal::Sym(p) = &items[1] {
+                            let body = if items.len() > 3 {
+                                LispVal::List(std::iter::once(LispVal::Sym("begin".into()))
+                                    .chain(items[2..].iter().cloned()).collect())
+                            } else { items[2].clone() };
+                            return Ok((p.clone(), body));
+                        }
+                    }
+                }
+                Err(format!("hof: expected (lambda (param) body), got {:?}", form))
+            }
+            _ => Err(format!("hof: expected lambda form, got {:?}", form)),
+        }
+    }
+
+    /// Extract (lambda (p1 p2) body) → (vec![p1, p2], body)
+    fn extract_lambda_2param(form: &LispVal) -> Result<(Vec<String>, LispVal), String> {
+        match form {
+            LispVal::List(items) if items.len() >= 3 => {
+                if let LispVal::Sym(s) = &items[0] {
+                    if s == "lambda" || s == "fn" {
+                        if let LispVal::List(params) = &items[1] {
+                            let names: Vec<String> = params.iter()
+                                .filter_map(|p| if let LispVal::Sym(s) = p { Some(s.clone()) } else { None })
+                                .collect();
+                            if names.len() == 2 {
+                                let body = if items.len() > 3 {
+                                    LispVal::List(std::iter::once(LispVal::Sym("begin".into()))
+                                        .chain(items[2..].iter().cloned()).collect())
+                                } else { items[2].clone() };
+                                return Ok((names, body));
+                            }
+                        }
+                    }
+                }
+                Err(format!("hof/reduce: expected (lambda (acc x) body), got {:?}", form))
+            }
+            _ => Err(format!("hof/reduce: expected lambda form, got {:?}", form)),
+        }
+    }
+
     fn need_host(&mut self, idx: usize) { self.host_needed.insert(idx); }
 
     fn host_call(idx: usize) -> Instruction<'static> {
@@ -656,6 +712,117 @@ impl WasmEmitter {
                 Ok(v)
             }
 
+            // (hof/map (lambda (x) body) start end [offset])
+            "hof/map" => {
+                if a.len() < 3 { return Err("hof/map: need (hof/map (lambda (x) body) start end [offset])".into()); }
+                let (param, body) = Self::extract_lambda(&a[0])?;
+                let param_idx = self.local_idx(&param);
+                let it_idx = self.local_idx("__hof_it");
+                let count_idx = self.local_idx("__hof_count");
+                let out_offset = if a.len() > 3 {
+                    match &a[3] { LispVal::Num(n) => *n as i64, _ => return Err("hof/map: offset must be number".into()) }
+                } else { 2048i64 };
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let tmp = self.local_idx("__hof_tmp");
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[1])?); v.push(Instruction::LocalSet(it_idx));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(count_idx));
+                v.push(Instruction::Block(BlockType::Result(ValType::I64)));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(it_idx));
+                v.extend(self.expr(&a[2])?); v.push(Instruction::I64GeS);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(count_idx)); v.push(Instruction::Br(2));
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(it_idx)); v.push(Instruction::LocalSet(param_idx));
+                v.extend(self.expr(&body)?); v.push(Instruction::LocalSet(tmp));
+                v.push(Instruction::I64Const(out_offset));
+                v.push(Instruction::LocalGet(count_idx));
+                v.push(Instruction::I64Const(8)); v.push(Instruction::I64Mul); v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(tmp));
+                v.push(Instruction::I64Store(ma));
+                v.push(Instruction::LocalGet(count_idx));
+                v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(count_idx));
+                v.push(Instruction::LocalGet(it_idx));
+                v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(it_idx));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::End);
+                Ok(v)
+            }
+            // (hof/filter (lambda (x) pred) start end [offset])
+            "hof/filter" => {
+                if a.len() < 3 { return Err("hof/filter: need (hof/filter (lambda (x) pred) start end [offset])".into()); }
+                let (param, body) = Self::extract_lambda(&a[0])?;
+                let param_idx = self.local_idx(&param);
+                let it_idx = self.local_idx("__hof_it");
+                let count_idx = self.local_idx("__hof_count");
+                let out_offset = if a.len() > 3 {
+                    match &a[3] { LispVal::Num(n) => *n as i64, _ => return Err("hof/filter: offset must be number".into()) }
+                } else { 2048i64 };
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[1])?); v.push(Instruction::LocalSet(it_idx));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(count_idx));
+                v.push(Instruction::Block(BlockType::Result(ValType::I64)));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(it_idx));
+                v.extend(self.expr(&a[2])?); v.push(Instruction::I64GeS);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(count_idx)); v.push(Instruction::Br(2));
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(it_idx)); v.push(Instruction::LocalSet(param_idx));
+                v.extend(self.expr(&body)?);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::If(BlockType::Empty));
+                // addr then value for i64.store
+                v.push(Instruction::I64Const(out_offset));
+                v.push(Instruction::LocalGet(count_idx));
+                v.push(Instruction::I64Const(8)); v.push(Instruction::I64Mul); v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(it_idx));
+                v.push(Instruction::I64Store(ma));
+                v.push(Instruction::LocalGet(count_idx));
+                v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(count_idx));
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(it_idx));
+                v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(it_idx));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::End);
+                Ok(v)
+            }
+            // (hof/reduce (lambda (acc x) body) init start end)
+            "hof/reduce" => {
+                if a.len() < 4 { return Err("hof/reduce: need (hof/reduce (lambda (acc x) body) init start end)".into()); }
+                let (params, body) = Self::extract_lambda_2param(&a[0])?;
+                let acc_idx = self.local_idx(&params[0]);
+                let param_idx = self.local_idx(&params[1]);
+                let it_idx = self.local_idx("__hof_it");
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[1])?); v.push(Instruction::LocalSet(acc_idx));
+                v.extend(self.expr(&a[2])?); v.push(Instruction::LocalSet(it_idx));
+                v.push(Instruction::Block(BlockType::Result(ValType::I64)));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(it_idx));
+                v.extend(self.expr(&a[3])?); v.push(Instruction::I64GeS);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(acc_idx)); v.push(Instruction::Br(2));
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(it_idx)); v.push(Instruction::LocalSet(param_idx));
+                v.extend(self.expr(&body)?); v.push(Instruction::LocalSet(acc_idx));
+                v.push(Instruction::LocalGet(it_idx));
+                v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(it_idx));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::End);
+                Ok(v)
+            }
+
             // (map-into mem_offset start end body)
             // Writes (body it) into memory at mem_offset + (it-start)*8
             // Returns count
@@ -832,15 +999,220 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0)); Ok(v)
             }
             "near/log" => {
-                let msg = self.expr(&a[0])?;
-                let mut v = Vec::new();
-                v.extend(msg.clone());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(msg);
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
-                // log_utf8(len, ptr) — idx 28
-                v.push(Self::host_call(28));
-                v.push(Instruction::I64Const(0)); Ok(v)
+                // (near/log "string") — log string
+                // (near/log "prefix" num) — log string then number
+                if a.len() == 1 {
+                    let msg = self.expr(&a[0])?;
+                    let mut v = Vec::new();
+                    v.extend(msg.clone());
+                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                    v.extend(msg);
+                    v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                    v.push(Self::host_call(28));
+                    v.push(Instruction::I64Const(0)); Ok(v)
+                } else {
+                    // String + number: copy string to LOG_BUF, convert number to ASCII,
+                    // append digits after string, single log_utf8 call
+                    let packed = self.expr(&a[0])?;  // i64 = ptr | (len << 32)
+                    let num_expr = self.expr(&a[1])?;
+                    let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+                    let str_len = self.local_idx("__clog_strlen");
+                    let copy_i = self.local_idx("__clog_i");
+                    let abs_val = self.local_idx("__logn_abs");
+                    let digit_count = self.local_idx("__logn_digits");
+                    let is_neg = self.local_idx("__logn_neg");
+                    let tmp_digit = self.local_idx("__logn_d");
+                    let num_ptr = self.local_idx("__logn_ptr");
+                    let copy2_i = self.local_idx("__clog_i2");
+                    let packed_local = self.local_idx("__clog_packed");
+                    let mut v = Vec::new();
+
+                    // Store packed string value in local
+                    v.extend(packed.clone());
+                    v.push(Instruction::LocalSet(packed_local));
+
+                    // Extract str_len = packed >> 32
+                    v.push(Instruction::LocalGet(packed_local));
+                    v.push(Instruction::I64Const(32));
+                    v.push(Instruction::I64ShrU);
+                    v.push(Instruction::LocalSet(str_len));
+
+                    // Copy string bytes: for i in 0..str_len: mem[4096+i] = mem[str_ptr+i]
+                    v.push(Instruction::I64Const(0));
+                    v.push(Instruction::LocalSet(copy_i));
+                    v.push(Instruction::Block(BlockType::Empty));
+                    v.push(Instruction::Loop(BlockType::Empty));
+                    // condition: copy_i >= str_len
+                    v.push(Instruction::LocalGet(copy_i));
+                    v.push(Instruction::LocalGet(str_len));
+                    v.push(Instruction::I64GeS);
+                    v.push(Instruction::If(BlockType::Empty));
+                    v.push(Instruction::Br(2));
+                    v.push(Instruction::End);
+                    // dest addr: (4096 + copy_i) as i32 — DEEPER
+                    v.push(Instruction::I64Const(4096));
+                    v.push(Instruction::LocalGet(copy_i));
+                    v.push(Instruction::I64Add);
+                    v.push(Instruction::I32WrapI64);
+                    // src byte: load from (str_ptr + copy_i)
+                    v.push(Instruction::LocalGet(packed_local));
+                    v.push(Instruction::I32WrapI64);         // str_ptr as i32
+                    v.push(Instruction::LocalGet(copy_i));
+                    v.push(Instruction::I32WrapI64);         // copy_i as i32
+                    v.push(Instruction::I32Add);             // src addr
+                    v.push(Instruction::I32Load8U(ma8));     // load byte (value on top)
+                    v.push(Instruction::I32Store8(ma8));     // store: pops value, then addr
+                    // i++
+                    v.push(Instruction::LocalGet(copy_i));
+                    v.push(Instruction::I64Const(1));
+                    v.push(Instruction::I64Add);
+                    v.push(Instruction::LocalSet(copy_i));
+                    v.push(Instruction::Br(0));
+                    v.push(Instruction::End);
+                    v.push(Instruction::End);
+
+                    // Now convert number to ASCII in NUM_BUF (4160..4184)
+                    v.extend(num_expr);
+                    v.push(Instruction::LocalSet(abs_val));
+                    // is_neg = abs_val < 0
+                    v.push(Instruction::LocalGet(abs_val));
+                    v.push(Instruction::I64Const(0));
+                    v.push(Instruction::I64LtS);
+                    v.push(Instruction::I64ExtendI32U);
+                    v.push(Instruction::LocalSet(is_neg));
+                    // abs_val = if is_neg { -abs_val } else { abs_val }
+                    v.push(Instruction::LocalGet(is_neg));
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                    v.push(Instruction::I64Const(0));
+                    v.push(Instruction::LocalGet(abs_val));
+                    v.push(Instruction::I64Sub);
+                    v.push(Instruction::Else);
+                    v.push(Instruction::LocalGet(abs_val));
+                    v.push(Instruction::End);
+                    v.push(Instruction::LocalSet(abs_val));
+                    // num_ptr = 4184 (write backwards)
+                    v.push(Instruction::I64Const(4184));
+                    v.push(Instruction::LocalSet(num_ptr));
+                    v.push(Instruction::I64Const(0));
+                    v.push(Instruction::LocalSet(digit_count));
+                    // digit conversion loop
+                    v.push(Instruction::Block(BlockType::Empty));
+                    v.push(Instruction::Loop(BlockType::Empty));
+                    v.push(Instruction::LocalGet(abs_val));
+                    v.push(Instruction::I64Eqz);
+                    v.push(Instruction::If(BlockType::Empty));
+                    v.push(Instruction::Br(2));
+                    v.push(Instruction::End);
+                    // tmp_digit = abs_val % 10
+                    v.push(Instruction::LocalGet(abs_val));
+                    v.push(Instruction::I64Const(10));
+                    v.push(Instruction::I64RemS);
+                    v.push(Instruction::LocalSet(tmp_digit));
+                    // abs_val /= 10
+                    v.push(Instruction::LocalGet(abs_val));
+                    v.push(Instruction::I64Const(10));
+                    v.push(Instruction::I64DivS);
+                    v.push(Instruction::LocalSet(abs_val));
+                    // ptr--, store digit
+                    v.push(Instruction::LocalGet(num_ptr));
+                    v.push(Instruction::I64Const(1));
+                    v.push(Instruction::I64Sub);
+                    v.push(Instruction::LocalSet(num_ptr));
+                    v.push(Instruction::LocalGet(num_ptr));
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::LocalGet(tmp_digit));
+                    v.push(Instruction::I64Const(48));
+                    v.push(Instruction::I64Add);
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::I32Store8(ma8));
+                    // digit_count++
+                    v.push(Instruction::LocalGet(digit_count));
+                    v.push(Instruction::I64Const(1));
+                    v.push(Instruction::I64Add);
+                    v.push(Instruction::LocalSet(digit_count));
+                    v.push(Instruction::Br(0));
+                    v.push(Instruction::End);
+                    v.push(Instruction::End);
+
+                    // Handle zero case
+                    v.push(Instruction::LocalGet(digit_count));
+                    v.push(Instruction::I64Eqz);
+                    v.push(Instruction::If(BlockType::Empty));
+                    v.push(Instruction::I64Const(4183));
+                    v.push(Instruction::LocalSet(num_ptr));
+                    v.push(Instruction::I64Const(4183));
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::I64Const(48));
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::I32Store8(ma8));
+                    v.push(Instruction::I64Const(1));
+                    v.push(Instruction::LocalSet(digit_count));
+                    v.push(Instruction::End);
+
+                    // Handle negative: prepend '-'
+                    v.push(Instruction::LocalGet(is_neg));
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::If(BlockType::Empty));
+                    v.push(Instruction::LocalGet(num_ptr));
+                    v.push(Instruction::I64Const(1));
+                    v.push(Instruction::I64Sub);
+                    v.push(Instruction::LocalSet(num_ptr));
+                    v.push(Instruction::LocalGet(num_ptr));
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::I64Const(45));
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::I32Store8(ma8));
+                    v.push(Instruction::LocalGet(digit_count));
+                    v.push(Instruction::I64Const(1));
+                    v.push(Instruction::I64Add);
+                    v.push(Instruction::LocalSet(digit_count));
+                    v.push(Instruction::End);
+
+                    // Copy number digits from NUM_BUF to after string in LOG_BUF
+                    // for i in 0..digit_count: mem[4096+str_len+i] = mem[num_ptr+i]
+                    v.push(Instruction::I64Const(0));
+                    v.push(Instruction::LocalSet(copy2_i));
+                    v.push(Instruction::Block(BlockType::Empty));
+                    v.push(Instruction::Loop(BlockType::Empty));
+                    v.push(Instruction::LocalGet(copy2_i));
+                    v.push(Instruction::LocalGet(digit_count));
+                    v.push(Instruction::I64GeS);
+                    v.push(Instruction::If(BlockType::Empty));
+                    v.push(Instruction::Br(2));
+                    v.push(Instruction::End);
+                    // dest addr: (4096 + str_len + copy2_i) as i32 — DEEPER
+                    v.push(Instruction::I64Const(4096));
+                    v.push(Instruction::LocalGet(str_len));
+                    v.push(Instruction::I64Add);
+                    v.push(Instruction::LocalGet(copy2_i));
+                    v.push(Instruction::I64Add);
+                    v.push(Instruction::I32WrapI64);
+                    // src byte: load from (num_ptr + copy2_i)
+                    v.push(Instruction::LocalGet(num_ptr));
+                    v.push(Instruction::LocalGet(copy2_i));
+                    v.push(Instruction::I64Add);
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::I32Load8U(ma8));
+                    v.push(Instruction::I32Store8(ma8));
+                    // i++
+                    v.push(Instruction::LocalGet(copy2_i));
+                    v.push(Instruction::I64Const(1));
+                    v.push(Instruction::I64Add);
+                    v.push(Instruction::LocalSet(copy2_i));
+                    v.push(Instruction::Br(0));
+                    v.push(Instruction::End);
+                    v.push(Instruction::End);
+
+                    // Single log_utf8(str_len + digit_count, 4096)
+                    v.push(Instruction::LocalGet(str_len));
+                    v.push(Instruction::LocalGet(digit_count));
+                    v.push(Instruction::I64Add);
+                    v.push(Instruction::I64Const(4096));
+                    v.push(Self::host_call(28));
+                    v.push(Instruction::I64Const(0));
+                    Ok(v)
+                }
             }
             "near/panic" => {
                 let msg = self.expr(&a[0])?;
@@ -856,6 +1228,110 @@ impl WasmEmitter {
             "near/abort" => {
                 // panic() — idx 26, traps unconditionally
                 Ok(vec![Self::host_call(26), Instruction::I64Const(0)])
+            }
+            // (near/log_num expr) — converts i64 to decimal string and logs via env.log_utf8
+            "near/log_num" => {
+                self.need_host(28);
+                let num_expr = self.expr(&a[0])?;
+                let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+                let abs_val = self.local_idx("__logn_abs");
+                let digit_count = self.local_idx("__logn_digits");
+                let is_neg = self.local_idx("__logn_neg");
+                let tmp_digit = self.local_idx("__logn_d");
+                let ptr = self.local_idx("__logn_ptr");
+                let mut v = Vec::new();
+                v.extend(num_expr);
+                v.push(Instruction::LocalSet(abs_val));
+                v.push(Instruction::LocalGet(abs_val));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64LtS);
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(is_neg));
+                v.push(Instruction::LocalGet(is_neg));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalGet(abs_val));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::Else);
+                v.push(Instruction::LocalGet(abs_val));
+                v.push(Instruction::End);
+                v.push(Instruction::LocalSet(abs_val));
+                v.push(Instruction::I64Const(4184));
+                v.push(Instruction::LocalSet(ptr));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalSet(digit_count));
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(abs_val));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Br(2));
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(abs_val));
+                v.push(Instruction::I64Const(10));
+                v.push(Instruction::I64RemS);
+                v.push(Instruction::LocalSet(tmp_digit));
+                v.push(Instruction::LocalGet(abs_val));
+                v.push(Instruction::I64Const(10));
+                v.push(Instruction::I64DivS);
+                v.push(Instruction::LocalSet(abs_val));
+                v.push(Instruction::LocalGet(ptr));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::LocalSet(ptr));
+                v.push(Instruction::LocalGet(ptr));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(tmp_digit));
+                v.push(Instruction::I64Const(48));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Store8(ma8));
+                v.push(Instruction::LocalGet(digit_count));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(digit_count));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); // loop
+                v.push(Instruction::End); // block
+                // Zero special case
+                v.push(Instruction::LocalGet(digit_count));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::I64Const(4183));
+                v.push(Instruction::LocalSet(ptr));
+                v.push(Instruction::I64Const(4183));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(48));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Store8(ma8));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::LocalSet(digit_count));
+                v.push(Instruction::End);
+                // Negative prefix
+                v.push(Instruction::LocalGet(is_neg));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(ptr));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::LocalSet(ptr));
+                v.push(Instruction::LocalGet(ptr));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(45));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Store8(ma8));
+                v.push(Instruction::LocalGet(digit_count));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(digit_count));
+                v.push(Instruction::End);
+                // log_utf8(count, ptr)
+                v.push(Instruction::LocalGet(digit_count));
+                v.push(Instruction::LocalGet(ptr));
+                v.push(Self::host_call(28));
+                v.push(Instruction::I64Const(0));
+                Ok(v)
             }
             "near/current_account_id" => self.read_to_register(3, a),
             "near/signer_account_id" => self.read_to_register(4, a),
@@ -3920,6 +4396,14 @@ pub fn compile_pure(source: &str) -> Result<Vec<u8>, String> {
 
 pub fn compile_near(source: &str) -> Result<Vec<u8>, String> {
     Ok(parse_and_compile(source, true)?.finish("_run"))
+}
+
+/// Compile to NEAR WASM and return function names in code-section order (for error reporting)
+pub fn compile_near_named(source: &str) -> Result<(Vec<u8>, Vec<String>), String> {
+    let mut em = parse_and_compile(source, true)?;
+    let names: Vec<String> = em.funcs.iter().map(|f| f.name.clone()).collect();
+    let wasm = em.finish("_run");
+    Ok((wasm, names))
 }
 
 /// Compile pre-parsed LispVal expressions to NEAR WASM

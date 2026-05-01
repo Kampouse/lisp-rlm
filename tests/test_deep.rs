@@ -1,4 +1,4 @@
-use lisp_rlm::{parser::parse_all, run_program, EvalState, Env};
+use lisp_rlm_wasm::{parser::parse_all, run_program, EvalState, Env};
 
 fn run(code: &str) -> String {
     let forms = parse_all(code).expect("parse");

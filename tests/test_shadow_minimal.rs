@@ -1,6 +1,6 @@
 //! Minimal shadowing test
-use lisp_rlm::EvalState;
-use lisp_rlm::*;
+use lisp_rlm_wasm::EvalState;
+use lisp_rlm_wasm::*;
 
 fn eval(code: &str) -> String {
     let exprs = parse_all(code).unwrap();
@@ -8,7 +8,7 @@ fn eval(code: &str) -> String {
     let mut state = EvalState::new();
     let mut result = LispVal::Nil;
     for expr in &exprs {
-        result = lisp_rlm::program::run_program(&[expr.clone()], &mut env, &mut state).unwrap();
+        result = lisp_rlm_wasm::program::run_program(&[expr.clone()], &mut env, &mut state).unwrap();
     }
     result.to_string()
 }

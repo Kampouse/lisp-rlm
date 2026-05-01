@@ -1,31 +1,26 @@
 //! Tests for lambda execution and higher-order functions.
 //!
-//! KNOWN BUG: map/filter/reduce with lambda arguments hang due to
-//! apply_lambda infinite loop when called from dispatch_collections.
-//!
-//! Tracked in: test_lambda_hof.rs — ignored tests below
-//! Workaround: use (loop ...) with recur instead of map/filter
-//!
-//! Root cause: Hermes' span-aware tokenizer (reverted) or bytecode
-//! compiler (disabled). The call_val → apply_lambda → lisp_eval path
-//! hangs inside dispatch_collections::handle but works fine in direct calls.
+//! Fixed: map/filter/reduce with lambda arguments were hanging due to
+//! duplicate PushClosure opcode in bytecode compiler (line ~1280).
+//! The double push corrupted the stack for CallDynamic, causing wrong
+//! argument binding in computed function calls.
 
-use lisp_rlm::EvalState;
-use lisp_rlm::{parse_all, Env, LispVal};
+use lisp_rlm_wasm::EvalState;
+use lisp_rlm_wasm::{parse_all, Env, LispVal};
 
 fn eval_val(code: &str) -> LispVal {
     let mut env = Env::new();
     let mut state = EvalState::new();
     for module in &["math", "list", "string"] {
-        if let Some(mcode) = lisp_rlm::get_stdlib_code(module) {
+        if let Some(mcode) = lisp_rlm_wasm::get_stdlib_code(module) {
             if let Ok(exprs) = parse_all(mcode) {
-                let _ = lisp_rlm::program::run_program(&exprs, &mut env, &mut state);
+                let _ = lisp_rlm_wasm::program::run_program(&exprs, &mut env, &mut state);
             }
         }
     }
     match parse_all(code) {
         Ok(exprs) => {
-            match lisp_rlm::program::run_program(&exprs, &mut env, &mut state) {
+            match lisp_rlm_wasm::program::run_program(&exprs, &mut env, &mut state) {
                 Ok(v) => v,
                 Err(e) => LispVal::Str(format!("ERROR: {}", e)),
             }
@@ -67,9 +62,8 @@ fn test_nested_lambda() {
 }
 
 #[test]
-fn _bug_map_with_lambda() {
-    // EXPECTED: (2 3 4)
-    // ACTUAL: hangs forever in apply_lambda
+fn test_map_with_lambda() {
+    // FIXED: was hanging due to duplicate PushClosure opcode
     let result = eval_val("(map (lambda (x) (+ x 1)) (list 1 2 3))");
     match result {
         LispVal::List(items) => {
@@ -83,9 +77,8 @@ fn _bug_map_with_lambda() {
 }
 
 #[test]
-fn _bug_filter_with_lambda() {
-    // EXPECTED: (4 5 6)
-    // ACTUAL: hangs forever in apply_lambda
+fn test_filter_with_lambda() {
+    // FIXED: was hanging due to duplicate PushClosure opcode
     let result = eval_val("(filter (lambda (x) (> x 3)) (list 1 4 2 5 6))");
     match result {
         LispVal::List(items) => {
@@ -99,9 +92,8 @@ fn _bug_filter_with_lambda() {
 }
 
 #[test]
-fn _bug_reduce_with_lambda() {
-    // EXPECTED: 15
-    // ACTUAL: hangs forever in apply_lambda
+fn test_reduce_with_lambda() {
+    // FIXED: was hanging due to duplicate PushClosure opcode
     let result = eval_val("(reduce (lambda (acc x) (+ acc x)) 0 (list 1 2 3 4 5))");
     assert_eq!(result, LispVal::Num(15));
 }

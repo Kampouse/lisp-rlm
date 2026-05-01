@@ -1273,7 +1273,6 @@ impl LoopCompiler {
                                 num_fixed_params: n_fixed,
                             });
                             self.code.push(Op::PushClosure(idx));
-                            self.code.push(Op::PushClosure(idx));
                             true
                         }
                         _ => {

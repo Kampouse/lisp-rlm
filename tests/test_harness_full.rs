@@ -1,7 +1,7 @@
 //! Comprehensive harness runtime tests
 //! Verifies all agent loop functions: scoring, ranking, lifecycle, budget, scheduler, persistence
 
-use lisp_rlm::*;
+use lisp_rlm_wasm::*;
 use std::sync::Mutex;
 
 // Serialize tests to avoid runtime/state conflicts between parallel runs
@@ -9,14 +9,14 @@ static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn eval(code: &str, env: &mut Env, state: &mut EvalState) -> LispVal {
     let exprs = parse_all(code).unwrap();
-    lisp_rlm::program::run_program(&exprs, env, state).unwrap()
+    lisp_rlm_wasm::program::run_program(&exprs, env, state).unwrap()
 }
 
 fn eval_ok(code: &str, env: &mut Env, state: &mut EvalState) -> LispVal {
     let exprs = parse_all(code).unwrap();
     let mut result = LispVal::Nil;
     for expr in &exprs {
-        result = match lisp_rlm::program::run_program(&[expr.clone()], env, state) {
+        result = match lisp_rlm_wasm::program::run_program(&[expr.clone()], env, state) {
             Ok(v) => v,
             Err(e) => panic!("eval failed: {} — code: {}", e, code),
         };

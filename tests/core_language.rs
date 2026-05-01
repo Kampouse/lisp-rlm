@@ -1,8 +1,8 @@
-use lisp_rlm::EvalState;
-use lisp_rlm::*;
+use lisp_rlm_wasm::EvalState;
+use lisp_rlm_wasm::*;
 
 fn run_program(code: &str, env: &mut Env, state: &mut EvalState) -> Result<String, String> {
-    let result = lisp_rlm::program::run_program(
+    let result = lisp_rlm_wasm::program::run_program(
         &parse_all(code)?, env, state
     )?;
     Ok(result.to_string())
@@ -19,17 +19,17 @@ fn eval_str_with_stdlib(code: &str) -> String {
     let mut state = EvalState::new();
     if let Some(scode) = get_stdlib_code("math") {
         if let Ok(exprs) = parse_all(scode) {
-            let _ = lisp_rlm::program::run_program(&exprs, &mut env, &mut state);
+            let _ = lisp_rlm_wasm::program::run_program(&exprs, &mut env, &mut state);
         }
     }
     if let Some(scode) = get_stdlib_code("list") {
         if let Ok(exprs) = parse_all(scode) {
-            let _ = lisp_rlm::program::run_program(&exprs, &mut env, &mut state);
+            let _ = lisp_rlm_wasm::program::run_program(&exprs, &mut env, &mut state);
         }
     }
     if let Some(scode) = get_stdlib_code("string") {
         if let Ok(exprs) = parse_all(scode) {
-            let _ = lisp_rlm::program::run_program(&exprs, &mut env, &mut state);
+            let _ = lisp_rlm_wasm::program::run_program(&exprs, &mut env, &mut state);
         }
     }
     run_program(code, &mut env, &mut state).unwrap_or_else(|e| format!("ERROR: {}", e))

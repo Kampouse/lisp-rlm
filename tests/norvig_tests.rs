@@ -14,8 +14,8 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use lisp_rlm::EvalState;
-use lisp_rlm::*;
+use lisp_rlm_wasm::EvalState;
+use lisp_rlm_wasm::*;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -30,7 +30,7 @@ fn run(code: &str, env: &mut Env, state: &mut EvalState) -> String {
     };
     let mut result = LispVal::Nil;
     for expr in &exprs {
-        match lisp_rlm::program::run_program(&[expr.clone()], env, state) {
+        match lisp_rlm_wasm::program::run_program(&[expr.clone()], env, state) {
             Ok(v) => result = v,
             Err(e) => return format!("ERROR: {}", e),
         }
