@@ -1,24 +1,122 @@
-=== F* Verification — Wed Apr 29 17:49:53 EDT 2026 ===
-✓ Lisp.Types (575ms)
-✓ Lisp.Values (401ms)
-✓ LispIR.Semantics (695ms)
-✓ Lisp.Source (1339ms)
-✓ Lisp.Closure (1322ms)
-✓ LispIR.ClosureVM (1374ms)
-✓ Lisp.Compiler (2109ms)
-✓ LispIR.Correctness (524ms)
-✓ LispIR.Determinism (844ms)
-✓ LispIR.CompilerSpec (2382ms)
-✓ LispIR.CompilerSpec3 (5555ms)
-✓ LispIR.CompilerSpec4 (7318ms)
-✓ LispIR.CompilerCorrectness (2535ms)
-✓ LispIR.PerExpr3 (8094ms)
-✓ LispIR.StackHeight (5439ms)
-✓ VMUnfoldHelpers (951ms)
-✓ VmView (3420ms)
-✓ VmIfTest (3454ms)
-✓ OpcodeProofs (2565ms)
-✓ BuiltinOpcodeProofs (2176ms)
-✓ StepProofs (25430ms)
-✓ ClosureVMSteps (1538ms)
-✓ ClosureOpcodeProofs (1942ms)
+=== F* Verification — Fri May  1 12:28:00 EDT 2026 ===
+✓ Lisp.Types (292ms)
+✓ Lisp.Values (174ms)
+✓ LispIR.Semantics (788ms)
+✓ Lisp.Source (1328ms)
+✓ Lisp.Closure (1366ms)
+✗ LispIR.ClosureVM
+* Error 189 at semantics/lisp_ir/LispIR.ClosureVM.fst(450,56-450,58):
+1 error was reported (see above)
+
+✓ Lisp.Compiler (2195ms)
+✓ LispIR.Correctness (461ms)
+✓ LispIR.Determinism (786ms)
+✓ LispIR.CompilerSpec (2414ms)
+✓ LispIR.CompilerSpec3 (6716ms)
+✓ LispIR.CompilerSpec4 (7429ms)
+✓ LispIR.CompilerCorrectness (2606ms)
+✗ LispIR.PerExpr3
+* Error 19 at semantics/lisp_ir/LispIR.PerExpr3.fst(87,21-87,23):
+1 error was reported (see above)
+
+✓ LispIR.StackHeight (6086ms)
+✗ VMUnfoldHelpers
+* Error 189 at semantics/lisp_ir/LispIR.ClosureVM.fst(450,56-450,58):
+1 error was reported (see above)
+
+✗ VmView
+* Error 189 at semantics/lisp_ir/LispIR.ClosureVM.fst(450,56-450,58):
+1 error was reported (see above)
+
+✓ VmIfTest (3973ms)
+✗ OpcodeProofs
+* Error 189 at semantics/lisp_ir/LispIR.ClosureVM.fst(450,56-450,58):
+1 error was reported (see above)
+
+✗ BuiltinOpcodeProofs
+* Error 189 at semantics/lisp_ir/LispIR.ClosureVM.fst(450,56-450,58):
+1 error was reported (see above)
+
+✗ StepProofs
+* Error 189 at semantics/lisp_ir/LispIR.ClosureVM.fst(450,56-450,58):
+1 error was reported (see above)
+
+✗ ClosureVMSteps
+* Error 189 at semantics/lisp_ir/LispIR.ClosureVM.fst(450,56-450,58):
+1 error was reported (see above)
+
+✗ ClosureOpcodeProofs
+* Error 189 at semantics/lisp_ir/LispIR.ClosureVM.fst(450,56-450,58):
+1 error was reported (see above)
+
+✗ ClosureRoundtrip
+* Error 189 at semantics/lisp_ir/LispIR.ClosureVM.fst(450,56-450,58):
+1 error was reported (see above)
+
+✗ CallSelfLoop
+* Error 189 at semantics/lisp_ir/LispIR.ClosureVM.fst(450,56-450,58):
+1 error was reported (see above)
+
+✗ SelfCallVMTest
+* Error 189 at semantics/lisp_ir/LispIR.ClosureVM.fst(450,56-450,58):
+1 error was reported (see above)
+
+✗ HandlerProofs
+* Error 189 at semantics/lisp_ir/LispIR.ClosureVM.fst(450,56-450,58):
+1 error was reported (see above)
+
+✗ HardOpcodeProofs
+* Error 189 at semantics/lisp_ir/LispIR.ClosureVM.fst(450,56-450,58):
+1 error was reported (see above)
+
+✗ HarnessProofs
+* Error 189 at semantics/lisp_ir/LispIR.ClosureVM.fst(450,56-450,58):
+1 error was reported (see above)
+
+✗ ExtendedClosureVM
+* Error 189 at semantics/lisp_ir/LispIR.ClosureVM.fst(450,56-450,58):
+1 error was reported (see above)
+
+✗ NewFormRoundtrips
+* Error 189 at semantics/lisp_ir/LispIR.ClosureVM.fst(450,56-450,58):
+1 error was reported (see above)
+
+✓ StackFuel (1975ms)
+✗ MapFilterReduce
+* Error 189 at semantics/lisp_ir/LispIR.ClosureVM.fst(450,56-450,58):
+1 error was reported (see above)
+
+✓ ExtendedOps (2853ms)
+✗ NewOpcodes
+* Error 189 at semantics/lisp_ir/LispIR.ClosureVM.fst(450,56-450,58):
+1 error was reported (see above)
+
+✓ ClosureTest (1292ms)
+✓ LambdaBody (1953ms)
+✗ LambdaMap
+* Error 189 at semantics/lisp_ir/LispIR.ClosureVM.fst(450,56-450,58):
+1 error was reported (see above)
+
+✓ DictCompilerSpec (1648ms)
+✓ DictOps (785ms)
+✓ DictSetTest (185ms)
+✗ DispatchRouting
+* Error 189 at semantics/lisp_ir/LispIR.ClosureVM.fst(450,56-450,58):
+1 error was reported (see above)
+
+✓ NilQSpec (1724ms)
+✓ NilQVm (1018ms)
+✓ PatchJumpTest (1648ms)
+✓ SelfCallTest (1327ms)
+✓ ShadowingFix (2922ms)
+✓ StackHeight (1769ms)
+✓ ProgramDesugaring (2482ms)
+✓ PureTypeSoundness (1300ms)
+✗ LispIR.Universality
+* Error 189 at semantics/lisp_ir/LispIR.ClosureVM.fst(450,56-450,58):
+1 error was reported (see above)
+
+=== SUMMARY ===
+29
+22
+

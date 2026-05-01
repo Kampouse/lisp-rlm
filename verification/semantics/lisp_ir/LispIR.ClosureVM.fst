@@ -16,6 +16,7 @@ open Lisp.Types
 open Lisp.Values
 open LispIR.Semantics
 open FStar.List.Tot
+open FStar.String
 
 // === Chunk: code + metadata for a compiled lambda ===
 noeq type chunk = {
@@ -49,6 +50,8 @@ noeq type closure_vm = {
   captured   : list lisp_val;
   // Per-instance closure storage: (captured_values, chunk_index)
   closure_envs : list (list lisp_val * nat);
+  // Global environment: functional dict (name → value)
+  env        : list (string * lisp_val);
 }
 
 val make_closure_vm : list opcode -> list chunk -> nat -> closure_vm
@@ -63,6 +66,7 @@ let make_closure_vm main_code table nslots = {
   num_slots = nslots;
   captured = [];
   closure_envs = [];
+  env = [];
 }
 
 // Pop n values from stack, return (remaining_stack, popped_in_order)
@@ -110,6 +114,19 @@ let rec build_captured rtcaps slots =
   | (_, idx) :: rest ->
     let v = match list_nth slots idx with Some x -> x | None -> Nil in
     v :: build_captured rest slots
+
+// Build field name list for ConstructTag: [("0", val_0); ("1", val_1); ...]
+// Field names are stringified indices matching the Rust implementation.
+val build_field_names : list lisp_val -> int -> Tot (list (string * lisp_val))
+let rec build_field_names items idx =
+  match items with
+  | [] -> []
+  | v :: rest ->
+    (string_of_int idx, v) :: build_field_names rest (idx + 1)
+
+// Convenience: start from index 0
+val build_fields0 : list lisp_val -> Tot (list (string * lisp_val))
+let build_fields0 items = build_field_names items 0
 
 // Extracted handler for CallSelf — helps Z3 unfold fill_slots
 val callself_handler : argc:nat -> s:closure_vm -> pc:nat -> closure_vm
@@ -267,11 +284,42 @@ let typed_ge_i64 a b = Bool (a >= b)
 val typed_mod_i64 : a:int -> b:int -> lisp_val
 let typed_mod_i64 a b = if b = 0 then Num 0 else Num (a % b)
 
-val typed_add_f64 : a:int -> b:int -> lisp_val
-let typed_add_f64 a b = Num (a + b)
+// F64 typed ops: coerce to ffloat, return Float for arithmetic, Bool for comparison
+// Matches Rust bytecode.rs:2325-2346 — accepts Float or Num (coerced via ff_of_int)
+val typed_add_f64 : a:ffloat -> b:ffloat -> lisp_val
+let typed_add_f64 a b = Float (ff_add a b)
 
-val typed_sub_f64 : a:int -> b:int -> lisp_val
-let typed_sub_f64 a b = Num (a - b)
+val typed_sub_f64 : a:ffloat -> b:ffloat -> lisp_val
+let typed_sub_f64 a b = Float (ff_sub a b)
+
+val typed_mul_f64 : a:ffloat -> b:ffloat -> lisp_val
+let typed_mul_f64 a b = Float (ff_mul a b)
+
+val typed_div_f64 : a:ffloat -> b:ffloat -> lisp_val
+let typed_div_f64 a b = Float (ff_div a b)
+
+val typed_eq_f64 : a:ffloat -> b:ffloat -> lisp_val
+let typed_eq_f64 a b = Bool (ff_eq a b)
+
+val typed_lt_f64 : a:ffloat -> b:ffloat -> lisp_val
+let typed_lt_f64 a b = Bool (ff_lt a b)
+
+val typed_le_f64 : a:ffloat -> b:ffloat -> lisp_val
+let typed_le_f64 a b = Bool (ff_le a b)
+
+val typed_gt_f64 : a:ffloat -> b:ffloat -> lisp_val
+let typed_gt_f64 a b = Bool (ff_gt a b)
+
+val typed_ge_f64 : a:ffloat -> b:ffloat -> lisp_val
+let typed_ge_f64 a b = Bool (ff_ge a b)
+
+// Helper: extract ffloat from Float or Num (coerces int to float)
+val to_ffloat : lisp_val -> Tot ffloat
+let to_ffloat v =
+  match v with
+  | Float f -> f
+  | Num n -> ff_of_int n
+  | _ -> ff_of_int 0
 
 // Dispatch: maps (binop, ty) to the right result function
 val typedbinop_result : binop -> ty -> lisp_val -> lisp_val -> Tot lisp_val
@@ -293,13 +341,20 @@ let typedbinop_result binop ty a b =
         | Mod -> typed_mod_i64 na nb)
      | _ -> Nil)
   | F64 ->
-    (match a, b with
-     | Num na, Num nb ->
-       (match binop with
-        | Add -> typed_add_f64 na nb
-        | Sub -> typed_sub_f64 na nb
-        | _ -> Num na)  // simplified
-     | _ -> Nil)
+    // Matches Rust: accepts Float or Num (coerces), all binops covered
+    let fa = to_ffloat a in
+    let fb = to_ffloat b in
+    (match binop with
+     | Add -> typed_add_f64 fa fb
+     | Sub -> typed_sub_f64 fa fb
+     | Mul -> typed_mul_f64 fa fb
+     | Div -> typed_div_f64 fa fb
+     | Mod -> typed_div_f64 fa fb  // F* has no ff_mod; model as div (sound approximation)
+     | Eq -> typed_eq_f64 fa fb
+     | Lt -> typed_lt_f64 fa fb
+     | Le -> typed_le_f64 fa fb
+     | Gt -> typed_gt_f64 fa fb
+     | Ge -> typed_ge_f64 fa fb)
 
 // Pure builtin computation — extracted for Z3-friendliness
 val builtin_result : name:string -> args:list lisp_val -> lisp_val
@@ -426,7 +481,7 @@ let closure_eval_op s =
        | b :: a :: rest ->
          { s with stack = num_arith a b int_mul ff_mul :: rest; pc = pc }
        | _ -> { s with ok = false })
-    | PushFloat _ -> { s with stack = Float (ff_of_int 0) :: s.stack; pc = pc }
+    | PushFloat f -> { s with stack = Float f :: s.stack; pc = pc }
     | PushStr str -> { s with stack = Str str :: s.stack; pc = pc }
     | Dup ->
       (match s.stack with
@@ -581,24 +636,26 @@ let closure_eval_op s =
          { s with slots = new_slots; pc = pc }
        | _, _ -> { s with ok = false })
 
-    // Typed arithmetic
+    // Typed arithmetic — float-aware, div-by-zero returns ok=false (matches Rust Err)
     | OpDiv ->
       (match s.stack with
        | b :: a :: rest ->
-         (match a, b with
-          | Num na, Num nb ->
-            if nb = 0 then { s with ok = false }
-            else { s with stack = Num (na / nb) :: rest; pc = pc }
-          | _ -> { s with ok = false })
+         // Match Rust bytecode.rs:3608-3617 — uses num_arith for float-aware division
+         (match b with
+          | Num 0 -> { s with ok = false }  // div-by-zero
+          | Float fb -> if ff_eq fb (ff_of_int 0) then { s with ok = false }
+                        else { s with stack = num_arith a b int_div ff_div :: rest; pc = pc }
+          | _ -> { s with stack = num_arith a b int_div ff_div :: rest; pc = pc })
        | _ -> { s with ok = false })
     | OpMod ->
       (match s.stack with
        | b :: a :: rest ->
-         (match a, b with
-          | Num na, Num nb ->
-            if nb = 0 then { s with ok = false }
-            else { s with stack = Num (na % nb) :: rest; pc = pc }
-          | _ -> { s with ok = false })
+         // Match Rust bytecode.rs:3618-3625 — uses num_val (NOT float-aware for Mod)
+         // Returns Num only, div-by-zero → ok=false
+         let av = (match a with Num n -> n | Float f -> ff_to_int f | _ -> 0) in
+         let bv = (match b with Num n -> n | Float f -> ff_to_int f | _ -> 0) in
+         if bv = 0 then { s with ok = false }
+         else { s with stack = Num (av % bv) :: rest; pc = pc }
        | _ -> { s with ok = false })
 
     // MakeList: pop n items, reverse, push as list
@@ -611,9 +668,6 @@ let closure_eval_op s =
       let (remaining, args) = pop_and_bind n_args s.stack [] in
       let result = builtin_result name args in
       { s with stack = result :: remaining; pc = pc }
-
-    // LoadGlobal: would need env model — abstract as ok=false
-    | LoadGlobal _ -> { s with ok = false }
 
     // DictMutSet: mutate dict in slot directly
     | DictMutSet slot_idx ->
@@ -698,6 +752,60 @@ let closure_eval_op s =
       let (stk, vals) = pop_and_bind n s.stack [] in
       let new_slots = fill_slots s.num_slots vals in
       { s with slots = new_slots; stack = stk; pc = 0 }
+
+    // PushLiteral: push an arbitrary lisp_val (for quote)
+    | PushLiteral v -> { s with stack = v :: s.stack; pc = pc }
+
+    // LoadGlobal: lookup name in env dict, push value (or Nil if not found)
+    | LoadGlobal name ->
+      let lookup = dict_get name s.env in
+      { s with stack = lookup :: s.stack; pc = pc }
+
+    // StoreGlobal: pop value, update env dict, push value back
+    | StoreGlobal name ->
+      (match s.stack with
+       | v :: rest ->
+         let new_env = dict_set name v s.env in
+         { s with stack = v :: rest; env = new_env; pc = pc }
+       | _ -> { s with ok = false })
+
+    // StoreCaptured: pop value, update captured list at index, push value back
+    | StoreCaptured idx ->
+      (match s.stack with
+       | v :: rest ->
+         (match list_set_or_extend s.captured idx v with
+          | Some caps' -> { s with stack = v :: rest; captured = caps'; pc = pc }
+          | None -> { s with ok = false })
+       | _ -> { s with ok = false })
+
+    // ConstructTag: pop n_args, build Tagged(type_name, fields)
+    // fields are [("0", val_0); ("1", val_1); ...]
+    | ConstructTag (type_name, n_args, variant_idx) ->
+      let (remaining, items) = pop_and_bind n_args s.stack [] in
+      let fields = build_fields0 items in
+      { s with stack = Tagged (type_name, variant_idx, fields) :: remaining; pc = pc }
+
+    // TagTest: peek at stack top, check if Tagged with matching type_name AND variant_id
+    // Does NOT pop the value (matches Rust implementation at bytecode.rs:4008-4016)
+    | TagTest (type_name, variant_idx) ->
+      (match s.stack with
+       | v :: rest ->
+         (match v with
+          | Tagged (tn, vid, _) -> { s with stack = Bool (tn = type_name && vid = variant_idx) :: v :: rest; pc = pc }
+          | _ -> { s with stack = Bool false :: v :: rest; pc = pc })
+       | _ -> { s with ok = false })
+
+    // GetField: pop tagged value, push field at index (as list of fields)
+    | GetField idx ->
+      (match s.stack with
+       | v :: rest ->
+         (match v with
+          | Tagged (_, _, fields) ->
+            (match list_nth fields idx with
+             | Some (_, fv) -> { s with stack = fv :: rest; pc = pc }
+             | None -> { s with stack = Nil :: rest; pc = pc })
+          | _ -> { s with stack = Nil :: rest; pc = pc })
+       | _ -> { s with ok = false })
 
     // Catch-all: unknown opcode
 

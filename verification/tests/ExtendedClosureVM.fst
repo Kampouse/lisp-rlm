@@ -25,7 +25,7 @@ let cvm code slots nslots = {
   code = code; ok = true;
   code_table = []; frames = [];
   num_slots = nslots;
-  captured = []; closure_envs = [];
+  captured = []; closure_envs = []; env = [];
 }
 
 // === Division VM correctness ===
@@ -101,7 +101,7 @@ val cvm_makelist_test : unit -> Lemma
              ok = true;
              code_table = [];
              frames = [];
-             num_slots = 0; captured = []; closure_envs = [] } in
+             num_slots = 0; captured = []; closure_envs = []; env = [] } in
    let s1 = closure_eval_op s in
    let s2 = closure_eval_op s1 in
    s2.ok = true &&
@@ -116,7 +116,7 @@ val cvm_length_test : unit -> Lemma
              ok = true;
              code_table = [];
              frames = [];
-             num_slots = 0; captured = []; closure_envs = [] } in
+             num_slots = 0; captured = []; closure_envs = []; env = [] } in
    let s1 = closure_eval_op s in
    let s2 = closure_eval_op s1 in
    s2.ok = true &&
@@ -131,7 +131,7 @@ val cvm_car_test : unit -> Lemma
              ok = true;
              code_table = [];
              frames = [];
-             num_slots = 0; captured = []; closure_envs = [] } in
+             num_slots = 0; captured = []; closure_envs = []; env = [] } in
    let s1 = closure_eval_op s in
    let s2 = closure_eval_op s1 in
    s2.ok = true &&
@@ -144,7 +144,7 @@ val cvm_cdr_test : unit -> Lemma
              ok = true;
              code_table = [];
              frames = [];
-             num_slots = 0; captured = []; closure_envs = [] } in
+             num_slots = 0; captured = []; closure_envs = []; env = [] } in
    let s1 = closure_eval_op s in
    let s2 = closure_eval_op s1 in
    s2.ok = true &&
@@ -159,7 +159,7 @@ val cvm_append_test : unit -> Lemma
              ok = true;
              code_table = [];
              frames = [];
-             num_slots = 0; captured = []; closure_envs = [] } in
+             num_slots = 0; captured = []; closure_envs = []; env = [] } in
    let s1 = closure_eval_op s in
    let s2 = closure_eval_op s1 in
    s2.ok = true &&
@@ -174,7 +174,7 @@ val cvm_strconcat_test : a:string -> b:string -> Lemma
              ok = true;
              code_table = [];
              frames = [];
-             num_slots = 0; captured = []; closure_envs = [] } in
+             num_slots = 0; captured = []; closure_envs = []; env = [] } in
    let s1 = closure_eval_op s in
    s1.ok = true && s1.pc = 1 &&
    (match s1.stack with | Str r :: _ -> r = a ^ b | _ -> false))
@@ -189,7 +189,7 @@ val cvm_div_test : a:int -> b:int -> Lemma
              ok = true;
              code_table = [];
              frames = [];
-             num_slots = 0; captured = []; closure_envs = [] } in
+             num_slots = 0; captured = []; closure_envs = []; env = [] } in
    let s1 = closure_eval_op s in
    let s2 = closure_eval_op s1 in
    s2.ok = true &&
@@ -202,7 +202,7 @@ val cvm_div_zero : a:int -> Lemma
              ok = true;
              code_table = [];
              frames = [];
-             num_slots = 0; captured = []; closure_envs = [] } in
+             num_slots = 0; captured = []; closure_envs = []; env = [] } in
    let s1 = closure_eval_op s in
    not s1.ok)
 let cvm_div_zero a = ()
@@ -217,7 +217,7 @@ val cvm_dictmutset_test : unit -> Lemma
              ok = true;
              code_table = [];
              frames = [];
-             num_slots = 1; captured = []; closure_envs = [] } in
+             num_slots = 1; captured = []; closure_envs = []; env = [] } in
    let s1 = closure_eval_op s in
    let s2 = closure_eval_op s1 in
    s2.ok = true &&

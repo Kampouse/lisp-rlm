@@ -102,6 +102,11 @@ let lisp_eq a b =
   | Nil,      Nil      -> true
   | _, _                -> false
 
+// === Lemma: lisp_eq on Num values ===
+val lisp_eq_num_sound : x:int -> y:int
+  -> Lemma (lisp_eq (Num x) (Num y) = (x = y))
+let lisp_eq_num_sound x y = ()
+
 // === Dict operations ===
 // Non-recursive wrappers around recursive helpers.
 // This lets Z3 unfold the first match case of dict_get/dict_remove.

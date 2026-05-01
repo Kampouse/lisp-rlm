@@ -280,6 +280,9 @@ pub struct EvalState {
     /// run_compiled_lambda calls share this via Arc, so StoreGlobal mutations
     /// are visible to LoadGlobal in any nesting depth.
     pub global_env: Option<std::sync::Arc<std::sync::RwLock<Env>>>,
+    /// Try/catch handler stack: list of (catch_pc) for PushTry/PopTry.
+    /// When an error occurs, we pop the top handler and jump to its PC.
+    pub try_stack: Vec<usize>,
 }
 
 impl EvalState {
@@ -303,6 +306,7 @@ impl EvalState {
             near_storage: im::HashMap::new(),
             near_context: im::HashMap::new(),
             global_env: None,
+            try_stack: Vec::new(),
         }
     }
 
@@ -338,6 +342,7 @@ impl EvalState {
             near_storage: im::HashMap::new(),
             near_context: im::HashMap::new(),
             global_env: None,
+            try_stack: Vec::new(),
         }
     }
 
@@ -410,6 +415,7 @@ impl Clone for EvalState {
             global_env: None, // Don't share global_env with forks
             near_storage: self.near_storage.clone(),
             near_context: self.near_context.clone(),
+            try_stack: Vec::new(),
         }
     }
 }

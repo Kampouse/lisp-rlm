@@ -54,7 +54,7 @@ let sum_vm code n accum = {
   stack = []; slots = [Num n; Num accum]; pc = 0;
   code = code; ok = true;
   code_table = []; frames = [];
-  num_slots = 2; captured = []; closure_envs = [];
+  num_slots = 2; captured = []; closure_envs = []; env = [];
 }
 
 // ============================================================

@@ -1,5 +1,5 @@
 
-use lisp_rlm_wasm::{try_compile_lambda, LispVal, Env, EvalState, parse_all};
+use lisp_rlm_wasm::{LispVal, Env, EvalState, parse_all};
 
 fn eval(src: &str, env: &mut Env, state: &mut EvalState) -> LispVal {
     let exprs = parse_all(src).unwrap();

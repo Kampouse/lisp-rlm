@@ -86,6 +86,8 @@ verify tests/ShadowingFix.fst "ShadowingFix"
 verify tests/StackHeight.fst "StackHeight"
 verify tests/ProgramDesugaring.fst "ProgramDesugaring"
 verify tests/PureTypeSoundness.fst "PureTypeSoundness"
+# Layer 8: Universality
+verify semantics/lisp_ir/LispIR.Universality.fst "LispIR.Universality"
 
 echo ""
 echo "=== SUMMARY ===" >> "$LOG"

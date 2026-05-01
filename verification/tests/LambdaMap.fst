@@ -38,7 +38,7 @@ let cvm code table stack slots nslots = {
   code = code; ok = true;
   code_table = table; frames = [];
   num_slots = nslots;
-  captured = []; closure_envs = [];
+  captured = []; closure_envs = []; env = [];
 }
 
 // ============================================================
@@ -150,7 +150,7 @@ val closure_add_capture : unit -> Lemma
                    chunk_runtime_captures = [("y", 0)] } in
    // Parent VM with y=10 in slot 0
    let s = { (cvm [PushClosure 0; Return] [chunk0] [] [Num 10] 1) with
-             captured = []; closure_envs = [] } in
+             captured = []; closure_envs = []; env = [] } in
    let s1 = closure_eval_op s in   // PushClosure 0
    s1.ok = true &&
    (match s1.stack with
@@ -235,7 +235,7 @@ val closure_add1_param : n:int -> Lemma
      stack = []; slots = [Num n]; pc = 0;
      code = chunk_code; ok = true;
      code_table = [chunk0]; frames = [];
-     num_slots = 1; captured = []; closure_envs = []
+     num_slots = 1; captured = []; closure_envs = []; env = []
    } in
    let s1 = closure_eval_op s in   // LoadSlot 0
    let s2 = closure_eval_op s1 in  // PushI64 1
@@ -255,7 +255,7 @@ val closure_mul2_param : n:int -> Lemma
      stack = []; slots = [Num n]; pc = 0;
      code = chunk_code; ok = true;
      code_table = [chunk0]; frames = [];
-     num_slots = 1; captured = []; closure_envs = []
+     num_slots = 1; captured = []; closure_envs = []; env = []
    } in
    let s1 = closure_eval_op s in
    let s2 = closure_eval_op s1 in
@@ -275,7 +275,7 @@ val closure_add_param : a:int -> b:int -> Lemma
      stack = []; slots = [Num a; Num b]; pc = 0;
      code = chunk_code; ok = true;
      code_table = [chunk0]; frames = [];
-     num_slots = 2; captured = []; closure_envs = []
+     num_slots = 2; captured = []; closure_envs = []; env = []
    } in
    let s1 = closure_eval_op s in
    let s2 = closure_eval_op s1 in
@@ -304,7 +304,7 @@ val map_add1_one : unit -> Lemma
      stack = []; slots = [Num 5]; pc = 0;
      code = chunk_code; ok = true;
      code_table = [chunk0]; frames = [];
-     num_slots = 1; captured = []; closure_envs = []
+     num_slots = 1; captured = []; closure_envs = []; env = []
    } in
    let s1 = closure_eval_op s in
    let s2 = closure_eval_op s1 in
@@ -325,7 +325,7 @@ val map_add1_three_elem0 : unit -> Lemma
      stack = []; slots = [Num 5]; pc = 0;
      code = chunk_code; ok = true;
      code_table = [chunk0]; frames = [];
-     num_slots = 1; captured = []; closure_envs = []
+     num_slots = 1; captured = []; closure_envs = []; env = []
    } in
    let s1 = closure_eval_op s in
    let s2 = closure_eval_op s1 in
@@ -344,7 +344,7 @@ val map_add1_three_elem1 : unit -> Lemma
      stack = []; slots = [Num 3]; pc = 0;
      code = chunk_code; ok = true;
      code_table = [chunk0]; frames = [];
-     num_slots = 1; captured = []; closure_envs = []
+     num_slots = 1; captured = []; closure_envs = []; env = []
    } in
    let s1 = closure_eval_op s in
    let s2 = closure_eval_op s1 in
@@ -363,7 +363,7 @@ val map_add1_three_elem2 : unit -> Lemma
      stack = []; slots = [Num 7]; pc = 0;
      code = chunk_code; ok = true;
      code_table = [chunk0]; frames = [];
-     num_slots = 1; captured = []; closure_envs = []
+     num_slots = 1; captured = []; closure_envs = []; env = []
    } in
    let s1 = closure_eval_op s in
    let s2 = closure_eval_op s1 in
@@ -393,7 +393,7 @@ val captured_var_accessible : n:int -> c:int -> Lemma
      stack = []; slots = [Num n]; pc = 0;
      code = chunk_code; ok = true;
      code_table = [chunk0]; frames = [];
-     num_slots = 1; captured = [Num c]; closure_envs = []
+     num_slots = 1; captured = [Num c]; closure_envs = []; env = []
    } in
    let s1 = closure_eval_op s in   // LoadSlot 0 → n
    let s2 = closure_eval_op s1 in  // LoadCaptured 0 → c
@@ -413,7 +413,7 @@ val captured_map_elem0 : unit -> Lemma
      stack = []; slots = [Num 1]; pc = 0;
      code = chunk_code; ok = true;
      code_table = [{ chunk_code = chunk_code; chunk_nslots = 1; chunk_runtime_captures = [("y", 0)] }];
-     frames = []; num_slots = 1; captured = [Num 10]; closure_envs = []
+     frames = []; num_slots = 1; captured = [Num 10]; closure_envs = []; env = []
    } in
    let s1 = closure_eval_op s in
    let s2 = closure_eval_op s1 in
@@ -431,7 +431,7 @@ val captured_map_elem1 : unit -> Lemma
      stack = []; slots = [Num 2]; pc = 0;
      code = chunk_code; ok = true;
      code_table = [{ chunk_code = chunk_code; chunk_nslots = 1; chunk_runtime_captures = [("y", 0)] }];
-     frames = []; num_slots = 1; captured = [Num 10]; closure_envs = []
+     frames = []; num_slots = 1; captured = [Num 10]; closure_envs = []; env = []
    } in
    let s1 = closure_eval_op s in
    let s2 = closure_eval_op s1 in
@@ -449,7 +449,7 @@ val captured_map_elem2 : unit -> Lemma
      stack = []; slots = [Num 3]; pc = 0;
      code = chunk_code; ok = true;
      code_table = [{ chunk_code = chunk_code; chunk_nslots = 1; chunk_runtime_captures = [("y", 0)] }];
-     frames = []; num_slots = 1; captured = [Num 10]; closure_envs = []
+     frames = []; num_slots = 1; captured = [Num 10]; closure_envs = []; env = []
    } in
    let s1 = closure_eval_op s in
    let s2 = closure_eval_op s1 in

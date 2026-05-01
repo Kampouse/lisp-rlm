@@ -28,7 +28,7 @@ val self_base_step : unit -> Lemma
              ok = true;
              code_table = [];
              frames = [];
-             num_slots = 1; captured = []; closure_envs = [] } in
+             num_slots = 1; captured = []; closure_envs = []; env = [] } in
    let s1 = closure_eval_op s in
    match s1.stack with
    | Num 0 :: [] -> true
@@ -41,7 +41,7 @@ val self_base_push_zero : unit -> Lemma
              ok = true;
              code_table = [];
              frames = [];
-             num_slots = 1; captured = []; closure_envs = [] } in
+             num_slots = 1; captured = []; closure_envs = []; env = [] } in
    let s1 = closure_eval_op s in
    match s1.stack with
    | Num 0 :: Num 0 :: [] -> true
@@ -54,7 +54,7 @@ val self_base_eq : unit -> Lemma
              ok = true;
              code_table = [];
              frames = [];
-             num_slots = 1; captured = []; closure_envs = [] } in
+             num_slots = 1; captured = []; closure_envs = []; env = [] } in
    let s1 = closure_eval_op s in
    match s1.stack with
    | Bool true :: [] -> true
@@ -81,7 +81,7 @@ val self_call_op : unit -> Lemma
              ok = true;
              code_table = [];
              frames = [];
-             num_slots = 1; captured = []; closure_envs = [] } in
+             num_slots = 1; captured = []; closure_envs = []; env = [] } in
    let s' = callself_handler 1 s 10 in
    s'.pc = 0 && s'.ok = true &&
    (match s'.stack with | [] -> true | _ -> false) &&

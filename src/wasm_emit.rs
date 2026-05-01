@@ -10,29 +10,6 @@
 use crate::types::LispVal;
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
-
-// ── Lightweight type system for typechecking ──
-
-#[derive(Debug, Clone, PartialEq)]
-enum Ty {
-    Num,
-    Bool,
-    Str,
-    Void,
-    Any,   // unknown / not checkable
-}
-
-impl std::fmt::Display for Ty {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Ty::Num => write!(f, "number"),
-            Ty::Bool => write!(f, "bool"),
-            Ty::Str => write!(f, "string"),
-            Ty::Void => write!(f, "void"),
-            Ty::Any => write!(f, "any"),
-        }
-    }
-}
 use wasm_encoder::{
     BlockType, ConstExpr, DataSection, EntityType, ExportKind, ExportSection, Function,
     FunctionSection, GlobalSection, GlobalType, ImportSection, Instruction, MemorySection,
@@ -109,9 +86,9 @@ const HOST_FUNCS: &[(&str, &[ValType], &[ValType])] = &[
 const HOST_BASE: u32 = 0xFF00_0000;
 const USER_BASE: u32 = 0xFF01_0000;
 const TEMP_MEM: i64 = 64;
-const INPUT_BUF: i64 = 16384;  // 16KB for input JSON args
-const STORAGE_BUF: i64 = 8192;  // 8 bytes for storage read/write buffer
-const STORAGE_U128_BUF: i64 = 8208;  // 16 bytes for u128 storage ops
+const HEAP_START: i64 = 4096; // heap starts at page 0 offset 4096 (after data segments)
+const FN_REF_TAG: i64 = 2;  // (fn_idx << 2) | 2
+const CLOSURE_TAG: i64 = 3; // (mem_ptr << 2) | 3
 // ~300 Tgas on NEAR ≈ ~10B simple ops. Cap at 1B to be safe (stops runaway, still uses full NEAR runtime).
 const GAS_LIMIT: i64 = 1_000_000_000;
 const DEPTH_LIMIT: i64 = 512;
@@ -137,6 +114,13 @@ pub struct WasmEmitter {
     next_data_offset: u32,
     host_needed: HashSet<usize>,
     gas_local: Option<u32>, // index of the gas counter local (i64)
+    heap_ptr: u32, // bump allocator for closures
+    lambda_counter: u32, // unique lambda id
+    // Track which function each lambda maps to, and its captured var count
+    // lambda_id -> (func_array_idx, captured_count)
+    lambda_info: Vec<(usize, usize)>, 
+    // When compiling a lambda, maps captured var names to their offset in the closure
+    captured_map: HashMap<String, usize>,
 }
 
 impl WasmEmitter {
@@ -145,7 +129,7 @@ impl WasmEmitter {
             locals: HashMap::new(), next_local: 0, current_func: None, current_param_count: 0,
             while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 1, exports: Vec::new(),
             data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(),
-            gas_local: None,
+            gas_local: None, heap_ptr: HEAP_START as u32, lambda_counter: 0, lambda_info: Vec::new(), captured_map: HashMap::new(),
         }
     }
 
@@ -157,49 +141,6 @@ impl WasmEmitter {
         i
     }
 
-    /// Format a helpful error for undefined variables
-    fn fmt_undef_error(&self, name: &str) -> String {
-        // Known internal variable mappings
-        let context: Option<String> = match name {
-            "__hof_it" | "__it" => Some("this is the loop variable in hof/map. Your lambda body references 'it' which maps to this.".into()),
-            "__hof_count" => Some("this is the loop count variable in hof/map.".into()),
-            n if n.starts_with("__logn_") => Some("this is an internal variable used by near/log_num, not accessible from user code.".into()),
-            n if n.starts_with("__clog_") => Some("this is an internal variable used by near/log (combined logging), not accessible from user code.".into()),
-            n if n.starts_with("__") => Some("this is an internal compiler variable, not accessible from user code.".into()),
-            _ => None,
-        };
-
-        let mut msg = format!("Undefined variable '{}'", name);
-
-        if let Some(ctx) = context {
-            msg.push_str(&format!("\n  Note: {}", ctx));
-        }
-
-        // Suggest closest matching user-visible local
-        let candidates: Vec<&str> = self.locals.keys()
-            .filter(|k| !k.starts_with("__"))
-            .map(String::as_str)
-            .collect();
-
-        if !candidates.is_empty() {
-            let mut best: Option<(&str, usize)> = None;
-            for c in &candidates {
-                let dist = levenshtein(name, c);
-                if dist <= 3 {
-                    match best {
-                        Some((_, best_dist)) if dist >= best_dist => {}
-                        _ => best = Some((c, dist)),
-                    }
-                }
-            }
-            if let Some((suggestion, _)) = best {
-                msg.push_str(&format!("\n  Did you mean '{}'?", suggestion));
-            }
-        }
-
-        msg
-    }
-
     fn alloc_data(&mut self, bytes: &[u8]) -> u32 {
         let off = self.next_data_offset;
         self.data_segments.push((off, bytes.to_vec()));
@@ -208,84 +149,10 @@ impl WasmEmitter {
         off
     }
 
-    /// Extract (lambda (param) body) → (param_name, body_expr)
-    fn extract_lambda(form: &LispVal) -> Result<(String, LispVal), String> {
-        match form {
-            LispVal::List(items) if items.len() >= 3 => {
-                if let LispVal::Sym(s) = &items[0] {
-                    if s == "lambda" || s == "fn" {
-                        if let LispVal::List(params) = &items[1] {
-                            if let Some(LispVal::Sym(p)) = params.first() {
-                                let body = if items.len() > 3 {
-                                    LispVal::List(std::iter::once(LispVal::Sym("begin".into()))
-                                        .chain(items[2..].iter().cloned()).collect())
-                                } else { items[2].clone() };
-                                return Ok((p.clone(), body));
-                            }
-                        }
-                        if let LispVal::Sym(p) = &items[1] {
-                            let body = if items.len() > 3 {
-                                LispVal::List(std::iter::once(LispVal::Sym("begin".into()))
-                                    .chain(items[2..].iter().cloned()).collect())
-                            } else { items[2].clone() };
-                            return Ok((p.clone(), body));
-                        }
-                    }
-                }
-                Err(format!("hof: expected (lambda (param) body), got {:?}", form))
-            }
-            _ => Err(format!("hof: expected lambda form, got {:?}", form)),
-        }
-    }
-
-    /// Extract (lambda (p1 p2) body) → (vec![p1, p2], body)
-    fn extract_lambda_2param(form: &LispVal) -> Result<(Vec<String>, LispVal), String> {
-        match form {
-            LispVal::List(items) if items.len() >= 3 => {
-                if let LispVal::Sym(s) = &items[0] {
-                    if s == "lambda" || s == "fn" {
-                        if let LispVal::List(params) = &items[1] {
-                            let names: Vec<String> = params.iter()
-                                .filter_map(|p| if let LispVal::Sym(s) = p { Some(s.clone()) } else { None })
-                                .collect();
-                            if names.len() == 2 {
-                                let body = if items.len() > 3 {
-                                    LispVal::List(std::iter::once(LispVal::Sym("begin".into()))
-                                        .chain(items[2..].iter().cloned()).collect())
-                                } else { items[2].clone() };
-                                return Ok((names, body));
-                            }
-                        }
-                    }
-                }
-                Err(format!("hof/reduce: expected (lambda (acc x) body), got {:?}", form))
-            }
-            _ => Err(format!("hof/reduce: expected lambda form, got {:?}", form)),
-        }
-    }
-
     fn need_host(&mut self, idx: usize) { self.host_needed.insert(idx); }
 
     fn host_call(idx: usize) -> Instruction<'static> {
         Instruction::Call(HOST_BASE | idx as u32)
-    }
-
-    fn parse_u128(s: &str) -> Result<(i64, i64), String> {
-        let mut lo: u64 = 0;
-        let mut hi: u64 = 0;
-        for ch in s.chars() {
-            if ch == '_' { continue; }
-            if ch < '0' || ch > '9' { return Err(format!("invalid digit in u128 literal: '{}'", ch)); }
-            let digit = ch as u64 - '0' as u64;
-            // hi:lo = hi:lo * 10 + digit
-            let old_hi = hi as u128;
-            let old_lo = lo as u128;
-            let new_val = old_hi * (1u128 << 64) + old_lo;
-            let new_val = new_val * 10 + digit as u128;
-            lo = new_val as u64;
-            hi = (new_val >> 64) as u64;
-        }
-        Ok((lo as i64, hi as i64))
     }
 
     // ── Tail-call detection ──
@@ -309,15 +176,148 @@ impl WasmEmitter {
         Some(op.as_str()) == self.current_func.as_deref() && items.len() - 1 == self.current_param_count
     }
 
-    // ── Lightweight typecheck pre-pass ──
+    /// Find free variables in an expression (symbols not in the given param set)
+    fn free_vars(&self, e: &LispVal, bound: &HashSet<String>) -> HashSet<String> {
+        let mut free = HashSet::new();
+        self.collect_free(e, bound, &mut free);
+        free
+    }
 
-    /// Typecheck a function body. Called in `emit_define` before codegen.
-    /// `func_name` is the name of the function being compiled, `params` are its parameter names.
-    /// `funcs` provides the list of all defined functions so far (for checking calls).
-    pub fn typecheck_expr(funcs: &Vec<FuncDef>, params: &[String], body: &LispVal) -> Result<(), String> {
-        let mut tc = TypeChecker { funcs, local_names: params.iter().cloned().collect() };
-        tc.check(body)?;
-        Ok(())
+    fn collect_free(&self, e: &LispVal, bound: &HashSet<String>, free: &mut HashSet<String>) {
+        match e {
+            LispVal::Sym(s) => {
+                if !bound.contains(s) && self.locals.contains_key(s) && !self.funcs.iter().any(|f| f.name == *s) {
+                    free.insert(s.clone());
+                }
+            }
+            LispVal::List(items) if !items.is_empty() => {
+                if let LispVal::Sym(op) = &items[0] {
+                    match op.as_str() {
+                        "lambda" => {
+                            if items.len() >= 3 {
+                                if let LispVal::List(params) = &items[1] {
+                                    let mut inner_bound = bound.clone();
+                                    for p in params {
+                                        if let LispVal::Sym(s) = p { inner_bound.insert(s.clone()); }
+                                    }
+                                    self.collect_free(&items[2], &inner_bound, free);
+                                }
+                            }
+                            return;
+                        }
+                        "let" | "let*" => {
+                            if items.len() >= 3 {
+                                if let LispVal::List(bindings) = &items[1] {
+                                    let mut inner_bound = bound.clone();
+                                    for b in bindings {
+                                        if let LispVal::List(pair) = b {
+                                            if let LispVal::Sym(s) = &pair[0] {
+                                                inner_bound.insert(s.clone());
+                                                if pair.len() > 1 { self.collect_free(&pair[1], bound, free); }
+                                            }
+                                        }
+                                    }
+                                    self.collect_free(&items[2], &inner_bound, free);
+                                }
+                                return;
+                            }
+                        }
+                        "define" => return, // don't look inside nested defines
+                        _ => {}
+                    }
+                }
+                for item in items { self.collect_free(item, bound, free); }
+            }
+            _ => {}
+        }
+    }
+
+    /// Compile (lambda (params) body) → tagged closure value on stack
+    fn emit_lambda(&mut self, params: &[String], body: &LispVal) -> Result<Vec<Instruction<'static>>, String> {
+        let lambda_id = self.lambda_counter as usize;
+        self.lambda_counter += 1;
+        
+        // Find free variables
+        let param_set: HashSet<String> = params.iter().cloned().collect();
+        let free = self.free_vars(body, &param_set);
+        let captured: Vec<String> = free.into_iter().collect();
+        let captured_count = captured.len();
+        
+        // Generate hidden function name
+        let name = format!("__lambda_{}", lambda_id);
+        
+        // Save state
+        let saved_func = self.current_func.take();
+        let saved_param_count = self.current_param_count;
+        let saved_locals = self.locals.clone();
+        let saved_next_local = self.next_local;
+        let saved_captured_map = self.captured_map.clone();
+        
+        // Set up lambda function
+        self.locals.clear();
+        self.next_local = 0;
+        self.captured_map.clear();
+        let _env_idx = self.local_idx("__closure_ptr"); // first param: closure pointer
+        for p in params { self.local_idx(p); }
+        self.current_func = Some(name.clone());
+        self.current_param_count = params.len() + 1; // +1 for closure ptr
+        // Set up captured var map: var_name -> offset in closure (1-indexed, [0] is lambda_id)
+        for (i, cap) in captured.iter().enumerate() {
+            self.captured_map.insert(cap.clone(), i + 1); // offset 1, 2, 3...
+        }
+        self.scan_host(body);
+        
+        // Pre-insert placeholder
+        let total_params = params.len() + 1;
+        let placeholder_idx = self.funcs.len();
+        self.funcs.push(FuncDef { name: name.clone(), param_count: total_params, local_count: 0, instrs: Vec::new() });
+        
+        let instrs = self.expr(body)?;
+        let total_locals = self.next_local as usize;
+        self.funcs[placeholder_idx] = FuncDef { name: name.clone(), param_count: total_params, local_count: total_locals, instrs };
+        
+        // Record lambda info
+        self.lambda_info.push((placeholder_idx, captured_count));
+        
+        // Restore state
+        self.current_func = saved_func;
+        self.current_param_count = saved_param_count;
+        self.locals = saved_locals;
+        self.next_local = saved_next_local;
+        self.captured_map = saved_captured_map;
+        
+        // Build closure value: allocate heap memory [fn_idx, cap1, cap2, ...]
+        let mut v = Vec::new();
+        if captured.is_empty() {
+            // No captures → direct fn ref
+            // Value: (lambda_id << 2) | FN_REF_TAG
+            v.push(Instruction::I64Const(((lambda_id as i64) << 2) | FN_REF_TAG));
+        } else {
+            // Allocate closure on heap: [lambda_id, captured_val_1, captured_val_2, ...]
+            let closure_size = (1 + captured_count) as u32; // i64 slots
+            let ptr = self.heap_ptr;
+            self.heap_ptr += closure_size * 8;
+            
+            // Store lambda_id at closure[0]
+            v.push(Instruction::I64Const(ptr as i64));
+            v.push(Instruction::I32WrapI64);
+            v.push(Instruction::I64Const(lambda_id as i64));
+            let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+            v.push(Instruction::I64Store(ma));
+            
+            // Store each captured value
+            for (i, cap) in captured.iter().enumerate() {
+                let &local_idx = self.locals.get(cap).ok_or_else(|| format!("lambda capture: undef local {}", cap))?;
+                v.push(Instruction::I64Const((ptr + ((i as u32 + 1) * 8)) as i64));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(local_idx));
+                v.push(Instruction::I64Store(ma));
+            }
+            
+            // Return closure ptr tagged
+            v.push(Instruction::I64Const(((ptr as i64) << 2) | CLOSURE_TAG));
+        }
+        Ok(v)
     }
 
     fn scan_host(&mut self, e: &LispVal) {
@@ -326,10 +326,10 @@ impl WasmEmitter {
         if items.is_empty() { return }
         let LispVal::Sym(op) = &items[0] else { return };
         match op.as_str() {
-            "near/store" | "near/storage_set" => { self.need_host(17); }
-            "near/load" | "near/storage_get" => { self.need_host(18); self.need_host(0); }
-            "near/remove" | "near/storage_remove" => { self.need_host(19); }
-            "near/has_key" | "near/storage_has" => { self.need_host(20); }
+            "near/store" => { self.need_host(17); self.need_host(18); self.need_host(0); self.need_host(1); }
+            "near/load" => { self.need_host(18); self.need_host(0); self.need_host(1); }
+            "near/remove" => { self.need_host(19); }
+            "near/has_key" => { self.need_host(20); }
             "near/return" => self.need_host(25),
             "near/log" => self.need_host(28),
             "near/panic" => self.need_host(27),
@@ -337,8 +337,6 @@ impl WasmEmitter {
             "near/signer_account_id" => { self.need_host(4); self.need_host(0); self.need_host(1); }
             "near/predecessor_account_id" => { self.need_host(6); self.need_host(0); self.need_host(1); }
             "near/input" => { self.need_host(7); self.need_host(0); self.need_host(1); }
-            "near/json_get_int" | "near/json_get_str" | "near/json_get_u128" => { self.need_host(7); self.need_host(0); self.need_host(1); }
-            "near/json_return_int" | "near/json_return_str" => self.need_host(25),
             "near/block_index" => self.need_host(8),
             "near/block_timestamp" => self.need_host(9),
             "near/epoch_height" => self.need_host(10),
@@ -356,8 +354,6 @@ impl WasmEmitter {
             "near/promise_return" => self.need_host(35),
             "near/promise_batch_create" => self.need_host(39),
             "near/promise_batch_then" => self.need_host(40),
-            "u128/store_storage" => { self.need_host(17); }
-            "u128/load_storage" => { self.need_host(18); self.need_host(0); }
             "near/promise_batch_action_create_account" => self.need_host(41),
             "near/promise_batch_action_deploy_contract" => self.need_host(42),
             "near/promise_batch_action_function_call" => self.need_host(43),
@@ -393,15 +389,6 @@ impl WasmEmitter {
         // Pre-insert placeholder so self-recursion resolves
         let placeholder_idx = self.funcs.len();
         self.funcs.push(FuncDef { name: name.into(), param_count: params.len(), local_count: 0, instrs: Vec::new() });
-
-        // Run typecheck pre-pass (catches obvious errors before codegen)
-        if !name.starts_with("__") {
-            if let Err(e) = Self::typecheck_expr(&self.funcs, params, body) {
-                // Remove placeholder before returning error
-                self.funcs.pop();
-                return Err(format!("in function '{}': {}", name, e));
-            }
-        }
 
         let tc = self.has_tc(body);
 
@@ -609,11 +596,19 @@ impl WasmEmitter {
             LispVal::Bool(false) => Ok(vec![Instruction::I64Const(0)]),
             LispVal::Nil => Ok(vec![Instruction::I64Const(0)]),
             LispVal::Sym(n) => {
+                // Check if it's a captured variable from enclosing lambda
+                if let Some(&offset) = self.captured_map.get(n) {
+                    // Load from closure: closure_ptr is local 0, load at offset*8
+                    let ma = wasm_encoder::MemArg { offset: (offset as u64 * 8), align: 3, memory_index: 0 };
+                    return Ok(vec![
+                        Instruction::LocalGet(0), // closure_ptr
+                        Instruction::I32WrapI64,
+                        Instruction::I64Load(ma),
+                    ]);
+                }
                 if let Some(&i) = self.locals.get(n) {
                     Ok(vec![Instruction::LocalGet(i)])
                 } else if let Some(pos) = self.funcs.iter().position(|func| &func.name == n) {
-                    // Function reference — encode as tagged i64 (positive = fn index)
-                    // Shift left by 1 and set bit 0 to distinguish from regular numbers
                     Ok(vec![Instruction::I64Const(((pos as i64) << 2) | 2)])
                 } else {
                     Err(format!("undef: {}", n))
@@ -624,7 +619,12 @@ impl WasmEmitter {
                 Ok(vec![Instruction::I64Const((off | ((s.len() as u64) << 32)) as i64)])
             }
             LispVal::List(items) if !items.is_empty() => {
-                if let LispVal::Sym(op) = &items[0] { self.call(op, &items[1..]) } else { Err("expected symbol".into()) }
+                if let LispVal::Sym(op) = &items[0] { 
+                    self.call(op, &items[1..]) 
+                } else {
+                    // Dynamic call: ((expr) args...) — callee is not a symbol
+                    self.emit_dynamic_call(&items[0], &items[1..])
+                }
             }
             _ => Err(format!("unsupported: {:?}", e)),
         }
@@ -632,6 +632,14 @@ impl WasmEmitter {
 
     fn call(&mut self, op: &str, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
         match op {
+            "lambda" => {
+                if a.len() < 2 { return Err("lambda: need params and body".into()); }
+                let LispVal::List(params) = &a[0] else { return Err("lambda: params must be list".into()); };
+                let param_names: Vec<String> = params.iter().map(|p| match p {
+                    LispVal::Sym(s) => Ok(s.clone()), _ => Err("lambda param must be symbol".into()),
+                }).collect::<Result<_, String>>()?;
+                self.emit_lambda(&param_names, &a[1])
+            }
             "+" => self.fold_binop(a, Instruction::I64Add, 0),
             "*" => self.fold_binop(a, Instruction::I64Mul, 1),
             "-" if a.len()==1 => {
@@ -833,117 +841,6 @@ impl WasmEmitter {
                 Ok(v)
             }
 
-            // (hof/map (lambda (x) body) start end [offset])
-            "hof/map" => {
-                if a.len() < 3 { return Err("hof/map: need (hof/map (lambda (x) body) start end [offset])".into()); }
-                let (param, body) = Self::extract_lambda(&a[0])?;
-                let param_idx = self.local_idx(&param);
-                let it_idx = self.local_idx("__hof_it");
-                let count_idx = self.local_idx("__hof_count");
-                let out_offset = if a.len() > 3 {
-                    match &a[3] { LispVal::Num(n) => *n as i64, _ => return Err("hof/map: offset must be number".into()) }
-                } else { 2048i64 };
-                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
-                let tmp = self.local_idx("__hof_tmp");
-                let mut v = Vec::new();
-                v.extend(self.expr(&a[1])?); v.push(Instruction::LocalSet(it_idx));
-                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(count_idx));
-                v.push(Instruction::Block(BlockType::Result(ValType::I64)));
-                v.push(Instruction::Loop(BlockType::Empty));
-                v.push(Instruction::LocalGet(it_idx));
-                v.extend(self.expr(&a[2])?); v.push(Instruction::I64GeS);
-                v.push(Instruction::If(BlockType::Empty));
-                v.push(Instruction::LocalGet(count_idx)); v.push(Instruction::Br(2));
-                v.push(Instruction::End);
-                v.push(Instruction::LocalGet(it_idx)); v.push(Instruction::LocalSet(param_idx));
-                v.extend(self.expr(&body)?); v.push(Instruction::LocalSet(tmp));
-                v.push(Instruction::I64Const(out_offset));
-                v.push(Instruction::LocalGet(count_idx));
-                v.push(Instruction::I64Const(8)); v.push(Instruction::I64Mul); v.push(Instruction::I64Add);
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::LocalGet(tmp));
-                v.push(Instruction::I64Store(ma));
-                v.push(Instruction::LocalGet(count_idx));
-                v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(count_idx));
-                v.push(Instruction::LocalGet(it_idx));
-                v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(it_idx));
-                v.push(Instruction::Br(0));
-                v.push(Instruction::End);
-                v.push(Instruction::I64Const(0));
-                v.push(Instruction::End);
-                Ok(v)
-            }
-            // (hof/filter (lambda (x) pred) start end [offset])
-            "hof/filter" => {
-                if a.len() < 3 { return Err("hof/filter: need (hof/filter (lambda (x) pred) start end [offset])".into()); }
-                let (param, body) = Self::extract_lambda(&a[0])?;
-                let param_idx = self.local_idx(&param);
-                let it_idx = self.local_idx("__hof_it");
-                let count_idx = self.local_idx("__hof_count");
-                let out_offset = if a.len() > 3 {
-                    match &a[3] { LispVal::Num(n) => *n as i64, _ => return Err("hof/filter: offset must be number".into()) }
-                } else { 2048i64 };
-                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
-                let mut v = Vec::new();
-                v.extend(self.expr(&a[1])?); v.push(Instruction::LocalSet(it_idx));
-                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(count_idx));
-                v.push(Instruction::Block(BlockType::Result(ValType::I64)));
-                v.push(Instruction::Loop(BlockType::Empty));
-                v.push(Instruction::LocalGet(it_idx));
-                v.extend(self.expr(&a[2])?); v.push(Instruction::I64GeS);
-                v.push(Instruction::If(BlockType::Empty));
-                v.push(Instruction::LocalGet(count_idx)); v.push(Instruction::Br(2));
-                v.push(Instruction::End);
-                v.push(Instruction::LocalGet(it_idx)); v.push(Instruction::LocalSet(param_idx));
-                v.extend(self.expr(&body)?);
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::If(BlockType::Empty));
-                // addr then value for i64.store
-                v.push(Instruction::I64Const(out_offset));
-                v.push(Instruction::LocalGet(count_idx));
-                v.push(Instruction::I64Const(8)); v.push(Instruction::I64Mul); v.push(Instruction::I64Add);
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::LocalGet(it_idx));
-                v.push(Instruction::I64Store(ma));
-                v.push(Instruction::LocalGet(count_idx));
-                v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(count_idx));
-                v.push(Instruction::End);
-                v.push(Instruction::LocalGet(it_idx));
-                v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(it_idx));
-                v.push(Instruction::Br(0));
-                v.push(Instruction::End);
-                v.push(Instruction::I64Const(0));
-                v.push(Instruction::End);
-                Ok(v)
-            }
-            // (hof/reduce (lambda (acc x) body) init start end)
-            "hof/reduce" => {
-                if a.len() < 4 { return Err("hof/reduce: need (hof/reduce (lambda (acc x) body) init start end)".into()); }
-                let (params, body) = Self::extract_lambda_2param(&a[0])?;
-                let acc_idx = self.local_idx(&params[0]);
-                let param_idx = self.local_idx(&params[1]);
-                let it_idx = self.local_idx("__hof_it");
-                let mut v = Vec::new();
-                v.extend(self.expr(&a[1])?); v.push(Instruction::LocalSet(acc_idx));
-                v.extend(self.expr(&a[2])?); v.push(Instruction::LocalSet(it_idx));
-                v.push(Instruction::Block(BlockType::Result(ValType::I64)));
-                v.push(Instruction::Loop(BlockType::Empty));
-                v.push(Instruction::LocalGet(it_idx));
-                v.extend(self.expr(&a[3])?); v.push(Instruction::I64GeS);
-                v.push(Instruction::If(BlockType::Empty));
-                v.push(Instruction::LocalGet(acc_idx)); v.push(Instruction::Br(2));
-                v.push(Instruction::End);
-                v.push(Instruction::LocalGet(it_idx)); v.push(Instruction::LocalSet(param_idx));
-                v.extend(self.expr(&body)?); v.push(Instruction::LocalSet(acc_idx));
-                v.push(Instruction::LocalGet(it_idx));
-                v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(it_idx));
-                v.push(Instruction::Br(0));
-                v.push(Instruction::End);
-                v.push(Instruction::I64Const(0));
-                v.push(Instruction::End);
-                Ok(v)
-            }
-
             // (map-into mem_offset start end body)
             // Writes (body it) into memory at mem_offset + (it-start)*8
             // Returns count
@@ -1095,88 +992,14 @@ impl WasmEmitter {
                 v.push(Self::host_call(20));
                 Ok(v)
             }
-            // --- storage aliases (near/storage_*) using STORAGE_BUF at offset 8192 ---
-            "near/storage_set" => {
-                let key_expr = self.expr(&a[0])?;
-                let val_expr = self.expr(&a[1])?;
-                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
-                let mut v = Vec::new();
-                // Store value at STORAGE_BUF
-                v.push(Instruction::I32Const(STORAGE_BUF as i32));
-                v.extend(val_expr);
-                v.push(Instruction::I64Store(ma));
-                // Extract key ptr and len (packed string: low32=ptr, high32=len)
-                v.extend(key_expr.clone());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // key_len
-                v.extend(key_expr);
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // key_ptr
-                // storage_write(key_len, key_ptr, val_len=8, val_ptr=STORAGE_BUF, register_id=0)
-                v.push(Instruction::I64Const(8));           // val_len
-                v.push(Instruction::I64Const(STORAGE_BUF)); // val_ptr
-                v.push(Instruction::I64Const(0));           // register_id
-                v.push(Self::host_call(17));
-                v.push(Instruction::Drop);
-                v.push(Instruction::I64Const(0));
-                Ok(v)
-            }
-            "near/storage_get" => {
-                let key_expr = self.expr(&a[0])?;
-                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
-                let mut v = Vec::new();
-                // Extract key ptr and len
-                v.extend(key_expr.clone());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // key_len
-                v.extend(key_expr);
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // key_ptr
-                v.push(Instruction::I64Const(0)); // register_id
-                // storage_read(key_len, key_ptr, register_id=0) — idx 18
-                v.push(Self::host_call(18));
-                // Result is 0 (not found) or 1 (found)
-                v.push(Instruction::I32WrapI64); // condition as i32
-                v.push(Instruction::If(wasm_encoder::BlockType::Result(ValType::I64)));
-                    // Found: read_register(0, STORAGE_BUF) then load i64
-                    v.push(Instruction::I64Const(0));           // register_id
-                    v.push(Instruction::I64Const(STORAGE_BUF)); // ptr
-                    v.push(Self::host_call(0));                 // read_register — idx 0
-                    v.push(Instruction::I32Const(STORAGE_BUF as i32));
-                    v.push(Instruction::I64Load(ma));
-                v.push(Instruction::Else);
-                    v.push(Instruction::I64Const(0)); // not found → 0
-                v.push(Instruction::End);
-                Ok(v)
-            }
-            "near/storage_has" => {
-                let key_expr = self.expr(&a[0])?;
-                let mut v = Vec::new();
-                v.extend(key_expr.clone());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(key_expr);
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
-                v.push(Self::host_call(20));
-                Ok(v)
-            }
-            "near/storage_remove" => {
-                let key_expr = self.expr(&a[0])?;
-                let mut v = Vec::new();
-                v.extend(key_expr.clone());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(key_expr);
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::I64Const(0)); // register_id
-                v.push(Self::host_call(19));
-                Ok(v)
-            }
             "near/return" => {
                 let val = self.expr(&a[0])?;
                 let mut v = Vec::new();
-                v.push(Instruction::I32Const(TEMP_MEM as i32)); v.extend(val);
+                v.push(Instruction::I32Const(0)); v.extend(val);
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                // value_return(len=8, ptr=TEMP_MEM) — idx 25
-                v.push(Instruction::I64Const(8)); v.push(Instruction::I64Const(TEMP_MEM));
+                // value_return(len=8, ptr=0) — idx 25
+                v.push(Instruction::I64Const(8)); v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(25));
-                // Set return flag so export wrapper skips its value_return
-                v.push(Instruction::I64Const(1));
-                v.push(Instruction::GlobalSet(1));
                 v.push(Instruction::I64Const(0)); Ok(v)
             }
             // (near/return_str packed_string) — returns variable-length string bytes
@@ -1194,133 +1017,16 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0)); Ok(v)
             }
             "near/log" => {
-                // (near/log "string") — log string
-                // (near/log "prefix" num) — log string then number (two separate log calls)
-                if a.len() == 1 {
-                    let msg = self.expr(&a[0])?;
-                    let mut v = Vec::new();
-                    v.extend(msg.clone());
-                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                    v.extend(msg);
-                    v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
-                    v.push(Self::host_call(28));
-                    v.push(Instruction::I64Const(0)); Ok(v)
-                } else {
-                    // Two separate log calls: first the string, then the number
-                    let msg = self.expr(&a[0])?;
-                    let num_expr = self.expr(&a[1])?;
-                    let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
-                    let abs_val = self.local_idx("__logn_abs");
-                    let digit_count = self.local_idx("__logn_digits");
-                    let is_neg = self.local_idx("__logn_neg");
-                    let tmp_digit = self.local_idx("__logn_d");
-                    let ptr = self.local_idx("__logn_ptr");
-                    let mut v = Vec::new();
-
-                    // First: log the string
-                    v.extend(msg.clone());
-                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                    v.extend(msg);
-                    v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
-                    v.push(Self::host_call(28));
-
-                    // Second: log the number (same technique as near/log_num)
-                    v.extend(num_expr);
-                    v.push(Instruction::LocalSet(abs_val));
-                    v.push(Instruction::LocalGet(abs_val));
-                    v.push(Instruction::I64Const(0));
-                    v.push(Instruction::I64LtS);
-                    v.push(Instruction::I64ExtendI32U);
-                    v.push(Instruction::LocalSet(is_neg));
-                    v.push(Instruction::LocalGet(is_neg));
-                    v.push(Instruction::I32WrapI64);
-                    v.push(Instruction::If(BlockType::Result(ValType::I64)));
-                    v.push(Instruction::I64Const(0));
-                    v.push(Instruction::LocalGet(abs_val));
-                    v.push(Instruction::I64Sub);
-                    v.push(Instruction::Else);
-                    v.push(Instruction::LocalGet(abs_val));
-                    v.push(Instruction::End);
-                    v.push(Instruction::LocalSet(abs_val));
-                    v.push(Instruction::I64Const(4184));
-                    v.push(Instruction::LocalSet(ptr));
-                    v.push(Instruction::I64Const(0));
-                    v.push(Instruction::LocalSet(digit_count));
-                    v.push(Instruction::Block(BlockType::Empty));
-                    v.push(Instruction::Loop(BlockType::Empty));
-                    v.push(Instruction::LocalGet(abs_val));
-                    v.push(Instruction::I64Eqz);
-                    v.push(Instruction::If(BlockType::Empty));
-                    v.push(Instruction::Br(2));
-                    v.push(Instruction::End);
-                    v.push(Instruction::LocalGet(abs_val));
-                    v.push(Instruction::I64Const(10));
-                    v.push(Instruction::I64RemS);
-                    v.push(Instruction::LocalSet(tmp_digit));
-                    v.push(Instruction::LocalGet(abs_val));
-                    v.push(Instruction::I64Const(10));
-                    v.push(Instruction::I64DivS);
-                    v.push(Instruction::LocalSet(abs_val));
-                    v.push(Instruction::LocalGet(ptr));
-                    v.push(Instruction::I64Const(1));
-                    v.push(Instruction::I64Sub);
-                    v.push(Instruction::LocalSet(ptr));
-                    v.push(Instruction::LocalGet(ptr));
-                    v.push(Instruction::I32WrapI64);
-                    v.push(Instruction::LocalGet(tmp_digit));
-                    v.push(Instruction::I64Const(48));
-                    v.push(Instruction::I64Add);
-                    v.push(Instruction::I32WrapI64);
-                    v.push(Instruction::I32Store8(ma8));
-                    v.push(Instruction::LocalGet(digit_count));
-                    v.push(Instruction::I64Const(1));
-                    v.push(Instruction::I64Add);
-                    v.push(Instruction::LocalSet(digit_count));
-                    v.push(Instruction::Br(0));
-                    v.push(Instruction::End);
-                    v.push(Instruction::End);
-                    // Zero special case
-                    v.push(Instruction::LocalGet(digit_count));
-                    v.push(Instruction::I64Eqz);
-                    v.push(Instruction::If(BlockType::Empty));
-                    v.push(Instruction::I64Const(4183));
-                    v.push(Instruction::LocalSet(ptr));
-                    v.push(Instruction::I64Const(4183));
-                    v.push(Instruction::I32WrapI64);
-                    v.push(Instruction::I64Const(48));
-                    v.push(Instruction::I32WrapI64);
-                    v.push(Instruction::I32Store8(ma8));
-                    v.push(Instruction::I64Const(1));
-                    v.push(Instruction::LocalSet(digit_count));
-                    v.push(Instruction::End);
-                    // Negative prefix
-                    v.push(Instruction::LocalGet(is_neg));
-                    v.push(Instruction::I32WrapI64);
-                    v.push(Instruction::If(BlockType::Empty));
-                    v.push(Instruction::LocalGet(ptr));
-                    v.push(Instruction::I64Const(1));
-                    v.push(Instruction::I64Sub);
-                    v.push(Instruction::LocalSet(ptr));
-                    v.push(Instruction::LocalGet(ptr));
-                    v.push(Instruction::I32WrapI64);
-                    v.push(Instruction::I64Const(45));
-                    v.push(Instruction::I32WrapI64);
-                    v.push(Instruction::I32Store8(ma8));
-                    v.push(Instruction::LocalGet(digit_count));
-                    v.push(Instruction::I64Const(1));
-                    v.push(Instruction::I64Add);
-                    v.push(Instruction::LocalSet(digit_count));
-                    v.push(Instruction::End);
-                    // log_utf8(count, ptr)
-                    v.push(Instruction::LocalGet(digit_count));
-                    v.push(Instruction::LocalGet(ptr));
-                    v.push(Self::host_call(28));
-
-                    v.push(Instruction::I64Const(0));
-                    Ok(v)
-                }
+                let msg = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                v.extend(msg.clone());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(msg);
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                // log_utf8(len, ptr) — idx 28
+                v.push(Self::host_call(28));
+                v.push(Instruction::I64Const(0)); Ok(v)
             }
-
             "near/panic" => {
                 let msg = self.expr(&a[0])?;
                 let mut v = Vec::new();
@@ -1336,146 +1042,10 @@ impl WasmEmitter {
                 // panic() — idx 26, traps unconditionally
                 Ok(vec![Self::host_call(26), Instruction::I64Const(0)])
             }
-            // (near/log_num expr) — converts i64 to decimal string and logs via env.log_utf8
-            "near/log_num" => {
-                self.need_host(28);
-                let num_expr = self.expr(&a[0])?;
-                let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
-                let abs_val = self.local_idx("__logn_abs");
-                let digit_count = self.local_idx("__logn_digits");
-                let is_neg = self.local_idx("__logn_neg");
-                let tmp_digit = self.local_idx("__logn_d");
-                let ptr = self.local_idx("__logn_ptr");
-                let mut v = Vec::new();
-                v.extend(num_expr);
-                v.push(Instruction::LocalSet(abs_val));
-                v.push(Instruction::LocalGet(abs_val));
-                v.push(Instruction::I64Const(0));
-                v.push(Instruction::I64LtS);
-                v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::LocalSet(is_neg));
-                v.push(Instruction::LocalGet(is_neg));
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::If(BlockType::Result(ValType::I64)));
-                v.push(Instruction::I64Const(0));
-                v.push(Instruction::LocalGet(abs_val));
-                v.push(Instruction::I64Sub);
-                v.push(Instruction::Else);
-                v.push(Instruction::LocalGet(abs_val));
-                v.push(Instruction::End);
-                v.push(Instruction::LocalSet(abs_val));
-                v.push(Instruction::I64Const(4184));
-                v.push(Instruction::LocalSet(ptr));
-                v.push(Instruction::I64Const(0));
-                v.push(Instruction::LocalSet(digit_count));
-                v.push(Instruction::Block(BlockType::Empty));
-                v.push(Instruction::Loop(BlockType::Empty));
-                v.push(Instruction::LocalGet(abs_val));
-                v.push(Instruction::I64Eqz);
-                v.push(Instruction::If(BlockType::Empty));
-                v.push(Instruction::Br(2));
-                v.push(Instruction::End);
-                v.push(Instruction::LocalGet(abs_val));
-                v.push(Instruction::I64Const(10));
-                v.push(Instruction::I64RemS);
-                v.push(Instruction::LocalSet(tmp_digit));
-                v.push(Instruction::LocalGet(abs_val));
-                v.push(Instruction::I64Const(10));
-                v.push(Instruction::I64DivS);
-                v.push(Instruction::LocalSet(abs_val));
-                v.push(Instruction::LocalGet(ptr));
-                v.push(Instruction::I64Const(1));
-                v.push(Instruction::I64Sub);
-                v.push(Instruction::LocalSet(ptr));
-                v.push(Instruction::LocalGet(ptr));
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::LocalGet(tmp_digit));
-                v.push(Instruction::I64Const(48));
-                v.push(Instruction::I64Add);
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Store8(ma8));
-                v.push(Instruction::LocalGet(digit_count));
-                v.push(Instruction::I64Const(1));
-                v.push(Instruction::I64Add);
-                v.push(Instruction::LocalSet(digit_count));
-                v.push(Instruction::Br(0));
-                v.push(Instruction::End); // loop
-                v.push(Instruction::End); // block
-                // Zero special case
-                v.push(Instruction::LocalGet(digit_count));
-                v.push(Instruction::I64Eqz);
-                v.push(Instruction::If(BlockType::Empty));
-                v.push(Instruction::I64Const(4183));
-                v.push(Instruction::LocalSet(ptr));
-                v.push(Instruction::I64Const(4183));
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Const(48));
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Store8(ma8));
-                v.push(Instruction::I64Const(1));
-                v.push(Instruction::LocalSet(digit_count));
-                v.push(Instruction::End);
-                // Negative prefix
-                v.push(Instruction::LocalGet(is_neg));
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::If(BlockType::Empty));
-                v.push(Instruction::LocalGet(ptr));
-                v.push(Instruction::I64Const(1));
-                v.push(Instruction::I64Sub);
-                v.push(Instruction::LocalSet(ptr));
-                v.push(Instruction::LocalGet(ptr));
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Const(45));
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Store8(ma8));
-                v.push(Instruction::LocalGet(digit_count));
-                v.push(Instruction::I64Const(1));
-                v.push(Instruction::I64Add);
-                v.push(Instruction::LocalSet(digit_count));
-                v.push(Instruction::End);
-                // log_utf8(count, ptr)
-                v.push(Instruction::LocalGet(digit_count));
-                v.push(Instruction::LocalGet(ptr));
-                v.push(Self::host_call(28));
-                v.push(Instruction::I64Const(0));
-                Ok(v)
-            }
             "near/current_account_id" => self.read_to_register(3, a),
             "near/signer_account_id" => self.read_to_register(4, a),
             "near/predecessor_account_id" => self.read_to_register(6, a),
             "near/input" => self.read_to_register(7, a),
-            "near/json_get_int" => {
-                if a.is_empty() { return Err("near/json_get_int requires a string key argument".into()); }
-                match &a[0] {
-                    LispVal::Str(key) => self.json_get_int(key),
-                    _ => Err("near/json_get_int key must be a string literal".into()),
-                }
-            }
-            "near/json_get_u128" => {
-                if a.len() < 2 { return Err("near/json_get_u128 requires a string key and offset argument".into()); }
-                match &a[0] {
-                    LispVal::Str(key) => {
-                        let offset_expr = self.expr(&a[1])?;
-                        self.json_get_u128(key, offset_expr)
-                    }
-                    _ => Err("near/json_get_u128 key must be a string literal".into()),
-                }
-            }
-            "near/json_get_str" => {
-                if a.is_empty() { return Err("near/json_get_str requires a string key argument".into()); }
-                match &a[0] {
-                    LispVal::Str(key) => self.json_get_str(key),
-                    _ => Err("near/json_get_str key must be a string literal".into()),
-                }
-            }
-            "near/json_return_int" => {
-                let val_expr = self.expr(&a[0])?;
-                self.json_return_int(val_expr)
-            }
-            "near/json_return_str" => {
-                let packed_expr = self.expr(&a[0])?;
-                self.json_return_str(packed_expr)
-            }
             "near/block_index" => Ok(vec![Self::host_call(8)]),
             "near/block_timestamp" => Ok(vec![Self::host_call(9)]),
             "near/epoch_height" => Ok(vec![Self::host_call(10)]),
@@ -2174,133 +1744,6 @@ impl WasmEmitter {
                 v.push(Instruction::Else);
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::End);
-                Ok(v)
-            }
-
-            // (u128/from_yocto "amount" offset) — compile-time parse decimal, store at offset, return offset
-            "u128/from_yocto" => {
-                if a.len() != 2 { return Err("u128/from_yocto: expected (\"amount\" offset)".into()); }
-                let offset_expr = self.expr(&a[1])?;
-                let (lo, hi) = match &a[0] {
-                    LispVal::Str(s) => Self::parse_u128(s)?,
-                    _ => return Err("u128/from_yocto: first arg must be a string literal".into()),
-                };
-                let off = self.local_idx("__u128_off");
-                let mut v = Vec::new();
-                v.extend(offset_expr); v.push(Instruction::LocalSet(off));
-                v.push(Instruction::LocalGet(off)); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Const(lo));
-                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                v.push(Instruction::LocalGet(off)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Const(hi));
-                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                v.push(Instruction::LocalGet(off));
-                Ok(v)
-            }
-
-            // (u128/new hi lo offset) — store hi:lo at offset, return offset
-            "u128/new" => {
-                if a.len() != 3 { return Err("u128/new: expected (hi lo offset)".into()); }
-                let hi_e = self.expr(&a[0])?;
-                let lo_e = self.expr(&a[1])?;
-                let off_e = self.expr(&a[2])?;
-                let off = self.local_idx("__u128_off");
-                let mut v = Vec::new();
-                v.extend(off_e); v.push(Instruction::LocalSet(off));
-                v.extend(lo_e);
-                v.push(Instruction::LocalGet(off)); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                v.extend(hi_e);
-                v.push(Instruction::LocalGet(off)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                v.push(Instruction::LocalGet(off));
-                Ok(v)
-            }
-
-            // (u128/from_i64 n offset) — zero-extend i64 to u128 at offset, return offset
-            "u128/from_i64" => {
-                if a.len() != 2 { return Err("u128/from_i64: expected (n offset)".into()); }
-                let n_e = self.expr(&a[0])?;
-                let off_e = self.expr(&a[1])?;
-                let off = self.local_idx("__u128_off");
-                let mut v = Vec::new();
-                v.extend(off_e); v.push(Instruction::LocalSet(off));
-                v.extend(n_e);
-                v.push(Instruction::LocalGet(off)); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                v.push(Instruction::LocalGet(off)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Const(0));
-                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                v.push(Instruction::LocalGet(off));
-                Ok(v)
-            }
-
-            // (u128/to_i64 offset) — load low 64 bits
-            "u128/to_i64" => {
-                let mut v = self.expr(&a[0])?;
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                Ok(v)
-            }
-
-            // (u128/store_storage "key" src) — store u128 at src to NEAR storage under key
-            "u128/store_storage" => {
-                if a.len() != 2 { return Err("u128/store_storage: expected (\"key\" src)".into()); }
-                let key = self.expr(&a[0])?;
-                let src = self.expr(&a[1])?;
-                let os = self.local_idx("__u128_s");
-                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
-                let mut v = Vec::new();
-                v.extend(src); v.push(Instruction::LocalSet(os));
-                // Copy 16 bytes from src to STORAGE_U128_BUF
-                v.push(Instruction::LocalGet(os)); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Load(ma));
-                v.push(Instruction::I32Const(STORAGE_U128_BUF as i32));
-                v.push(Instruction::I64Store(ma));
-                v.push(Instruction::LocalGet(os)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Load(ma));
-                v.push(Instruction::I32Const((STORAGE_U128_BUF + 8) as i32));
-                v.push(Instruction::I64Store(ma));
-                // storage_write(key_len, key_ptr, 16, STORAGE_U128_BUF, 0) — idx 17
-                v.extend(key.clone());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(key);
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::I64Const(16)); v.push(Instruction::I64Const(STORAGE_U128_BUF)); v.push(Instruction::I64Const(0));
-                v.push(Self::host_call(17)); v.push(Instruction::Drop);
-                v.push(Instruction::I64Const(0));
-                Ok(v)
-            }
-
-            // (u128/load_storage "key" dst) — load u128 from NEAR storage to dst, return dst
-            "u128/load_storage" => {
-                if a.len() != 2 { return Err("u128/load_storage: expected (\"key\" dst)".into()); }
-                let key = self.expr(&a[0])?;
-                let dst = self.expr(&a[1])?;
-                let od = self.local_idx("__u128_d");
-                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
-                let mut v = Vec::new();
-                v.extend(dst); v.push(Instruction::LocalSet(od));
-                // storage_read(key_len, key_ptr, 0) — idx 18
-                v.extend(key.clone());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(key);
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::I64Const(0));
-                v.push(Self::host_call(18)); v.push(Instruction::Drop);
-                // read_register(0, STORAGE_U128_BUF)
-                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(STORAGE_U128_BUF));
-                v.push(Self::host_call(0)); v.push(Instruction::Drop);
-                // Copy 16 bytes from STORAGE_U128_BUF to dst
-                v.push(Instruction::I32Const(STORAGE_U128_BUF as i32));
-                v.push(Instruction::I64Load(ma));
-                v.push(Instruction::LocalGet(od)); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Store(ma));
-                v.push(Instruction::I32Const((STORAGE_U128_BUF + 8) as i32));
-                v.push(Instruction::I64Load(ma));
-                v.push(Instruction::LocalGet(od)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Store(ma));
-                v.push(Instruction::LocalGet(od));
                 Ok(v)
             }
 
@@ -4268,942 +3711,13 @@ impl WasmEmitter {
 
             // User function call
             _ => {
-                let pos = self.funcs.iter().position(|f| f.name == op).ok_or_else(|| {
-                    let mut msg = format!("in {}: function '{}' is not defined", self.current_func.as_deref().unwrap_or("top"), op);
-                    // Suggest closest match from user-defined functions
-                    let candidates: Vec<&str> = self.funcs.iter()
-                        .filter(|f| !f.name.starts_with("__"))
-                        .map(|f| f.name.as_str())
-                        .collect();
-                    let builtins = ["+", "-", "*", "/", "mod", "abs", "=", "!=", "<", ">", "<=", ">=",
-                        "and", "or", "not", "if", "let", "begin", "while", "for", "set!", "quote",
-                        "near/log", "near/return", "near/store", "near/load", "near/storage_set", "near/storage_get", "near/storage_has", "near/storage_remove", "near/log_num",
-                        "near/json_get_int", "near/json_get_str", "near/json_get_u128", "near/json_return_int", "near/json_return_str",
-                        "hof/map", "hof/filter", "hof/reduce"];
-                    let all_candidates: Vec<&str> = candidates.iter().chain(builtins.iter()).copied().collect();
-                    let mut best: Option<(&str, usize)> = None;
-                    for c in &all_candidates {
-                        let dist = levenshtein(op, c);
-                        if dist <= 3 {
-                            match best {
-                                Some((_, best_dist)) if dist >= best_dist => {}
-                                _ => best = Some((*c, dist)),
-                            }
-                        }
-                    }
-                    if let Some((suggestion, _)) = best {
-                        msg.push_str(&format!(". Did you mean '{}'?", suggestion));
-                    }
-                    msg
-                })?;
+                let pos = self.funcs.iter().position(|f| f.name == op).ok_or_else(|| format!("in {}: unknown function '{}'", self.current_func.as_deref().unwrap_or("top"), op))?;
                 let mut v = Vec::new();
                 for x in a { v.extend(self.expr(x)?); }
                 v.push(Instruction::Call(USER_BASE | pos as u32));
                 Ok(v)
             }
         }
-    }
-
-    /// Emit WASM to read input JSON to INPUT_BUF, scan for "key": pattern, return i64 value.
-    fn json_get_int(&mut self, key: &str) -> Result<Vec<Instruction<'static>>, String> {
-        self.need_host(7); self.need_host(0); self.need_host(1);
-        let mut pattern = vec![b'"'];
-        pattern.extend(key.as_bytes());
-        pattern.extend_from_slice(b"\":");
-        let pat_off = self.alloc_data(&pattern);
-        let pat_len = pattern.len() as i64;
-        let pos = self.local_idx("__js_pos");
-        let ilen = self.local_idx("__js_ilen");
-        let mi = self.local_idx("__js_mi");
-        let jj = self.local_idx("__js_j");
-        let res = self.local_idx("__js_res");
-        let ng = self.local_idx("__js_ng");
-        let dg = self.local_idx("__js_dg");
-        let prev_byte = self.local_idx("__js_prev");
-        let ws_byte = self.local_idx("__js_ws_byte");
-        let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
-        let ib = INPUT_BUF;
-        let mut v = Vec::new();
-
-        // Read input to INPUT_BUF
-        v.push(Instruction::I64Const(0)); v.push(Self::host_call(7)); // input(0)
-        v.push(Instruction::I64Const(0)); v.push(Self::host_call(1)); // register_len(0)
-        v.push(Instruction::LocalSet(ilen));
-        v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(ib)); v.push(Self::host_call(0)); // read_register(0, ib)
-
-        // pos = 0, depth = 0
-        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(pos));
-        let depth = self.local_idx("__js_depth");
-        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(depth));
-
-        // Scan loop (block/loop)
-        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
-        // if pos + pat_len > ilen: break
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(pat_len));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalGet(ilen));
-        v.push(Instruction::I64GtS); v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::Br(2)); v.push(Instruction::End);
-
-        // Track brace depth: load byte at INPUT_BUF+pos
-        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
-        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
-        let scan_byte = self.local_idx("__js_sb");
-        v.push(Instruction::LocalSet(scan_byte));
-        // if byte == '{': depth++
-        v.push(Instruction::LocalGet(scan_byte)); v.push(Instruction::I64Const(0x7B));
-        v.push(Instruction::I64Eq);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::LocalGet(depth)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(depth));
-        v.push(Instruction::End);
-        // if byte == '}': depth--
-        v.push(Instruction::LocalGet(scan_byte)); v.push(Instruction::I64Const(0x7D));
-        v.push(Instruction::I64Eq);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::LocalGet(depth)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Sub); v.push(Instruction::LocalSet(depth));
-        v.push(Instruction::End);
-
-        // Only try to match at depth == 1 (top level)
-        v.push(Instruction::LocalGet(depth)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Ne);
-        v.push(Instruction::If(BlockType::Empty));
-        // depth != 1, skip comparison, just advance pos
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
-        v.push(Instruction::Br(1)); // back to outer LOOP (skip label 0 = this if)
-        v.push(Instruction::End);
-
-        // Assume match (mi=1), compare bytes
-        v.push(Instruction::I64Const(1)); v.push(Instruction::LocalSet(mi));
-        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(jj));
-        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
-        v.push(Instruction::LocalGet(jj)); v.push(Instruction::I64Const(pat_len));
-        v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::Br(2)); v.push(Instruction::End);
-        // Load input[ib+pos+j]
-        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Add);
-        v.push(Instruction::LocalGet(jj)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
-        // Load pattern[pat_off+j]
-        v.push(Instruction::I64Const(pat_off as i64)); v.push(Instruction::LocalGet(jj)); v.push(Instruction::I64Add);
-        v.push(Instruction::I32WrapI64); v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
-        // Compare
-        v.push(Instruction::I64Eq);
-        v.push(Instruction::If(BlockType::Empty)); // match continues
-        v.push(Instruction::Else); // mismatch
-        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(mi));
-        v.push(Instruction::Br(2)); v.push(Instruction::End);
-        v.push(Instruction::LocalGet(jj)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(jj));
-        v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End); // inner loop/block
-
-        // If mi==1: check preceding byte boundary
-        v.push(Instruction::LocalGet(mi)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Eq);
-        v.push(Instruction::If(BlockType::Empty));
-        // pos > 0 → check preceding byte
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(0));
-        v.push(Instruction::I64GtS);
-        v.push(Instruction::If(BlockType::Empty));
-        // Load byte at INPUT_BUF[pos-1]
-        v.push(Instruction::I64Const(ib));
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Sub); v.push(Instruction::I64Add);
-        v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
-        v.push(Instruction::LocalSet(prev_byte));
-        // Valid if prev_byte in {0x7B '{', 0x2C ',', 0x20 ' ', 0x09 '\t', 0x0A '\n'}
-        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x7B)); v.push(Instruction::I64Eq);
-        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x2C)); v.push(Instruction::I64Eq);
-        v.push(Instruction::I32Or);
-        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x20)); v.push(Instruction::I64Eq);
-        v.push(Instruction::I32Or);
-        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x09)); v.push(Instruction::I64Eq);
-        v.push(Instruction::I32Or);
-        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x0A)); v.push(Instruction::I64Eq);
-        v.push(Instruction::I32Or);
-        // If NOT valid boundary, reset mi
-        v.push(Instruction::I32Eqz);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(mi));
-        v.push(Instruction::End);
-        v.push(Instruction::End); // end pos > 0 check
-        v.push(Instruction::End); // end mi==1 check
-        // Now check mi again — if still 1, break outer
-        v.push(Instruction::LocalGet(mi)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Eq);
-        v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
-        // pos++
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
-        v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End); // outer loop/block
-
-        // Wrap parse section: if pos >= ilen (key not found), skip parsing; res stays 0
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
-        v.push(Instruction::I64LtS);
-        v.push(Instruction::If(BlockType::Empty)); // if pos < ilen → parse
-
-        // pos at match. Value at pos + pat_len
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(pat_len));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
-
-        // Skip whitespace (space, tab, LF, CR)
-        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
-        v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::Br(2)); v.push(Instruction::End);
-        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
-        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
-        v.push(Instruction::LocalSet(ws_byte));
-        // byte == ' ' || byte == '\t' || byte == '\n' || byte == '\r'
-        v.push(Instruction::LocalGet(ws_byte)); v.push(Instruction::I64Const(0x20)); v.push(Instruction::I64Eq);
-        v.push(Instruction::LocalGet(ws_byte)); v.push(Instruction::I64Const(0x09)); v.push(Instruction::I64Eq);
-        v.push(Instruction::I32Or);
-        v.push(Instruction::LocalGet(ws_byte)); v.push(Instruction::I64Const(0x0A)); v.push(Instruction::I64Eq);
-        v.push(Instruction::I32Or);
-        v.push(Instruction::LocalGet(ws_byte)); v.push(Instruction::I64Const(0x0D)); v.push(Instruction::I64Eq);
-        v.push(Instruction::I32Or);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
-        v.push(Instruction::Br(1)); v.push(Instruction::End);
-        v.push(Instruction::End); v.push(Instruction::End);
-
-        // Skip quote if present
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
-        v.push(Instruction::I64LtS);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
-        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
-        v.push(Instruction::I64Const(0x22)); v.push(Instruction::I64Eq);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
-        v.push(Instruction::End); v.push(Instruction::End);
-
-        // Check negative
-        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(ng));
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
-        v.push(Instruction::I64LtS);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
-        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
-        v.push(Instruction::I64Const(0x2D)); v.push(Instruction::I64Eq);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::I64Const(1)); v.push(Instruction::LocalSet(ng));
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
-        v.push(Instruction::End); v.push(Instruction::End);
-
-        // Parse digits
-        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(res));
-        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
-        v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::Br(2)); v.push(Instruction::End);
-        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
-        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
-        v.push(Instruction::LocalSet(dg));
-        // if dg < 0x30: break
-        v.push(Instruction::LocalGet(dg)); v.push(Instruction::I64Const(0x30));
-        v.push(Instruction::I64LtS);
-        v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
-        // if dg > 0x39: break
-        v.push(Instruction::LocalGet(dg)); v.push(Instruction::I64Const(0x39));
-        v.push(Instruction::I64GtS);
-        v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
-        // res = res*10 + (dg - 0x30)
-        v.push(Instruction::LocalGet(res)); v.push(Instruction::I64Const(10)); v.push(Instruction::I64Mul);
-        v.push(Instruction::LocalGet(dg)); v.push(Instruction::I64Const(0x30)); v.push(Instruction::I64Sub);
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(res));
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
-        v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
-
-        // Apply negative → store to res
-        v.push(Instruction::LocalGet(ng)); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalGet(res)); v.push(Instruction::I64Sub);
-        v.push(Instruction::LocalSet(res));
-        v.push(Instruction::End); // end if neg
-        v.push(Instruction::End); // end if pos < ilen (parse section)
-        // Return res (0 if key not found, parsed value otherwise)
-        v.push(Instruction::LocalGet(res));
-        Ok(v)
-    }
-
-    /// Emit WASM to read input JSON, scan for "key": pattern, parse decimal into u128 at offset.
-    /// Returns offset (i64). u128 stored as lo 8 bytes at offset, hi 8 bytes at offset+8.
-    fn json_get_u128(&mut self, key: &str, offset_expr: Vec<Instruction<'static>>) -> Result<Vec<Instruction<'static>>, String> {
-        self.need_host(7); self.need_host(0); self.need_host(1);
-        let mut pattern = vec![b'"'];
-        pattern.extend(key.as_bytes());
-        pattern.extend_from_slice(b"\":");
-        let pat_off = self.alloc_data(&pattern);
-        let pat_len = pattern.len() as i64;
-        let pos = self.local_idx("__ju_pos");
-        let ilen = self.local_idx("__ju_ilen");
-        let mi = self.local_idx("__ju_mi");
-        let jj = self.local_idx("__ju_j");
-        let lo = self.local_idx("__ju_lo");
-        let hi = self.local_idx("__ju_hi");
-        let dg = self.local_idx("__ju_dg");
-        let prev_byte = self.local_idx("__ju_prev");
-        let ws_byte = self.local_idx("__ju_ws_byte");
-        let scan_byte = self.local_idx("__ju_sb");
-        let depth = self.local_idx("__ju_depth");
-        let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
-        let ib = INPUT_BUF;
-        let mut v = offset_expr;
-
-        // Store offset to a temp local
-        let off_local = self.local_idx("__ju_offset");
-        v.push(Instruction::LocalSet(off_local));
-
-        // Read input to INPUT_BUF
-        v.push(Instruction::I64Const(0)); v.push(Self::host_call(7));
-        v.push(Instruction::I64Const(0)); v.push(Self::host_call(1));
-        v.push(Instruction::LocalSet(ilen));
-        v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(ib)); v.push(Self::host_call(0));
-
-        // pos = 0, depth = 0
-        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(pos));
-        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(depth));
-
-        // ── Scan loop ──
-        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(pat_len));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalGet(ilen));
-        v.push(Instruction::I64GtS); v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::Br(2)); v.push(Instruction::End);
-
-        // Track brace depth
-        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
-        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
-        v.push(Instruction::LocalSet(scan_byte));
-        v.push(Instruction::LocalGet(scan_byte)); v.push(Instruction::I64Const(0x7B));
-        v.push(Instruction::I64Eq);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::LocalGet(depth)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(depth));
-        v.push(Instruction::End);
-        v.push(Instruction::LocalGet(scan_byte)); v.push(Instruction::I64Const(0x7D));
-        v.push(Instruction::I64Eq);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::LocalGet(depth)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Sub); v.push(Instruction::LocalSet(depth));
-        v.push(Instruction::End);
-
-        // Only match at depth == 1
-        v.push(Instruction::LocalGet(depth)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Ne);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
-        v.push(Instruction::Br(1));
-        v.push(Instruction::End);
-
-        // Compare bytes
-        v.push(Instruction::I64Const(1)); v.push(Instruction::LocalSet(mi));
-        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(jj));
-        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
-        v.push(Instruction::LocalGet(jj)); v.push(Instruction::I64Const(pat_len));
-        v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::Br(2)); v.push(Instruction::End);
-        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Add);
-        v.push(Instruction::LocalGet(jj)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
-        v.push(Instruction::I64Const(pat_off as i64)); v.push(Instruction::LocalGet(jj)); v.push(Instruction::I64Add);
-        v.push(Instruction::I32WrapI64); v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
-        v.push(Instruction::I64Eq);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::Else);
-        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(mi));
-        v.push(Instruction::Br(2)); v.push(Instruction::End);
-        v.push(Instruction::LocalGet(jj)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(jj));
-        v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
-
-        // Check preceding byte boundary
-        v.push(Instruction::LocalGet(mi)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Eq);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(0));
-        v.push(Instruction::I64GtS);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::I64Const(ib));
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Sub); v.push(Instruction::I64Add);
-        v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
-        v.push(Instruction::LocalSet(prev_byte));
-        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x7B)); v.push(Instruction::I64Eq);
-        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x2C)); v.push(Instruction::I64Eq);
-        v.push(Instruction::I32Or);
-        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x20)); v.push(Instruction::I64Eq);
-        v.push(Instruction::I32Or);
-        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x09)); v.push(Instruction::I64Eq);
-        v.push(Instruction::I32Or);
-        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x0A)); v.push(Instruction::I64Eq);
-        v.push(Instruction::I32Or);
-        v.push(Instruction::I32Eqz);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(mi));
-        v.push(Instruction::End);
-        v.push(Instruction::End);
-        v.push(Instruction::End);
-        v.push(Instruction::LocalGet(mi)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Eq);
-        v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
-        v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
-
-        // ── Parse section ──
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
-        v.push(Instruction::I64LtS);
-        v.push(Instruction::If(BlockType::Empty));
-
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(pat_len));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
-
-        // Skip whitespace
-        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
-        v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::Br(2)); v.push(Instruction::End);
-        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
-        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
-        v.push(Instruction::LocalSet(ws_byte));
-        v.push(Instruction::LocalGet(ws_byte)); v.push(Instruction::I64Const(0x20)); v.push(Instruction::I64Eq);
-        v.push(Instruction::LocalGet(ws_byte)); v.push(Instruction::I64Const(0x09)); v.push(Instruction::I64Eq);
-        v.push(Instruction::I32Or);
-        v.push(Instruction::LocalGet(ws_byte)); v.push(Instruction::I64Const(0x0A)); v.push(Instruction::I64Eq);
-        v.push(Instruction::I32Or);
-        v.push(Instruction::LocalGet(ws_byte)); v.push(Instruction::I64Const(0x0D)); v.push(Instruction::I64Eq);
-        v.push(Instruction::I32Or);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
-        v.push(Instruction::Br(1)); v.push(Instruction::End);
-        v.push(Instruction::End); v.push(Instruction::End);
-
-        // Skip quote if present
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
-        v.push(Instruction::I64LtS);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
-        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
-        v.push(Instruction::I64Const(0x22)); v.push(Instruction::I64Eq);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
-        v.push(Instruction::End); v.push(Instruction::End);
-
-        // Init lo = 0, hi = 0
-        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(lo));
-        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(hi));
-
-        // ── Digit parse loop: hi:lo = hi:lo * 10 + digit ──
-        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
-        v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::Br(2)); v.push(Instruction::End);
-        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
-        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
-        v.push(Instruction::LocalSet(dg));
-        v.push(Instruction::LocalGet(dg)); v.push(Instruction::I64Const(0x30));
-        v.push(Instruction::I64LtS);
-        v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
-        v.push(Instruction::LocalGet(dg)); v.push(Instruction::I64Const(0x39));
-        v.push(Instruction::I64GtS);
-        v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
-
-        // digit = dg - 0x30
-        v.push(Instruction::LocalGet(dg)); v.push(Instruction::I64Const(0x30)); v.push(Instruction::I64Sub);
-        v.push(Instruction::LocalSet(dg));
-
-        // u128 multiply-by-10-and-add-digit using 32-bit split:
-        // lo_lo = lo & 0xFFFFFFFF, lo_hi = lo >> 32
-        // p0 = lo_lo * 10 + digit, r0 = p0 & 0xFFFFFFFF, c0 = p0 >> 32
-        // p1 = lo_hi * 10 + c0, r1 = p1 & 0xFFFFFFFF, c1 = p1 >> 32
-        // lo = r0 | (r1 << 32), hi = hi * 10 + c1
-        let lo_lo = self.local_idx("__ju_ll");
-        let lo_hi = self.local_idx("__ju_lh");
-        let p0 = self.local_idx("__ju_p0");
-        let r0 = self.local_idx("__ju_r0");
-        let c0 = self.local_idx("__ju_c0");
-        let p1 = self.local_idx("__ju_p1");
-        let r1 = self.local_idx("__ju_r1");
-        let c1 = self.local_idx("__ju_c1");
-
-        // lo_lo = lo & 0xFFFFFFFF
-        v.push(Instruction::LocalGet(lo)); v.push(Instruction::I64Const(0xFFFFFFFF));
-        v.push(Instruction::I64And); v.push(Instruction::LocalSet(lo_lo));
-        // lo_hi = lo >> 32
-        v.push(Instruction::LocalGet(lo)); v.push(Instruction::I64Const(32));
-        v.push(Instruction::I64ShrU); v.push(Instruction::LocalSet(lo_hi));
-        // p0 = lo_lo * 10 + digit
-        v.push(Instruction::LocalGet(lo_lo)); v.push(Instruction::I64Const(10));
-        v.push(Instruction::I64Mul); v.push(Instruction::LocalGet(dg));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(p0));
-        // r0 = p0 & 0xFFFFFFFF
-        v.push(Instruction::LocalGet(p0)); v.push(Instruction::I64Const(0xFFFFFFFF));
-        v.push(Instruction::I64And); v.push(Instruction::LocalSet(r0));
-        // c0 = p0 >> 32
-        v.push(Instruction::LocalGet(p0)); v.push(Instruction::I64Const(32));
-        v.push(Instruction::I64ShrU); v.push(Instruction::LocalSet(c0));
-        // p1 = lo_hi * 10 + c0
-        v.push(Instruction::LocalGet(lo_hi)); v.push(Instruction::I64Const(10));
-        v.push(Instruction::I64Mul); v.push(Instruction::LocalGet(c0));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(p1));
-        // r1 = p1 & 0xFFFFFFFF
-        v.push(Instruction::LocalGet(p1)); v.push(Instruction::I64Const(0xFFFFFFFF));
-        v.push(Instruction::I64And); v.push(Instruction::LocalSet(r1));
-        // c1 = p1 >> 32
-        v.push(Instruction::LocalGet(p1)); v.push(Instruction::I64Const(32));
-        v.push(Instruction::I64ShrU); v.push(Instruction::LocalSet(c1));
-        // lo = r0 | (r1 << 32)
-        v.push(Instruction::LocalGet(r1)); v.push(Instruction::I64Const(32));
-        v.push(Instruction::I64Shl); v.push(Instruction::LocalGet(r0));
-        v.push(Instruction::I64Or); v.push(Instruction::LocalSet(lo));
-        // hi = hi * 10 + c1
-        v.push(Instruction::LocalGet(hi)); v.push(Instruction::I64Const(10));
-        v.push(Instruction::I64Mul); v.push(Instruction::LocalGet(c1));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(hi));
-
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
-        v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
-
-        // ── Write lo/hi to memory at offset ──
-        let ma64 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
-        v.push(Instruction::LocalGet(off_local));
-        v.push(Instruction::I32WrapI64);
-        v.push(Instruction::LocalGet(lo));
-        v.push(Instruction::I64Store(ma64.clone()));
-        v.push(Instruction::LocalGet(off_local));
-        v.push(Instruction::I64Const(8)); v.push(Instruction::I64Add);
-        v.push(Instruction::I32WrapI64);
-        v.push(Instruction::LocalGet(hi));
-        v.push(Instruction::I64Store(ma64));
-
-        v.push(Instruction::End); // end if pos < ilen
-
-        v.push(Instruction::LocalGet(off_local));
-        Ok(v)
-    }
-
-    /// Emit WASM to read input JSON, scan for "key": "value", return packed string (ptr|len<<32).
-    fn json_get_str(&mut self, key: &str) -> Result<Vec<Instruction<'static>>, String> {
-        self.need_host(7); self.need_host(0); self.need_host(1);
-        let mut pattern = vec![b'"'];
-        pattern.extend(key.as_bytes());
-        pattern.extend_from_slice(b"\":");
-        let pat_off = self.alloc_data(&pattern);
-        let pat_len = pattern.len() as i64;
-        let pos = self.local_idx("__jss_pos");
-        let ilen = self.local_idx("__jss_ilen");
-        let mi = self.local_idx("__jss_mi");
-        let jj = self.local_idx("__jss_j");
-        let slen = self.local_idx("__jss_slen");
-        let prev_byte = self.local_idx("__jss_prev");
-        let ws_byte = self.local_idx("__jss_ws_byte");
-        let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
-        let ib = INPUT_BUF;
-        let mut v = Vec::new();
-
-        // Read input to INPUT_BUF
-        v.push(Instruction::I64Const(0)); v.push(Self::host_call(7));
-        v.push(Instruction::I64Const(0)); v.push(Self::host_call(1)); v.push(Instruction::LocalSet(ilen));
-        v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(ib)); v.push(Self::host_call(0));
-
-        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(pos));
-        let depth = self.local_idx("__jss_depth");
-        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(depth));
-
-        // Scan loop
-        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(pat_len));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalGet(ilen));
-        v.push(Instruction::I64GtS); v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::Br(2)); v.push(Instruction::End);
-
-        // Track brace depth
-        let scan_byte = self.local_idx("__jss_sb");
-        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
-        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
-        v.push(Instruction::LocalSet(scan_byte));
-        v.push(Instruction::LocalGet(scan_byte)); v.push(Instruction::I64Const(0x7B));
-        v.push(Instruction::I64Eq);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::LocalGet(depth)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(depth));
-        v.push(Instruction::End);
-        v.push(Instruction::LocalGet(scan_byte)); v.push(Instruction::I64Const(0x7D));
-        v.push(Instruction::I64Eq);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::LocalGet(depth)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Sub); v.push(Instruction::LocalSet(depth));
-        v.push(Instruction::End);
-        // Only match at depth == 1
-        v.push(Instruction::LocalGet(depth)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Ne);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
-        v.push(Instruction::Br(1)); // back to outer LOOP (skip label 0 = this if)
-        v.push(Instruction::End);
-
-        v.push(Instruction::I64Const(1)); v.push(Instruction::LocalSet(mi));
-        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(jj));
-        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
-        v.push(Instruction::LocalGet(jj)); v.push(Instruction::I64Const(pat_len));
-        v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::Br(2)); v.push(Instruction::End);
-        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Add);
-        v.push(Instruction::LocalGet(jj)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
-        v.push(Instruction::I64Const(pat_off as i64)); v.push(Instruction::LocalGet(jj)); v.push(Instruction::I64Add);
-        v.push(Instruction::I32WrapI64); v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
-        v.push(Instruction::I64Eq);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::Else);
-        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(mi));
-        v.push(Instruction::Br(2)); v.push(Instruction::End);
-        v.push(Instruction::LocalGet(jj)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(jj));
-        v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
-
-        // If mi==1: check preceding byte boundary
-        v.push(Instruction::LocalGet(mi)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Eq);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(0));
-        v.push(Instruction::I64GtS);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::I64Const(ib));
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Sub); v.push(Instruction::I64Add);
-        v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
-        v.push(Instruction::LocalSet(prev_byte));
-        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x7B)); v.push(Instruction::I64Eq);
-        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x2C)); v.push(Instruction::I64Eq);
-        v.push(Instruction::I32Or);
-        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x20)); v.push(Instruction::I64Eq);
-        v.push(Instruction::I32Or);
-        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x09)); v.push(Instruction::I64Eq);
-        v.push(Instruction::I32Or);
-        v.push(Instruction::LocalGet(prev_byte)); v.push(Instruction::I64Const(0x0A)); v.push(Instruction::I64Eq);
-        v.push(Instruction::I32Or);
-        v.push(Instruction::I32Eqz);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(mi));
-        v.push(Instruction::End);
-        v.push(Instruction::End);
-        v.push(Instruction::End);
-        v.push(Instruction::LocalGet(mi)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Eq);
-        v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
-        v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
-
-        // If pos >= ilen, key not found — return 0 (packed as 0)
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
-        v.push(Instruction::I64LtS);
-        v.push(Instruction::If(BlockType::Result(ValType::I64)));
-
-        // Value at pos + pat_len
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(pat_len));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
-
-        // Skip whitespace (space, tab, LF, CR)
-        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
-        v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::Br(2)); v.push(Instruction::End);
-        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
-        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
-        v.push(Instruction::LocalSet(ws_byte));
-        v.push(Instruction::LocalGet(ws_byte)); v.push(Instruction::I64Const(0x20)); v.push(Instruction::I64Eq);
-        v.push(Instruction::LocalGet(ws_byte)); v.push(Instruction::I64Const(0x09)); v.push(Instruction::I64Eq);
-        v.push(Instruction::I32Or);
-        v.push(Instruction::LocalGet(ws_byte)); v.push(Instruction::I64Const(0x0A)); v.push(Instruction::I64Eq);
-        v.push(Instruction::I32Or);
-        v.push(Instruction::LocalGet(ws_byte)); v.push(Instruction::I64Const(0x0D)); v.push(Instruction::I64Eq);
-        v.push(Instruction::I32Or);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
-        v.push(Instruction::Br(1)); v.push(Instruction::End);
-        v.push(Instruction::End); v.push(Instruction::End);
-
-        // Skip opening quote (the quote before the string value)
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
-
-        // Measure string length (scan until closing quote)
-        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(slen));
-        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
-        v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(slen));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalGet(ilen));
-        v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::Br(2)); v.push(Instruction::End);
-        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
-        v.push(Instruction::LocalGet(slen)); v.push(Instruction::I64Add); v.push(Instruction::I64Add);
-        v.push(Instruction::I32WrapI64); v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
-        v.push(Instruction::I64Const(0x22)); v.push(Instruction::I64Eq);
-        v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
-        v.push(Instruction::LocalGet(slen)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(slen));
-        v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
-
-        // Return packed: (slen << 32) | (ib + pos)
-        v.push(Instruction::LocalGet(slen)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
-        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Add);
-        v.push(Instruction::I64Or);
-        v.push(Instruction::Else);
-        // Key not found: return 0
-        v.push(Instruction::I64Const(0));
-        v.push(Instruction::End); // end if pos < ilen
-        Ok(v)
-    }
-
-    /// Emit WASM to write {"result": <digits>} to INPUT_BUF and call value_return.
-    fn json_return_int(&mut self, val_expr: Vec<Instruction<'static>>) -> Result<Vec<Instruction<'static>>, String> {
-        self.need_host(25);
-        let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
-        let abs_val = self.local_idx("__jri_abs");
-        let is_neg = self.local_idx("__jri_neg");
-        let dc = self.local_idx("__jri_dc");
-        let td = self.local_idx("__jri_td");
-        let ptr = self.local_idx("__jri_ptr");
-        let ib = INPUT_BUF;
-        let mut v = Vec::new();
-
-        // Write prefix: {"result":  (with trailing space for padding-free int write)
-        let prefix: &[u8] = b"{\"result\":  ";
-        let prefix_len = prefix.len() as i64; // 12
-        let prefix_off = self.alloc_data(prefix);
-
-        // Copy prefix to INPUT_BUF
-        let ci = self.local_idx("__jri_ci");
-        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(ci));
-        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
-        v.push(Instruction::LocalGet(ci)); v.push(Instruction::I64Const(prefix_len));
-        v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::Br(2)); v.push(Instruction::End);
-        // addr = ib + ci
-        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(ci)); v.push(Instruction::I64Add);
-        v.push(Instruction::I32WrapI64);
-        // val = load from prefix_off + ci
-        v.push(Instruction::I64Const(prefix_off as i64)); v.push(Instruction::LocalGet(ci)); v.push(Instruction::I64Add);
-        v.push(Instruction::I32WrapI64); v.push(Instruction::I32Load8U(ma8.clone()));
-        v.push(Instruction::I32Store8(ma8.clone()));
-        v.push(Instruction::LocalGet(ci)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(ci));
-        v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
-
-        // Write integer digits backwards from ib + prefix_len + 20
-        v.extend(val_expr);
-        v.push(Instruction::LocalSet(abs_val));
-
-        // Check negative
-        v.push(Instruction::LocalGet(abs_val)); v.push(Instruction::I64Const(0));
-        v.push(Instruction::I64LtS); v.push(Instruction::I64ExtendI32U);
-        v.push(Instruction::LocalSet(is_neg));
-        v.push(Instruction::LocalGet(is_neg)); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::If(BlockType::Result(ValType::I64)));
-        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalGet(abs_val)); v.push(Instruction::I64Sub);
-        v.push(Instruction::Else);
-        v.push(Instruction::LocalGet(abs_val));
-        v.push(Instruction::End);
-        v.push(Instruction::LocalSet(abs_val));
-
-        let digit_end = prefix_len + 21;
-        v.push(Instruction::I64Const(digit_end)); v.push(Instruction::LocalSet(ptr));
-        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(dc));
-
-        // Handle 0
-        v.push(Instruction::LocalGet(abs_val)); v.push(Instruction::I64Eqz);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::LocalGet(ptr)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Sub); v.push(Instruction::LocalSet(ptr));
-        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(ptr));
-        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I64Const(0x30)); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I32Store8(ma8.clone()));
-        v.push(Instruction::I64Const(1)); v.push(Instruction::LocalSet(dc));
-        v.push(Instruction::Else);
-
-        // Digit loop
-        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
-        v.push(Instruction::LocalGet(abs_val)); v.push(Instruction::I64Eqz);
-        v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
-        v.push(Instruction::LocalGet(abs_val)); v.push(Instruction::I64Const(10));
-        v.push(Instruction::I64RemS); v.push(Instruction::LocalSet(td));
-        v.push(Instruction::LocalGet(abs_val)); v.push(Instruction::I64Const(10));
-        v.push(Instruction::I64DivS); v.push(Instruction::LocalSet(abs_val));
-        v.push(Instruction::LocalGet(ptr)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Sub); v.push(Instruction::LocalSet(ptr));
-        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(ptr));
-        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::LocalGet(td)); v.push(Instruction::I64Const(0x30));
-        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I32Store8(ma8.clone()));
-        v.push(Instruction::LocalGet(dc)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(dc));
-        v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
-        v.push(Instruction::End); // end else
-
-        // Add minus sign
-        v.push(Instruction::LocalGet(is_neg)); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::LocalGet(ptr)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Sub); v.push(Instruction::LocalSet(ptr));
-        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(ptr));
-        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I64Const(0x2D)); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I32Store8(ma8.clone()));
-        v.push(Instruction::LocalGet(dc)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(dc));
-        v.push(Instruction::End);
-
-        // Shift digits to position prefix_len
-        let si = self.local_idx("__jri_si");
-        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(si));
-        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
-        v.push(Instruction::LocalGet(si)); v.push(Instruction::LocalGet(dc));
-        v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::Br(2)); v.push(Instruction::End);
-        // Push dst addr first (deeper), then load byte (top) for I32Store8
-        v.push(Instruction::I64Const(ib + prefix_len)); v.push(Instruction::LocalGet(si));
-        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-        // Stack: [dst_addr]
-        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(ptr)); v.push(Instruction::I64Add);
-        v.push(Instruction::LocalGet(si)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I32Load8U(ma8.clone()));
-        // Stack: [dst_addr, loaded_byte] — I32Store8 pops value=byte, addr=dst_addr
-        v.push(Instruction::I32Store8(ma8.clone()));
-        v.push(Instruction::LocalGet(si)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(si));
-        v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
-
-        // Write '}'
-        v.push(Instruction::I64Const(ib + prefix_len)); v.push(Instruction::LocalGet(dc));
-        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I64Const(b'}' as i64)); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I32Store8(ma8.clone()));
-
-        // total_len = prefix_len + dc + 1
-        let tl = self.local_idx("__jri_tl");
-        v.push(Instruction::I64Const(prefix_len)); v.push(Instruction::LocalGet(dc));
-        v.push(Instruction::I64Add); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(tl));
-
-        // value_return(total_len, ib)
-        v.push(Instruction::LocalGet(tl)); v.push(Instruction::I64Const(ib));
-        v.push(Self::host_call(25));
-
-        v.push(Instruction::I64Const(1)); v.push(Instruction::GlobalSet(1));
-        v.push(Instruction::I64Const(0));
-        Ok(v)
-    }
-
-    /// Emit WASM to write {"result": "str"} to INPUT_BUF and call value_return.
-    fn json_return_str(&mut self, packed_expr: Vec<Instruction<'static>>) -> Result<Vec<Instruction<'static>>, String> {
-        self.need_host(25);
-        let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
-        let ib = INPUT_BUF;
-        let packed = self.local_idx("__jrs_packed");
-        let str_ptr = self.local_idx("__jrs_ptr");
-        let str_len = self.local_idx("__jrs_len");
-        let ci = self.local_idx("__jrs_ci");
-        let mut v = Vec::new();
-
-        // Write prefix: {"result": "
-        let prefix: &[u8] = b"{\"result\": \"";
-        let prefix_len = prefix.len() as i64; // 12
-        let prefix_off = self.alloc_data(prefix);
-
-        // Copy prefix
-        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(ci));
-        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
-        v.push(Instruction::LocalGet(ci)); v.push(Instruction::I64Const(prefix_len));
-        v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::Br(2)); v.push(Instruction::End);
-        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(ci));
-        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I64Const(prefix_off as i64)); v.push(Instruction::LocalGet(ci));
-        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I32Load8U(ma8.clone()));
-        v.push(Instruction::I32Store8(ma8.clone()));
-        v.push(Instruction::LocalGet(ci)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(ci));
-        v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
-
-        // Unpack string
-        v.extend(packed_expr);
-        v.push(Instruction::LocalSet(packed));
-        v.push(Instruction::LocalGet(packed)); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(str_ptr));
-        v.push(Instruction::LocalGet(packed)); v.push(Instruction::I64Const(32));
-        v.push(Instruction::I64ShrU); v.push(Instruction::LocalSet(str_len));
-
-        // Copy string bytes to ib + prefix_len
-        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(ci));
-        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
-        v.push(Instruction::LocalGet(ci)); v.push(Instruction::LocalGet(str_len));
-        v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::Br(2)); v.push(Instruction::End);
-        // dst
-        v.push(Instruction::I64Const(ib + prefix_len)); v.push(Instruction::LocalGet(ci));
-        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-        // src
-        v.push(Instruction::LocalGet(str_ptr)); v.push(Instruction::LocalGet(ci));
-        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I32Load8U(ma8.clone()));
-        v.push(Instruction::I32Store8(ma8.clone()));
-        v.push(Instruction::LocalGet(ci)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(ci));
-        v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
-
-        // Write '"}'
-        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(str_len));
-        v.push(Instruction::I64Add); v.push(Instruction::I64Const(prefix_len));
-        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I64Const(0x22)); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I32Store8(ma8.clone()));
-
-        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(str_len));
-        v.push(Instruction::I64Add); v.push(Instruction::I64Const(prefix_len + 1));
-        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I64Const(b'}' as i64)); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I32Store8(ma8.clone()));
-
-        // value_return(prefix_len + str_len + 2, ib)
-        v.push(Instruction::I64Const(prefix_len)); v.push(Instruction::LocalGet(str_len));
-        v.push(Instruction::I64Add); v.push(Instruction::I64Const(2));
-        v.push(Instruction::I64Add); v.push(Instruction::I64Const(ib));
-        v.push(Self::host_call(25));
-
-        v.push(Instruction::I64Const(1)); v.push(Instruction::GlobalSet(1));
-        v.push(Instruction::I64Const(0));
-        Ok(v)
     }
 
     // Helper: call host(register_id=0), read_register(0, TEMP_MEM), register_len(0), return packed (ptr|len<<32)
@@ -5351,6 +3865,79 @@ impl WasmEmitter {
         Ok(v)
     }
 
+    /// Dynamic call: callee is an expression, not a known function name
+    /// Checks tag at runtime: fn-ref (tag 2) or closure (tag 3)
+    /// Dynamic call: callee is an expression, not a known function name
+    fn emit_dynamic_call(&mut self, callee: &LispVal, args: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
+        let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+        
+        // Create temp locals for this call site
+        let temp_callee = self.next_local; self.next_local += 1;
+        let temp_closure_ptr = self.next_local; self.next_local += 1;
+        let lambda_id_local = self.next_local; self.next_local += 1;
+        let arg_locals: Vec<u32> = args.iter().map(|_| { let l = self.next_local; self.next_local += 1; l }).collect();
+        
+        // 1. Evaluate callee (this triggers emit_lambda which populates lambda_info)
+        let mut v = self.expr(callee)?;
+        v.push(Instruction::LocalSet(temp_callee));
+        
+        // 2. Evaluate args
+        for (i, arg) in args.iter().enumerate() {
+            v.extend(self.expr(arg)?);
+            v.push(Instruction::LocalSet(arg_locals[i]));
+        }
+        
+        // 3. Now lambda_info is populated — generate dispatch
+        let n_lambdas = self.lambda_info.len();
+        if n_lambdas == 0 {
+            return Err("dynamic call but no lambdas defined".into());
+        }
+        
+        // Compute lambda_id from callee tag
+        // First compute (callee & 3) to determine tag, then dispatch
+        v.push(Instruction::LocalGet(temp_callee));
+        v.push(Instruction::I64Const(3));
+        v.push(Instruction::I64And);
+        v.push(Instruction::I64Const(2));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        // fn-ref path
+        v.push(Instruction::LocalGet(temp_callee));
+        v.push(Instruction::I64Const(2));
+        v.push(Instruction::I64ShrU);
+        v.push(Instruction::LocalSet(lambda_id_local));
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::LocalSet(temp_closure_ptr));
+        v.push(Instruction::Else);
+        // closure path
+        v.push(Instruction::LocalGet(temp_callee));
+        v.push(Instruction::I64Const(2));
+        v.push(Instruction::I64ShrU);
+        v.push(Instruction::LocalSet(temp_closure_ptr));
+        v.push(Instruction::LocalGet(temp_closure_ptr));
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I64Load(ma));
+        v.push(Instruction::LocalSet(lambda_id_local));
+        v.push(Instruction::End);
+        
+        // Sequential if/else dispatch
+        for (lid, &(func_idx, _cap_count)) in self.lambda_info.iter().enumerate() {
+            v.push(Instruction::LocalGet(lambda_id_local));
+            v.push(Instruction::I64Const(lid as i64));
+            v.push(Instruction::I64Eq);
+            v.push(Instruction::If(BlockType::Result(ValType::I64)));
+            v.push(Instruction::LocalGet(temp_closure_ptr));
+            for &al in &arg_locals { v.push(Instruction::LocalGet(al)); }
+            v.push(Instruction::Call(USER_BASE | func_idx as u32));
+            v.push(Instruction::Return);
+            v.push(Instruction::Else);
+        }
+        v.push(Instruction::I64Const(-1));
+        for _ in 0..n_lambdas { v.push(Instruction::End); }
+        
+        Ok(v)
+    }
+
     fn fold_binop(&mut self, a: &[LispVal], op: Instruction<'static>, identity: i64) -> Result<Vec<Instruction<'static>>, String> {
         if a.is_empty() { return Ok(vec![Instruction::I64Const(identity)]) }
         let mut v = self.expr(&a[0])?;
@@ -5366,98 +3953,7 @@ impl WasmEmitter {
 
     // ── Module assembly ──
 
-    /// Remove functions not reachable from exports (tree-shaking / dead code elimination)
-    fn tree_shake(&mut self) {
-        if self.funcs.is_empty() { return; }
-
-        // Build call graph: for each func index, which other func indices does it call?
-        let func_names: Vec<&str> = self.funcs.iter().map(|f| f.name.as_str()).collect();
-        let name_to_idx: HashMap<&str, usize> = func_names.iter().enumerate().map(|(i, &n)| (n, i)).collect();
-
-        let mut calls: Vec<Vec<usize>> = vec![vec![]; self.funcs.len()];
-        for (i, f) in self.funcs.iter().enumerate() {
-            for instr in &f.instrs {
-                if let Instruction::Call(idx) = instr {
-                    if *idx >= USER_BASE {
-                        let pos = (*idx - USER_BASE) as usize;
-                        if pos < self.funcs.len() {
-                            calls[i].push(pos);
-                        }
-                    }
-                }
-            }
-        }
-
-        // BFS from exported functions
-        let mut reachable = vec![false; self.funcs.len()];
-        let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
-
-        // Seed with exported function names
-        for (fn_name, _, _) in &self.exports {
-            if let Some(&idx) = name_to_idx.get(fn_name.as_str()) {
-                if !reachable[idx] { reachable[idx] = true; queue.push_back(idx); }
-            }
-        }
-        // If no exports, keep last function (default export)
-        if self.exports.is_empty() && !self.funcs.is_empty() {
-            let last = self.funcs.len() - 1;
-            if !reachable[last] { reachable[last] = true; queue.push_back(last); }
-        }
-
-        while let Some(idx) = queue.pop_front() {
-            for &callee in &calls[idx] {
-                if !reachable[callee] {
-                    reachable[callee] = true;
-                    queue.push_back(callee);
-                }
-            }
-        }
-
-        // Build old_idx -> new_idx mapping
-        let mut old_to_new: Vec<Option<usize>> = vec![None; self.funcs.len()];
-        let mut next = 0usize;
-        for (i, r) in reachable.iter().enumerate() {
-            if *r { old_to_new[i] = Some(next); next += 1; }
-        }
-
-        // Remap Call instructions
-        for (i, f) in self.funcs.iter_mut().enumerate() {
-            if !reachable[i] { continue; }
-            for instr in &mut f.instrs {
-                if let Instruction::Call(idx) = instr {
-                    if *idx >= USER_BASE {
-                        let pos = (*idx - USER_BASE) as usize;
-                        if let Some(new_pos) = old_to_new[pos] {
-                            *idx = USER_BASE | new_pos as u32;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Remove unreachable functions
-        let before = self.funcs.len();
-        self.funcs.retain(|_| {
-            let idx = old_to_new.iter().position(|m| m.is_none());
-            // Can't use retain like this — need index
-            true
-        });
-        // Actually, retain doesn't give index. Use drain_filter or manual:
-        let mut new_funcs: Vec<FuncDef> = Vec::new();
-        for (i, f) in std::mem::take(&mut self.funcs).into_iter().enumerate() {
-            if reachable[i] { new_funcs.push(f); }
-        }
-        self.funcs = new_funcs;
-
-        let removed = before - self.funcs.len();
-        if removed > 0 {
-            eprintln!("🌳 Tree-shake: removed {}/{} unused functions", removed, before);
-        }
-    }
-
     pub fn finish(&mut self, default_export: &str) -> Vec<u8> {
-        // Tree-shake before emitting
-        self.tree_shake();
         // Ensure host functions needed by export wrappers are included
         if !self.exports.is_empty() {
             self.need_host(7);  // input
@@ -5515,13 +4011,8 @@ impl WasmEmitter {
         mems.memory(MemoryType { minimum: self.memory_pages.max(1) as u64, maximum: None, memory64: false, shared: false, page_size_log2: None });
         m.section(&mems);
 
-        // Global section: mutable i64 for call depth tracking + return flag
+        // Global section: mutable i64 for call depth tracking
         let mut globals = GlobalSection::new();
-        globals.global(
-            GlobalType { val_type: ValType::I64, mutable: true, shared: false },
-            &ConstExpr::i64_const(0),
-        );
-        // Global 1: return flag — set to 1 by near/return, checked by export wrapper
         globals.global(
             GlobalType { val_type: ValType::I64, mutable: true, shared: false },
             &ConstExpr::i64_const(0),
@@ -5576,14 +4067,16 @@ impl WasmEmitter {
                     let param_count = func.map(|f| f.param_count).unwrap_or(0);
                     let mut fb = Function::new(vec![(1u32, ValType::I64)]); // local 0 for result swapping
                     let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
-
-                    // Reset return flag before calling function
-                    fb.instruction(&Instruction::I64Const(0));
-                    fb.instruction(&Instruction::GlobalSet(1));
-
                     if param_count == 0 {
                         fb.instruction(&Instruction::Call(idx));
                         fb.instruction(&Instruction::LocalSet(0));
+                        fb.instruction(&Instruction::I64Const(TEMP_MEM));
+                        fb.instruction(&Instruction::I32WrapI64);
+                        fb.instruction(&Instruction::LocalGet(0));
+                        fb.instruction(&Instruction::I64Store(ma));
+                        fb.instruction(&Instruction::I64Const(8));
+                        fb.instruction(&Instruction::I64Const(TEMP_MEM));
+                        fb.instruction(&Instruction::Call(host_idx[&25]));
                     } else {
                         // input(0)
                         fb.instruction(&Instruction::I64Const(0));
@@ -5602,28 +4095,19 @@ impl WasmEmitter {
                             fb.instruction(&Instruction::I32WrapI64);
                             fb.instruction(&Instruction::I64Load(ma));
                         }
-                        // Reset return flag before calling function
-                        fb.instruction(&Instruction::I64Const(0));
-                        fb.instruction(&Instruction::GlobalSet(1));
                         fb.instruction(&Instruction::Call(idx));
-                        fb.instruction(&Instruction::LocalSet(0));
+                        // Store result at TEMP_MEM: i64.store needs [i32 addr, i64 val]
+                        // Stack: [i64 result]. Save to local 0, push addr, load local, store
+                        fb.instruction(&Instruction::LocalSet(0)); // save result to local 0
+                        fb.instruction(&Instruction::I64Const(TEMP_MEM));
+                        fb.instruction(&Instruction::I32WrapI64);   // addr as i32
+                        fb.instruction(&Instruction::LocalGet(0));  // restore result
+                        fb.instruction(&Instruction::I64Store(ma));
+                        // value_return(8, TEMP_MEM)
+                        fb.instruction(&Instruction::I64Const(8));
+                        fb.instruction(&Instruction::I64Const(TEMP_MEM));
+                        fb.instruction(&Instruction::Call(host_idx[&25]));
                     }
-
-                    // Check return flag — if near/return was called, skip wrapper's value_return
-                    fb.instruction(&Instruction::Block(BlockType::Empty)); // $skip_return (label 0)
-                    fb.instruction(&Instruction::GlobalGet(1));
-                    fb.instruction(&Instruction::I32WrapI64);
-                    fb.instruction(&Instruction::BrIf(0)); // if flag set, skip to end of block
-                    // Wrapper's value_return: store result at TEMP_MEM and return it
-                    fb.instruction(&Instruction::I64Const(TEMP_MEM));
-                    fb.instruction(&Instruction::I32WrapI64);
-                    fb.instruction(&Instruction::LocalGet(0));
-                    fb.instruction(&Instruction::I64Store(ma));
-                    fb.instruction(&Instruction::I64Const(8));
-                    fb.instruction(&Instruction::I64Const(TEMP_MEM));
-                    fb.instruction(&Instruction::Call(host_idx[&25]));
-                    fb.instruction(&Instruction::End); // end $skip_return
-
                     fb.instruction(&Instruction::End);
                     code.function(&fb);
                 }
@@ -5707,72 +4191,8 @@ pub fn compile_pure(source: &str) -> Result<Vec<u8>, String> {
     Ok(parse_and_compile(source, false)?.finish("run"))
 }
 
-/// Resolve `(module name "path")` directives at the text level before parsing.
-/// Modules are resolved relative to `base_dir`.
-fn resolve_modules_inner(source: &str, base_dir: &std::path::Path, seen: &mut Vec<std::path::PathBuf>) -> Result<String, String> {
-    let mut resolved = String::new();
-    for line in source.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("(module ") {
-            let rest = rest.strip_suffix(")").unwrap_or(rest);
-            if let Some(path_start) = rest.find('"') {
-                let path_end = rest.rfind('"').unwrap_or(rest.len());
-                if path_start + 1 < path_end {
-                    let path_str = &rest[path_start + 1..path_end];
-                    let module_path = base_dir.join(path_str).canonicalize()
-                        .map_err(|e| format!("module not found: {} — {}", path_str, e))?;
-                    if seen.contains(&module_path) {
-                        return Err(format!("circular module dependency: {}", module_path.display()));
-                    }
-                    seen.push(module_path.clone());
-                    let module_source = std::fs::read_to_string(&module_path)
-                        .map_err(|e| format!("module not found: {} — {}", module_path.display(), e))?;
-                    let module_dir = module_path.parent().unwrap_or(base_dir);
-                    let resolved_module = resolve_modules_inner(&module_source, module_dir, seen)?;
-                    resolved.push_str(&resolved_module);
-                    resolved.push('\n');
-                }
-            }
-        } else {
-            resolved.push_str(line);
-            resolved.push('\n');
-        }
-    }
-    Ok(resolved)
-}
-
-pub fn resolve_modules(source: &str, base_dir: &std::path::Path) -> Result<String, String> {
-    let mut seen: Vec<std::path::PathBuf> = Vec::new();
-    resolve_modules_inner(source, base_dir, &mut seen)
-}
-
-/// Compile with module resolution from a specific base directory
-pub fn compile_near_from_dir(source: &str, base_dir: &std::path::Path) -> Result<Vec<u8>, String> {
-    let resolved = resolve_modules(source, base_dir)?;
-    Ok(parse_and_compile(&resolved, true)?.finish("_run"))
-}
-
-/// Like compile_near_named but with explicit base directory for module resolution
-pub fn compile_near_named_from_dir(source: &str, base_dir: &std::path::Path) -> Result<(Vec<u8>, Vec<String>), String> {
-    let resolved = resolve_modules(source, base_dir)?;
-    let mut em = parse_and_compile(&resolved, true)?;
-    let names: Vec<String> = em.funcs.iter().map(|f| f.name.clone()).collect();
-    let wasm = em.finish("_run");
-    Ok((wasm, names))
-}
-
 pub fn compile_near(source: &str) -> Result<Vec<u8>, String> {
-    let resolved = resolve_modules(source, std::path::Path::new("."))?;
-    Ok(parse_and_compile(&resolved, true)?.finish("_run"))
-}
-
-/// Compile to NEAR WASM and return function names in code-section order (for error reporting)
-pub fn compile_near_named(source: &str) -> Result<(Vec<u8>, Vec<String>), String> {
-    let resolved = resolve_modules(source, std::path::Path::new("."))?;
-    let mut em = parse_and_compile(&resolved, true)?;
-    let names: Vec<String> = em.funcs.iter().map(|f| f.name.clone()).collect();
-    let wasm = em.finish("_run");
-    Ok((wasm, names))
+    Ok(parse_and_compile(source, true)?.finish("_run"))
 }
 
 /// Compile pre-parsed LispVal expressions to NEAR WASM
@@ -5819,277 +4239,6 @@ pub fn compile_pure_to_wat(source: &str) -> Result<String, String> {
 pub fn compile_near_to_wat(source: &str) -> Result<String, String> {
     let b = compile_near(source)?;
     wasmprinter::print_bytes(&b).map_err(|e| e.to_string())
-}
-
-// ── TypeChecker: lightweight pre-pass ──
-
-struct TypeChecker<'a> {
-    funcs: &'a Vec<FuncDef>,
-    local_names: Vec<String>,
-}
-
-impl<'a> TypeChecker<'a> {
-    fn check(&mut self, e: &LispVal) -> Result<Ty, String> {
-        match e {
-            LispVal::Num(_) => Ok(Ty::Num),
-            LispVal::Bool(_) => Ok(Ty::Bool),
-            LispVal::Nil => Ok(Ty::Void),
-            LispVal::Str(_) => Ok(Ty::Str),
-            LispVal::Sym(name) => {
-                if self.local_names.contains(&name.to_string()) {
-                    Ok(Ty::Any)
-                } else {
-                    Err(format!("Undefined variable '{}'", name))
-                }
-            }
-            LispVal::List(items) if !items.is_empty() => {
-                if let LispVal::Sym(op) = &items[0] {
-                    self.check_call(op, &items[1..])
-                } else {
-                    Err(format!("expected symbol in call position, got {:?}", items[0]))
-                }
-            }
-            LispVal::List(items) if items.is_empty() => Ok(Ty::Void),
-            _ => Ok(Ty::Any),
-        }
-    }
-
-    fn check_call(&mut self, op: &str, args: &[LispVal]) -> Result<Ty, String> {
-        let numeric_binops = ["+", "-", "*", "/", "mod"];
-        let comparison_ops = ["=", "!=", "<", ">", "<=", ">="];
-        let bool_ops = ["and", "or", "not"];
-
-        if numeric_binops.contains(&op) {
-            if op != "+" && op != "*" && args.len() != 2 {
-                return Err(format!("Type error: '{}' expects exactly 2 arguments, got {}", op, args.len()));
-            }
-            // Allow + and * with 2+ args (they fold), but check each arg is numeric
-            for (i, arg) in args.iter().enumerate() {
-                let ty = self.check(arg)?;
-                match ty {
-                    Ty::Str => return Err(format!("Type error: '{}' expects numeric arguments, got string at argument {}", op, i + 1)),
-                    Ty::Void => return Err(format!("Type error: '{}' expects numeric arguments, got void at argument {}", op, i + 1)),
-                    _ => {}
-                }
-            }
-            return Ok(Ty::Num);
-        }
-
-        if comparison_ops.contains(&op) {
-            if args.len() != 2 {
-                return Err(format!("Type error: '{}' expects exactly 2 arguments, got {}", op, args.len()));
-            }
-            for (i, arg) in args.iter().enumerate() {
-                let ty = self.check(arg)?;
-                match ty {
-                    Ty::Str => return Err(format!("Type error: '{}' expects numeric arguments, got string at argument {}", op, i + 1)),
-                    Ty::Void => return Err(format!("Type error: '{}' expects numeric arguments, got void at argument {}", op, i + 1)),
-                    _ => {}
-                }
-            }
-            return Ok(Ty::Bool);
-        }
-
-        if bool_ops.contains(&op) {
-            for arg in args {
-                let ty = self.check(arg)?;
-                match ty {
-                    Ty::Str => return Err(format!("Type error: '{}' expects bool/numeric arguments, got string", op)),
-                    _ => {}
-                }
-            }
-            return Ok(Ty::Bool);
-        }
-
-        match op {
-            "abs" => {
-                if args.len() != 1 {
-                    return Err(format!("Type error: 'abs' expects 1 argument, got {}", args.len()));
-                }
-                let ty = self.check(&args[0])?;
-                match ty {
-                    Ty::Str => Err("Type error: 'abs' expects a numeric argument, got string".into()),
-                    _ => Ok(Ty::Num),
-                }
-            }
-            "if" => {
-                if args.len() < 2 {
-                    return Err("Type error: 'if' expects at least 2 arguments (condition, then, [else])".into());
-                }
-                let cond_ty = self.check(&args[0])?;
-                if cond_ty == Ty::Str {
-                    return Err("Type error: 'if' condition must be numeric or bool, got string".into());
-                }
-                let then_ty = self.check(&args[1])?;
-                if args.len() > 2 {
-                    let else_ty = self.check(&args[2])?;
-                    if then_ty != Ty::Any && else_ty != Ty::Any && then_ty != else_ty {
-                        return Err(format!("Type error: 'if' branches have mismatched types: {} vs {}", then_ty, else_ty));
-                    }
-                }
-                Ok(then_ty)
-            }
-            "begin" => {
-                if args.is_empty() { return Ok(Ty::Void); }
-                for arg in &args[..args.len()-1] { self.check(arg)?; }
-                self.check(args.last().unwrap())
-            }
-            "let" => {
-                // (let ((x val) ...) body...)
-                if args.is_empty() { return Ok(Ty::Void); }
-                let mut saved = self.local_names.clone();
-                if let LispVal::List(bindings) = &args[0] {
-                    for b in bindings {
-                        if let LispVal::List(p) = b {
-                            if p.len() == 2 {
-                                if let LispVal::Sym(n) = &p[0] {
-                                    self.local_names.push(n.clone());
-                                }
-                                self.check(&p[1])?;
-                            }
-                        }
-                    }
-                }
-                // body
-                let result = if args.len() > 1 {
-                    for arg in &args[1..args.len()-1] { self.check(arg)?; }
-                    self.check(args.last().unwrap())
-                } else {
-                    Ok(Ty::Void)
-                };
-                self.local_names = saved;
-                result
-            }
-            "while" => {
-                for arg in args { self.check(arg)?; }
-                Ok(Ty::Void)
-            }
-            "for" => {
-                if args.len() < 4 { return Ok(Ty::Any); }
-                let mut saved = self.local_names.clone();
-                if let LispVal::Sym(var) = &args[0] {
-                    self.local_names.push(var.clone());
-                }
-                self.check(&args[1])?;
-                self.check(&args[2])?;
-                for arg in &args[3..] { self.check(arg)?; }
-                self.local_names = saved;
-                Ok(Ty::Void)
-            }
-            "reduce" => {
-                for arg in args { self.check(arg)?; }
-                Ok(Ty::Any)
-            }
-            "set!" => {
-                if args.len() >= 2 { self.check(&args[1])?; }
-                Ok(Ty::Void)
-            }
-            "quote" => Ok(Ty::Any),
-            // NEAR builtins
-            "near/log" | "near/log_num" => {
-                for arg in args { self.check(arg)?; }
-                Ok(Ty::Void)
-            }
-            "near/return" | "near/return_str" | "near/json_return_int" | "near/json_return_str" => {
-                for arg in args { self.check(arg)?; }
-                Ok(Ty::Void)
-            }
-            "near/store" | "near/storage_set" | "near/remove" | "near/storage_remove" | "near/has_key" | "near/storage_has" | "near/panic" | "near/abort" | "u128/store_storage" => {
-                for arg in args { self.check(arg)?; }
-                Ok(Ty::Any)
-            }
-            "near/load" | "near/storage_get" | "near/current_account_id" | "near/signer_account_id" |
-            "near/predecessor_account_id" | "near/input" | "near/json_get_int" | "near/json_get_u128" |
-            "near/block_index" |
-            "near/block_timestamp" | "near/epoch_height" | "near/prepaid_gas" |
-            "near/used_gas" | "near/attached_deposit" | "near/attached_deposit_high" |
-            "near/account_balance" | "near/sha256" | "near/random_seed" |
-            "near/json_get_str" |
-            "near/promise_create" | "near/promise_then" | "near/promise_and" |
-            "near/promise_results_count" | "near/promise_result" | "near/promise_return" |
-            "near/promise_batch_create" | "near/promise_batch_then" => {
-                for arg in args { self.check(arg)?; }
-                Ok(Ty::Any)
-            }
-            // u128 operations
-            "u128/from_yocto" | "u128/new" | "u128/from_i64" | "u128/to_i64" |
-            "u128/load" | "u128/load_high" | "u128/store" | "u128/add" | "u128/sub" |
-            "u128/eq" | "u128/is_zero" | "u128/lt" | "u128/load_storage" => {
-                for arg in args { self.check(arg)?; }
-                Ok(Ty::Any)
-            }
-            // HOF macros
-            "hof/map" | "hof/filter" | "hof/reduce" => {
-                for arg in args { self.check(arg)?; }
-                Ok(Ty::Any)
-            }
-            // User-defined function call
-            _ => {
-                // Check if function exists
-                if let Some(func) = self.funcs.iter().find(|f| f.name == op) {
-                    if args.len() != func.param_count {
-                        return Err(format!("Type error: '{}' expects {} argument(s), got {}", op, func.param_count, args.len()));
-                    }
-                    for arg in args { self.check(arg)?; }
-                    Ok(Ty::Any)
-                } else {
-                    let suggestion = self.suggest_function(op);
-                    if let Some(s) = suggestion {
-                        Err(format!("Error: function '{}' is not defined. Did you mean '{}'?", op, s))
-                    } else {
-                        Err(format!("Error: function '{}' is not defined", op))
-                    }
-                }
-            }
-        }
-    }
-
-    fn suggest_function(&self, name: &str) -> Option<String> {
-        let mut best: Option<(String, usize)> = None;
-        for f in self.funcs {
-            // skip internal functions
-            if f.name.starts_with("__") { continue; }
-            let dist = levenshtein(name, &f.name);
-            if dist <= 3 {
-                match &best {
-                    Some((_, best_dist)) if dist >= *best_dist => {}
-                    _ => best = Some((f.name.clone(), dist)),
-                }
-            }
-        }
-        // Also check common builtins
-        let builtins = ["+", "-", "*", "/", "mod", "abs", "=", "!=", "<", ">", "<=", ">=",
-            "and", "or", "not", "if", "let", "begin", "while", "for", "set!", "quote",
-            "near/log", "near/return", "near/store", "near/load", "near/storage_set", "near/storage_get", "near/storage_has", "near/storage_remove", "near/json_get_int", "near/json_get_str", "near/json_get_u128", "near/json_return_int", "near/json_return_str", "hof/map", "hof/filter", "hof/reduce"];
-        for b in &builtins {
-            let dist = levenshtein(name, b);
-            if dist <= 3 {
-                match &best {
-                    Some((_, best_dist)) if dist >= *best_dist => {}
-                    _ => best = Some((b.to_string(), dist)),
-                }
-            }
-        }
-        best.map(|(s, _)| s)
-    }
-}
-
-fn levenshtein(a: &str, b: &str) -> usize {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-    let (m, n) = (a.len(), b.len());
-    if m == 0 { return n; }
-    if n == 0 { return m; }
-    let mut prev: Vec<usize> = (0..=n).collect();
-    let mut curr: Vec<usize> = vec![0; n + 1];
-    for i in 1..=m {
-        curr[0] = i;
-        for j in 1..=n {
-            let cost = if a[i-1] == b[j-1] { 0 } else { 1 };
-            curr[j] = (prev[j] + 1).min(curr[j-1] + 1).min(prev[j-1] + cost);
-        }
-        std::mem::swap(&mut prev, &mut curr);
-    }
-    prev[n]
 }
 
 #[cfg(test)]
@@ -6244,6 +4393,29 @@ mod near_ycomb_wat {
     #[test]
     fn print_wat() {
         let src = "(define (f me x) (if (<= x 0) 1 (* x (me me (- x 1))))) (define (main) (f f 5)) (export \"main\" main true)";
+        let wat = compile_near_to_wat(src).expect("wat");
+        eprintln!("{}", wat);
+    }
+}
+
+#[cfg(test)]
+mod lambda_test {
+    use super::*;
+    #[test]
+    fn test_simple_lambda() {
+        let src = "(define (test) ((lambda (x) (* x x)) 7))";
+        let result = compile_pure(src);
+        eprintln!("RESULT: {:?}", result.as_ref().map(|w| w.len()));
+        if let Err(ref e) = result { eprintln!("ERROR: {}", e); }
+    }
+}
+
+#[cfg(test)]
+mod square_wat {
+    use super::*;
+    #[test]
+    fn print_wat() {
+        let src = r#"(define (square) ((lambda (x) (* x x)) 7)) (export "square" square true)"#;
         let wat = compile_near_to_wat(src).expect("wat");
         eprintln!("{}", wat);
     }

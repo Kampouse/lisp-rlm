@@ -13,7 +13,7 @@ open LispIR.Semantics
 open LispIR.ClosureVM
 
 // ============================================================
-// LoadGlobal — always fails (no env model)
+// LoadGlobal — lookup in env, returns Nil if not found (ok=true)
 // ============================================================
 
 val step_loadglobal : unit -> Lemma
@@ -21,10 +21,13 @@ val step_loadglobal : unit -> Lemma
     stack = []; slots = []; pc = 0;
     code = [LoadGlobal "foo"; Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 0; captured = []; closure_envs = [];
+    num_slots = 0; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
-   s1.ok = false)
+   s1.ok = true &&
+   (match s1.stack with
+    | Nil :: _ -> true
+    | _ -> false))
 let step_loadglobal () = ()
 
 // ============================================================
@@ -38,7 +41,7 @@ val step_builtin_abs_pos : a:int -> Lemma
      stack = [Num a]; slots = []; pc = 0;
      code = [BuiltinCall ("abs", 1); Return]; ok = true;
      code_table = []; frames = [];
-     num_slots = 0; captured = []; closure_envs = [];
+     num_slots = 0; captured = []; closure_envs = []; env = [];
    } in
     let s1 = closure_eval_op vm in
     s1.ok = true && s1.pc = 1 &&
@@ -51,7 +54,7 @@ val step_builtin_abs_neg : a:int -> Lemma
      stack = [Num a]; slots = []; pc = 0;
      code = [BuiltinCall ("abs", 1); Return]; ok = true;
      code_table = []; frames = [];
-     num_slots = 0; captured = []; closure_envs = [];
+     num_slots = 0; captured = []; closure_envs = []; env = [];
    } in
     let s1 = closure_eval_op vm in
     s1.ok = true && s1.pc = 1 &&
@@ -64,7 +67,7 @@ val step_builtin_length3 : unit -> Lemma
     stack = [List [Num 1; Num 2; Num 3]]; slots = []; pc = 0;
     code = [BuiltinCall ("length", 1); Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 0; captured = []; closure_envs = [];
+    num_slots = 0; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    s1.ok = true && s1.pc = 1 &&
@@ -76,7 +79,7 @@ val step_builtin_length_nil : unit -> Lemma
     stack = [Nil]; slots = []; pc = 0;
     code = [BuiltinCall ("length", 1); Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 0; captured = []; closure_envs = [];
+    num_slots = 0; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    s1.ok = true && s1.pc = 1 &&
@@ -89,7 +92,7 @@ val step_builtin_strconcat : a:string -> b:string -> Lemma
     stack = [Str b; Str a]; slots = []; pc = 0;
     code = [BuiltinCall ("str-concat", 2); Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 0; captured = []; closure_envs = [];
+    num_slots = 0; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    s1.ok = true && s1.pc = 1 &&
@@ -103,7 +106,7 @@ val step_builtin_min_lt : a:int -> b:int -> Lemma
      stack = [Num b; Num a]; slots = []; pc = 0;
      code = [BuiltinCall ("min", 2); Return]; ok = true;
      code_table = []; frames = [];
-     num_slots = 0; captured = []; closure_envs = [];
+     num_slots = 0; captured = []; closure_envs = []; env = [];
    } in
     let s1 = closure_eval_op vm in
     s1.ok = true && s1.pc = 1 &&
@@ -116,7 +119,7 @@ val step_builtin_min_ge : a:int -> b:int -> Lemma
      stack = [Num b; Num a]; slots = []; pc = 0;
      code = [BuiltinCall ("min", 2); Return]; ok = true;
      code_table = []; frames = [];
-     num_slots = 0; captured = []; closure_envs = [];
+     num_slots = 0; captured = []; closure_envs = []; env = [];
    } in
     let s1 = closure_eval_op vm in
     s1.ok = true && s1.pc = 1 &&
@@ -130,7 +133,7 @@ val step_builtin_max_gt : a:int -> b:int -> Lemma
      stack = [Num b; Num a]; slots = []; pc = 0;
      code = [BuiltinCall ("max", 2); Return]; ok = true;
      code_table = []; frames = [];
-     num_slots = 0; captured = []; closure_envs = [];
+     num_slots = 0; captured = []; closure_envs = []; env = [];
    } in
     let s1 = closure_eval_op vm in
     s1.ok = true && s1.pc = 1 &&
@@ -143,7 +146,7 @@ val step_builtin_max_le : a:int -> b:int -> Lemma
      stack = [Num b; Num a]; slots = []; pc = 0;
      code = [BuiltinCall ("max", 2); Return]; ok = true;
      code_table = []; frames = [];
-     num_slots = 0; captured = []; closure_envs = [];
+     num_slots = 0; captured = []; closure_envs = []; env = [];
    } in
     let s1 = closure_eval_op vm in
     s1.ok = true && s1.pc = 1 &&
@@ -156,7 +159,7 @@ val step_builtin_car : a:int -> b:int -> Lemma
     stack = [List [Num a; Num b]]; slots = []; pc = 0;
     code = [BuiltinCall ("car", 1); Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 0; captured = []; closure_envs = [];
+    num_slots = 0; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    s1.ok = true && s1.pc = 1 &&
@@ -169,7 +172,7 @@ val step_builtin_cdr : a:int -> b:int -> Lemma
     stack = [List [Num a; Num b]]; slots = []; pc = 0;
     code = [BuiltinCall ("cdr", 1); Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 0; captured = []; closure_envs = [];
+    num_slots = 0; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    s1.ok = true && s1.pc = 1 &&
@@ -182,7 +185,7 @@ val step_builtin_cons : a:int -> b:int -> Lemma
     stack = [List [Num b]; Num a]; slots = []; pc = 0;
     code = [BuiltinCall ("cons", 2); Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 0; captured = []; closure_envs = [];
+    num_slots = 0; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    s1.ok = true && s1.pc = 1 &&
@@ -197,7 +200,7 @@ val step_builtin_list : a:int -> b:int -> Lemma
     stack = [Num b; Num a]; slots = []; pc = 0;
     code = [BuiltinCall ("list", 2); Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 0; captured = []; closure_envs = [];
+    num_slots = 0; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    s1.ok = true && s1.pc = 1 &&
@@ -212,7 +215,7 @@ val step_builtin_append : a:int -> b:int -> Lemma
     stack = [List [Num b]; List [Num a]]; slots = []; pc = 0;
     code = [BuiltinCall ("append", 2); Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 0; captured = []; closure_envs = [];
+    num_slots = 0; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    s1.ok = true && s1.pc = 1 &&

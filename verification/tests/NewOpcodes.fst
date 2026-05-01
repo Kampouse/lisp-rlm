@@ -29,7 +29,7 @@ let cvm0 code nslots = {
   code = code; ok = true;
   code_table = []; frames = [];
   num_slots = nslots;
-  captured = []; closure_envs = [];
+  captured = []; closure_envs = []; env = [];
 }
 
 // ============================================================
@@ -69,7 +69,7 @@ val step_call_dynamic_car : a:int -> b:int -> Lemma
     slots = []; pc = 0;
     code = [CallDynamic 1; Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 0; captured = []; closure_envs = [];
+    num_slots = 0; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    s1.ok = true && s1.pc = 1 &&
@@ -85,7 +85,7 @@ val step_call_dynamic_cdr : a:int -> b:int -> Lemma
     slots = []; pc = 0;
     code = [CallDynamic 1; Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 0; captured = []; closure_envs = [];
+    num_slots = 0; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    s1.ok = true && s1.pc = 1 &&
@@ -107,7 +107,7 @@ val step_recur_direct_2 : a:int -> b:int -> Lemma
     slots = [Nil; Nil]; pc = 0;
     code = [RecurDirect 2; Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 2; captured = []; closure_envs = [];
+    num_slots = 2; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    s1.ok = true && s1.pc = 0 &&
@@ -124,7 +124,7 @@ val step_recur_direct_1 : a:int -> Lemma
     slots = [Nil]; pc = 0;
     code = [RecurDirect 1; Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 1; captured = []; closure_envs = [];
+    num_slots = 1; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    s1.ok = true && s1.pc = 0 &&
@@ -145,7 +145,7 @@ val step_call_dynamic_non_builtin_num : unit -> Lemma
     slots = []; pc = 0;
     code = [CallDynamic 1; Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 0; captured = []; closure_envs = [];
+    num_slots = 0; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    s1.ok = false)
@@ -158,7 +158,7 @@ val step_call_dynamic_non_builtin_bool : unit -> Lemma
     slots = []; pc = 0;
     code = [CallDynamic 1; Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 0; captured = []; closure_envs = [];
+    num_slots = 0; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    s1.ok = false)

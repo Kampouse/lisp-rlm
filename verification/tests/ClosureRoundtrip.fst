@@ -20,7 +20,7 @@ let cvm code table nslots = {
   code = code; ok = true;
   code_table = table; frames = [];
   num_slots = nslots;
-  captured = []; closure_envs = [];
+  captured = []; closure_envs = []; env = [];
 }
 
 // ============================================================
@@ -211,7 +211,7 @@ val closure_callref_dispatch : unit -> Lemma
       stack = [Num 3]; slots = [Num 7; Num 0]; pc = 0;
       code = [CallCapturedRef (1, 1); Return]; ok = true;
       code_table = [chunk0]; frames = [];
-      num_slots = 2; captured = []; closure_envs = [([], 0)]
+      num_slots = 2; captured = []; closure_envs = [([], 0)]; env = [];
     } in
    let s' = closure_eval_op s in
    s'.ok = true && s'.pc = 0 &&
@@ -227,7 +227,7 @@ val closure_callref_chunk : unit -> Lemma
       stack = []; slots = [Num 3]; pc = 0;
       code = [LoadSlot 0; LoadCaptured 0; OpAdd; Return]; ok = true;
       code_table = []; frames = [{ ret_pc = 1; ret_slots = [Num 7; Num 0]; ret_stack = []; ret_code = [CallCapturedRef (1, 1); Return]; ret_num_slots = 2; ret_captured = [] }];
-      num_slots = 1; captured = [Num 7]; closure_envs = []
+      num_slots = 1; captured = [Num 7]; closure_envs = []; env = []
     } in
    let s1 = closure_eval_op s in
    let s2 = closure_eval_op s1 in

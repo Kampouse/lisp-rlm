@@ -334,7 +334,235 @@ pub struct PureCheckResult {
     pub inferred_type: TcType,
 }
 
-/// Check a `pure` define form.
+/// Check a block of `pure` define forms with a shared type environment.
+///
+/// Each define is type-checked in order. Inferred types from earlier defines
+/// are added to the environment so later defines can reference them:
+///
+/// ```lisp
+/// (pure
+///   (define (double x) (* x 2))      ;; inferred: num → num
+///   (define (quadruple x) (double (double x))))  ;; sees double's type
+/// ```
+///
+/// Input: a slice of define forms (each is a `LispVal::List` starting with "define").
+/// Returns Ok with all results if every form type-checks, or the first error.
+pub fn check_pure_block(forms: &[&LispVal]) -> Result<Vec<PureCheckResult>, String> {
+    let mut env = TcEnv::with_pure_builtins();
+    let mut supply = VarSupply::new();
+    let mut results = Vec::new();
+
+    for form in forms {
+        let list = match form {
+            LispVal::List(l) => l,
+            other => return Err(format!("pure: expected list, got {}", other)),
+        };
+
+        if list.is_empty() {
+            return Err("pure: empty define form".into());
+        }
+
+        match &list[0] {
+            LispVal::Sym(s) if s == "define" => {}
+            other => return Err(format!("pure: expected define, got {}", other)),
+        }
+
+        // Extract name + params + type annotation + body
+        let result = check_define_in_env(list, &mut env, &mut supply)?;
+
+        // Add the inferred type to the shared environment for later forms
+        env.insert_mono(result.name.clone(), result.inferred_type.clone());
+        results.push(result);
+    }
+
+    Ok(results)
+}
+
+/// Check a single define form using an existing type environment (for pure blocks).
+fn check_define_in_env(
+    list: &[LispVal],
+    env: &mut TcEnv,
+    supply: &mut VarSupply,
+) -> Result<PureCheckResult, String> {
+    match list.get(1) {
+        Some(LispVal::List(sig)) => {
+            // (define (f x y) [:: type] body)
+            check_function_define_in_env(sig, &list[2..], env, supply)
+        }
+        Some(LispVal::Sym(_name)) => {
+            // (define name [:: type] expr)
+            check_value_define_in_env(&list[1..], env, supply)
+        }
+        other => Err(format!("pure define: unexpected form {:?}", other)),
+    }
+}
+
+/// Check a function define in an existing environment.
+fn check_function_define_in_env(
+    sig: &[LispVal],
+    rest: &[LispVal],
+    env: &mut TcEnv,
+    supply: &mut VarSupply,
+) -> Result<PureCheckResult, String> {
+    let name = match sig.first() {
+        Some(LispVal::Sym(s)) => s.clone(),
+        other => return Err(format!("pure define: expected function name, got {:?}", other)),
+    };
+
+    let params: Vec<String> = sig[1..]
+        .iter()
+        .map(|v| match v {
+            LispVal::Sym(s) => s.clone(),
+            other => format!("_{}", other),
+        })
+        .collect();
+
+    // Parse type annotation and body
+    let (annotated_type, body) = if rest.len() >= 3 {
+        match &rest[0] {
+            LispVal::Sym(s) if s == "::" => {
+                if rest.len() < 3 {
+                    return Err("pure define: missing body after type annotation".into());
+                }
+                let body = rest.last().cloned().unwrap();
+                let type_parts: Vec<LispVal> = rest[1..rest.len() - 1].to_vec();
+                let ann_type = parse_type_annotation(&LispVal::List(type_parts))?;
+                (Some(ann_type), body)
+            }
+            _ => {
+                let body = rest.last().cloned().unwrap_or(LispVal::Nil);
+                (None, body)
+            }
+        }
+    } else if rest.len() >= 1 {
+        match &rest[0] {
+            LispVal::Sym(s) if s == "::" => {
+                return Err("pure define: missing type annotation after ::".into());
+            }
+            _ => {
+                let body = rest[0].clone();
+                (None, body)
+            }
+        }
+    } else {
+        return Err("pure define: missing body".into());
+    };
+
+    // Create a child scope: params shadow outer names
+    let mut check_env = env.clone();
+    let mut subst = Subst::new();
+
+    let param_types: Vec<TcType> = if let Some(ref ann_ty) = annotated_type {
+        match ann_ty {
+            TcType::Arrow(args, ret) => {
+                if args.len() != params.len() {
+                    return Err(format!(
+                        "pure define {}: annotation has {} params, function has {}",
+                        name,
+                        args.len(),
+                        params.len()
+                    ));
+                }
+                let self_type = TcType::Arrow(args.clone(), ret.clone());
+                check_env.insert_mono(name.clone(), self_type);
+                args.clone()
+            }
+            other => {
+                return Err(format!(
+                    "pure define {}: expected arrow type, got {}",
+                    name, other
+                ));
+            }
+        }
+    } else {
+        let ret_var = supply.fresh();
+        let arg_vars: Vec<TcType> = params.iter().map(|_| supply.fresh()).collect();
+        let self_type = TcType::Arrow(arg_vars.clone(), Box::new(ret_var));
+        check_env.insert_mono(name.clone(), self_type);
+        arg_vars
+    };
+
+    for (p, t) in params.iter().zip(param_types.iter()) {
+        check_env.insert_mono(p.clone(), t.clone());
+    }
+
+    // Infer body type
+    let body_type = infer(&body, &check_env, supply, &mut subst)?;
+
+    let resolved_params: Vec<TcType> = param_types.iter().map(|t| subst.apply(t)).collect();
+    let resolved_ret = subst.apply(&body_type);
+    let inferred = TcType::Arrow(resolved_params.clone(), Box::new(resolved_ret.clone()));
+
+    // Check against annotation if provided
+    if let Some(ann_ty) = annotated_type {
+        let s = unify(&inferred, &ann_ty)
+            .map_err(|e| format!("pure define {}: type error — {}", name, e))?;
+        subst = s.compose(subst);
+    }
+
+    let final_type = subst.apply(&inferred);
+
+    Ok(PureCheckResult {
+        name,
+        inferred_type: final_type,
+    })
+}
+
+/// Check a value define in an existing environment.
+fn check_value_define_in_env(
+    parts: &[LispVal],
+    env: &mut TcEnv,
+    supply: &mut VarSupply,
+) -> Result<PureCheckResult, String> {
+    let name = match parts.first() {
+        Some(LispVal::Sym(s)) => s.clone(),
+        other => return Err(format!("pure define: expected name, got {:?}", other)),
+    };
+
+    let (annotated_type, body) = if parts.len() >= 4 {
+        match &parts[1] {
+            LispVal::Sym(s) if s == "::" => {
+                let ann_type = parse_type_annotation(&parts[2])?;
+                let body = parts[3].clone();
+                (Some(ann_type), body)
+            }
+            _ => {
+                let body = parts[1].clone();
+                (None, body)
+            }
+        }
+    } else if parts.len() >= 2 {
+        match &parts[1] {
+            LispVal::Sym(s) if s == "::" => {
+                return Err("pure define: missing type after ::".into());
+            }
+            _ => {
+                let body = parts[1].clone();
+                (None, body)
+            }
+        }
+    } else {
+        return Err("pure define: missing body".into());
+    };
+
+    let mut subst = Subst::new();
+    let body_type = infer(&body, env, supply, &mut subst)?;
+
+    if let Some(ann_ty) = annotated_type {
+        let s = unify(&body_type, &ann_ty)
+            .map_err(|e| format!("pure define {}: type error — {}", name, e))?;
+        subst = s.compose(subst);
+    }
+
+    let final_type = subst.apply(&body_type);
+
+    Ok(PureCheckResult {
+        name,
+        inferred_type: final_type,
+    })
+}
+
+/// Check a `pure` define form (single form, backward compatible).
 ///
 /// Expected input: the args to `pure` — a single define form.
 /// `(pure (define (f x y) :: int -> int -> int (body)))`

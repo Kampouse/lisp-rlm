@@ -33,7 +33,7 @@ val push_closure_step : unit -> Lemma
              frames = [];
              num_slots = 0;
              captured = [];
-             closure_envs = [] } in
+             closure_envs = []; env = [] } in
    match closure_eval_op s with
    | { ok = false } -> true
    | _ -> false)
@@ -50,7 +50,7 @@ val push_closure_capture : unit -> Lemma
              frames = [];
              num_slots = 1;
              captured = [];
-             closure_envs = [] } in
+             closure_envs = []; env = [] } in
    let s1 = closure_eval_op s in
    s1.ok = true &&
    (match s1.stack with | Num inst_id :: _ -> inst_id = 0 | _ -> false) &&
@@ -71,7 +71,7 @@ val call_captured_step : unit -> Lemma
              frames = [];
              num_slots = 0;
              captured = [];
-             closure_envs = [([], 0)] } in
+             closure_envs = [([], 0)] ; env = [] } in
    let s1 = callcaptured_handler 0 s 1 in
    s1.pc = 0 && s1.ok = true &&
    (match s1.code with | [PushI64 42; Return] -> true | _ -> false) &&
@@ -98,7 +98,7 @@ val return_step : unit -> Lemma
                          ret_captured = [] }];
              num_slots = 0;
              captured = [];
-             closure_envs = [] } in
+             closure_envs = []; env = [] } in
    let s1 = return_handler s in
    s1.pc = 1 &&
    s1.ok = true &&
@@ -116,7 +116,7 @@ val callself_step : unit -> Lemma
              frames = [];
              num_slots = 4;
              captured = [];
-             closure_envs = [] } in
+             closure_envs = []; env = [] } in
    let s1 = callself_handler 2 s 4 in
    s1.pc = 0 &&
    s1.ok = true &&

@@ -13,7 +13,7 @@ let cvm code slots stack nslots = {
   code = code; ok = true;
   code_table = []; frames = [];
   num_slots = nslots;
-  captured = []; closure_envs = [];
+  captured = []; closure_envs = []; env = [];
 }
 
 // ============================================================

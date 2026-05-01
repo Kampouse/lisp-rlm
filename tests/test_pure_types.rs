@@ -3,7 +3,7 @@
 use lisp_rlm_wasm::{parse_all, Env, EvalState};
 
 fn eval_source(src: &str) -> Result<String, String> {
-    let exprs = parse_all(src).map_err(|e| e.to_string())?;
+    let exprs = parse_all(src)?;
     let mut env = Env::new();
     let mut state = EvalState::new();
     let mut result = String::new();

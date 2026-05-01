@@ -23,7 +23,7 @@ val step_callself_noargs : unit -> Lemma
     stack = []; slots = [Num 0]; pc = 0;
     code = [CallSelf 0; Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 1; captured = []; closure_envs = [];
+    num_slots = 1; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    s1.ok = true && s1.pc = 0)
@@ -34,7 +34,7 @@ val step_callself_2args : a:int -> b:int -> Lemma
     stack = [Num a; Num b]; slots = [Num 0]; pc = 0;
     code = [CallSelf 2; Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 2; captured = []; closure_envs = [];
+    num_slots = 2; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    s1.ok = true && s1.pc = 0)
@@ -50,7 +50,7 @@ val step_recur_0args : unit -> Lemma
     stack = []; slots = []; pc = 0;
     code = [Recur 0; Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 0; captured = []; closure_envs = [];
+    num_slots = 0; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    s1.ok = true && s1.pc = 0)
@@ -61,7 +61,7 @@ val step_recur_2args : a:int -> b:int -> Lemma
     stack = [Num a; Num b]; slots = [Num 0; Num 1]; pc = 0;
     code = [Recur 2; Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 2; captured = []; closure_envs = [];
+    num_slots = 2; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    s1.ok = true && s1.pc = 0)
@@ -77,7 +77,7 @@ val step_recurincaccum_exit : cv:int -> av:int -> step:int -> limit:int -> Lemma
      stack = []; slots = [Num cv; Num av]; pc = 0;
      code = [RecurIncAccum (0, 1, step, limit, 5); PushI64 0; Return]; ok = true;
      code_table = []; frames = [];
-     num_slots = 2; captured = []; closure_envs = [];
+     num_slots = 2; captured = []; closure_envs = []; env = [];
    } in
     let s1 = closure_eval_op vm in
     s1.ok = true && s1.pc = 5))
@@ -89,7 +89,7 @@ val step_recurincaccum_continue : cv:int -> av:int -> step:int -> limit:int -> L
      stack = []; slots = [Num cv; Num av]; pc = 0;
      code = [RecurIncAccum (0, 1, step, limit, 5); PushI64 0; Return]; ok = true;
      code_table = []; frames = [];
-     num_slots = 2; captured = []; closure_envs = [];
+     num_slots = 2; captured = []; closure_envs = []; env = [];
    } in
     let s1 = closure_eval_op vm in
     s1.ok = true && s1.pc = 0))
@@ -104,7 +104,7 @@ val step_typedbinop_add_i64 : a:int -> b:int -> Lemma
     stack = [Num b; Num a]; slots = []; pc = 0;
     code = [TypedBinOp (Add, I64); Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 0; captured = []; closure_envs = [];
+    num_slots = 0; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    let s2 = closure_eval_op s1 in
@@ -116,7 +116,7 @@ val step_typedbinop_sub_i64 : a:int -> b:int -> Lemma
     stack = [Num b; Num a]; slots = []; pc = 0;
     code = [TypedBinOp (Sub, I64); Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 0; captured = []; closure_envs = [];
+    num_slots = 0; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    let s2 = closure_eval_op s1 in
@@ -128,7 +128,7 @@ val step_typedbinop_mul_i64 : a:int -> b:int -> Lemma
     stack = [Num b; Num a]; slots = []; pc = 0;
     code = [TypedBinOp (Mul, I64); Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 0; captured = []; closure_envs = [];
+    num_slots = 0; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    let s2 = closure_eval_op s1 in
@@ -140,7 +140,7 @@ val step_typedbinop_eq_i64 : a:int -> b:int -> Lemma
     stack = [Num b; Num a]; slots = []; pc = 0;
     code = [TypedBinOp (Eq, I64); Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 0; captured = []; closure_envs = [];
+    num_slots = 0; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    let s2 = closure_eval_op s1 in
@@ -152,7 +152,7 @@ val step_typedbinop_lt_i64 : a:int -> b:int -> Lemma
     stack = [Num b; Num a]; slots = []; pc = 0;
     code = [TypedBinOp (Lt, I64); Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 0; captured = []; closure_envs = [];
+    num_slots = 0; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    let s2 = closure_eval_op s1 in
@@ -164,7 +164,7 @@ val step_typedbinop_gt_i64 : a:int -> b:int -> Lemma
     stack = [Num b; Num a]; slots = []; pc = 0;
     code = [TypedBinOp (Gt, I64); Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 0; captured = []; closure_envs = [];
+    num_slots = 0; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    let s2 = closure_eval_op s1 in
@@ -176,7 +176,7 @@ val step_typedbinop_le_i64 : a:int -> b:int -> Lemma
     stack = [Num b; Num a]; slots = []; pc = 0;
     code = [TypedBinOp (Le, I64); Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 0; captured = []; closure_envs = [];
+    num_slots = 0; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    let s2 = closure_eval_op s1 in
@@ -188,7 +188,7 @@ val step_typedbinop_ge_i64 : a:int -> b:int -> Lemma
     stack = [Num b; Num a]; slots = []; pc = 0;
     code = [TypedBinOp (Ge, I64); Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 0; captured = []; closure_envs = [];
+    num_slots = 0; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    let s2 = closure_eval_op s1 in
@@ -201,7 +201,7 @@ val step_typedbinop_mod_i64 : a:int -> b:int -> Lemma
      stack = [Num b; Num a]; slots = []; pc = 0;
      code = [TypedBinOp (Mod, I64); Return]; ok = true;
      code_table = []; frames = [];
-     num_slots = 0; captured = []; closure_envs = [];
+     num_slots = 0; captured = []; closure_envs = []; env = [];
    } in
     let s1 = closure_eval_op vm in
     let s2 = closure_eval_op s1 in
@@ -213,7 +213,7 @@ val step_typedbinop_mod_zero : a:int -> Lemma
     stack = [Num 0; Num a]; slots = []; pc = 0;
     code = [TypedBinOp (Mod, I64); Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 0; captured = []; closure_envs = [];
+    num_slots = 0; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    let s2 = closure_eval_op s1 in
@@ -225,7 +225,7 @@ val step_typedbinop_add_f64 : a:int -> b:int -> Lemma
     stack = [Num b; Num a]; slots = []; pc = 0;
     code = [TypedBinOp (Add, F64); Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 0; captured = []; closure_envs = [];
+    num_slots = 0; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    let s2 = closure_eval_op s1 in
@@ -237,7 +237,7 @@ val step_typedbinop_sub_f64 : a:int -> b:int -> Lemma
     stack = [Num b; Num a]; slots = []; pc = 0;
     code = [TypedBinOp (Sub, F64); Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 0; captured = []; closure_envs = [];
+    num_slots = 0; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    let s2 = closure_eval_op s1 in

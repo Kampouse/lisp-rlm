@@ -36,7 +36,7 @@ let cvm0 code slots nslots = {
   code = code; ok = true;
   code_table = []; frames = [];
   num_slots = nslots;
-  captured = []; closure_envs = [];
+  captured = []; closure_envs = []; env = [];
 }
 
 // ============================================================
@@ -405,7 +405,7 @@ val step_makelist : unit -> Lemma
   (let s = { stack = [Num 3; Num 2; Num 1]; slots = []; pc = 0;
              code = [MakeList 3; Return];
              ok = true; code_table = []; frames = [];
-             num_slots = 0; captured = []; closure_envs = [] } in
+             num_slots = 0; captured = []; closure_envs = []; env = [] } in
    let s1 = closure_eval_op s in
    let s2 = closure_eval_op s1 in
    s2.ok = true &&
@@ -427,7 +427,7 @@ val step_store_load_slot0 : n:int -> Lemma
   (let s = { stack = [Num n]; slots = [Num 0]; pc = 0;
              code = [StoreSlot 0; LoadSlot 0; Return];
              ok = true; code_table = []; frames = [];
-             num_slots = 1; captured = []; closure_envs = [] } in
+             num_slots = 1; captured = []; closure_envs = []; env = [] } in
    let s1 = closure_eval_op s in
    let s2 = closure_eval_op s1 in
    let s3 = closure_eval_op s2 in
@@ -443,7 +443,7 @@ val step_dictset2 : unit -> Lemma
              slots = []; pc = 0;
              code = [DictSet; Return];
              ok = true; code_table = []; frames = [];
-             num_slots = 0; captured = []; closure_envs = [] } in
+             num_slots = 0; captured = []; closure_envs = []; env = [] } in
    let s1 = closure_eval_op s in
    let s2 = closure_eval_op s1 in
    s2.ok = true &&

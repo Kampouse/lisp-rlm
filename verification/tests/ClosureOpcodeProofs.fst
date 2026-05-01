@@ -23,7 +23,7 @@ val step_opmod : a:int -> b:int -> Lemma
      stack = [Num b; Num a]; slots = []; pc = 0;
      code = [OpMod; Return]; ok = true;
      code_table = []; frames = [];
-     num_slots = 0; captured = []; closure_envs = [];
+     num_slots = 0; captured = []; closure_envs = []; env = [];
    } in
     let s1 = closure_eval_op vm in
     s1.ok = true && s1.pc = 1 &&
@@ -35,7 +35,7 @@ val step_opmod_zero : a:int -> Lemma
     stack = [Num 0; Num a]; slots = []; pc = 0;
     code = [OpMod; Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 0; captured = []; closure_envs = [];
+    num_slots = 0; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    s1.ok = false)
@@ -50,7 +50,7 @@ val step_loadcaptured_0 : v:int -> Lemma
     stack = []; slots = []; pc = 0;
     code = [LoadCaptured 0; Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 0; captured = [Num v]; closure_envs = [];
+    num_slots = 0; captured = [Num v]; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    s1.ok = true && s1.pc = 1 &&
@@ -62,7 +62,7 @@ val step_loadcaptured_1 : a:int -> b:int -> Lemma
     stack = []; slots = []; pc = 0;
     code = [LoadCaptured 1; Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 0; captured = [Num a; Num b]; closure_envs = [];
+    num_slots = 0; captured = [Num a; Num b]; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    s1.ok = true && s1.pc = 1 &&
@@ -74,7 +74,7 @@ val step_loadcaptured_str : s:string -> Lemma
     stack = []; slots = []; pc = 0;
     code = [LoadCaptured 0; Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 0; captured = [Str s]; closure_envs = [];
+    num_slots = 0; captured = [Str s]; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    s1.ok = true && s1.pc = 1 &&
@@ -91,7 +91,7 @@ val step_pushclosure_empty : unit -> Lemma
     code = [PushClosure 0; Return]; ok = true;
     code_table = [{ chunk_code = [Return]; chunk_nslots = 0; chunk_runtime_captures = [] }];
     frames = [];
-    num_slots = 0; captured = []; closure_envs = [];
+    num_slots = 0; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    s1.ok = true && s1.pc = 1 &&
@@ -105,7 +105,7 @@ val step_pushclosure_with_capture : v:int -> Lemma
     code_table = [{ chunk_code = [Return]; chunk_nslots = 0;
                     chunk_runtime_captures = [("x", 0)] }];
     frames = [];
-    num_slots = 1; captured = []; closure_envs = [];
+    num_slots = 1; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    s1.ok = true && s1.pc = 1 &&
@@ -124,7 +124,7 @@ val step_callcapturedref_ok_pc : a:int -> b:int -> Lemma
     code_table = [{ chunk_code = [Return]; chunk_nslots = 2; chunk_runtime_captures = [] }];
     frames = [];
     num_slots = 1; captured = [];
-    closure_envs = [([], 0)];
+    closure_envs = [([], 0)]; env = [];
   } in
    let s1 = closure_eval_op vm in
    s1.ok = true && s1.pc = 0)
@@ -142,7 +142,7 @@ val step_callcaptured_ok : a:int -> b:int -> Lemma
     code_table = [{ chunk_code = [Return]; chunk_nslots = 2; chunk_runtime_captures = [] }];
     frames = [];
     num_slots = 0; captured = [];
-    closure_envs = [([], 0)];
+    closure_envs = [([], 0)]; env = [];
   } in
    let s1 = closure_eval_op vm in
    s1.ok = true && s1.pc = 0)
@@ -157,7 +157,7 @@ val step_getdefaultslot_hit : v:int -> Lemma
     stack = []; slots = [Dict [("k", Num v)]; Str "k"; Num 0; Num 3]; pc = 0;
     code = [GetDefaultSlot (0, 1, 2, 3); Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 4; captured = []; closure_envs = [];
+    num_slots = 4; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    s1.ok = true && s1.pc = 1 &&
@@ -171,7 +171,7 @@ val step_getdefaultslot_miss : d:int -> Lemma
     stack = []; slots = [Dict []; Str "missing"; Num d; Num 3]; pc = 0;
     code = [GetDefaultSlot (0, 1, 2, 3); Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 4; captured = []; closure_envs = [];
+    num_slots = 4; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    s1.ok = true && s1.pc = 1 &&
@@ -189,7 +189,7 @@ val step_dictmutset_new : v:int -> Lemma
     stack = [Num v; Str "key"]; slots = [Dict []]; pc = 0;
     code = [DictMutSet 0; Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 1; captured = []; closure_envs = [];
+    num_slots = 1; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    s1.ok = true && s1.pc = 1 &&
@@ -206,7 +206,7 @@ val step_dictmutset_overwrite : old:int -> v:int -> Lemma
     stack = [Num v; Str "k"]; slots = [Dict [("k", Num old)]]; pc = 0;
     code = [DictMutSet 0; Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 1; captured = []; closure_envs = [];
+    num_slots = 1; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    s1.ok = true && s1.pc = 1 &&
@@ -220,7 +220,7 @@ val step_dictmutset_bad_key : unit -> Lemma
     stack = [Num 1; Num 2]; slots = [Dict []]; pc = 0;
     code = [DictMutSet 0; Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 1; captured = []; closure_envs = [];
+    num_slots = 1; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
    s1.ok = false)

@@ -6,6 +6,7 @@ name = "lisp-rlm-wasm"
 version = "0.1.0"
 edition = "2021"
 description = "Lisp runtime compiled to WASM"
+autobins = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -36,5 +37,5 @@ tempfile = "3.27.0"
 wat = "1.0"
 
 [[bin]]
-name = "near-compile"
-path = "src/bin/near_compile.rs"
+name = "lisp-run"
+path = "src/bin/lisp_run.rs"

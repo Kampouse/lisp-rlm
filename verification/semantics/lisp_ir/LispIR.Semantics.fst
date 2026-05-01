@@ -7,12 +7,15 @@ module LispIR.Semantics
 
 open Lisp.Types
 open Lisp.Values
+open FStar.String
 
 let op_int_add (x:int) (y:int) : int = x + y
 let op_int_sub (x:int) (y:int) : int = x - y
 let int_mul (x:int) (y:int) : Tot int = Prims.op_Multiply x y
 val int_div : x:int -> y:int -> Tot int
 let int_div x y = if y = 0 then 0 else x / y
+val int_mod : x:int -> y:int -> Tot int
+let int_mod x y = if y = 0 then 0 else x % y
 let op_int_lt  (x:int) (y:int) : bool = x < y
 let op_int_le  (x:int) (y:int) : bool = x <= y
 let op_int_gt  (x:int) (y:int) : bool = x > y
@@ -59,6 +62,28 @@ let val_of_dict v =
   match v with
   | Dict entries -> entries
   | _ -> []
+
+// Pop n values from stack
+val pop_n : list lisp_val -> nat -> Tot (option (list lisp_val * list lisp_val))
+let rec pop_n stk n =
+  match n, stk with
+  | 0, _ -> Some ([], stk)
+  | _, [] -> None
+  | _, v :: rest ->
+    (match pop_n rest (n - 1) with
+     | Some (items, remaining) -> Some (v :: items, remaining)
+     | None -> None)
+
+// Convert list of values to field pairs: [("0", v0); ("1", v1); ...]
+val items_to_fields : list lisp_val -> int -> Tot (list (string * lisp_val))
+let rec items_to_fields items idx =
+  match items with
+  | [] -> []
+  | v :: rest -> (string_of_int idx, v) :: items_to_fields rest (idx + 1)
+
+// Convenience: items_to_fields starting from 0
+val items_to_fields0 : list lisp_val -> Tot (list (string * lisp_val))
+let items_to_fields0 items = items_to_fields items 0
 
 // === Core: evaluate one opcode ===
 val eval_op : opcode -> vm_state -> Tot vm_result
@@ -116,8 +141,24 @@ let eval_op op s =
 
   | OpDiv -> (match s.stack with
     | b :: a :: rest ->
-      Ok {s with stack = num_arith a b int_div ff_div :: rest; pc = s.pc + 1}
+      // div-by-zero check — matches Rust bytecode.rs:3612-3613
+      (match b with
+       | Num 0 -> Err "division by zero"
+       | Float fb -> if ff_eq fb (ff_of_int 0) then Err "division by zero"
+                     else Ok {s with stack = num_arith a b int_div ff_div :: rest; pc = s.pc + 1}
+       | _ -> Ok {s with stack = num_arith a b int_div ff_div :: rest; pc = s.pc + 1})
     | _ -> Err "OpDiv: stack underflow")
+
+  | OpMod -> (match s.stack with
+    | b :: a :: rest ->
+      // Matches Rust bytecode.rs:3618-3625 — uses num_val (truncates floats to int)
+      let av = (match a with Num n -> n | Float f -> ff_to_int f | _ -> 0) in
+      let bv = (match b with Num n -> n | Float f -> ff_to_int f | _ -> 0) in
+      if bv = 0 then Err "modulo by zero"
+      else
+        let r = int_mod av bv in  // int_div-style safe wrapper
+        Ok {s with stack = Num r :: rest; pc = s.pc + 1}
+    | _ -> Err "OpMod: stack underflow")
 
   | OpEq -> (match s.stack with
     | b :: a :: rest ->
@@ -208,15 +249,55 @@ let eval_op op s =
   | SlotAddImm (idx, imm) -> (match list_nth s.slots idx with
     | Some (Num n) ->
       let r = Num (n + imm) in
-      (match list_update s.slots idx r with
-       | Some slots' -> Ok {s with slots = slots'; stack = r :: s.stack; pc = s.pc + 1}
-       | None -> Err "SlotAddImm: update failed")
+      // Does NOT write back to slot — matches Rust (bytecode.rs:2389-2394, 3711-3714)
+      Ok {s with stack = r :: s.stack; pc = s.pc + 1}
     | Some (Float f) ->
       let r = Float (ff_add f (ff_of_int imm)) in
-      (match list_update s.slots idx r with
-       | Some slots' -> Ok {s with slots = slots'; stack = r :: s.stack; pc = s.pc + 1}
-       | None -> Err "SlotAddImm: update failed")
+      // Does NOT write back to slot
+      Ok {s with stack = r :: s.stack; pc = s.pc + 1}
     | _ -> Err "SlotAddImm: slot not numeric")
+
+  // --- New opcodes: literal, global env, captured mutation, deftype ---
+  | PushLiteral v ->
+    Ok {s with stack = v :: s.stack; pc = s.pc + 1}
+
+  | LoadGlobal _ ->
+    // No env model in simple vm_state — advance pc (env handled in ClosureVM)
+    Ok {s with pc = s.pc + 1}
+
+  | StoreGlobal _ ->
+    Ok {s with pc = s.pc + 1}
+
+  | StoreCaptured _ ->
+    Ok {s with pc = s.pc + 1}
+
+  | ConstructTag (type_name, n_args, variant_idx) ->
+    // Simplified: pop n_args, build Tagged with variant_id
+    (match pop_n s.stack n_args with
+     | Some (items, rest) ->
+       Ok {s with stack = Tagged (type_name, variant_idx, items_to_fields0 items) :: rest; pc = s.pc + 1}
+     | None -> Err "ConstructTag: stack underflow")
+
+  | TagTest (type_name, variant_idx) ->
+    (match s.stack with
+    | v :: rest ->
+      let is_tag = match v with
+        | Tagged (tn, vid, _) -> tn = type_name && vid = variant_idx
+        | _ -> false in
+      // Does NOT pop — pushes Bool result, leaves original value
+      Ok {s with stack = Bool is_tag :: v :: rest; pc = s.pc + 1}
+    | [] -> Err "TagTest: stack underflow")
+
+  | GetField idx ->
+    (match s.stack with
+    | v :: rest ->
+      (match v with
+       | Tagged (_, _, fields) ->
+         (match list_nth fields idx with
+          | Some (_, fv) -> Ok {s with stack = fv :: rest; pc = s.pc + 1}
+          | None -> Ok {s with stack = Nil :: rest; pc = s.pc + 1})
+       | _ -> Ok {s with stack = Nil :: rest; pc = s.pc + 1})
+    | [] -> Err "GetField: stack underflow")
 
   // --- Default: advance PC for all remaining ops ---
   | _ -> Ok {s with pc = s.pc + 1}

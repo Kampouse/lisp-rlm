@@ -34,6 +34,7 @@ noeq type lisp_val =
   | Dict   of list (string * lisp_val)
   | Lambda of list string * lisp_val * list (string * lisp_val)  (* params, body, env *)
   | BuiltinFn of string
+  | Tagged  of string * int * list (string * lisp_val)  (* type_name, variant_id, [(field_name, field_val)] *)
 
 // === BinOp ===
 type binop =
@@ -115,6 +116,20 @@ noeq type opcode =
   | PushBuiltin    of string
   | CallDynamic    of nat
   | RecurDirect    of nat
+
+  // Literal value (for quote)
+  | PushLiteral    of lisp_val
+
+  // Global environment operations (env is a functional dict)
+  | StoreGlobal    of string
+
+  // Captured variable mutation
+  | StoreCaptured  of nat
+
+  // Sum type (deftype) operations
+  | ConstructTag   of string * nat * nat  (* type_name, n_args, variant_idx *)
+  | TagTest        of string * nat         (* type_name, variant_idx *)
+  | GetField       of nat                  (* field index *)
 
   // Fused patterns
   | GetDefaultSlot   of nat * nat * nat * nat

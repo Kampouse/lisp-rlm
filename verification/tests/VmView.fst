@@ -126,7 +126,7 @@ val step_push_i64 : n:int -> stack:list lisp_val -> slots:list lisp_val -> rest:
       stack = stack; slots = slots; pc = 0;
       code = PushI64 n :: rest; ok = true;
       code_table = []; frames = []; num_slots = 0;
-      captured = []; closure_envs = []
+      captured = []; closure_envs = []; env = []
     } in
    let s' = closure_eval_op s in
    s'.ok = true && s'.pc = 1 &&
@@ -138,7 +138,7 @@ val step_push_bool : b:bool -> stack:list lisp_val -> rest:list opcode -> Lemma
       stack = stack; slots = []; pc = 0;
       code = PushBool b :: rest; ok = true;
       code_table = []; frames = []; num_slots = 0;
-      captured = []; closure_envs = []
+      captured = []; closure_envs = []; env = []
     } in
    let s' = closure_eval_op s in
    s'.ok = true && s'.pc = 1 &&
@@ -150,7 +150,7 @@ val step_load_slot0 : slot_val:lisp_val -> stack:list lisp_val -> rest:list opco
       stack = stack; slots = slot_val :: []; pc = 0;
       code = LoadSlot 0 :: rest; ok = true;
       code_table = []; frames = []; num_slots = 0;
-      captured = []; closure_envs = []
+      captured = []; closure_envs = []; env = []
     } in
    let s' = closure_eval_op s in
    s'.ok = true && s'.pc = 1 &&
@@ -165,7 +165,7 @@ val step_load_slot1 : s0:lisp_val -> s1_val:lisp_val -> stack:list lisp_val -> r
       stack = stack; slots = [s0; s1_val]; pc = 0;
       code = LoadSlot 1 :: rest; ok = true;
       code_table = []; frames = []; num_slots = 0;
-      captured = []; closure_envs = []
+      captured = []; closure_envs = []; env = []
     } in
    let s' = closure_eval_op s in
    s'.ok = true && s'.pc = 1 &&
@@ -180,7 +180,7 @@ val step_load_captured0 : cap_val:lisp_val -> stack:list lisp_val -> rest:list o
       stack = stack; slots = []; pc = 0;
       code = LoadCaptured 0 :: rest; ok = true;
       code_table = []; frames = []; num_slots = 0;
-      captured = [cap_val]; closure_envs = []
+      captured = [cap_val]; closure_envs = []; env = []
     } in
    let s' = closure_eval_op s in
    s'.ok = true && s'.pc = 1 &&
@@ -195,7 +195,7 @@ val step_op_add : a:int -> b:int -> rest:list opcode -> Lemma
       stack = [Num a; Num b]; slots = []; pc = 0;
       code = OpAdd :: rest; ok = true;
       code_table = []; frames = []; num_slots = 0;
-      captured = []; closure_envs = []
+      captured = []; closure_envs = []; env = []
     } in
    let s' = closure_eval_op s in
    s'.ok = true && s'.pc = 1 &&
@@ -207,7 +207,7 @@ val step_op_mul : a:int -> b:int -> rest:list opcode -> Lemma
       stack = [Num a; Num b]; slots = []; pc = 0;
       code = OpMul :: rest; ok = true;
       code_table = []; frames = []; num_slots = 0;
-      captured = []; closure_envs = []
+      captured = []; closure_envs = []; env = []
     } in
    let s' = closure_eval_op s in
    s'.ok = true && s'.pc = 1 &&
@@ -219,7 +219,7 @@ val step_op_gt : a:int -> b:int -> rest:list opcode -> Lemma
       stack = [Num a; Num b]; slots = []; pc = 0;
       code = OpGt :: rest; ok = true;
       code_table = []; frames = []; num_slots = 0;
-      captured = []; closure_envs = []
+      captured = []; closure_envs = []; env = []
     } in
    let s' = closure_eval_op s in
    s'.ok = true && s'.pc = 1 &&
@@ -233,7 +233,7 @@ val step_op_lt : a:int -> b:int -> rest:list opcode -> Lemma
       stack = [Num a; Num b]; slots = []; pc = 0;
       code = OpLt :: rest; ok = true;
       code_table = []; frames = []; num_slots = 0;
-      captured = []; closure_envs = []
+      captured = []; closure_envs = []; env = []
     } in
    let s' = closure_eval_op s in
    s'.ok = true && s'.pc = 1 &&
@@ -247,7 +247,7 @@ val step_op_eq : a:int -> b:int -> rest:list opcode -> Lemma
       stack = [Num a; Num b]; slots = []; pc = 0;
       code = OpEq :: rest; ok = true;
       code_table = []; frames = []; num_slots = 0;
-      captured = []; closure_envs = []
+      captured = []; closure_envs = []; env = []
     } in
    let s' = closure_eval_op s in
    s'.ok = true && s'.pc = 1 &&

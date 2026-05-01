@@ -26,7 +26,7 @@ val callself_handler_0 : unit -> Lemma
     stack = []; slots = [Num 0]; pc = 0;
     code = [CallSelf 0; Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 1; captured = []; closure_envs = [];
+    num_slots = 1; captured = []; closure_envs = []; env = [];
   } in
    let s1 = callself_handler 0 s 1 in
    s1.pc = 0 &&
@@ -39,7 +39,7 @@ val callself_handler_2 : a:int -> b:int -> Lemma
     stack = [Num a; Num b]; slots = [Num 0]; pc = 0;
     code = [CallSelf 2; Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 2; captured = []; closure_envs = [];
+    num_slots = 2; captured = []; closure_envs = []; env = [];
   } in
    let s1 = callself_handler 2 s 1 in
    s1.pc = 0 &&
@@ -55,7 +55,7 @@ val callself_dispatch_0 : unit -> Lemma
     stack = []; slots = [Num 0]; pc = 0;
     code = [CallSelf 0; Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 1; captured = []; closure_envs = [];
+    num_slots = 1; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op s in
    s1.ok = true && s1.pc = 0)
@@ -66,7 +66,7 @@ val callself_dispatch_2 : a:int -> b:int -> Lemma
     stack = [Num a; Num b]; slots = [Num 0]; pc = 0;
     code = [CallSelf 2; Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 2; captured = []; closure_envs = [];
+    num_slots = 2; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op s in
    s1.ok = true && s1.pc = 0)
@@ -81,7 +81,7 @@ val recur_handler_0 : unit -> Lemma
     stack = []; slots = []; pc = 0;
     code = [Recur 0; Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 0; captured = []; closure_envs = [];
+    num_slots = 0; captured = []; closure_envs = []; env = [];
   } in
    let s1 = recur_handler 0 s in
    s1.pc = 0 &&
@@ -93,7 +93,7 @@ val recur_handler_2 : a:int -> b:int -> Lemma
     stack = [Num a; Num b]; slots = [Num 0; Num 1]; pc = 0;
     code = [Recur 2; Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 2; captured = []; closure_envs = [];
+    num_slots = 2; captured = []; closure_envs = []; env = [];
   } in
    let s1 = recur_handler 2 s in
    s1.pc = 0 &&
@@ -107,7 +107,7 @@ val recur_dispatch_0 : unit -> Lemma
     stack = []; slots = []; pc = 0;
     code = [Recur 0; Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 0; captured = []; closure_envs = [];
+    num_slots = 0; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op s in
    s1.ok = true && s1.pc = 0)
@@ -118,7 +118,7 @@ val recur_dispatch_2 : a:int -> b:int -> Lemma
     stack = [Num a; Num b]; slots = [Num 0; Num 1]; pc = 0;
     code = [Recur 2; Return]; ok = true;
     code_table = []; frames = [];
-    num_slots = 2; captured = []; closure_envs = [];
+    num_slots = 2; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op s in
    s1.ok = true && s1.pc = 0)
@@ -134,7 +134,7 @@ val recurincaccum_handler_continue : cv:int -> av:int -> step:int -> limit:int -
      stack = []; slots = [Num cv; Num av]; pc = 0;
      code = [RecurIncAccum (0, 1, step, limit, 5); Return]; ok = true;
      code_table = []; frames = [];
-     num_slots = 2; captured = []; closure_envs = [];
+     num_slots = 2; captured = []; closure_envs = []; env = [];
    } in
     let s1 = recurincaccum_handler 0 1 step limit 5 s in
     s1.pc = 0 &&
@@ -152,7 +152,7 @@ val recurincaccum_dispatch_continue : cv:int -> av:int -> step:int -> limit:int 
      stack = []; slots = [Num cv; Num av]; pc = 0;
      code = [RecurIncAccum (0, 1, step, limit, 5); Return]; ok = true;
      code_table = []; frames = [];
-     num_slots = 2; captured = []; closure_envs = [];
+     num_slots = 2; captured = []; closure_envs = []; env = [];
    } in
     let s1 = closure_eval_op s in
     s1.ok = true && s1.pc = 0))
@@ -199,7 +199,7 @@ val callcapturedref_handler_2 : a:int -> b:int -> Lemma
     code_table = [{ chunk_code = [Return]; chunk_nslots = 2; chunk_runtime_captures = [] }];
     frames = [];
     num_slots = 1; captured = [];
-    closure_envs = [([], 0)];
+    closure_envs = [([], 0)]; env = [];
   } in
    let s1 = callcapturedref_handler 0 2 s 1 in
    s1.pc = 0 &&
@@ -216,7 +216,7 @@ val callcapturedref_dispatch : a:int -> b:int -> Lemma
     code_table = [{ chunk_code = [Return]; chunk_nslots = 2; chunk_runtime_captures = [] }];
     frames = [];
     num_slots = 1; captured = [];
-    closure_envs = [([], 0)];
+    closure_envs = [([], 0)]; env = [];
   } in
    let s1 = closure_eval_op s in
    s1.ok = true && s1.pc = 0)
@@ -267,7 +267,7 @@ val callcaptured_handler_2 : a:int -> b:int -> Lemma
     code_table = [{ chunk_code = [Return]; chunk_nslots = 2; chunk_runtime_captures = [] }];
     frames = [];
     num_slots = 0; captured = [];
-    closure_envs = [([], 0)];
+    closure_envs = [([], 0)]; env = [];
   } in
    let s1 = callcaptured_handler 2 2 s 1 in
    s1.pc = 0 &&
@@ -284,7 +284,7 @@ val callcaptured_dispatch : a:int -> b:int -> Lemma
     code_table = [{ chunk_code = [Return]; chunk_nslots = 2; chunk_runtime_captures = [] }];
     frames = [];
     num_slots = 0; captured = [];
-    closure_envs = [([], 0)];
+    closure_envs = [([], 0)]; env = [];
   } in
    let s1 = closure_eval_op s in
    s1.ok = true && s1.pc = 0)

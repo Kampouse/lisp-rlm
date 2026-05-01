@@ -25,7 +25,7 @@ let s0 code slots nslots = {
   code = code; ok = true;
   code_table = []; frames = [];
   num_slots = nslots;
-  captured = []; closure_envs = [];
+  captured = []; closure_envs = []; env = [];
 }
 
 // State with stack pre-loaded
@@ -35,7 +35,7 @@ let sws code stack slots nslots = {
   code = code; ok = true;
   code_table = []; frames = [];
   num_slots = nslots;
-  captured = []; closure_envs = [];
+  captured = []; closure_envs = []; env = [];
 }
 
 // ============================================================
@@ -441,7 +441,7 @@ val route_callcaptured : unit -> Lemma
              code_table = [{ chunk_code = [PushI64 42; Return];
                             chunk_nslots = 0;
                             chunk_runtime_captures = [] }];
-             closure_envs = [([], 0)] } in
+             closure_envs = [([], 0)] ; env = [] } in
    let s' = closure_eval_op s in
    s'.ok = true && s'.pc = 0 &&
    (match s'.code with | [PushI64 42; Return] -> true | _ -> false) &&
@@ -454,7 +454,7 @@ val route_callcapturedref : unit -> Lemma
              code_table = [{ chunk_code = [PushI64 42; Return];
                             chunk_nslots = 0;
                             chunk_runtime_captures = [] }];
-             closure_envs = [([], 0)];
+             closure_envs = [([], 0)]; env = [];
              num_slots = 1 } in
    let s' = closure_eval_op s in
    s'.ok = true && s'.pc = 0 &&
@@ -561,7 +561,8 @@ let route_builtincall_abs n = ()
 
 val route_loadglobal : unit -> Lemma
   (let s' = closure_eval_op (s0 [LoadGlobal "x"] [] 0) in
-   not s'.ok)
+   s'.ok = true &&
+   (match s'.stack with | Nil :: _ -> true | _ -> false))
 let route_loadglobal () = ()
 
 // ============================================================

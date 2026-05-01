@@ -76,10 +76,7 @@ pub fn run_program(
                         continue;
                     }
                     "pure" => {
-                        // pure: type-check, then strip annotation and continue
-                        // For now, just desugar it — the compiler will see it
-                        // as a define with a :: annotation that it can ignore
-                        // TODO: integrate typing if needed
+                        // pure: pass through — desugar_define_to_pair handles stripping
                         preprocessed.push(form);
                         continue;
                     }
@@ -120,15 +117,15 @@ pub fn run_program(
     // ── Phase 3: Separate defines from expressions ──
     // Defines must be executed imperatively (writing to env) so that
     // subsequent code and nested run_program calls (require) can see them.
-    let mut defines: Vec<(String, LispVal)> = Vec::new();
+    let mut defines: Vec<((String, LispVal), Option<String>)> = Vec::new();
     let mut exprs: Vec<&LispVal> = Vec::new();
     let mut in_defines = true;
 
-
-    for form in &preprocessed {
+     for form in &preprocessed {
         if in_defines {
-            if let Some(binding) = desugar_define_to_pair(form) {
-                defines.push(binding);
+            let bindings = desugar_define_to_pairs(form)?;
+            if !bindings.is_empty() {
+                defines.extend(bindings);
                 continue;
             }
             in_defines = false;
@@ -139,7 +136,7 @@ pub fn run_program(
     // ── Phase 4: Execute defines imperatively ──
     // Each define's value expression is compiled and run separately.
     // The result is stored in env so subsequent defines/expressions can see it.
-    for (name, val_expr) in &defines {
+    for ((name, val_expr), pure_type) in &defines {
         // For function defines (lambda values), pass the name so self_name
         // is set for recursive calls via CallSelf.
         let func_name = if matches!(
@@ -164,7 +161,7 @@ pub fn run_program(
                 .collect::<Vec<_>>(),
             env,
             func_name,
-            None,
+            pure_type.as_deref(),
         )
         .ok_or_else(|| {
             format!(
@@ -436,7 +433,7 @@ fn desugar_program(forms: &[&LispVal]) -> LispVal {
         if let LispVal::List(list) = form {
             if let Some(LispVal::Sym(name)) = list.first() {
                 if name.as_str() == "define" {
-                    if let Some(binding) = desugar_define_to_pair(form) {
+                    if let Some(binding) = desugar_define_to_pair(form).ok().flatten() {
                         defines.push(binding);
                         continue;
                     }
@@ -463,13 +460,106 @@ fn desugar_program(forms: &[&LispVal]) -> LispVal {
     wrap_in_lets(defines, body)
 }
 
-/// Desugar a single `(define ...)` form (passed as &LispVal) into a (name, value_expr) pair.
-/// Used by run_program to extract define bindings for imperative execution.
-fn desugar_define_to_pair(form: &LispVal) -> Option<(String, LispVal)> {
+/// Strip type annotations from a `(define ...)` form.
+/// E.g. `(define (f x) :: int -> int body)` → `(define (f x) body)`
+/// Finds `::` in the list and removes it plus all type tokens between it and the body.
+fn strip_type_annotation(list: &[LispVal]) -> Vec<LispVal> {
+    // Find the position of `::` (the type annotation marker)
+    let Some(arrow_pos) = list.iter().position(|v| {
+        matches!(v, LispVal::Sym(s) if s == "::")
+    }) else {
+        // No type annotation — return as-is
+        return list.to_vec();
+    };
+
+    // Take everything before `::` plus the last element (the body)
+    let mut result: Vec<LispVal> = list[..arrow_pos].to_vec();
+    if let Some(body) = list.last() {
+        result.push(body.clone());
+    }
+    result
+}
+
+/// Desugar a top-level form into zero or more (name, value_expr) pairs.
+/// Handles `(pure (define ...) ...)` with multiple inner forms by type-checking
+/// them all in a shared environment and returning all bindings.
+/// Desugar a top-level form into define bindings with optional pure type annotations.
+///
+/// For `(pure (define f ...) (define g ...))`: type-checks all defines with a shared
+/// environment, strips annotations, returns bindings with their inferred pure types.
+/// For regular `(define f ...)`: returns a single binding with no pure type.
+fn desugar_define_to_pairs(form: &LispVal) -> Result<Vec<((String, LispVal), Option<String>)>, String> {
     if let LispVal::List(list) = form {
-        desugar_define(list)
+        if let Some(LispVal::Sym(s)) = list.first() {
+            if s == "pure" && list.len() >= 2 {
+                // Collect all inner forms that are defines
+                let inner_forms = &list[1..];
+                let define_forms: Vec<&LispVal> = inner_forms
+                    .iter()
+                    .filter(|f| {
+                        if let LispVal::List(l) = f {
+                            matches!(l.first(), Some(LispVal::Sym(s)) if s == "define")
+                        } else {
+                            false
+                        }
+                    })
+                    .collect();
+
+                if !define_forms.is_empty() {
+                    // Type-check all forms with a shared environment
+                    let check_results = crate::typing::check_pure_block(&define_forms)?;
+
+                    // Build a name→type map from check results
+                    let mut type_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+                    for r in &check_results {
+                        type_map.insert(r.name.clone(), r.inferred_type.to_string());
+                    }
+
+                    // Strip annotations and desugar each define
+                    let mut bindings = Vec::new();
+                    for df in &define_forms {
+                        if let LispVal::List(l) = df {
+                            let stripped = strip_type_annotation(l);
+                            if let Some(pair) = desugar_define(stripped.as_slice()) {
+                                let pure_type = type_map.get(&pair.0).cloned();
+                                bindings.push((pair, pure_type));
+                            }
+                        }
+                    }
+                    return Ok(bindings);
+                }
+
+                // Single non-define form inside pure — shouldn't be a binding
+                return Ok(Vec::new());
+            }
+        }
+        // Regular define (non-pure)
+        Ok(desugar_define(list).into_iter().map(|p| (p, None)).collect())
     } else {
-        None
+        Ok(Vec::new())
+    }
+}
+
+/// Desugar a single `(define ...)` form (passed as &LispVal) into a (name, value_expr) pair.
+/// Used by desugar_program (interpreter path) and for single-form pure blocks.
+fn desugar_define_to_pair(form: &LispVal) -> Result<Option<(String, LispVal)>, String> {
+    if let LispVal::List(list) = form {
+        // Handle (pure (define ...)) — strip wrapper and type annotations
+        if let Some(LispVal::Sym(s)) = list.first() {
+            if s == "pure" && list.len() >= 2 {
+                if let LispVal::List(inner) = &list[1] {
+                    // Run type checker — propagate errors (type mismatches, impure forms)
+                    let _check = crate::typing::check_pure_define(&list[1..])?;
+
+                    // Strip :: type annotations from inner define
+                    let stripped = strip_type_annotation(inner);
+                    return Ok(desugar_define(stripped.as_slice()));
+                }
+            }
+        }
+        Ok(desugar_define(list))
+    } else {
+        Ok(None)
     }
 }
 

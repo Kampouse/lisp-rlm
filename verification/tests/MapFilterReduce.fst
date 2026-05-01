@@ -27,7 +27,7 @@ let call_vm1 code arg caps nslots = {
   stack = []; slots = [arg]; pc = 0;
   code = code; ok = true;
   code_table = [{ chunk_code = code; chunk_nslots = nslots; chunk_runtime_captures = [] }];
-  frames = []; num_slots = nslots; captured = caps; closure_envs = [];
+  frames = []; num_slots = nslots; captured = caps; closure_envs = []; env = [];
 }
 
 val call_vm2 : list opcode -> lisp_val -> lisp_val -> list lisp_val -> nat -> closure_vm
@@ -35,7 +35,7 @@ let call_vm2 code a1 a2 caps nslots = {
   stack = []; slots = [a1; a2]; pc = 0;
   code = code; ok = true;
   code_table = [{ chunk_code = code; chunk_nslots = nslots; chunk_runtime_captures = [] }];
-  frames = []; num_slots = nslots; captured = caps; closure_envs = [];
+  frames = []; num_slots = nslots; captured = caps; closure_envs = []; env = [];
 }
 
 // Run 4 steps (e.g., LoadSlot; PushI64; OpAdd; Return)
@@ -141,7 +141,7 @@ val score_dictset_step : unit -> Lemma
   (let s : closure_vm = {
       stack = [Nil; Str "score"; Num 42]; slots = [Nil]; pc = 0;
       code = [DictSet]; ok = true;
-      code_table = []; frames = []; num_slots = 1; captured = []; closure_envs = []
+      code_table = []; frames = []; num_slots = 1; captured = []; closure_envs = []; env = []
     } in
    let s1 = closure_eval_op s in
    s1.ok = true &&
