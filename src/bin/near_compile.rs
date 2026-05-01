@@ -502,6 +502,9 @@ fn run_repl() {
                 println!("  :wat       Show compiled WASM (WAT format)");
                 println!("  :size      Show WASM byte size");
                 println!("  :near      Deploy last compiled WASM to testnet");
+                println!("  :push      Deploy all definitions to NEAR testnet");
+                println!("  :call fn   Call a view function on the deployed contract");
+                println!("  :call! fn  Call a mutable function (costs gas)");
                 println!();
                 println!("WASM emitter: hof/map hof/filter hof/reduce");
                 println!("  near/log \"msg\"  near/log \"x=\" 42  near/log_num 99");
@@ -540,6 +543,39 @@ fn run_repl() {
                         Err(e) => println!("Error: {}", e),
                     },
                     Err(e) => println!("Compile error: {}", e),
+                }
+                continue;
+            }
+            s if s == ":push" => {
+                if history.is_empty() { println!("No definitions to push"); continue; }
+                let src = repl_source_with_def(&history, "");
+                match lisp_rlm_wasm::wasm_emit::compile_near(&src) {
+                    Ok(wasm) => {
+                        // Remove __repl_main export — deploy only user exports
+                        match deploy(&wasm) {
+                            Ok(msg) => println!("{}", msg),
+                            Err(e) => println!("Error: {}", e),
+                        }
+                    }
+                    Err(e) => println!("Compile error: {}", e),
+                }
+                continue;
+            }
+            s if s.starts_with(":call!") => {
+                let method = s.trim_start_matches(":call!").trim().trim_matches('"').trim_matches('\'');
+                if method.is_empty() { println!("Usage: :call! <method_name>"); continue; }
+                match call_testnet_mutable(method) {
+                    Ok(output) => println!("{}", output),
+                    Err(e) => println!("Error: {}", e),
+                }
+                continue;
+            }
+            s if s.starts_with(":call") && !s.starts_with(":call!") => {
+                let method = s.trim_start_matches(":call").trim().trim_matches('"').trim_matches('\'');
+                if method.is_empty() { println!("Usage: :call <method_name>"); continue; }
+                match call_testnet_view(method) {
+                    Ok(output) => println!("{}", output),
+                    Err(e) => println!("Error: {}", e),
                 }
                 continue;
             }
@@ -796,4 +832,107 @@ fn deploy(wasm: &[u8]) -> Result<String, String> {
         }
     }
     Err(format!("deploy failed: {}", stdout))
+}
+
+fn call_testnet_view(method: &str) -> Result<String, String> {
+    let args_base64 = base64::encode("{}");
+    let rpc_payload = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"query","params":{{"request_type":"call_function","finality":"final","account_id":"kampy.testnet","method_name":"{}","args_base64":"{}"}}}}"#,
+        method, args_base64
+    );
+    let output = std::process::Command::new("curl")
+        .args(["-s", "-X", "POST", "https://rpc.testnet.near.org",
+               "-H", "Content-Type: application/json",
+               "-d", &rpc_payload])
+        .output().map_err(|e| format!("curl: {}", e))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_rpc_result(method, &stdout)
+}
+
+fn call_testnet_mutable(method: &str) -> Result<String, String> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let key = format!("{}/.near-credentials/testnet/kampy.testnet.json", home);
+    let output = std::process::Command::new("near")
+        .args(["contract", "call-function", "as-transaction", "kampy.testnet", method,
+               "json-args", "{}", "prepaid-gas", "100 Tgas", "attached-deposit", "0 NEAR",
+               "sign-as", "kampy.testnet", "network-config", "testnet",
+               "sign-with-access-key-file", &key, "send"])
+        .output().map_err(|e| format!("near CLI: {}", e))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{}{}", stdout, stderr);
+
+    let mut result = format!("🔄 {} (mutable)\n", method);
+
+    // Parse return value — near CLI outputs it in the logs
+    if let Some(val) = parse_near_cli_return(&stdout) {
+        result.push_str(&format!("  return: {}\n", val));
+    }
+
+    // Extract transaction hash
+    for line in combined.lines() {
+        if let Some(id) = line.split("Transaction ID:").nth(1) {
+            result.push_str(&format!("  ✅ https://explorer.testnet.near.org/transactions/{}", id.trim()));
+            return Ok(result);
+        }
+    }
+
+    // Fallback: check for success indicators
+    if combined.contains("no matching key") {
+        return Err("No matching access key found. Account may need funding.".to_string());
+    }
+
+    result.push_str(&format!("  output: {}", combined.trim()));
+    Ok(result)
+}
+
+fn parse_rpc_result(method: &str, raw: &str) -> Result<String, String> {
+    let v: serde_json::Value = serde_json::from_str(raw)
+        .map_err(|e| format!("JSON parse: {}\nRaw: {}", e, raw))?;
+
+    // Check for error
+    if let Some(err) = v.get("error") {
+        let msg = err.get("message").and_then(|m| m.as_str()).unwrap_or("unknown");
+        return Err(format!("RPC error: {}", msg));
+    }
+
+    let mut result = format!("📋 {} → ", method);
+
+    // Decode result bytes as i64 LE
+    if let Some(res) = v.pointer("/result/result").and_then(|r| r.as_array()) {
+        let bytes: Vec<u8> = res.iter().filter_map(|b| b.as_u64().map(|v| v as u8)).collect();
+        if bytes.len() == 8 {
+            let val = i64::from_le_bytes(bytes.as_slice().try_into().unwrap_or([0;8]));
+            result.push_str(&format!("{}", val));
+        } else if bytes.len() == 0 {
+            result.push_str("(void)");
+        } else {
+            // Try as UTF-8 string
+            match std::str::from_utf8(&bytes) {
+                Ok(s) => result.push_str(&format!("\"{}\"", s)),
+                Err(_) => result.push_str(&format!("{:?}", bytes)),
+            }
+        }
+    }
+
+    // Show logs
+    if let Some(logs) = v.pointer("/result/logs").and_then(|l| l.as_array()) {
+        for log in logs.iter().filter_map(|l| l.as_str()) {
+            result.push_str(&format!("\n  LOG: {}", log));
+        }
+    }
+
+    Ok(result)
+}
+
+fn parse_near_cli_return(output: &str) -> Option<String> {
+    // near CLI outputs something like "1" or parsed return value
+    for line in output.lines() {
+        let trimmed = line.trim();
+        // Look for a bare integer return value
+        if trimmed.parse::<i64>().is_ok() {
+            return Some(trimmed.to_string());
+        }
+    }
+    None
 }
