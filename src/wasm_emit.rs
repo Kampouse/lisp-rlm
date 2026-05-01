@@ -1156,10 +1156,10 @@ impl WasmEmitter {
             "near/return" => {
                 let val = self.expr(&a[0])?;
                 let mut v = Vec::new();
-                v.push(Instruction::I32Const(0)); v.extend(val);
+                v.push(Instruction::I32Const(TEMP_MEM as i32)); v.extend(val);
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                // value_return(len=8, ptr=0) — idx 25
-                v.push(Instruction::I64Const(8)); v.push(Instruction::I64Const(0));
+                // value_return(len=8, ptr=TEMP_MEM) — idx 25
+                v.push(Instruction::I64Const(8)); v.push(Instruction::I64Const(TEMP_MEM));
                 v.push(Self::host_call(25));
                 // Set return flag so export wrapper skips its value_return
                 v.push(Instruction::I64Const(1));
@@ -4639,6 +4639,9 @@ impl WasmEmitter {
                             fb.instruction(&Instruction::I32WrapI64);
                             fb.instruction(&Instruction::I64Load(ma));
                         }
+                        // Reset return flag before calling function
+                        fb.instruction(&Instruction::I64Const(0));
+                        fb.instruction(&Instruction::GlobalSet(1));
                         fb.instruction(&Instruction::Call(idx));
                         fb.instruction(&Instruction::LocalSet(0));
                     }
