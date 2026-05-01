@@ -1176,7 +1176,7 @@ fn deploy(wasm: &[u8]) -> Result<String, String> {
 fn call_testnet_view(method: &str) -> Result<String, String> {
     let args_base64 = base64::encode("{}");
     let rpc_payload = format!(
-        r#"{{"jsonrpc":"2.0","id":1,"method":"query","params":{{"request_type":"call_function","finality":"final","account_id":"kampy.testnet","method_name":"{}","args_base64":"{}"}}}}"#,
+        r#"{{"jsonrpc":"2.0","id":1,"method":"query","params":{{"request_type":"call_function","finality":"optimistic","account_id":"kampy.testnet","method_name":"{}","args_base64":"{}"}}}}"#,
         method, args_base64
     );
     let output = std::process::Command::new("curl")

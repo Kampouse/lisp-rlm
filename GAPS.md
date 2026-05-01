@@ -2,7 +2,7 @@
 
 ## Status: Works on NEAR testnet ✅
 
-Last verified: 2026-05-01 on kampy.testnet
+Last verified: 2026-05-01 on kampy.testnet (tree-shaken 670-byte contract with modules)
 
 ---
 
@@ -30,7 +30,7 @@ Last verified: 2026-05-01 on kampy.testnet
 - [x] `i32.store8` — byte-level writes
 
 ### Higher-Order Functions (inline)
-- [x] `(hof/map (lambda (x) body) start end [offset])` — map range, writes to memory
+- [x] `(hof/map (lambda (x) body) start end [offset])` — map range
 - [x] `(hof/filter (lambda (x) pred) start end [offset])` — filter range
 - [x] `(hof/reduce (lambda (acc x) body) init start end)` — fold range
 - [x] Lambda body inlined at compile time (no runtime dispatch)
@@ -44,10 +44,27 @@ Last verified: 2026-05-01 on kampy.testnet
 - [x] `near/return` — value_return
 - [x] `near/return_str` — string return
 - [x] `near/log` — log packed string
-- [x] `near/log_num` — **log i64 as decimal** (i64→ASCII conversion in WASM)
+- [x] `near/log_num` — log i64 as decimal (i64→ASCII in WASM)
 - [x] `near/panic` / `near/abort`
 - [x] `near/input` — read call args
 - [x] `near/block_index`
+
+### Storage
+- [x] `near/storage_set` — write key/value to NEAR storage
+- [x] `near/storage_get` — read value from NEAR storage
+- [x] `near/storage_has` — check key exists
+- [x] `near/storage_remove` — delete key
+- [x] Persistent storage in REPL (HashMap across calls)
+- [x] Counter contract verified on testnet (state persists on-chain)
+
+### u128
+- [x] Memory-based u128 (16 bytes at offset, passed as i64 pointer)
+- [x] `u128/from_yocto "amount" offset` — compile-time decimal parsing
+- [x] `u128/new hi lo offset`, `u128/from_i64 n offset`, `u128/to_i64 offset`
+- [x] `u128/add dst src`, `u128/sub dst src`, `u128/mul dst val` (in-place)
+- [x] `u128/store addr lo hi`, `u128/load addr`, `u128/load_high addr`
+- [x] `u128/eq a1 a2`, `u128/is_zero addr`, `u128/lt a1 a2`
+- [x] `u128/store_storage "key" src`, `u128/load_storage "key" dst`
 
 ### FP64 Fixed-Point
 - [x] `fp64/set_int`, `fp64/get_int`, `fp64/get_frac`
@@ -55,8 +72,18 @@ Last verified: 2026-05-01 on kampy.testnet
 - [x] Q64.64 precision via 32-bit splits
 
 ### Tooling
-- [x] WASM validation on compile (catches type mismatches before deploy)
-- [x] Deployed contracts verified on testnet (all functions return correct values)
+- [x] WASM validation on compile (wasmparser + function-name error mapping)
+- [x] Type checking (lightweight pre-pass: Num, Bool, Str, Void, Any)
+- [x] Better error messages (Levenshtein suggestions, internal var mapping)
+- [x] Inline tests: `(test "name" expr expected)` via `near-compile test`
+- [x] REPL with wasmtime mock NEAR runtime
+- [x] Live testnet: `:push`, `:call`, `:call!` in REPL
+- [x] Persistent memory (256KB) + storage in REPL
+- [x] Project system: `near.json` + `init`, `build`, `deploy`, `test`
+- [x] Module imports: `(module name "path")` — C-style #include
+- [x] Circular dependency detection
+- [x] Tree-shaking: unused functions stripped from binary
+- [x] REPL auto-loads project defines (including modules)
 
 ---
 
@@ -67,20 +94,23 @@ Last verified: 2026-05-01 on kampy.testnet
 - [ ] **Cross-contract calls** — No `promise_create`, `promise_then`, `promise_results`
   - Need: `(near/call account_id method args deposit gas)`
   - Need: callback support for async patterns
-  - **Priority: HIGH** — without this, contracts can't interact with anything
+  - **Priority: HIGH**
 
-- [ ] **Cross-contract call results** — No way to read async results
-  - Need: callback functions that receive promise results
+- [ ] **JSON input/output** — All contract calls use `{}` args
+  - Can't pass parameters to contracts
+  - Need: `near/json_get_int`, `near/json_get_str`, `near/json_return`
+  - **Priority: HIGH** — without this, contracts can't receive arguments
 
-- [ ] **Storage** — No `storage_write`, `storage_read`, `storage_remove`
-  - Need: persistent state between calls
-  - Without this, contracts are pure functions (no state)
-  - **Priority: HIGH** — state is fundamental for contracts
-
-- [ ] **Balance/transfer** — No `balance`, `attached_deposit`, `transfer`
-  - Can't write financial contracts
+- [ ] **AccountId type** — signer/predecessor returned as raw bytes
+  - No string comparison for access control
+  - **Priority: HIGH** — needed for any auth
 
 ### Important for Usability
+
+- [ ] **u128/to_string** — Can't log full 128-bit values
+  - Only `u128/to_i64` shows low 64 bits
+  - Division-by-10 in raw WASM is complex
+  - **Priority: MEDIUM**
 
 - [ ] **Float values** — Only i64 supported
   - No `f64` WASM type
@@ -89,58 +119,31 @@ Last verified: 2026-05-01 on kampy.testnet
 
 - [ ] **Dynamic lists** — No runtime list data structure
   - `hof/map` writes to raw memory, returns count
-  - No way to pass lists between functions
   - No `car`, `cdr`, `cons`, `list` at runtime
   - **Priority: MEDIUM**
 
 - [ ] **String operations** — Very limited
   - String literals exist (packed ptr+len)
   - No `string-append`, `substring`, `string-length`
-  - No `number->string` (only via `near/log_num` which logs, doesn't return)
   - **Priority: MEDIUM**
-
-- [ ] **Pattern matching** — No `match`
-  - Bytecode VM has it (broken), WASM emitter doesn't
-  - **Priority: LOW**
 
 ### Nice to Have
 
 - [ ] **Closure support** — Lambdas only inlined at compile time
-  - Can't pass lambdas to user-defined functions
-  - Can't return lambdas from functions
-  - Y combinator not supported in WASM emitter
-
 - [ ] **Recursion** — No self-calls in emitted WASM
-  - `CallSelf` / `PushSelf` only in bytecode VM
-  - WASM emitter has no recursive function support
-
-- [x] **u128** — Memory-based u128 support via `u128/` ops
-  - `u128/from_yocto "1.5" offset` — compile-time decimal parsing
-  - `u128/new hi lo offset`, `u128/from_i64 n offset`, `u128/to_i64 offset`
-  - `u128/add dst src`, `u128/sub dst src`, `u128/mul dst val` (in-place)
-  - `u128/store addr lo hi`, `u128/load addr`, `u128/load_high addr`
-  - `u128/eq a1 a2`, `u128/is_zero addr`, `u128/lt a1 a2`
-  - `u128/store_storage "key" src`, `u128/load_storage "key" dst`
-
 - [ ] **Enums / tagged unions** — No ADTs
-  - No way to represent Result<T, E> or Option<T>
-
-- [ ] **`match` / pattern matching** — Not in WASM emitter
-
+- [ ] **Borsh serialization** — For NEAR state
+- [ ] **Vec/dynamic arrays**
 - [ ] **Global definitions** — `(define x value)` only defines functions
-  - Can't define constants or computed values at module level
-  - Workaround: use `(define (x) value)` and call `(x)`
-
-- [ ] **Multi-file / imports** — Single file only
-  - No `require` / `import` for WASM target
-  - No stdlib loading
+  - Workaround: `(define (x) value)` and call `(x)`
 
 ---
 
 ## Known Bugs
 
 - [ ] **Double value_return**: Functions using `near/return` AND the export wrapper both call `value_return`. The wrapper's call (with 0) wins. **Workaround**: don't use `near/return` inside exported functions — just return the value, the wrapper handles it.
-- [ ] **`near/log_num` buffer**: Uses memory at 4096..4120. If contract uses same area, data corruption. Should use a dedicated log buffer.
+- [ ] **Combined logging**: `(near/log "str" num)` causes WASM stack imbalance — can't combine string+number in single log line yet. Two separate log lines work fine.
+- [ ] **REPL `:call!` return**: After mutable call, `:call` shows stale value (block cache). Wait a block and retry.
 
 ---
 
@@ -153,10 +156,14 @@ Last verified: 2026-05-01 on kampy.testnet
 | Lambda closures | ✅ Captures env | ❌ Inlined body only |
 | Pattern matching | 🐛 Broken | ❌ Not implemented |
 | Cross-contract calls | ❌ | ❌ |
-| Storage | ❌ | ❌ |
+| Storage | ❌ | ✅ |
+| u128 | ❌ | ✅ |
 | Recursion | ✅ CallSelf | ❌ |
 | String ops | ✅ Runtime | ❌ Minimal |
 | FP64 math | ✅ Via builtins | ✅ Via builtins |
+| Tree-shaking | ❌ | ✅ |
+| Module system | ❌ | ✅ |
+| Project files | ❌ | ✅ |
 | Runs on NEAR | ❌ (native Rust) | ✅ (WASM contract) |
 
 ---
@@ -165,9 +172,12 @@ Last verified: 2026-05-01 on kampy.testnet
 
 ```
 input.lisp
+    ↓ resolve_modules() — text-level #include
     ↓ parse
 LispVal AST
+    ↓ typecheck_expr() — lightweight pre-pass
     ↓ WasmEmitter::compile_near()
+    ↓ tree_shake() — remove unused functions
 wasm-encoder Module
     ↓ .finish("_run")
 raw WASM bytes
@@ -175,6 +185,9 @@ raw WASM bytes
 output.wasm → deploy to NEAR
 ```
 
-The WASM emitter is a one-pass compiler. No IR, no optimization passes.
-Lambda bodies are inlined at the call site — no closures, no function pointers.
-All locals are i64. Memory layout is manual (offsets specified by user).
+Memory layout:
+- TEMP_MEM = 64 (return values)
+- LOG_BUF = 4096 (64 bytes, string log buffer)
+- NUM_BUF = 4160 (24 bytes, number-to-string buffer)
+- STORAGE_BUF = 8192 (8 bytes, i64 storage temp)
+- STORAGE_U128_BUF = 8208 (16 bytes, u128 storage temp)

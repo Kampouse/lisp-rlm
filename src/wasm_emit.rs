@@ -1161,6 +1161,9 @@ impl WasmEmitter {
                 // value_return(len=8, ptr=0) — idx 25
                 v.push(Instruction::I64Const(8)); v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(25));
+                // Set return flag so export wrapper skips its value_return
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::GlobalSet(1));
                 v.push(Instruction::I64Const(0)); Ok(v)
             }
             // (near/return_str packed_string) — returns variable-length string bytes
@@ -1179,7 +1182,7 @@ impl WasmEmitter {
             }
             "near/log" => {
                 // (near/log "string") — log string
-                // (near/log "prefix" num) — log string then number
+                // (near/log "prefix" num) — log string then number (two separate log calls)
                 if a.len() == 1 {
                     let msg = self.expr(&a[0])?;
                     let mut v = Vec::new();
@@ -1190,76 +1193,32 @@ impl WasmEmitter {
                     v.push(Self::host_call(28));
                     v.push(Instruction::I64Const(0)); Ok(v)
                 } else {
-                    // String + number: copy string to LOG_BUF, convert number to ASCII,
-                    // append digits after string, single log_utf8 call
-                    let packed = self.expr(&a[0])?;  // i64 = ptr | (len << 32)
+                    // Two separate log calls: first the string, then the number
+                    let msg = self.expr(&a[0])?;
                     let num_expr = self.expr(&a[1])?;
                     let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
-                    let str_len = self.local_idx("__clog_strlen");
-                    let copy_i = self.local_idx("__clog_i");
                     let abs_val = self.local_idx("__logn_abs");
                     let digit_count = self.local_idx("__logn_digits");
                     let is_neg = self.local_idx("__logn_neg");
                     let tmp_digit = self.local_idx("__logn_d");
-                    let num_ptr = self.local_idx("__logn_ptr");
-                    let copy2_i = self.local_idx("__clog_i2");
-                    let packed_local = self.local_idx("__clog_packed");
+                    let ptr = self.local_idx("__logn_ptr");
                     let mut v = Vec::new();
 
-                    // Store packed string value in local
-                    v.extend(packed.clone());
-                    v.push(Instruction::LocalSet(packed_local));
+                    // First: log the string
+                    v.extend(msg.clone());
+                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                    v.extend(msg);
+                    v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                    v.push(Self::host_call(28));
 
-                    // Extract str_len = packed >> 32
-                    v.push(Instruction::LocalGet(packed_local));
-                    v.push(Instruction::I64Const(32));
-                    v.push(Instruction::I64ShrU);
-                    v.push(Instruction::LocalSet(str_len));
-
-                    // Copy string bytes: for i in 0..str_len: mem[4096+i] = mem[str_ptr+i]
-                    v.push(Instruction::I64Const(0));
-                    v.push(Instruction::LocalSet(copy_i));
-                    v.push(Instruction::Block(BlockType::Empty));
-                    v.push(Instruction::Loop(BlockType::Empty));
-                    // condition: copy_i >= str_len
-                    v.push(Instruction::LocalGet(copy_i));
-                    v.push(Instruction::LocalGet(str_len));
-                    v.push(Instruction::I64GeS);
-                    v.push(Instruction::If(BlockType::Empty));
-                    v.push(Instruction::Br(2));
-                    v.push(Instruction::End);
-                    // dest addr: (4096 + copy_i) as i32 — DEEPER
-                    v.push(Instruction::I64Const(4096));
-                    v.push(Instruction::LocalGet(copy_i));
-                    v.push(Instruction::I64Add);
-                    v.push(Instruction::I32WrapI64);
-                    // src byte: load from (str_ptr + copy_i)
-                    v.push(Instruction::LocalGet(packed_local));
-                    v.push(Instruction::I32WrapI64);         // str_ptr as i32
-                    v.push(Instruction::LocalGet(copy_i));
-                    v.push(Instruction::I32WrapI64);         // copy_i as i32
-                    v.push(Instruction::I32Add);             // src addr
-                    v.push(Instruction::I32Load8U(ma8));     // load byte (value on top)
-                    v.push(Instruction::I32Store8(ma8));     // store: pops value, then addr
-                    // i++
-                    v.push(Instruction::LocalGet(copy_i));
-                    v.push(Instruction::I64Const(1));
-                    v.push(Instruction::I64Add);
-                    v.push(Instruction::LocalSet(copy_i));
-                    v.push(Instruction::Br(0));
-                    v.push(Instruction::End);
-                    v.push(Instruction::End);
-
-                    // Now convert number to ASCII in NUM_BUF (4160..4184)
+                    // Second: log the number (same technique as near/log_num)
                     v.extend(num_expr);
                     v.push(Instruction::LocalSet(abs_val));
-                    // is_neg = abs_val < 0
                     v.push(Instruction::LocalGet(abs_val));
                     v.push(Instruction::I64Const(0));
                     v.push(Instruction::I64LtS);
                     v.push(Instruction::I64ExtendI32U);
                     v.push(Instruction::LocalSet(is_neg));
-                    // abs_val = if is_neg { -abs_val } else { abs_val }
                     v.push(Instruction::LocalGet(is_neg));
                     v.push(Instruction::I32WrapI64);
                     v.push(Instruction::If(BlockType::Result(ValType::I64)));
@@ -1270,12 +1229,10 @@ impl WasmEmitter {
                     v.push(Instruction::LocalGet(abs_val));
                     v.push(Instruction::End);
                     v.push(Instruction::LocalSet(abs_val));
-                    // num_ptr = 4184 (write backwards)
                     v.push(Instruction::I64Const(4184));
-                    v.push(Instruction::LocalSet(num_ptr));
+                    v.push(Instruction::LocalSet(ptr));
                     v.push(Instruction::I64Const(0));
                     v.push(Instruction::LocalSet(digit_count));
-                    // digit conversion loop
                     v.push(Instruction::Block(BlockType::Empty));
                     v.push(Instruction::Loop(BlockType::Empty));
                     v.push(Instruction::LocalGet(abs_val));
@@ -1283,29 +1240,25 @@ impl WasmEmitter {
                     v.push(Instruction::If(BlockType::Empty));
                     v.push(Instruction::Br(2));
                     v.push(Instruction::End);
-                    // tmp_digit = abs_val % 10
                     v.push(Instruction::LocalGet(abs_val));
                     v.push(Instruction::I64Const(10));
                     v.push(Instruction::I64RemS);
                     v.push(Instruction::LocalSet(tmp_digit));
-                    // abs_val /= 10
                     v.push(Instruction::LocalGet(abs_val));
                     v.push(Instruction::I64Const(10));
                     v.push(Instruction::I64DivS);
                     v.push(Instruction::LocalSet(abs_val));
-                    // ptr--, store digit
-                    v.push(Instruction::LocalGet(num_ptr));
+                    v.push(Instruction::LocalGet(ptr));
                     v.push(Instruction::I64Const(1));
                     v.push(Instruction::I64Sub);
-                    v.push(Instruction::LocalSet(num_ptr));
-                    v.push(Instruction::LocalGet(num_ptr));
+                    v.push(Instruction::LocalSet(ptr));
+                    v.push(Instruction::LocalGet(ptr));
                     v.push(Instruction::I32WrapI64);
                     v.push(Instruction::LocalGet(tmp_digit));
                     v.push(Instruction::I64Const(48));
                     v.push(Instruction::I64Add);
                     v.push(Instruction::I32WrapI64);
                     v.push(Instruction::I32Store8(ma8));
-                    // digit_count++
                     v.push(Instruction::LocalGet(digit_count));
                     v.push(Instruction::I64Const(1));
                     v.push(Instruction::I64Add);
@@ -1313,13 +1266,12 @@ impl WasmEmitter {
                     v.push(Instruction::Br(0));
                     v.push(Instruction::End);
                     v.push(Instruction::End);
-
-                    // Handle zero case
+                    // Zero special case
                     v.push(Instruction::LocalGet(digit_count));
                     v.push(Instruction::I64Eqz);
                     v.push(Instruction::If(BlockType::Empty));
                     v.push(Instruction::I64Const(4183));
-                    v.push(Instruction::LocalSet(num_ptr));
+                    v.push(Instruction::LocalSet(ptr));
                     v.push(Instruction::I64Const(4183));
                     v.push(Instruction::I32WrapI64);
                     v.push(Instruction::I64Const(48));
@@ -1328,16 +1280,15 @@ impl WasmEmitter {
                     v.push(Instruction::I64Const(1));
                     v.push(Instruction::LocalSet(digit_count));
                     v.push(Instruction::End);
-
-                    // Handle negative: prepend '-'
+                    // Negative prefix
                     v.push(Instruction::LocalGet(is_neg));
                     v.push(Instruction::I32WrapI64);
                     v.push(Instruction::If(BlockType::Empty));
-                    v.push(Instruction::LocalGet(num_ptr));
+                    v.push(Instruction::LocalGet(ptr));
                     v.push(Instruction::I64Const(1));
                     v.push(Instruction::I64Sub);
-                    v.push(Instruction::LocalSet(num_ptr));
-                    v.push(Instruction::LocalGet(num_ptr));
+                    v.push(Instruction::LocalSet(ptr));
+                    v.push(Instruction::LocalGet(ptr));
                     v.push(Instruction::I32WrapI64);
                     v.push(Instruction::I64Const(45));
                     v.push(Instruction::I32WrapI64);
@@ -1347,52 +1298,16 @@ impl WasmEmitter {
                     v.push(Instruction::I64Add);
                     v.push(Instruction::LocalSet(digit_count));
                     v.push(Instruction::End);
-
-                    // Copy number digits from NUM_BUF to after string in LOG_BUF
-                    // for i in 0..digit_count: mem[4096+str_len+i] = mem[num_ptr+i]
-                    v.push(Instruction::I64Const(0));
-                    v.push(Instruction::LocalSet(copy2_i));
-                    v.push(Instruction::Block(BlockType::Empty));
-                    v.push(Instruction::Loop(BlockType::Empty));
-                    v.push(Instruction::LocalGet(copy2_i));
+                    // log_utf8(count, ptr)
                     v.push(Instruction::LocalGet(digit_count));
-                    v.push(Instruction::I64GeS);
-                    v.push(Instruction::If(BlockType::Empty));
-                    v.push(Instruction::Br(2));
-                    v.push(Instruction::End);
-                    // dest addr: (4096 + str_len + copy2_i) as i32 — DEEPER
-                    v.push(Instruction::I64Const(4096));
-                    v.push(Instruction::LocalGet(str_len));
-                    v.push(Instruction::I64Add);
-                    v.push(Instruction::LocalGet(copy2_i));
-                    v.push(Instruction::I64Add);
-                    v.push(Instruction::I32WrapI64);
-                    // src byte: load from (num_ptr + copy2_i)
-                    v.push(Instruction::LocalGet(num_ptr));
-                    v.push(Instruction::LocalGet(copy2_i));
-                    v.push(Instruction::I64Add);
-                    v.push(Instruction::I32WrapI64);
-                    v.push(Instruction::I32Load8U(ma8));
-                    v.push(Instruction::I32Store8(ma8));
-                    // i++
-                    v.push(Instruction::LocalGet(copy2_i));
-                    v.push(Instruction::I64Const(1));
-                    v.push(Instruction::I64Add);
-                    v.push(Instruction::LocalSet(copy2_i));
-                    v.push(Instruction::Br(0));
-                    v.push(Instruction::End);
-                    v.push(Instruction::End);
-
-                    // Single log_utf8(str_len + digit_count, 4096)
-                    v.push(Instruction::LocalGet(str_len));
-                    v.push(Instruction::LocalGet(digit_count));
-                    v.push(Instruction::I64Add);
-                    v.push(Instruction::I64Const(4096));
+                    v.push(Instruction::LocalGet(ptr));
                     v.push(Self::host_call(28));
+
                     v.push(Instruction::I64Const(0));
                     Ok(v)
                 }
             }
+
             "near/panic" => {
                 let msg = self.expr(&a[0])?;
                 let mut v = Vec::new();
@@ -4637,8 +4552,13 @@ impl WasmEmitter {
         mems.memory(MemoryType { minimum: self.memory_pages.max(1) as u64, maximum: None, memory64: false, shared: false, page_size_log2: None });
         m.section(&mems);
 
-        // Global section: mutable i64 for call depth tracking
+        // Global section: mutable i64 for call depth tracking + return flag
         let mut globals = GlobalSection::new();
+        globals.global(
+            GlobalType { val_type: ValType::I64, mutable: true, shared: false },
+            &ConstExpr::i64_const(0),
+        );
+        // Global 1: return flag — set to 1 by near/return, checked by export wrapper
         globals.global(
             GlobalType { val_type: ValType::I64, mutable: true, shared: false },
             &ConstExpr::i64_const(0),
@@ -4693,16 +4613,14 @@ impl WasmEmitter {
                     let param_count = func.map(|f| f.param_count).unwrap_or(0);
                     let mut fb = Function::new(vec![(1u32, ValType::I64)]); // local 0 for result swapping
                     let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+
+                    // Reset return flag before calling function
+                    fb.instruction(&Instruction::I64Const(0));
+                    fb.instruction(&Instruction::GlobalSet(1));
+
                     if param_count == 0 {
                         fb.instruction(&Instruction::Call(idx));
                         fb.instruction(&Instruction::LocalSet(0));
-                        fb.instruction(&Instruction::I64Const(TEMP_MEM));
-                        fb.instruction(&Instruction::I32WrapI64);
-                        fb.instruction(&Instruction::LocalGet(0));
-                        fb.instruction(&Instruction::I64Store(ma));
-                        fb.instruction(&Instruction::I64Const(8));
-                        fb.instruction(&Instruction::I64Const(TEMP_MEM));
-                        fb.instruction(&Instruction::Call(host_idx[&25]));
                     } else {
                         // input(0)
                         fb.instruction(&Instruction::I64Const(0));
@@ -4722,18 +4640,24 @@ impl WasmEmitter {
                             fb.instruction(&Instruction::I64Load(ma));
                         }
                         fb.instruction(&Instruction::Call(idx));
-                        // Store result at TEMP_MEM: i64.store needs [i32 addr, i64 val]
-                        // Stack: [i64 result]. Save to local 0, push addr, load local, store
-                        fb.instruction(&Instruction::LocalSet(0)); // save result to local 0
-                        fb.instruction(&Instruction::I64Const(TEMP_MEM));
-                        fb.instruction(&Instruction::I32WrapI64);   // addr as i32
-                        fb.instruction(&Instruction::LocalGet(0));  // restore result
-                        fb.instruction(&Instruction::I64Store(ma));
-                        // value_return(8, TEMP_MEM)
-                        fb.instruction(&Instruction::I64Const(8));
-                        fb.instruction(&Instruction::I64Const(TEMP_MEM));
-                        fb.instruction(&Instruction::Call(host_idx[&25]));
+                        fb.instruction(&Instruction::LocalSet(0));
                     }
+
+                    // Check return flag — if near/return was called, skip wrapper's value_return
+                    fb.instruction(&Instruction::Block(BlockType::Empty)); // $skip_return (label 0)
+                    fb.instruction(&Instruction::GlobalGet(1));
+                    fb.instruction(&Instruction::I32WrapI64);
+                    fb.instruction(&Instruction::BrIf(0)); // if flag set, skip to end of block
+                    // Wrapper's value_return: store result at TEMP_MEM and return it
+                    fb.instruction(&Instruction::I64Const(TEMP_MEM));
+                    fb.instruction(&Instruction::I32WrapI64);
+                    fb.instruction(&Instruction::LocalGet(0));
+                    fb.instruction(&Instruction::I64Store(ma));
+                    fb.instruction(&Instruction::I64Const(8));
+                    fb.instruction(&Instruction::I64Const(TEMP_MEM));
+                    fb.instruction(&Instruction::Call(host_idx[&25]));
+                    fb.instruction(&Instruction::End); // end $skip_return
+
                     fb.instruction(&Instruction::End);
                     code.function(&fb);
                 }
