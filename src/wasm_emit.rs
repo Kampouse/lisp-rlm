@@ -4296,8 +4296,10 @@ impl WasmEmitter {
         v.push(Instruction::LocalSet(ilen));
         v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(ib)); v.push(Self::host_call(0)); // read_register(0, ib)
 
-        // pos = 0
+        // pos = 0, depth = 0
         v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(pos));
+        let depth = self.local_idx("__js_depth");
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(depth));
 
         // Scan loop (block/loop)
         v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
@@ -4306,6 +4308,37 @@ impl WasmEmitter {
         v.push(Instruction::I64Add); v.push(Instruction::LocalGet(ilen));
         v.push(Instruction::I64GtS); v.push(Instruction::If(BlockType::Empty));
         v.push(Instruction::Br(2)); v.push(Instruction::End);
+
+        // Track brace depth: load byte at INPUT_BUF+pos
+        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+        let scan_byte = self.local_idx("__js_sb");
+        v.push(Instruction::LocalSet(scan_byte));
+        // if byte == '{': depth++
+        v.push(Instruction::LocalGet(scan_byte)); v.push(Instruction::I64Const(0x7B));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(depth)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(depth));
+        v.push(Instruction::End);
+        // if byte == '}': depth--
+        v.push(Instruction::LocalGet(scan_byte)); v.push(Instruction::I64Const(0x7D));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(depth)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Sub); v.push(Instruction::LocalSet(depth));
+        v.push(Instruction::End);
+
+        // Only try to match at depth == 1 (top level)
+        v.push(Instruction::LocalGet(depth)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Ne);
+        v.push(Instruction::If(BlockType::Empty));
+        // depth != 1, skip comparison, just advance pos
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+        v.push(Instruction::Br(1)); // back to outer LOOP (skip label 0 = this if)
+        v.push(Instruction::End);
 
         // Assume match (mi=1), compare bytes
         v.push(Instruction::I64Const(1)); v.push(Instruction::LocalSet(mi));
@@ -4495,6 +4528,8 @@ impl WasmEmitter {
         v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(ib)); v.push(Self::host_call(0));
 
         v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(pos));
+        let depth = self.local_idx("__jss_depth");
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(depth));
 
         // Scan loop
         v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
@@ -4502,6 +4537,33 @@ impl WasmEmitter {
         v.push(Instruction::I64Add); v.push(Instruction::LocalGet(ilen));
         v.push(Instruction::I64GtS); v.push(Instruction::If(BlockType::Empty));
         v.push(Instruction::Br(2)); v.push(Instruction::End);
+
+        // Track brace depth
+        let scan_byte = self.local_idx("__jss_sb");
+        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::LocalSet(scan_byte));
+        v.push(Instruction::LocalGet(scan_byte)); v.push(Instruction::I64Const(0x7B));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(depth)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(depth));
+        v.push(Instruction::End);
+        v.push(Instruction::LocalGet(scan_byte)); v.push(Instruction::I64Const(0x7D));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(depth)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Sub); v.push(Instruction::LocalSet(depth));
+        v.push(Instruction::End);
+        // Only match at depth == 1
+        v.push(Instruction::LocalGet(depth)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Ne);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+        v.push(Instruction::Br(1)); // back to outer LOOP (skip label 0 = this if)
+        v.push(Instruction::End);
 
         v.push(Instruction::I64Const(1)); v.push(Instruction::LocalSet(mi));
         v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(jj));
