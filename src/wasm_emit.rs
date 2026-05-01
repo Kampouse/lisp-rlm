@@ -5815,7 +5815,8 @@ pub fn compile_pure(source: &str) -> Result<Vec<u8>, String> {
 }
 
 pub fn compile_near(source: &str) -> Result<Vec<u8>, String> {
-    Ok(parse_and_compile(source, true)?.finish("_run"))
+    let resolved = resolve_modules(source, std::path::Path::new("."))?;
+    Ok(parse_and_compile(&resolved, true)?.finish("_run"))
 }
 
 /// Compile pre-parsed LispVal expressions to NEAR WASM
