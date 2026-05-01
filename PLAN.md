@@ -31,23 +31,12 @@ lisp-rlm/
 - [x] `lisp-core` compiles standalone
 - [x] `lisp-core` compiles to `wasm32-unknown-unknown` ✅
 
-## Phase 2: WASM Emitter Split
-- [ ] Create `crates/lisp-wasm/` with empty lib
-- [ ] Move `wasm_emit.rs` base (core emit, define, call, if/else, let, while) into `lisp-wasm/src/emit.rs`
-- [ ] Split into modules:
-  - [ ] `src/emit.rs` — core codegen (define, call, if, let, while, for, set!)
-  - [ ] `src/hof.rs` — hof/map, hof/filter, hof/reduce, extract_lambda
-  - [ ] `src/storage.rs` — near/storage_set/get/has/remove
-  - [ ] `src/u128.rs` — all u128 ops, parse_u128
-  - [ ] `src/logging.rs` — near/log, near/log_num
-  - [ ] `src/json.rs` — json_get_int/str/u128, json_return_int/str (depth tracking, boundary checks)
-  - [ ] `src/typing.rs` — lightweight type checker
-  - [ ] `src/host.rs` — need_host registration, host call indices
-  - [ ] `src/tree_shake.rs` — dead code elimination
-  - [ ] `src/near_validate.rs` — WASM validation with function-name mapping
-  - [ ] `src/lib.rs` — public API: compile_near, compile_near_named, resolve_modules
-- [ ] All existing tests pass
-- [ ] `near-compile` binary still works
+## Phase 2: WASM Emitter Split ✅ DONE
+- [x] Create `crates/lisp-wasm/` with Cargo.toml
+- [x] Split into modules: emit, json, tree_shake, host, logging, hof, u128
+- [x] Root `src/wasm_emit.rs` → thin re-export
+- [x] All 14 WASM tests pass
+- [x] near-compile works, test_json compiles (2762 bytes)
 
 ## Phase 3: Bytecode VM Split
 - [ ] Create `crates/lisp-vm/` 
