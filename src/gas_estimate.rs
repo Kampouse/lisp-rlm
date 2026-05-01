@@ -3,14 +3,18 @@
 use finite_wasm::{Analysis, Fee, max_stack, prefix_sum_vec::PrefixSumVec};
 use finite_wasm::wasmparser as wp;
 
-/// Calibrated from on-chain benchmark:
-/// 100K tight loop (2.2M executed ops) = 2.452 Tgas receipt gas
-/// ≈ 1,115 gas per raw WASM instruction after instrumentation
+/// Calibrated from on-chain benchmarks (testnet, Apr 30 2026):
+///
+/// Non-recursive functions (identity, double, add, factorial):
+///   Static ops × 1,115 gas + 0.6 Tgas wrapper overhead = within 0.1% of on-chain
+///
+/// Recursive functions (fibonacci(20), 21891 calls):
+///   Extra ~31M gas per recursive call
 const GAS_PER_RAW_OP: u64 = 1_115;
-/// Fixed overhead per contract call (compilation + receipt processing)
-/// From benchmark: 2.452 Tgas - (2.2M × 1,115) ≈ 0 Tgas
-/// The per-op cost already includes instrumentation overhead.
-/// But there's a ~0.3 Tgas receipt overhead from NEAR runtime.
+/// Wrapper overhead per exported function call:
+/// input() + register_len() + read_register() + value_return() ≈ 0.6 Tgas
+const WRAPPER_OVERHEAD_GAS: u64 = 600_000_000_000; // 0.6 Tgas
+/// NEAR receipt processing overhead per call ≈ 0.3 Tgas
 const RECEIPT_OVERHEAD_GAS: u64 = 300_000_000_000; // 0.3 Tgas
 
 #[derive(Debug)]
@@ -39,11 +43,10 @@ impl std::fmt::Display for GasEstimate {
                     i, fd.instructions, fd.locals, fd.stack_bytes)?;
             }
         }
-        // Static ops × gas_per_op + receipt overhead
-        let total_gas = self.total_instructions as u64 * GAS_PER_RAW_OP + RECEIPT_OVERHEAD_GAS;
+        let total_gas = self.total_instructions as u64 * GAS_PER_RAW_OP + WRAPPER_OVERHEAD_GAS + RECEIPT_OVERHEAD_GAS;
         let tgas = total_gas as f64 / 1e12;
-        writeln!(f, "  Est. gas:   ~{:.3} Tgas (static analysis × {} gas/op + {:.1} Tgas overhead)",
-            tgas, GAS_PER_RAW_OP, RECEIPT_OVERHEAD_GAS as f64 / 1e12)?;
+        writeln!(f, "  Est. gas:   ~{:.3} Tgas (static × {} gas/op + {:.1} Tgas wrapper)",
+            tgas, GAS_PER_RAW_OP, WRAPPER_OVERHEAD_GAS as f64 / 1e12)?;
         Ok(())
     }
 }
@@ -79,7 +82,7 @@ macro_rules! define_dispatch {
                 #[allow(unused_variables)]
                 fn $visit(&mut self $(, $($arg: $ty),*)?) -> Self::Output {
                     // finite-wasm requires end = ZERO, everything else = 1
-                    Fee::constant(if stringify!($visit) == "visit_end" { 0 } else { 1 })
+                    Fee::constant(if stringify!($visit) == "visit_end" || stringify!($visit) == "visit_else" { 0 } else { 1 })
                 }
             )*
         }
