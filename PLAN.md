@@ -38,17 +38,13 @@ lisp-rlm/
 - [x] All 14 WASM tests pass
 - [x] near-compile works, test_json compiles (2762 bytes)
 
-## Phase 3: Bytecode VM Split
-- [ ] Create `crates/lisp-vm/` 
-- [ ] Move `bytecode.rs`, `program.rs` into `lisp-vm`
-- [ ] Move `eval/` directory into `lisp-vm`
-- [ ] Feature-gate heavy deps:
-  - [ ] `crypto` feature (sha256, keccak) — off by default
-  - [ ] `http` feature (reqwest, fetch) — off by default
-  - [ ] `llm` feature (provider, openai) — off by default
-  - [ ] `stdlib-full` feature (all stdlib) — on by default
-- [ ] `lisp-vm` with no extra features compiles to `wasm32`
-- [ ] All existing tests pass
+## Phase 3: Bytecode VM Split ✅ DONE
+- [x] Create `crates/lisp-vm/` with feature flags
+- [x] Move bytecode.rs, program.rs, eval/ into lisp-vm
+- [x] Feature-gate: crypto (sha2, sha3), http (reqwest, tokio), llm
+- [x] `lisp-vm --no-default-features` compiles standalone
+- [x] `lisp-vm --no-default-features --target wasm32-unknown-unknown` ✅
+- [x] All existing binaries work, near-compile validates
 
 ## Phase 4: On-chain VM
 - [ ] Create `crates/near-vm/`
