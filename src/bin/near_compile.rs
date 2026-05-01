@@ -479,6 +479,7 @@ fn run_repl() {
 
     // Persistent mock storage across REPL calls
     let repl_storage: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<Vec<u8>, Vec<u8>>>> = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    let repl_memory: std::sync::Arc<std::sync::Mutex<Vec<u8>>> = std::sync::Arc::new(std::sync::Mutex::new(vec![0u8; 262144])); // 4 pages = 256KB
     println!();
 
     let mut history: Vec<String> = Vec::new();
@@ -598,7 +599,7 @@ fn run_repl() {
         }
 
         let src = repl_source(&history, &input);
-        match eval_wasm(&src, Some(&repl_storage)) {
+        match eval_wasm(&src, Some(&repl_storage), Some(&repl_memory)) {
             Ok((result, logs)) => {
                 for l in &logs { println!("  LOG: {}", l); }
                 println!("{}", result);
@@ -629,14 +630,14 @@ fn is_wasmtime_available() -> bool {
     true
 }
 
-fn eval_wasm(src: &str, shared_storage: Option<&std::sync::Arc<std::sync::Mutex<std::collections::HashMap<Vec<u8>, Vec<u8>>>>>) -> Result<(String, Vec<String>), String> {
+fn eval_wasm(src: &str, shared_storage: Option<&std::sync::Arc<std::sync::Mutex<std::collections::HashMap<Vec<u8>, Vec<u8>>>>>, shared_memory: Option<&std::sync::Arc<std::sync::Mutex<Vec<u8>>>>) -> Result<(String, Vec<String>), String> {
     let wasm = lisp_rlm_wasm::wasm_emit::compile_near(src)?;
     let mut v = wasmparser::Validator::new();
     v.validate_all(&wasm).map_err(|e| format!("WASM validation: {}", e))?;
-    run_wasmtime(&wasm, shared_storage)
+    run_wasmtime(&wasm, shared_storage, shared_memory)
 }
 
-fn run_wasmtime(wasm: &[u8], shared_storage: Option<&std::sync::Arc<std::sync::Mutex<std::collections::HashMap<Vec<u8>, Vec<u8>>>>>) -> Result<(String, Vec<String>), String> {
+fn run_wasmtime(wasm: &[u8], shared_storage: Option<&std::sync::Arc<std::sync::Mutex<std::collections::HashMap<Vec<u8>, Vec<u8>>>>>, shared_memory: Option<&std::sync::Arc<std::sync::Mutex<Vec<u8>>>>) -> Result<(String, Vec<String>), String> {
     use std::sync::{Arc, Mutex};
     use std::collections::HashMap;
     use wasmtime::*;
@@ -649,8 +650,6 @@ fn run_wasmtime(wasm: &[u8], shared_storage: Option<&std::sync::Arc<std::sync::M
     let storage: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>> = shared_storage.cloned().unwrap_or_else(|| Arc::new(Mutex::new(HashMap::new())));
 
     let mut store = Store::new(&engine, ());
-    let memory = Memory::new(&mut store, MemoryType::new(4, None)).map_err(|e| format!("memory: {}", e))?;
-
     // ── Log ──
     let logs_c = logs.clone();
     let log_fn = Func::new(&mut store, FuncType::new(&engine, [ValType::I64, ValType::I64], []),
@@ -795,9 +794,23 @@ fn run_wasmtime(wasm: &[u8], shared_storage: Option<&std::sync::Arc<std::sync::M
     linker.define(&store, "env", "attached_deposit", noop0).map_err(|e| format!("link: {}", e))?;
 
     let instance = linker.instantiate(&mut store, &module).map_err(|e| format!("instantiate: {}", e))?;
+
+    // Restore memory AFTER instantiation (data segments are loaded during init)
+    if let Some(sm) = shared_memory {
+        let mem_data = sm.lock().unwrap();
+        let dst = memory.data_mut(&mut store);
+        let len = std::cmp::min(mem_data.len(), dst.len());
+        dst[..len].copy_from_slice(&mem_data[..len]);
+    }
     let main_fn = instance.get_func(&mut store, "__repl_main").ok_or("__repl_main not found")?;
     main_fn.call(&mut store, &[], &mut []).map_err(|e| format!("call: {}", e))?;
 
+
+    // Save memory for next REPL call
+    if let Some(sm) = shared_memory {
+        let src = memory.data(&store);
+        sm.lock().unwrap()[..src.len()].copy_from_slice(src);
+    }
     let mut result_val = String::from("()");
     if let Some(mem) = instance.get_memory(&mut store, "memory") {
         let data = mem.data(&store);
