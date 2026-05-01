@@ -3680,7 +3680,14 @@ impl WasmEmitter {
 
     // ── Module assembly ──
 
-    pub fn finish(&self, default_export: &str) -> Vec<u8> {
+    pub fn finish(&mut self, default_export: &str) -> Vec<u8> {
+        // Ensure host functions needed by export wrappers are included
+        if !self.exports.is_empty() {
+            self.need_host(7);  // input
+            self.need_host(1);  // register_len
+            self.need_host(0);  // read_register
+            self.need_host(25); // value_return
+        }
         let mut m = Module::new();
         let host_list: Vec<usize> = (0..HOST_FUNCS.len()).filter(|i| self.host_needed.contains(i)).collect();
         let host_count = host_list.len() as u32;
@@ -3711,8 +3718,19 @@ impl WasmEmitter {
         // Function section
         let mut funcs = FunctionSection::new();
         for f in &self.funcs { funcs.function(f.param_count as u32 + 1); }
-        let wrapper_count = if self.exports.is_empty() { 1 } else { self.exports.len() as u32 };
-        for _ in 0..wrapper_count { funcs.function(0); }
+        if self.exports.is_empty() {
+            funcs.function(0); // default wrapper: () -> ()
+        } else {
+            for (fn_name, _, _) in &self.exports {
+                let func = self.funcs.iter().find(|f| f.name.as_str() == fn_name.as_str());
+                let param_count = func.map(|f| f.param_count).unwrap_or(0);
+                // Wrapper type: (i64 × param_count) -> () — same as type param_count+1 but returns nothing
+                // For simplicity, use type 0 for now (NEAR passes args via input() anyway)
+                // TODO: create proper wrapper types
+                let _ = param_count;
+                funcs.function(0);
+            }
+        }
         m.section(&funcs);
 
         // Memory (internal, exported — same as near-sdk output)
@@ -3759,7 +3777,7 @@ impl WasmEmitter {
         if self.exports.is_empty() {
             if let Some(f) = self.funcs.last() {
                 let idx = internal_base + (self.funcs.len()-1) as u32;
-                let mut fb = Function::new(Vec::<(u32, ValType)>::new());
+                let mut fb = Function::new(vec![(1u32, ValType::I64)]); // local 0 for result swapping
                 // Pass default args: for each param, push 100000 (for tight loop benchmarking)
                 for _ in 0..f.param_count {
                     fb.instruction(&Instruction::I64Const(100000));
@@ -3772,8 +3790,52 @@ impl WasmEmitter {
         } else {
             for (fn_name, _, _) in &self.exports {
                 if let Some(&idx) = name_map.get(fn_name.as_str()) {
-                    let mut fb = Function::new(Vec::<(u32, ValType)>::new());
-                    fb.instruction(&Instruction::Call(idx)); fb.instruction(&Instruction::Drop); fb.instruction(&Instruction::End);
+                    let func = self.funcs.iter().find(|f| f.name.as_str() == fn_name.as_str());
+                    let param_count = func.map(|f| f.param_count).unwrap_or(0);
+                    let mut fb = Function::new(vec![(1u32, ValType::I64)]); // local 0 for result swapping
+                    let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                    if param_count == 0 {
+                        fb.instruction(&Instruction::Call(idx));
+                        fb.instruction(&Instruction::LocalSet(0));
+                        fb.instruction(&Instruction::I64Const(TEMP_MEM));
+                        fb.instruction(&Instruction::I32WrapI64);
+                        fb.instruction(&Instruction::LocalGet(0));
+                        fb.instruction(&Instruction::I64Store(ma));
+                        fb.instruction(&Instruction::I64Const(8));
+                        fb.instruction(&Instruction::I64Const(TEMP_MEM));
+                        fb.instruction(&Instruction::Call(host_idx[&25]));
+                    } else {
+                        // input(0)
+                        fb.instruction(&Instruction::I64Const(0));
+                        fb.instruction(&Instruction::Call(host_idx[&7]));
+                        // register_len(0) — drop
+                        fb.instruction(&Instruction::I64Const(0));
+                        fb.instruction(&Instruction::Call(host_idx[&1]));
+                        fb.instruction(&Instruction::Drop);
+                        // read_register(0, TEMP_MEM)
+                        fb.instruction(&Instruction::I64Const(0));
+                        fb.instruction(&Instruction::I64Const(TEMP_MEM));
+                        fb.instruction(&Instruction::Call(host_idx[&0]));
+                        // Load args
+                        for i in 0..param_count {
+                            fb.instruction(&Instruction::I64Const(TEMP_MEM + (i as i64) * 8));
+                            fb.instruction(&Instruction::I32WrapI64);
+                            fb.instruction(&Instruction::I64Load(ma));
+                        }
+                        fb.instruction(&Instruction::Call(idx));
+                        // Store result at TEMP_MEM: i64.store needs [i32 addr, i64 val]
+                        // Stack: [i64 result]. Save to local 0, push addr, load local, store
+                        fb.instruction(&Instruction::LocalSet(0)); // save result to local 0
+                        fb.instruction(&Instruction::I64Const(TEMP_MEM));
+                        fb.instruction(&Instruction::I32WrapI64);   // addr as i32
+                        fb.instruction(&Instruction::LocalGet(0));  // restore result
+                        fb.instruction(&Instruction::I64Store(ma));
+                        // value_return(8, TEMP_MEM)
+                        fb.instruction(&Instruction::I64Const(8));
+                        fb.instruction(&Instruction::I64Const(TEMP_MEM));
+                        fb.instruction(&Instruction::Call(host_idx[&25]));
+                    }
+                    fb.instruction(&Instruction::End);
                     code.function(&fb);
                 }
             }
