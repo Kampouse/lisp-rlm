@@ -476,6 +476,9 @@ fn run_repl() {
 
     println!("⚡ NEAR Lisp REPL (WASM + wasmtime, mock NEAR runtime)");
     println!("   :help for commands, :quit to exit");
+
+    // Persistent mock storage across REPL calls
+    let repl_storage: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<Vec<u8>, Vec<u8>>>> = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
     println!();
 
     let mut history: Vec<String> = Vec::new();
@@ -559,7 +562,7 @@ fn run_repl() {
         }
 
         let src = repl_source(&history, &input);
-        match eval_wasm(&src) {
+        match eval_wasm(&src, Some(&repl_storage)) {
             Ok((result, logs)) => {
                 for l in &logs { println!("  LOG: {}", l); }
                 println!("{}", result);
@@ -590,14 +593,14 @@ fn is_wasmtime_available() -> bool {
     true
 }
 
-fn eval_wasm(src: &str) -> Result<(String, Vec<String>), String> {
+fn eval_wasm(src: &str, shared_storage: Option<&std::sync::Arc<std::sync::Mutex<std::collections::HashMap<Vec<u8>, Vec<u8>>>>>) -> Result<(String, Vec<String>), String> {
     let wasm = lisp_rlm_wasm::wasm_emit::compile_near(src)?;
     let mut v = wasmparser::Validator::new();
     v.validate_all(&wasm).map_err(|e| format!("WASM validation: {}", e))?;
-    run_wasmtime(&wasm)
+    run_wasmtime(&wasm, shared_storage)
 }
 
-fn run_wasmtime(wasm: &[u8]) -> Result<(String, Vec<String>), String> {
+fn run_wasmtime(wasm: &[u8], shared_storage: Option<&std::sync::Arc<std::sync::Mutex<std::collections::HashMap<Vec<u8>, Vec<u8>>>>>) -> Result<(String, Vec<String>), String> {
     use std::sync::{Arc, Mutex};
     use std::collections::HashMap;
     use wasmtime::*;
@@ -607,7 +610,7 @@ fn run_wasmtime(wasm: &[u8]) -> Result<(String, Vec<String>), String> {
 
     let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let registers: Arc<Mutex<HashMap<u64, Vec<u8>>>> = Arc::new(Mutex::new(HashMap::new()));
-    let storage: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>> = Arc::new(Mutex::new(HashMap::new()));
+    let storage: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>> = shared_storage.cloned().unwrap_or_else(|| Arc::new(Mutex::new(HashMap::new())));
 
     let mut store = Store::new(&engine, ());
     let memory = Memory::new(&mut store, MemoryType::new(4, None)).map_err(|e| format!("memory: {}", e))?;
