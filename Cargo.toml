@@ -21,6 +21,7 @@ wasm-encoder = "0.248.0"
 wasmparser = { version = "0.228.0", features = ["simd"] }
 wasmprinter = "0.248.0"
 finite-wasm = "0.6"
+wasmtime = { version = "44.0.1", features = ["cranelift"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -35,3 +36,7 @@ wat = "1.0"
 [[bin]]
 name = "near-compile"
 path = "src/bin/near_compile.rs"
+
+[[bin]]
+name = "near-repl"
+path = "src/bin/near_repl.rs"
