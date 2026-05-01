@@ -4488,7 +4488,98 @@ impl WasmEmitter {
 
     // ── Module assembly ──
 
+    /// Remove functions not reachable from exports (tree-shaking / dead code elimination)
+    fn tree_shake(&mut self) {
+        if self.funcs.is_empty() { return; }
+
+        // Build call graph: for each func index, which other func indices does it call?
+        let func_names: Vec<&str> = self.funcs.iter().map(|f| f.name.as_str()).collect();
+        let name_to_idx: HashMap<&str, usize> = func_names.iter().enumerate().map(|(i, &n)| (n, i)).collect();
+
+        let mut calls: Vec<Vec<usize>> = vec![vec![]; self.funcs.len()];
+        for (i, f) in self.funcs.iter().enumerate() {
+            for instr in &f.instrs {
+                if let Instruction::Call(idx) = instr {
+                    if *idx >= USER_BASE {
+                        let pos = (*idx - USER_BASE) as usize;
+                        if pos < self.funcs.len() {
+                            calls[i].push(pos);
+                        }
+                    }
+                }
+            }
+        }
+
+        // BFS from exported functions
+        let mut reachable = vec![false; self.funcs.len()];
+        let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+
+        // Seed with exported function names
+        for (fn_name, _, _) in &self.exports {
+            if let Some(&idx) = name_to_idx.get(fn_name.as_str()) {
+                if !reachable[idx] { reachable[idx] = true; queue.push_back(idx); }
+            }
+        }
+        // If no exports, keep last function (default export)
+        if self.exports.is_empty() && !self.funcs.is_empty() {
+            let last = self.funcs.len() - 1;
+            if !reachable[last] { reachable[last] = true; queue.push_back(last); }
+        }
+
+        while let Some(idx) = queue.pop_front() {
+            for &callee in &calls[idx] {
+                if !reachable[callee] {
+                    reachable[callee] = true;
+                    queue.push_back(callee);
+                }
+            }
+        }
+
+        // Build old_idx -> new_idx mapping
+        let mut old_to_new: Vec<Option<usize>> = vec![None; self.funcs.len()];
+        let mut next = 0usize;
+        for (i, r) in reachable.iter().enumerate() {
+            if *r { old_to_new[i] = Some(next); next += 1; }
+        }
+
+        // Remap Call instructions
+        for (i, f) in self.funcs.iter_mut().enumerate() {
+            if !reachable[i] { continue; }
+            for instr in &mut f.instrs {
+                if let Instruction::Call(idx) = instr {
+                    if *idx >= USER_BASE {
+                        let pos = (*idx - USER_BASE) as usize;
+                        if let Some(new_pos) = old_to_new[pos] {
+                            *idx = USER_BASE | new_pos as u32;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Remove unreachable functions
+        let before = self.funcs.len();
+        self.funcs.retain(|_| {
+            let idx = old_to_new.iter().position(|m| m.is_none());
+            // Can't use retain like this — need index
+            true
+        });
+        // Actually, retain doesn't give index. Use drain_filter or manual:
+        let mut new_funcs: Vec<FuncDef> = Vec::new();
+        for (i, f) in std::mem::take(&mut self.funcs).into_iter().enumerate() {
+            if reachable[i] { new_funcs.push(f); }
+        }
+        self.funcs = new_funcs;
+
+        let removed = before - self.funcs.len();
+        if removed > 0 {
+            eprintln!("🌳 Tree-shake: removed {}/{} unused functions", removed, before);
+        }
+    }
+
     pub fn finish(&mut self, default_export: &str) -> Vec<u8> {
+        // Tree-shake before emitting
+        self.tree_shake();
         // Ensure host functions needed by export wrappers are included
         if !self.exports.is_empty() {
             self.need_host(7);  // input
