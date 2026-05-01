@@ -4728,7 +4728,7 @@ pub fn compile_pure(source: &str) -> Result<Vec<u8>, String> {
 
 /// Resolve `(module name "path")` directives at the text level before parsing.
 /// Modules are resolved relative to `base_dir`.
-pub fn resolve_modules(source: &str, base_dir: &std::path::Path) -> Result<String, String> {
+fn resolve_modules_inner(source: &str, base_dir: &std::path::Path, seen: &mut Vec<std::path::PathBuf>) -> Result<String, String> {
     let mut resolved = String::new();
     for line in source.lines() {
         let trimmed = line.trim();
@@ -4738,11 +4738,16 @@ pub fn resolve_modules(source: &str, base_dir: &std::path::Path) -> Result<Strin
                 let path_end = rest.rfind('"').unwrap_or(rest.len());
                 if path_start + 1 < path_end {
                     let path_str = &rest[path_start + 1..path_end];
-                    let module_path = base_dir.join(path_str);
+                    let module_path = base_dir.join(path_str).canonicalize()
+                        .map_err(|e| format!("module not found: {} — {}", path_str, e))?;
+                    if seen.contains(&module_path) {
+                        return Err(format!("circular module dependency: {}", module_path.display()));
+                    }
+                    seen.push(module_path.clone());
                     let module_source = std::fs::read_to_string(&module_path)
                         .map_err(|e| format!("module not found: {} — {}", module_path.display(), e))?;
                     let module_dir = module_path.parent().unwrap_or(base_dir);
-                    let resolved_module = resolve_modules(&module_source, module_dir)?;
+                    let resolved_module = resolve_modules_inner(&module_source, module_dir, seen)?;
                     resolved.push_str(&resolved_module);
                     resolved.push('\n');
                 }
@@ -4753,6 +4758,11 @@ pub fn resolve_modules(source: &str, base_dir: &std::path::Path) -> Result<Strin
         }
     }
     Ok(resolved)
+}
+
+pub fn resolve_modules(source: &str, base_dir: &std::path::Path) -> Result<String, String> {
+    let mut seen: Vec<std::path::PathBuf> = Vec::new();
+    resolve_modules_inner(source, base_dir, &mut seen)
 }
 
 /// Compile with module resolution from a specific base directory
