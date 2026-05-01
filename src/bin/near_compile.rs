@@ -599,23 +599,26 @@ fn eval_wasm(src: &str) -> Result<(String, Vec<String>), String> {
 
 fn run_wasmtime(wasm: &[u8]) -> Result<(String, Vec<String>), String> {
     use std::sync::{Arc, Mutex};
+    use std::collections::HashMap;
     use wasmtime::*;
 
     let engine = Engine::default();
     let module = Module::new(&engine, wasm).map_err(|e| format!("module: {}", e))?;
 
     let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let mut store = Store::new(&engine, ());
+    let registers: Arc<Mutex<HashMap<u64, Vec<u8>>>> = Arc::new(Mutex::new(HashMap::new()));
+    let storage: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>> = Arc::new(Mutex::new(HashMap::new()));
 
+    let mut store = Store::new(&engine, ());
     let memory = Memory::new(&mut store, MemoryType::new(4, None)).map_err(|e| format!("memory: {}", e))?;
 
+    // ── Log ──
     let logs_c = logs.clone();
-    let log_fn = Func::new(&mut store,
-        FuncType::new(&engine, [ValType::I64, ValType::I64], []),
+    let log_fn = Func::new(&mut store, FuncType::new(&engine, [ValType::I64, ValType::I64], []),
         move |mut caller, args, _| {
             let len = args[0].unwrap_i64() as usize;
             let ptr = args[1].unwrap_i64() as usize;
-            if len > 0 && len < 4096 {
+            if len > 0 && len < 8192 {
                 if let Some(data) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                     let mem = data.data(&caller);
                     if ptr + len <= mem.len() {
@@ -628,35 +631,129 @@ fn run_wasmtime(wasm: &[u8]) -> Result<(String, Vec<String>), String> {
             Ok(())
         });
 
-    let value_return_fn = Func::new(&mut store,
-        FuncType::new(&engine, [ValType::I64, ValType::I64], []),
+    let value_return_fn = Func::new(&mut store, FuncType::new(&engine, [ValType::I64, ValType::I64], []),
         |_, _, _| Ok(()));
 
-    let noop1 = Func::new(&mut store,
-        FuncType::new(&engine, [ValType::I64], []),
-        |_, _, _| Ok(()));
+    // ── Registers ──
+    let rc1 = registers.clone();
+    let read_register_fn = Func::new(&mut store, FuncType::new(&engine, [ValType::I64, ValType::I64], []),
+        move |mut caller, args, _| {
+            let rid = args[0].unwrap_i64() as u64;
+            let ptr = args[1].unwrap_i64() as usize;
+            if let Some(data) = rc1.lock().unwrap().get(&rid).cloned() {
+                if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                    let md = mem.data_mut(&mut caller);
+                    if ptr + data.len() <= md.len() { md[ptr..ptr+data.len()].copy_from_slice(&data); }
+                }
+            }
+            Ok(())
+        });
 
-    let noop2 = Func::new(&mut store,
-        FuncType::new(&engine, [ValType::I64, ValType::I64], []),
-        |_, _, _| Ok(()));
+    let rc2 = registers.clone();
+    let register_len_fn = Func::new(&mut store, FuncType::new(&engine, [ValType::I64], [ValType::I64]),
+        move |_, args, results| {
+            let rid = args[0].unwrap_i64() as u64;
+            let len = rc2.lock().unwrap().get(&rid).map(|d| d.len() as i64).unwrap_or(0);
+            results[0] = Val::I64(len); Ok(())
+        });
 
-    let reg_len_fn = Func::new(&mut store,
-        FuncType::new(&engine, [ValType::I64], [ValType::I64]),
-        |_, _, results| { results[0] = Val::I64(0); Ok(()) });
+    // ── Storage ──
+    let sc1 = storage.clone(); let rc3 = registers.clone();
+    let storage_write_fn = Func::new(&mut store,
+        FuncType::new(&engine, [ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], [ValType::I64]),
+        move |mut caller, args, results| {
+            let (kl,kp,vl,vp,rid) = (args[0].unwrap_i64() as usize, args[1].unwrap_i64() as usize,
+                args[2].unwrap_i64() as usize, args[3].unwrap_i64() as usize, args[4].unwrap_i64() as u64);
+            if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                let md = mem.data(&caller);
+                if kp+kl <= md.len() && vp+vl <= md.len() {
+                    let key = md[kp..kp+kl].to_vec(); let val = md[vp..vp+vl].to_vec();
+                    let old = sc1.lock().unwrap().insert(key, val);
+                    if rid != u64::MAX { if let Some(old) = old { rc3.lock().unwrap().insert(rid, old); } }
+                }
+            }
+            results[0] = Val::I64(0); Ok(())
+        });
 
-    let panic_fn = Func::new(&mut store,
-        FuncType::new(&engine, [], []),
-        |_, _, _| Err(wasmtime::Error::msg("NEAR panic")));
+    let sc2 = storage.clone(); let rc4 = registers.clone();
+    let storage_read_fn = Func::new(&mut store,
+        FuncType::new(&engine, [ValType::I64, ValType::I64, ValType::I64], [ValType::I64]),
+        move |mut caller, args, results| {
+            let (kl,kp,rid) = (args[0].unwrap_i64() as usize, args[1].unwrap_i64() as usize, args[2].unwrap_i64() as u64);
+            if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                let md = mem.data(&caller);
+                if kp+kl <= md.len() {
+                    if let Some(val) = sc2.lock().unwrap().get(&md[kp..kp+kl]).cloned() {
+                        rc4.lock().unwrap().insert(rid, val); results[0] = Val::I64(1); return Ok(());
+                    }
+                }
+            }
+            results[0] = Val::I64(0); Ok(())
+        });
+
+    let sc3 = storage.clone(); let rc5 = registers.clone();
+    let storage_remove_fn = Func::new(&mut store,
+        FuncType::new(&engine, [ValType::I64, ValType::I64, ValType::I64], [ValType::I64]),
+        move |mut caller, args, results| {
+            let (kl,kp,rid) = (args[0].unwrap_i64() as usize, args[1].unwrap_i64() as usize, args[2].unwrap_i64() as u64);
+            if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                let md = mem.data(&caller);
+                if kp+kl <= md.len() {
+                    if let Some(val) = sc3.lock().unwrap().remove(&md[kp..kp+kl].to_vec()) {
+                        if rid != u64::MAX { rc5.lock().unwrap().insert(rid, val); }
+                        results[0] = Val::I64(1); return Ok(());
+                    }
+                }
+            }
+            results[0] = Val::I64(0); Ok(())
+        });
+
+    let sc4 = storage.clone();
+    let storage_has_key_fn = Func::new(&mut store,
+        FuncType::new(&engine, [ValType::I64, ValType::I64], [ValType::I64]),
+        move |mut caller, args, results| {
+            let (kl,kp) = (args[0].unwrap_i64() as usize, args[1].unwrap_i64() as usize);
+            if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                let md = mem.data(&caller);
+                if kp+kl <= md.len() {
+                    results[0] = Val::I64(if sc4.lock().unwrap().contains_key(&md[kp..kp+kl]) { 1 } else { 0 });
+                    return Ok(());
+                }
+            }
+            results[0] = Val::I64(0); Ok(())
+        });
+
+    // ── Stubs ──
+    let panic_fn = Func::new(&mut store, FuncType::new(&engine, [], []),
+        |_,_,_| Err(wasmtime::Error::msg("NEAR panic")));
+    let noop0 = Func::new(&mut store, FuncType::new(&engine, [], []), |_,_,_| Ok(()));
+    let noop1 = Func::new(&mut store, FuncType::new(&engine, [ValType::I64], []), |_,_,_| Ok(()));
+    let noop1r = Func::new(&mut store, FuncType::new(&engine, [ValType::I64], [ValType::I64]),
+        |_,_,r| { r[0] = Val::I64(0); Ok(()) });
+    let noop0r = Func::new(&mut store, FuncType::new(&engine, [], [ValType::I64]),
+        |_,_,r| { r[0] = Val::I64(0); Ok(()) });
 
     let mut linker = Linker::new(&engine);
     linker.define(&store, "env", "log_utf8", log_fn).map_err(|e| format!("link: {}", e))?;
     linker.define(&store, "env", "value_return", value_return_fn).map_err(|e| format!("link: {}", e))?;
+    linker.define(&store, "env", "read_register", read_register_fn).map_err(|e| format!("link: {}", e))?;
+    linker.define(&store, "env", "register_len", register_len_fn).map_err(|e| format!("link: {}", e))?;
     linker.define(&store, "env", "input", noop1.clone()).map_err(|e| format!("link: {}", e))?;
-    linker.define(&store, "env", "read_register", noop2.clone()).map_err(|e| format!("link: {}", e))?;
-    linker.define(&store, "env", "register_len", reg_len_fn).map_err(|e| format!("link: {}", e))?;
+    linker.define(&store, "env", "storage_write", storage_write_fn).map_err(|e| format!("link: {}", e))?;
+    linker.define(&store, "env", "storage_read", storage_read_fn).map_err(|e| format!("link: {}", e))?;
+    linker.define(&store, "env", "storage_remove", storage_remove_fn).map_err(|e| format!("link: {}", e))?;
+    linker.define(&store, "env", "storage_has_key", storage_has_key_fn).map_err(|e| format!("link: {}", e))?;
     linker.define(&store, "env", "panic_utf8", panic_fn.clone()).map_err(|e| format!("link: {}", e))?;
     linker.define(&store, "env", "panic", panic_fn).map_err(|e| format!("link: {}", e))?;
     linker.define(&store, "env", "memory", memory).map_err(|e| format!("link: {}", e))?;
+    linker.define(&store, "env", "current_account_id", noop1r.clone()).map_err(|e| format!("link: {}", e))?;
+    linker.define(&store, "env", "signer_account_id", noop1r.clone()).map_err(|e| format!("link: {}", e))?;
+    linker.define(&store, "env", "signer_account_pk", noop1r.clone()).map_err(|e| format!("link: {}", e))?;
+    linker.define(&store, "env", "predecessor_account_id", noop1r).map_err(|e| format!("link: {}", e))?;
+    linker.define(&store, "env", "block_index", noop0r.clone()).map_err(|e| format!("link: {}", e))?;
+    linker.define(&store, "env", "block_timestamp", noop0r).map_err(|e| format!("link: {}", e))?;
+    linker.define(&store, "env", "account_balance", noop0.clone()).map_err(|e| format!("link: {}", e))?;
+    linker.define(&store, "env", "attached_deposit", noop0).map_err(|e| format!("link: {}", e))?;
 
     let instance = linker.instantiate(&mut store, &module).map_err(|e| format!("instantiate: {}", e))?;
     let main_fn = instance.get_func(&mut store, "__repl_main").ok_or("__repl_main not found")?;
@@ -665,7 +762,7 @@ fn run_wasmtime(wasm: &[u8]) -> Result<(String, Vec<String>), String> {
     let mut result_val = String::from("()");
     if let Some(mem) = instance.get_memory(&mut store, "memory") {
         let data = mem.data(&store);
-        let off: usize = 64; // TEMP_MEM
+        let off: usize = 64;
         if off + 8 <= data.len() {
             let val = i64::from_le_bytes(data[off..off+8].try_into().unwrap_or([0;8]));
             result_val = val.to_string();

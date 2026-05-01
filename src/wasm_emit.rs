@@ -109,6 +109,7 @@ const HOST_FUNCS: &[(&str, &[ValType], &[ValType])] = &[
 const HOST_BASE: u32 = 0xFF00_0000;
 const USER_BASE: u32 = 0xFF01_0000;
 const TEMP_MEM: i64 = 64;
+const STORAGE_BUF: i64 = 8192;  // 8 bytes for storage read/write buffer
 // ~300 Tgas on NEAR ≈ ~10B simple ops. Cap at 1B to be safe (stops runaway, still uses full NEAR runtime).
 const GAS_LIMIT: i64 = 1_000_000_000;
 const DEPTH_LIMIT: i64 = 512;
@@ -305,10 +306,10 @@ impl WasmEmitter {
         if items.is_empty() { return }
         let LispVal::Sym(op) = &items[0] else { return };
         match op.as_str() {
-            "near/store" => { self.need_host(17); self.need_host(18); self.need_host(0); self.need_host(1); }
-            "near/load" => { self.need_host(18); self.need_host(0); self.need_host(1); }
-            "near/remove" => { self.need_host(19); }
-            "near/has_key" => { self.need_host(20); }
+            "near/store" | "near/storage_set" => { self.need_host(17); }
+            "near/load" | "near/storage_get" => { self.need_host(18); self.need_host(0); }
+            "near/remove" | "near/storage_remove" => { self.need_host(19); }
+            "near/has_key" | "near/storage_has" => { self.need_host(20); }
             "near/return" => self.need_host(25),
             "near/log" => self.need_host(28),
             "near/panic" => self.need_host(27),
@@ -1058,6 +1059,77 @@ impl WasmEmitter {
                 v.extend(key);
                 v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
                 v.push(Self::host_call(20));
+                Ok(v)
+            }
+            // --- storage aliases (near/storage_*) using STORAGE_BUF at offset 8192 ---
+            "near/storage_set" => {
+                let key_expr = self.expr(&a[0])?;
+                let val_expr = self.expr(&a[1])?;
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let mut v = Vec::new();
+                // Store value at STORAGE_BUF
+                v.push(Instruction::I32Const(STORAGE_BUF as i32));
+                v.extend(val_expr);
+                v.push(Instruction::I64Store(ma));
+                // Extract key ptr and len (packed string: low32=ptr, high32=len)
+                v.extend(key_expr.clone());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // key_len
+                v.extend(key_expr);
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // key_ptr
+                // storage_write(key_len, key_ptr, val_len=8, val_ptr=STORAGE_BUF, register_id=0)
+                v.push(Instruction::I64Const(8));           // val_len
+                v.push(Instruction::I64Const(STORAGE_BUF)); // val_ptr
+                v.push(Instruction::I64Const(0));           // register_id
+                v.push(Self::host_call(17));
+                v.push(Instruction::Drop);
+                v.push(Instruction::I64Const(0));
+                Ok(v)
+            }
+            "near/storage_get" => {
+                let key_expr = self.expr(&a[0])?;
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let mut v = Vec::new();
+                // Extract key ptr and len
+                v.extend(key_expr.clone());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // key_len
+                v.extend(key_expr);
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // key_ptr
+                v.push(Instruction::I64Const(0)); // register_id
+                // storage_read(key_len, key_ptr, register_id=0) — idx 18
+                v.push(Self::host_call(18));
+                // Result is 0 (not found) or 1 (found)
+                v.push(Instruction::I32WrapI64); // condition as i32
+                v.push(Instruction::If(wasm_encoder::BlockType::Result(ValType::I64)));
+                    // Found: read_register(0, STORAGE_BUF) then load i64
+                    v.push(Instruction::I64Const(0));           // register_id
+                    v.push(Instruction::I64Const(STORAGE_BUF)); // ptr
+                    v.push(Self::host_call(0));                 // read_register — idx 0
+                    v.push(Instruction::I32Const(STORAGE_BUF as i32));
+                    v.push(Instruction::I64Load(ma));
+                v.push(Instruction::Else);
+                    v.push(Instruction::I64Const(0)); // not found → 0
+                v.push(Instruction::End);
+                Ok(v)
+            }
+            "near/storage_has" => {
+                let key_expr = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                v.extend(key_expr.clone());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(key_expr);
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Self::host_call(20));
+                Ok(v)
+            }
+            "near/storage_remove" => {
+                let key_expr = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                v.extend(key_expr.clone());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(key_expr);
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0)); // register_id
+                v.push(Self::host_call(19));
                 Ok(v)
             }
             "near/return" => {
@@ -4082,7 +4154,7 @@ impl WasmEmitter {
                         .collect();
                     let builtins = ["+", "-", "*", "/", "mod", "abs", "=", "!=", "<", ">", "<=", ">=",
                         "and", "or", "not", "if", "let", "begin", "while", "for", "set!", "quote",
-                        "near/log", "near/return", "near/store", "near/load", "near/log_num",
+                        "near/log", "near/return", "near/store", "near/load", "near/storage_set", "near/storage_get", "near/storage_has", "near/storage_remove", "near/log_num",
                         "hof/map", "hof/filter", "hof/reduce"];
                     let all_candidates: Vec<&str> = candidates.iter().chain(builtins.iter()).copied().collect();
                     let mut best: Option<(&str, usize)> = None;
@@ -4737,11 +4809,11 @@ impl<'a> TypeChecker<'a> {
                 for arg in args { self.check(arg)?; }
                 Ok(Ty::Void)
             }
-            "near/store" | "near/remove" | "near/has_key" | "near/panic" | "near/abort" => {
+            "near/store" | "near/storage_set" | "near/remove" | "near/storage_remove" | "near/has_key" | "near/storage_has" | "near/panic" | "near/abort" => {
                 for arg in args { self.check(arg)?; }
                 Ok(Ty::Any)
             }
-            "near/load" | "near/current_account_id" | "near/signer_account_id" |
+            "near/load" | "near/storage_get" | "near/current_account_id" | "near/signer_account_id" |
             "near/predecessor_account_id" | "near/input" | "near/block_index" |
             "near/block_timestamp" | "near/epoch_height" | "near/prepaid_gas" |
             "near/used_gas" | "near/attached_deposit" | "near/attached_deposit_high" |
@@ -4794,7 +4866,7 @@ impl<'a> TypeChecker<'a> {
         // Also check common builtins
         let builtins = ["+", "-", "*", "/", "mod", "abs", "=", "!=", "<", ">", "<=", ">=",
             "and", "or", "not", "if", "let", "begin", "while", "for", "set!", "quote",
-            "near/log", "near/return", "near/store", "near/load", "hof/map", "hof/filter", "hof/reduce"];
+            "near/log", "near/return", "near/store", "near/load", "near/storage_set", "near/storage_get", "near/storage_has", "near/storage_remove", "hof/map", "hof/filter", "hof/reduce"];
         for b in &builtins {
             let dist = levenshtein(name, b);
             if dist <= 3 {
