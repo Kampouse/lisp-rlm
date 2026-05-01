@@ -155,6 +155,8 @@ pub enum Op {
     StoreGlobal(String),
     /// Call captured function from cl.captured[idx] with N args (no slot copy)
     CallCapturedRef(usize, usize),
+    /// PushSelf: push the current function value onto the stack (for Y combinator self-passing)
+    PushSelf,
     /// Push a pre-compiled closure from cl.closures[idx] onto the stack
     PushClosure(usize),
     /// Push a function name onto the call trace (for stack traces on errors)
@@ -1331,6 +1333,28 @@ impl LoopCompiler {
                                 self.code.push(Op::MakeList(n_args));
                                 return true;
                             }
+                            // Y combinator: (me me args...) — self-passing pattern
+                            // If callee is a local slot AND first arg is the same symbol,
+                            // skip the self-pass arg and compile only real args, then CallSelf.
+                            if n_args > 0 {
+                                if let Some(LispVal::Sym(first_arg)) = list.get(1) {
+                                    if first_arg == op && self.slot_of(op).is_some() {
+                                        let has_self_name = self.self_name.as_deref() == Some(op.as_str());
+                                        if !has_self_name {
+                                            // Push self as first arg (the "me" parameter)
+                                            self.code.push(Op::PushSelf);
+                                            // Compile only real args (list[2..])
+                                            for real_arg in &list[2..] {
+                                                if !self.compile_expr(real_arg, outer_env) {
+                                                    return false;
+                                                }
+                                            }
+                                            self.code.push(Op::CallSelf(n_args)); // n_args = original count including self-pass
+                                            return true;
+                                        }
+                                    }
+                                }
+                            }
                             for arg in &list[1..] {
                                 if !self.compile_expr(arg, outer_env) {
                                     return false;
@@ -2504,7 +2528,7 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
                 pc += 1;
             }
             Op::CallCaptured(_, _)
-            | Op::CallCapturedRef(_, _)
+            | Op::CallCapturedRef(_, _) | Op::PushSelf
             | Op::PushClosure(_)
             | Op::PushBuiltin(_)
             | Op::PushLiteral(_)
@@ -3927,6 +3951,13 @@ fn run_compiled_lambda_inner(
             }
             Op::PushLiteral(ref val) => {
                 stack.push(val.clone());
+                pc += 1;
+            }
+            Op::PushSelf => {
+                // Push the current function value onto the stack (for Y combinator)
+                // The current function is stored in env as the defined name
+                let self_fn = slots[0].clone(); // slot 0 = self param
+                stack.push(self_fn);
                 pc += 1;
             }
             // --- Sum-type primitives ---
