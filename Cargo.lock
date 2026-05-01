@@ -1193,6 +1193,7 @@ dependencies = [
  "finite-wasm",
  "im",
  "libc",
+ "lisp-vm",
  "lisp-wasm",
  "reqwest",
  "rustyline",
@@ -1208,6 +1209,21 @@ dependencies = [
  "wasmprinter 0.248.0",
  "wasmtime",
  "wat",
+]
+
+[[package]]
+name = "lisp-vm"
+version = "0.1.0"
+dependencies = [
+ "im",
+ "libc",
+ "lisp-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sha3",
+ "tokio",
 ]
 
 [[package]]

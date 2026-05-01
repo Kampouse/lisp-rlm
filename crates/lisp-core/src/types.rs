@@ -264,7 +264,7 @@ pub struct EvalState {
     pub rlm_iteration: usize,
     /// Pluggable LLM provider — when `None`, LLM builtins return an error.
     #[cfg(all(not(target_arch = "wasm32"), feature = "full"))]
-    pub llm_provider: Option<Box<dyn std::any::Any>>,
+    pub llm_provider: Option<Box<dyn std::any::Any + Send + Sync>>,
     /// Call trace ring buffer — last N function calls for error reporting.
     pub call_trace: Vec<String>,
     /// Maximum call trace depth to keep (ring buffer).
@@ -310,7 +310,7 @@ impl EvalState {
 
     /// Set the LLM provider for this state.
     #[cfg(all(not(target_arch = "wasm32"), feature = "full"))]
-    pub fn set_llm_provider(&mut self, provider: Box<dyn std::any::Any>) {
+    pub fn set_llm_provider(&mut self, provider: Box<dyn std::any::Any + Send + Sync>) {
         self.llm_provider = Some(provider);
     }
 
@@ -319,7 +319,7 @@ impl EvalState {
     #[cfg(all(not(target_arch = "wasm32"), feature = "full"))]
     pub fn fork_for_parallel(
         &self,
-        provider: Option<Box<dyn std::any::Any>>,
+        provider: Option<Box<dyn std::any::Any + Send + Sync>>,
     ) -> EvalState {
         EvalState {
             eval_count: 0,
@@ -496,7 +496,7 @@ pub enum LispVal {
         /// (unsupported forms) or not yet attempted.
         /// Uses Arc (not Box) so cloning the LispVal shares the same CompiledLambda
         /// — critical for StoreCaptured to persist mutations across calls.
-        compiled: Option<std::sync::Arc<()>>,
+        compiled: Option<std::sync::Arc<CompiledLambda>>,
         /// Fast memoization cache for pure compiled lambdas. Shared across clones.
         memo_cache:
             Option<std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, LispVal>>>>,
@@ -672,4 +672,133 @@ pub fn hash_args(args: &[LispVal]) -> u64 {
         h = h.wrapping_mul(0x00000100000001B3); // FNV prime
     }
     h
+}
+
+// ===========================================================================
+// Bytecode VM types (used by lisp-vm crate)
+// ===========================================================================
+
+/// Binary operation kinds for typed bytecode ops.
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Eq,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+/// Known type for typed ops.
+#[derive(Clone, Debug)]
+pub enum Ty {
+    I64,
+    F64,
+}
+
+/// Bytecode opcodes for the loop VM.
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub enum Op {
+    LoadSlot(usize),
+    PushI64(i64),
+    PushFloat(f64),
+    PushBool(bool),
+    PushStr(String),
+    PushNil,
+    MakeList(usize),
+    Dup,
+    Pop,
+    StoreSlot(usize),
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Eq,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    JumpIfTrue(usize),
+    JumpIfFalse(usize),
+    Jump(usize),
+    Return,
+    Recur(usize),
+    BuiltinCall(String, usize),
+    SlotAddImm(usize, i64),
+    SlotSubImm(usize, i64),
+    SlotMulImm(usize, i64),
+    SlotDivImm(usize, i64),
+    SlotEqImm(usize, i64),
+    SlotLtImm(usize, i64),
+    SlotLeImm(usize, i64),
+    SlotGtImm(usize, i64),
+    SlotGeImm(usize, i64),
+    RecurDirect(usize),
+    JumpIfSlotLtImm(usize, i64, usize),
+    JumpIfSlotLeImm(usize, i64, usize),
+    JumpIfSlotGtImm(usize, i64, usize),
+    JumpIfSlotGeImm(usize, i64, usize),
+    JumpIfSlotEqImm(usize, i64, usize),
+    RecurIncAccum(usize, usize, i64, i64, usize),
+    CallCaptured(usize, usize),
+    LoadCaptured(usize),
+    StoreCaptured(usize),
+    LoadGlobal(String),
+    StoreGlobal(String),
+    CallCapturedRef(usize, usize),
+    PushSelf,
+    PushClosure(usize),
+    TracePush(String),
+    TracePop,
+    DictGet,
+    DictSet,
+    DictMutSet(usize),
+    CallSelf(usize),
+    CallDynamic(usize),
+    GetDefaultSlot(usize, usize, usize, usize),
+    StoreAndLoadSlot(usize),
+    ReturnSlot(usize),
+    TypedBinOp(BinOp, Ty),
+    PushBuiltin(String),
+    PushLiteral(LispVal),
+    ConstructTag(String, u16, u8),
+    TagTest(String, u16),
+    GetField(u8),
+}
+
+/// A compiled lambda closure for the bytecode VM.
+#[derive(Debug)]
+pub struct CompiledLambda {
+    pub name: Option<String>,
+    pub num_param_slots: usize,
+    pub rest_param_idx: Option<usize>,
+    pub num_fixed_params: usize,
+    pub total_slots: usize,
+    pub code: Vec<Op>,
+    pub captured: std::sync::RwLock<Vec<(String, LispVal)>>,
+    pub closures: Vec<CompiledLambda>,
+    pub runtime_captures: Vec<(String, usize)>,
+}
+
+impl Clone for CompiledLambda {
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            num_param_slots: self.num_param_slots,
+            rest_param_idx: self.rest_param_idx,
+            num_fixed_params: self.num_fixed_params,
+            total_slots: self.total_slots,
+            code: self.code.clone(),
+            captured: std::sync::RwLock::new(self.captured.read().unwrap().clone()),
+            closures: self.closures.clone(),
+            runtime_captures: self.runtime_captures.clone(),
+        }
+    }
 }

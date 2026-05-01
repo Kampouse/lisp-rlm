@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "clojure-rlm", "crates/lisp-core", "crates/lisp-wasm"]
+members = [".", "clojure-rlm", "crates/lisp-core", "crates/lisp-wasm", "crates/lisp-vm"]
 
 [package]
 name = "lisp-rlm-wasm"
@@ -22,6 +22,7 @@ sha3 = "0.10"
 wat = "1.0"
 wasm-encoder = "0.248.0"
 lisp-wasm = { path = "crates/lisp-wasm" }
+lisp-vm = { path = "crates/lisp-vm" }
 wasmparser = { version = "0.228.0", features = ["simd"] }
 wasmprinter = "0.248.0"
 finite-wasm = "0.6"
