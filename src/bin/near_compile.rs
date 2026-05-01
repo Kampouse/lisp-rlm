@@ -777,15 +777,33 @@ fn run_repl() {
         if let Ok(source) = fs::read_to_string(src_path) {
             let base_dir = src_path.parent().unwrap_or(Path::new("."));
             if let Ok(resolved) = lisp_rlm_wasm::wasm_emit::resolve_modules(&source, base_dir) {
-                let defines: Vec<String> = resolved.lines()
-                    .filter(|l| l.trim().starts_with("(define "))
-                    .map(|l| l.to_string())
-                    .collect();
+                // Extract top-level forms by counting parens
+                let mut defines: Vec<String> = Vec::new();
+                let mut memory_decl = String::from("(memory 4)");
+                let mut depth = 0isize;
+                let mut current = String::new();
+                for ch in resolved.chars() {
+                    if ch == '(' { depth += 1; current.push(ch); }
+                    else if ch == ')' {
+                        depth -= 1;
+                        current.push(ch);
+                        if depth == 0 {
+                            let trimmed = current.trim();
+                            if trimmed.starts_with("(define ") {
+                                defines.push(trimmed.to_string());
+                            } else if trimmed.starts_with("(memory ") {
+                                memory_decl = trimmed.to_string();
+                            }
+                            current.clear();
+                        }
+                    } else if depth > 0 {
+                        current.push(ch);
+                    }
+                }
                 if !defines.is_empty() {
-                    // Verify compilation works
-                    let test_src = format!("(memory 4)\n{}\n(define (__repl_main) 0)\n(export \"__repl_main\" __repl_main true)\n",
-                        defines.join("\n"));
-                    match lisp_rlm_wasm::wasm_emit::compile_near(&test_src) {
+                    let test_src = format!("{}\n{}\n(define (__repl_main) 0)\n(export \"__repl_main\" __repl_main true)\n",
+                        memory_decl, defines.join("\n"));
+                    match lisp_rlm_wasm::wasm_emit::compile_near_from_dir(&test_src, base_dir) {
                         Ok(_wasm) => {
                             println!("📦 Loaded {} definitions from {}", defines.len(), config.src);
                             history = defines;
