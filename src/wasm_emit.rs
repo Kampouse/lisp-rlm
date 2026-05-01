@@ -110,6 +110,7 @@ const HOST_BASE: u32 = 0xFF00_0000;
 const USER_BASE: u32 = 0xFF01_0000;
 const TEMP_MEM: i64 = 64;
 const STORAGE_BUF: i64 = 8192;  // 8 bytes for storage read/write buffer
+const STORAGE_U128_BUF: i64 = 8208;  // 16 bytes for u128 storage ops
 // ~300 Tgas on NEAR ≈ ~10B simple ops. Cap at 1B to be safe (stops runaway, still uses full NEAR runtime).
 const GAS_LIMIT: i64 = 1_000_000_000;
 const DEPTH_LIMIT: i64 = 512;
@@ -268,6 +269,24 @@ impl WasmEmitter {
         Instruction::Call(HOST_BASE | idx as u32)
     }
 
+    fn parse_u128(s: &str) -> Result<(i64, i64), String> {
+        let mut lo: u64 = 0;
+        let mut hi: u64 = 0;
+        for ch in s.chars() {
+            if ch == '_' { continue; }
+            if ch < '0' || ch > '9' { return Err(format!("invalid digit in u128 literal: '{}'", ch)); }
+            let digit = ch as u64 - '0' as u64;
+            // hi:lo = hi:lo * 10 + digit
+            let old_hi = hi as u128;
+            let old_lo = lo as u128;
+            let new_val = old_hi * (1u128 << 64) + old_lo;
+            let new_val = new_val * 10 + digit as u128;
+            lo = new_val as u64;
+            hi = (new_val >> 64) as u64;
+        }
+        Ok((lo as i64, hi as i64))
+    }
+
     // ── Tail-call detection ──
 
     fn has_tc(&self, e: &LispVal) -> bool {
@@ -334,6 +353,8 @@ impl WasmEmitter {
             "near/promise_return" => self.need_host(35),
             "near/promise_batch_create" => self.need_host(39),
             "near/promise_batch_then" => self.need_host(40),
+            "u128/store_storage" => { self.need_host(17); }
+            "u128/load_storage" => { self.need_host(18); self.need_host(0); }
             "near/promise_batch_action_create_account" => self.need_host(41),
             "near/promise_batch_action_deploy_contract" => self.need_host(42),
             "near/promise_batch_action_function_call" => self.need_host(43),
@@ -2193,6 +2214,133 @@ impl WasmEmitter {
                 v.push(Instruction::Else);
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::End);
+                Ok(v)
+            }
+
+            // (u128/from_yocto "amount" offset) — compile-time parse decimal, store at offset, return offset
+            "u128/from_yocto" => {
+                if a.len() != 2 { return Err("u128/from_yocto: expected (\"amount\" offset)".into()); }
+                let offset_expr = self.expr(&a[1])?;
+                let (lo, hi) = match &a[0] {
+                    LispVal::Str(s) => Self::parse_u128(s)?,
+                    _ => return Err("u128/from_yocto: first arg must be a string literal".into()),
+                };
+                let off = self.local_idx("__u128_off");
+                let mut v = Vec::new();
+                v.extend(offset_expr); v.push(Instruction::LocalSet(off));
+                v.push(Instruction::LocalGet(off)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(lo));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalGet(off)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(hi));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalGet(off));
+                Ok(v)
+            }
+
+            // (u128/new hi lo offset) — store hi:lo at offset, return offset
+            "u128/new" => {
+                if a.len() != 3 { return Err("u128/new: expected (hi lo offset)".into()); }
+                let hi_e = self.expr(&a[0])?;
+                let lo_e = self.expr(&a[1])?;
+                let off_e = self.expr(&a[2])?;
+                let off = self.local_idx("__u128_off");
+                let mut v = Vec::new();
+                v.extend(off_e); v.push(Instruction::LocalSet(off));
+                v.extend(lo_e);
+                v.push(Instruction::LocalGet(off)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.extend(hi_e);
+                v.push(Instruction::LocalGet(off)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalGet(off));
+                Ok(v)
+            }
+
+            // (u128/from_i64 n offset) — zero-extend i64 to u128 at offset, return offset
+            "u128/from_i64" => {
+                if a.len() != 2 { return Err("u128/from_i64: expected (n offset)".into()); }
+                let n_e = self.expr(&a[0])?;
+                let off_e = self.expr(&a[1])?;
+                let off = self.local_idx("__u128_off");
+                let mut v = Vec::new();
+                v.extend(off_e); v.push(Instruction::LocalSet(off));
+                v.extend(n_e);
+                v.push(Instruction::LocalGet(off)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalGet(off)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalGet(off));
+                Ok(v)
+            }
+
+            // (u128/to_i64 offset) — load low 64 bits
+            "u128/to_i64" => {
+                let mut v = self.expr(&a[0])?;
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                Ok(v)
+            }
+
+            // (u128/store_storage "key" src) — store u128 at src to NEAR storage under key
+            "u128/store_storage" => {
+                if a.len() != 2 { return Err("u128/store_storage: expected (\"key\" src)".into()); }
+                let key = self.expr(&a[0])?;
+                let src = self.expr(&a[1])?;
+                let os = self.local_idx("__u128_s");
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let mut v = Vec::new();
+                v.extend(src); v.push(Instruction::LocalSet(os));
+                // Copy 16 bytes from src to STORAGE_U128_BUF
+                v.push(Instruction::LocalGet(os)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(ma));
+                v.push(Instruction::I32Const(STORAGE_U128_BUF as i32));
+                v.push(Instruction::I64Store(ma));
+                v.push(Instruction::LocalGet(os)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(ma));
+                v.push(Instruction::I32Const((STORAGE_U128_BUF + 8) as i32));
+                v.push(Instruction::I64Store(ma));
+                // storage_write(key_len, key_ptr, 16, STORAGE_U128_BUF, 0) — idx 17
+                v.extend(key.clone());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(key);
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(16)); v.push(Instruction::I64Const(STORAGE_U128_BUF)); v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(17)); v.push(Instruction::Drop);
+                v.push(Instruction::I64Const(0));
+                Ok(v)
+            }
+
+            // (u128/load_storage "key" dst) — load u128 from NEAR storage to dst, return dst
+            "u128/load_storage" => {
+                if a.len() != 2 { return Err("u128/load_storage: expected (\"key\" dst)".into()); }
+                let key = self.expr(&a[0])?;
+                let dst = self.expr(&a[1])?;
+                let od = self.local_idx("__u128_d");
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let mut v = Vec::new();
+                v.extend(dst); v.push(Instruction::LocalSet(od));
+                // storage_read(key_len, key_ptr, 0) — idx 18
+                v.extend(key.clone());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(key);
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(18)); v.push(Instruction::Drop);
+                // read_register(0, STORAGE_U128_BUF)
+                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(STORAGE_U128_BUF));
+                v.push(Self::host_call(0)); v.push(Instruction::Drop);
+                // Copy 16 bytes from STORAGE_U128_BUF to dst
+                v.push(Instruction::I32Const(STORAGE_U128_BUF as i32));
+                v.push(Instruction::I64Load(ma));
+                v.push(Instruction::LocalGet(od)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Store(ma));
+                v.push(Instruction::I32Const((STORAGE_U128_BUF + 8) as i32));
+                v.push(Instruction::I64Load(ma));
+                v.push(Instruction::LocalGet(od)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Store(ma));
+                v.push(Instruction::LocalGet(od));
                 Ok(v)
             }
 
@@ -4809,7 +4957,7 @@ impl<'a> TypeChecker<'a> {
                 for arg in args { self.check(arg)?; }
                 Ok(Ty::Void)
             }
-            "near/store" | "near/storage_set" | "near/remove" | "near/storage_remove" | "near/has_key" | "near/storage_has" | "near/panic" | "near/abort" => {
+            "near/store" | "near/storage_set" | "near/remove" | "near/storage_remove" | "near/has_key" | "near/storage_has" | "near/panic" | "near/abort" | "u128/store_storage" => {
                 for arg in args { self.check(arg)?; }
                 Ok(Ty::Any)
             }
@@ -4821,6 +4969,13 @@ impl<'a> TypeChecker<'a> {
             "near/promise_create" | "near/promise_then" | "near/promise_and" |
             "near/promise_results_count" | "near/promise_result" | "near/promise_return" |
             "near/promise_batch_create" | "near/promise_batch_then" => {
+                for arg in args { self.check(arg)?; }
+                Ok(Ty::Any)
+            }
+            // u128 operations
+            "u128/from_yocto" | "u128/new" | "u128/from_i64" | "u128/to_i64" |
+            "u128/load" | "u128/store" | "u128/add" | "u128/sub" |
+            "u128/eq" | "u128/is_zero" | "u128/lt" | "u128/load_storage" => {
                 for arg in args { self.check(arg)?; }
                 Ok(Ty::Any)
             }

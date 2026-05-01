@@ -114,8 +114,13 @@ Last verified: 2026-05-01 on kampy.testnet
   - `CallSelf` / `PushSelf` only in bytecode VM
   - WASM emitter has no recursive function support
 
-- [ ] **BigInt** — No arbitrary precision
-  - NEAR uses u128 for balances, this compiler only does i64
+- [x] **u128** — Memory-based u128 support via `u128/` ops
+  - `u128/from_yocto "1.5" offset` — compile-time decimal parsing
+  - `u128/new hi lo offset`, `u128/from_i64 n offset`, `u128/to_i64 offset`
+  - `u128/add dst src`, `u128/sub dst src`, `u128/mul dst val` (in-place)
+  - `u128/store addr lo hi`, `u128/load addr`, `u128/load_high addr`
+  - `u128/eq a1 a2`, `u128/is_zero addr`, `u128/lt a1 a2`
+  - `u128/store_storage "key" src`, `u128/load_storage "key" dst`
 
 - [ ] **Enums / tagged unions** — No ADTs
   - No way to represent Result<T, E> or Option<T>
