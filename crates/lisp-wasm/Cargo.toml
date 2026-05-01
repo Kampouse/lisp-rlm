@@ -1,0 +1,10 @@
+[package]
+name = "lisp-wasm"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+lisp-core = { path = "../lisp-core" }
+wasm-encoder = "0.248.0"
+wasmparser = { version = "0.228.0", features = ["simd"] }
+wasmprinter = "0.248.0"
