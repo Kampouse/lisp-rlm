@@ -36,7 +36,3 @@ wat = "1.0"
 [[bin]]
 name = "near-compile"
 path = "src/bin/near_compile.rs"
-
-[[bin]]
-name = "near-repl"
-path = "src/bin/near_repl.rs"
