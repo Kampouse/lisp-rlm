@@ -4,11 +4,12 @@ use crate::types::LispVal;
 // Tokenizer + Parser
 // ---------------------------------------------------------------------------
 
-fn tokenize(input: &str) -> Vec<String> {
+fn tokenize(input: &str) -> Vec<(String, usize)> {
     let chars: Vec<char> = input.chars().collect();
     let len = chars.len();
     let mut tokens = Vec::new();
     let mut cur = String::new();
+    let mut cur_start = 0;
     let mut in_str = false;
     let mut i = 0;
 
@@ -18,19 +19,19 @@ fn tokenize(input: &str) -> Vec<String> {
         if in_str {
             cur.push(ch);
             if ch == '"' {
-                tokens.push(cur.clone());
+                tokens.push((cur.clone(), cur_start));
                 cur.clear();
                 in_str = false;
             }
             i += 1;
         } else if ch == '"' && !in_str {
             in_str = true;
+            cur_start = i;
             cur.push(ch);
             i += 1;
         } else if ch == ';' && i + 1 < len && chars[i + 1] == ';' {
-            // ;; line comment — skip to end of line
             if !cur.is_empty() {
-                tokens.push(cur.clone());
+                tokens.push((cur.clone(), cur_start));
                 cur.clear();
             }
             i += 2;
@@ -41,9 +42,8 @@ fn tokenize(input: &str) -> Vec<String> {
                 i += 1;
             }
         } else if ch == '(' && i + 1 < len && chars[i + 1] == ';' {
-            // (; block comment ;) — skip until matching ;)
             if !cur.is_empty() {
-                tokens.push(cur.clone());
+                tokens.push((cur.clone(), cur_start));
                 cur.clear();
             }
             i += 2;
@@ -55,104 +55,120 @@ fn tokenize(input: &str) -> Vec<String> {
                 i += 1;
             }
         } else if ch == '\'' {
-            // Quote shorthand: 'x => (quote x)
             if !cur.is_empty() {
-                tokens.push(cur.clone());
+                tokens.push((cur.clone(), cur_start));
                 cur.clear();
             }
-            tokens.push("#quote".to_string());
+            tokens.push(("#quote".to_string(), i));
             i += 1;
         } else if ch == '#' && i + 1 < len && chars[i + 1] == '\\' {
-            // Character literal: #\a, #\space, #\newline
             if !cur.is_empty() {
-                tokens.push(cur.clone());
+                tokens.push((cur.clone(), cur_start));
                 cur.clear();
             }
-            i += 2; // skip #\
+            cur_start = i;
+            i += 2;
             if i < len {
-                // Collect the character name
                 let mut char_name = String::new();
                 while i < len && !chars[i].is_whitespace() && chars[i] != '(' && chars[i] != ')' {
                     char_name.push(chars[i]);
                     i += 1;
-                    // If first char after \ is a letter and next is not a letter, stop
                     if char_name.len() == 1 && (i >= len || !chars[i].is_ascii_alphabetic()) {
                         break;
                     }
                 }
-                tokens.push(format!("#char:{}", char_name));
+                tokens.push((format!("#char:{}", char_name), cur_start));
             }
         } else if ch == '`' {
-            // Quasiquote — tokenize as special token
             if !cur.is_empty() {
-                tokens.push(cur.clone());
+                tokens.push((cur.clone(), cur_start));
                 cur.clear();
             }
-            tokens.push("#quasiquote".to_string());
+            tokens.push(("#quasiquote".to_string(), i));
             i += 1;
         } else if ch == ',' && i + 1 < len && chars[i + 1] == '@' {
-            // Splicing unquote ,@
             if !cur.is_empty() {
-                tokens.push(cur.clone());
+                tokens.push((cur.clone(), cur_start));
                 cur.clear();
             }
-            tokens.push("#unquote-splicing".to_string());
+            tokens.push(("#unquote-splicing".to_string(), i));
             i += 2;
         } else if ch == ',' {
-            // Unquote ,
             if !cur.is_empty() {
-                tokens.push(cur.clone());
+                tokens.push((cur.clone(), cur_start));
                 cur.clear();
             }
-            tokens.push("#unquote".to_string());
+            tokens.push(("#unquote".to_string(), i));
             i += 1;
         } else if ch == '(' || ch == ')' {
             if !cur.is_empty() {
-                tokens.push(cur.clone());
+                tokens.push((cur.clone(), cur_start));
                 cur.clear();
             }
-            tokens.push(ch.to_string());
+            tokens.push((ch.to_string(), i));
             i += 1;
         } else if ch.is_whitespace() {
             if !cur.is_empty() {
-                tokens.push(cur.clone());
+                tokens.push((cur.clone(), cur_start));
                 cur.clear();
             }
             i += 1;
         } else {
+            if cur.is_empty() {
+                cur_start = i;
+            }
             cur.push(ch);
             i += 1;
         }
     }
 
     if !cur.is_empty() {
-        tokens.push(cur);
+        tokens.push((cur, cur_start));
     }
     tokens
 }
 
-fn parse(tokens: &[String], pos: &mut usize) -> Result<LispVal, String> {
-    if *pos >= tokens.len() {
-        return Err("unexpected EOF".into());
+/// Compute line and column (1-indexed) from a byte offset in the source.
+fn offset_to_line_col(input: &str, offset: usize) -> (usize, usize) {
+    let mut line = 1;
+    let mut col = 1;
+    for (i, ch) in input.char_indices() {
+        if i >= offset { break; }
+        if ch == '\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
     }
-    let tok = &tokens[*pos];
+    (line, col)
+}
+
+fn parse(tokens: &[(String, usize)], pos: &mut usize, source: &str) -> Result<LispVal, String> {
+    if *pos >= tokens.len() {
+        return Err("unexpected end of input".into());
+    }
+    let (tok, offset) = &tokens[*pos];
+    let (line, col) = offset_to_line_col(source, *offset);
+    let loc = || format!(" at line {}, col {}", line, col);
+
     *pos += 1;
     match tok.as_str() {
         "(" => {
             let mut list = Vec::new();
-            while *pos < tokens.len() && tokens[*pos] != ")" {
-                list.push(parse(tokens, pos)?);
+            while *pos < tokens.len() && tokens[*pos].0 != ")" {
+                list.push(parse(tokens, pos, source)?);
             }
             if *pos >= tokens.len() {
-                return Err("missing )".into());
+                return Err(format!("missing closing `)`{}", loc()));
             }
             *pos += 1;
             Ok(LispVal::List(list))
         }
-        ")" => Err("unexpected )".into()),
+        ")" => Err(format!("unexpected `)`{}", loc())),
         "#quote" => {
             // 'form => (quote form)
-            let inner = parse(tokens, pos)?;
+            let inner = parse(tokens, pos, source)?;
             Ok(LispVal::List(vec![LispVal::Sym("quote".into()), inner]))
         }
         t if t.starts_with("#char:") => {
@@ -172,7 +188,7 @@ fn parse(tokens: &[String], pos: &mut usize) -> Result<LispVal, String> {
         }
         "#quasiquote" => {
             // (` form) => (quasiquote form)
-            let inner = parse(tokens, pos)?;
+            let inner = parse(tokens, pos, source)?;
             Ok(LispVal::List(vec![
                 LispVal::Sym("quasiquote".into()),
                 inner,
@@ -180,12 +196,12 @@ fn parse(tokens: &[String], pos: &mut usize) -> Result<LispVal, String> {
         }
         "#unquote" => {
             // (, form) => (unquote form)
-            let inner = parse(tokens, pos)?;
+            let inner = parse(tokens, pos, source)?;
             Ok(LispVal::List(vec![LispVal::Sym("unquote".into()), inner]))
         }
         "#unquote-splicing" => {
             // (,@ form) => (unquote-splicing form)
-            let inner = parse(tokens, pos)?;
+            let inner = parse(tokens, pos, source)?;
             Ok(LispVal::List(vec![
                 LispVal::Sym("unquote-splicing".into()),
                 inner,
@@ -243,7 +259,7 @@ pub fn parse_all(input: &str) -> Result<Vec<LispVal>, String> {
     let mut pos = 0;
     let mut exprs = Vec::new();
     while pos < tokens.len() {
-        exprs.push(parse(&tokens, &mut pos)?);
+        exprs.push(parse(&tokens, &mut pos, input)?);
     }
     Ok(exprs)
 }

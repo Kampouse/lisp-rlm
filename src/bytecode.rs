@@ -3064,7 +3064,11 @@ pub fn eval_builtin(
             if let Ok(Some(result)) = crate::eval::dispatch_types::handle(name, args) {
                 return Ok(result);
             }
-            Err(format!("unknown builtin '{}'", name))
+            let args_str: Vec<String> = args.iter().map(|a| {
+                let s = a.to_string();
+                if s.len() > 40 { format!("{}...", &s[..37]) } else { s }
+            }).collect();
+            Err(format!("unknown builtin '{}' with args: ({})", name, args_str.join(" ")))
         }
     }
 }
@@ -3224,8 +3228,31 @@ pub fn vm_call_lambda(
             ..
         } => run_compiled_lambda(cl, args, outer_env, state),
         LispVal::BuiltinFn(name) => eval_builtin(name, args, Some(outer_env), Some(state)),
-        _ => Err(format!("not callable: {}", func)),
+        _ => Err(format!("cannot call {} as a function (expected a lambda or builtin)", func)),
     }
+}
+
+/// Generate a short human-readable summary of a CompiledLambda for stack traces.
+fn summarize_compiled_lambda(cl: &CompiledLambda) -> String {
+    let n_params = cl.num_fixed_params;
+    let mut ops_summary = String::new();
+    for op in cl.code.iter().take(3) {
+        if !ops_summary.is_empty() { ops_summary.push(' '); }
+        match op {
+            Op::BuiltinCall(name, _) => ops_summary.push_str(name),
+            Op::Add => ops_summary.push('+'),
+            Op::Sub => ops_summary.push('-'),
+            Op::Mul => ops_summary.push('*'),
+            Op::Div => ops_summary.push('/'),
+            Op::PushI64(n) => { ops_summary.push_str(&n.to_string()); }
+            Op::LoadSlot(_) => ops_summary.push('_'),
+            _ => ops_summary.push('.'),
+        }
+    }
+    format!("(fn [{}] {})", 
+        (0..n_params).map(|i| format!("p{}", i)).collect::<Vec<_>>().join(" "),
+        if ops_summary.is_empty() { "..." } else { &ops_summary }
+    )
 }
 
 /// Run a compiled lambda with the given arguments. Returns the result directly.
@@ -3235,7 +3262,12 @@ pub fn run_compiled_lambda(
     outer_env: &mut Env,
     state: &mut EvalState,
 ) -> Result<LispVal, String> {
-    let fname = cl.name.as_deref().unwrap_or("<lambda>");
+    let fname = cl.name.as_deref().unwrap_or_else(|| {
+        // Generate a hint from the first few ops: e.g. "<(fn [x] ...)>"
+        let hint = summarize_compiled_lambda(cl);
+        // Leak is fine — these strings are small and live for the process lifetime
+        Box::leak(hint.into_boxed_str())
+    });
     state.trace_push(fname);
     let result = run_compiled_lambda_inner(cl, args, outer_env, state);
     match result {

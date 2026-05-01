@@ -9,6 +9,12 @@ use std::io::{self, BufRead, Write};
 fn main() {
     let args: Vec<String> = env::args().collect();
 
+    // Check for -e flag (inline eval)
+    if args.len() >= 3 && (args[1] == "-e" || args[1] == "--eval") {
+        inline_eval(&args[2]);
+        return;
+    }
+
     if args.len() > 1 {
         // Run file
         let filename = &args[1];
@@ -44,6 +50,25 @@ fn main() {
                 }
                 Err(_) => break,
             }
+        }
+    }
+}
+
+fn inline_eval(code: &str) {
+    let exprs = match lisp_rlm_wasm::parse_all(code) {
+        Ok(e) => e,
+        Err(e) => { eprintln!("Parse error: {}", e); std::process::exit(1) }
+    };
+    let mut env = lisp_rlm_wasm::Env::new();
+    let mut state = lisp_rlm_wasm::EvalState::new();
+    for expr in &exprs {
+        match lisp_rlm_wasm::run_program(std::slice::from_ref(expr), &mut env, &mut state) {
+            Ok(val) => {
+                if !matches!(val, lisp_rlm_wasm::LispVal::Nil) {
+                    println!("{}", val);
+                }
+            }
+            Err(e) => { eprintln!("Error: {}", e); std::process::exit(1); }
         }
     }
 }
