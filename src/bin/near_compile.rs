@@ -767,6 +767,7 @@ fn run_repl() {
 
     let repl_storage: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<Vec<u8>, Vec<u8>>>> = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
     let repl_memory: std::sync::Arc<std::sync::Mutex<Vec<u8>>> = std::sync::Arc::new(std::sync::Mutex::new(vec![0u8; 262144]));
+    let repl_input: std::sync::Arc<std::sync::Mutex<Vec<u8>>> = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     println!();
 
     let mut history: Vec<String> = Vec::new();
@@ -837,6 +838,7 @@ fn run_repl() {
                 println!("  :push      Deploy all definitions to NEAR testnet");
                 println!("  :call fn   Call a view function on the deployed contract");
                 println!("  :call! fn  Call a mutable function (costs gas)");
+                println!("  :input     Set mock input JSON (e.g. :input '{{\"amount\": 42}}')");
                 println!();
                 println!("WASM emitter: hof/map hof/filter hof/reduce");
                 println!("  near/log \"msg\"  near/log \"x=\" 42  near/log_num 99");
@@ -848,6 +850,13 @@ fn run_repl() {
                 continue;
             }
             ":reset" => { history.clear(); println!("✓ reset"); continue; }
+            s if s.starts_with(":input") => {
+                let json_str = s.trim_start_matches(":input").trim();
+                if json_str.is_empty() { println!("Usage: :input {{\"key\": value}}"); continue; }
+                *repl_input.lock().unwrap() = json_str.as_bytes().to_vec();
+                println!("✓ input set ({} bytes)", json_str.len());
+                continue;
+            }
             ":wat" => {
                 let src = repl_source(&history, "(near/return 0)");
                 match lisp_rlm_wasm::wasm_emit::compile_near(&src) {
@@ -929,7 +938,7 @@ fn run_repl() {
         }
 
         let src = repl_source(&history, &input);
-        match eval_wasm(&src, Some(&repl_storage), Some(&repl_memory)) {
+        match eval_wasm(&src, Some(&repl_storage), Some(&repl_memory), Some(&repl_input)) {
             Ok((result, logs)) => {
                 for l in &logs { println!("  LOG: {}", l); }
                 println!("{}", result);
@@ -960,14 +969,14 @@ fn is_wasmtime_available() -> bool {
     true
 }
 
-fn eval_wasm(src: &str, shared_storage: Option<&std::sync::Arc<std::sync::Mutex<std::collections::HashMap<Vec<u8>, Vec<u8>>>>>, shared_memory: Option<&std::sync::Arc<std::sync::Mutex<Vec<u8>>>>) -> Result<(String, Vec<String>), String> {
+fn eval_wasm(src: &str, shared_storage: Option<&std::sync::Arc<std::sync::Mutex<std::collections::HashMap<Vec<u8>, Vec<u8>>>>>, shared_memory: Option<&std::sync::Arc<std::sync::Mutex<Vec<u8>>>>, shared_input: Option<&std::sync::Arc<std::sync::Mutex<Vec<u8>>>>) -> Result<(String, Vec<String>), String> {
     let wasm = lisp_rlm_wasm::wasm_emit::compile_near(src)?;
     let mut v = wasmparser::Validator::new();
     v.validate_all(&wasm).map_err(|e| format!("WASM validation: {}", e))?;
-    run_wasmtime(&wasm, shared_storage, shared_memory)
+    run_wasmtime(&wasm, shared_storage, shared_memory, shared_input)
 }
 
-fn run_wasmtime(wasm: &[u8], shared_storage: Option<&std::sync::Arc<std::sync::Mutex<std::collections::HashMap<Vec<u8>, Vec<u8>>>>>, shared_memory: Option<&std::sync::Arc<std::sync::Mutex<Vec<u8>>>>) -> Result<(String, Vec<String>), String> {
+fn run_wasmtime(wasm: &[u8], shared_storage: Option<&std::sync::Arc<std::sync::Mutex<std::collections::HashMap<Vec<u8>, Vec<u8>>>>>, shared_memory: Option<&std::sync::Arc<std::sync::Mutex<Vec<u8>>>>, shared_input: Option<&std::sync::Arc<std::sync::Mutex<Vec<u8>>>>) -> Result<(String, Vec<String>), String> {
     use std::sync::{Arc, Mutex};
     use std::collections::HashMap;
     use wasmtime::*;
@@ -1024,6 +1033,18 @@ fn run_wasmtime(wasm: &[u8], shared_storage: Option<&std::sync::Arc<std::sync::M
             let rid = args[0].unwrap_i64() as u64;
             let len = rc2.lock().unwrap().get(&rid).map(|d| d.len() as i64).unwrap_or(0);
             results[0] = Val::I64(len); Ok(())
+        });
+
+    let mock_input_data = shared_input.cloned().unwrap_or_else(|| Arc::new(Mutex::new(Vec::new())));
+    let rc_input = registers.clone();
+    let input_fn = Func::new(&mut store, FuncType::new(&engine, [ValType::I64], []),
+        move |_, args, _| {
+            let rid = args[0].unwrap_i64() as u64;
+            let data = mock_input_data.lock().unwrap().clone();
+            if !data.is_empty() {
+                rc_input.lock().unwrap().insert(rid, data);
+            }
+            Ok(())
         });
 
     let sc1 = storage.clone(); let rc3 = registers.clone();
@@ -1105,7 +1126,7 @@ fn run_wasmtime(wasm: &[u8], shared_storage: Option<&std::sync::Arc<std::sync::M
     linker.define(&store, "env", "value_return", value_return_fn).map_err(|e| format!("link: {}", e))?;
     linker.define(&store, "env", "read_register", read_register_fn).map_err(|e| format!("link: {}", e))?;
     linker.define(&store, "env", "register_len", register_len_fn).map_err(|e| format!("link: {}", e))?;
-    linker.define(&store, "env", "input", noop1.clone()).map_err(|e| format!("link: {}", e))?;
+    linker.define(&store, "env", "input", input_fn).map_err(|e| format!("link: {}", e))?;
     linker.define(&store, "env", "storage_write", storage_write_fn).map_err(|e| format!("link: {}", e))?;
     linker.define(&store, "env", "storage_read", storage_read_fn).map_err(|e| format!("link: {}", e))?;
     linker.define(&store, "env", "storage_remove", storage_remove_fn).map_err(|e| format!("link: {}", e))?;
