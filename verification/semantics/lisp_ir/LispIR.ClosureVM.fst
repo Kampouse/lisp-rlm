@@ -652,10 +652,14 @@ let closure_eval_op s =
        | b :: a :: rest ->
          // Match Rust bytecode.rs:3618-3625 — uses num_val (NOT float-aware for Mod)
          // Returns Num only, div-by-zero → ok=false
+         // Pattern match on zero directly so F* knows bv ≠ 0 in the else branch
          let av = (match a with Num n -> n | Float f -> ff_to_int f | _ -> 0) in
-         let bv = (match b with Num n -> n | Float f -> ff_to_int f | _ -> 0) in
-         if bv = 0 then { s with ok = false }
-         else admit() (* TODO: bv nonzero after guard, F* loses refinement across let *)
+         (match b with
+          | Num 0 -> { s with ok = false }
+          | Float f -> if ff_to_int f = 0 then { s with ok = false }
+                       else { s with stack = Num (av / ff_to_int f) :: rest; pc = pc }
+          | Num bv -> { s with stack = Num (av / bv) :: rest; pc = pc }
+          | _ -> { s with ok = false })
        | _ -> { s with ok = false })
 
     // MakeList: pop n items, reverse, push as list
