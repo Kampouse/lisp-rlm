@@ -20,6 +20,7 @@ wat = "1.0"
 wasm-encoder = "0.248.0"
 wasmparser = "0.248.0"
 wasmprinter = "0.248.0"
+finite-wasm = "0.6"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { version = "1", features = ["full"] }

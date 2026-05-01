@@ -38,6 +38,13 @@ fn main() {
                 if let Err(e) = lisp_rlm_wasm::near_validate::validate_near_wasm(&wasm_bytes) {
                     eprintln!("⚠ NEAR validation warning: {}", e);
                 }
+                let gas_flag = args.iter().any(|a| a == "--gas" || a == "--gas-estimate");
+                if gas_flag {
+                    match lisp_rlm_wasm::gas_estimate::estimate_gas(&wasm_bytes) {
+                        Ok(est) => println!("{}", est),
+                        Err(e) => eprintln!("Gas estimate error: {}", e),
+                    }
+                }
                 let out_path = args.iter().position(|a| a == "-o")
                     .and_then(|i| args.get(i + 1))
                     .map(|s| s.as_str())
