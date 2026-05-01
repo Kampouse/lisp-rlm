@@ -1,0 +1,11 @@
+[package]
+name = "lisp-core"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+full = []
+
+[dependencies]
+im = "15"
