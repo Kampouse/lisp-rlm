@@ -2805,18 +2805,64 @@ pub fn eval_builtin(
     }
 
     match name {
-        "abs" => Ok(LispVal::Num(
-            num_val(args.get(0).cloned().unwrap_or(LispVal::Nil)).abs(),
-        )),
+        "abs" => match args.get(0) {
+            Some(LispVal::Num(n)) => Ok(LispVal::Num(n.abs())),
+            Some(LispVal::Float(f)) => Ok(LispVal::Float(f.abs())),
+            _ => Ok(LispVal::Num(0)),
+        },
         "min" => {
-            let a = num_val(args.get(0).cloned().unwrap_or(LispVal::Nil));
-            let b = num_val(args.get(1).cloned().unwrap_or(LispVal::Nil));
-            Ok(LispVal::Num(a.min(b)))
+            if args.is_empty() { return Ok(LispVal::Num(0)); }
+            let has_float = args.iter().any(|a| matches!(a, LispVal::Float(_)));
+            if has_float {
+                let mut best = match args.get(0) {
+                    Some(LispVal::Float(f)) => *f,
+                    Some(LispVal::Num(n)) => *n as f64,
+                    _ => f64::INFINITY,
+                };
+                for a in &args[1..] {
+                    let v = match a {
+                        LispVal::Float(f) => *f,
+                        LispVal::Num(n) => *n as f64,
+                        _ => f64::INFINITY,
+                    };
+                    if v < best { best = v; }
+                }
+                Ok(LispVal::Float(best))
+            } else {
+                let mut best = num_val(args.get(0).cloned().unwrap_or(LispVal::Nil));
+                for a in &args[1..] {
+                    let v = num_val(a.clone());
+                    if v < best { best = v; }
+                }
+                Ok(LispVal::Num(best))
+            }
         }
         "max" => {
-            let a = num_val(args.get(0).cloned().unwrap_or(LispVal::Nil));
-            let b = num_val(args.get(1).cloned().unwrap_or(LispVal::Nil));
-            Ok(LispVal::Num(a.max(b)))
+            if args.is_empty() { return Ok(LispVal::Num(0)); }
+            let has_float = args.iter().any(|a| matches!(a, LispVal::Float(_)));
+            if has_float {
+                let mut best = match args.get(0) {
+                    Some(LispVal::Float(f)) => *f,
+                    Some(LispVal::Num(n)) => *n as f64,
+                    _ => f64::NEG_INFINITY,
+                };
+                for a in &args[1..] {
+                    let v = match a {
+                        LispVal::Float(f) => *f,
+                        LispVal::Num(n) => *n as f64,
+                        _ => f64::NEG_INFINITY,
+                    };
+                    if v > best { best = v; }
+                }
+                Ok(LispVal::Float(best))
+            } else {
+                let mut best = num_val(args.get(0).cloned().unwrap_or(LispVal::Nil));
+                for a in &args[1..] {
+                    let v = num_val(a.clone());
+                    if v > best { best = v; }
+                }
+                Ok(LispVal::Num(best))
+            }
         }
         "to-string" => Ok(LispVal::Str(format!(
             "{}",
@@ -3057,8 +3103,18 @@ pub fn eval_builtin(
             Ok(LispVal::List(result))
         }
         "sqrt" => {
-            let n = num_val(args.get(0).cloned().unwrap_or(LispVal::Nil));
-            Ok(LispVal::Float((n as f64).sqrt()))
+            let n = match args.get(0) {
+                Some(LispVal::Num(n)) => *n as f64,
+                Some(LispVal::Float(f)) => *f,
+                _ => 0.0,
+            };
+            let result = n.sqrt();
+            // Return Num for perfect integer squares
+            if result.fract() == 0.0 && result.abs() <= i64::MAX as f64 {
+                Ok(LispVal::Num(result as i64))
+            } else {
+                Ok(LispVal::Float(result))
+            }
         }
         "pow" => {
             let base = num_val(args.get(0).cloned().unwrap_or(LispVal::Nil));
@@ -3141,10 +3197,10 @@ pub fn eval_builtin(
                 } else if let Ok(f) = s.parse::<f64>() {
                     Ok(LispVal::Float(f))
                 } else {
-                    Ok(LispVal::Nil)
+                    Ok(LispVal::Bool(false))
                 }
             }
-            _ => Ok(LispVal::Nil),
+            _ => Ok(LispVal::Bool(false)),
         },
         "num->str" | "number->string" => match args.get(0) {
             Some(LispVal::Num(n)) => Ok(LispVal::Str(n.to_string())),
