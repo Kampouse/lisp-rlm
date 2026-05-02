@@ -945,6 +945,94 @@ impl LoopCompiler {
                             }
                             true
                         }
+                        // match: (match expr clause1 clause2 ...)
+                        // Each clause: (pattern body)
+                        "match" => {
+                            if list.len() < 3 {
+                                return false;
+                            }
+                            let scrutinee = &list[1];
+                            // Compile scrutinee and store in a temp slot
+                            if !self.compile_expr(scrutinee, outer_env) {
+                                return false;
+                            }
+                            let scrutinee_slot = self.slot_map.len();
+                            self.slot_map.push("__match_scrutinee".to_string());
+                            self.code.push(Op::StoreSlot(scrutinee_slot));
+
+                            let mut end_jumps: Vec<usize> = Vec::new();
+                            let mut i = 2;
+                            let mut last_was_else = false;
+
+                            while i < list.len() {
+                                let clause = match list.get(i) {
+                                    Some(LispVal::List(c)) if c.len() >= 2 => c.clone(),
+                                    _ => return false,
+                                };
+                                let pattern = &clause[0];
+                                let body = &clause[1];
+
+                                // else clause — always matches
+                                if *pattern == LispVal::Sym("else".into()) {
+                                    last_was_else = true;
+                                    // Add bindings from the clause (none for else)
+                                    let _bindings_start = self.slot_map.len();
+                                    if !self.compile_expr(body, outer_env) {
+                                        return false;
+                                    }
+                                    // Restore slot_map (no new bindings for else)
+                                    break;
+                                }
+
+                                // Compile pattern match check → pushes Bool on stack
+                                // Also extracts bindings into slots (adding to slot_map)
+                                let bindings_start = self.slot_map.len();
+                                if !self.compile_pattern_check(pattern, scrutinee_slot, outer_env) {
+                                    return false;
+                                }
+                                let _bindings_end = self.slot_map.len();
+
+                                let jf_idx = self.code.len();
+                                self.code.push(Op::JumpIfFalse(0)); // placeholder
+
+                                // Pattern matched! Bindings are now in slots.
+                                // Compile the body with bindings visible.
+                                if !self.compile_expr(body, outer_env) {
+                                    return false;
+                                }
+
+                                // Jump to end of match
+                                end_jumps.push(self.code.len());
+                                self.code.push(Op::Jump(0));
+
+                                // Patch: if pattern didn't match, jump here
+                                self.code[jf_idx] = Op::JumpIfFalse(self.code.len());
+
+                                // Restore slot_map (remove pattern bindings)
+                                self.slot_map.truncate(bindings_start);
+
+                                i += 1;
+                            }
+
+                            // If no else clause, push nil for no-match
+                            if !last_was_else {
+                                self.code.push(Op::PushNil);
+                            }
+
+                            // Patch all end jumps
+                            let end_pc = self.code.len();
+                            for idx in end_jumps {
+                                self.code[idx] = Op::Jump(end_pc);
+                            }
+
+                            // Remove scrutinee slot from slot_map
+                            // (We can't easily remove from middle, but it's at scrutinee_slot)
+                            // The scrutinee slot is no longer needed; truncate if it was last.
+                            // Since we may have added bindings after, just leave it.
+                            // The slot is allocated but unused after match — harmless.
+
+                            true
+                        }
                         // let: (let ((x init) ...) body)
                         "let" | "let*" => {
                             // Named let: (let name ((var init) ...) body ...)
@@ -1458,6 +1546,330 @@ impl LoopCompiler {
         }
     }
 
+    /// Compile a pattern match check against a value in `value_slot`.
+    /// Pushes Bool(true) on stack if pattern matches, Bool(false) otherwise.
+    /// For binding patterns (?x, nested destructuring), also allocates slots
+    /// and emits code to extract values into those slots.
+    /// Adds binding names to self.slot_map as needed.
+    fn compile_pattern_check(
+        &mut self,
+        pattern: &LispVal,
+        value_slot: usize,
+        _outer_env: &Env,
+    ) -> bool {
+        match pattern {
+            // Variable binding: ?x — matches anything, binds x to value
+            LispVal::Sym(name) if name.starts_with('?') => {
+                let bind_name = &name[1..]; // strip '?' prefix
+                let slot_idx = self.slot_map.len();
+                self.slot_map.push(bind_name.to_string());
+                self.code.push(Op::LoadSlot(value_slot));
+                self.code.push(Op::StoreSlot(slot_idx));
+                // Always matches
+                self.code.push(Op::PushBool(true));
+                true
+            }
+            // Wildcard: _ — matches anything, no binding
+            LispVal::Sym(name) if name == "_" => {
+                self.code.push(Op::PushBool(true));
+                true
+            }
+            // Plain symbol binding (used in nested destructuring): a, b, c, etc.
+            // Treat as variable binding (same as ?x but without ? prefix)
+            LispVal::Sym(name) => {
+                // Skip special keywords that shouldn't be bindings
+                if name == "true" || name == "false" || name == "nil" || name == "else" {
+                    // Treat as literal
+                    match name.as_str() {
+                        "true" => {
+                            self.code.push(Op::LoadSlot(value_slot));
+                            self.code.push(Op::PushBool(true));
+                            self.code.push(Op::Eq);
+                        }
+                        "false" => {
+                            self.code.push(Op::LoadSlot(value_slot));
+                            self.code.push(Op::PushBool(false));
+                            self.code.push(Op::Eq);
+                        }
+                        "nil" => {
+                            self.code.push(Op::LoadSlot(value_slot));
+                            self.code.push(Op::PushNil);
+                            self.code.push(Op::Eq);
+                        }
+                        _ => return false,
+                    }
+                    return true;
+                }
+                let slot_idx = self.slot_map.len();
+                self.slot_map.push(name.clone());
+                self.code.push(Op::LoadSlot(value_slot));
+                self.code.push(Op::StoreSlot(slot_idx));
+                // Always matches
+                self.code.push(Op::PushBool(true));
+                true
+            }
+            // Literal patterns: numbers, bools, strings, nil
+            LispVal::Num(n) => {
+                self.code.push(Op::LoadSlot(value_slot));
+                self.code.push(Op::PushI64(*n));
+                self.code.push(Op::Eq);
+                true
+            }
+            LispVal::Float(f) => {
+                self.code.push(Op::LoadSlot(value_slot));
+                self.code.push(Op::PushFloat(*f));
+                self.code.push(Op::Eq);
+                true
+            }
+            LispVal::Bool(b) => {
+                self.code.push(Op::LoadSlot(value_slot));
+                self.code.push(Op::PushBool(*b));
+                self.code.push(Op::Eq);
+                true
+            }
+            LispVal::Str(s) => {
+                self.code.push(Op::LoadSlot(value_slot));
+                self.code.push(Op::PushStr(s.clone()));
+                self.code.push(Op::Eq);
+                true
+            }
+            LispVal::Nil => {
+                self.code.push(Op::LoadSlot(value_slot));
+                self.code.push(Op::PushNil);
+                self.code.push(Op::Eq);
+                true
+            }
+            // List patterns: (cons ...), (list ...), or nested destructuring
+            LispVal::List(pat_list) if !pat_list.is_empty() => {
+                let is_cons = matches!(
+                    &pat_list[0],
+                    LispVal::Sym(op) if op == "cons" && pat_list.len() == 3
+                );
+                let is_list = matches!(
+                    &pat_list[0],
+                    LispVal::Sym(op) if op == "list"
+                );
+
+                if is_cons {
+                    self.compile_cons_pattern(pat_list, value_slot, _outer_env)
+                } else if is_list {
+                    self.compile_list_pattern(pat_list, value_slot, _outer_env)
+                } else {
+                    // Nested destructuring: (pat1 pat2 ...) — match list by length
+                    self.compile_destructure_pattern(pat_list, value_slot, _outer_env)
+                }
+            }
+            _ => false,
+        }
+    }
+    /// Compile (cons ?h ?t) pattern: non-empty list, bind head and tail
+    fn compile_cons_pattern(
+        &mut self,
+        pat_list: &[LispVal],
+        value_slot: usize,
+        outer_env: &Env,
+    ) -> bool {
+        // Check non-empty: (= (length scrutinee) 0) → if empty, fail
+        self.code.push(Op::LoadSlot(value_slot));
+        self.code.push(Op::BuiltinCall("length".to_string(), 1));
+        self.code.push(Op::PushI64(0));
+        self.code.push(Op::Eq);
+        let nil_check_idx = self.code.len();
+        self.code.push(Op::JumpIfFalse(0)); // if NOT empty (length > 0), continue
+        self.code.push(Op::PushBool(false)); // is nil → no match
+        let nil_end_idx = self.code.len();
+        self.code.push(Op::Jump(0)); // skip to end
+        self.code[nil_check_idx] = Op::JumpIfFalse(self.code.len()); // not nil → continue
+
+        // Store head in temp slot
+        let head_slot = self.slot_map.len();
+        self.slot_map.push("__cons_head".to_string());
+        self.code.push(Op::LoadSlot(value_slot));
+        self.code.push(Op::BuiltinCall("car".to_string(), 1));
+        self.code.push(Op::StoreSlot(head_slot));
+
+        // Store tail in temp slot
+        let tail_slot = self.slot_map.len();
+        self.slot_map.push("__cons_tail".to_string());
+        self.code.push(Op::LoadSlot(value_slot));
+        self.code.push(Op::BuiltinCall("cdr".to_string(), 1));
+        self.code.push(Op::StoreSlot(tail_slot));
+
+        // Compile head sub-pattern against head_slot
+        if !self.compile_pattern_check(&pat_list[1], head_slot, outer_env) {
+            return false;
+        }
+        // head check result is on stack (Bool)
+        let head_fail_idx = self.code.len();
+        self.code.push(Op::JumpIfFalse(0)); // if head doesn't match, fail
+
+        // Compile tail sub-pattern against tail_slot
+        if !self.compile_pattern_check(&pat_list[2], tail_slot, outer_env) {
+            return false;
+        }
+        // tail check result is on stack (Bool) — this is the final result for the success path
+
+        // Success path ends here with the tail check result on stack.
+        // Jump past the failure block.
+        let success_end = self.code.len();
+        self.code.push(Op::Jump(0)); // skip over failure blocks
+
+        // Failure block: head failed → push false
+        self.code[head_fail_idx] = Op::JumpIfFalse(self.code.len());
+        self.code.push(Op::PushBool(false));
+
+        // Patch nil fail jump to go here (end)
+        self.code[nil_end_idx] = Op::Jump(self.code.len());
+        // Patch success jump to skip failure block
+        self.code[success_end] = Op::Jump(self.code.len());
+
+        // Don't truncate slots here — binding slots added by sub-patterns (e.g., ?h, ?t)
+        // need to remain for the match body to access. The match handler will clean up
+        // all slots after the body (or on pattern failure, before the next clause).
+
+        true
+    }
+    /// Compile (list p1 p2 ...) pattern: match by length + element patterns
+    fn compile_list_pattern(
+        &mut self,
+        pat_list: &[LispVal],
+        value_slot: usize,
+        outer_env: &Env,
+    ) -> bool {
+        let expected_len = pat_list.len() - 1;
+
+        // Check length: (eq (length scrutinee) expected_len)
+        self.code.push(Op::LoadSlot(value_slot));
+        self.code.push(Op::BuiltinCall("length".to_string(), 1));
+        self.code.push(Op::PushI64(expected_len as i64));
+        self.code.push(Op::Eq);
+        let len_fail_idx = self.code.len();
+        self.code.push(Op::JumpIfFalse(0)); // if length doesn't match, fail
+
+        // Extract each element: (nth scrutinee i) for each i
+        let _elem_slots_start = self.slot_map.len();
+        let mut elem_slots: Vec<usize> = Vec::new();
+        for i in 0..expected_len {
+            let slot = self.slot_map.len();
+            self.slot_map.push(format!("__list_elem_{}", i));
+            elem_slots.push(slot);
+            self.code.push(Op::LoadSlot(value_slot));
+            self.code.push(Op::PushI64(i as i64));
+            self.code.push(Op::BuiltinCall("nth".to_string(), 2));
+            self.code.push(Op::StoreSlot(slot));
+        }
+
+        // Check each element pattern
+        // On any element failure, jump to the end and push false.
+        // Collect jump indices for non-last elements to patch later.
+        let mut fail_jump_indices: Vec<usize> = Vec::new();
+        for (i, sub_pat) in pat_list[1..].iter().enumerate() {
+            if !self.compile_pattern_check(sub_pat, elem_slots[i], outer_env) {
+                return false;
+            }
+            // Element check pushes bool on stack.
+            if i + 1 < expected_len {
+                // Not the last element: if check fails, jump to fail block
+                let elem_fail_idx = self.code.len();
+                self.code.push(Op::JumpIfFalse(0));
+                fail_jump_indices.push(elem_fail_idx);
+                // If element matched, JumpIfFalse doesn't jump, bool is popped.
+                // Continue to next element. Stack is empty.
+            }
+            // If last element, leave its bool on stack as final result.
+        }
+
+        // All elements matched — last element's bool is on stack. This is the success path.
+        // Jump past the failure block.
+        let success_end = self.code.len();
+        self.code.push(Op::Jump(0)); // skip over failure block
+        let fail_block = self.code.len();
+
+        // Failure block: push false
+        self.code.push(Op::PushBool(false));
+
+        // Patch success jump to skip failure block
+        self.code[success_end] = Op::Jump(self.code.len());
+
+        // Patch all non-last element fail jumps to jump to the failure block
+        for &fail_idx in &fail_jump_indices {
+            self.code[fail_idx] = Op::JumpIfFalse(fail_block);
+        }
+
+        // Patch length fail jump to jump to the failure block
+        self.code[len_fail_idx] = Op::JumpIfFalse(fail_block);
+
+        // Don't truncate slots here — binding slots added by sub-patterns need to remain
+        // for the match body to access. The match handler will clean up all slots after
+        // the body (or on pattern failure, before the next clause).
+
+        true
+    }
+
+    /// Compile nested destructuring pattern: (pat1 pat2 ...)
+    /// Matches list of exactly this length, binds/destructures each element
+    fn compile_destructure_pattern(
+        &mut self,
+        pat_list: &[LispVal],
+        value_slot: usize,
+        outer_env: &Env,
+    ) -> bool {
+        let expected_len = pat_list.len();
+
+        // Check length
+        self.code.push(Op::LoadSlot(value_slot));
+        self.code.push(Op::BuiltinCall("length".to_string(), 1));
+        self.code.push(Op::PushI64(expected_len as i64));
+        self.code.push(Op::Eq);
+        let len_fail_idx = self.code.len();
+        self.code.push(Op::JumpIfFalse(0)); // if length doesn't match, fail
+
+        // Extract each element into temp slots
+        let _elem_slots_start = self.slot_map.len();
+        let mut elem_slots: Vec<usize> = Vec::new();
+        for i in 0..expected_len {
+            let slot = self.slot_map.len();
+            self.slot_map.push(format!("__destr_elem_{}", i));
+            elem_slots.push(slot);
+            self.code.push(Op::LoadSlot(value_slot));
+            self.code.push(Op::PushI64(i as i64));
+            self.code.push(Op::BuiltinCall("nth".to_string(), 2));
+            self.code.push(Op::StoreSlot(slot));
+        }
+
+        // Check each element sub-pattern
+        let mut fail_jump_indices: Vec<usize> = Vec::new();
+        for (i, sub_pat) in pat_list.iter().enumerate() {
+            if !self.compile_pattern_check(sub_pat, elem_slots[i], outer_env) {
+                return false;
+            }
+            if i + 1 < expected_len {
+                let elem_fail_idx = self.code.len();
+                self.code.push(Op::JumpIfFalse(0));
+                fail_jump_indices.push(elem_fail_idx);
+            }
+        }
+
+        // All matched — last element's bool is on stack
+        let success_end = self.code.len();
+        self.code.push(Op::Jump(0)); // skip over failure block
+        let fail_block = self.code.len();
+        self.code.push(Op::PushBool(false));
+
+        // Patch success jump to skip failure block
+        self.code[success_end] = Op::Jump(self.code.len());
+
+        for &fail_idx in &fail_jump_indices {
+            self.code[fail_idx] = Op::JumpIfFalse(fail_block);
+        }
+        self.code[len_fail_idx] = Op::JumpIfFalse(fail_block);
+
+        // Don't truncate slots here — binding slots added by sub-patterns need to remain
+        // for the match body to access. The match handler will clean up all slots after
+        // the body (or on pattern failure, before the next clause).
+
+        true
+    }
     /// Compile the loop body. Returns the compiled loop or None.
     fn compile_body(
         mut self,
