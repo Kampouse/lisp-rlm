@@ -20,6 +20,48 @@ fn replace_sym_call(expr: &LispVal, old_name: &str, new_name: &str) -> LispVal {
     }
 }
 
+/// Expand a macro call at compile time.
+pub fn expand_macro_call(
+    macro_val: &LispVal,
+    unevaluated_args: &[LispVal],
+) -> Result<LispVal, String> {
+    match macro_val {
+        LispVal::Macro {
+            params,
+            rest_param,
+            body,
+            closed_env,
+        } => {
+            let mut macro_env = Env::new();
+            if let Ok(guard) = closed_env.read() {
+                for (k, v) in guard.iter() {
+                    macro_env.insert_mut(k.clone(), v.clone());
+                }
+            }
+            // Bind params to UNEVALUATED args
+            for (i, param) in params.iter().enumerate() {
+                if let Some(arg) = unevaluated_args.get(i) {
+                    macro_env.insert_mut(param.clone(), arg.clone());
+                } else {
+                    return Err(format!(
+                        "macro: not enough args, expected {}",
+                        params.len()
+                    ));
+                }
+            }
+            // Bind rest param
+            if let Some(rest) = rest_param {
+                let rest_args: Vec<LispVal> = unevaluated_args[params.len()..].to_vec();
+                macro_env.insert_mut(rest.clone(), LispVal::List(rest_args));
+            }
+            // Evaluate macro body in macro_env
+            let mut state = EvalState::new();
+            crate::program::run_program(&[body.as_ref().clone()], &mut macro_env, &mut state)
+        }
+        _ => Err("not a macro".into()),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // Compiles (loop ((i init) ...) body) into flat opcodes with slot-indexed
@@ -647,7 +689,11 @@ impl LoopCompiler {
                     self.last_result_f64 = false;
                     true
                 } else {
-                    false
+                    // Unknown symbol — push as literal (e.g., keyword type descriptors like :int, :str)
+                    self.code.push(Op::PushLiteral(LispVal::Sym(name.clone())));
+                    self.last_result_i64 = false;
+                    self.last_result_f64 = false;
+                    true
                 }
             }
             LispVal::List(list) if list.is_empty() => {
@@ -667,6 +713,52 @@ impl LoopCompiler {
                             self.last_result_i64 = false;
                             self.last_result_f64 = false;
                             true
+                        }
+                        // quasiquote: expand at compile time, then compile the expansion
+                        "quasiquote" => {
+                            if list.len() != 2 {
+                                return false;
+                            }
+                            match crate::eval::quasiquote::expand_quasiquote(&list[1]) {
+                                Ok(expansion) => self.compile_expr(&expansion, outer_env),
+                                Err(_) => false,
+                            }
+                        }
+                        // unquote / unquote-splicing: only valid inside quasiquote (expanded away)
+                        "unquote" | "unquote-splicing" => {
+                            // These should never appear at top level after quasiquote expansion.
+                            // Treat as error (return false → fall back to interpreter).
+                            false
+                        }
+                        // macroexpand: expand a macro call and return the expansion as data
+                        "macroexpand" => {
+                            if list.len() != 2 { return false; }
+                            match &list[1] {
+                                LispVal::List(ref form_list) if !form_list.is_empty() => {
+                                    if let LispVal::Sym(ref name) = form_list[0] {
+                                        if let Some(macro_val) = outer_env.get(name) {
+                                            if matches!(macro_val, LispVal::Macro { .. }) {
+                                                match expand_macro_call(&macro_val, &form_list[1..]) {
+                                                    Ok(expansion) => {
+                                                        self.code.push(Op::PushLiteral(expansion));
+                                                        self.last_result_i64 = false;
+                                                        self.last_result_f64 = false;
+                                                        return true;
+                                                    }
+                                                    Err(_) => return false,
+                                                }
+                                            }
+                                        }
+                                        // Not a macro — return the form as-is
+                                        self.code.push(Op::PushLiteral(list[1].clone()));
+                                        self.last_result_i64 = false;
+                                        self.last_result_f64 = false;
+                                        return true;
+                                    }
+                                }
+                                _ => {}
+                            }
+                            false
                         }
                         // begin/progn: evaluate all forms, return last value
                         "begin" | "progn" => {
@@ -1149,6 +1241,80 @@ impl LoopCompiler {
                             self.slot_map.truncate(let_start);
                             all_ok
                         }
+                        // letrec: (letrec ((f (lambda ...)) (g (lambda ...))) body...)
+                        // All bindings are visible to all init expressions.
+                        // For lambda bindings, set pending_lambda_name so CallSelf is used
+                        // for self-referencing recursive calls (avoids stale capture problem).
+                        "letrec" => {
+                            if list.len() < 3 {
+                                return false;
+                            }
+                            let bindings = match &list[1] {
+                                LispVal::List(b) => b,
+                                _ => return false,
+                            };
+                            let let_start = self.slot_map.len();
+                            let mut var_slots: Vec<(String, usize)> = Vec::new();
+                            for binding in bindings.iter() {
+                                let (name, _) = match binding {
+                                    LispVal::List(pair) if pair.len() == 2 => match &pair[0] {
+                                        LispVal::Sym(n) => (n.clone(), &pair[1]),
+                                        _ => return false,
+                                    },
+                                    _ => return false,
+                                };
+                                let slot = self.slot_map.len();
+                                self.slot_map.push(name.clone());
+                                var_slots.push((name, slot));
+                            }
+                            // Initialize all slots to Nil
+                            for (_, slot) in &var_slots {
+                                self.code.push(Op::PushNil);
+                                self.code.push(Op::StoreSlot(*slot));
+                            }
+                            // Compile each init expression with all vars visible
+                            let mut all_ok = true;
+                            for binding in bindings.iter() {
+                                if let LispVal::List(pair) = binding {
+                                    let sym_name = match &pair[0] {
+                                        LispVal::Sym(n) => n,
+                                        _ => {
+                                            all_ok = false;
+                                            break;
+                                        }
+                                    };
+                                    // If init is a lambda, set pending_lambda_name for CallSelf
+                                    let is_lambda_init = matches!(&pair[1],
+                                        LispVal::List(ref l) if !l.is_empty() &&
+                                        matches!(&l[0], LispVal::Sym(ref s) if s == "lambda" || s == "fn")
+                                    );
+                                    if is_lambda_init {
+                                        self.pending_lambda_name = Some(sym_name.clone());
+                                    }
+                                    if !self.compile_expr(&pair[1], outer_env) {
+                                        self.pending_lambda_name = None;
+                                        all_ok = false;
+                                        break;
+                                    }
+                                    self.pending_lambda_name = None;
+                                    let slot = self.slot_map.iter().position(|s| s == sym_name).unwrap();
+                                    self.code.push(Op::StoreSlot(slot));
+                                }
+                            }
+                            if !all_ok {
+                                self.slot_map.truncate(let_start);
+                                return false;
+                            }
+                            // Compile body
+                            for expr in &list[2..] {
+                                if !self.compile_expr(expr, outer_env) {
+                                    self.slot_map.truncate(let_start);
+                                    return false;
+                                }
+                            }
+                            self.slot_map.truncate(let_start);
+                            true
+                        }
                         // when: (when test body...) → if test (begin body...)
                         "when" => {
                             if list.len() < 3 {
@@ -1246,9 +1412,22 @@ impl LoopCompiler {
                                                 let slot = self.slot_map.len();
                                                 self.slot_map.push(name.clone());
                                                 var_slots.push(slot);
+                                                // If init is a lambda, set pending_lambda_name
+                                                // so the inner compiler enables CallSelf for recursion.
+                                                // This supports letrec-style self-reference:
+                                                // (let ((f (lambda ...))) ... (f ...))
+                                                let is_lambda_init = matches!(&pair[1],
+                                                    LispVal::List(ref l) if !l.is_empty() &&
+                                                    matches!(&l[0], LispVal::Sym(ref s) if s == "lambda" || s == "fn")
+                                                );
+                                                if is_lambda_init {
+                                                    self.pending_lambda_name = Some(name.clone());
+                                                }
                                                 if !self.compile_expr(&pair[1], outer_env) {
+                                                    self.pending_lambda_name = None;
                                                     return false;
                                                 }
+                                                self.pending_lambda_name = None;
                                                 self.code.push(Op::StoreSlot(slot));
                                                 continue;
                                             }
@@ -1432,6 +1611,54 @@ impl LoopCompiler {
                         _ => {
                             // Function call: captured var, self-call, inline op, or assumed builtin
                             let n_args = list.len() - 1;
+                            // Check if it's a macro — expand at compile time before compiling args
+                            if let Some(macro_val) = outer_env.get(op) {
+                                if matches!(macro_val, LispVal::Macro { .. }) {
+                                    match expand_macro_call(macro_val, &list[1..]) {
+                                        Ok(expansion) => {
+                                            return self.compile_expr(&expansion, outer_env);
+                                        }
+                                        Err(_) => return false,
+                                    }
+                                }
+                            }
+                            // If callee is an unresolvable symbol (not a slot, not captured,
+                            // not a builtin), compile the whole form as a list literal.
+                            // This handles type descriptors like (:fn :int → :int) and
+                            // other data-as-code patterns.
+                            if self.slot_of(op).is_none()
+                                && self.captured_idx(op).is_none()
+                                && !self.try_capture(op, outer_env)
+                                && !crate::helpers::is_builtin_name(op)
+                                && crate::helpers::lookup_constructor(op).is_none()
+                                && self.self_name.as_deref() != Some(op)
+                            {
+                                // Compile each element, then build a list
+                                // But we need the UNEVALUATED forms as data, not evaluated values.
+                                // Use PushLiteral for symbols/atoms, compile_expr for sub-lists.
+                                for elem in list.iter() {
+                                    match elem {
+                                        LispVal::Sym(s) => {
+                                            self.code.push(Op::PushLiteral(LispVal::Sym(s.clone())));
+                                        }
+                                        LispVal::Num(n) => {
+                                            self.code.push(Op::PushI64(*n));
+                                        }
+                                        LispVal::Str(s) => {
+                                            self.code.push(Op::PushLiteral(LispVal::Str(s.clone())));
+                                        }
+                                        LispVal::Bool(b) => {
+                                            self.code.push(Op::PushLiteral(LispVal::Bool(*b)));
+                                        }
+                                        other => {
+                                            // For sub-lists and other complex forms, push as literal
+                                            self.code.push(Op::PushLiteral(other.clone()));
+                                        }
+                                    }
+                                }
+                                self.code.push(Op::BuiltinCall("list".to_string(), list.len()));
+                                return true;
+                            }
                             // Check for inline dict ops first
                             if op == "dict/get" || op == "dict-ref" {
                                 if n_args == 2 {
@@ -3819,6 +4046,22 @@ pub fn eval_builtin(
                     }
                 }
             }
+        }
+        "macroexpand" => {
+            let form = args.first().ok_or("macroexpand: need a form")?;
+            if let LispVal::List(ref form_list) = form {
+                if let Some(LispVal::Sym(ref sym_name)) = form_list.first() {
+                    if let Some(env) = env {
+                        if let Some(macro_val) = env.get(sym_name) {
+                            if matches!(macro_val, LispVal::Macro { .. }) {
+                                return expand_macro_call(&macro_val, &form_list[1..]);
+                            }
+                        }
+                    }
+                    return Err(format!("macroexpand: {} is not a macro", sym_name));
+                }
+            }
+            Err("macroexpand: expected (macro-name args...) form".into())
         }
         _ => {
             // Intercept load-file: use run_program (VM) instead of lisp_eval (tree-walker)

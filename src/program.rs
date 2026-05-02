@@ -59,7 +59,7 @@ pub fn run_program(
     }
 
     // Process defmacro, require, export, pure imperatively.
-    let mut preprocessed: Vec<&LispVal> = Vec::new();
+    let mut preprocessed_owned: Vec<LispVal> = Vec::new();
     for form in &remaining {
         if let LispVal::List(list) = form {
             if let Some(LispVal::Sym(name)) = list.first() {
@@ -78,7 +78,7 @@ pub fn run_program(
                     }
                     "pure" => {
                         // pure: pass through — desugar_define_to_pair handles stripping
-                        preprocessed.push(form);
+                        preprocessed_owned.push((*form).clone());
                         continue;
                     }
                     "deftype" => {
@@ -87,12 +87,58 @@ pub fn run_program(
                         process_deftype(list)?;
                         continue;
                     }
+                    "define-values" => {
+                        // (define-values (a b c) expr) — destructuring bind
+                        if list.len() != 3 {
+                            return Err("define-values: need (vars) and expr".into());
+                        }
+                        let names = match &list[1] {
+                            LispVal::List(ns) => ns,
+                            _ => return Err("define-values: first arg must be a list of names".into()),
+                        };
+                        let value = run_program(&[list[2].clone()], env, state)?;
+                        match &value {
+                            LispVal::List(vals) => {
+                                for (i, name) in names.iter().enumerate() {
+                                    if let LispVal::Sym(n) = name {
+                                        let v = vals.get(i).cloned().unwrap_or(LispVal::Nil);
+                                        env.insert_mut(n.clone(), v);
+                                    }
+                                }
+                            }
+                            _ => return Err("define-values: value must be a list".into()),
+                        }
+                        continue;
+                    }
                     _ => {}
                 }
             }
         }
-        preprocessed.push(form);
+        // Check if this form is a macro call — expand it
+        // But don't expand when the form is (macroexpand ...) — let the builtin handle it
+        if let LispVal::List(list) = form {
+            if let Some(LispVal::Sym(name)) = list.first() {
+                if name.as_str() != "macroexpand" {
+                    if let Some(val) = env.get(name) {
+                        if matches!(val, LispVal::Macro { .. }) {
+                            let args: &[LispVal] = &list[1..];
+                            match crate::bytecode::expand_macro_call(val, args) {
+                                Ok(expansion) => {
+                                    preprocessed_owned.push(expansion);
+                                    continue;
+                                }
+                                Err(e) => return Err(format!("macro expansion error for '{}': {}", name, e)),
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        preprocessed_owned.push((*form).clone());
     }
+
+    // Build reference vector for downstream phases
+    let preprocessed: Vec<&LispVal> = preprocessed_owned.iter().collect();
 
     // ── Phase 2: Two-pass forward reference collection ──
     // Collect all define names so the compiler knows about them at compile time.

@@ -57,6 +57,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "values", "call-with-values",
     "force", "make-promise", "promise?",
     "delay", "define-values", "let-values", "let*-values",
+    "macroexpand",
     "case-lambda",
     "assv", "assq", "memv", "memq",
     "char->integer", "integer->char",
