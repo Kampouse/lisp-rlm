@@ -1283,20 +1283,48 @@ impl LoopCompiler {
                                 self.code.push(Op::LoadSlot(slot)); // set! returns the new value
                                 true
                             } else if let Some(idx) = self.captured_idx(&name) {
-                                // Captured variable — always use StoreGlobal for set!
-                                // StoreCaptured only mutates the closure's local copy,
-                                // not the outer env. StoreGlobal writes to outer_env so
-                                // subsequent reads (LoadGlobal) see the mutation.
-                                self.set_target_globals.insert(name.clone());
-                                if !self.compile_expr(&list[2], outer_env) {
-                                    return false;
+                                if self.forward_captures.contains(&name) {
+                                    // Env capture — use StoreGlobal so other closures see the mutation
+                                    // Compile RHS BEFORE inserting into set_target_globals,
+                                    // so the RHS reads the captured value (LoadCaptured), not env (LoadGlobal).
+                                    if !self.compile_expr(&list[2], outer_env) {
+                                        return false;
+                                    }
+                                    self.set_target_globals.insert(name.clone());
+                                    self.code.push(Op::StoreGlobal(name.clone()));
+                                    self.code.push(Op::LoadGlobal(name));
+                                } else {
+                                    // Runtime capture (let/param in enclosing scope) —
+                                    // use StoreCaptured to mutate the closure's captured snapshot
+                                    if !self.compile_expr(&list[2], outer_env) {
+                                        return false;
+                                    }
+                                    self.code.push(Op::StoreCaptured(idx));
+                                    self.code.push(Op::LoadCaptured(idx));
                                 }
-                                self.code.push(Op::StoreGlobal(name.clone()));
-                                self.code.push(Op::LoadGlobal(name));
+                                true
+                            } else if self.try_capture(&name, outer_env) {
+                                // Variable was a runtime capture from parent slots.
+                                // Now captured_idx should return Some. Re-check forward_captures.
+                                let idx = self.captured_idx(&name).unwrap();
+                                if self.forward_captures.contains(&name) {
+                                    self.set_target_globals.insert(name.clone());
+                                    if !self.compile_expr(&list[2], outer_env) {
+                                        return false;
+                                    }
+                                    self.code.push(Op::StoreGlobal(name.clone()));
+                                    self.code.push(Op::LoadGlobal(name));
+                                } else {
+                                    if !self.compile_expr(&list[2], outer_env) {
+                                        return false;
+                                    }
+                                    self.code.push(Op::StoreCaptured(idx));
+                                    self.code.push(Op::LoadCaptured(idx));
+                                }
                                 true
                             } else {
-                                // Unknown variable — might be a runtime capture (let-bound in enclosing lambda)
-                                // or a top-level define. Emit StoreGlobal/LoadGlobal as fallback.
+                                // Truly unknown variable — top-level define or undefined.
+                                // Emit StoreGlobal/LoadGlobal as fallback.
                                 self.set_target_globals.insert(name.clone());
                                 if !self.compile_expr(&list[2], outer_env) {
                                     return false;
