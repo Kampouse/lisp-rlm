@@ -901,6 +901,7 @@ impl LoopCompiler {
                             }
                             let mut end_jumps: Vec<usize> = Vec::new();
                             let mut i = 1;
+                            let mut last_was_else = false;
                             while i < list.len() {
                                 let clause = match list.get(i) {
                                     Some(LispVal::List(c)) if c.len() >= 2 => c.clone(),
@@ -910,6 +911,7 @@ impl LoopCompiler {
                                 };
                                 // else clause — just compile result
                                 if clause[0] == LispVal::Sym("else".into()) {
+                                    last_was_else = true;
                                     if !self.compile_expr(&clause[1], outer_env) {
                                         return false;
                                     }
@@ -930,6 +932,11 @@ impl LoopCompiler {
                                                              // patch JF to skip to next clause
                                 self.code[jf_idx] = Op::JumpIfFalse(self.code.len());
                                 i += 1;
+                            }
+                            // If the last clause wasn't `else`, the last JumpIfFalse
+                            // lands here with empty stack. Push nil so Return has a value.
+                            if !last_was_else {
+                                self.code.push(Op::PushNil);
                             }
                             // patch all end jumps
                             let end_pc = self.code.len();
@@ -1075,7 +1082,12 @@ impl LoopCompiler {
                                     self.code.push(Op::Pop);
                                 }
                             }
-                            self.code[jf_idx] = Op::JumpIfFalse(self.code.len());
+                            let jmp_idx = self.code.len();
+                            self.code.push(Op::Jump(0));
+                            let else_start = self.code.len();
+                            self.code[jf_idx] = Op::JumpIfFalse(else_start);
+                            self.code.push(Op::PushNil);
+                            self.code[jmp_idx] = Op::Jump(self.code.len());
                             true
                         }
                         // unless: (unless test body...) → if (not test) (begin body...)
@@ -1098,7 +1110,12 @@ impl LoopCompiler {
                                     self.code.push(Op::Pop);
                                 }
                             }
-                            self.code[jt_idx] = Op::JumpIfTrue(self.code.len());
+                            let jmp_idx = self.code.len();
+                            self.code.push(Op::Jump(0));
+                            let else_start = self.code.len();
+                            self.code[jt_idx] = Op::JumpIfTrue(else_start);
+                            self.code.push(Op::PushNil);
+                            self.code[jmp_idx] = Op::Jump(self.code.len());
                             true
                         }
                         // loop: (loop ((var init) ...) body) with (recur val ...) inside body
@@ -2965,7 +2982,7 @@ pub fn eval_builtin(
         "mod" => {
             let b = num_val(args.get(1).cloned().unwrap_or(LispVal::Nil));
             if b == 0 {
-                panic!("divisor of zero");
+                return Err("mod by zero".into());
             } else {
                 let a = num_val(args.get(0).cloned().unwrap_or(LispVal::Nil));
                 Ok(LispVal::Num(a.rem_euclid(b)))
@@ -3517,7 +3534,7 @@ pub fn try_compile_lambda(
     let mut max_slot = base_slots;
     for op in &code {
         match op {
-            Op::StoreSlot(s) | Op::LoadSlot(s) => max_slot = max_slot.max(*s + 1),
+            Op::StoreSlot(s) | Op::LoadSlot(s) | Op::StoreAndLoadSlot(s) => max_slot = max_slot.max(*s + 1),
             Op::SlotAddImm(s, _)
             | Op::SlotSubImm(s, _)
             | Op::SlotMulImm(s, _)

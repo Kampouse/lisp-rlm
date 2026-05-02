@@ -477,10 +477,11 @@ fn test_mod_positive() {
     assert_eq!(eval_str("(mod 20 5)"), "0");
 }
 #[test]
-#[should_panic(expected = "divisor of zero")]
 fn test_mod_zero_divisor() {
-    // mod by zero panics in Rust's % operator — not caught by our eval
-    eval_str("(mod 5 0)");
+    // mod by zero returns an error, not a panic
+    let result = eval_str("(mod 5 0)");
+    assert!(result.starts_with("ERROR:"), "expected error, got: {}", result);
+    assert!(result.contains("mod by zero"), "expected 'mod by zero', got: {}", result);
 }
 #[test]
 fn test_native_filter() {

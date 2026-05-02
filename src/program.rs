@@ -15,6 +15,7 @@
 use crate::bytecode::{run_compiled_lambda, try_compile_lambda};
 use crate::helpers::parse_params;
 use crate::types::{get_stdlib_code, Env, EvalState, LispVal};
+use crate::verifier::verify_bytecode;
 
 /// Run a program (sequence of top-level forms) through the VM.
 ///
@@ -170,7 +171,10 @@ pub fn run_program(
             )
         })?;
 
-        let value = run_compiled_lambda(&cl, &[], env, state)?;
+    verify_bytecode(&cl)
+        .map_err(|errs| errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; "))?;
+
+    let value = run_compiled_lambda(&cl, &[], env, state)?;
         env.insert_mut(name.clone(), value);
     }
 
@@ -205,12 +209,19 @@ pub fn run_program(
         None,
         None,
     )
-        .ok_or_else(|| {
-            format!(
-                "run_program: compilation failed for body expression(s): {:?}",
-                body
-            )
-        })?;
+    .ok_or_else(|| {
+        format!(
+            "run_program: compilation failed for body expression(s): {:?}",
+            body
+        )
+    })?;
+
+    verify_bytecode(&cl).map_err(|errs| {
+        errs.iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("; ")
+    })?;
 
     // Share the live env via Arc so nested run_compiled_lambda calls (e.g., for-each
     // calling inner lambdas) can see each other's StoreGlobal mutations.
