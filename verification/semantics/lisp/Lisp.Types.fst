@@ -16,6 +16,7 @@ assume val ff_add : ffloat -> ffloat -> Tot ffloat
 assume val ff_sub : ffloat -> ffloat -> Tot ffloat
 assume val ff_mul : ffloat -> ffloat -> Tot ffloat
 assume val ff_div : ffloat -> ffloat -> Tot ffloat
+assume val ff_rem : ffloat -> ffloat -> Tot ffloat
 assume val ff_gt  : ffloat -> ffloat -> Tot bool
 assume val ff_lt  : ffloat -> ffloat -> Tot bool
 assume val ff_ge  : ffloat -> ffloat -> Tot bool

@@ -444,13 +444,19 @@ let closure_eval_op s =
                 | Mod -> { s with stack = typed_mod_i64 na nb :: rest; pc = pc })
              | _ -> { s with ok = false })
           | F64 ->
-            (match a, b with
-             | Num na, Num nb ->
+            (let fa = to_ffloat a in
+             let fb = to_ffloat b in
                (match binop with
-                | Add -> { s with stack = typed_add_f64 na nb :: rest; pc = pc }
-                | Sub -> { s with stack = typed_sub_f64 na nb :: rest; pc = pc }
-                | _ -> { s with stack = Num na :: rest; pc = pc })
-             | _ -> { s with ok = false }))
+                | Add -> { s with stack = typed_add_f64 fa fb :: rest; pc = pc }
+                | Sub -> { s with stack = typed_sub_f64 fa fb :: rest; pc = pc }
+                | Mul -> { s with stack = typed_mul_f64 fa fb :: rest; pc = pc }
+                | Div -> { s with stack = typed_div_f64 fa fb :: rest; pc = pc }
+                | Mod -> { s with stack = Float (ff_rem fa fb) :: rest; pc = pc }
+                | Eq -> { s with stack = Bool (ff_eq fa fb) :: rest; pc = pc }
+                | Lt -> { s with stack = Bool (ff_lt fa fb) :: rest; pc = pc }
+                | Le -> { s with stack = Bool (ff_le fa fb) :: rest; pc = pc }
+                | Gt -> { s with stack = Bool (ff_gt fa fb) :: rest; pc = pc }
+                | Ge -> { s with stack = Bool (ff_ge fa fb) :: rest; pc = pc })))
        | _ -> { s with ok = false })
 
     // Division and modulo
@@ -655,7 +661,7 @@ let closure_eval_op s =
          let av = (match a with Num n -> n | Float f -> ff_to_int f | _ -> 0) in
          let bv = (match b with Num n -> n | Float f -> ff_to_int f | _ -> 0) in
          if bv = 0 then { s with ok = false }
-         else { s with stack = Num (av % bv) :: rest; pc = pc }
+         else { s with stack = typed_mod_i64 av bv :: rest; pc = pc }
        | _ -> { s with ok = false })
 
     // MakeList: pop n items, reverse, push as list

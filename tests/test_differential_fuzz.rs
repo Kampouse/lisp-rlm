@@ -9,7 +9,7 @@
 //!   3. Random bytecode programs are generated, run through both, and results compared
 //!   4. Known-good programs from the F* verification serve as regression tests
 
-use lisp_rlm_wasm::bytecode::{make_test_compiled_lambda, make_test_compiled_loop, run_compiled_loop_test, run_lambda_test, BinOp, Op, Ty};
+use lisp_rlm_wasm::bytecode::{make_test_compiled_lambda, make_test_compiled_loop, run_compiled_lambda, run_compiled_loop_test, run_lambda_test, BinOp, Op, Ty};
 use lisp_rlm_wasm::types::LispVal;
 
 // ---------------------------------------------------------------------------
@@ -511,6 +511,11 @@ impl SpecVm {
                 let b = self.pop();
                 let a = self.pop();
                 self.stack.push(LispVal::Bool(Self::spec_num_cmp(&a, &b, |x, y| x >= y, |x, y| x >= y)));
+                self.pc += 1;
+            }
+            Op::Not => {
+                let v = self.pop();
+                self.stack.push(LispVal::Bool(!Self::spec_is_truthy(&v)));
                 self.pc += 1;
             }
             Op::TypedBinOp(binop, ty) => {
@@ -1371,10 +1376,21 @@ fn differential_test_one(
     let spec_vm = SpecVm::new(code.clone(), init_slots.clone());
     let spec_result = spec_vm.run(max_steps);
 
-    // --- Run the Rust VM (catch panics — the VM panics on type errors) ---
+    // --- Run the Rust VM with a capped step budget ---
+    // Mutations that loop (e.g., PushNil, MakeList(1), Jump(0)) can build deeply
+    // nested LispVal structures within the step budget. When the VM exits, Drop of
+    // these structures causes recursive stack overflow (SIGABRT).
+    // catch_unwind cannot catch stack-overflow panics (no stack left to unwind),
+    // and on macOS the signal kills the whole process regardless of thread isolation.
+    //
+    // Fix: cap the Rust VM's step budget to match the spec VM's max_steps exactly.
+    // This prevents the Rust VM from building structures far deeper than what the
+    // spec VM would produce (the root cause of the stack overflow on Drop).
+    let cl = make_test_compiled_lambda(init_slots.len(), init_slots.len(), code.clone());
+    let mut state = lisp_rlm_wasm::types::EvalState::new();
+    state.eval_budget = (max_steps * 3) as u64;
     let rust_result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        let cl = make_test_compiled_lambda(init_slots.len(), init_slots.len(), code.clone());
-        run_lambda_test(&cl, &init_slots)
+        run_compiled_lambda(&cl, &init_slots, &mut lisp_rlm_wasm::types::Env::new(), &mut state)
     }));
 
     let rust_result = match rust_result {

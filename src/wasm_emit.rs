@@ -90,8 +90,22 @@ const INPUT_BUF: i64 = 16384;  // 16KB for input JSON args
 const STORAGE_BUF: i64 = 8192;  // 8 bytes for storage read/write buffer
 const STORAGE_U128_BUF: i64 = 8208;  // 16 bytes for u128 storage ops
 const HEAP_START: i64 = 4096; // heap starts at page 0 offset 4096 (after data segments)
-const FN_REF_TAG: i64 = 2;  // (fn_idx << 2) | 2
-const CLOSURE_TAG: i64 = 3; // (mem_ptr << 2) | 3
+// ── Tagged value scheme (3-bit tag in bottom bits) ──
+// Every value on the WASM stack is a tagged i64:
+//   bits 2..0 = type tag, bits 63..3 = payload
+// Falsy set: { Bool(false)=1, Nil=4 }
+// Note: Num(0)=0 is NOT falsy — in Lisp, only #f and nil are falsy.
+// Everything else (including Num(n≠0), FnRef, Closure, Str) is truthy.
+const TAG_NUM:     i64 = 0; // payload = integer value (61-bit signed)
+const TAG_BOOL:    i64 = 1; // payload = 0 (false) or 1 (true)
+const TAG_FNREF:   i64 = 2; // payload = function index
+const TAG_CLOSURE: i64 = 3; // payload = heap pointer
+const TAG_NIL:     i64 = 4;
+const TAG_STR:     i64 = 5; // payload = (heap_off | (len << 32))
+const TAG_BITS: i64 = 3;
+// Sentinel falsy values (used for truthiness check)
+const TAGGED_FALSE: i64 = TAG_BOOL;       // 1
+const TAGGED_NIL:   i64 = TAG_NIL;        // 4
 // ~300 Tgas on NEAR ≈ ~10B simple ops. Cap at 1B to be safe (stops runaway, still uses full NEAR runtime).
 const GAS_LIMIT: i64 = 1_000_000_000;
 const DEPTH_LIMIT: i64 = 512;
@@ -119,6 +133,7 @@ pub struct WasmEmitter {
     gas_local: Option<u32>, // index of the gas counter local (i64)
     heap_ptr: u32, // bump allocator for closures
     lambda_counter: u32, // unique lambda id
+    fuzz_mode: bool, // if true, export wrappers store tagged values (no untag, no value_return)
     // Track which function each lambda maps to, and its captured var count
     // lambda_id -> (func_array_idx, captured_count)
     lambda_info: Vec<(usize, usize)>, 
@@ -132,7 +147,7 @@ impl WasmEmitter {
             locals: HashMap::new(), next_local: 0, current_func: None, current_param_count: 0,
             while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 1, exports: Vec::new(),
             data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(),
-            gas_local: None, heap_ptr: HEAP_START as u32, lambda_counter: 0, lambda_info: Vec::new(), captured_map: HashMap::new(),
+            gas_local: None, heap_ptr: HEAP_START as u32, lambda_counter: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(),
         }
     }
 
@@ -142,6 +157,172 @@ impl WasmEmitter {
         self.locals.insert(name.to_string(), i);
         self.next_local += 1;
         i
+    }
+
+    // ── Tagged value helpers ──
+    // Stack effect: [val] → [(val << TAG_BITS) | tag]
+    fn emit_tag(&self, tag: i64) -> Vec<Instruction<'static>> {
+        vec![
+            Instruction::I64Const(TAG_BITS),
+            Instruction::I64Shl,
+            Instruction::I64Const(tag),
+            Instruction::I64Or,
+        ]
+    }
+
+    // Stack effect: [val] → [val >> TAG_BITS] (arithmetic shift, preserves sign for Num)
+    fn emit_untag(&self) -> Vec<Instruction<'static>> {
+        vec![Instruction::I64Const(TAG_BITS), Instruction::I64ShrS]
+    }
+
+    /// Coerce a tagged value to its numeric payload, or 0 if non-numeric.
+    /// Matches F* spec: num_val Num(x) = x, num_val Float(f) = trunc, num_val _ = 0
+    /// Stack: [val] → [numeric_value]
+    fn emit_num_coerce(&mut self) -> Vec<Instruction<'static>> {
+        let tmp = self.local_idx("__coerce_tmp");
+        let result = self.local_idx("__coerce_result");
+        let mut v = vec![
+            Instruction::LocalSet(tmp),   // save val
+            Instruction::LocalGet(tmp),
+            Instruction::I64Const(7),     // mask tag bits
+            Instruction::I64And,
+            Instruction::I64Const(TAG_NUM),
+            Instruction::I64Eq,           // is it TAG_NUM? (i32 on stack)
+            Instruction::If(BlockType::Empty),
+            Instruction::LocalGet(tmp),
+            Instruction::I64Const(TAG_BITS),
+            Instruction::I64ShrS,         // untag payload
+            Instruction::LocalSet(result),
+            Instruction::Else,
+            Instruction::I64Const(0),     // non-numeric → 0
+            Instruction::LocalSet(result),
+            Instruction::End,
+            Instruction::LocalGet(result),
+        ];
+        v
+    }
+
+    // Stack effect: [val] → [(val << TAG_BITS) | TAG_NUM]
+    fn emit_tag_num(&self) -> Vec<Instruction<'static>> {
+        self.emit_tag(TAG_NUM)
+    }
+
+    /// Safe division: checks for zero divisor, returns 0 instead of trapping.
+    /// Stack: [a, b] → [a/b] or [0] if b==0
+    fn emit_safe_div(&mut self) -> Vec<Instruction<'static>> {
+        let a = self.local_idx("__div_a");
+        let b = self.local_idx("__div_b");
+        let result = self.local_idx("__div_result");
+        vec![
+            // Pop b then a into locals
+            Instruction::LocalSet(b),
+            Instruction::LocalSet(a),
+            // Check if b == 0
+            Instruction::LocalGet(b),
+            Instruction::I64Eqz,
+            Instruction::If(BlockType::Empty),
+            // b is zero → result = 0
+            Instruction::I64Const(0),
+            Instruction::LocalSet(result),
+            Instruction::Else,
+            // b is non-zero → do the division
+            Instruction::LocalGet(a),
+            Instruction::LocalGet(b),
+            Instruction::I64DivS,
+            Instruction::LocalSet(result),
+            Instruction::End,
+            Instruction::LocalGet(result),
+        ]
+    }
+
+    /// Safe remainder: checks for zero divisor, returns 0 instead of trapping.
+    /// Uses euclidean remainder (always non-negative) to match ClosureVM's rem_euclid.
+    /// Stack: [a, b] → [euclidean a%b] or [0] if b==0
+    fn emit_safe_rem(&mut self) -> Vec<Instruction<'static>> {
+        let a = self.local_idx("__rem_a");
+        let b = self.local_idx("__rem_b");
+        let result = self.local_idx("__rem_result");
+        vec![
+            Instruction::LocalSet(b),
+            Instruction::LocalSet(a),
+            Instruction::LocalGet(b),
+            Instruction::I64Eqz,
+            Instruction::If(BlockType::Empty),
+            Instruction::I64Const(0),
+            Instruction::LocalSet(result),
+            Instruction::Else,
+            Instruction::LocalGet(a),
+            Instruction::LocalGet(b),
+            Instruction::I64RemS,
+            Instruction::LocalSet(result),
+            // Euclidean fixup: if result < 0, add |b| to make it non-negative
+            Instruction::LocalGet(result),
+            Instruction::I64Const(0),
+            Instruction::I64LtS,
+            Instruction::If(BlockType::Empty),
+            Instruction::LocalGet(result),
+            Instruction::LocalGet(b),
+            Instruction::I64Const(0),
+            Instruction::I64LtS,
+            Instruction::If(BlockType::Result(ValType::I64)),
+            Instruction::I64Const(0),
+            Instruction::LocalGet(b),
+            Instruction::I64Sub,
+            Instruction::Else,
+            Instruction::LocalGet(b),
+            Instruction::End,
+            Instruction::I64Add,
+            Instruction::LocalSet(result),
+            Instruction::End,
+            Instruction::End,
+            Instruction::LocalGet(result),
+        ]
+    }
+
+    // Stack effect: [val] → [(val << TAG_BITS) | TAG_BOOL]
+    fn emit_tag_bool(&self) -> Vec<Instruction<'static>> {
+        self.emit_tag(TAG_BOOL)
+    }
+
+    // Stack effect: [val] → [(val << TAG_BITS) | TAG_STR]
+    fn emit_tag_str(&self) -> Vec<Instruction<'static>> {
+        self.emit_tag(TAG_STR)
+    }
+
+    // Emit a tagged constant
+    fn emit_tagged_const(&self, val: i64, tag: i64) -> Vec<Instruction<'static>> {
+        vec![Instruction::I64Const((val << TAG_BITS) | tag)]
+    }
+
+    // Stack effect: [val] → [1] if truthy, [0] if falsy
+    /// Check if a tagged i64 is truthy. Expects [i64 tagged_val] on stack,
+    /// leaves [i64] (0 = falsy, 1 = truthy) on stack.
+    /// Uses a local to save the value since i64.eq is binary (consumes the value).
+    fn emit_is_truthy(&mut self) -> Vec<Instruction<'static>> {
+        let tmp = self.local_idx("__truthy_tmp");
+        vec![
+            Instruction::LocalSet(tmp),     // save tagged val
+            // Check val == 1 (Bool false)
+            Instruction::LocalGet(tmp),
+            Instruction::I64Const(1),
+            Instruction::I64Eq,             // → i32
+            // Check val == 4 (Nil)
+            Instruction::LocalGet(tmp),
+            Instruction::I64Const(TAGGED_NIL),
+            Instruction::I64Eq,             // → i32
+            Instruction::I32Or,             // → i32
+            // invert: 0 → truthy, 1 → falsy
+            Instruction::I32Eqz,            // → i32
+            Instruction::I64ExtendI32U,    // → i64 for callers
+        ]
+    }
+
+    // Stack effect: [cond_i64] → consumed, then If block opened
+    // Emits truthiness check + branch (for if/while/and/or)
+    fn emit_cond_branch(&mut self) -> Vec<Instruction<'static>> {
+        let mut v = self.emit_is_truthy();
+        v.push(Instruction::I32WrapI64); // i64 → i32 for If
+        v
     }
 
     fn alloc_data(&mut self, bytes: &[u8]) -> u32 {
@@ -366,8 +547,8 @@ impl WasmEmitter {
         let mut v = Vec::new();
         if captured.is_empty() {
             // No captures → direct fn ref
-            // Value: (lambda_id << 2) | FN_REF_TAG
-            v.push(Instruction::I64Const(((lambda_id as i64) << 2) | FN_REF_TAG));
+            // Value: (lambda_id << TAG_BITS) | TAG_FNREF
+            v.push(Instruction::I64Const(((lambda_id as i64) << TAG_BITS) | TAG_FNREF));
         } else {
             // Allocate closure on heap: [lambda_id, captured_val_1, captured_val_2, ...]
             let closure_size = (1 + captured_count) as u32; // i64 slots
@@ -381,7 +562,7 @@ impl WasmEmitter {
             let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
             v.push(Instruction::I64Store(ma));
             
-            // Store each captured value
+            // Store each captured value (self.locals is restored to enclosing scope at this point)
             for (i, cap) in captured.iter().enumerate() {
                 let &local_idx = self.locals.get(cap).ok_or_else(|| format!("lambda capture: undef local {}", cap))?;
                 v.push(Instruction::I64Const((ptr + ((i as u32 + 1) * 8)) as i64));
@@ -391,7 +572,7 @@ impl WasmEmitter {
             }
             
             // Return closure ptr tagged
-            v.push(Instruction::I64Const(((ptr as i64) << 2) | CLOSURE_TAG));
+            v.push(Instruction::I64Const(((ptr as i64) << TAG_BITS) | TAG_CLOSURE));
         }
         Ok(v)
     }
@@ -457,6 +638,12 @@ impl WasmEmitter {
     }
 
     // ── Public API ──
+
+    /// Set fuzz mode: export wrappers store tagged values (no untag, no value_return).
+    pub fn set_fuzz_mode(&mut self, enabled: bool) -> &mut Self {
+        self.fuzz_mode = enabled;
+        self
+    }
 
     pub fn emit_define(&mut self, name: &str, params: &[String], body: &LispVal) -> Result<(), String> {
         self.locals.clear(); self.next_local = 0;
@@ -570,7 +757,7 @@ impl WasmEmitter {
         v.push(Instruction::Loop(BlockType::Empty));
         v.extend(inner);
         v.push(Instruction::End);
-        v.push(Instruction::I64Const(0));
+        v.push(Instruction::I64Const(TAG_NIL));
         v.push(Instruction::Unreachable);
         v.push(Instruction::End);
         Ok(v)
@@ -618,7 +805,7 @@ impl WasmEmitter {
 
     fn tc_if(&mut self, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
         let mut v = self.expr(&a[0])?;
-        v.push(Instruction::I32WrapI64);
+        v.extend(self.emit_cond_branch());
         let t = &a[1]; let default = LispVal::Num(0);
         let e = if a.len()>2 { &a[2] } else { &default };
         match (self.is_self(t), self.is_self(e)) {
@@ -676,10 +863,10 @@ impl WasmEmitter {
 
     fn expr(&mut self, e: &LispVal) -> Result<Vec<Instruction<'static>>, String> {
         match e {
-            LispVal::Num(n) => Ok(vec![Instruction::I64Const(*n as i64)]),
-            LispVal::Bool(true) => Ok(vec![Instruction::I64Const(1)]),
-            LispVal::Bool(false) => Ok(vec![Instruction::I64Const(0)]),
-            LispVal::Nil => Ok(vec![Instruction::I64Const(0)]),
+            LispVal::Num(n) => Ok(self.emit_tagged_const(*n as i64, TAG_NUM)),
+            LispVal::Bool(true) => Ok(self.emit_tagged_const(1, TAG_BOOL)),
+            LispVal::Bool(false) => Ok(self.emit_tagged_const(0, TAG_BOOL)),
+            LispVal::Nil => Ok(vec![Instruction::I64Const(TAG_NIL)]),
             LispVal::Sym(n) => {
                 // Check if it's a captured variable from enclosing lambda
                 if let Some(&offset) = self.captured_map.get(n) {
@@ -694,14 +881,17 @@ impl WasmEmitter {
                 if let Some(&i) = self.locals.get(n) {
                     Ok(vec![Instruction::LocalGet(i)])
                 } else if let Some(pos) = self.funcs.iter().position(|func| &func.name == n) {
-                    Ok(vec![Instruction::I64Const(((pos as i64) << 2) | 2)])
+                    Ok(self.emit_tagged_const(pos as i64, TAG_FNREF))
                 } else {
                     Err(format!("undef: {}", n))
                 }
             }
             LispVal::Str(s) => {
                 let off = self.alloc_data(s.as_bytes()) as u64;
-                Ok(vec![Instruction::I64Const((off | ((s.len() as u64) << 32)) as i64)])
+                let encoded = (off | ((s.len() as u64) << 32)) as i64;
+                let mut v = vec![Instruction::I64Const(encoded)];
+                v.extend(self.emit_tag_str());
+                Ok(v)
             }
             LispVal::List(items) if !items.is_empty() => {
                 if let LispVal::Sym(op) = &items[0] { 
@@ -730,21 +920,27 @@ impl WasmEmitter {
             "-" if a.len()==1 => {
                 let mut v = vec![Instruction::I64Const(0)];
                 v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_num_coerce());
                 v.push(Instruction::I64Sub);
+                v.extend(self.emit_tag_num());
                 Ok(v)
             }
             "-" => self.fold_binop(a, Instruction::I64Sub, i64::MIN as _),
-            "/" => self.fold_binop(a, Instruction::I64DivS, i64::MIN as _),
+            "/" => self.fold_binop_safe(a, Instruction::I64DivS, i64::MIN as _, true),
             "mod" => {
                 let mut v = self.expr(&a[0])?;
+                v.extend(self.emit_num_coerce());
                 v.extend(self.expr(&a[1])?);
-                v.push(Instruction::I64RemS);
+                v.extend(self.emit_num_coerce());
+                v.extend(self.emit_safe_rem());
+                v.extend(self.emit_tag_num());
                 Ok(v)
             }
             "abs" => {
                 let temp = self.local_idx("__abs_tmp");
                 let mut v = Vec::new();
                 v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_num_coerce());
                 v.push(Instruction::LocalTee(temp));
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::I64LtS);
@@ -755,6 +951,7 @@ impl WasmEmitter {
                 v.push(Instruction::Else);
                 v.push(Instruction::LocalGet(temp));
                 v.push(Instruction::End);
+                v.extend(self.emit_tag_num());
                 Ok(v)
             }
 
@@ -762,34 +959,52 @@ impl WasmEmitter {
             "<"  => self.cmp(a, Instruction::I64LtS),
             ">=" => self.cmp(a, Instruction::I64GeS),
             "<=" => self.cmp(a, Instruction::I64LeS),
-            "="  => self.cmp(a, Instruction::I64Eq),
-            "!=" => self.cmp(a, Instruction::I64Ne),
+            "="  => self.eq(a),
+            "!=" => self.neq(a),
 
             "and" => {
+                let tmp = self.local_idx("__and_val");
                 let mut v = self.expr(&a[0])?;
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::If(BlockType::Result(ValType::I64)));
-                v.extend(self.expr(&a[1])?);
-                v.push(Instruction::Else); v.push(Instruction::I64Const(0)); v.push(Instruction::End);
-                Ok(v)
-            }
-            "or" => {
-                let mut v = self.expr(&a[0])?;
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::If(BlockType::Result(ValType::I64)));
-                v.push(Instruction::I64Const(1));
-                v.push(Instruction::Else); v.extend(self.expr(&a[1])?); v.push(Instruction::End);
-                Ok(v)
-            }
-            "not" => { let mut v = self.expr(&a[0])?; v.push(Instruction::I64Eqz); v.push(Instruction::I64ExtendI32U); Ok(v) }
-
-            "if" => {
-                let mut v = self.expr(&a[0])?;
-                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalSet(tmp));       // save first value
+                v.push(Instruction::LocalGet(tmp));        // reload for truthiness check
+                v.extend(self.emit_cond_branch());
                 v.push(Instruction::If(BlockType::Result(ValType::I64)));
                 v.extend(self.expr(&a[1])?);
                 v.push(Instruction::Else);
-                if a.len()>2 { v.extend(self.expr(&a[2])?); } else { v.push(Instruction::I64Const(0)); }
+                v.push(Instruction::LocalGet(tmp));        // return first value if falsy
+                v.push(Instruction::End);
+                Ok(v)
+            }
+            "or" => {
+                let tmp = self.local_idx("__or_val");
+                let mut v = self.expr(&a[0])?;
+                v.push(Instruction::LocalSet(tmp));       // save first value
+                v.push(Instruction::LocalGet(tmp));        // reload for truthiness check
+                v.extend(self.emit_cond_branch());
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.push(Instruction::LocalGet(tmp));        // return first value if truthy
+                v.push(Instruction::Else);
+                v.extend(self.expr(&a[1])?);
+                v.push(Instruction::End);
+                Ok(v)
+            }
+            "not" => {
+                let mut v = self.expr(&a[0])?;
+                v.extend(self.emit_is_truthy());
+                // invert: 1 → 0, 0 → 1
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::I64ExtendI32U); // i32 → i64 for emit_tag_bool
+                v.extend(self.emit_tag_bool());
+                Ok(v)
+            }
+
+            "if" => {
+                let mut v = self.expr(&a[0])?;
+                v.extend(self.emit_cond_branch());
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.extend(self.expr(&a[1])?);
+                v.push(Instruction::Else);
+                if a.len()>2 { v.extend(self.expr(&a[2])?); } else { v.push(Instruction::I64Const(TAG_NIL)); }
                 v.push(Instruction::End); Ok(v)
             }
             "begin" => {
@@ -818,13 +1033,14 @@ impl WasmEmitter {
                 v.push(Instruction::Block(BlockType::Result(ValType::I64)));
                 // loop $loop
                 v.push(Instruction::Loop(BlockType::Empty));
-                // cond
-                v.extend(self.expr(&a[0])?); v.push(Instruction::I32WrapI64); v.push(Instruction::I32Eqz);
-                // if !cond → exit with 0
+                // cond — use tagged truthiness
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_is_truthy());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Eqz);
+                // if !cond → exit with tagged nil
                 v.push(Instruction::If(BlockType::Empty));
-                // Push current value of last expression for the block result
-                // Actually while returns 0 by spec, just use i64.const 0
-                v.push(Instruction::I64Const(0)); v.push(Instruction::Br(2)); // br $exit with i64
+                v.push(Instruction::I64Const(TAG_NIL)); v.push(Instruction::Br(2)); // br $exit with i64
                 v.push(Instruction::End); // if — no else needed
                 // body
                 for x in &a[1..] { v.extend(self.expr(x)?); v.push(Instruction::Drop); }
@@ -832,7 +1048,7 @@ impl WasmEmitter {
                 v.push(Instruction::Br(0)); // br $loop
                 v.push(Instruction::End); // loop
                 // unreachable — loop either exits via br 1 or loops forever
-                v.push(Instruction::I64Const(0)); // fallback (unreachable in practice)
+                v.push(Instruction::I64Const(TAG_NIL)); // fallback (unreachable in practice)
                 v.push(Instruction::End); // block
                 Ok(v)
             }
@@ -840,7 +1056,7 @@ impl WasmEmitter {
                 let LispVal::Sym(n) = &a[0] else { return Err("set!: expected symbol".into()) };
                 let idx = self.local_idx(n);
                 let mut v = self.expr(&a[1])?;
-                v.push(Instruction::LocalSet(idx)); v.push(Instruction::I64Const(0)); Ok(v)
+                v.push(Instruction::LocalSet(idx)); v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
 
             // Memory
@@ -854,18 +1070,20 @@ impl WasmEmitter {
                 let LispVal::Sym(var) = &a[0] else { return Err("for: var must be symbol".into()) };
                 let idx = self.local_idx(var);
                 let mut v = Vec::new();
-                // init: var = start
+                // init: var = start (untag for raw counter)
                 v.extend(self.expr(&a[1])?);
+                v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(idx));
                 // block (result i64) { loop { if (>= var end) break; body...; var += 1; br loop } }
                 v.push(Instruction::Block(BlockType::Result(ValType::I64)));
                 v.push(Instruction::Loop(BlockType::Empty));
-                // condition: var >= end → exit
+                // condition: var >= end → exit (both untagged counters)
                 v.push(Instruction::LocalGet(idx));
                 v.extend(self.expr(&a[2])?);
+                v.extend(self.emit_untag());
                 v.push(Instruction::I64GeS);
                 v.push(Instruction::If(BlockType::Empty));
-                v.push(Instruction::I64Const(0)); v.push(Instruction::Br(2)); // exit block
+                v.push(Instruction::I64Const(TAG_NIL)); v.push(Instruction::Br(2)); // exit block
                 v.push(Instruction::End);
                 // body expressions (drop all but last)
                 for (i, x) in a[3..].iter().enumerate() {
@@ -880,7 +1098,7 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(idx));
                 v.push(Instruction::Br(0)); // loop
                 v.push(Instruction::End); // loop
-                v.push(Instruction::I64Const(0)); // fallback
+                v.push(Instruction::I64Const(TAG_NIL)); // fallback
                 v.push(Instruction::End); // block
                 Ok(v)
             }
@@ -893,26 +1111,32 @@ impl WasmEmitter {
                 let LispVal::Sym(acc_var) = &a[3] else { return Err("reduce: acc must be symbol".into()) };
                 let acc_idx = self.local_idx(acc_var);
                 let it_idx = self.local_idx("__it");
-                // acc = init, it = start, while it < end: acc = body, it += 1
+                // acc = init (untagged), it = start (untagged), while it < end: acc = body, it += 1
                 let mut v = Vec::new();
                 // acc = init
                 v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(acc_idx));
                 // it = start
                 v.extend(self.expr(&a[1])?);
+                v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(it_idx));
                 // while loop
                 v.push(Instruction::Block(BlockType::Result(ValType::I64)));
                 v.push(Instruction::Loop(BlockType::Empty));
-                // it >= end → exit with acc
+                // it >= end → exit with acc (re-tag as Num)
                 v.push(Instruction::LocalGet(it_idx));
                 v.extend(self.expr(&a[2])?);
+                v.extend(self.emit_untag());
                 v.push(Instruction::I64GeS);
                 v.push(Instruction::If(BlockType::Empty));
-                v.push(Instruction::LocalGet(acc_idx)); v.push(Instruction::Br(2));
+                v.push(Instruction::LocalGet(acc_idx));
+                v.extend(self.emit_tag_num());
+                v.push(Instruction::Br(2));
                 v.push(Instruction::End);
-                // acc = body
+                // acc = body (untag body result, keep as raw number for accumulation)
                 v.extend(self.expr(&a[4])?);
+                v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(acc_idx));
                 // it += 1
                 v.push(Instruction::LocalGet(it_idx));
@@ -921,7 +1145,7 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(it_idx));
                 v.push(Instruction::Br(0));
                 v.push(Instruction::End); // loop
-                v.push(Instruction::I64Const(0)); // fallback
+                v.push(Instruction::I64Const(TAG_NIL)); // fallback
                 v.push(Instruction::End); // block
                 Ok(v)
             }
@@ -935,23 +1159,25 @@ impl WasmEmitter {
                 let off_idx = self.local_idx("__off");
                 let count_idx = self.local_idx("__count");
                 let mut v = Vec::new();
-                // off = mem_offset, it = start, count = 0
-                v.extend(self.expr(&a[0])?); v.push(Instruction::LocalSet(off_idx));
-                v.extend(self.expr(&a[1])?); v.push(Instruction::LocalSet(it_idx));
+                // off = mem_offset (untag), it = start (untag), count = 0
+                v.extend(self.expr(&a[0])?); v.extend(self.emit_untag()); v.push(Instruction::LocalSet(off_idx));
+                v.extend(self.expr(&a[1])?); v.extend(self.emit_untag()); v.push(Instruction::LocalSet(it_idx));
                 v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(count_idx));
                 v.push(Instruction::Block(BlockType::Result(ValType::I64)));
                 v.push(Instruction::Loop(BlockType::Empty));
                 // it >= end → exit
                 v.push(Instruction::LocalGet(it_idx));
-                v.extend(self.expr(&a[2])?);
+                v.extend(self.expr(&a[2])?); v.extend(self.emit_untag());
                 v.push(Instruction::I64GeS);
                 v.push(Instruction::If(BlockType::Empty));
-                v.push(Instruction::LocalGet(count_idx)); v.push(Instruction::Br(2));
+                // return count as tagged Num
+                v.push(Instruction::LocalGet(count_idx)); v.extend(self.emit_tag_num()); v.push(Instruction::Br(2));
                 v.push(Instruction::End);
-                // mem[off] = body(it)
+                // mem[off] = body(it) — store untagged value
                 v.push(Instruction::LocalGet(off_idx));
                 v.push(Instruction::I32WrapI64);
                 v.extend(self.expr(&a[3])?);
+                v.extend(self.emit_untag());
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
                 // off += 8, it += 1, count += 1
                 v.push(Instruction::LocalGet(off_idx)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(off_idx));
@@ -959,7 +1185,7 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(count_idx)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(count_idx));
                 v.push(Instruction::Br(0));
                 v.push(Instruction::End); // loop
-                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Const(TAG_NIL));
                 v.push(Instruction::End); // block
                 Ok(v)
             }
@@ -970,53 +1196,57 @@ impl WasmEmitter {
                 let it_idx = self.local_idx("__it");
                 let count_idx = self.local_idx("__count");
                 let mut v = Vec::new();
-                v.extend(self.expr(&a[0])?); v.push(Instruction::LocalSet(it_idx));
+                v.extend(self.expr(&a[0])?); v.extend(self.emit_untag()); v.push(Instruction::LocalSet(it_idx));
                 v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(count_idx));
                 v.push(Instruction::Block(BlockType::Result(ValType::I64)));
                 v.push(Instruction::Loop(BlockType::Empty));
                 v.push(Instruction::LocalGet(it_idx));
-                v.extend(self.expr(&a[1])?);
+                v.extend(self.expr(&a[1])?); v.extend(self.emit_untag());
                 v.push(Instruction::I64GeS);
                 v.push(Instruction::If(BlockType::Empty));
-                v.push(Instruction::LocalGet(count_idx)); v.push(Instruction::Br(2));
+                v.push(Instruction::LocalGet(count_idx)); v.extend(self.emit_tag_num()); v.push(Instruction::Br(2));
                 v.push(Instruction::End);
-                // if pred(it): count += 1
+                // if pred(it): count += 1 (use tagged truthiness)
                 v.extend(self.expr(&a[2])?);
-                v.push(Instruction::I32WrapI64);
+                v.extend(self.emit_cond_branch());
                 v.push(Instruction::If(BlockType::Empty));
                 v.push(Instruction::LocalGet(count_idx)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(count_idx));
                 v.push(Instruction::End);
                 v.push(Instruction::LocalGet(it_idx)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(it_idx));
                 v.push(Instruction::Br(0));
                 v.push(Instruction::End); // loop
-                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Const(TAG_NIL));
                 v.push(Instruction::End); // block
                 Ok(v)
             }
             "mem-set8!" => {
                 let mut v = Vec::new();
-                v.extend(self.expr(&a[0])?); v.push(Instruction::I32WrapI64);
-                v.extend(self.expr(&a[1])?); v.push(Instruction::I32WrapI64);
+                v.extend(self.expr(&a[0])?); v.extend(self.emit_untag()); v.push(Instruction::I32WrapI64);
+                v.extend(self.expr(&a[1])?); v.extend(self.emit_untag()); v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I32Store8(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
-                v.push(Instruction::I64Const(0)); Ok(v)
+                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
             "mem-get8" => {
                 let mut v = self.expr(&a[0])?;
+                v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
-                v.push(Instruction::I64ExtendI32U); Ok(v)
+                v.extend(self.emit_tag_num());
+                Ok(v)
             }
             "mem-set!" => {
                 let mut v = Vec::new();
-                v.extend(self.expr(&a[0])?); v.push(Instruction::I32WrapI64);
-                v.extend(self.expr(&a[1])?);
+                v.extend(self.expr(&a[0])?); v.extend(self.emit_untag()); v.push(Instruction::I32WrapI64);
+                v.extend(self.expr(&a[1])?); v.extend(self.emit_untag());
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                v.push(Instruction::I64Const(0)); Ok(v)
+                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
             "mem-get" => {
                 let mut v = self.expr(&a[0])?;
+                v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.extend(self.emit_tag_num());
                 Ok(v)
             }
 
@@ -1025,8 +1255,9 @@ impl WasmEmitter {
                 let key = self.expr(&a[0])?;
                 let val = self.expr(&a[1])?;
                 let mut v = Vec::new();
-                // Store val at mem[0]
+                // Store untagged val at mem[0]
                 v.push(Instruction::I32Const(0)); v.extend(val);
+                v.extend(self.emit_untag());
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
                 // storage_write(key_len, key_ptr, val_len=8, val_ptr=0, register_id=0) — idx 17
                 v.extend(key.clone());
@@ -1035,7 +1266,7 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(8)); v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(17)); v.push(Instruction::Drop);
-                v.push(Instruction::I64Const(0)); Ok(v)
+                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
             "near/load" => {
                 let key = self.expr(&a[0])?;
@@ -1052,6 +1283,8 @@ impl WasmEmitter {
                 v.push(Self::host_call(0));
                 v.push(Instruction::I32Const(0));
                 v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                // Tag loaded value as Num
+                v.extend(self.emit_tag_num());
                 Ok(v)
             }
             "near/remove" => {
@@ -1075,12 +1308,15 @@ impl WasmEmitter {
                 v.extend(key);
                 v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
                 v.push(Self::host_call(20));
+                // Host returns 0/1 as u64 — tag as Bool
+                v.extend(self.emit_tag_bool());
                 Ok(v)
             }
             "near/return" => {
                 let val = self.expr(&a[0])?;
                 let mut v = Vec::new();
                 v.push(Instruction::I32Const(TEMP_MEM as i32)); v.extend(val);
+                v.extend(self.emit_untag());
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
                 // value_return(len=8, ptr=TEMP_MEM) — idx 25
                 v.push(Instruction::I64Const(8)); v.push(Instruction::I64Const(TEMP_MEM));
@@ -1088,7 +1324,7 @@ impl WasmEmitter {
                 // Set return flag so export wrapper skips its value_return
                 v.push(Instruction::I64Const(1));
                 v.push(Instruction::GlobalSet(1));
-                v.push(Instruction::I64Const(0)); Ok(v)
+                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
             // (near/return_str packed_string) — returns variable-length string bytes
             // packed = low32=ptr, high32=len. Calls value_return(len, ptr) directly.
@@ -1102,7 +1338,7 @@ impl WasmEmitter {
                 v.extend(packed);
                 v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // ptr
                 v.push(Self::host_call(25));
-                v.push(Instruction::I64Const(0)); Ok(v)
+                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
             "near/log" => {
                 // (near/log "string") — log string
@@ -1115,7 +1351,7 @@ impl WasmEmitter {
                     v.extend(msg);
                     v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
                     v.push(Self::host_call(28));
-                    v.push(Instruction::I64Const(0)); Ok(v)
+                    v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
                 } else {
                     // Two separate log calls: first the string, then the number
                     let msg = self.expr(&a[0])?;
@@ -1223,7 +1459,7 @@ impl WasmEmitter {
                     v.push(Instruction::LocalGet(digit_count));
                     v.push(Instruction::LocalGet(ptr));
                     v.push(Self::host_call(28));
-                    v.push(Instruction::I64Const(0)); Ok(v)
+                    v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
                 }
             }
             "near/panic" => {
@@ -1235,7 +1471,7 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
                 // panic_utf8(len, ptr) — idx 27
                 v.push(Self::host_call(27));
-                v.push(Instruction::I64Const(0)); Ok(v)
+                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
             "near/abort" => {
                 // panic() — idx 26, traps unconditionally
@@ -1422,22 +1658,25 @@ impl WasmEmitter {
                 let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
                 let tmp = self.local_idx("__hof_tmp");
                 let mut v = Vec::new();
-                v.extend(self.expr(&a[1])?); v.push(Instruction::LocalSet(it_idx));
+                v.extend(self.expr(&a[1])?); v.extend(self.emit_untag()); v.push(Instruction::LocalSet(it_idx));
                 v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(count_idx));
                 v.push(Instruction::Block(BlockType::Result(ValType::I64)));
                 v.push(Instruction::Loop(BlockType::Empty));
                 v.push(Instruction::LocalGet(it_idx));
-                v.extend(self.expr(&a[2])?); v.push(Instruction::I64GeS);
+                v.extend(self.expr(&a[2])?); v.extend(self.emit_untag()); v.push(Instruction::I64GeS);
                 v.push(Instruction::If(BlockType::Empty));
-                v.push(Instruction::LocalGet(count_idx)); v.push(Instruction::Br(2));
+                v.push(Instruction::LocalGet(count_idx)); v.extend(self.emit_tag_num()); v.push(Instruction::Br(2));
                 v.push(Instruction::End);
-                v.push(Instruction::LocalGet(it_idx)); v.push(Instruction::LocalSet(param_idx));
+                // param = tagged(it) — pass tagged value to lambda
+                v.push(Instruction::LocalGet(it_idx)); v.extend(self.emit_tag_num()); v.push(Instruction::LocalSet(param_idx));
                 v.extend(self.expr(&body)?); v.push(Instruction::LocalSet(tmp));
+                // Store untagged result
                 v.push(Instruction::I64Const(out_offset));
                 v.push(Instruction::LocalGet(count_idx));
                 v.push(Instruction::I64Const(8)); v.push(Instruction::I64Mul); v.push(Instruction::I64Add);
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalGet(tmp));
+                v.extend(self.emit_untag());
                 v.push(Instruction::I64Store(ma));
                 v.push(Instruction::LocalGet(count_idx));
                 v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(count_idx));
@@ -1445,7 +1684,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(it_idx));
                 v.push(Instruction::Br(0));
                 v.push(Instruction::End);
-                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Const(TAG_NIL));
                 v.push(Instruction::End);
                 Ok(v)
             }
@@ -1461,23 +1700,25 @@ impl WasmEmitter {
                 } else { 2048i64 };
                 let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
                 let mut v = Vec::new();
-                v.extend(self.expr(&a[1])?); v.push(Instruction::LocalSet(it_idx));
+                v.extend(self.expr(&a[1])?); v.extend(self.emit_untag()); v.push(Instruction::LocalSet(it_idx));
                 v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(count_idx));
                 v.push(Instruction::Block(BlockType::Result(ValType::I64)));
                 v.push(Instruction::Loop(BlockType::Empty));
                 v.push(Instruction::LocalGet(it_idx));
-                v.extend(self.expr(&a[2])?); v.push(Instruction::I64GeS);
+                v.extend(self.expr(&a[2])?); v.extend(self.emit_untag()); v.push(Instruction::I64GeS);
                 v.push(Instruction::If(BlockType::Empty));
-                v.push(Instruction::LocalGet(count_idx)); v.push(Instruction::Br(2));
+                v.push(Instruction::LocalGet(count_idx)); v.extend(self.emit_tag_num()); v.push(Instruction::Br(2));
                 v.push(Instruction::End);
-                v.push(Instruction::LocalGet(it_idx)); v.push(Instruction::LocalSet(param_idx));
+                // param = tagged(it) — pass tagged value to lambda
+                v.push(Instruction::LocalGet(it_idx)); v.extend(self.emit_tag_num()); v.push(Instruction::LocalSet(param_idx));
                 v.extend(self.expr(&body)?);
-                v.push(Instruction::I32WrapI64);
+                v.extend(self.emit_cond_branch());
                 v.push(Instruction::If(BlockType::Empty));
                 v.push(Instruction::I64Const(out_offset));
                 v.push(Instruction::LocalGet(count_idx));
                 v.push(Instruction::I64Const(8)); v.push(Instruction::I64Mul); v.push(Instruction::I64Add);
                 v.push(Instruction::I32WrapI64);
+                // Store untagged it value
                 v.push(Instruction::LocalGet(it_idx));
                 v.push(Instruction::I64Store(ma));
                 v.push(Instruction::LocalGet(count_idx));
@@ -1487,7 +1728,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(it_idx));
                 v.push(Instruction::Br(0));
                 v.push(Instruction::End);
-                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Const(TAG_NIL));
                 v.push(Instruction::End);
                 Ok(v)
             }
@@ -1499,22 +1740,28 @@ impl WasmEmitter {
                 let param_idx = self.local_idx(&params[1]);
                 let it_idx = self.local_idx("__hof_it");
                 let mut v = Vec::new();
-                v.extend(self.expr(&a[1])?); v.push(Instruction::LocalSet(acc_idx));
-                v.extend(self.expr(&a[2])?); v.push(Instruction::LocalSet(it_idx));
+                // acc = init (untagged), it = start (untagged)
+                v.extend(self.expr(&a[1])?); v.extend(self.emit_untag()); v.push(Instruction::LocalSet(acc_idx));
+                v.extend(self.expr(&a[2])?); v.extend(self.emit_untag()); v.push(Instruction::LocalSet(it_idx));
                 v.push(Instruction::Block(BlockType::Result(ValType::I64)));
                 v.push(Instruction::Loop(BlockType::Empty));
                 v.push(Instruction::LocalGet(it_idx));
-                v.extend(self.expr(&a[3])?); v.push(Instruction::I64GeS);
+                v.extend(self.expr(&a[3])?); v.extend(self.emit_untag()); v.push(Instruction::I64GeS);
                 v.push(Instruction::If(BlockType::Empty));
-                v.push(Instruction::LocalGet(acc_idx)); v.push(Instruction::Br(2));
+                v.push(Instruction::LocalGet(acc_idx)); v.extend(self.emit_tag_num()); v.push(Instruction::Br(2));
                 v.push(Instruction::End);
-                v.push(Instruction::LocalGet(it_idx)); v.push(Instruction::LocalSet(param_idx));
-                v.extend(self.expr(&body)?); v.push(Instruction::LocalSet(acc_idx));
+                // param = tagged(it), acc = tagged(acc)
+                v.push(Instruction::LocalGet(it_idx)); v.extend(self.emit_tag_num()); v.push(Instruction::LocalSet(param_idx));
+                v.push(Instruction::LocalGet(acc_idx)); v.extend(self.emit_tag_num()); v.push(Instruction::LocalSet(acc_idx));
+                // body result → untag for accumulation
+                v.extend(self.expr(&body)?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(acc_idx));
                 v.push(Instruction::LocalGet(it_idx));
                 v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(it_idx));
                 v.push(Instruction::Br(0));
                 v.push(Instruction::End);
-                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Const(TAG_NIL));
                 v.push(Instruction::End);
                 Ok(v)
             }
@@ -1554,11 +1801,11 @@ impl WasmEmitter {
             "near/signer_account_id" => self.read_to_register(4, a),
             "near/predecessor_account_id" => self.read_to_register(6, a),
             "near/input" => self.read_to_register(7, a),
-            "near/block_index" => Ok(vec![Self::host_call(8)]),
-            "near/block_timestamp" => Ok(vec![Self::host_call(9)]),
-            "near/epoch_height" => Ok(vec![Self::host_call(10)]),
-            "near/prepaid_gas" => Ok(vec![Self::host_call(15)]),
-            "near/used_gas" => Ok(vec![Self::host_call(16)]),
+            "near/block_index" => { let mut v = vec![Self::host_call(8)]; v.extend(self.emit_tag_num()); Ok(v) },
+            "near/block_timestamp" => { let mut v = vec![Self::host_call(9)]; v.extend(self.emit_tag_num()); Ok(v) },
+            "near/epoch_height" => { let mut v = vec![Self::host_call(10)]; v.extend(self.emit_tag_num()); Ok(v) },
+            "near/prepaid_gas" => { let mut v = vec![Self::host_call(15)]; v.extend(self.emit_tag_num()); Ok(v) },
+            "near/used_gas" => { let mut v = vec![Self::host_call(16)]; v.extend(self.emit_tag_num()); Ok(v) },
             "near/attached_deposit" => self.read_u128_low(14),
             "near/attached_deposit_high" => self.read_u128_high(14),
             "near/account_balance" => self.read_u128_low(12),
@@ -1577,9 +1824,10 @@ impl WasmEmitter {
                 v.push(Self::host_call(0));
                 // register_len(0) — idx 1
                 v.push(Instruction::I64Const(0)); v.push(Self::host_call(1));
-                // Pack: (len << 32) | TEMP_MEM
+                // Pack: (len << 32) | TEMP_MEM — tag as Str
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
                 v.push(Instruction::I64Const(TEMP_MEM)); v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
                 Ok(v)
             }
             "near/random_seed" => self.read_to_register(23, a),
@@ -1606,12 +1854,16 @@ impl WasmEmitter {
                 // arguments: len >> 32, ptr
                 v.extend(args.clone()); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
                 v.extend(args); v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
-                // amount: store at mem[0], pass ptr=0
+                // amount: untag, store at mem[0], pass ptr=0
                 v.push(Instruction::I32Const(0)); v.extend(amount);
+                v.extend(self.emit_untag());
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
                 v.push(Instruction::I64Const(0)); // amount_ptr
+                // gas: untag for host
                 v.extend(gas);
+                v.extend(self.emit_untag());
                 v.push(Self::host_call(30)); // returns promise_index
+                v.extend(self.emit_tag_num()); // tag return
                 Ok(v)
             }
 
@@ -1657,7 +1909,7 @@ impl WasmEmitter {
 
             // (near/promise_results_count) → count: i64
             "near/promise_results_count" => {
-                Ok(vec![Self::host_call(33)])
+                Ok(vec![Self::host_call(33), Instruction::I64Const(TAG_BITS), Instruction::I64Shl])
             }
 
             // (near/promise_result idx) → packed result string
@@ -1923,7 +2175,7 @@ impl WasmEmitter {
                 v.push(Instruction::I32Const(8)); v.push(Instruction::I32Add);
                 v.extend(hi);
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                v.push(Instruction::I64Const(0)); Ok(v)
+                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
 
             // (u128/load addr) → low 64 bits
@@ -1985,7 +2237,7 @@ impl WasmEmitter {
                 v.push(Instruction::I32Const(8)); v.push(Instruction::I32Add);
                 v.push(Instruction::LocalGet(hi_i));
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                v.push(Instruction::I64Const(0)); Ok(v)
+                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
 
             // (u128/sub dst_addr src_addr) — dst -= src
@@ -2033,7 +2285,7 @@ impl WasmEmitter {
                 v.push(Instruction::I32Const(8)); v.push(Instruction::I32Add);
                 v.push(Instruction::LocalGet(hi_i));
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                v.push(Instruction::I64Const(0)); Ok(v)
+                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
 
             // (u128/mul dst_addr val_i64) — dst *= val_i64 (unsigned)
@@ -2163,7 +2415,7 @@ impl WasmEmitter {
                 v.push(Instruction::I32Const(8)); v.push(Instruction::I32Add);
                 v.push(Instruction::LocalGet(rh_i));
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                v.push(Instruction::I64Const(0)); Ok(v)
+                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
 
             // (u128/lt addr1 addr2) → i64 (0 or 1)
@@ -2467,7 +2719,7 @@ impl WasmEmitter {
                 v.push(Instruction::I32Const(8)); v.push(Instruction::I32Add);
                 v.extend(val);
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                v.push(Instruction::I64Const(0)); Ok(v)
+                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
 
             // (fp64/get_int addr) → i64 — integer part = mem[addr+8]
@@ -2499,7 +2751,7 @@ impl WasmEmitter {
                 v.push(Instruction::I32Const(8)); v.push(Instruction::I32Add);
                 v.extend(hi);
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                v.push(Instruction::I64Const(0)); Ok(v)
+                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
 
             // (fp64/add dst_addr src_addr) — dst += src (both Q64.64 in memory)
@@ -2541,7 +2793,7 @@ impl WasmEmitter {
                 v.push(Instruction::I32Const(8)); v.push(Instruction::I32Add);
                 v.push(Instruction::LocalGet(dh));
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                v.push(Instruction::I64Const(0)); Ok(v)
+                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
 
             // (fp64/mul dst_addr src_addr) — dst *= src (Q64.64, full 128-bit multiply via 32-bit splits)
@@ -2670,7 +2922,7 @@ impl WasmEmitter {
                 v.push(Instruction::I32Const(8)); v.push(Instruction::I32Add);
                 v.push(Instruction::LocalGet(rh));
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                v.push(Instruction::I64Const(0)); Ok(v)
+                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
 
             // (fp64/lt addr1 addr2) → i64 — compare Q64.64 values
@@ -2766,7 +3018,7 @@ impl WasmEmitter {
                 v.push(Instruction::I32Const(8)); v.push(Instruction::I32Add);
                 v.push(Instruction::LocalGet(dh));
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                v.push(Instruction::I64Const(0)); Ok(v)
+                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
 
             // (fp64/div dst_addr src_addr) — dst /= src (Q64.64, Newton reciprocal + full-precision mul)
@@ -2944,7 +3196,7 @@ impl WasmEmitter {
                 v.push(Instruction::I32Const(8)); v.push(Instruction::I32Add);
                 v.push(Instruction::LocalGet(rh));
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                v.push(Instruction::I64Const(0)); Ok(v)
+                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
 
 
@@ -3120,7 +3372,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
                 v.push(Instruction::End); // r64 == 0
                 v.push(Instruction::End); // V == 0
-                v.push(Instruction::I64Const(0)); Ok(v)
+                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
 
             // ── tick_to_price64: Q64.64 via Q32.32 + shift ──
@@ -3208,7 +3460,7 @@ impl WasmEmitter {
                 v.push(Instruction::I32Const(8)); v.push(Instruction::I32Add);
                 v.push(Instruction::LocalGet(r_i)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                v.push(Instruction::I64Const(0)); Ok(v)
+                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
 
 
@@ -3321,7 +3573,7 @@ impl WasmEmitter {
                 v.push(Instruction::I32Const(8)); v.push(Instruction::I32Add);
                 v.push(Instruction::LocalGet(r_i)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                v.push(Instruction::I64Const(0)); Ok(v)
+                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
 
             // (sqrt x) → i64 — integer square root via Newton's method
@@ -3754,7 +4006,7 @@ impl WasmEmitter {
                 v.push(Instruction::I32Const(8)); v.push(Instruction::I32Add);
                 v.push(Instruction::LocalGet(num_hi));
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                v.push(Instruction::I64Const(0)); Ok(v)
+                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
 
             "liq_amount1_64" => {
@@ -3798,7 +4050,7 @@ impl WasmEmitter {
                 v.push(Instruction::I32Const(8)); v.push(Instruction::I32Add);
                 v.push(Instruction::LocalGet(liq_h));
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                v.push(Instruction::I64Const(0)); Ok(v)
+                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
 
             // (price64_to_tick addr) → i64
@@ -4181,7 +4433,7 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.extend(val);
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                v.push(Instruction::I64Const(0)); Ok(v)
+                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
 
             // (arr_len offset) → i64 — reads from offset-8
@@ -4213,7 +4465,7 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(off_i)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Sub); v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalGet(len_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add);
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                v.push(Instruction::I64Const(0)); Ok(v)
+                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
 
             // (arr_sort offset) — bubble sort in-place
@@ -4279,7 +4531,7 @@ impl WasmEmitter {
                 v.push(Instruction::Br(0));
                 v.push(Instruction::End); // outer loop
                 v.push(Instruction::End); // outer block
-                v.push(Instruction::I64Const(0)); Ok(v)
+                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
 
             // (arr_find offset val) → index or -1 (linear search)
@@ -4357,11 +4609,13 @@ impl WasmEmitter {
         // register_len(0)
         v.push(Instruction::I64Const(0));
         v.push(Self::host_call(1));
-        // Pack: (len << 32) | TEMP_MEM
+        // Pack: (len << 32) | TEMP_MEM — tag as Str
         v.push(Instruction::I64Const(32));
         v.push(Instruction::I64Shl);
         v.push(Instruction::I64Const(TEMP_MEM));
         v.push(Instruction::I64Or);
+        // Tag as Str
+        v.extend(self.emit_tag_str());
         Ok(v)
     }
 
@@ -4374,9 +4628,10 @@ impl WasmEmitter {
         v.push(Instruction::I64Const(0));
         v.push(Instruction::I64Const(0));
         v.push(Self::host_call(0));
-        // Load low 8 bytes (bytes 0..7) as i64
+        // Load low 8 bytes (bytes 0..7) as i64 — tag as Num
         v.push(Instruction::I32Const(0));
         v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+        v.extend(self.emit_tag_num());
         Ok(v)
     }
 
@@ -4389,9 +4644,10 @@ impl WasmEmitter {
         v.push(Instruction::I64Const(0));
         v.push(Instruction::I64Const(0));
         v.push(Self::host_call(0));
-        // Load high 8 bytes (bytes 8..15) as i64
+        // Load high 8 bytes (bytes 8..15) as i64 — tag as Num
         v.push(Instruction::I32Const(8));
         v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+        v.extend(self.emit_tag_num());
         Ok(v)
     }
 
@@ -4528,7 +4784,7 @@ impl WasmEmitter {
         v.push(Instruction::If(BlockType::Empty));
         // fn-ref path
         v.push(Instruction::LocalGet(temp_callee));
-        v.push(Instruction::I64Const(2));
+        v.push(Instruction::I64Const(TAG_BITS as i64));
         v.push(Instruction::I64ShrU);
         v.push(Instruction::LocalSet(lambda_id_local));
         v.push(Instruction::I64Const(0));
@@ -4536,7 +4792,7 @@ impl WasmEmitter {
         v.push(Instruction::Else);
         // closure path
         v.push(Instruction::LocalGet(temp_callee));
-        v.push(Instruction::I64Const(2));
+        v.push(Instruction::I64Const(TAG_BITS as i64));
         v.push(Instruction::I64ShrU);
         v.push(Instruction::LocalSet(temp_closure_ptr));
         v.push(Instruction::LocalGet(temp_closure_ptr));
@@ -4564,16 +4820,65 @@ impl WasmEmitter {
     }
 
     fn fold_binop(&mut self, a: &[LispVal], op: Instruction<'static>, identity: i64) -> Result<Vec<Instruction<'static>>, String> {
-        if a.is_empty() { return Ok(vec![Instruction::I64Const(identity)]) }
+        if a.is_empty() { return Ok(self.emit_tagged_const(identity, TAG_NUM)) }
         let mut v = self.expr(&a[0])?;
-        for x in &a[1..] { v.extend(self.expr(x)?); v.push(op.clone()); }
+        v.extend(self.emit_num_coerce());
+        for x in &a[1..] {
+            v.extend(self.expr(x)?);
+            v.extend(self.emit_num_coerce());
+            v.push(op.clone());
+        }
+        v.extend(self.emit_tag_num());
+        Ok(v)
+    }
+
+    /// Like fold_binop but wraps div/rem with zero-check to avoid WASM traps.
+    fn fold_binop_safe(&mut self, a: &[LispVal], _op: Instruction<'static>, identity: i64, is_div: bool) -> Result<Vec<Instruction<'static>>, String> {
+        if a.is_empty() { return Ok(self.emit_tagged_const(identity, TAG_NUM)) }
+        let mut v = self.expr(&a[0])?;
+        v.extend(self.emit_num_coerce());
+        for x in &a[1..] {
+            v.extend(self.expr(x)?);
+            v.extend(self.emit_num_coerce());
+            if is_div {
+                v.extend(self.emit_safe_div());
+            } else {
+                v.extend(self.emit_safe_rem());
+            }
+        }
+        v.extend(self.emit_tag_num());
         Ok(v)
     }
 
     fn cmp(&mut self, a: &[LispVal], op: Instruction<'static>) -> Result<Vec<Instruction<'static>>, String> {
         let mut v = self.expr(&a[0])?;
+        v.extend(self.emit_num_coerce());
         v.extend(self.expr(&a[1])?);
-        v.push(op); v.push(Instruction::I64ExtendI32U); Ok(v)
+        v.extend(self.emit_num_coerce());
+        v.push(op); v.push(Instruction::I64ExtendI32U);
+        v.extend(self.emit_tag_bool());
+        Ok(v)
+    }
+
+    /// Structural equality: compare full tagged values (no coercion).
+    /// Used for `=` operator to match ClosureVM's lisp_eq behavior.
+    fn eq(&mut self, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
+        let mut v = self.expr(&a[0])?;
+        v.extend(self.expr(&a[1])?);
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::I64ExtendI32U);
+        v.extend(self.emit_tag_bool());
+        Ok(v)
+    }
+
+    /// Structural inequality: compare full tagged values (no coercion).
+    fn neq(&mut self, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
+        let mut v = self.expr(&a[0])?;
+        v.extend(self.expr(&a[1])?);
+        v.push(Instruction::I64Ne);
+        v.push(Instruction::I64ExtendI32U);
+        v.extend(self.emit_tag_bool());
+        Ok(v)
     }
 
     // ── JSON parsing methods ──
@@ -5696,10 +6001,17 @@ impl WasmEmitter {
                         fb.instruction(&Instruction::I64Const(TEMP_MEM));
                         fb.instruction(&Instruction::I32WrapI64);
                         fb.instruction(&Instruction::LocalGet(0));
+                        if !self.fuzz_mode {
+                            // Untag the return value before storing for host
+                            fb.instruction(&Instruction::I64Const(TAG_BITS));
+                            fb.instruction(&Instruction::I64ShrS);
+                        }
                         fb.instruction(&Instruction::I64Store(ma));
-                        fb.instruction(&Instruction::I64Const(8));
-                        fb.instruction(&Instruction::I64Const(TEMP_MEM));
-                        fb.instruction(&Instruction::Call(host_idx[&25]));
+                        if !self.fuzz_mode {
+                            fb.instruction(&Instruction::I64Const(8));
+                            fb.instruction(&Instruction::I64Const(TEMP_MEM));
+                            fb.instruction(&Instruction::Call(host_idx[&25]));
+                        }
                     } else {
                         // input(0)
                         fb.instruction(&Instruction::I64Const(0));
@@ -5712,11 +6024,14 @@ impl WasmEmitter {
                         fb.instruction(&Instruction::I64Const(0));
                         fb.instruction(&Instruction::I64Const(TEMP_MEM));
                         fb.instruction(&Instruction::Call(host_idx[&0]));
-                        // Load args
+                        // Load args — tag raw i64 from host as Num
                         for i in 0..param_count {
                             fb.instruction(&Instruction::I64Const(TEMP_MEM + (i as i64) * 8));
                             fb.instruction(&Instruction::I32WrapI64);
                             fb.instruction(&Instruction::I64Load(ma));
+                            // Tag as Num: (val << 3) | 0
+                            fb.instruction(&Instruction::I64Const(TAG_BITS));
+                            fb.instruction(&Instruction::I64Shl);
                         }
                         fb.instruction(&Instruction::Call(idx));
                         // Store result at TEMP_MEM: i64.store needs [i32 addr, i64 val]
@@ -5725,11 +6040,18 @@ impl WasmEmitter {
                         fb.instruction(&Instruction::I64Const(TEMP_MEM));
                         fb.instruction(&Instruction::I32WrapI64);   // addr as i32
                         fb.instruction(&Instruction::LocalGet(0));  // restore result
+                        if !self.fuzz_mode {
+                            // Untag the return value before storing for host
+                            fb.instruction(&Instruction::I64Const(TAG_BITS));
+                            fb.instruction(&Instruction::I64ShrS);
+                        }
                         fb.instruction(&Instruction::I64Store(ma));
-                        // value_return(8, TEMP_MEM)
-                        fb.instruction(&Instruction::I64Const(8));
-                        fb.instruction(&Instruction::I64Const(TEMP_MEM));
-                        fb.instruction(&Instruction::Call(host_idx[&25]));
+                        if !self.fuzz_mode {
+                            // value_return(8, TEMP_MEM)
+                            fb.instruction(&Instruction::I64Const(8));
+                            fb.instruction(&Instruction::I64Const(TEMP_MEM));
+                            fb.instruction(&Instruction::Call(host_idx[&25]));
+                        }
                     }
                     fb.instruction(&Instruction::End);
                     code.function(&fb);
@@ -5812,6 +6134,19 @@ fn parse_and_compile(source: &str, near: bool) -> Result<WasmEmitter, String> {
 
 pub fn compile_pure(source: &str) -> Result<Vec<u8>, String> {
     Ok(parse_and_compile(source, false)?.finish("run"))
+}
+
+/// Compile a Lisp program for fuzz testing.
+/// Creates a "run" export that calls the last defined function and stores
+/// the **tagged** return value at TEMP_MEM (offset 64) for the harness to read.
+/// Does NOT call value_return (this is a test, not a NEAR contract).
+pub fn compile_fuzz(source: &str) -> Result<Vec<u8>, String> {
+    let mut em = parse_and_compile(source, false)?;
+    if let Some(f) = em.funcs.last() {
+        em.add_export(&f.name.clone(), "run", false);
+    }
+    em.set_fuzz_mode(true);
+    Ok(em.finish("run"))
 }
 
 pub fn compile_near(source: &str) -> Result<Vec<u8>, String> {

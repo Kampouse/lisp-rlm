@@ -1,0 +1,15 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 6337bc74f50d1aea6aea94268bdc5346070a75c7c4ab53a5a54cf0f33cfac912 # shrinks to expr = "(define (run) (mod 0 true))"
+cc 23ebe33d6b5fa5bfe6729051fcf62cfd57a531b331e7bde0a00969426c461442 # shrinks to op = "/", count = 2, val = 0
+cc 9eca39cfd16272d71237540bab52c6340b438f858fa15fb5c840286268568d2d # shrinks to expr = "(define (run) (<= 0 true))"
+cc c1a5064c585e56da83d457a12ccca51963e2036bf887b887d53199117e101a18 # shrinks to expr = "(define (run) (and nil 0))"
+cc 0a616d770213bfcc775cca3af99b3e1314d34211dfa6a9b985c09de411424e80 # shrinks to expr = "(define (run) (= true false))"
+cc 2c9b892feab00a5e56bcf345d5604f077b1c589a873e9a45faa8f6e771194558 # shrinks to expr = "(define (run) (not true 0))"
+cc 776e5ffa69e01f6580aea9a8d6d304b3144d0c850c5b71fb8b29b51e5a131e13 # shrinks to expr = "(define (run) (mod -1 -2))"
+cc bd44916eca0fa36394ed075c2c0d5c1d114f1d0b0a9e35487069bb9fea036b35 # shrinks to expr = "(define (run) (not nil 0))"
+cc 24d68216db998a234c5abde580e2a5a81111855278220285fdca0ff01a397d5c # shrinks to expr = "(define (run) (!= true false))"

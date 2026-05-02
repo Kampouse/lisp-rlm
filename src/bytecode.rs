@@ -95,6 +95,8 @@ pub enum Op {
     Le,
     Gt,
     Ge,
+    /// Pop value, push its boolean negation (using is_truthy)
+    Not,
     /// Pop stack, jump to addr if truthy
     JumpIfTrue(usize),
     /// Pop stack, jump to addr if falsy
@@ -511,13 +513,14 @@ impl LoopCompiler {
         }
 
         // Emit callee ops with slot offset + captured remap + jump target offset
-        let code_start = self.code.len();
         let callee_code_len = callee.code.len();
 
         // Wrap inlined call with trace for stack traces
         if let Some(ref name) = callee.name {
             self.code.push(Op::TracePush(name.clone()));
         }
+
+        let code_start = self.code.len(); // AFTER TracePush, so jump offsets are correct
 
         for (i, op) in callee.code.iter().enumerate() {
             if i == callee_code_len - 1 && matches!(op, Op::Return | Op::ReturnSlot(_)) {
@@ -766,8 +769,7 @@ impl LoopCompiler {
                             if !self.compile_expr(arg, outer_env) {
                                 return false;
                             }
-                            self.code.push(Op::PushBool(false));
-                            self.code.push(Op::Eq);
+                            self.code.push(Op::Not);
                             true
                         }
                         // Nested if: (if test then else) — compiles to jump instructions
@@ -2283,6 +2285,11 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
                 stack.push(LispVal::Bool(num_cmp(&a, &b, |x, y| x >= y, |x, y| x >= y)));
                 pc += 1;
             }
+            Op::Not => {
+                let v = stack.pop().unwrap_or(LispVal::Nil);
+                stack.push(LispVal::Bool(!is_truthy(&v)));
+                pc += 1;
+            }
             // Typed binary ops — zero dynamic dispatch
             Op::TypedBinOp(op, ty) => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
@@ -2298,17 +2305,17 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
                             _ => 0,
                         };
                         let result = match op {
-                            BinOp::Add => i64::checked_add(av, bv).ok_or_else(|| "integer overflow in add".to_string()),
-                            BinOp::Sub => i64::checked_sub(av, bv).ok_or_else(|| "integer overflow in sub".to_string()),
-                            BinOp::Mul => i64::checked_mul(av, bv).ok_or_else(|| "integer overflow in mul".to_string()),
-                            BinOp::Div => i64::checked_div(av, bv).ok_or_else(|| "integer overflow in div".to_string()),
-                            BinOp::Mod => i64::checked_rem(av, bv).ok_or_else(|| "integer overflow in mod".to_string()),
+                            BinOp::Add => i64::checked_add(av, bv).unwrap_or(0),
+                            BinOp::Sub => i64::checked_sub(av, bv).unwrap_or(0),
+                            BinOp::Mul => i64::checked_mul(av, bv).unwrap_or(0),
+                            BinOp::Div => i64::checked_div(av, bv).unwrap_or(0),
+                            BinOp::Mod => i64::checked_rem(av, bv).unwrap_or(0),
                             BinOp::Lt => return Ok(LispVal::Bool(av < bv)),
                             BinOp::Le => return Ok(LispVal::Bool(av <= bv)),
                             BinOp::Gt => return Ok(LispVal::Bool(av > bv)),
                             BinOp::Ge => return Ok(LispVal::Bool(av >= bv)),
                             BinOp::Eq => return Ok(LispVal::Bool(av == bv)),
-                        }?;
+                        };
                         stack.push(LispVal::Num(result));
                     }
                     Ty::F64 => {
@@ -2627,13 +2634,19 @@ fn num_arith_checked(
 }
 
 /// Polymorphic numeric comparison: returns bool, float-aware.
+/// Non-numeric operands are coerced to 0 (matches F* spec num_cmp wildcard).
 fn num_cmp(a: &LispVal, b: &LispVal, op: impl Fn(f64, f64) -> bool, int_op: impl Fn(i64, i64) -> bool) -> bool {
     match (a, b) {
         (LispVal::Float(x), LispVal::Float(y)) => op(*x, *y),
         (LispVal::Float(x), LispVal::Num(y)) => op(*x, *y as f64),
         (LispVal::Num(x), LispVal::Float(y)) => op(*x as f64, *y),
         (LispVal::Num(x), LispVal::Num(y)) => int_op(*x, *y),
-        _ => false,
+        _ => {
+            // Coerce non-numeric operands to 0, matching F* spec
+            let av = num_val_ref(a);
+            let bv = num_val_ref(b);
+            int_op(av, bv)
+        }
     }
 }
 
@@ -2859,9 +2872,10 @@ pub fn eval_builtin(
             let b = num_val(args.get(1).cloned().unwrap_or(LispVal::Nil));
             if b == 0 {
                 panic!("divisor of zero");
+            } else {
+                let a = num_val(args.get(0).cloned().unwrap_or(LispVal::Nil));
+                Ok(LispVal::Num(a.rem_euclid(b)))
             }
-            let a = num_val(args.get(0).cloned().unwrap_or(LispVal::Nil));
-            Ok(LispVal::Num(a.rem_euclid(b)))
         }
         "remainder" => {
             let b = num_val(args.get(1).cloned().unwrap_or(LispVal::Nil));
@@ -3727,6 +3741,11 @@ fn run_compiled_lambda_inner(
                 stack.push(LispVal::Bool(num_cmp(&a, &b, |x, y| x >= y, |x, y| x >= y)));
                 pc += 1;
             }
+            Op::Not => {
+                let v = stack.pop().unwrap_or(LispVal::Nil);
+                stack.push(LispVal::Bool(!is_truthy(&v)));
+                pc += 1;
+            }
             // Typed binary ops — zero dynamic dispatch
             Op::TypedBinOp(op, ty) => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
@@ -3742,17 +3761,17 @@ fn run_compiled_lambda_inner(
                             _ => 0,
                         };
                         let result = match op {
-                            BinOp::Add => i64::checked_add(av, bv).ok_or_else(|| "integer overflow in add".to_string()),
-                            BinOp::Sub => i64::checked_sub(av, bv).ok_or_else(|| "integer overflow in sub".to_string()),
-                            BinOp::Mul => i64::checked_mul(av, bv).ok_or_else(|| "integer overflow in mul".to_string()),
-                            BinOp::Div => i64::checked_div(av, bv).ok_or_else(|| "integer overflow in div".to_string()),
-                            BinOp::Mod => i64::checked_rem(av, bv).ok_or_else(|| "integer overflow in mod".to_string()),
+                            BinOp::Add => i64::checked_add(av, bv).unwrap_or(0),
+                            BinOp::Sub => i64::checked_sub(av, bv).unwrap_or(0),
+                            BinOp::Mul => i64::checked_mul(av, bv).unwrap_or(0),
+                            BinOp::Div => i64::checked_div(av, bv).unwrap_or(0),
+                            BinOp::Mod => i64::checked_rem(av, bv).unwrap_or(0),
                             BinOp::Lt => return Ok(LispVal::Bool(av < bv)),
                             BinOp::Le => return Ok(LispVal::Bool(av <= bv)),
                             BinOp::Gt => return Ok(LispVal::Bool(av > bv)),
                             BinOp::Ge => return Ok(LispVal::Bool(av >= bv)),
                             BinOp::Eq => return Ok(LispVal::Bool(av == bv)),
-                        }?;
+                        };
                         stack.push(LispVal::Num(result));
                     }
                     Ty::F64 => {
@@ -3846,6 +3865,71 @@ fn run_compiled_lambda_inner(
                 let v = num_val_ref(safe_slot(&slots, *s));
                 stack.push(LispVal::Bool(v >= *imm));
                 pc += 1;
+            }
+            Op::JumpIfSlotLtImm(s, imm, addr) => {
+                let v = num_val_ref(safe_slot(&slots, *s));
+                if v < *imm {
+                    pc = *addr;
+                } else {
+                    pc += 1;
+                }
+            }
+            Op::JumpIfSlotLeImm(s, imm, addr) => {
+                let v = num_val_ref(safe_slot(&slots, *s));
+                if v <= *imm {
+                    pc = *addr;
+                } else {
+                    pc += 1;
+                }
+            }
+            Op::JumpIfSlotGtImm(s, imm, addr) => {
+                let v = num_val_ref(safe_slot(&slots, *s));
+                if v > *imm {
+                    pc = *addr;
+                } else {
+                    pc += 1;
+                }
+            }
+            Op::JumpIfSlotGeImm(s, imm, addr) => {
+                let v = num_val_ref(safe_slot(&slots, *s));
+                if v >= *imm {
+                    pc = *addr;
+                } else {
+                    pc += 1;
+                }
+            }
+            Op::JumpIfSlotEqImm(s, imm, addr) => {
+                let v = num_val_ref(safe_slot(&slots, *s));
+                if v == *imm {
+                    pc = *addr;
+                } else {
+                    pc += 1;
+                }
+            }
+            Op::RecurIncAccum(counter, accum, step, limit, exit_addr) => {
+                let cv = num_val_ref(safe_slot(&slots, *counter));
+                if cv >= *limit {
+                    pc = *exit_addr;
+                } else {
+                    let av = num_val_ref(safe_slot(&slots, *accum));
+                    let new_accum = match i64::checked_add(av, cv) {
+                        Some(r) => r,
+                        None => return Err("integer overflow in add".into()),
+                    };
+                    let new_counter = match i64::checked_add(cv, *step) {
+                        Some(r) => r,
+                        None => return Err("integer overflow in add".into()),
+                    };
+                    while slots.len() <= *accum {
+                        slots.push(LispVal::Nil);
+                    }
+                    while slots.len() <= *counter {
+                        slots.push(LispVal::Nil);
+                    }
+                    slots[*accum] = LispVal::Num(new_accum);
+                    slots[*counter] = LispVal::Num(new_counter);
+                    pc = 0;
+                }
             }
             Op::BuiltinCall(name, n_args) => {
                 let mut bargs: Vec<LispVal> = Vec::with_capacity(*n_args);
@@ -4118,6 +4202,34 @@ fn run_compiled_lambda_inner(
                     }
                 }
                 pc += 1;
+            }
+            Op::Recur(n) => {
+                // Pop N values in reverse order into slots 0..N, reset pc
+                for i in (0..*n).rev() {
+                    if i < slots.len() {
+                        slots[i] = stack.pop().unwrap_or(LispVal::Nil);
+                    } else {
+                        while slots.len() <= i {
+                            slots.push(LispVal::Nil);
+                        }
+                        slots[i] = stack.pop().unwrap_or(LispVal::Nil);
+                    }
+                }
+                pc = 0;
+            }
+            Op::RecurDirect(n) => {
+                // Same as Recur but guaranteed small N
+                for i in (0..*n).rev() {
+                    if i < slots.len() {
+                        slots[i] = stack.pop().unwrap_or(LispVal::Nil);
+                    } else {
+                        while slots.len() <= i {
+                            slots.push(LispVal::Nil);
+                        }
+                        slots[i] = stack.pop().unwrap_or(LispVal::Nil);
+                    }
+                }
+                pc = 0;
             }
             Op::Return => {
                 let retval = stack.pop().unwrap_or(LispVal::Nil);
