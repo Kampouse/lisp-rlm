@@ -166,6 +166,16 @@ impl Env {
         self.bindings.clone()
     }
 
+    /// Create an Env from a snapshot (inverse of `snapshot`).
+    /// Does NOT add standard aliases or builtins — the snapshot already contains them.
+    pub fn from_snapshot(snap: &im::HashMap<String, LispVal>) -> Self {
+        Env {
+            bindings: snap.clone(),
+            shared_env: None,
+            scope_snapshot: None,
+        }
+    }
+
     /// Restore bindings from a previous snapshot.
     pub fn restore(&mut self, snap: im::HashMap<String, LispVal>) {
         self.bindings = snap;
@@ -250,6 +260,10 @@ pub struct EvalState {
     pub eval_count: u64,
     /// Maximum allowed eval iterations (0 = unlimited)
     pub eval_budget: u64,
+    /// Current VM call depth (for stack overflow protection)
+    pub call_depth: u32,
+    /// Maximum allowed call depth (default 16 for safety)
+    pub max_call_depth: u32,
     /// Stack of env snapshots for snapshot/rollback
     pub snapshots: Vec<im::HashMap<String, LispVal>>,
     /// Persistent agent state (survives snapshots)
@@ -272,6 +286,8 @@ pub struct EvalState {
     pub call_trace_max: usize,
     /// Pending pure type annotation from `(pure ...)`. Consumed by the next lambda creation.
     pub pending_pure_type: Option<String>,
+    /// Pure type annotations stored by function name (from `mark-pure` builtin).
+    pub pure_types: std::collections::HashMap<String, String>,
     /// Mock NEAR storage (key-value, persisted across REPL evaluations)
     pub near_storage: im::HashMap<String, LispVal>,
     /// Mock NEAR context (account_id, signer, block_height, etc.)
@@ -291,6 +307,8 @@ impl EvalState {
         EvalState {
             eval_count: 0,
             eval_budget: DEFAULT_EVAL_BUDGET,
+            call_depth: 0,
+            max_call_depth: 16,
             snapshots: Vec::new(),
             rlm_state: im::OrdMap::new(),
             tokens_used: Arc::new(AtomicU64::new(0)),
@@ -303,6 +321,7 @@ impl EvalState {
             call_trace: Vec::new(),
             call_trace_max: 64,
             pending_pure_type: None,
+            pure_types: std::collections::HashMap::new(),
             near_storage: im::HashMap::new(),
             near_context: im::HashMap::new(),
             global_env: None,
@@ -328,6 +347,8 @@ impl EvalState {
         EvalState {
             eval_count: 0,
             eval_budget: self.eval_budget,
+            call_depth: 0,
+            max_call_depth: self.max_call_depth,
             snapshots: Vec::new(),
             rlm_state: self.rlm_state.clone(),
             tokens_used: Arc::clone(&self.tokens_used),
@@ -339,6 +360,7 @@ impl EvalState {
             call_trace: Vec::new(),
             call_trace_max: self.call_trace_max,
             pending_pure_type: None,
+            pure_types: std::collections::HashMap::new(),
             near_storage: im::HashMap::new(),
             near_context: im::HashMap::new(),
             global_env: None,
@@ -400,6 +422,8 @@ impl Clone for EvalState {
         EvalState {
             eval_count: self.eval_count,
             eval_budget: self.eval_budget,
+            call_depth: self.call_depth,
+            max_call_depth: self.max_call_depth,
             snapshots: self.snapshots.clone(),
             rlm_state: self.rlm_state.clone(),
             tokens_used: Arc::clone(&self.tokens_used),
@@ -411,6 +435,7 @@ impl Clone for EvalState {
             llm_provider: None, // providers are not cloned
             call_trace: self.call_trace.clone(),
             pending_pure_type: None, // Don't propagate pure type to forks
+            pure_types: self.pure_types.clone(),
             call_trace_max: self.call_trace_max,
             global_env: None, // Don't share global_env with forks
             near_storage: self.near_storage.clone(),
@@ -508,8 +533,7 @@ pub enum LispVal {
     },
     /// case-lambda: dispatches based on arg count
     CaseLambda {
-        cases: Vec<(Vec<String>, Option<String>, LispVal)>,
-        closed_env: std::sync::Arc<std::sync::RwLock<im::HashMap<String, LispVal>>>,
+        clauses: Vec<(usize, bool, LispVal)>, // (fixed_param_count, has_rest, compiled_lambda)
     },
     /// Macro (like `Lambda` but receives *unevaluated* arguments).
     Macro {
@@ -539,6 +563,13 @@ pub enum LispVal {
         type_name: String,
         variant_id: u16,
         fields: Vec<LispVal>,
+    },
+    /// Delayed computation (promise). Contains a thunk (0-param closure) and a
+    /// cache cell. On first `force`, the thunk is called and the result is stored
+    /// in the cache. Subsequent forces return the cached value.
+    Delay {
+        thunk: Box<LispVal>,
+        cache: std::sync::Arc<std::sync::RwLock<Option<LispVal>>>,
     },
 }
 
@@ -614,8 +645,8 @@ impl std::fmt::Display for LispVal {
             LispVal::Lambda { params, .. } => {
                 write!(f, "#<lambda ({})>", params.join(" "))
             }
-            LispVal::CaseLambda { cases, .. } => {
-                write!(f, "#<case-lambda {} cases>", cases.len())
+            LispVal::CaseLambda { clauses, .. } => {
+                write!(f, "#<case-lambda {} clauses>", clauses.len())
             }
             LispVal::Macro { params, .. } => {
                 write!(f, "#<macro ({})>", params.join(" "))
@@ -642,6 +673,8 @@ impl std::fmt::Display for LispVal {
                     write!(f, "({}::{} {})", type_name, variant_id, parts.join(" "))
                 }
             }
+            LispVal::Delay { .. } => write!(f, "#<promise>"),
+            LispVal::Memoized { .. } => write!(f, "#<memoized>"),
         }
     }
 }

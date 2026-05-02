@@ -833,7 +833,8 @@ fn infer(
         | LispVal::Macro { .. }
         | LispVal::Map(_)
         | LispVal::Recur(_)
-        | LispVal::Memoized { .. } => Ok(TcType::Con(TcCon::Any)),
+        | LispVal::Memoized { .. }
+        | LispVal::Delay { .. } => Ok(TcType::Con(TcCon::Any)),
     }
 }
 

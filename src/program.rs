@@ -221,7 +221,10 @@ pub fn run_program(
         .map_err(|errs| errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; "))?;
 
     let value = run_compiled_lambda(&cl, &[], env, state)?;
-        env.insert_mut(name.clone(), value);
+    env.insert_mut(name.clone(), value);
+    if let Some(ref pt) = pure_type {
+        state.pure_types.insert(name.clone(), pt.clone());
+    }
     }
 
     // ── Phase 5: Evaluate remaining expressions ──
@@ -462,6 +465,9 @@ fn collect_define_names(forms: &[&LispVal]) -> Vec<String> {
                         let inner_refs: Vec<&LispVal> = list[1..].iter().collect();
                         names.extend(collect_define_names(&inner_refs));
                     }
+                    // Scope-creating forms: defines inside these don't leak to top level
+                    "fork" | "lambda" | "case-lambda" | "delay" | "loop" | "let" | "letrec"
+                    | "let*" | "match" | "try" => {}
                     _ => {}
                 }
             }

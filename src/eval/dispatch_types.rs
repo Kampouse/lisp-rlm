@@ -235,6 +235,8 @@ pub fn type_of(value: &LispVal) -> &'static str {
         LispVal::Tagged { .. } => ":tagged",
         LispVal::Macro { .. } => ":macro",
         LispVal::Recur(_) => ":recur",
+        LispVal::Delay { .. } => ":promise",
+        LispVal::Memoized { .. } => ":memoized",
     }
 }
 
