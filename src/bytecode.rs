@@ -2304,19 +2304,33 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
                             LispVal::Num(n) => *n,
                             _ => 0,
                         };
-                        let result = match op {
-                            BinOp::Add => i64::checked_add(av, bv).unwrap_or(0),
-                            BinOp::Sub => i64::checked_sub(av, bv).unwrap_or(0),
-                            BinOp::Mul => i64::checked_mul(av, bv).unwrap_or(0),
-                            BinOp::Div => i64::checked_div(av, bv).unwrap_or(0),
-                            BinOp::Mod => i64::checked_rem(av, bv).unwrap_or(0),
-                            BinOp::Lt => return Ok(LispVal::Bool(av < bv)),
-                            BinOp::Le => return Ok(LispVal::Bool(av <= bv)),
-                            BinOp::Gt => return Ok(LispVal::Bool(av > bv)),
-                            BinOp::Ge => return Ok(LispVal::Bool(av >= bv)),
-                            BinOp::Eq => return Ok(LispVal::Bool(av == bv)),
-                        };
-                        stack.push(LispVal::Num(result));
+                        stack.push(match op {
+                            BinOp::Add => {
+                                LispVal::Num(i64::checked_add(av, bv)
+                                    .ok_or("integer overflow in add")?)
+                            }
+                            BinOp::Sub => {
+                                LispVal::Num(i64::checked_sub(av, bv)
+                                    .ok_or("integer overflow in sub")?)
+                            }
+                            BinOp::Mul => {
+                                LispVal::Num(i64::checked_mul(av, bv)
+                                    .ok_or("integer overflow in mul")?)
+                            }
+                            BinOp::Div => {
+                                LispVal::Num(i64::checked_div(av, bv)
+                                    .ok_or("integer overflow in div")?)
+                            }
+                            BinOp::Mod => {
+                                LispVal::Num(i64::checked_rem(av, bv)
+                                    .ok_or("integer overflow in mod")?)
+                            }
+                            BinOp::Lt => LispVal::Bool(av < bv),
+                            BinOp::Le => LispVal::Bool(av <= bv),
+                            BinOp::Gt => LispVal::Bool(av > bv),
+                            BinOp::Ge => LispVal::Bool(av >= bv),
+                            BinOp::Eq => LispVal::Bool(av == bv),
+                        });
                     }
                     Ty::F64 => {
                         let av = match &a {
@@ -2634,19 +2648,14 @@ fn num_arith_checked(
 }
 
 /// Polymorphic numeric comparison: returns bool, float-aware.
-/// Non-numeric operands are coerced to 0 (matches F* spec num_cmp wildcard).
+/// Non-numeric operands return false (matches spec VM behavior).
 fn num_cmp(a: &LispVal, b: &LispVal, op: impl Fn(f64, f64) -> bool, int_op: impl Fn(i64, i64) -> bool) -> bool {
     match (a, b) {
         (LispVal::Float(x), LispVal::Float(y)) => op(*x, *y),
         (LispVal::Float(x), LispVal::Num(y)) => op(*x, *y as f64),
         (LispVal::Num(x), LispVal::Float(y)) => op(*x as f64, *y),
         (LispVal::Num(x), LispVal::Num(y)) => int_op(*x, *y),
-        _ => {
-            // Coerce non-numeric operands to 0, matching F* spec
-            let av = num_val_ref(a);
-            let bv = num_val_ref(b);
-            int_op(av, bv)
-        }
+        _ => false,
     }
 }
 
@@ -3816,19 +3825,33 @@ fn run_compiled_lambda_inner(
                             LispVal::Num(n) => *n,
                             _ => 0,
                         };
-                        let result = match op {
-                            BinOp::Add => i64::checked_add(av, bv).unwrap_or(0),
-                            BinOp::Sub => i64::checked_sub(av, bv).unwrap_or(0),
-                            BinOp::Mul => i64::checked_mul(av, bv).unwrap_or(0),
-                            BinOp::Div => i64::checked_div(av, bv).unwrap_or(0),
-                            BinOp::Mod => i64::checked_rem(av, bv).unwrap_or(0),
-                            BinOp::Lt => return Ok(LispVal::Bool(av < bv)),
-                            BinOp::Le => return Ok(LispVal::Bool(av <= bv)),
-                            BinOp::Gt => return Ok(LispVal::Bool(av > bv)),
-                            BinOp::Ge => return Ok(LispVal::Bool(av >= bv)),
-                            BinOp::Eq => return Ok(LispVal::Bool(av == bv)),
-                        };
-                        stack.push(LispVal::Num(result));
+                        stack.push(match op {
+                            BinOp::Add => {
+                                LispVal::Num(i64::checked_add(av, bv)
+                                    .ok_or("integer overflow in add")?)
+                            }
+                            BinOp::Sub => {
+                                LispVal::Num(i64::checked_sub(av, bv)
+                                    .ok_or("integer overflow in sub")?)
+                            }
+                            BinOp::Mul => {
+                                LispVal::Num(i64::checked_mul(av, bv)
+                                    .ok_or("integer overflow in mul")?)
+                            }
+                            BinOp::Div => {
+                                LispVal::Num(i64::checked_div(av, bv)
+                                    .ok_or("integer overflow in div")?)
+                            }
+                            BinOp::Mod => {
+                                LispVal::Num(i64::checked_rem(av, bv)
+                                    .ok_or("integer overflow in mod")?)
+                            }
+                            BinOp::Lt => LispVal::Bool(av < bv),
+                            BinOp::Le => LispVal::Bool(av <= bv),
+                            BinOp::Gt => LispVal::Bool(av > bv),
+                            BinOp::Ge => LispVal::Bool(av >= bv),
+                            BinOp::Eq => LispVal::Bool(av == bv),
+                        });
                     }
                     Ty::F64 => {
                         let av = match &a {
