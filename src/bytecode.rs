@@ -337,14 +337,13 @@ impl LoopCompiler {
             return true;
         }
         if let Some(val) = outer_env.get(name) {
-            // Check if this is a forward reference (Nil in env from pre-population)
-            // vs a legitimate Nil value. We mark forward refs specially.
-            let is_forward_ref = matches!(val, LispVal::Nil) && !name.starts_with('*');
             self.captured.push((name.to_string(), val.clone()));
-            // If forward ref, also record the name for late-binding check
-            if is_forward_ref {
-                self.forward_captures.push(name.to_string());
-            }
+            // ALL captures from outer_env are "env captures" — the captured snapshot
+            // is frozen at closure-creation time. If any inner lambda set!'s this
+            // variable, the snapshot goes stale. To handle this, always use
+            // LoadGlobal/StoreGlobal for env captures, which read/write the live
+            // outer_env instead of the frozen snapshot.
+            self.forward_captures.push(name.to_string());
             return true;
         }
         // Check if name is a slot in the parent (outer function's parameters/let-bindings)
@@ -1216,24 +1215,47 @@ impl LoopCompiler {
                                 Some(b) => b,
                                 None => return false,
                             };
-                            // Parse bindings: ((var1 init1) (var2 init2) ...)
+                            // Parse bindings: ((var1 init1) (var2 init2) ...) or flat (var1 init1 var2 init2 ...)
                             let mut var_slots: Vec<usize> = Vec::new();
-                            for binding in bindings.iter() {
-                                if let LispVal::List(pair) = binding {
-                                    if pair.len() == 2 {
-                                        if let LispVal::Sym(name) = &pair[0] {
-                                            let slot = self.slot_map.len();
-                                            self.slot_map.push(name.clone());
-                                            var_slots.push(slot);
-                                            if !self.compile_expr(&pair[1], outer_env) {
-                                                return false;
-                                            }
-                                            self.code.push(Op::StoreSlot(slot));
-                                            continue;
+                            // Check if this is flat syntax: first element is a Sym, not a List
+                            let is_flat = bindings.first().map_or(false, |b| matches!(b, LispVal::Sym(_)));
+                            if is_flat {
+                                // Flat: (var1 init1 var2 init2 ...)
+                                if bindings.len() % 2 != 0 {
+                                    return false;
+                                }
+                                for chunk in bindings.chunks(2) {
+                                    if let LispVal::Sym(name) = &chunk[0] {
+                                        let slot = self.slot_map.len();
+                                        self.slot_map.push(name.clone());
+                                        var_slots.push(slot);
+                                        if !self.compile_expr(&chunk[1], outer_env) {
+                                            return false;
                                         }
+                                        self.code.push(Op::StoreSlot(slot));
+                                    } else {
+                                        return false;
                                     }
                                 }
-                                return false;
+                            } else {
+                                // Pair: ((var1 init1) (var2 init2) ...)
+                                for binding in bindings.iter() {
+                                    if let LispVal::List(pair) = binding {
+                                        if pair.len() == 2 {
+                                            if let LispVal::Sym(name) = &pair[0] {
+                                                let slot = self.slot_map.len();
+                                                self.slot_map.push(name.clone());
+                                                var_slots.push(slot);
+                                                if !self.compile_expr(&pair[1], outer_env) {
+                                                    return false;
+                                                }
+                                                self.code.push(Op::StoreSlot(slot));
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                    return false;
+                                }
                             }
                             let loop_start = self.code.len();
                             self.loop_stack.push((loop_start, var_slots));
@@ -1261,19 +1283,16 @@ impl LoopCompiler {
                                 self.code.push(Op::LoadSlot(slot)); // set! returns the new value
                                 true
                             } else if let Some(idx) = self.captured_idx(&name) {
-                                // Captured variable — use StoreCaptured for let-bound captures,
-                                // or StoreGlobal for forward-referenced top-level defines
+                                // Captured variable — always use StoreGlobal for set!
+                                // StoreCaptured only mutates the closure's local copy,
+                                // not the outer env. StoreGlobal writes to outer_env so
+                                // subsequent reads (LoadGlobal) see the mutation.
                                 self.set_target_globals.insert(name.clone());
                                 if !self.compile_expr(&list[2], outer_env) {
                                     return false;
                                 }
-                                if self.forward_captures.contains(&name) {
-                                    self.code.push(Op::StoreGlobal(name.clone()));
-                                    self.code.push(Op::LoadGlobal(name));
-                                } else {
-                                    self.code.push(Op::StoreCaptured(idx));
-                                    self.code.push(Op::LoadCaptured(idx));
-                                }
+                                self.code.push(Op::StoreGlobal(name.clone()));
+                                self.code.push(Op::LoadGlobal(name));
                                 true
                             } else {
                                 // Unknown variable — might be a runtime capture (let-bound in enclosing lambda)
@@ -3799,13 +3818,17 @@ pub fn eval_builtin(
             }
             // Try dispatch modules for builtins not hardcoded above
             if let (Some(e), Some(s)) = (env, state) {
-                let mut env_clone = e.clone();
-                // dispatch_collections needs env for user-function calls (HOFs)
-                match crate::eval::dispatch_collections::handle(name, args, &mut env_clone, s) {
+                // dispatch_collections needs env for user-function calls (HOFs).
+                // Pass the REAL env (not a clone) so that set! mutations inside
+                // HOF lambdas (e.g., for-each, map, filter) are visible to the caller.
+                match crate::eval::dispatch_collections::handle(name, args, e, s) {
                     Ok(Some(result)) => return Ok(result),
                     Err(e) => return Err(e),
                     Ok(None) => {}
                 }
+                // Subsequent dispatch modules get a clone — mutations here are
+                // not expected to propagate back to the caller's env.
+                let mut env_clone = e.clone();
                 // dispatch_state needs env and state
                 #[cfg(not(target_arch = "wasm32"))]
                 match crate::eval::dispatch_state::handle(name, args, &mut env_clone, s) {
@@ -4257,7 +4280,6 @@ fn run_compiled_lambda_inner(
                 pc += 1;
             }
             Op::LoadGlobal(name) => {
-                // Live lookup from outer_env — sees set! mutations
                 match outer_env.get(name) {
                     Some(val) => stack.push(val.clone()),
                     None => return Err(format!("LoadGlobal: undefined {}", name)),
