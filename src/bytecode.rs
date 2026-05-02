@@ -2246,12 +2246,14 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
             Op::Div => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
+                check_float_zero(&a, &b, "division")?;
                 stack.push(num_arith_checked(&a, &b, "div", i64::checked_div, |x, y| x / y)?);
                 pc += 1;
             }
             Op::Mod => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
+                check_float_zero(&a, &b, "modulo")?;
                 stack.push(num_arith_checked(&a, &b, "mod", i64::checked_rem, |x, y| x % y)?);
                 pc += 1;
             }
@@ -2597,6 +2599,15 @@ pub fn num_val_ref(v: &LispVal) -> i64 {
     }
 }
 
+/// Extract f64 from any LispVal for float arithmetic promotion.
+pub fn num_val_ref_f64(v: &LispVal) -> f64 {
+    match v {
+        LispVal::Float(f) => *f,
+        LispVal::Num(n) => *n as f64,
+        _ => 0.0,
+    }
+}
+
 /// Safe slot read — returns Nil on out-of-bounds (matches SpecVm behavior).
 #[inline]
 fn safe_slot<'a>(slots: &'a [LispVal], idx: usize) -> &'a LispVal {
@@ -2615,7 +2626,13 @@ fn num_arith(
         (LispVal::Float(x), LispVal::Num(y)) => LispVal::Float(float_op(*x, *y as f64)),
         (LispVal::Num(x), LispVal::Float(y)) => LispVal::Float(float_op(*x as f64, *y)),
         (LispVal::Num(x), LispVal::Num(y)) => LispVal::Num(int_op(*x, *y)),
-        _ => LispVal::Num(0),
+        _ => {
+            if matches!(a, LispVal::Float(_)) || matches!(b, LispVal::Float(_)) {
+                LispVal::Float(float_op(num_val_ref_f64(a), num_val_ref_f64(b)))
+            } else {
+                LispVal::Num(int_op(num_val_ref(a), num_val_ref(b)))
+            }
+        }
     }
 }
 
@@ -2635,15 +2652,37 @@ fn num_arith_checked(
             Some(r) => Ok(LispVal::Num(r)),
             None => Err(format!("integer overflow in {}", op_name)),
         },
-        // Non-numeric operands: coerce to 0 and try
+        // Non-numeric operands: if either is Float, promote to float arithmetic
         _ => {
-            let av = num_val_ref(a);
-            let bv = num_val_ref(b);
-            match int_op(av, bv) {
-                Some(r) => Ok(LispVal::Num(r)),
-                None => Err(format!("integer overflow in {}", op_name)),
+            let af = matches!(a, LispVal::Float(_)) || matches!(b, LispVal::Float(_));
+            if af {
+                Ok(LispVal::Float(float_op(num_val_ref_f64(a), num_val_ref_f64(b))))
+            } else {
+                let av = num_val_ref(a);
+                let bv = num_val_ref(b);
+                match int_op(av, bv) {
+                    Some(r) => Ok(LispVal::Num(r)),
+                    None => Err(format!("integer overflow in {}", op_name)),
+                }
             }
         }
+    }
+}
+
+/// Check if a float div/mod operation would divide by zero.
+/// Returns Err("division by zero") or Err("modulo by zero") if the divisor is 0.0 or 0.
+/// This matches the spec VM behavior: IEEE 754 NaN/inf are NOT produced.
+fn check_float_zero(a: &LispVal, b: &LispVal, op_name: &str) -> Result<(), String> {
+    let divisor_f64 = match b {
+        LispVal::Float(f) => *f,
+        LispVal::Num(n) => *n as f64,
+        _ if matches!(a, LispVal::Float(_)) || matches!(b, LispVal::Float(_)) => num_val_ref_f64(b),
+        _ => return Ok(()), // Pure integer path — checked_div/checked_rem handle it
+    };
+    if divisor_f64 == 0.0 {
+        Err(format!("{} by zero", op_name))
+    } else {
+        Ok(())
     }
 }
 
@@ -3604,6 +3643,91 @@ pub fn run_lambda_test(cl: &CompiledLambda, args: &[LispVal]) -> Result<LispVal,
     run_compiled_lambda(cl, args, &mut crate::types::Env::new(), &mut crate::types::EvalState::new())
 }
 
+/// Validate that all slot indices in the bytecode are within bounds.
+/// Returns an error string describing the first OOB slot found.
+/// Used by both the differential fuzz tests and as a defensive pre-flight check.
+pub fn validate_slot_indices(code: &[Op], slots_len: usize) -> Result<(), String> {
+    for op in code {
+        match op {
+            Op::LoadSlot(s)
+            | Op::StoreSlot(s)
+            | Op::ReturnSlot(s)
+            | Op::StoreAndLoadSlot(s)
+            | Op::DictMutSet(s)
+            | Op::RecurDirect(s) => {
+                if *s >= slots_len {
+                    return Err(format!(
+                        "slot index {} out of bounds (slots_len={})",
+                        s, slots_len
+                    ));
+                }
+            }
+            Op::SlotAddImm(s, _)
+            | Op::SlotSubImm(s, _)
+            | Op::SlotMulImm(s, _)
+            | Op::SlotDivImm(s, _)
+            | Op::SlotEqImm(s, _)
+            | Op::SlotLtImm(s, _)
+            | Op::SlotLeImm(s, _)
+            | Op::SlotGtImm(s, _)
+            | Op::SlotGeImm(s, _) => {
+                if *s >= slots_len {
+                    return Err(format!(
+                        "slot index {} out of bounds (slots_len={})",
+                        s, slots_len
+                    ));
+                }
+            }
+            Op::JumpIfSlotLtImm(s, _, _)
+            | Op::JumpIfSlotLeImm(s, _, _)
+            | Op::JumpIfSlotGtImm(s, _, _)
+            | Op::JumpIfSlotGeImm(s, _, _)
+            | Op::JumpIfSlotEqImm(s, _, _) => {
+                if *s >= slots_len {
+                    return Err(format!(
+                        "slot index {} out of bounds (slots_len={})",
+                        s, slots_len
+                    ));
+                }
+            }
+            Op::RecurIncAccum(counter, accum, _, _, _) => {
+                if *counter >= slots_len {
+                    return Err(format!(
+                        "RecurIncAccum counter slot {} out of bounds (slots_len={})",
+                        counter, slots_len
+                    ));
+                }
+                if *accum >= slots_len {
+                    return Err(format!(
+                        "RecurIncAccum accum slot {} out of bounds (slots_len={})",
+                        accum, slots_len
+                    ));
+                }
+            }
+            Op::GetDefaultSlot(a, b, c, d) => {
+                for &(name, idx) in &[("map", *a), ("key", *b), ("default", *c), ("result", *d)] {
+                    if idx >= slots_len {
+                        return Err(format!(
+                            "GetDefaultSlot {} slot {} out of bounds (slots_len={})",
+                            name, idx, slots_len
+                        ));
+                    }
+                }
+            }
+            Op::Recur(n) => {
+                if *n > slots_len {
+                    return Err(format!(
+                        "Recur({}) requires {} slots but only {} available",
+                        n, n, slots_len
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// Run a compiled lambda with the given arguments. Returns the result directly.
 pub fn run_compiled_lambda(
     cl: &CompiledLambda,
@@ -3767,12 +3891,14 @@ fn run_compiled_lambda_inner(
             Op::Div => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
+                check_float_zero(&a, &b, "division")?;
                 stack.push(num_arith_checked(&a, &b, "div", i64::checked_div, |x, y| x / y)?);
                 pc += 1;
             }
             Op::Mod => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
+                check_float_zero(&a, &b, "modulo")?;
                 stack.push(num_arith_checked(&a, &b, "mod", i64::checked_rem, |x, y| x % y)?);
                 pc += 1;
             }

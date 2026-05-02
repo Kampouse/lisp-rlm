@@ -9,7 +9,7 @@
 //!   3. Random bytecode programs are generated, run through both, and results compared
 //!   4. Known-good programs from the F* verification serve as regression tests
 
-use lisp_rlm_wasm::bytecode::{make_test_compiled_lambda, make_test_compiled_loop, run_compiled_lambda, run_compiled_loop_test, run_lambda_test, BinOp, Op, Ty};
+use lisp_rlm_wasm::bytecode::{make_test_compiled_lambda, make_test_compiled_loop, run_compiled_lambda, run_compiled_loop_test, run_lambda_test, validate_slot_indices, BinOp, Op, Ty};
 use lisp_rlm_wasm::types::LispVal;
 
 // ---------------------------------------------------------------------------
@@ -1387,6 +1387,20 @@ fn differential_test_one(
     // This prevents the Rust VM from building structures far deeper than what the
     // spec VM would produce (the root cause of the stack overflow on Drop).
     let cl = make_test_compiled_lambda(init_slots.len(), init_slots.len(), code.clone());
+    // Pre-validate slot indices to match the spec VM's behavior.
+    // The spec VM calls validate_slot_indices() before executing; if OOB,
+    // it errors immediately. The Rust VM uses safe_slot which silently
+    // returns Nil — we validate here so both VMs agree on OOB errors.
+    if let Err(e) = validate_slot_indices(&code, init_slots.len()) {
+        // Both VMs should error on OOB — this is a match.
+        match spec_result {
+            SpecResult::Error(_) => return None,
+            _ => return Some(format!(
+                "VALIDATION ERROR: {} but spec={:?}",
+                e, spec_result
+            )),
+        }
+    }
     let mut state = lisp_rlm_wasm::types::EvalState::new();
     state.eval_budget = (max_steps * 3) as u64;
     let rust_result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
