@@ -130,6 +130,7 @@ let rec compile fuel expr c =
             | None -> None
             | Some c3 -> Some (emit DictSet c3))))
    | List (Sym "list" :: args) -> compile_list f args c
+   | List (Sym "vec" :: args) -> compile_vec f args c
    | List (Sym "progn" :: body) -> compile_body f body c
    | List (Sym "begin" :: body) -> compile_body f body c
    | List (Sym "and" :: args) -> compile_and f args c
@@ -256,6 +257,13 @@ and compile_list_body fuel args c : Tot (option (compiler * nat)) =
         (match compile_list_body f rest c1 with
          | None -> None
          | Some (c2, n) -> Some (c2, n + 1))))
+
+and compile_vec fuel args c : Tot (option compiler) =
+  if fuel <= 0 then None else
+  let f = fuel - 1 in
+  (match compile_list_body f args c with
+   | None -> None
+   | Some (c', n) -> Some (emit (MakeVec n) c'))
 
 and compile_and fuel args c : Tot (option compiler) =
   if fuel <= 0 then None else

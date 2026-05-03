@@ -10,6 +10,7 @@
 module Lisp.Values
 
 open Lisp.Types
+open FStar.Seq
 
 // === Truthiness ===
 val is_truthy : lisp_val -> Tot bool
@@ -181,3 +182,86 @@ let list_cons hd tl =
   match tl with
   | List elems -> List (hd :: elems)
   | _ -> List [hd; tl]  (* degenerate: treat non-list tail as single elem *)
+
+// === Vector (Seq) accessors ===
+// lisp_val's Vec constructor wraps seq lisp_val — O(1) len/nth via Seq theory.
+// VecContains uses lisp_eq on primitives (noeq prevents general lisp_val comparison).
+
+val vec_of_list : list lisp_val -> Tot (seq lisp_val)
+let vec_of_list l = FStar.Seq.of_list l
+
+val vec_len : lisp_val -> Tot nat
+let vec_len v =
+  match v with
+  | Vec s -> FStar.Seq.length s
+  | _ -> 0
+
+val vec_nth : lisp_val -> int -> Tot (option lisp_val)
+let vec_nth v n =
+  match v with
+  | Vec s ->
+    let len = FStar.Seq.length s in
+    if n < 0 || n >= len then None
+    else
+      let idx = n in  // SMT knows: 0 <= idx < len
+      Some (FStar.Seq.index s idx)
+  | _ -> None
+
+val vec_empty : lisp_val -> Tot bool
+let vec_empty v =
+  match v with
+  | Vec s -> FStar.Seq.length s = 0
+  | _ -> false
+
+val vec_conj : lisp_val -> lisp_val -> lisp_val
+let vec_conj val0 vec0 =
+  match vec0 with
+  | Vec s -> Vec (FStar.Seq.append s (FStar.Seq.Base.create 1 val0))
+  | _ -> Vec (FStar.Seq.Base.create 1 val0)
+
+// VecContains: check if val exists in vec using lisp_eq on primitive types.
+// noeq on lisp_val means we can't use Seq.mem — explicit loop required.
+val vec_contains_prim_aux : needle:lisp_val -> v:seq lisp_val -> i:nat -> Tot bool (decreases (FStar.Seq.length v - i))
+let rec vec_contains_prim_aux needle v i =
+  if i >= FStar.Seq.length v then false
+  else lisp_eq needle (FStar.Seq.index v i) || vec_contains_prim_aux needle v (i + 1)
+
+val vec_contains_prim : lisp_val -> lisp_val -> Tot bool
+let vec_contains_prim needle vec0 =
+  match vec0 with
+  | Vec s -> vec_contains_prim_aux needle s 0
+  | _ -> false
+
+// Clamp an int to the range [0, max_val], returning nat.
+// Used to safely convert VM int indices to nat for Seq operations.
+val clamp_nat : i:int -> max_val:nat -> Tot nat
+let clamp_nat i max_val =
+  if i <= 0 then 0
+  else if i >= max_val then max_val
+  else i
+
+// VecSlice: extract sub-sequence [start, end).
+val vec_slice : lisp_val -> int -> int -> Tot (seq lisp_val)
+let vec_slice vec0 start_i end_i =
+  match vec0 with
+  | Vec s ->
+    let len = FStar.Seq.length s in
+    let lo = clamp_nat start_i len in
+    let hi = clamp_nat end_i len in
+    if lo < hi then FStar.Seq.slice s lo hi
+    else FStar.Seq.empty
+  | _ -> FStar.Seq.empty
+
+// VecAssoc: update index or append at end.
+val vec_assoc : int -> lisp_val -> lisp_val -> lisp_val
+let vec_assoc idx val0 vec0 =
+  match vec0 with
+  | Vec s ->
+    let len = FStar.Seq.length s in
+    if idx < 0 then Nil
+    else if idx >= len then
+      if idx = len then
+        Vec (FStar.Seq.append s (FStar.Seq.Base.create 1 val0))
+      else Nil
+    else Vec (FStar.Seq.upd s idx val0)
+  | _ -> Nil

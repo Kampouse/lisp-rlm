@@ -5,6 +5,8 @@
 *)
 module Lisp.Types
 
+open FStar.Seq
+
 // === Abstract float type ===
 
 type ffloat
@@ -36,6 +38,7 @@ noeq type lisp_val =
   | Lambda of list string * lisp_val * list (string * lisp_val)  (* params, body, env *)
   | BuiltinFn of string
   | Tagged  of string * int * list (string * lisp_val)  (* type_name, variant_id, [(field_name, field_val)] *)
+  | Vec     of seq lisp_val
 
 // === BinOp ===
 type binop =
@@ -144,6 +147,15 @@ noeq type opcode =
 
   // Typed ops
   | TypedBinOp     of binop * ty
+
+  // Vec operations
+  | MakeVec        of nat   (* n_args: pop n, reverse, push Vec *)
+  | VecNth              (* pop idx, pop vec, push vec[idx] or Nil *)
+  | VecAssoc            (* pop val, pop idx, pop vec, push updated vec *)
+  | VecLen              (* pop vec, push length as Num *)
+  | VecConj             (* pop val, pop vec, push vec+[val] *)
+  | VecContains         (* pop val, pop vec, push Bool *)
+  | VecSlice            (* pop end, pop start, pop vec, push sub-vec *)
 
 // === VM State ===
 noeq type vm_state = {

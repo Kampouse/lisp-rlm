@@ -827,6 +827,9 @@ fn infer(
         // Empty list
         LispVal::List(_) => Ok(TcType::Con(TcCon::List(Box::new(supply.fresh())))),
 
+        // Vec — infer as (:vec T)
+        LispVal::Vec(_) => Ok(TcType::Con(TcCon::Any)),
+
         // Maps, lambdas from env — treat as opaque
         LispVal::Lambda { .. }
         | LispVal::CaseLambda { .. }

@@ -48,7 +48,8 @@ fn lispval_to_tagged(val: &LispVal) -> Option<i64> {
         | LispVal::Float(_) | LispVal::Map(_) | LispVal::BuiltinFn(_)
         | LispVal::Macro { .. } | LispVal::CaseLambda { .. }
         | LispVal::Recur(_) | LispVal::Memoized { .. }
-        | LispVal::Tagged { .. } | LispVal::Sym(_) | LispVal::Delay { .. } => None,
+        | LispVal::Tagged { .. } | LispVal::Sym(_) | LispVal::Delay { .. }
+        | LispVal::Vec(_) => None,
     }
 }
 

@@ -455,6 +455,20 @@ fn stack_effect(op: &Op) -> (usize, usize) {
         Op::FilterOp(_) => (1, 1),
         // ReduceOp(slot): pop 2 (list, init), push 1 (accumulator)
         Op::ReduceOp(_) => (2, 1),
+        // MakeVec(n): pop n, push 1
+        Op::MakeVec(n) => (*n as usize, 1),
+        // VecNth: pop 2 (index, vec), push 1
+        Op::VecNth => (2, 1),
+        // VecAssoc: pop 3 (val, index, vec), push 1
+        Op::VecAssoc => (3, 1),
+        // VecLen: pop 1 (vec), push 1
+        Op::VecLen => (1, 1),
+        // VecConj: pop 2 (val, vec), push 1
+        Op::VecConj => (2, 1),
+        // VecContains: pop 2 (target, vec), push 1
+        Op::VecContains => (2, 1),
+        // VecSlice: pop 3 (end, start, vec), push 1
+        Op::VecSlice => (3, 1),
     }
 }
 

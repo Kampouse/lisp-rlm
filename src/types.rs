@@ -507,6 +507,10 @@ pub enum LispVal {
     Sym(String),
     /// Heterogeneous list of Lisp values.
     List(Vec<LispVal>),
+    /// Immutable native array. Backed by Vec at runtime.
+    /// Immutable semantics — vec-assoc returns a fresh copy.
+    /// In F* modeled as `seq lisp_val` (SMT array theory, no induction).
+    Vec(Vec<LispVal>),
     /// First-class closure.
     ///
     /// - `params` — parameter names.
@@ -584,6 +588,7 @@ impl PartialEq for LispVal {
             (Str(a), Str(b)) => a == b,
             (Sym(a), Sym(b)) => a == b,
             (List(a), List(b)) => a == b,
+            (Vec(a), Vec(b)) => a == b,
             (Map(a), Map(b)) => a == b,
             (Recur(a), Recur(b)) => a == b,
             (
@@ -642,6 +647,10 @@ impl std::fmt::Display for LispVal {
                 let parts: Vec<String> = vals.iter().map(|v| v.to_string()).collect();
                 write!(f, "({})", parts.join(" "))
             }
+            LispVal::Vec(vals) => {
+                let parts: Vec<String> = vals.iter().map(|v| v.to_string()).collect();
+                write!(f, "[{}]", parts.join(" "))
+            }
             LispVal::Lambda { params, .. } => {
                 write!(f, "#<lambda ({})>", params.join(" "))
             }
@@ -674,7 +683,6 @@ impl std::fmt::Display for LispVal {
                 }
             }
             LispVal::Delay { .. } => write!(f, "#<promise>"),
-            LispVal::Memoized { .. } => write!(f, "#<memoized>"),
         }
     }
 }

@@ -260,6 +260,21 @@ pub enum Op {
     /// ReduceOp(slot_idx): pop list, pop init, fold with slots[slot_idx](acc, elem), push result.
     /// Function takes exactly 2 args (accumulator, element).
     ReduceOp(usize),
+    // --- Vec operations: native immutable arrays ---
+    /// Pop n values, construct a Vec, push it
+    MakeVec(usize),
+    /// Pop index, pop vec, push vec[index] (or Nil if out of bounds)
+    VecNth,
+    /// Pop value, pop index, pop vec, push vec with value at index (fresh copy)
+    VecAssoc,
+    /// Pop vec, push its length as Num
+    VecLen,
+    /// Pop value, pop vec, push vec with value appended (fresh copy)
+    VecConj,
+    /// Pop vec, pop value, push true if value is in vec (structural equality)
+    VecContains,
+    /// Pop end, pop start, pop vec, push vec[start:end] (fresh copy)
+    VecSlice,
 }
 
 /// Compiled loop representation.
@@ -2085,6 +2100,16 @@ impl LoopCompiler {
                                 self.code.push(Op::MakeList(n_args));
                                 return true;
                             }
+                            // Fast path: (vec e1 e2 ...) → MakeVec(n)
+                            if op == "vec" {
+                                for arg in &list[1..] {
+                                    if !self.compile_expr(arg, outer_env) {
+                                        return false;
+                                    }
+                                }
+                                self.code.push(Op::MakeVec(n_args));
+                                return true;
+                            }
                             // Y combinator: (me me args...) — self-passing pattern
                             // If callee is a local slot AND first arg is the same symbol,
                             // skip the self-pass arg and compile only real args, then CallSelf.
@@ -3680,6 +3705,13 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
             | Op::MapOp(_)
             | Op::FilterOp(_)
             | Op::ReduceOp(_)
+            | Op::MakeVec(_)
+            | Op::VecNth
+            | Op::VecAssoc
+            | Op::VecLen
+            | Op::VecConj
+            | Op::VecContains
+            | Op::VecSlice
             | Op::TracePush(_)
             | Op::TracePop => {
                 return Err(
@@ -3794,6 +3826,7 @@ fn check_type(val: &LispVal, ty: &LispVal) -> Result<bool, String> {
             ":num" | ":number" => Ok(matches!(val, LispVal::Num(_) | LispVal::Float(_))),
             ":bool" => Ok(matches!(val, LispVal::Bool(_))),
             ":list" => Ok(matches!(val, LispVal::List(_))),
+            ":vec" => Ok(matches!(val, LispVal::Vec(_))),
             ":map" | ":dict" => Ok(matches!(val, LispVal::Map(_))),
             ":fn" | ":function" => Ok(matches!(val,
                 LispVal::Lambda { .. } | LispVal::BuiltinFn(_) | LispVal::CaseLambda { .. } | LispVal::Memoized { .. }
@@ -3876,6 +3909,7 @@ fn guess_return_type_from_ops(code: &[Op]) -> &'static str {
     let mut has_str_op = false;
     let mut has_cmp = false;
     let mut has_list_op = false;
+    let mut has_vec_op = false;
 
     for op in code.iter().rev().take(20) {
         match op {
@@ -3899,9 +3933,9 @@ fn guess_return_type_from_ops(code: &[Op]) -> &'static str {
                 has_str_op = true
             }
             Op::PushLiteral(LispVal::Num(_)) => has_arith = true,
+            Op::MakeVec(_) | Op::VecNth | Op::VecAssoc | Op::VecLen | Op::VecConj | Op::VecContains | Op::VecSlice => has_vec_op = true,
             Op::PushLiteral(LispVal::Float(_)) => has_float_arith = true,
             Op::PushLiteral(LispVal::List(_)) => has_list_op = true,
-            Op::MakeList(_) => has_list_op = true,
             _ => {}
         }
     }
@@ -3909,6 +3943,7 @@ fn guess_return_type_from_ops(code: &[Op]) -> &'static str {
     if has_float_arith { ":float" }
     else if has_str_op && !has_arith { ":str" }
     else if has_list_op && !has_arith { ":list" }
+    else if has_vec_op && !has_arith { ":vec" }
     else if has_cmp && !has_arith { ":bool" }
     else if has_arith { ":int" }
     else { ":any" }
@@ -3919,12 +3954,12 @@ fn is_valid_type_spec(ty: &LispVal) -> bool {
     match ty {
         LispVal::Sym(s) => matches!(s.as_str(),
             ":int" | ":str" | ":string" | ":float" | ":num" | ":number"
-            | ":bool" | ":list" | ":map" | ":dict" | ":fn" | ":function"
+            | ":bool" | ":list" | ":vec" | ":map" | ":dict" | ":fn" | ":function"
             | ":any" | ":nil" | ":sym"
         ),
         LispVal::Str(s) => matches!(s.as_str(),
             ":int" | ":str" | ":string" | ":float" | ":num" | ":number"
-            | ":bool" | ":list" | ":map" | ":dict" | ":fn" | ":function"
+            | ":bool" | ":list" | ":vec" | ":map" | ":dict" | ":fn" | ":function"
             | ":any" | ":nil" | ":sym"
         ),
         // Compound type specs: (:or ...), (:list ...), (:map ...), (:tuple ...), (:fn ...)
@@ -4566,6 +4601,59 @@ pub fn eval_builtin(
             Ok(LispVal::List(vec![head].into_iter().chain(tail).collect()))
         }
         "list" => Ok(LispVal::List(args.to_vec())),
+        "vec" => Ok(LispVal::Vec(args.to_vec())),
+        "vec?" => Ok(LispVal::Bool(matches!(args.get(0), Some(LispVal::Vec(_))))),
+        "vec-nth" => {
+            match (args.get(0), args.get(1)) {
+                (Some(LispVal::Vec(v)), Some(LispVal::Num(i))) if *i >= 0 && (*i as usize) < v.len() => {
+                    Ok(v[*i as usize].clone())
+                }
+                _ => Ok(LispVal::Nil),
+            }
+        }
+        "vec-assoc" => {
+            match (args.get(0), args.get(1), args.get(2)) {
+                (Some(LispVal::Vec(v)), Some(LispVal::Num(i)), Some(val)) if *i >= 0 && (*i as usize) < v.len() => {
+                    let mut new_v = v.clone();
+                    new_v[*i as usize] = val.clone();
+                    Ok(LispVal::Vec(new_v))
+                }
+                _ => Ok(LispVal::Nil),
+            }
+        }
+        "vec-len" => {
+            match args.get(0) {
+                Some(LispVal::Vec(v)) => Ok(LispVal::Num(v.len() as i64)),
+                _ => Ok(LispVal::Num(0)),
+            }
+        }
+        "vec-conj" => {
+            match args.get(0) {
+                Some(LispVal::Vec(v)) => {
+                    let mut new_v = v.clone();
+                    new_v.push(args.get(1).cloned().unwrap_or(LispVal::Nil));
+                    Ok(LispVal::Vec(new_v))
+                }
+                Some(LispVal::Nil) => Ok(LispVal::Vec(vec![args.get(1).cloned().unwrap_or(LispVal::Nil)])),
+                _ => Ok(LispVal::Nil),
+            }
+        }
+        "vec-contains?" => {
+            match args.get(0) {
+                Some(LispVal::Vec(v)) => Ok(LispVal::Bool(v.contains(args.get(1).unwrap_or(&LispVal::Nil)))),
+                _ => Ok(LispVal::Bool(false)),
+            }
+        }
+        "vec-slice" => {
+            match (args.get(0), args.get(1), args.get(2)) {
+                (Some(LispVal::Vec(v)), Some(LispVal::Num(s)), Some(LispVal::Num(e))) => {
+                    let si = (*s as usize).max(0).min(v.len());
+                    let ei = (*e as usize).max(si).min(v.len());
+                    Ok(LispVal::Vec(v[si..ei].to_vec()))
+                }
+                _ => Ok(LispVal::Nil),
+            }
+        }
         "length" => match args.get(0) {
             Some(LispVal::List(l)) => Ok(LispVal::Num(l.len() as i64)),
             Some(LispVal::Str(s)) => Ok(LispVal::Num(s.len() as i64)),
@@ -5828,6 +5916,80 @@ fn run_compiled_lambda_inner(
                 stack.push(LispVal::List(items));
                 pc += 1;
             }
+            Op::MakeVec(n) => {
+                let mut items = Vec::with_capacity(*n);
+                for _ in 0..*n {
+                    items.push(stack.pop().unwrap_or(LispVal::Nil));
+                }
+                items.reverse();
+                stack.push(LispVal::Vec(items));
+                pc += 1;
+            }
+            Op::VecNth => {
+                let idx = stack.pop().unwrap_or(LispVal::Nil);
+                let vec = stack.pop().unwrap_or(LispVal::Nil);
+                match (&idx, &vec) {
+                    (LispVal::Num(i), LispVal::Vec(v)) if *i >= 0 && (*i as usize) < v.len() => {
+                        stack.push(v[*i as usize].clone());
+                    }
+                    _ => stack.push(LispVal::Nil),
+                }
+                pc += 1;
+            }
+            Op::VecAssoc => {
+                let val = stack.pop().unwrap_or(LispVal::Nil);
+                let idx = stack.pop().unwrap_or(LispVal::Nil);
+                let vec = stack.pop().unwrap_or(LispVal::Nil);
+                match (&idx, &vec) {
+                    (LispVal::Num(i), LispVal::Vec(v)) if *i >= 0 && (*i as usize) < v.len() => {
+                        let mut new_v = v.clone();
+                        new_v[*i as usize] = val;
+                        stack.push(LispVal::Vec(new_v));
+                    }
+                    _ => stack.push(LispVal::Nil),
+                }
+                pc += 1;
+            }
+            Op::VecLen => {
+                match stack.pop() {
+                    Some(LispVal::Vec(v)) => stack.push(LispVal::Num(v.len() as i64)),
+                    _ => stack.push(LispVal::Num(0)),
+                }
+                pc += 1;
+            }
+            Op::VecConj => {
+                let val = stack.pop().unwrap_or(LispVal::Nil);
+                let vec = stack.pop().unwrap_or(LispVal::Nil);
+                match vec {
+                    LispVal::Vec(mut v) => { v.push(val); stack.push(LispVal::Vec(v)); }
+                    LispVal::Nil => stack.push(LispVal::Vec(vec![val])),
+                    _ => stack.push(LispVal::Nil),
+                }
+                pc += 1;
+            }
+            Op::VecContains => {
+                let target = stack.pop().unwrap_or(LispVal::Nil);
+                let vec = stack.pop().unwrap_or(LispVal::Nil);
+                match &vec {
+                    LispVal::Vec(v) => stack.push(LispVal::Bool(v.contains(&target))),
+                    _ => stack.push(LispVal::Bool(false)),
+                }
+                pc += 1;
+            }
+            Op::VecSlice => {
+                let end = stack.pop().unwrap_or(LispVal::Nil);
+                let start = stack.pop().unwrap_or(LispVal::Nil);
+                let vec = stack.pop().unwrap_or(LispVal::Nil);
+                match (&start, &end, &vec) {
+                    (LispVal::Num(s), LispVal::Num(e), LispVal::Vec(v)) => {
+                        let si = (*s as usize).max(0).min(v.len());
+                        let ei = (*e as usize).max(si).min(v.len());
+                        stack.push(LispVal::Vec(v[si..ei].to_vec()));
+                    }
+                    _ => stack.push(LispVal::Nil),
+                }
+                pc += 1;
+            }
             Op::Add => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
@@ -6105,13 +6267,9 @@ fn run_compiled_lambda_inner(
                     "map" if bargs.len() == 2 => {
                         let func = &bargs[0];
                         let list = &bargs[1];
-                        let vals = match list {
-                            LispVal::List(l) => l,
-                            LispVal::Nil => {
-                                stack.push(LispVal::Nil);
-                                pc += 1;
-                                continue;
-                            }
+                        let (vals, is_vec) = match list {
+                            LispVal::List(l) => (l.as_slice(), false),
+                            LispVal::Vec(v) => (v.as_slice(), true),
                             _ => {
                                 stack.push(LispVal::Nil);
                                 pc += 1;
@@ -6122,13 +6280,14 @@ fn run_compiled_lambda_inner(
                         for v in vals.iter() {
                             result.push(vm_call_lambda(func, &[v.clone()], outer_env, state)?);
                         }
-                        stack.push(LispVal::List(result));
+                        stack.push(if is_vec { LispVal::Vec(result) } else { LispVal::List(result) });
                     }
                     "filter" if bargs.len() == 2 => {
                         let func = &bargs[0];
                         let list = &bargs[1];
-                        let vals = match list {
-                            LispVal::List(l) => l,
+                        let (vals, is_vec) = match list {
+                            LispVal::List(l) => (l.as_slice(), false),
+                            LispVal::Vec(v) => (v.as_slice(), true),
                             _ => {
                                 stack.push(LispVal::Nil);
                                 pc += 1;
@@ -6146,7 +6305,7 @@ fn run_compiled_lambda_inner(
                                 result.push(v.clone());
                             }
                         }
-                        stack.push(LispVal::List(result));
+                        stack.push(if is_vec { LispVal::Vec(result) } else { LispVal::List(result) });
                     }
                     "for-each" if bargs.len() == 2 => {
                         let func = &bargs[0];
@@ -6195,7 +6354,8 @@ fn run_compiled_lambda_inner(
                         let init = bargs[1].clone();
                         let list = &bargs[2];
                         let vals = match list {
-                            LispVal::List(l) => l,
+                            LispVal::List(l) => l.as_slice(),
+                            LispVal::Vec(v) => v.as_slice(),
                             _ => {
                                 stack.push(init);
                                 pc += 1;
@@ -6380,8 +6540,9 @@ fn run_compiled_lambda_inner(
                         slots.len()
                     ));
                 };
-                let vals = match &list_val {
-                    LispVal::List(l) => l,
+                let (vals, is_vec) = match &list_val {
+                    LispVal::List(l) => (l.as_slice(), false),
+                    LispVal::Vec(v) => (v.as_slice(), true),
                     _ => {
                         stack.push(LispVal::Nil);
                         pc += 1;
@@ -6392,7 +6553,7 @@ fn run_compiled_lambda_inner(
                 for v in vals.iter() {
                     result.push(vm_call_lambda(&func, &[v.clone()], outer_env, state)?);
                 }
-                stack.push(LispVal::List(result));
+                stack.push(if is_vec { LispVal::Vec(result) } else { LispVal::List(result) });
                 pc += 1;
             }
             Op::FilterOp(slot_idx) => {
@@ -6406,8 +6567,9 @@ fn run_compiled_lambda_inner(
                         slots.len()
                     ));
                 };
-                let vals = match &list_val {
-                    LispVal::List(l) => l,
+                let (vals, is_vec) = match &list_val {
+                    LispVal::List(l) => (l.as_slice(), false),
+                    LispVal::Vec(v) => (v.as_slice(), true),
                     _ => {
                         stack.push(LispVal::Nil);
                         pc += 1;
@@ -6425,7 +6587,7 @@ fn run_compiled_lambda_inner(
                         result.push(v.clone());
                     }
                 }
-                stack.push(LispVal::List(result));
+                stack.push(if is_vec { LispVal::Vec(result) } else { LispVal::List(result) });
                 pc += 1;
             }
             Op::ReduceOp(slot_idx) => {
@@ -6441,7 +6603,8 @@ fn run_compiled_lambda_inner(
                     ));
                 };
                 let vals = match &list_val {
-                    LispVal::List(l) => l,
+                    LispVal::List(l) => l.as_slice(),
+                    LispVal::Vec(v) => v.as_slice(),
                     _ => {
                         stack.push(init);
                         pc += 1;

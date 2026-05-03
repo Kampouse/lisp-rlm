@@ -223,6 +223,7 @@ impl SpecVm {
             (LispVal::Str(x), LispVal::Str(y)) => x == y,
             (LispVal::Nil, LispVal::Nil) => true,
             (LispVal::List(a), LispVal::List(b)) => a == b,
+            (LispVal::Vec(a), LispVal::Vec(b)) => a == b,
             (
                 LispVal::Tagged { type_name: ta, variant_id: va, fields: fa },
                 LispVal::Tagged { type_name: tb, variant_id: vb, fields: fb },
@@ -935,6 +936,110 @@ impl SpecVm {
             // For fuzzing purposes, just return an error (the loop VM would call eval_builtin)
             Op::BuiltinCall(name, _) => {
                 return StepOutcome::Error(format!("BuiltinCall({}) not supported in spec VM", name));
+            }
+            // Vec opcodes: SpecVM handles them concretely
+            Op::MakeVec(n) => {
+                let mut items = Vec::with_capacity(*n);
+                for _ in 0..*n {
+                    items.push(self.stack.pop().unwrap_or(LispVal::Nil));
+                }
+                items.reverse();
+                self.stack.push(LispVal::Vec(items));
+                self.pc += 1;
+            }
+            Op::VecNth => {
+                let idx = self.pop();
+                let vec_val = self.pop();
+                let idx_i = Self::spec_num_val(&idx);
+                match &vec_val {
+                    LispVal::Vec(items) => {
+                        if idx_i >= 0 && (idx_i as usize) < items.len() {
+                            self.stack.push(items[idx_i as usize].clone());
+                        } else {
+                            self.stack.push(LispVal::Nil);
+                        }
+                    }
+                    _ => self.stack.push(LispVal::Nil),
+                }
+                self.pc += 1;
+            }
+            Op::VecAssoc => {
+                let val = self.pop();
+                let idx = self.pop();
+                let vec_val = self.pop();
+                let idx_i = Self::spec_num_val(&idx);
+                match &vec_val {
+                    LispVal::Vec(items) => {
+                        let mut new_items = items.clone();
+                        if idx_i >= 0 && (idx_i as usize) < new_items.len() {
+                            new_items[idx_i as usize] = val;
+                        } else if idx_i == items.len() as i64 {
+                            new_items.push(val);
+                        }
+                        self.stack.push(LispVal::Vec(new_items));
+                    }
+                    _ => self.stack.push(LispVal::Nil),
+                }
+                self.pc += 1;
+            }
+            Op::VecLen => {
+                let vec_val = self.pop();
+                match &vec_val {
+                    LispVal::Vec(items) => self.stack.push(LispVal::Num(items.len() as i64)),
+                    _ => self.stack.push(LispVal::Num(0)),
+                }
+                self.pc += 1;
+            }
+            Op::VecConj => {
+                let val = self.pop();
+                let vec_val = self.pop();
+                match &vec_val {
+                    LispVal::Vec(items) => {
+                        let mut new_items = items.clone();
+                        new_items.push(val);
+                        self.stack.push(LispVal::Vec(new_items));
+                    }
+                    _ => self.stack.push(LispVal::Nil),
+                }
+                self.pc += 1;
+            }
+            Op::VecContains => {
+                let val = self.pop();
+                let vec_val = self.pop();
+                match &vec_val {
+                    LispVal::Vec(items) => {
+                        let found = items.iter().any(|item| {
+                            match (item, &val) {
+                                (LispVal::Num(a), LispVal::Num(b)) => a == b,
+                                (LispVal::Bool(a), LispVal::Bool(b)) => a == b,
+                                (LispVal::Str(a), LispVal::Str(b)) => a == b,
+                                (LispVal::Nil, LispVal::Nil) => true,
+                                _ => false,
+                            }
+                        });
+                        self.stack.push(LispVal::Bool(found));
+                    }
+                    _ => self.stack.push(LispVal::Bool(false)),
+                }
+                self.pc += 1;
+            }
+            Op::VecSlice => {
+                let end = Self::spec_num_val(&self.pop());
+                let start = Self::spec_num_val(&self.pop());
+                let vec_val = self.pop();
+                match &vec_val {
+                    LispVal::Vec(items) => {
+                        let s = if start < 0 { 0 } else { start as usize };
+                        let e = if end < 0 { 0 } else if (end as usize) > items.len() { items.len() } else { end as usize };
+                        if s < e {
+                            self.stack.push(LispVal::Vec(items[s..e].to_vec()));
+                        } else {
+                            self.stack.push(LispVal::Vec(vec![]));
+                        }
+                    }
+                    _ => self.stack.push(LispVal::Vec(vec![])),
+                }
+                self.pc += 1;
             }
         }
         StepOutcome::Continue
