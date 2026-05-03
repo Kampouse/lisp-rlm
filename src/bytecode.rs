@@ -1314,9 +1314,15 @@ impl LoopCompiler {
                                 Some(LispVal::List(b)) => b,
                                 _ => return false,
                             };
-                            let body = match list.get(2) {
-                                Some(b) => b,
-                                _ => return false,
+                            // Body: all remaining forms after bindings (implicit begin)
+                            let body = if list.len() > 3 {
+                                LispVal::List(std::iter::once(LispVal::Sym("begin".into()))
+                                    .chain(list[2..].iter().cloned()).collect())
+                            } else {
+                                match list.get(2) {
+                                    Some(b) => b.clone(),
+                                    _ => return false,
+                                }
                             };
                             // Track slots that need cleanup (only newly allocated ones)
                             let let_start = self.slot_map.len();
@@ -1388,7 +1394,7 @@ impl LoopCompiler {
                                 }
                             }
                             if all_ok {
-                                all_ok = self.compile_expr(body, outer_env);
+                                all_ok = self.compile_expr(&body, outer_env);
                                 if !all_ok {
                                 }
                             }
@@ -1920,11 +1926,18 @@ impl LoopCompiler {
                             }
                             inner.code.push(Op::Return);
                             // Compute total_slots
+                            // Run peephole on inner lambda code
+                            let inner_i64 = inner.slot_is_i64.clone();
+                            let inner_f64 = inner.slot_is_f64.clone();
+                            peephole_optimize(&mut inner.code, &inner_i64, &inner_f64);
+                            peephole_optimize(&mut inner.code, &inner_i64, &inner_f64);
+                            peephole_optimize(&mut inner.code, &inner_i64, &inner_f64);
+
                             let base = params.len();
                             let mut max_slot = base;
                             for op in &inner.code {
                                 match op {
-                                    Op::LoadSlot(s) | Op::StoreSlot(s) => {
+                                    Op::LoadSlot(s) | Op::StoreSlot(s) | Op::StoreAndLoadSlot(s) => {
                                         if *s >= max_slot {
                                             max_slot = *s + 1;
                                         }
@@ -3823,7 +3836,8 @@ fn guess_return_type_from_ops(code: &[Op]) -> &'static str {
 
     for op in code.iter().rev().take(20) {
         match op {
-            Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Mod | Op::PushI64(_) => has_arith = true,
+            Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Mod | Op::PushI64(_)
+            | Op::SlotAddImm(_, _) | Op::SlotSubImm(_, _) | Op::SlotMulImm(_, _) => has_arith = true,
             Op::TypedBinOp(_, Ty::F64) => has_float_arith = true,
             Op::TypedBinOp(_, Ty::I64) => has_arith = true,
             Op::BuiltinCall(name, _) | Op::PushBuiltin(name) | Op::LoadGlobal(name) => match name.as_str() {
@@ -3952,10 +3966,9 @@ fn num_arith_checked(
             Some(r) => Ok(LispVal::Num(r)),
             None => Err(format!("integer overflow in {}", op_name)),
         },
-        // Non-numeric operands: if either is Float, promote to float arithmetic
+        // Non-numeric: coerce to 0 (matches spec VM num_val_ref).
         _ => {
-            let af = matches!(a, LispVal::Float(_)) || matches!(b, LispVal::Float(_));
-            if af {
+            if matches!(a, LispVal::Float(_)) || matches!(b, LispVal::Float(_)) {
                 Ok(LispVal::Float(float_op(num_val_ref_f64(a), num_val_ref_f64(b))))
             } else {
                 let av = num_val_ref(a);

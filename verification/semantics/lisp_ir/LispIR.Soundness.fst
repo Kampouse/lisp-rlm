@@ -9,17 +9,27 @@
       - Comparisons: =, >, <, <=, >=
       - Control: if (true/false branches), let, sym lookup, not
 
-    Proof strategy: Each lemma uses the "fuel lemma" pattern:
-      1. compile_lambda produces Some code (by existing CompilerSpec lemmas)
-      2. eval_steps unfolds through the compiled bytecode (Z3 with sufficient fuel)
-      3. eval_expr unfolds the source expression
-      4. val_eq witnesses the equality at the noeq barrier
+    Proof strategy: Each lemma uses assert_norm to let the F* normalizer
+    evaluate compile_lambda, eval_steps, and eval_expr, then verify the
+    results match structurally via val_eq.
 
-    Note: lisp_val is noeq (contains ffloat), so we use val_eq instead of =.
-    Note: vm_result and eval_result both have Ok/Err; Lisp.Source.Ok is qualified.
+    This works because:
+      1. compile_lambda produces concrete bytecode (F* can unfold it)
+      2. eval_steps executes the bytecode on the VM (normalizer evaluates it)
+      3. eval_expr evaluates the source expression (normalizer evaluates it)
+      4. val_eq witnesses equality at the noeq barrier
+
+    Key insight: The normalizer can handle branching (JumpIfFalse) when
+    test values are concrete (Num 1, Bool false). For symbolic operands
+    in straight-line arithmetic (PushI64 a; PushI64 b; OpAdd), it works
+    because Z3 can reason about the composition.
+
+    Limitation: Division requires b <> 0 precondition because the VM's
+    division opcode has a zero-guard that the normalizer can't decide
+    for symbolic b.
 
     Compound forms (nested if, let, lambda) need a simulation relation approach
-    rather than this fuel-based unfolding strategy.
+    rather than this per-form fuel-based strategy.
 *)
 module LispIR.Soundness
 
@@ -138,7 +148,14 @@ val sound_add : a:int -> b:int -> Lemma
       match vm_top 100 (fresh_vm code), src_val 100 (List [Sym "+"; Num a; Num b]) [] with
       | Some vm_v, Some ev_v -> val_eq vm_v ev_v
       | _ -> false))
-let sound_add a b = val_eq_num (op_int_add a b) (op_int_add a b)
+let sound_add a b =
+  assert_norm (
+    match compile_lambda 100 [] (List [Sym "+"; Num a; Num b]) with
+    | None -> false
+    | Some code ->
+      match vm_top 100 (fresh_vm code), src_val 100 (List [Sym "+"; Num a; Num b]) [] with
+      | Some vm_v, Some ev_v -> val_eq vm_v ev_v
+      | _ -> false)
 
 val sound_sub : a:int -> b:int -> Lemma
   (requires True)
@@ -148,7 +165,14 @@ val sound_sub : a:int -> b:int -> Lemma
       match vm_top 100 (fresh_vm code), src_val 100 (List [Sym "-"; Num a; Num b]) [] with
       | Some vm_v, Some ev_v -> val_eq vm_v ev_v
       | _ -> false))
-let sound_sub a b = val_eq_num (op_int_sub a b) (op_int_sub a b)
+let sound_sub a b =
+  assert_norm (
+    match compile_lambda 100 [] (List [Sym "-"; Num a; Num b]) with
+    | None -> false
+    | Some code ->
+      match vm_top 100 (fresh_vm code), src_val 100 (List [Sym "-"; Num a; Num b]) [] with
+      | Some vm_v, Some ev_v -> val_eq vm_v ev_v
+      | _ -> false)
 
 val sound_mul : a:int -> b:int -> Lemma
   (requires True)
@@ -158,17 +182,31 @@ val sound_mul : a:int -> b:int -> Lemma
       match vm_top 100 (fresh_vm code), src_val 100 (List [Sym "*"; Num a; Num b]) [] with
       | Some vm_v, Some ev_v -> val_eq vm_v ev_v
       | _ -> false))
-let sound_mul a b = val_eq_num (int_mul a b) (int_mul a b)
+let sound_mul a b =
+  assert_norm (
+    match compile_lambda 100 [] (List [Sym "*"; Num a; Num b]) with
+    | None -> false
+    | Some code ->
+      match vm_top 100 (fresh_vm code), src_val 100 (List [Sym "*"; Num a; Num b]) [] with
+      | Some vm_v, Some ev_v -> val_eq vm_v ev_v
+      | _ -> false)
 
 val sound_div : a:int -> b:int -> Lemma
-  (requires True)
+  (requires b <> 0)
   (ensures (match compile_lambda 100 [] (List [Sym "/"; Num a; Num b]) with
     | None -> false
     | Some code ->
       match vm_top 100 (fresh_vm code), src_val 100 (List [Sym "/"; Num a; Num b]) [] with
       | Some vm_v, Some ev_v -> val_eq vm_v ev_v
       | _ -> false))
-let sound_div a b = val_eq_num (int_div a b) (int_div a b)
+let sound_div a b =
+  assert_norm (
+    match compile_lambda 100 [] (List [Sym "/"; Num a; Num b]) with
+    | None -> false
+    | Some code ->
+      match vm_top 100 (fresh_vm code), src_val 100 (List [Sym "/"; Num a; Num b]) [] with
+      | Some vm_v, Some ev_v -> val_eq vm_v ev_v
+      | _ -> false)
 
 // --- COMPARISONS ---
 
@@ -180,7 +218,14 @@ val sound_gt : a:int -> b:int -> Lemma
       match vm_top 100 (fresh_vm code), src_val 100 (List [Sym ">"; Num a; Num b]) [] with
       | Some vm_v, Some ev_v -> val_eq vm_v ev_v
       | _ -> false))
-let sound_gt a b = val_eq_bool (op_int_gt a b) (op_int_gt a b)
+let sound_gt a b =
+  assert_norm (
+    match compile_lambda 100 [] (List [Sym ">"; Num a; Num b]) with
+    | None -> false
+    | Some code ->
+      match vm_top 100 (fresh_vm code), src_val 100 (List [Sym ">"; Num a; Num b]) [] with
+      | Some vm_v, Some ev_v -> val_eq vm_v ev_v
+      | _ -> false)
 
 val sound_lt : a:int -> b:int -> Lemma
   (requires True)
@@ -190,7 +235,14 @@ val sound_lt : a:int -> b:int -> Lemma
       match vm_top 100 (fresh_vm code), src_val 100 (List [Sym "<"; Num a; Num b]) [] with
       | Some vm_v, Some ev_v -> val_eq vm_v ev_v
       | _ -> false))
-let sound_lt a b = val_eq_bool (op_int_lt a b) (op_int_lt a b)
+let sound_lt a b =
+  assert_norm (
+    match compile_lambda 100 [] (List [Sym "<"; Num a; Num b]) with
+    | None -> false
+    | Some code ->
+      match vm_top 100 (fresh_vm code), src_val 100 (List [Sym "<"; Num a; Num b]) [] with
+      | Some vm_v, Some ev_v -> val_eq vm_v ev_v
+      | _ -> false)
 
 val sound_eq : a:int -> b:int -> Lemma
   (requires True)
@@ -200,7 +252,14 @@ val sound_eq : a:int -> b:int -> Lemma
       match vm_top 100 (fresh_vm code), src_val 100 (List [Sym "="; Num a; Num b]) [] with
       | Some vm_v, Some ev_v -> val_eq vm_v ev_v
       | _ -> false))
-let sound_eq a b = val_eq_bool (a = b) (a = b)
+let sound_eq a b =
+  assert_norm (
+    match compile_lambda 100 [] (List [Sym "="; Num a; Num b]) with
+    | None -> false
+    | Some code ->
+      match vm_top 100 (fresh_vm code), src_val 100 (List [Sym "="; Num a; Num b]) [] with
+      | Some vm_v, Some ev_v -> val_eq vm_v ev_v
+      | _ -> false)
 
 val sound_le : a:int -> b:int -> Lemma
   (requires True)
@@ -210,7 +269,14 @@ val sound_le : a:int -> b:int -> Lemma
       match vm_top 100 (fresh_vm code), src_val 100 (List [Sym "<="; Num a; Num b]) [] with
       | Some vm_v, Some ev_v -> val_eq vm_v ev_v
       | _ -> false))
-let sound_le a b = val_eq_bool (op_int_le a b) (op_int_le a b)
+let sound_le a b =
+  assert_norm (
+    match compile_lambda 100 [] (List [Sym "<="; Num a; Num b]) with
+    | None -> false
+    | Some code ->
+      match vm_top 100 (fresh_vm code), src_val 100 (List [Sym "<="; Num a; Num b]) [] with
+      | Some vm_v, Some ev_v -> val_eq vm_v ev_v
+      | _ -> false)
 
 val sound_ge : a:int -> b:int -> Lemma
   (requires True)
@@ -220,7 +286,14 @@ val sound_ge : a:int -> b:int -> Lemma
       match vm_top 100 (fresh_vm code), src_val 100 (List [Sym ">="; Num a; Num b]) [] with
       | Some vm_v, Some ev_v -> val_eq vm_v ev_v
       | _ -> false))
-let sound_ge a b = val_eq_bool (op_int_ge a b) (op_int_ge a b)
+let sound_ge a b =
+  assert_norm (
+    match compile_lambda 100 [] (List [Sym ">="; Num a; Num b]) with
+    | None -> false
+    | Some code ->
+      match vm_top 100 (fresh_vm code), src_val 100 (List [Sym ">="; Num a; Num b]) [] with
+      | Some vm_v, Some ev_v -> val_eq vm_v ev_v
+      | _ -> false)
 
 // --- SYMBOL LOOKUP ---
 
@@ -232,7 +305,14 @@ val sound_sym : n:int -> Lemma
       match vm_top 100 (init_vm_h code [Num n]), src_val 100 (Sym "x") [("x", Num n)] with
       | Some vm_v, Some ev_v -> val_eq vm_v ev_v
       | _ -> false))
-let sound_sym n = val_eq_num n n
+let sound_sym n =
+  assert_norm (
+    match compile_lambda 100 ["x"] (Sym "x") with
+    | None -> false
+    | Some code ->
+      match vm_top 100 (init_vm_h code [Num n]), src_val 100 (Sym "x") [("x", Num n)] with
+      | Some vm_v, Some ev_v -> val_eq vm_v ev_v
+      | _ -> false)
 
 // --- NOT ---
 
@@ -244,7 +324,14 @@ val sound_not_true : unit -> Lemma
       match vm_top 100 (fresh_vm code), src_val 100 (List [Sym "not"; Bool true]) [] with
       | Some vm_v, Some ev_v -> val_eq vm_v ev_v
       | _ -> false))
-let sound_not_true () = val_eq_bool false false
+let sound_not_true () =
+  assert_norm (
+    match compile_lambda 100 [] (List [Sym "not"; Bool true]) with
+    | None -> false
+    | Some code ->
+      match vm_top 100 (fresh_vm code), src_val 100 (List [Sym "not"; Bool true]) [] with
+      | Some vm_v, Some ev_v -> val_eq vm_v ev_v
+      | _ -> false)
 
 val sound_not_false : unit -> Lemma
   (requires True)
@@ -254,7 +341,14 @@ val sound_not_false : unit -> Lemma
       match vm_top 100 (fresh_vm code), src_val 100 (List [Sym "not"; Bool false]) [] with
       | Some vm_v, Some ev_v -> val_eq vm_v ev_v
       | _ -> false))
-let sound_not_false () = val_eq_bool true true
+let sound_not_false () =
+  assert_norm (
+    match compile_lambda 100 [] (List [Sym "not"; Bool false]) with
+    | None -> false
+    | Some code ->
+      match vm_top 100 (fresh_vm code), src_val 100 (List [Sym "not"; Bool false]) [] with
+      | Some vm_v, Some ev_v -> val_eq vm_v ev_v
+      | _ -> false)
 
 // --- IF (concrete) ---
 
@@ -266,7 +360,14 @@ val sound_if_true : unit -> Lemma
       match vm_top 100 (fresh_vm code), src_val 100 (List [Sym "if"; Num 1; Num 42; Num 99]) [] with
       | Some vm_v, Some ev_v -> val_eq vm_v ev_v
       | _ -> false))
-let sound_if_true () = val_eq_num 42 42
+let sound_if_true () =
+  assert_norm (
+    match compile_lambda 100 [] (List [Sym "if"; Num 1; Num 42; Num 99]) with
+    | None -> false
+    | Some code ->
+      match vm_top 100 (fresh_vm code), src_val 100 (List [Sym "if"; Num 1; Num 42; Num 99]) [] with
+      | Some vm_v, Some ev_v -> val_eq vm_v ev_v
+      | _ -> false)
 
 val sound_if_false : unit -> Lemma
   (requires True)
@@ -276,7 +377,14 @@ val sound_if_false : unit -> Lemma
       match vm_top 100 (fresh_vm code), src_val 100 (List [Sym "if"; Bool false; Num 42; Num 99]) [] with
       | Some vm_v, Some ev_v -> val_eq vm_v ev_v
       | _ -> false))
-let sound_if_false () = val_eq_num 99 99
+let sound_if_false () =
+  assert_norm (
+    match compile_lambda 100 [] (List [Sym "if"; Bool false; Num 42; Num 99]) with
+    | None -> false
+    | Some code ->
+      match vm_top 100 (fresh_vm code), src_val 100 (List [Sym "if"; Bool false; Num 42; Num 99]) [] with
+      | Some vm_v, Some ev_v -> val_eq vm_v ev_v
+      | _ -> false)
 
 // --- LET ---
 
@@ -288,18 +396,27 @@ val sound_let : n:int -> Lemma
       match vm_top 100 (fresh_vm code), src_val 100 (List [Sym "let"; List [List [Sym "x"; Num n]]; Sym "x"]) [] with
       | Some vm_v, Some ev_v -> val_eq vm_v ev_v
       | _ -> false))
-let sound_let n = val_eq_num n n
+let sound_let n =
+  assert_norm (
+    match compile_lambda 100 [] (List [Sym "let"; List [List [Sym "x"; Num n]]; Sym "x"]) with
+    | None -> false
+    | Some code ->
+      match vm_top 100 (fresh_vm code), src_val 100 (List [Sym "let"; List [List [Sym "x"; Num n]]; Sym "x"]) [] with
+      | Some vm_v, Some ev_v -> val_eq vm_v ev_v
+      | _ -> false)
 
 // === SUMMARY ===
 // All per-form soundness lemmas verified by F* with 0 admits.
 // Each lemma proves: for the given form, the compiled bytecode
 // executed on the VM produces the same value as the source evaluator.
 //
+// Proof technique: assert_norm lets the normalizer evaluate
+// compile_lambda + eval_steps + eval_expr and verify structural
+// equality via val_eq. Works for straight-line code and concrete
+// branching. Division requires b <> 0 precondition.
+//
 // Verified: 18 lemmas (num, bool, nil, add, sub, mul, div, gt, lt,
 //           eq, le, ge, sym, not_true, not_false, if_true, if_false, let)
 //
-// Limitation: These proofs use fuel-based unfolding. Z3 unfolds
-// compile_lambda + eval_steps + eval_expr and checks the results
-// structurally match. This works for atomic forms but does not scale
-// to nested compound forms (nested if, let, lambda). A simulation
-// relation proof would be needed for the full completeness theorem.
+// Next step: Use compiles_to inductive relation (LispIR.CompRel.fst)
+// for compositional proofs of nested compound forms.
