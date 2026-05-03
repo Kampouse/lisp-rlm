@@ -74,6 +74,19 @@ let rec pop_n stk n =
      | Some (items, remaining) -> Some (v :: items, remaining)
      | None -> None)
 
+// Reverse a list — helper first, then main function
+val list_rev_append : list 'a -> list 'a -> Tot (list 'a)
+let rec list_rev_append l1 l2 =
+  match l1 with
+  | [] -> l2
+  | x :: rest -> list_rev_append rest (x :: l2)
+
+val list_rev : list 'a -> Tot (list 'a)
+let rec list_rev l =
+  match l with
+  | [] -> []
+  | x :: rest -> list_rev_append (list_rev rest) [x]
+
 // Convert list of values to field pairs: [("0", v0); ("1", v1); ...]
 val items_to_fields : list lisp_val -> int -> Tot (list (string * lisp_val))
 let rec items_to_fields items idx =
@@ -298,6 +311,24 @@ let eval_op op s =
           | None -> Ok {s with stack = Nil :: rest; pc = s.pc + 1})
        | _ -> Ok {s with stack = Nil :: rest; pc = s.pc + 1})
     | [] -> Err "GetField: stack underflow")
+
+  // --- MakeList: pop n items, push List ---
+  | MakeList n ->
+    (match pop_n s.stack n with
+     | Some (items, rest) ->
+       // items are in reverse stack order (top of stack is head)
+       // pop_n returns [top, next, ...] so we reverse to get original order
+       let reversed = list_rev items in
+       Ok {s with stack = List reversed :: rest; pc = s.pc + 1}
+     | None -> Err "MakeList: stack underflow")
+
+  // --- Fused HOF opcodes (placeholder — advance pc) ---
+  | MapOp _ ->
+    Ok {s with pc = s.pc + 1}
+  | FilterOp _ ->
+    Ok {s with pc = s.pc + 1}
+  | ReduceOp _ ->
+    Ok {s with pc = s.pc + 1}
 
   // --- Default: advance PC for all remaining ops ---
   | _ -> Ok {s with pc = s.pc + 1}

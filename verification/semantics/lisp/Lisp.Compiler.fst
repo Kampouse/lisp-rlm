@@ -136,6 +136,31 @@ let rec compile fuel expr c =
    | List (Sym "or" :: args) -> compile_or f args c
    | List (Sym "cond" :: clauses) -> compile_cond f clauses c
    | List (Sym "lambda" :: List params :: body) -> compile_lambda_expr f params body c
+   // Fused HOF opcodes — map/filter/reduce with known function symbol
+   | List (Sym "map" :: Sym func_name :: list_expr :: _) ->
+     (match slot_of func_name c.slot_map with
+      | Some slot_idx ->
+        (match compile f list_expr c with
+         | Some c' -> Some { c' with code = list_append c'.code [MapOp (abs slot_idx)] }
+         | None -> None)
+      | None -> None)
+   | List (Sym "filter" :: Sym func_name :: list_expr :: _) ->
+     (match slot_of func_name c.slot_map with
+      | Some slot_idx ->
+        (match compile f list_expr c with
+         | Some c' -> Some { c' with code = list_append c'.code [FilterOp (abs slot_idx)] }
+         | None -> None)
+      | None -> None)
+   | List (Sym "reduce" :: Sym func_name :: init_expr :: list_expr :: _) ->
+     (match slot_of func_name c.slot_map with
+      | Some slot_idx ->
+        (match compile f init_expr c with
+         | Some c1 ->
+           (match compile f list_expr c1 with
+            | Some c2 -> Some { c2 with code = list_append c2.code [ReduceOp (abs slot_idx)] }
+            | None -> None)
+         | None -> None)
+      | None -> None)
    | _ -> None)
 
 and compile_chain fuel binop first rest c : Tot (option compiler) =

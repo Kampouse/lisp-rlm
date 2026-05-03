@@ -820,6 +820,23 @@ impl SpecVm {
                 }
                 self.pc += 1;
             }
+            // Fused HOF opcodes: SpecVM can't call lambdas, so push empty list / init
+            Op::MapOp(_) => {
+                let _list_val = self.pop(); // pop list (ignored)
+                self.stack.push(LispVal::List(vec![]));
+                self.pc += 1;
+            }
+            Op::FilterOp(_) => {
+                let _list_val = self.pop(); // pop list (ignored)
+                self.stack.push(LispVal::List(vec![]));
+                self.pc += 1;
+            }
+            Op::ReduceOp(_) => {
+                let _list_val = self.pop(); // pop list
+                let init = self.pop(); // pop init, push it back
+                self.stack.push(init);
+                self.pc += 1;
+            }
             Op::DictMutSet(slot_idx) => {
                 let val = self.pop();
                 let key = self.pop();
