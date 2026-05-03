@@ -139,3 +139,45 @@ let dict_remove key m =
 
 val dict_set : key:string -> v:lisp_val -> m:list (string * lisp_val) -> Tot (list (string * lisp_val))
 let dict_set key v m = (key, v) :: dict_remove key m
+
+// === Vector (List) accessors ===
+// lisp_val's List constructor wraps list lisp_val — a vector with O(n) len/nth.
+// These enable length-induction proofs over list-valued computations.
+// Note: lisp_val is noeq, so equality lemmas require assert_norm on concrete terms.
+
+val list_len_aux : acc:nat -> elems:list lisp_val -> Tot nat (decreases elems)
+let rec list_len_aux acc elems =
+  match elems with
+  | [] -> acc
+  | x :: rest -> list_len_aux (acc + 1) rest
+
+val list_len : lisp_val -> Tot nat
+let list_len v =
+  match v with
+  | List elems -> list_len_aux 0 elems
+  | _ -> 0
+
+val list_nth_aux : elems:list lisp_val -> n:nat -> Tot (option lisp_val) (decreases elems)
+let rec list_nth_aux elems n =
+  match elems, n with
+  | [], _ -> None
+  | x :: _, 0 -> Some x
+  | _ :: rest, _ -> list_nth_aux rest (n - 1)
+
+val list_nth : lisp_val -> nat -> Tot (option lisp_val)
+let list_nth v n =
+  match v with
+  | List elems -> list_nth_aux elems n
+  | _ -> None
+
+val list_empty : lisp_val -> Tot bool
+let list_empty v =
+  match v with
+  | List [] -> true
+  | _ -> false
+
+val list_cons : lisp_val -> lisp_val -> lisp_val
+let list_cons hd tl =
+  match tl with
+  | List elems -> List (hd :: elems)
+  | _ -> List [hd; tl]  (* degenerate: treat non-list tail as single elem *)
