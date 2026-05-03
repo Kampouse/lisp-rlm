@@ -457,7 +457,10 @@ impl WasmEmitter {
                                     for p in params {
                                         if let LispVal::Sym(s) = p { inner_bound.insert(s.clone()); }
                                     }
-                                    self.collect_free(&items[2], &inner_bound, free);
+                                    // Collect free vars from all body expressions
+                                    for body_expr in &items[2..] {
+                                        self.collect_free(body_expr, &inner_bound, free);
+                                    }
                                 }
                             }
                             return;
@@ -474,7 +477,10 @@ impl WasmEmitter {
                                             }
                                         }
                                     }
-                                    self.collect_free(&items[2], &inner_bound, free);
+                                    // Collect free vars from all body expressions
+                                    for body_expr in &items[2..] {
+                                        self.collect_free(body_expr, &inner_bound, free);
+                                    }
                                 }
                                 return;
                             }
@@ -909,11 +915,21 @@ impl WasmEmitter {
         match op {
             "lambda" => {
                 if a.len() < 2 { return Err("lambda: need params and body".into()); }
-                let LispVal::List(params) = &a[0] else { return Err("lambda: params must be list".into()); };
+                let LispVal::List(params) = &a[0] else { return Err("lambda: params must be list".into()) };
                 let param_names: Vec<String> = params.iter().map(|p| match p {
                     LispVal::Sym(s) => Ok(s.clone()), _ => Err("lambda param must be symbol".into()),
                 }).collect::<Result<_, String>>()?;
-                self.emit_lambda(&param_names, &a[1])
+                // Wrap multi-expression bodies in (begin ...)
+                let body = if a.len() == 2 {
+                    a[1].clone()
+                } else {
+                    LispVal::List(
+                        std::iter::once(LispVal::Sym("begin".into()))
+                            .chain(a[1..].iter().cloned())
+                            .collect()
+                    )
+                };
+                self.emit_lambda(&param_names, &body)
             }
             "+" => self.fold_binop(a, Instruction::I64Add, 0),
             "*" => self.fold_binop(a, Instruction::I64Mul, 1),
@@ -1054,9 +1070,25 @@ impl WasmEmitter {
             }
             "set!" => {
                 let LispVal::Sym(n) = &a[0] else { return Err("set!: expected symbol".into()) };
-                let idx = self.local_idx(n);
                 let mut v = self.expr(&a[1])?;
-                v.push(Instruction::LocalSet(idx)); v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
+                if let Some(&offset) = self.captured_map.get(n) {
+                    // Captured variable — write back to closure heap slot
+                    // so mutations are visible across calls and shared references.
+                    // WASM i64.store: [i32 address, i64 value] → []
+                    // Value is already on stack from expr(); need to save it,
+                    // push address, then push value again.
+                    let temp = self.next_local; self.next_local += 1;
+                    v.push(Instruction::LocalSet(temp));     // save value
+                    v.push(Instruction::LocalGet(0));        // closure_ptr (i64)
+                    v.push(Instruction::I32WrapI64);        // → i32 address
+                    v.push(Instruction::LocalGet(temp));     // restore value (i64)
+                    let ma = wasm_encoder::MemArg { offset: (offset as u64 * 8), align: 3, memory_index: 0 };
+                    v.push(Instruction::I64Store(ma));
+                } else {
+                    let idx = self.local_idx(n);
+                    v.push(Instruction::LocalSet(idx));
+                }
+                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
 
             // Memory

@@ -219,6 +219,13 @@ fn verify_slot_indices(code: &[Op], slots_len: usize) -> VResult<()> {
                     }
                 }
             }
+            Op::MapOp(slot_idx) | Op::FilterOp(slot_idx) | Op::ReduceOp(slot_idx) => {
+                if *slot_idx >= slots_len {
+                    return Err(err("slot_bounds", Some(i),
+                        format!("fused HOF slot {} out of bounds (slots_len={})",
+                            slot_idx, slots_len)));
+                }
+            }
             Op::Recur(n) => {
                 if *n > slots_len {
                     return Err(err("slot_bounds", Some(i),
@@ -440,6 +447,14 @@ fn stack_effect(op: &Op) -> (usize, usize) {
 
         // GetDefaultSlot: no stack effect (reads/writes slots directly)
         Op::GetDefaultSlot(_, _, _, _) => (0, 0),
+
+        // Fused HOF opcodes
+        // MapOp(slot): pop 1 (list), push 1 (result list)
+        Op::MapOp(_) => (1, 1),
+        // FilterOp(slot): pop 1 (list), push 1 (filtered list)
+        Op::FilterOp(_) => (1, 1),
+        // ReduceOp(slot): pop 2 (list, init), push 1 (accumulator)
+        Op::ReduceOp(_) => (2, 1),
     }
 }
 

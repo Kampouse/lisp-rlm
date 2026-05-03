@@ -250,6 +250,16 @@ pub enum Op {
     /// GetField(idx): pop a Tagged value, push its fields[idx].
     /// Panics if TOS is not Tagged or idx is out of bounds.
     GetField(u8),
+    // --- Fused HOF opcodes: map/filter/reduce with known function in slot ---
+    /// MapOp(slot_idx): pop list, apply slots[slot_idx] to each element, push result list.
+    /// Function takes exactly 1 arg (the element).
+    MapOp(usize),
+    /// FilterOp(slot_idx): pop list, keep elements where slots[slot_idx] returns truthy, push filtered list.
+    /// Function takes exactly 1 arg (the element).
+    FilterOp(usize),
+    /// ReduceOp(slot_idx): pop list, pop init, fold with slots[slot_idx](acc, elem), push result.
+    /// Function takes exactly 2 args (accumulator, element).
+    ReduceOp(usize),
 }
 
 /// Compiled loop representation.
@@ -2151,6 +2161,36 @@ impl LoopCompiler {
                                         return true;
                                     }
                                 }
+                                // Fused HOF opcodes: (map f list), (filter f list), (reduce f init list)
+                                // If the function arg is a known symbol with a slot, emit a fused opcode
+                                // instead of BuiltinCall. Falls through to BuiltinCall for dynamic cases.
+                                if op == "map" && n_args == 2 {
+                                    if let Some(LispVal::Sym(func_name)) = list.get(1) {
+                                        if let Some(slot) = self.slot_of(func_name) {
+                                            if !self.compile_expr(&list[2], outer_env) { return false; }
+                                            self.code.push(Op::MapOp(slot));
+                                            return true;
+                                        }
+                                    }
+                                } else if op == "filter" && n_args == 2 {
+                                    if let Some(LispVal::Sym(func_name)) = list.get(1) {
+                                        if let Some(slot) = self.slot_of(func_name) {
+                                            if !self.compile_expr(&list[2], outer_env) { return false; }
+                                            self.code.push(Op::FilterOp(slot));
+                                            return true;
+                                        }
+                                    }
+                                } else if op == "reduce" && n_args == 3 {
+                                    if let Some(LispVal::Sym(func_name)) = list.get(1) {
+                                        if let Some(slot) = self.slot_of(func_name) {
+                                            if !self.compile_expr(&list[2], outer_env) { return false; }
+                                            if !self.compile_expr(&list[3], outer_env) { return false; }
+                                            if !self.compile_expr(&list[3], outer_env) { return false; }
+                                            self.code.push(Op::ReduceOp(slot));
+                                            return true;
+                                        }
+                                    }
+                                }
                                 self.code.push(Op::BuiltinCall(op.clone(), n_args));
                             }
                             true
@@ -3637,6 +3677,9 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
             | Op::ConstructTag(_, _, _)
             | Op::TagTest(_, _)
             | Op::GetField(_)
+            | Op::MapOp(_)
+            | Op::FilterOp(_)
+            | Op::ReduceOp(_)
             | Op::TracePush(_)
             | Op::TracePop => {
                 return Err(
@@ -6323,6 +6366,96 @@ fn run_compiled_lambda_inner(
                         return Err(format!("get-field: expected tagged value, got {}", val));
                     }
                 }
+                pc += 1;
+            }
+            // --- Fused HOF opcodes ---
+            Op::MapOp(slot_idx) => {
+                let list_val = stack.pop().unwrap_or(LispVal::Nil);
+                let func = if *slot_idx < slots.len() {
+                    slots[*slot_idx].clone()
+                } else {
+                    return Err(format!(
+                        "MapOp: slot index {} out of bounds (slots_len={})",
+                        slot_idx,
+                        slots.len()
+                    ));
+                };
+                let vals = match &list_val {
+                    LispVal::List(l) => l,
+                    _ => {
+                        stack.push(LispVal::Nil);
+                        pc += 1;
+                        continue;
+                    }
+                };
+                let mut result = Vec::with_capacity(vals.len());
+                for v in vals.iter() {
+                    result.push(vm_call_lambda(&func, &[v.clone()], outer_env, state)?);
+                }
+                stack.push(LispVal::List(result));
+                pc += 1;
+            }
+            Op::FilterOp(slot_idx) => {
+                let list_val = stack.pop().unwrap_or(LispVal::Nil);
+                let func = if *slot_idx < slots.len() {
+                    slots[*slot_idx].clone()
+                } else {
+                    return Err(format!(
+                        "FilterOp: slot index {} out of bounds (slots_len={})",
+                        slot_idx,
+                        slots.len()
+                    ));
+                };
+                let vals = match &list_val {
+                    LispVal::List(l) => l,
+                    _ => {
+                        stack.push(LispVal::Nil);
+                        pc += 1;
+                        continue;
+                    }
+                };
+                let mut result = Vec::new();
+                for v in vals.iter() {
+                    let keep = match vm_call_lambda(&func, &[v.clone()], outer_env, state) {
+                        Ok(LispVal::Bool(b)) => b,
+                        Ok(_) => true,
+                        Err(_) => false,
+                    };
+                    if keep {
+                        result.push(v.clone());
+                    }
+                }
+                stack.push(LispVal::List(result));
+                pc += 1;
+            }
+            Op::ReduceOp(slot_idx) => {
+                let list_val = stack.pop().unwrap_or(LispVal::Nil);
+                let init = stack.pop().unwrap_or(LispVal::Nil);
+                let func = if *slot_idx < slots.len() {
+                    slots[*slot_idx].clone()
+                } else {
+                    return Err(format!(
+                        "ReduceOp: slot index {} out of bounds (slots_len={})",
+                        slot_idx,
+                        slots.len()
+                    ));
+                };
+                let vals = match &list_val {
+                    LispVal::List(l) => l,
+                    _ => {
+                        stack.push(init);
+                        pc += 1;
+                        continue;
+                    }
+                };
+                let mut acc = init;
+                for v in vals.iter() {
+                    acc = match vm_call_lambda(&func, &[acc.clone(), v.clone()], outer_env, state) {
+                        Ok(r) => r,
+                        Err(_) => acc,
+                    };
+                }
+                stack.push(acc);
                 pc += 1;
             }
             Op::Recur(n) => {

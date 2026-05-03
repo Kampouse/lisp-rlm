@@ -137,6 +137,11 @@ noeq type opcode =
   | StoreAndLoadSlot of nat
   | ReturnSlot       of nat
 
+  // Fused HOF opcodes
+  | MapOp          of nat   (* slot_idx — function takes exactly 1 arg *)
+  | FilterOp       of nat   (* slot_idx — function takes exactly 1 arg *)
+  | ReduceOp       of nat   (* slot_idx — function takes exactly 2 args: acc, elem *)
+
   // Typed ops
   | TypedBinOp     of binop * ty
 

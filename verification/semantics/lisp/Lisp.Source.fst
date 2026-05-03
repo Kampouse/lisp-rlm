@@ -98,10 +98,32 @@ and eval_expr (fuel:int) (expr:lisp_val) (env:env) : eval_result =
        | Err m, _ -> Err m
        | _, Err m -> Err m)
 
+    | [Sym "filter"; func_expr; list_expr] ->
+      (match eval_expr f func_expr env, eval_expr f list_expr env with
+       | Ok (Lambda (params, body, closure_env)), Ok (List lst) ->
+         eval_filter_list f params body closure_env lst
+       | Ok _, Ok Nil -> Ok Nil
+       | Ok _, Ok (List []) -> Ok Nil
+       | Ok _, Ok _ -> Err "filter: second arg must be a list"
+       | Err m, _ -> Err m
+       | _, Err m -> Err m)
+
+    | [Sym "reduce"; func_expr; init_expr; list_expr] ->
+      (match eval_expr f func_expr env, eval_expr f init_expr env, eval_expr f list_expr env with
+       | Ok (Lambda (params, body, closure_env)), Ok init, Ok (List lst) ->
+         eval_reduce_list f params body closure_env init lst
+       | Ok _, Ok init, Ok Nil -> Ok init
+       | Ok _, Ok init, Ok (List []) -> Ok init
+       | Ok _, Ok _, Ok _ -> Err "reduce: third arg must be a list"
+       | Err m, _, _ -> Err m
+       | _, Err m, _ -> Err m
+       | _, _, Err m -> Err m)
+
     | Sym fname :: _ ->
       (match fname with
        | "+" | "-" | "*" | "/" | "=" | "<" | ">" | "<=" | ">="
-       | "if" | "let" | "fn" | "quote" | "map" | "not" | "nil?" | "get" | "set" ->
+       | "if" | "let" | "fn" | "quote" | "map" | "filter" | "reduce"
+       | "not" | "nil?" | "get" | "set" ->
          eval_special f elems env
        | _ ->
          (match env_get fname env with
@@ -208,4 +230,36 @@ and eval_map_list (fuel:int) (params:list string) (body:lisp_val) (closure_env:l
       (match eval_map_list f params body closure_env rest with
        | Ok (List rest_results) -> Ok (List (result :: rest_results))
        | Ok _ -> Err "map: internal error" | Err m -> Err m)
+    | Err m -> Err m)
+
+and eval_filter_list (fuel:int) (params:list string) (body:lisp_val) (closure_env:list (string * lisp_val)) (lst:list lisp_val) : eval_result =
+  if fuel <= 0 then Err "out of fuel" else
+  let f = fuel - 1 in
+  match lst with
+  | [] -> Ok Nil
+  | elem :: rest ->
+    (match apply_fn f params body closure_env [elem] with
+    | Ok (Bool true) ->
+      (match eval_filter_list f params body closure_env rest with
+       | Ok (List filtered) -> Ok (List (elem :: filtered))
+       | Ok Nil -> Ok (List [elem])
+       | _ -> Err "filter: internal error")
+    | Ok (Bool false) ->
+      eval_filter_list f params body closure_env rest
+    | Ok _ ->
+      // truthy non-bool values count as true
+      (match eval_filter_list f params body closure_env rest with
+       | Ok (List filtered) -> Ok (List (elem :: filtered))
+       | Ok Nil -> Ok (List [elem])
+       | _ -> Err "filter: internal error")
+    | Err m -> Err m)
+
+and eval_reduce_list (fuel:int) (params:list string) (body:lisp_val) (closure_env:list (string * lisp_val)) (acc:lisp_val) (lst:list lisp_val) : eval_result =
+  if fuel <= 0 then Err "out of fuel" else
+  let f = fuel - 1 in
+  match lst with
+  | [] -> Ok acc
+  | elem :: rest ->
+    (match apply_fn f params body closure_env [acc; elem] with
+    | Ok new_acc -> eval_reduce_list f params body closure_env new_acc rest
     | Err m -> Err m)
