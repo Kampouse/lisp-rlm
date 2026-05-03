@@ -2,12 +2,10 @@
 //!
 //! The tree-walking evaluator has been removed. All evaluation goes through
 //! the bytecode compiler + VM (`crate::program::run_program`).
-//! The thin wrapper functions below exist for backward compatibility with
-//! dispatch modules that call `apply_lambda` / `lisp_eval`.
 
 use crate::types::{Env, EvalState, LispVal};
 
-// Re-export helpers so dispatch modules can use super::is_truthy etc.
+// Re-export helpers so dispatch modules can use crate::helpers::is_truthy etc.
 pub use crate::helpers::is_truthy;
 
 pub mod crypto;
@@ -90,26 +88,6 @@ pub fn lisp_to_json(val: &LispVal) -> serde_json::Value {
 /// Evaluate a single Lisp expression (delegates to VM via run_program).
 pub fn lisp_eval(expr: &LispVal, env: &mut Env, state: &mut EvalState) -> Result<LispVal, String> {
     crate::program::run_program(&[expr.clone()], env, state)
-}
-
-/// Apply a function value to arguments (delegates to VM).
-pub fn apply_lambda(
-    func: &LispVal,
-    args: &[LispVal],
-    env: &mut Env,
-    state: &mut EvalState,
-) -> Result<LispVal, String> {
-    crate::bytecode::vm_call_lambda(func, args, env, state)
-}
-
-/// Dispatch a builtin call by name with evaluated arguments.
-pub fn dispatch_call_with_args(
-    name: &str,
-    args: &[LispVal],
-    env: &mut Env,
-    state: &mut EvalState,
-) -> Result<LispVal, String> {
-    crate::bytecode::eval_builtin(name, args, Some(env), Some(state))
 }
 
 /// Call a function value (delegates to VM).

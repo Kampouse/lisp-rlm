@@ -24,11 +24,11 @@
 //! - [`types`] — value types ([`LispVal`], [`Env`], [`EvalState`])
 //! - [`parser`] — S-expression parser
 //! - [`helpers`] — utility predicates
-//! - [`eval`] — builtin dispatch modules, JSON helpers, and backward-compat stubs
+//! - [`dispatch`] — builtin dispatch modules, JSON helpers, and backward-compat stubs
 //! - [`typing`] — type inference and checking
 
 pub mod bytecode;
-mod eval;
+mod dispatch;
 pub mod helpers;
 pub mod parser;
 pub mod types;
@@ -42,9 +42,9 @@ pub mod verifier;
 pub use bytecode::{exec_compiled_loop, run_compiled_lambda, try_compile_lambda, try_compile_loop};
 pub use wasm_emit::{compile_near_from_exprs, compile_near_to_wat_from_exprs};
 #[cfg(not(target_arch = "wasm32"))]
-pub use eval::llm_provider::{GenericProvider, LlmProvider, LlmResponse};
+pub use dispatch::llm_provider::{GenericProvider, LlmProvider, LlmResponse};
 #[cfg(not(target_arch = "wasm32"))]
-pub use eval::{apply_lambda, lisp_eval};
+pub use dispatch::lisp_eval;
 pub use helpers::{is_builtin_name, is_truthy};
 pub use parser::parse_all;
 pub use parser::parse_all_spanned;

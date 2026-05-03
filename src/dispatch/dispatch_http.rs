@@ -1,7 +1,7 @@
 //! HTTP builtins: http-get, http-post, http-get-json.
 
-use super::json_to_lisp;
-use super::llm_provider::{SHARED_CLIENT, SHARED_RUNTIME};
+use crate::dispatch::json_to_lisp;
+use crate::dispatch::llm_provider::{SHARED_CLIENT, SHARED_RUNTIME};
 use crate::helpers::*;
 use crate::types::LispVal;
 

@@ -209,7 +209,7 @@ pub fn handle(
             let exprs = crate::parser::parse_all(&code)?;
             let mut result = LispVal::Nil;
             for expr in &exprs {
-                result = super::lisp_eval(expr, env, state)?;
+                result = crate::dispatch::lisp_eval(expr, env, state)?;
             }
             Ok(Some(result))
         }
@@ -330,7 +330,7 @@ pub fn handle(
         "save-state" => {
             let path = as_str(&args[0])?;
             let val = args.get(1).cloned().unwrap_or(LispVal::Nil);
-            let json = super::lisp_to_json(&val);
+            let json = crate::dispatch::lisp_to_json(&val);
             let pretty =
                 serde_json::to_string_pretty(&json).map_err(|e| format!("save-state: {}", e))?;
             // Create parent dirs if needed
@@ -346,7 +346,7 @@ pub fn handle(
                 std::fs::read_to_string(path).map_err(|e| format!("load-state: {}", e))?;
             let json: serde_json::Value =
                 serde_json::from_str(&content).map_err(|e| format!("load-state: {}", e))?;
-            Ok(Some(super::json_to_lisp(json)))
+            Ok(Some(crate::dispatch::json_to_lisp(json)))
         }
 
         // --- LLM / RLM builtins ---
@@ -354,13 +354,13 @@ pub fn handle(
             let prompt = args.first()
                 .ok_or("llm: need prompt string")?
                 .to_string();
-            let provider = crate::eval::llm_provider::GenericProvider::from_env()
+            let provider = crate::dispatch::llm_provider::GenericProvider::from_env()
                 .map_err(|e| format!("llm: {}", e))?;
             let messages = vec![
                 ("system".to_string(), "You are a helpful assistant. Respond concisely.".to_string()),
                 ("user".to_string(), prompt),
             ];
-            use crate::eval::llm_provider::LlmProvider;
+            use crate::dispatch::llm_provider::LlmProvider;
             let response = provider.complete(&messages, Some(1024))
                 .map_err(|e| format!("llm: {}", e))?;
             Ok(Some(LispVal::Str(response.content)))

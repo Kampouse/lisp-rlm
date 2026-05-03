@@ -14,7 +14,7 @@ fn call_val(
     env: &mut Env,
     state: &mut EvalState,
 ) -> Result<LispVal, String> {
-    super::call_val(func, args, env, state)
+    crate::dispatch::call_val(func, args, env, state)
 }
 
 pub fn handle(
@@ -445,7 +445,7 @@ pub fn handle(
                 use std::sync::Arc;
                 let func = Arc::new(func.clone());
                 let provider = state.llm_provider.as_ref().map(|p| p.box_clone());
-                let rt = &crate::eval::llm_provider::SHARED_RUNTIME;
+                let rt = &crate::dispatch::llm_provider::SHARED_RUNTIME;
 
                 let results: Result<Vec<LispVal>, String> = rt.block_on(async {
                     let mut tasks = Vec::with_capacity(lst.len());
@@ -458,7 +458,7 @@ pub fn handle(
                         );
                         tasks.push(tokio::spawn(async move {
                             tokio::task::yield_now().await;
-                            super::call_val(&f, &[elem], &mut task_env, &mut task_state)
+                            crate::dispatch::call_val(&f, &[elem], &mut task_env, &mut task_state)
                         }));
                     }
                     let mut out = Vec::with_capacity(tasks.len());
@@ -482,7 +482,7 @@ pub fn handle(
                     Some(other) => return Err(format!("par-map: expected list, got {}", other)),
                     None => return Err("par-map: need (f list)".into()),
                 };
-                let results: Result<Vec<LispVal>, String> = lst.iter().map(|elem| super::call_val(func, &[elem.clone()], env, state)).collect();
+                let results: Result<Vec<LispVal>, String> = lst.iter().map(|elem| crate::dispatch::call_val(func, &[elem.clone()], env, state)).collect();
                 Ok(Some(LispVal::List(results?)))
             }
         }
@@ -503,7 +503,7 @@ pub fn handle(
                 use std::sync::Arc;
                 let func = Arc::new(func.clone());
                 let provider = state.llm_provider.as_ref().map(|p| p.box_clone());
-                let rt = &crate::eval::llm_provider::SHARED_RUNTIME;
+                let rt = &crate::dispatch::llm_provider::SHARED_RUNTIME;
 
                 let results: Result<Vec<LispVal>, String> = rt.block_on(async {
                     let mut tasks = Vec::with_capacity(lst.len());
@@ -517,8 +517,8 @@ pub fn handle(
                         let e = elem.clone();
                         tasks.push(tokio::spawn(async move {
                             tokio::task::yield_now().await;
-                            let result = super::call_val(&f, &[e], &mut task_env, &mut task_state)?;
-                            Ok::<bool, String>(super::is_truthy(&result))
+                            let result = crate::dispatch::call_val(&f, &[e], &mut task_env, &mut task_state)?;
+                            Ok::<bool, String>(crate::helpers::is_truthy(&result))
                         }));
                     }
                     let mut out = Vec::new();
@@ -546,7 +546,7 @@ pub fn handle(
                 };
                 let mut out = Vec::new();
                 for elem in lst {
-                    if super::is_truthy(&super::call_val(func, &[elem.clone()], env, state)?) {
+                    if crate::helpers::is_truthy(&crate::dispatch::call_val(func, &[elem.clone()], env, state)?) {
                         out.push(elem);
                     }
                 }
@@ -765,7 +765,7 @@ pub fn handle(
                 {
                     let expr = l[1].clone();
                     // Eval the expression directly
-                    super::lisp_eval(&expr, env, state).map(Some)
+                    crate::dispatch::lisp_eval(&expr, env, state).map(Some)
                 }
                 _ => Err("force: need promise".into()),
             }

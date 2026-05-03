@@ -279,7 +279,7 @@ pub struct EvalState {
     /// Pluggable LLM provider — when `None`, LLM builtins return an error.
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg(not(target_arch = "wasm32"))]
-    pub llm_provider: Option<Box<dyn crate::eval::llm_provider::LlmProvider>>,
+    pub llm_provider: Option<Box<dyn crate::dispatch::llm_provider::LlmProvider>>,
     /// Call trace ring buffer — last N function calls for error reporting.
     pub call_trace: Vec<String>,
     /// Maximum call trace depth to keep (ring buffer).
@@ -332,7 +332,7 @@ impl EvalState {
     /// Set the LLM provider for this state.
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn set_llm_provider(&mut self, provider: Box<dyn crate::eval::llm_provider::LlmProvider>) {
+    pub fn set_llm_provider(&mut self, provider: Box<dyn crate::dispatch::llm_provider::LlmProvider>) {
         self.llm_provider = Some(provider);
     }
 
@@ -342,7 +342,7 @@ impl EvalState {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn fork_for_parallel(
         &self,
-        provider: Option<Box<dyn crate::eval::llm_provider::LlmProvider>>,
+        provider: Option<Box<dyn crate::dispatch::llm_provider::LlmProvider>>,
     ) -> EvalState {
         EvalState {
             eval_count: 0,

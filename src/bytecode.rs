@@ -869,7 +869,7 @@ impl LoopCompiler {
                             if list.len() != 2 {
                                 return false;
                             }
-                            match crate::eval::quasiquote::expand_quasiquote(&list[1]) {
+                            match crate::dispatch::quasiquote::expand_quasiquote(&list[1]) {
                                 Ok(expansion) => self.compile_expr(&expansion, outer_env),
                                 Err(_) => false,
                             }
@@ -5223,7 +5223,7 @@ pub fn eval_builtin(
                 // dispatch_collections needs env for user-function calls (HOFs).
                 // Pass the REAL env (not a clone) so that set! mutations inside
                 // HOF lambdas (e.g., for-each, map, filter) are visible to the caller.
-                match crate::eval::dispatch_collections::handle(name, args, e, s) {
+                match crate::dispatch::dispatch_collections::handle(name, args, e, s) {
                     Ok(Some(result)) => return Ok(result),
                     Err(e) => return Err(e),
                     Ok(None) => {}
@@ -5233,30 +5233,30 @@ pub fn eval_builtin(
                 let mut env_clone = e.clone();
                 // dispatch_state needs env and state
                 #[cfg(not(target_arch = "wasm32"))]
-                match crate::eval::dispatch_state::handle(name, args, &mut env_clone, s) {
+                match crate::dispatch::dispatch_state::handle(name, args, &mut env_clone, s) {
                     Ok(Some(result)) => return Ok(result),
                     Err(e) => return Err(e),
                     Ok(None) => {}
                 }
             }
-            if let Ok(Some(result)) = crate::eval::dispatch_arithmetic::handle(name, args) {
+            if let Ok(Some(result)) = crate::dispatch::dispatch_arithmetic::handle(name, args) {
                 return Ok(result);
             }
-            if let Ok(Some(result)) = crate::eval::dispatch_strings::handle(name, args) {
+            if let Ok(Some(result)) = crate::dispatch::dispatch_strings::handle(name, args) {
                 return Ok(result);
             }
-            if let Ok(Some(result)) = crate::eval::dispatch_predicates::handle(name, args) {
-                return Ok(result);
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Ok(Some(result)) = crate::eval::dispatch_json::handle(name, args) {
+            if let Ok(Some(result)) = crate::dispatch::dispatch_predicates::handle(name, args) {
                 return Ok(result);
             }
             #[cfg(not(target_arch = "wasm32"))]
-            if let Ok(Some(result)) = crate::eval::dispatch_http::handle(name, args) {
+            if let Ok(Some(result)) = crate::dispatch::dispatch_json::handle(name, args) {
                 return Ok(result);
             }
-            if let Ok(Some(result)) = crate::eval::dispatch_types::handle(name, args) {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Ok(Some(result)) = crate::dispatch::dispatch_http::handle(name, args) {
+                return Ok(result);
+            }
+            if let Ok(Some(result)) = crate::dispatch::dispatch_types::handle(name, args) {
                 return Ok(result);
             }
 
