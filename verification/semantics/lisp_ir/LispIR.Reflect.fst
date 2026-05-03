@@ -302,18 +302,18 @@ let sound_if_nil a b =
       | Some vm_v -> val_eq vm_v (Num b)
       | None -> false)
 
-// Str is always truthy
-val sound_if_str : a:int -> b:int -> Lemma
+// Str is always truthy (symbolic s — compiler emits PushStr s directly)
+val sound_if_str : s:string -> a:int -> b:int -> Lemma
   (requires True)
-  (ensures (match compile_lambda 100 [] (List [Sym "if"; Str "hi"; Num a; Num b]) with
+  (ensures (match compile_lambda 100 [] (List [Sym "if"; Str s; Num a; Num b]) with
     | None -> false
     | Some code ->
       match vm_top 100 (fresh_vm code) with
       | Some vm_v -> val_eq vm_v (Num a)
       | None -> false))
-let sound_if_str a b =
+let sound_if_str s a b =
   assert_norm (
-    match compile_lambda 100 [] (List [Sym "if"; Str "hi"; Num a; Num b]) with
+    match compile_lambda 100 [] (List [Sym "if"; Str s; Num a; Num b]) with
     | None -> false
     | Some code ->
       match vm_top 100 (fresh_vm code) with
@@ -462,3 +462,56 @@ let sound_max_lt x y =
       match vm_top 100 { stack = []; slots = [Num x; Num y]; pc = 0; code = code; ok = true } with
       | Some vm_v -> val_eq vm_v (Num y)
       | None -> false)
+
+// ============================================================
+// Float: is_truthy (Float _) = true -> then-branch
+// ============================================================
+val sound_if_float : f:ffloat -> a:int -> b:int -> Lemma
+  (requires True)
+  (ensures (match compile_lambda 100 [] (List [Sym "if"; Float f; Num a; Num b]) with
+    | None -> false
+    | Some code ->
+      match vm_top 100 (fresh_vm code) with
+      | Some vm_v -> val_eq vm_v (Num a)
+      | None -> false))
+let sound_if_float f a b =
+  assert_norm (
+    match compile_lambda 100 [] (List [Sym "if"; Float f; Num a; Num b]) with
+    | None -> false
+    | Some code ->
+      match vm_top 100 (fresh_vm code) with
+      | Some vm_v -> val_eq vm_v (Num a)
+      | None -> false)
+
+// ============================================================
+// sound_if_compile_time: unified if-soundness for all
+// compile-time pushable lisp_val constructors.
+//
+// Proves: for any pushable test value, the VM takes the same
+// branch as the source evaluator's is_truthy would dictate.
+//
+// Covers 5 of 12 constructors (the ones the compiler emits
+// directly via push instructions):
+//   Num, Float, Bool, Nil, Str
+//
+// NOT covered (require let-binding or runtime construction):
+//   Sym, List, Pair, Dict, Lambda, BuiltinFn, Tagged
+// ============================================================
+val sound_if_compile_time : test:lisp_val -> a:int -> b:int -> Lemma
+  (requires (match test with
+    | Num _ | Float _ | Bool _ | Nil | Str _ -> true
+    | _ -> false))
+  (ensures (match compile_lambda 100 [] (List [Sym "if"; test; Num a; Num b]) with
+    | None -> false
+    | Some code ->
+      match vm_top 100 (fresh_vm code) with
+      | Some vm_v -> val_eq vm_v (Num (if is_truthy test then a else b))
+      | None -> false))
+let sound_if_compile_time test a b =
+  match test with
+  | Num n   -> sound_if_num n a b
+  | Float f -> sound_if_float f a b
+  | Bool bv -> sound_if_concrete bv a b
+  | Nil     -> sound_if_nil a b
+  | Str s   -> sound_if_str s a b
+  | _       -> ()
