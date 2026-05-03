@@ -3617,3 +3617,71 @@ fn test_differential_fuzz_dangerous_sequences() {
         .unwrap();
     child.join().unwrap();
 }
+
+// ---------------------------------------------------------------------------
+// Fused HOF opcode: SpecVM placeholder consistency check
+// ---------------------------------------------------------------------------
+// MapOp/FilterOp/ReduceOp are NOT supported in run_compiled_loop (the loop VM
+// rejects them). They only work in run_compiled_lambda (full VM with closures).
+// The SpecVM has placeholder semantics for these opcodes (push empty/identity).
+// This test verifies that the SpecVM placeholder behavior is consistent.
+#[test]
+fn test_specvm_fused_hof_placeholders() {
+    // MapOp: SpecVM pops list, pushes empty list
+    let code = vec![
+        Op::PushI64(1),
+        Op::PushI64(2),
+        Op::MakeList(2),
+        Op::MapOp(0),
+        Op::Return,
+    ];
+    let spec = SpecVm::new(code, vec![LispVal::Num(0)]).run(1000);
+    assert!(matches!(spec, SpecResult::Value(LispVal::List(ref l)) if l.is_empty()),
+        "MapOp placeholder should return empty list, got {:?}", spec);
+
+    // FilterOp: SpecVM pops list, pushes empty list
+    let code2 = vec![
+        Op::PushI64(1),
+        Op::PushI64(2),
+        Op::MakeList(2),
+        Op::FilterOp(0),
+        Op::Return,
+    ];
+    let spec2 = SpecVm::new(code2, vec![LispVal::Num(0)]).run(1000);
+    assert!(matches!(spec2, SpecResult::Value(LispVal::List(ref l)) if l.is_empty()),
+        "FilterOp placeholder should return empty list, got {:?}", spec2);
+
+    // ReduceOp: SpecVM pops list + init, pushes init
+    let code3 = vec![
+        Op::PushI64(42),  // init
+        Op::PushI64(1),
+        Op::PushI64(2),
+        Op::MakeList(2),  // list
+        Op::ReduceOp(0),
+        Op::Return,
+    ];
+    let spec3 = SpecVm::new(code3, vec![LispVal::Num(0)]).run(1000);
+    assert_eq!(spec3, SpecResult::Value(LispVal::Num(42)),
+        "ReduceOp placeholder should return init value, got {:?}", spec3);
+
+    // MapOp on empty list: should still return empty list
+    let code4 = vec![
+        Op::MakeList(0),
+        Op::MapOp(0),
+        Op::Return,
+    ];
+    let spec4 = SpecVm::new(code4, vec![LispVal::Num(0)]).run(1000);
+    assert!(matches!(spec4, SpecResult::Value(LispVal::List(ref l)) if l.is_empty()),
+        "MapOp empty list should return empty list, got {:?}", spec4);
+
+    // ReduceOp on empty list: should return init
+    let code5 = vec![
+        Op::PushI64(99),
+        Op::MakeList(0),
+        Op::ReduceOp(0),
+        Op::Return,
+    ];
+    let spec5 = SpecVm::new(code5, vec![LispVal::Num(0)]).run(1000);
+    assert_eq!(spec5, SpecResult::Value(LispVal::Num(99)),
+        "ReduceOp empty list should return init, got {:?}", spec5);
+}
