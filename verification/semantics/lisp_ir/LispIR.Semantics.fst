@@ -330,6 +330,58 @@ let eval_op op s =
   | ReduceOp _ ->
     Ok {s with pc = s.pc + 1}
 
+  // --- Vec opcodes ---
+  | MakeVec n ->
+    (match pop_n s.stack n with
+     | Some (items, rest) ->
+       // items are in reverse stack order; reverse to get original order
+       let reversed = list_rev items in
+       Ok {s with stack = Vec (vec_of_list reversed) :: rest; pc = s.pc + 1}
+     | None -> Err "MakeVec: stack underflow")
+
+  | VecNth -> (match s.stack with
+    | idx_val :: vec_val :: rest ->
+      let idx = num_val idx_val in
+      if idx < 0 then Ok {s with stack = Nil :: rest; pc = s.pc + 1}
+      else
+        let r = vec_nth vec_val idx in
+        (match r with
+         | Some v -> Ok {s with stack = v :: rest; pc = s.pc + 1}
+         | None -> Ok {s with stack = Nil :: rest; pc = s.pc + 1})
+    | _ -> Err "VecNth: stack underflow")
+
+  | VecLen -> (match s.stack with
+    | vec_val :: rest ->
+      Ok {s with stack = Num (vec_len vec_val) :: rest; pc = s.pc + 1}
+    | _ -> Err "VecLen: stack underflow")
+
+  | VecConj -> (match s.stack with
+    | val0 :: vec_val :: rest ->
+      Ok {s with stack = vec_conj val0 vec_val :: rest; pc = s.pc + 1}
+    | _ -> Err "VecConj: stack underflow")
+
+  | VecContains -> (match s.stack with
+    | val0 :: vec_val :: rest ->
+      // noeq on lisp_val prevents Seq.mem; use explicit loop with lisp_eq on primitives
+      let has = vec_contains_prim val0 vec_val in
+      Ok {s with stack = Bool has :: rest; pc = s.pc + 1}
+    | _ -> Err "VecContains: stack underflow")
+
+  | VecSlice -> (match s.stack with
+    | end_val :: start_val :: vec_val :: rest ->
+      let start_i = num_val start_val in
+      let end_i = num_val end_val in
+      let sliced = vec_slice vec_val start_i end_i in
+      Ok {s with stack = Vec sliced :: rest; pc = s.pc + 1}
+    | _ -> Err "VecSlice: stack underflow")
+
+  | VecAssoc -> (match s.stack with
+    | val0 :: idx_val :: vec_val :: rest ->
+      let idx = num_val idx_val in
+      let updated = vec_assoc idx val0 vec_val in
+      Ok {s with stack = updated :: rest; pc = s.pc + 1}
+    | _ -> Err "VecAssoc: stack underflow")
+
   // --- Default: advance PC for all remaining ops ---
   | _ -> Ok {s with pc = s.pc + 1}
 

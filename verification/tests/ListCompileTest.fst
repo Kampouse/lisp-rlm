@@ -133,7 +133,13 @@ val compile_list_three_spec : a:int -> b:int -> c:int -> Lemma
       | [PushI64 x; PushI64 y; PushI64 z; MakeList 3; Return] -> x = a && y = b && z = c
       | _ -> false)
     | None -> false))
-let compile_list_three_spec a b c = admit()
+let compile_list_three_spec a b c =
+  assert_norm (
+    match compile_lambda 100 [] (List [Sym "list"; Num a; Num b; Num c]) with
+    | Some code -> (match code with
+      | [PushI64 x; PushI64 y; PushI64 z; MakeList 3; Return] -> x = a && y = b && z = c
+      | _ -> false)
+    | None -> false)
 
 // ============================================================
 // LAYER 3: End-to-end compiler correctness
@@ -183,7 +189,16 @@ val cc_list_two : a:int -> b:int -> Lemma
         | _ -> false)
       | _ -> false)
    | None -> false)
-let cc_list_two a b = ()
+let cc_list_two a b =
+  assert_norm (
+    match compile_lambda 100 [] (List [Sym "list"; Num a; Num b]) with
+   | Some code ->
+     (match eval_steps 100 (fresh_vm code) with
+      | Ok s' -> (match s'.stack with
+        | List [Num x; Num y] :: _ -> x = a && y = b
+        | _ -> false)
+      | _ -> false)
+   | None -> false)
 
 // (list a b c) → VM produces List [Num a; Num b; Num c]
 // Admit — 3-deep list construction exceeds normalizer capacity
