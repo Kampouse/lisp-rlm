@@ -1,8 +1,10 @@
 #!/bin/bash
 cd "$(dirname "$0")"
 
-FSTAR="/tmp/fstar-install/fstar/bin/fstar.exe"
-OPTS="--odir build --cache_dir build/cache --include semantics/lisp --include semantics/lisp_ir --include tests"
+eval $(opam env --switch=fstar 2>/dev/null)
+FSTAR="fstar.exe"
+CORE_OPTS="--odir build --cache_dir build/cache --include semantics/lisp --include semantics/lisp_ir --include tests --z3rlimit 20"
+UNIV_OPTS="--odir build --cache_dir build/cache --include semantics/lisp --include semantics/lisp_ir --z3rlimit 20"
 
 mkdir -p build/cache
 LOG=build/verify_results.txt
@@ -11,8 +13,9 @@ LOG=build/verify_results.txt
 verify() {
     local file="$1"
     local label="$2"
+    local opts="${3:-$CORE_OPTS}"
     local start=$(date +%s%N 2>/dev/null || python3 -c "import time; print(int(time.time()*1e9))")
-    if $FSTAR $OPTS "$file" >build/tmp_out.txt 2>&1; then
+    if $FSTAR $opts "$file" >build/tmp_out.txt 2>&1; then
         local end=$(date +%s%N 2>/dev/null || python3 -c "import time; print(int(time.time()*1e9))")
         local elapsed=$(( (end - start) / 1000000 ))
         echo "✓ $label (${elapsed}ms)" >> "$LOG"
@@ -86,8 +89,17 @@ verify tests/ShadowingFix.fst "ShadowingFix"
 verify tests/StackHeight.fst "StackHeight"
 verify tests/ProgramDesugaring.fst "ProgramDesugaring"
 verify tests/PureTypeSoundness.fst "PureTypeSoundness"
-# Layer 8: Universality
-verify semantics/lisp_ir/LispIR.Universality.fst "LispIR.Universality"
+# Layer 8: Universality (leaf modules — verified individually to avoid Z3 state pollution)
+verify universality/UnivMinskyModel.fst "UnivMinskyModel" "$UNIV_OPTS"
+verify universality/UnivSimHints.fst "UnivSimHints" "$UNIV_OPTS"
+verify universality/UnivAdd05.fst "UnivTrace 0+5" "$UNIV_OPTS"
+verify universality/UnivTraceOnePlusOne.fst "UnivTrace 1+1" "$UNIV_OPTS"
+verify universality/UnivTraceThreePlusFour.fst "UnivTrace 3+4" "$UNIV_OPTS"
+verify universality/UnivIterative.fst "UnivIterative" "$UNIV_OPTS"
+verify universality/UnivConstruct.fst "UnivConstruct" "$UNIV_OPTS"
+verify universality/UnivTaggedDispatch.fst "UnivTaggedDispatch" "$UNIV_OPTS"
+verify universality/UnivTaggedTestDispatch.fst "UnivTaggedTestDispatch" "$UNIV_OPTS"
+verify universality/UnivSelfInterp.fst "UnivSelfInterp" "$UNIV_OPTS"
 
 echo ""
 echo "=== SUMMARY ===" >> "$LOG"
