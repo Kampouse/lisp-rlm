@@ -15,19 +15,8 @@ open FStar.List.Tot
 open FStar.Pervasives
 open FStar.Char
 open FStar.String
+open LispIR.AST
 module U32 = FStar.UInt32
-
-// ============================================================
-// TOKEN TYPE
-// ============================================================
-
-type token =
-  | TkLParen
-  | TkRParen
-  | TkNum of int
-  | TkSym of string
-  | TkBool of bool
-  | TkStr of string
 
 // ============================================================
 // CHARACTER CLASSIFICATION

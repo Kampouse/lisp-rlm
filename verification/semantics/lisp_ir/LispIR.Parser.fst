@@ -2,6 +2,7 @@ module LispIR.Parser
 (** Fuel-based Parser — F* Formal Verification
 
     Tokens -> AST for the mini language.
+    Uses shared AST from LispIR.AST.
 
     Grammar:
       expr    = atom | '(' compound ')'
@@ -15,36 +16,11 @@ module LispIR.Parser
     Returns option (expr * remaining_tokens).
     Fuel = number of tokens remaining.
     Each recursive call consumes 1 fuel.
-
-    NOTE: Higher-order arguments (mk) cause SMT termination issues.
-    Constructors are inlined per operator.
 *)
 
 open FStar.List.Tot
 open FStar.Pervasives
-
-// ============================================================
-// TYPES
-// ============================================================
-
-type expr =
-  | ENum of int
-  | EAdd of (expr * expr)
-  | ESub of (expr * expr)
-  | ENeg of expr
-  | EIfGt of (expr * expr * expr * expr)
-  | ELet of (string * expr * expr)
-  | EBool of bool
-  | EStr of string
-  | ESym of string
-
-type token =
-  | TkLParen
-  | TkRParen
-  | TkNum of int
-  | TkSym of string
-  | TkBool of bool
-  | TkStr of string
+open LispIR.AST
 
 // ============================================================
 // PARSER — mutually recursive with fuel
@@ -54,14 +30,14 @@ let rec parse_expr (fuel:int) (toks:list token) : Tot (option (expr * (list toke
   if fuel <= 0 then None
   else match toks with
   | [] -> None
-  | TkNum n :: rest -> Some (ENum n, rest)
-  | TkBool b :: rest -> Some (EBool b, rest)
-  | TkStr s :: rest -> Some (EStr s, rest)
+  | TkNum n :: rest -> Some (Num n, rest)
+  | TkBool b :: rest -> Some (Bool b, rest)
+  | TkStr s :: rest -> Some (Str s, rest)
   | TkSym name :: rest ->
     if name = "+" || name = "-" || name = "neg"
     || name = "if-gt" || name = "let"
     then None
-    else Some (ESym name, rest)
+    else Some (Sym name, rest)
   | TkLParen :: rest -> parse_compound (fuel - 1) rest
   | TkRParen :: _ -> None
 
@@ -86,7 +62,7 @@ and parse_add (fuel:int) (toks:list token) : Tot (option (expr * (list token))) 
       | None -> None
       | Some (b, r2) ->
         match r2 with
-        | TkRParen :: r3 -> Some (EAdd (a, b), r3)
+        | TkRParen :: r3 -> Some (Add (a, b), r3)
         | _ -> None
 
 and parse_sub (fuel:int) (toks:list token) : Tot (option (expr * (list token))) (decreases fuel) =
@@ -99,7 +75,7 @@ and parse_sub (fuel:int) (toks:list token) : Tot (option (expr * (list token))) 
       | None -> None
       | Some (b, r2) ->
         match r2 with
-        | TkRParen :: r3 -> Some (ESub (a, b), r3)
+        | TkRParen :: r3 -> Some (Sub (a, b), r3)
         | _ -> None
 
 and parse_neg (fuel:int) (toks:list token) : Tot (option (expr * (list token))) (decreases fuel) =
@@ -109,7 +85,7 @@ and parse_neg (fuel:int) (toks:list token) : Tot (option (expr * (list token))) 
     | None -> None
     | Some (a, r1) ->
       match r1 with
-      | TkRParen :: r2 -> Some (ENeg a, r2)
+      | TkRParen :: r2 -> Some (Neg a, r2)
       | _ -> None
 
 and parse_if_gt (fuel:int) (toks:list token) : Tot (option (expr * (list token))) (decreases fuel) =
@@ -128,7 +104,7 @@ and parse_if_gt (fuel:int) (toks:list token) : Tot (option (expr * (list token))
           | None -> None
           | Some (el, r4) ->
             match r4 with
-            | TkRParen :: r5 -> Some (EIfGt (ca, cb, t, el), r5)
+            | TkRParen :: r5 -> Some (IfGt (ca, cb, t, el), r5)
             | _ -> None
 
 and parse_let (fuel:int) (toks:list token) : Tot (option (expr * (list token))) (decreases fuel) =
@@ -143,7 +119,7 @@ and parse_let (fuel:int) (toks:list token) : Tot (option (expr * (list token))) 
         | None -> None
         | Some (body, r3) ->
           (match r3 with
-           | TkRParen :: r4 -> Some (ELet (name, val_e, body), r4)
+           | TkRParen :: r4 -> Some (Let (name, val_e, body), r4)
            | _ -> None)))
   | _ -> None
 
