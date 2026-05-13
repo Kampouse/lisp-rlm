@@ -2,9 +2,7 @@ use lisp_rlm_wasm::EvalState;
 use lisp_rlm_wasm::*;
 
 fn run_program(code: &str, env: &mut Env, state: &mut EvalState) -> Result<String, String> {
-    let result = lisp_rlm_wasm::program::run_program(
-        &parse_all(code)?, env, state
-    )?;
+    let result = lisp_rlm_wasm::program::run_program(&parse_all(code)?, env, state)?;
     Ok(result.to_string())
 }
 use std::panic::{catch_unwind, AssertUnwindSafe};

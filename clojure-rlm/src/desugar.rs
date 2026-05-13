@@ -10,8 +10,8 @@
 //! - Maps → (hash-map ...) calls
 //! - Sets → (hash-set ...) calls
 
-use lisp_rlm_wasm::LispVal;
 use crate::parser::CljVal;
+use lisp_rlm_wasm::LispVal;
 
 pub fn desugar(val: &CljVal) -> LispVal {
     match val {
@@ -132,7 +132,11 @@ fn desugar_fn(items: &[CljVal]) -> LispVal {
 
     let body = if items.len() > 3 {
         let body_exprs: Vec<LispVal> = items[2..].iter().map(desugar).collect();
-        { let mut b = vec![LispVal::Sym("begin".into())]; b.extend(body_exprs); LispVal::List(b) }
+        {
+            let mut b = vec![LispVal::Sym("begin".into())];
+            b.extend(body_exprs);
+            LispVal::List(b)
+        }
     } else {
         desugar(&items[2])
     };
@@ -178,7 +182,11 @@ fn desugar_let(items: &[CljVal]) -> LispVal {
 
     let body = if items.len() > 3 {
         let body_exprs: Vec<LispVal> = items[2..].iter().map(desugar).collect();
-        { let mut b = vec![LispVal::Sym("begin".into())]; b.extend(body_exprs); LispVal::List(b) }
+        {
+            let mut b = vec![LispVal::Sym("begin".into())];
+            b.extend(body_exprs);
+            LispVal::List(b)
+        }
     } else {
         desugar(&items[2])
     };
@@ -198,7 +206,11 @@ fn desugar_when(items: &[CljVal]) -> LispVal {
     let test = desugar(&items[1]);
     let body = if items.len() > 3 {
         let body_exprs: Vec<LispVal> = items[2..].iter().map(desugar).collect();
-        { let mut b = vec![LispVal::Sym("begin".into())]; b.extend(body_exprs); LispVal::List(b) }
+        {
+            let mut b = vec![LispVal::Sym("begin".into())];
+            b.extend(body_exprs);
+            LispVal::List(b)
+        }
     } else {
         desugar(&items[2])
     };
@@ -213,7 +225,11 @@ fn desugar_when_not(items: &[CljVal]) -> LispVal {
     let test = LispVal::List(vec![LispVal::Sym("not".into()), desugar(&items[1])]);
     let body = if items.len() > 3 {
         let body_exprs: Vec<LispVal> = items[2..].iter().map(desugar).collect();
-        { let mut b = vec![LispVal::Sym("begin".into())]; b.extend(body_exprs); LispVal::List(b) }
+        {
+            let mut b = vec![LispVal::Sym("begin".into())];
+            b.extend(body_exprs);
+            LispVal::List(b)
+        }
     } else {
         desugar(&items[2])
     };
@@ -227,7 +243,11 @@ fn desugar_if_not(items: &[CljVal]) -> LispVal {
     }
     let test = LispVal::List(vec![LispVal::Sym("not".into()), desugar(&items[1])]);
     let then = desugar(&items[2]);
-    let else_ = if items.len() > 3 { desugar(&items[3]) } else { LispVal::Nil };
+    let else_ = if items.len() > 3 {
+        desugar(&items[3])
+    } else {
+        LispVal::Nil
+    };
     LispVal::List(vec![LispVal::Sym("if".into()), test, then, else_])
 }
 
@@ -293,12 +313,20 @@ fn thread_into(acc: LispVal, form: &CljVal, last: bool) -> LispVal {
             if last {
                 let mut all_args = args;
                 all_args.push(acc);
-                { let mut c = vec![func]; c.extend(all_args); LispVal::List(c) }
+                {
+                    let mut c = vec![func];
+                    c.extend(all_args);
+                    LispVal::List(c)
+                }
             } else {
                 // Insert acc as second arg (after function)
                 let mut all_args = vec![acc];
                 all_args.extend(args);
-                { let mut c = vec![func]; c.extend(all_args); LispVal::List(c) }
+                {
+                    let mut c = vec![func];
+                    c.extend(all_args);
+                    LispVal::List(c)
+                }
             }
         }
         // (-> x f) shorthand — just (f x)
@@ -347,13 +375,20 @@ fn desugar_anon_fn(body: &[CljVal]) -> LispVal {
                 }
             }
             CljVal::List(items) | CljVal::Vec(items) | CljVal::AnonFn(items) => {
-                for item in items { scan(item, max, rest); }
+                for item in items {
+                    scan(item, max, rest);
+                }
             }
             CljVal::Map(pairs) => {
-                for (k, v) in pairs { scan(k, max, rest); scan(v, max, rest); }
+                for (k, v) in pairs {
+                    scan(k, max, rest);
+                    scan(v, max, rest);
+                }
             }
             CljVal::Set(items) => {
-                for item in items { scan(item, max, rest); }
+                for item in items {
+                    scan(item, max, rest);
+                }
             }
             _ => {}
         }
@@ -373,11 +408,14 @@ fn desugar_anon_fn(body: &[CljVal]) -> LispVal {
 
     // Body items are the raw contents of #(...) — treat as a function call form
     // #(* % 2) → body = [Sym("*"), Sym("%"), Num(2)] → desugar as (* %1 2)
-    let desugared_body: Vec<LispVal> = body.iter().map(|b| {
-        let mut d = desugar(b);
-        rename_bare_percent(&mut d);
-        d
-    }).collect();
+    let desugared_body: Vec<LispVal> = body
+        .iter()
+        .map(|b| {
+            let mut d = desugar(b);
+            rename_bare_percent(&mut d);
+            d
+        })
+        .collect();
 
     let body_expr = if desugared_body.len() == 1 {
         desugared_body.into_iter().next().unwrap()

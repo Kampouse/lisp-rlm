@@ -19,12 +19,10 @@ fn eval_val(code: &str) -> LispVal {
         }
     }
     match parse_all(code) {
-        Ok(exprs) => {
-            match lisp_rlm_wasm::program::run_program(&exprs, &mut env, &mut state) {
-                Ok(v) => v,
-                Err(e) => LispVal::Str(format!("ERROR: {}", e)),
-            }
-        }
+        Ok(exprs) => match lisp_rlm_wasm::program::run_program(&exprs, &mut env, &mut state) {
+            Ok(v) => v,
+            Err(e) => LispVal::Str(format!("ERROR: {}", e)),
+        },
         Err(e) => LispVal::Str(format!("PARSE ERROR: {}", e)),
     }
 }

@@ -9,7 +9,10 @@
 //!   3. Random bytecode programs are generated, run through both, and results compared
 //!   4. Known-good programs from the F* verification serve as regression tests
 
-use lisp_rlm_wasm::bytecode::{make_test_compiled_lambda, make_test_compiled_loop, run_compiled_lambda, run_compiled_loop_test, run_lambda_test, validate_slot_indices, BinOp, Op, Ty};
+use lisp_rlm_wasm::bytecode::{
+    make_test_compiled_lambda, make_test_compiled_loop, run_compiled_lambda,
+    run_compiled_loop_test, run_lambda_test, validate_slot_indices, BinOp, Op, Ty,
+};
 use lisp_rlm_wasm::types::LispVal;
 
 // ---------------------------------------------------------------------------
@@ -111,7 +114,8 @@ impl SpecVm {
                     }
                 }
                 Op::GetDefaultSlot(a, b, c, d) => {
-                    for &(name, idx) in &[("map", *a), ("key", *b), ("default", *c), ("result", *d)] {
+                    for &(name, idx) in &[("map", *a), ("key", *b), ("default", *c), ("result", *d)]
+                    {
                         if idx >= slots_len {
                             return Err(format!(
                                 "GetDefaultSlot {} slot {} out of bounds (slots_len={})",
@@ -225,8 +229,16 @@ impl SpecVm {
             (LispVal::List(a), LispVal::List(b)) => a == b,
             (LispVal::Vec(a), LispVal::Vec(b)) => a == b,
             (
-                LispVal::Tagged { type_name: ta, variant_id: va, fields: fa },
-                LispVal::Tagged { type_name: tb, variant_id: vb, fields: fb },
+                LispVal::Tagged {
+                    type_name: ta,
+                    variant_id: va,
+                    fields: fa,
+                },
+                LispVal::Tagged {
+                    type_name: tb,
+                    variant_id: vb,
+                    fields: fb,
+                },
             ) => ta == tb && va == vb && fa == fb,
             _ => false,
         }
@@ -333,13 +345,17 @@ impl SpecVm {
                     _ => {
                         // Float promotion: if either operand is Float, do float arithmetic
                         if matches!(&a, LispVal::Float(_)) || matches!(&b, LispVal::Float(_)) {
-                            self.stack.push(LispVal::Float(Self::spec_to_f64(&a) + Self::spec_to_f64(&b)));
+                            self.stack.push(LispVal::Float(
+                                Self::spec_to_f64(&a) + Self::spec_to_f64(&b),
+                            ));
                         } else {
                             let av = Self::spec_num_val(&a);
                             let bv = Self::spec_num_val(&b);
                             match av.checked_add(bv) {
                                 Some(r) => self.stack.push(LispVal::Num(r)),
-                                None => return StepOutcome::Error("integer overflow in add".into()),
+                                None => {
+                                    return StepOutcome::Error("integer overflow in add".into())
+                                }
                             }
                         }
                     }
@@ -361,13 +377,17 @@ impl SpecVm {
                     }
                     _ => {
                         if matches!(&a, LispVal::Float(_)) || matches!(&b, LispVal::Float(_)) {
-                            self.stack.push(LispVal::Float(Self::spec_to_f64(&a) - Self::spec_to_f64(&b)));
+                            self.stack.push(LispVal::Float(
+                                Self::spec_to_f64(&a) - Self::spec_to_f64(&b),
+                            ));
                         } else {
                             let av = Self::spec_num_val(&a);
                             let bv = Self::spec_num_val(&b);
                             match av.checked_sub(bv) {
                                 Some(r) => self.stack.push(LispVal::Num(r)),
-                                None => return StepOutcome::Error("integer overflow in sub".into()),
+                                None => {
+                                    return StepOutcome::Error("integer overflow in sub".into())
+                                }
                             }
                         }
                     }
@@ -389,13 +409,17 @@ impl SpecVm {
                     }
                     _ => {
                         if matches!(&a, LispVal::Float(_)) || matches!(&b, LispVal::Float(_)) {
-                            self.stack.push(LispVal::Float(Self::spec_to_f64(&a) * Self::spec_to_f64(&b)));
+                            self.stack.push(LispVal::Float(
+                                Self::spec_to_f64(&a) * Self::spec_to_f64(&b),
+                            ));
                         } else {
                             let av = Self::spec_num_val(&a);
                             let bv = Self::spec_num_val(&b);
                             match av.checked_mul(bv) {
                                 Some(r) => self.stack.push(LispVal::Num(r)),
-                                None => return StepOutcome::Error("integer overflow in mul".into()),
+                                None => {
+                                    return StepOutcome::Error("integer overflow in mul".into())
+                                }
                             }
                         }
                     }
@@ -436,7 +460,9 @@ impl SpecVm {
                             let bv = Self::spec_num_val(&b);
                             match av.checked_div(bv) {
                                 Some(r) => self.stack.push(LispVal::Num(r)),
-                                None => return StepOutcome::Error("integer overflow in div".into()),
+                                None => {
+                                    return StepOutcome::Error("integer overflow in div".into())
+                                }
                             }
                         }
                     }
@@ -477,7 +503,9 @@ impl SpecVm {
                             let bv = Self::spec_num_val(&b);
                             match av.checked_rem(bv) {
                                 Some(r) => self.stack.push(LispVal::Num(r)),
-                                None => return StepOutcome::Error("integer overflow in mod".into()),
+                                None => {
+                                    return StepOutcome::Error("integer overflow in mod".into())
+                                }
                             }
                         }
                     }
@@ -493,25 +521,45 @@ impl SpecVm {
             Op::Lt => {
                 let b = self.pop();
                 let a = self.pop();
-                self.stack.push(LispVal::Bool(Self::spec_num_cmp(&a, &b, |x, y| x < y, |x, y| x < y)));
+                self.stack.push(LispVal::Bool(Self::spec_num_cmp(
+                    &a,
+                    &b,
+                    |x, y| x < y,
+                    |x, y| x < y,
+                )));
                 self.pc += 1;
             }
             Op::Le => {
                 let b = self.pop();
                 let a = self.pop();
-                self.stack.push(LispVal::Bool(Self::spec_num_cmp(&a, &b, |x, y| x <= y, |x, y| x <= y)));
+                self.stack.push(LispVal::Bool(Self::spec_num_cmp(
+                    &a,
+                    &b,
+                    |x, y| x <= y,
+                    |x, y| x <= y,
+                )));
                 self.pc += 1;
             }
             Op::Gt => {
                 let b = self.pop();
                 let a = self.pop();
-                self.stack.push(LispVal::Bool(Self::spec_num_cmp(&a, &b, |x, y| x > y, |x, y| x > y)));
+                self.stack.push(LispVal::Bool(Self::spec_num_cmp(
+                    &a,
+                    &b,
+                    |x, y| x > y,
+                    |x, y| x > y,
+                )));
                 self.pc += 1;
             }
             Op::Ge => {
                 let b = self.pop();
                 let a = self.pop();
-                self.stack.push(LispVal::Bool(Self::spec_num_cmp(&a, &b, |x, y| x >= y, |x, y| x >= y)));
+                self.stack.push(LispVal::Bool(Self::spec_num_cmp(
+                    &a,
+                    &b,
+                    |x, y| x >= y,
+                    |x, y| x >= y,
+                )));
                 self.pc += 1;
             }
             Op::Not => {
@@ -527,36 +575,36 @@ impl SpecVm {
                         let av = Self::spec_typed_i64_val(&a);
                         let bv = Self::spec_typed_i64_val(&b);
                         self.stack.push(match binop {
-                            BinOp::Add => {
-                                match av.checked_add(bv) {
-                                    Some(r) => LispVal::Num(r),
-                                    None => return StepOutcome::Error("integer overflow in add".into()),
+                            BinOp::Add => match av.checked_add(bv) {
+                                Some(r) => LispVal::Num(r),
+                                None => {
+                                    return StepOutcome::Error("integer overflow in add".into())
                                 }
-                            }
-                            BinOp::Sub => {
-                                match av.checked_sub(bv) {
-                                    Some(r) => LispVal::Num(r),
-                                    None => return StepOutcome::Error("integer overflow in sub".into()),
+                            },
+                            BinOp::Sub => match av.checked_sub(bv) {
+                                Some(r) => LispVal::Num(r),
+                                None => {
+                                    return StepOutcome::Error("integer overflow in sub".into())
                                 }
-                            }
-                            BinOp::Mul => {
-                                match av.checked_mul(bv) {
-                                    Some(r) => LispVal::Num(r),
-                                    None => return StepOutcome::Error("integer overflow in mul".into()),
+                            },
+                            BinOp::Mul => match av.checked_mul(bv) {
+                                Some(r) => LispVal::Num(r),
+                                None => {
+                                    return StepOutcome::Error("integer overflow in mul".into())
                                 }
-                            }
-                            BinOp::Div => {
-                                match av.checked_div(bv) {
-                                    Some(r) => LispVal::Num(r),
-                                    None => return StepOutcome::Error("integer overflow in div".into()),
+                            },
+                            BinOp::Div => match av.checked_div(bv) {
+                                Some(r) => LispVal::Num(r),
+                                None => {
+                                    return StepOutcome::Error("integer overflow in div".into())
                                 }
-                            }
-                            BinOp::Mod => {
-                                match av.checked_rem(bv) {
-                                    Some(r) => LispVal::Num(r),
-                                    None => return StepOutcome::Error("integer overflow in mod".into()),
+                            },
+                            BinOp::Mod => match av.checked_rem(bv) {
+                                Some(r) => LispVal::Num(r),
+                                None => {
+                                    return StepOutcome::Error("integer overflow in mod".into())
                                 }
-                            }
+                            },
                             BinOp::Lt => LispVal::Bool(av < bv),
                             BinOp::Le => LispVal::Bool(av <= bv),
                             BinOp::Gt => LispVal::Bool(av > bv),
@@ -633,7 +681,10 @@ impl SpecVm {
                 // Matches Rust: DON'T write back to slot
                 let v = self.slot_num(*s);
                 match v.checked_add(*imm) {
-                    Some(r) => { self.stack.push(LispVal::Num(r)); self.pc += 1; }
+                    Some(r) => {
+                        self.stack.push(LispVal::Num(r));
+                        self.pc += 1;
+                    }
                     None => return StepOutcome::Error("integer overflow in add".into()),
                 }
             }
@@ -641,14 +692,20 @@ impl SpecVm {
                 // Matches Rust: DON'T write back to slot
                 let v = self.slot_num(*s);
                 match v.checked_sub(*imm) {
-                    Some(r) => { self.stack.push(LispVal::Num(r)); self.pc += 1; }
+                    Some(r) => {
+                        self.stack.push(LispVal::Num(r));
+                        self.pc += 1;
+                    }
                     None => return StepOutcome::Error("integer overflow in sub".into()),
                 }
             }
             Op::SlotMulImm(s, imm) => {
                 let v = self.slot_num(*s);
                 match v.checked_mul(*imm) {
-                    Some(r) => { self.stack.push(LispVal::Num(r)); self.pc += 1; }
+                    Some(r) => {
+                        self.stack.push(LispVal::Num(r));
+                        self.pc += 1;
+                    }
                     None => return StepOutcome::Error("integer overflow in mul".into()),
                 }
             }
@@ -798,9 +855,11 @@ impl SpecVm {
             Op::TagTest(ref type_name, variant_id) => {
                 // Peek at stack top — does NOT pop
                 let matches = match self.stack.last() {
-                    Some(LispVal::Tagged { type_name: tn, variant_id: vid, .. }) => {
-                        tn == type_name && *vid == *variant_id
-                    }
+                    Some(LispVal::Tagged {
+                        type_name: tn,
+                        variant_id: vid,
+                        ..
+                    }) => tn == type_name && *vid == *variant_id,
                     _ => false,
                 };
                 self.stack.push(LispVal::Bool(matches));
@@ -814,9 +873,7 @@ impl SpecVm {
                         self.stack.push(field);
                     }
                     _ => {
-                        return StepOutcome::Error(
-                            "get-field: expected tagged value".into(),
-                        );
+                        return StepOutcome::Error("get-field: expected tagged value".into());
                     }
                 }
                 self.pc += 1;
@@ -848,7 +905,9 @@ impl SpecVm {
                             if let LispVal::Str(k) = &key {
                                 m.insert(k.clone(), val);
                             } else {
-                                return StepOutcome::Error("dict-mut-set: key must be string".into());
+                                return StepOutcome::Error(
+                                    "dict-mut-set: key must be string".into(),
+                                );
                             }
                         }
                         _ => return StepOutcome::Error("dict-mut-set: slot is not a map".into()),
@@ -869,12 +928,10 @@ impl SpecVm {
                 let map_val = self.get_slot(*map_slot);
                 let key_val = self.get_slot(*key_slot);
                 let result = match (&map_val, &key_val) {
-                    (LispVal::Map(m), LispVal::Str(k)) => {
-                        match m.get(k) {
-                            Some(v) if !matches!(v, LispVal::Nil) => v.clone(),
-                            _ => self.get_slot(*default_slot),
-                        }
-                    }
+                    (LispVal::Map(m), LispVal::Str(k)) => match m.get(k) {
+                        Some(v) if !matches!(v, LispVal::Nil) => v.clone(),
+                        _ => self.get_slot(*default_slot),
+                    },
                     _ => self.get_slot(*default_slot),
                 };
                 // Write result to result_slot
@@ -898,18 +955,14 @@ impl SpecVm {
             | Op::LoadGlobal(_)
             | Op::TracePush(_)
             | Op::TracePop => {
-                return StepOutcome::Error(
-                    "unsupported op in spec VM".into(),
-                );
+                return StepOutcome::Error("unsupported op in spec VM".into());
             }
             // --- DictGet/DictSet: supported by loop VM ---
             Op::DictGet => {
                 let key = self.pop();
                 let map = self.pop();
                 let result = match (&map, &key) {
-                    (LispVal::Map(m), LispVal::Str(k)) => {
-                        m.get(k).cloned().unwrap_or(LispVal::Nil)
-                    }
+                    (LispVal::Map(m), LispVal::Str(k)) => m.get(k).cloned().unwrap_or(LispVal::Nil),
                     _ => LispVal::Nil,
                 };
                 self.stack.push(result);
@@ -920,13 +973,9 @@ impl SpecVm {
                 let key = self.pop();
                 let map = self.pop();
                 let result = match (&map, &key) {
-                    (LispVal::Map(m), LispVal::Str(k)) => {
-                        LispVal::Map(m.update(k.clone(), val))
-                    }
+                    (LispVal::Map(m), LispVal::Str(k)) => LispVal::Map(m.update(k.clone(), val)),
                     _ => {
-                        return StepOutcome::Error(
-                            "dict/set: need (map key value)".into(),
-                        );
+                        return StepOutcome::Error("dict/set: need (map key value)".into());
                     }
                 };
                 self.stack.push(result);
@@ -935,7 +984,10 @@ impl SpecVm {
             // --- BuiltinCall: needs eval_builtin which we can't easily call from here ---
             // For fuzzing purposes, just return an error (the loop VM would call eval_builtin)
             Op::BuiltinCall(name, _) => {
-                return StepOutcome::Error(format!("BuiltinCall({}) not supported in spec VM", name));
+                return StepOutcome::Error(format!(
+                    "BuiltinCall({}) not supported in spec VM",
+                    name
+                ));
             }
             // Vec opcodes: SpecVM handles them concretely
             Op::MakeVec(n) => {
@@ -1008,14 +1060,12 @@ impl SpecVm {
                 let vec_val = self.pop();
                 match &vec_val {
                     LispVal::Vec(items) => {
-                        let found = items.iter().any(|item| {
-                            match (item, &val) {
-                                (LispVal::Num(a), LispVal::Num(b)) => a == b,
-                                (LispVal::Bool(a), LispVal::Bool(b)) => a == b,
-                                (LispVal::Str(a), LispVal::Str(b)) => a == b,
-                                (LispVal::Nil, LispVal::Nil) => true,
-                                _ => false,
-                            }
+                        let found = items.iter().any(|item| match (item, &val) {
+                            (LispVal::Num(a), LispVal::Num(b)) => a == b,
+                            (LispVal::Bool(a), LispVal::Bool(b)) => a == b,
+                            (LispVal::Str(a), LispVal::Str(b)) => a == b,
+                            (LispVal::Nil, LispVal::Nil) => true,
+                            _ => false,
                         });
                         self.stack.push(LispVal::Bool(found));
                     }
@@ -1030,7 +1080,13 @@ impl SpecVm {
                 match &vec_val {
                     LispVal::Vec(items) => {
                         let s = if start < 0 { 0 } else { start as usize };
-                        let e = if end < 0 { 0 } else if (end as usize) > items.len() { items.len() } else { end as usize };
+                        let e = if end < 0 {
+                            0
+                        } else if (end as usize) > items.len() {
+                            items.len()
+                        } else {
+                            end as usize
+                        };
                         if s < e {
                             self.stack.push(LispVal::Vec(items[s..e].to_vec()));
                         } else {
@@ -1084,7 +1140,9 @@ struct Rng {
 
 impl Rng {
     fn new(seed: u64) -> Self {
-        Self { state: if seed == 0 { 1 } else { seed } }
+        Self {
+            state: if seed == 0 { 1 } else { seed },
+        }
     }
 
     fn next_u64(&mut self) -> u64 {
@@ -1140,16 +1198,26 @@ impl Rng {
     /// Exercises overflow paths that [-5,5] never hits.
     fn boundary_i64(&mut self) -> i64 {
         const EDGES: &[i64] = &[
-            0, 1, -1,
-            i64::MAX, i64::MIN,
-            i64::MAX - 1, i64::MIN + 1,
-            i64::MAX / 2, i64::MIN / 2,
-            255, 256, -256,
-            65535, 65536,
+            0,
+            1,
+            -1,
+            i64::MAX,
+            i64::MIN,
+            i64::MAX - 1,
+            i64::MIN + 1,
+            i64::MAX / 2,
+            i64::MIN / 2,
+            255,
+            256,
+            -256,
+            65535,
+            65536,
             // Square roots of i64::MAX (overflow under mul)
-            3037000499, -3037000500,
+            3037000499,
+            -3037000500,
             // Near overflow for i32::MAX/MIN (truncation edges)
-            2147483647, -2147483648,
+            2147483647,
+            -2147483648,
         ];
         if self.next_usize(2) == 0 {
             // 50%: pick from the boundary table
@@ -1164,19 +1232,28 @@ impl Rng {
     /// Exercises NaN/Inf propagation, underflow, and precision edges.
     fn boundary_f64(&mut self) -> f64 {
         const EDGES: &[f64] = &[
-            0.0, -0.0, 1.0, -1.0,
-            f64::INFINITY, f64::NEG_INFINITY,
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
             f64::NAN,
-            f64::MAX, f64::MIN,
+            f64::MAX,
+            f64::MIN,
             f64::MIN_POSITIVE, // smallest positive normal
             f64::EPSILON,      // 1.0 + EPS != 1.0
             // Values where float→int truncation changes behavior
-            3.7, -2.3, 0.999999, -0.000001,
+            3.7,
+            -2.3,
+            0.999999,
+            -0.000001,
             // Large enough to overflow i64 when cast
-            1e19, -1e19,
+            1e19,
+            -1e19,
             // Precision boundaries
-            9007199254740992.0,  // 2^53 (first non-representable integer)
-            9007199254740993.0,  // rounds to 2^53
+            9007199254740992.0, // 2^53 (first non-representable integer)
+            9007199254740993.0, // rounds to 2^53
         ];
         if self.next_usize(2) == 0 {
             // 50%: pick from the boundary table
@@ -1351,7 +1428,9 @@ fn fuzz_op_to_op(rng: &mut Rng, fop: FuzzOp, max_pc: usize, num_slots: usize) ->
         FuzzOp::PushNil => Op::PushNil,
         FuzzOp::Dup => Op::Dup,
         FuzzOp::Pop => Op::Pop,
-        FuzzOp::StoreSlot => Op::StoreSlot(rng.next_usize(if num_slots == 0 { 1 } else { num_slots })),
+        FuzzOp::StoreSlot => {
+            Op::StoreSlot(rng.next_usize(if num_slots == 0 { 1 } else { num_slots }))
+        }
         FuzzOp::Add => Op::Add,
         FuzzOp::Sub => Op::Sub,
         FuzzOp::Mul => Op::Mul,
@@ -1370,20 +1449,67 @@ fn fuzz_op_to_op(rng: &mut Rng, fop: FuzzOp, max_pc: usize, num_slots: usize) ->
         FuzzOp::RecurDirect => {
             Op::RecurDirect(rng.next_usize(if num_slots == 0 { 1 } else { num_slots }))
         }
-        FuzzOp::SlotAddImm => Op::SlotAddImm(rng.next_usize(if num_slots == 0 { 1 } else { num_slots }), rng.boundary_i64()),
-        FuzzOp::SlotSubImm => Op::SlotSubImm(rng.next_usize(if num_slots == 0 { 1 } else { num_slots }), rng.boundary_i64()),
-        FuzzOp::SlotMulImm => Op::SlotMulImm(rng.next_usize(if num_slots == 0 { 1 } else { num_slots }), rng.boundary_i64()),
-        FuzzOp::SlotDivImm => Op::SlotDivImm(rng.next_usize(if num_slots == 0 { 1 } else { num_slots }), rng.boundary_i64()),
-        FuzzOp::SlotEqImm => Op::SlotEqImm(rng.next_usize(if num_slots == 0 { 1 } else { num_slots }), rng.boundary_i64()),
-        FuzzOp::SlotLtImm => Op::SlotLtImm(rng.next_usize(if num_slots == 0 { 1 } else { num_slots }), rng.boundary_i64()),
-        FuzzOp::SlotLeImm => Op::SlotLeImm(rng.next_usize(if num_slots == 0 { 1 } else { num_slots }), rng.boundary_i64()),
-        FuzzOp::SlotGtImm => Op::SlotGtImm(rng.next_usize(if num_slots == 0 { 1 } else { num_slots }), rng.boundary_i64()),
-        FuzzOp::SlotGeImm => Op::SlotGeImm(rng.next_usize(if num_slots == 0 { 1 } else { num_slots }), rng.boundary_i64()),
-        FuzzOp::JumpIfSlotLtImm => Op::JumpIfSlotLtImm(rng.next_usize(if num_slots == 0 { 1 } else { num_slots }), rng.boundary_i64(), rng.next_usize(max_pc + 1)),
-        FuzzOp::JumpIfSlotLeImm => Op::JumpIfSlotLeImm(rng.next_usize(if num_slots == 0 { 1 } else { num_slots }), rng.boundary_i64(), rng.next_usize(max_pc + 1)),
-        FuzzOp::JumpIfSlotGtImm => Op::JumpIfSlotGtImm(rng.next_usize(if num_slots == 0 { 1 } else { num_slots }), rng.boundary_i64(), rng.next_usize(max_pc + 1)),
-        FuzzOp::JumpIfSlotGeImm => Op::JumpIfSlotGeImm(rng.next_usize(if num_slots == 0 { 1 } else { num_slots }), rng.boundary_i64(), rng.next_usize(max_pc + 1)),
-        FuzzOp::JumpIfSlotEqImm => Op::JumpIfSlotEqImm(rng.next_usize(if num_slots == 0 { 1 } else { num_slots }), rng.boundary_i64(), rng.next_usize(max_pc + 1)),
+        FuzzOp::SlotAddImm => Op::SlotAddImm(
+            rng.next_usize(if num_slots == 0 { 1 } else { num_slots }),
+            rng.boundary_i64(),
+        ),
+        FuzzOp::SlotSubImm => Op::SlotSubImm(
+            rng.next_usize(if num_slots == 0 { 1 } else { num_slots }),
+            rng.boundary_i64(),
+        ),
+        FuzzOp::SlotMulImm => Op::SlotMulImm(
+            rng.next_usize(if num_slots == 0 { 1 } else { num_slots }),
+            rng.boundary_i64(),
+        ),
+        FuzzOp::SlotDivImm => Op::SlotDivImm(
+            rng.next_usize(if num_slots == 0 { 1 } else { num_slots }),
+            rng.boundary_i64(),
+        ),
+        FuzzOp::SlotEqImm => Op::SlotEqImm(
+            rng.next_usize(if num_slots == 0 { 1 } else { num_slots }),
+            rng.boundary_i64(),
+        ),
+        FuzzOp::SlotLtImm => Op::SlotLtImm(
+            rng.next_usize(if num_slots == 0 { 1 } else { num_slots }),
+            rng.boundary_i64(),
+        ),
+        FuzzOp::SlotLeImm => Op::SlotLeImm(
+            rng.next_usize(if num_slots == 0 { 1 } else { num_slots }),
+            rng.boundary_i64(),
+        ),
+        FuzzOp::SlotGtImm => Op::SlotGtImm(
+            rng.next_usize(if num_slots == 0 { 1 } else { num_slots }),
+            rng.boundary_i64(),
+        ),
+        FuzzOp::SlotGeImm => Op::SlotGeImm(
+            rng.next_usize(if num_slots == 0 { 1 } else { num_slots }),
+            rng.boundary_i64(),
+        ),
+        FuzzOp::JumpIfSlotLtImm => Op::JumpIfSlotLtImm(
+            rng.next_usize(if num_slots == 0 { 1 } else { num_slots }),
+            rng.boundary_i64(),
+            rng.next_usize(max_pc + 1),
+        ),
+        FuzzOp::JumpIfSlotLeImm => Op::JumpIfSlotLeImm(
+            rng.next_usize(if num_slots == 0 { 1 } else { num_slots }),
+            rng.boundary_i64(),
+            rng.next_usize(max_pc + 1),
+        ),
+        FuzzOp::JumpIfSlotGtImm => Op::JumpIfSlotGtImm(
+            rng.next_usize(if num_slots == 0 { 1 } else { num_slots }),
+            rng.boundary_i64(),
+            rng.next_usize(max_pc + 1),
+        ),
+        FuzzOp::JumpIfSlotGeImm => Op::JumpIfSlotGeImm(
+            rng.next_usize(if num_slots == 0 { 1 } else { num_slots }),
+            rng.boundary_i64(),
+            rng.next_usize(max_pc + 1),
+        ),
+        FuzzOp::JumpIfSlotEqImm => Op::JumpIfSlotEqImm(
+            rng.next_usize(if num_slots == 0 { 1 } else { num_slots }),
+            rng.boundary_i64(),
+            rng.next_usize(max_pc + 1),
+        ),
         FuzzOp::RecurIncAccum => {
             let s = if num_slots >= 2 {
                 rng.next_usize(if num_slots == 0 { 1 } else { num_slots })
@@ -1397,13 +1523,19 @@ fn fuzz_op_to_op(rng: &mut Rng, fop: FuzzOp, max_pc: usize, num_slots: usize) ->
             };
             Op::RecurIncAccum(s, a, 1, rng.next_range(2, 8), rng.next_usize(max_pc + 1))
         }
-        FuzzOp::StoreAndLoadSlot => Op::StoreAndLoadSlot(rng.next_usize(if num_slots == 0 { 1 } else { num_slots })),
-        FuzzOp::ReturnSlot => Op::ReturnSlot(rng.next_usize(if num_slots == 0 { 1 } else { num_slots })),
+        FuzzOp::StoreAndLoadSlot => {
+            Op::StoreAndLoadSlot(rng.next_usize(if num_slots == 0 { 1 } else { num_slots }))
+        }
+        FuzzOp::ReturnSlot => {
+            Op::ReturnSlot(rng.next_usize(if num_slots == 0 { 1 } else { num_slots }))
+        }
         FuzzOp::PushStr => {
             // Generate a short random string from a small alphabet
             const CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789_";
             let len = rng.next_usize(4) + 1; // 1..4 chars
-            let s: String = (0..len).map(|_| CHARS[rng.next_usize(CHARS.len())] as char).collect();
+            let s: String = (0..len)
+                .map(|_| CHARS[rng.next_usize(CHARS.len())] as char)
+                .collect();
             Op::PushStr(s)
         }
         FuzzOp::MakeList => {
@@ -1412,16 +1544,32 @@ fn fuzz_op_to_op(rng: &mut Rng, fop: FuzzOp, max_pc: usize, num_slots: usize) ->
         }
         FuzzOp::TypedBinOpI64 => {
             const BINOPS: &[BinOp] = &[
-                BinOp::Add, BinOp::Sub, BinOp::Mul, BinOp::Div, BinOp::Mod,
-                BinOp::Lt, BinOp::Le, BinOp::Gt, BinOp::Ge, BinOp::Eq,
+                BinOp::Add,
+                BinOp::Sub,
+                BinOp::Mul,
+                BinOp::Div,
+                BinOp::Mod,
+                BinOp::Lt,
+                BinOp::Le,
+                BinOp::Gt,
+                BinOp::Ge,
+                BinOp::Eq,
             ];
             let op = BINOPS[rng.next_usize(BINOPS.len())].clone();
             Op::TypedBinOp(op, Ty::I64)
         }
         FuzzOp::TypedBinOpF64 => {
             const BINOPS: &[BinOp] = &[
-                BinOp::Add, BinOp::Sub, BinOp::Mul, BinOp::Div, BinOp::Mod,
-                BinOp::Lt, BinOp::Le, BinOp::Gt, BinOp::Ge, BinOp::Eq,
+                BinOp::Add,
+                BinOp::Sub,
+                BinOp::Mul,
+                BinOp::Div,
+                BinOp::Mod,
+                BinOp::Lt,
+                BinOp::Le,
+                BinOp::Gt,
+                BinOp::Ge,
+                BinOp::Eq,
             ];
             let op = BINOPS[rng.next_usize(BINOPS.len())].clone();
             Op::TypedBinOp(op, Ty::F64)
@@ -1431,9 +1579,7 @@ fn fuzz_op_to_op(rng: &mut Rng, fop: FuzzOp, max_pc: usize, num_slots: usize) ->
         FuzzOp::DictMutSet => {
             Op::DictMutSet(rng.next_usize(if num_slots == 0 { 1 } else { num_slots }))
         }
-        FuzzOp::PushLiteral => {
-            Op::PushLiteral(rng.next_lisp_val())
-        }
+        FuzzOp::PushLiteral => Op::PushLiteral(rng.next_lisp_val()),
         FuzzOp::ConstructTag => {
             const TAG_NAMES: &[&str] = &["Option", "Result", "Pair", "Node", "Leaf"];
             let name = TAG_NAMES[rng.next_usize(TAG_NAMES.len())].to_string();
@@ -1463,7 +1609,10 @@ fn generate_random_program(rng: &mut Rng, num_slots: usize, code_len: usize) -> 
 
     // Build filtered op list: exclude slot-dependent ops when num_slots == 0
     let available_ops: Vec<&FuzzOp> = if num_slots == 0 {
-        FUZZ_OPS.iter().filter(|fop| !is_slot_dependent(fop)).collect()
+        FUZZ_OPS
+            .iter()
+            .filter(|fop| !is_slot_dependent(fop))
+            .collect()
     } else {
         FUZZ_OPS.iter().collect()
     };
@@ -1476,7 +1625,9 @@ fn generate_random_program(rng: &mut Rng, num_slots: usize, code_len: usize) -> 
     }
 
     // Ensure the program always terminates: if no Return/ReturnSlot at the end, append one
-    let has_terminal = code.iter().any(|op| matches!(op, Op::Return | Op::ReturnSlot(_)));
+    let has_terminal = code
+        .iter()
+        .any(|op| matches!(op, Op::Return | Op::ReturnSlot(_)));
     if !has_terminal {
         // Add a return at the end
         code.push(Op::Return);
@@ -1517,16 +1668,23 @@ fn differential_test_one(
         // Both VMs should error on OOB — this is a match.
         match spec_result {
             SpecResult::Error(_) => return None,
-            _ => return Some(format!(
-                "VALIDATION ERROR: {} but spec={:?}",
-                e, spec_result
-            )),
+            _ => {
+                return Some(format!(
+                    "VALIDATION ERROR: {} but spec={:?}",
+                    e, spec_result
+                ))
+            }
         }
     }
     let mut state = lisp_rlm_wasm::types::EvalState::new();
     state.eval_budget = (max_steps * 3) as u64;
     let rust_result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        run_compiled_lambda(&cl, &init_slots, &mut lisp_rlm_wasm::types::Env::new(), &mut state)
+        run_compiled_lambda(
+            &cl,
+            &init_slots,
+            &mut lisp_rlm_wasm::types::Env::new(),
+            &mut state,
+        )
     }));
 
     let rust_result = match rust_result {
@@ -1606,12 +1764,7 @@ fn differential_test_one(
 #[test]
 fn test_regression_direct_add() {
     // PushI64(3), PushI64(4), Add, Return → 7
-    let code = vec![
-        Op::PushI64(3),
-        Op::PushI64(4),
-        Op::Add,
-        Op::Return,
-    ];
+    let code = vec![Op::PushI64(3), Op::PushI64(4), Op::Add, Op::Return];
     let slots = vec![];
 
     let cl = make_test_compiled_loop(slots.clone(), code.clone(), vec![]);
@@ -1648,8 +1801,16 @@ fn test_regression_minsky_addition() {
     let rust_result = run_lambda_test(&cl, &args);
     let spec_result = SpecVm::new(code, args).run(1000);
 
-    assert_eq!(rust_result, Ok(LispVal::Num(7)), "Rust VM minsky addition failed");
-    assert_eq!(spec_result, SpecResult::Value(LispVal::Num(7)), "Spec VM minsky addition failed");
+    assert_eq!(
+        rust_result,
+        Ok(LispVal::Num(7)),
+        "Rust VM minsky addition failed"
+    );
+    assert_eq!(
+        spec_result,
+        SpecResult::Value(LispVal::Num(7)),
+        "Spec VM minsky addition failed"
+    );
 }
 
 #[test]
@@ -1689,10 +1850,7 @@ fn test_regression_sum_zero_to_n() {
     // Iteration 4: counter=4 < 5, accum = 6+4=10, counter=4+1=5, pc=0
     // Iteration 5: counter=5 >= 5, pc=1
     // pc=1: ReturnSlot(1) → return 10
-    let code = vec![
-        Op::RecurIncAccum(0, 1, 1, 5, 1),
-        Op::ReturnSlot(1),
-    ];
+    let code = vec![Op::RecurIncAccum(0, 1, 1, 5, 1), Op::ReturnSlot(1)];
     let args = vec![LispVal::Num(0), LispVal::Num(0)];
 
     let cl = make_test_compiled_lambda(2, 2, code.clone());
@@ -1700,7 +1858,11 @@ fn test_regression_sum_zero_to_n() {
     let spec_result = SpecVm::new(code, args).run(1000);
 
     assert_eq!(rust_result, Ok(LispVal::Num(10)), "Rust VM sum failed");
-    assert_eq!(spec_result, SpecResult::Value(LispVal::Num(10)), "Spec VM sum failed");
+    assert_eq!(
+        spec_result,
+        SpecResult::Value(LispVal::Num(10)),
+        "Spec VM sum failed"
+    );
 }
 
 #[test]
@@ -1755,7 +1917,11 @@ fn test_regression_comparison_and_branch() {
     assert_eq!(rust_result, Ok(LispVal::Num(5)), "positive branch (rust)");
 
     let spec_result = SpecVm::new(code.clone(), slots_pos).run(100);
-    assert_eq!(spec_result, SpecResult::Value(LispVal::Num(5)), "positive branch (spec)");
+    assert_eq!(
+        spec_result,
+        SpecResult::Value(LispVal::Num(5)),
+        "positive branch (spec)"
+    );
 
     // Test with zero value
     let slots_zero = vec![LispVal::Num(0)];
@@ -1764,7 +1930,11 @@ fn test_regression_comparison_and_branch() {
     assert_eq!(rust_result, Ok(LispVal::Num(42)), "zero branch (rust)");
 
     let spec_result = SpecVm::new(code.clone(), slots_zero).run(100);
-    assert_eq!(spec_result, SpecResult::Value(LispVal::Num(42)), "zero branch (spec)");
+    assert_eq!(
+        spec_result,
+        SpecResult::Value(LispVal::Num(42)),
+        "zero branch (spec)"
+    );
 
     // Test with negative value
     let slots_neg = vec![LispVal::Num(-3)];
@@ -1773,7 +1943,11 @@ fn test_regression_comparison_and_branch() {
     assert_eq!(rust_result, Ok(LispVal::Num(42)), "negative branch (rust)");
 
     let spec_result = SpecVm::new(code.clone(), slots_neg).run(100);
-    assert_eq!(spec_result, SpecResult::Value(LispVal::Num(42)), "negative branch (spec)");
+    assert_eq!(
+        spec_result,
+        SpecResult::Value(LispVal::Num(42)),
+        "negative branch (spec)"
+    );
 }
 
 #[test]
@@ -1787,7 +1961,10 @@ fn test_regression_division_by_zero() {
     let spec_result = SpecVm::new(code, slots).run(100);
 
     assert!(rust_result.is_err(), "Rust should error on div-by-zero");
-    assert!(matches!(spec_result, SpecResult::Error(_)), "Spec should error on div-by-zero");
+    assert!(
+        matches!(spec_result, SpecResult::Error(_)),
+        "Spec should error on div-by-zero"
+    );
 }
 
 #[test]
@@ -1836,20 +2013,23 @@ fn test_regression_slot_sub_imm_no_writeback() {
     //   2: Sub                → push (original - 1) - original = -1
     //   3: Return
     // With slots=[5]: push 4, push 5, sub → -1, return -1
-    let code = vec![
-        Op::SlotSubImm(0, 1),
-        Op::LoadSlot(0),
-        Op::Sub,
-        Op::Return,
-    ];
+    let code = vec![Op::SlotSubImm(0, 1), Op::LoadSlot(0), Op::Sub, Op::Return];
     let slots = vec![LispVal::Num(5)];
 
     let cl = make_test_compiled_loop(slots.clone(), code.clone(), vec![]);
     let rust_result = run_compiled_loop_test(&cl);
     let spec_result = SpecVm::new(code, slots).run(100);
 
-    assert_eq!(rust_result, Ok(LispVal::Num(-1)), "SlotSubImm should not write back (rust)");
-    assert_eq!(spec_result, SpecResult::Value(LispVal::Num(-1)), "SlotSubImm should not write back (spec)");
+    assert_eq!(
+        rust_result,
+        Ok(LispVal::Num(-1)),
+        "SlotSubImm should not write back (rust)"
+    );
+    assert_eq!(
+        spec_result,
+        SpecResult::Value(LispVal::Num(-1)),
+        "SlotSubImm should not write back (spec)"
+    );
 }
 
 #[test]
@@ -1896,12 +2076,7 @@ fn test_regression_float_coercion() {
     //   1: PushI64(2)
     //   2: Add → 3.7 + 2.0 = 5.7 (Float propagation)
     //   3: Return
-    let code = vec![
-        Op::PushFloat(3.7),
-        Op::PushI64(2),
-        Op::Add,
-        Op::Return,
-    ];
+    let code = vec![Op::PushFloat(3.7), Op::PushI64(2), Op::Add, Op::Return];
     let slots = vec![];
 
     let cl = make_test_compiled_loop(slots.clone(), code.clone(), vec![]);
@@ -1981,14 +2156,14 @@ fn test_regression_nested_recur() {
 
     let code = vec![
         Op::JumpIfSlotEqImm(0, 0, 8), // 0: if n==0, exit
-        Op::SlotSubImm(0, 1),          // 1: push n-1
-        Op::LoadSlot(2),               // 2: push b
-        Op::LoadSlot(1),               // 3: push a
-        Op::LoadSlot(2),               // 4: push b
-        Op::Add,                       // 5: push a+b
-        Op::Recur(3),                  // 6: recur(n-1, b, a+b)
-        Op::PushNil,                   // 7: (padding, not reached)
-        Op::ReturnSlot(1),             // 8: return b
+        Op::SlotSubImm(0, 1),         // 1: push n-1
+        Op::LoadSlot(2),              // 2: push b
+        Op::LoadSlot(1),              // 3: push a
+        Op::LoadSlot(2),              // 4: push b
+        Op::Add,                      // 5: push a+b
+        Op::Recur(3),                 // 6: recur(n-1, b, a+b)
+        Op::PushNil,                  // 7: (padding, not reached)
+        Op::ReturnSlot(1),            // 8: return b
     ];
     // fib(6) = 8: slots = [n=6, a=0, b=1]
     // Iterations: n=6,a=0,b=1 → n=5,a=1,b=1 → n=4,a=1,b=2 → n=3,a=2,b=3 → n=2,a=3,b=5 → n=1,a=5,b=8 → n=0 → return 8
@@ -1999,7 +2174,11 @@ fn test_regression_nested_recur() {
     let spec_result = SpecVm::new(code, args).run(1000);
 
     assert_eq!(rust_result, Ok(LispVal::Num(8)), "Rust fib(6) failed");
-    assert_eq!(spec_result, SpecResult::Value(LispVal::Num(8)), "Spec fib(6) failed");
+    assert_eq!(
+        spec_result,
+        SpecResult::Value(LispVal::Num(8)),
+        "Spec fib(6) failed"
+    );
 }
 
 #[test]
@@ -2047,13 +2226,19 @@ fn test_regression_jump_if_slot_ops() {
     let slots_taken = vec![LispVal::Num(3)];
     let cl = make_test_compiled_loop(slots_taken.clone(), code.clone(), vec![]);
     assert_eq!(run_compiled_loop_test(&cl), Ok(LispVal::Num(200)));
-    assert_eq!(SpecVm::new(code.clone(), slots_taken).run(100), SpecResult::Value(LispVal::Num(200)));
+    assert_eq!(
+        SpecVm::new(code.clone(), slots_taken).run(100),
+        SpecResult::Value(LispVal::Num(200))
+    );
 
     // slots[0] = 7 >= 5 → fall through → return 100
     let slots_fall = vec![LispVal::Num(7)];
     let cl = make_test_compiled_loop(slots_fall.clone(), code.clone(), vec![]);
     assert_eq!(run_compiled_loop_test(&cl), Ok(LispVal::Num(100)));
-    assert_eq!(SpecVm::new(code.clone(), slots_fall).run(100), SpecResult::Value(LispVal::Num(100)));
+    assert_eq!(
+        SpecVm::new(code.clone(), slots_fall).run(100),
+        SpecResult::Value(LispVal::Num(100))
+    );
 }
 
 #[test]
@@ -2061,26 +2246,46 @@ fn test_regression_truthiness() {
     // Test is_truthy: only Nil and Bool(false) are falsy
     //   0: PushBool(true), JumpIfTrue(2), PushI64(1), Return, PushI64(2), Return
     let code = vec![
-        Op::PushBool(true), Op::JumpIfTrue(4), Op::PushI64(1), Op::Return, Op::PushI64(2), Op::Return,
+        Op::PushBool(true),
+        Op::JumpIfTrue(4),
+        Op::PushI64(1),
+        Op::Return,
+        Op::PushI64(2),
+        Op::Return,
     ];
     let cl = make_test_compiled_lambda(0, 0, code.clone());
     assert_eq!(run_lambda_test(&cl, &[]), Ok(LispVal::Num(2))); // true → jump to 3 → return 2
 
     let code = vec![
-        Op::PushBool(false), Op::JumpIfTrue(4), Op::PushI64(1), Op::Return, Op::PushI64(2), Op::Return,
+        Op::PushBool(false),
+        Op::JumpIfTrue(4),
+        Op::PushI64(1),
+        Op::Return,
+        Op::PushI64(2),
+        Op::Return,
     ];
     let cl = make_test_compiled_lambda(0, 0, code.clone());
     assert_eq!(run_lambda_test(&cl, &[]), Ok(LispVal::Num(1))); // false → fall through → return 1
 
     let code = vec![
-        Op::PushNil, Op::JumpIfTrue(4), Op::PushI64(1), Op::Return, Op::PushI64(2), Op::Return,
+        Op::PushNil,
+        Op::JumpIfTrue(4),
+        Op::PushI64(1),
+        Op::Return,
+        Op::PushI64(2),
+        Op::Return,
     ];
     let cl = make_test_compiled_lambda(0, 0, code.clone());
     assert_eq!(run_lambda_test(&cl, &[]), Ok(LispVal::Num(1))); // nil → fall through → return 1
 
     // JumpIfFalse version
     let code = vec![
-        Op::PushNil, Op::JumpIfFalse(4), Op::PushI64(1), Op::Return, Op::PushI64(2), Op::Return,
+        Op::PushNil,
+        Op::JumpIfFalse(4),
+        Op::PushI64(1),
+        Op::Return,
+        Op::PushI64(2),
+        Op::Return,
     ];
     let cl = make_test_compiled_lambda(0, 0, code.clone());
     assert_eq!(run_lambda_test(&cl, &[]), Ok(LispVal::Num(2))); // nil → jump to 3 → return 2
@@ -2102,29 +2307,30 @@ fn test_differential_fuzz_short_programs() {
             let mut mismatches = 0;
             let total = 500;
 
-    for i in 0..total {
-        let num_slots = rng.next_usize(4); // 0-3 slots
-        let code_len = rng.next_usize(8) + 2; // 2-9 instructions
-        let code = generate_random_program(&mut rng, num_slots, code_len);
+            for i in 0..total {
+                let num_slots = rng.next_usize(4); // 0-3 slots
+                let code_len = rng.next_usize(8) + 2; // 2-9 instructions
+                let code = generate_random_program(&mut rng, num_slots, code_len);
 
-        // Generate random initial slot values
-        let mut init_slots = Vec::with_capacity(num_slots);
-        for _ in 0..num_slots {
-            init_slots.push(rng.next_lisp_val());
-        }
+                // Generate random initial slot values
+                let mut init_slots = Vec::with_capacity(num_slots);
+                for _ in 0..num_slots {
+                    init_slots.push(rng.next_lisp_val());
+                }
 
-        if let Some(desc) = differential_test_one(code, init_slots, 1000) {
-            mismatches += 1;
-            eprintln!("MISMATCH #{}: {}", i, desc);
-        }
-    }
+                if let Some(desc) = differential_test_one(code, init_slots, 1000) {
+                    mismatches += 1;
+                    eprintln!("MISMATCH #{}: {}", i, desc);
+                }
+            }
 
-    assert_eq!(
-        mismatches, 0,
-        "Found {} mismatches between spec VM and Rust VM in {} programs",
-        mismatches, total
-    );
-        }).unwrap();
+            assert_eq!(
+                mismatches, 0,
+                "Found {} mismatches between spec VM and Rust VM in {} programs",
+                mismatches, total
+            );
+        })
+        .unwrap();
     child.join().unwrap();
 }
 
@@ -2212,7 +2418,9 @@ fn test_differential_fuzz_slot_imm_ops() {
         }
 
         // Ensure termination
-        let has_terminal = code.iter().any(|op| matches!(op, Op::Return | Op::ReturnSlot(_)));
+        let has_terminal = code
+            .iter()
+            .any(|op| matches!(op, Op::Return | Op::ReturnSlot(_)));
         if !has_terminal {
             code.push(Op::Return);
         }
@@ -2353,47 +2561,161 @@ fn test_step_level_differential() {
     ///   3. Captures the result (stack top + slot values) via StoreSlot+Return
     ///
     /// Then compare spec_step vs rust_step for that opcode.
-
     let test_cases: Vec<(&str, Vec<Op>, Vec<LispVal>, Vec<LispVal>)> = vec![
         // (name, code, init_slots, expected_final_slots)
         // LoadSlot
-        ("LoadSlot", vec![Op::LoadSlot(0), Op::Return], vec![LispVal::Num(42)], vec![LispVal::Num(42)]),
+        (
+            "LoadSlot",
+            vec![Op::LoadSlot(0), Op::Return],
+            vec![LispVal::Num(42)],
+            vec![LispVal::Num(42)],
+        ),
         // StoreSlot
-        ("StoreSlot", vec![Op::PushI64(99), Op::StoreSlot(0), Op::ReturnSlot(0)], vec![LispVal::Num(0)], vec![LispVal::Num(99)]),
+        (
+            "StoreSlot",
+            vec![Op::PushI64(99), Op::StoreSlot(0), Op::ReturnSlot(0)],
+            vec![LispVal::Num(0)],
+            vec![LispVal::Num(99)],
+        ),
         // Add
-        ("Add", vec![Op::PushI64(3), Op::PushI64(4), Op::Add, Op::Return], vec![], vec![]),
+        (
+            "Add",
+            vec![Op::PushI64(3), Op::PushI64(4), Op::Add, Op::Return],
+            vec![],
+            vec![],
+        ),
         // Sub
-        ("Sub", vec![Op::PushI64(10), Op::PushI64(3), Op::Sub, Op::Return], vec![], vec![]),
+        (
+            "Sub",
+            vec![Op::PushI64(10), Op::PushI64(3), Op::Sub, Op::Return],
+            vec![],
+            vec![],
+        ),
         // Mul
-        ("Mul", vec![Op::PushI64(6), Op::PushI64(7), Op::Mul, Op::Return], vec![], vec![]),
+        (
+            "Mul",
+            vec![Op::PushI64(6), Op::PushI64(7), Op::Mul, Op::Return],
+            vec![],
+            vec![],
+        ),
         // Div
-        ("Div", vec![Op::PushI64(20), Op::PushI64(4), Op::Div, Op::Return], vec![], vec![]),
+        (
+            "Div",
+            vec![Op::PushI64(20), Op::PushI64(4), Op::Div, Op::Return],
+            vec![],
+            vec![],
+        ),
         // Mod
-        ("Mod", vec![Op::PushI64(17), Op::PushI64(5), Op::Mod, Op::Return], vec![], vec![]),
+        (
+            "Mod",
+            vec![Op::PushI64(17), Op::PushI64(5), Op::Mod, Op::Return],
+            vec![],
+            vec![],
+        ),
         // Eq true
-        ("Eq_true", vec![Op::PushI64(5), Op::PushI64(5), Op::Eq, Op::Return], vec![], vec![]),
+        (
+            "Eq_true",
+            vec![Op::PushI64(5), Op::PushI64(5), Op::Eq, Op::Return],
+            vec![],
+            vec![],
+        ),
         // Eq false
-        ("Eq_false", vec![Op::PushI64(5), Op::PushI64(6), Op::Eq, Op::Return], vec![], vec![]),
+        (
+            "Eq_false",
+            vec![Op::PushI64(5), Op::PushI64(6), Op::Eq, Op::Return],
+            vec![],
+            vec![],
+        ),
         // Lt true
-        ("Lt_true", vec![Op::PushI64(3), Op::PushI64(5), Op::Lt, Op::Return], vec![], vec![]),
+        (
+            "Lt_true",
+            vec![Op::PushI64(3), Op::PushI64(5), Op::Lt, Op::Return],
+            vec![],
+            vec![],
+        ),
         // Gt true
-        ("Gt_true", vec![Op::PushI64(5), Op::PushI64(3), Op::Gt, Op::Return], vec![], vec![]),
+        (
+            "Gt_true",
+            vec![Op::PushI64(5), Op::PushI64(3), Op::Gt, Op::Return],
+            vec![],
+            vec![],
+        ),
         // Dup
-        ("Dup", vec![Op::PushI64(7), Op::Dup, Op::Add, Op::Return], vec![], vec![]),
+        (
+            "Dup",
+            vec![Op::PushI64(7), Op::Dup, Op::Add, Op::Return],
+            vec![],
+            vec![],
+        ),
         // Pop
-        ("Pop", vec![Op::PushI64(1), Op::PushI64(2), Op::Pop, Op::Return], vec![], vec![]),
+        (
+            "Pop",
+            vec![Op::PushI64(1), Op::PushI64(2), Op::Pop, Op::Return],
+            vec![],
+            vec![],
+        ),
         // JumpIfTrue taken
-        ("JumpIfTrue_taken", vec![Op::PushI64(1), Op::JumpIfTrue(3), Op::PushI64(0), Op::Return, Op::PushI64(99), Op::Return], vec![], vec![]),
+        (
+            "JumpIfTrue_taken",
+            vec![
+                Op::PushI64(1),
+                Op::JumpIfTrue(3),
+                Op::PushI64(0),
+                Op::Return,
+                Op::PushI64(99),
+                Op::Return,
+            ],
+            vec![],
+            vec![],
+        ),
         // JumpIfFalse taken
-        ("JumpIfFalse_taken", vec![Op::PushNil, Op::JumpIfFalse(3), Op::PushI64(0), Op::Return, Op::PushI64(99), Op::Return], vec![], vec![]),
+        (
+            "JumpIfFalse_taken",
+            vec![
+                Op::PushNil,
+                Op::JumpIfFalse(3),
+                Op::PushI64(0),
+                Op::Return,
+                Op::PushI64(99),
+                Op::Return,
+            ],
+            vec![],
+            vec![],
+        ),
         // SlotAddImm (no writeback)
-        ("SlotAddImm", vec![Op::SlotAddImm(0, 10), Op::Return], vec![LispVal::Num(5)], vec![LispVal::Num(5)]), // slot should NOT change
+        (
+            "SlotAddImm",
+            vec![Op::SlotAddImm(0, 10), Op::Return],
+            vec![LispVal::Num(5)],
+            vec![LispVal::Num(5)],
+        ), // slot should NOT change
         // SlotSubImm (no writeback)
-        ("SlotSubImm", vec![Op::SlotSubImm(0, 3), Op::Return], vec![LispVal::Num(10)], vec![LispVal::Num(10)]), // slot should NOT change
+        (
+            "SlotSubImm",
+            vec![Op::SlotSubImm(0, 3), Op::Return],
+            vec![LispVal::Num(10)],
+            vec![LispVal::Num(10)],
+        ), // slot should NOT change
         // StoreAndLoadSlot
-        ("StoreAndLoadSlot", vec![Op::PushI64(77), Op::StoreAndLoadSlot(0), Op::Return], vec![LispVal::Nil], vec![LispVal::Num(77)]),
+        (
+            "StoreAndLoadSlot",
+            vec![Op::PushI64(77), Op::StoreAndLoadSlot(0), Op::Return],
+            vec![LispVal::Nil],
+            vec![LispVal::Num(77)],
+        ),
         // MakeList
-        ("MakeList", vec![Op::PushI64(1), Op::PushI64(2), Op::PushI64(3), Op::MakeList(3), Op::Return], vec![], vec![]),
+        (
+            "MakeList",
+            vec![
+                Op::PushI64(1),
+                Op::PushI64(2),
+                Op::PushI64(3),
+                Op::MakeList(3),
+                Op::Return,
+            ],
+            vec![],
+            vec![],
+        ),
     ];
 
     for (name, code, init_slots, _expected_slots) in &test_cases {
@@ -2403,7 +2725,11 @@ fn test_step_level_differential() {
 
         match (&rust_result, &spec_result) {
             (Ok(rv), SpecResult::Value(sv)) => {
-                assert_eq!(rv, sv, "Step-level mismatch for '{}': rust={:?} spec={:?}", name, rv, sv);
+                assert_eq!(
+                    rv, sv,
+                    "Step-level mismatch for '{}': rust={:?} spec={:?}",
+                    name, rv, sv
+                );
             }
             (Err(re), SpecResult::Error(_)) => {
                 // Both errored — ok
@@ -2496,7 +2822,12 @@ fn test_lambda_jumpiftrue_addr3() {
 #[test]
 fn test_lambda_truthiness_exact() {
     let code = vec![
-        Op::PushBool(true), Op::JumpIfTrue(4), Op::PushI64(1), Op::Return, Op::PushI64(2), Op::Return,
+        Op::PushBool(true),
+        Op::JumpIfTrue(4),
+        Op::PushI64(1),
+        Op::Return,
+        Op::PushI64(2),
+        Op::Return,
     ];
     eprintln!("code len: {}", code.len());
     let cl = make_test_compiled_lambda(0, 0, code);
@@ -2530,14 +2861,14 @@ fn test_lambda_jit_minimal() {
         Op::PushBool(true),
         Op::JumpIfTrue(3),
         Op::PushI64(1),
-        Op::Return,       // pc=3 in original test
+        Op::Return, // pc=3 in original test
         Op::PushI64(2),
         Op::Return,
     ];
     let cl = make_test_compiled_lambda(0, 0, code.clone());
     let r = run_lambda_test(&cl, &[]);
     eprintln!("jit minimal: {:?}", r);
-    
+
     // Try with addr=4 instead
     let code2 = vec![
         Op::PushBool(true),
@@ -2731,11 +3062,11 @@ fn test_differential_fuzz_float_edges() {
                         match r {
                             0 => FuzzOp::PushFloat,
                             1 => FuzzOp::TypedBinOpF64,
-                            2 => FuzzOp::Add,  // untyped with float promotion
+                            2 => FuzzOp::Add, // untyped with float promotion
                             3 => FuzzOp::Sub,
                             4 => FuzzOp::Mul,
                             5 => FuzzOp::Div,
-                            6 => FuzzOp::TypedBinOpI64,  // float→0 coercion
+                            6 => FuzzOp::TypedBinOpI64, // float→0 coercion
                             _ => FUZZ_OPS[rng.next_usize(FUZZ_OPS.len())],
                         }
                     };
@@ -2866,7 +3197,8 @@ fn test_differential_fuzz_multi_seed() {
             }
 
             assert_eq!(
-                mismatches, 0,
+                mismatches,
+                0,
                 "Found {} mismatches across {} seeds × {} programs",
                 mismatches,
                 seeds.len(),
@@ -2958,10 +3290,7 @@ fn corpus_programs() -> Vec<(Vec<Op>, Vec<LispVal>)> {
             vec![],
         ),
         // Dup + Add: 7*2 = 14
-        (
-            vec![Op::PushI64(7), Op::Dup, Op::Add, Op::Return],
-            vec![],
-        ),
+        (vec![Op::PushI64(7), Op::Dup, Op::Add, Op::Return], vec![]),
         // MakeList + Eq: [1,2,3] == [1,2,3]
         (
             vec![
@@ -2993,8 +3322,12 @@ fn mutate_op(rng: &mut Rng, op: &Op, num_slots: usize, max_pc: usize) -> Op {
         Op::PushI64(n) => Op::PushI64(n.wrapping_add(rng.boundary_i64())),
         Op::PushFloat(f) => Op::PushFloat(f + rng.boundary_f64()),
         Op::LoadSlot(_) => Op::LoadSlot(rng.next_usize(if num_slots == 0 { 1 } else { num_slots })),
-        Op::StoreSlot(_) => Op::StoreSlot(rng.next_usize(if num_slots == 0 { 1 } else { num_slots })),
-        Op::ReturnSlot(_) => Op::ReturnSlot(rng.next_usize(if num_slots == 0 { 1 } else { num_slots })),
+        Op::StoreSlot(_) => {
+            Op::StoreSlot(rng.next_usize(if num_slots == 0 { 1 } else { num_slots }))
+        }
+        Op::ReturnSlot(_) => {
+            Op::ReturnSlot(rng.next_usize(if num_slots == 0 { 1 } else { num_slots }))
+        }
         Op::Jump(_) => Op::Jump(rng.next_usize(max_pc + 1)),
         Op::JumpIfTrue(_) => Op::JumpIfTrue(rng.next_usize(max_pc + 1)),
         Op::JumpIfFalse(_) => Op::JumpIfFalse(rng.next_usize(max_pc + 1)),
@@ -3126,10 +3459,10 @@ fn test_differential_fuzz_type_coercion() {
                         1 => code.push(Op::PushFloat(rng.boundary_f64())),
                         2 => code.push(Op::PushNil),
                         3 => code.push(Op::PushBool(rng.next_usize(2) == 0)),
-                        4 => code.push(Op::PushNil),         // double-weight nil
+                        4 => code.push(Op::PushNil), // double-weight nil
                         5 => code.push(Op::PushFloat(f64::NAN)), // double-weight NaN
-                        6 => code.push(Op::PushI64(0)),      // zero
-                        _ => code.push(Op::PushFloat(0.0)),  // 0.0
+                        6 => code.push(Op::PushI64(0)), // zero
+                        _ => code.push(Op::PushFloat(0.0)), // 0.0
                     }
                 }
 
@@ -3235,10 +3568,7 @@ fn test_differential_fuzz_long_programs() {
                     // Longer programs need more steps
                     if let Some(desc) = differential_test_one(code, init_slots, 5000) {
                         mismatches += 1;
-                        eprintln!(
-                            "LONG PROG MISMATCH seed={} prog={}: {}",
-                            seed, i, desc
-                        );
+                        eprintln!("LONG PROG MISMATCH seed={} prog={}: {}", seed, i, desc);
                     }
                 }
             }
@@ -3275,7 +3605,9 @@ fn test_differential_fuzz_recur_stress() {
                 let counter_slot = rng.next_usize(num_slots);
                 let accum_slot = loop {
                     let s = rng.next_usize(num_slots);
-                    if s != counter_slot { break s; }
+                    if s != counter_slot {
+                        break s;
+                    }
                 };
 
                 // Pick a limit from boundary values to test edge cases
@@ -3298,10 +3630,10 @@ fn test_differential_fuzz_recur_stress() {
                     Op::SlotSubImm(counter_slot, 1),                    // 1
                     Op::LoadSlot(accum_slot),                           // 2
                     Op::LoadSlot(counter_slot),                         // 3
-                    Op::Add,                                             // 4
+                    Op::Add,                                            // 4
                     Op::StoreSlot(accum_slot),                          // 5
                     Op::RecurIncAccum(counter_slot, accum_slot, 1, limit.max(1) + 1, ret_addr), // 6
-                    Op::Jump(0),                                         // 7
+                    Op::Jump(0),                                        // 7
                     Op::ReturnSlot(accum_slot),                         // 8
                 ];
 
@@ -3357,12 +3689,18 @@ fn shrink_program(
         for skip in 0..best.len() {
             // Don't remove the only return
             if matches!(best[skip], Op::Return | Op::ReturnSlot(_))
-                && best.iter().filter(|o| matches!(o, Op::Return | Op::ReturnSlot(_))).count() <= 1
+                && best
+                    .iter()
+                    .filter(|o| matches!(o, Op::Return | Op::ReturnSlot(_)))
+                    .count()
+                    <= 1
             {
                 continue;
             }
 
-            let mut candidate: Vec<Op> = best.iter().enumerate()
+            let mut candidate: Vec<Op> = best
+                .iter()
+                .enumerate()
                 .filter(|(i, _)| *i != skip)
                 .map(|(_, op)| op.clone())
                 .collect();
@@ -3372,12 +3710,16 @@ fn shrink_program(
             }
 
             // Ensure there's still a return
-            let has_ret = candidate.iter().any(|o| matches!(o, Op::Return | Op::ReturnSlot(_)));
+            let has_ret = candidate
+                .iter()
+                .any(|o| matches!(o, Op::Return | Op::ReturnSlot(_)));
             if !has_ret {
                 candidate.push(Op::Return);
             }
 
-            if let Some(d) = differential_test_one(candidate.clone(), init_slots.to_vec(), max_steps) {
+            if let Some(d) =
+                differential_test_one(candidate.clone(), init_slots.to_vec(), max_steps)
+            {
                 // Still mismatches with fewer instructions — keep shrinking
                 if candidate.len() < best.len() {
                     best = candidate;
@@ -3408,7 +3750,8 @@ fn test_differential_fuzz_shrink() {
                 let num_slots = rng.next_usize(3);
                 let code_len = rng.next_usize(10) + 5;
                 let code = generate_random_program(&mut rng, num_slots, code_len);
-                let init_slots: Vec<LispVal> = (0..num_slots).map(|_| rng.next_lisp_val()).collect();
+                let init_slots: Vec<LispVal> =
+                    (0..num_slots).map(|_| rng.next_lisp_val()).collect();
 
                 // These should all pass — shrink should return None
                 let result = shrink_program(&code, &init_slots, 1000);
@@ -3475,16 +3818,12 @@ fn test_differential_fuzz_stack_depth() {
 
                     code.push(Op::Return);
 
-                    let init_slots: Vec<LispVal> = (0..num_slots)
-                        .map(|_| rng.next_lisp_val())
-                        .collect();
+                    let init_slots: Vec<LispVal> =
+                        (0..num_slots).map(|_| rng.next_lisp_val()).collect();
 
                     if let Some(desc) = differential_test_one(code, init_slots, 5000) {
                         mismatches += 1;
-                        eprintln!(
-                            "STACK DEPTH MISMATCH seed={} prog={}: {}",
-                            seed, i, desc
-                        );
+                        eprintln!("STACK DEPTH MISMATCH seed={} prog={}: {}", seed, i, desc);
                     }
                 }
             }
@@ -3541,11 +3880,7 @@ fn test_differential_fuzz_dangerous_sequences() {
 
             // --- Dup on empty stack ---
             // Dup does nothing, Return returns Nil (empty stack)
-            check(
-                vec![Op::Dup, Op::Return],
-                vec![],
-                "dup_empty",
-            );
+            check(vec![Op::Dup, Op::Return], vec![], "dup_empty");
 
             // --- Dup on empty, then Add (two Nils) ---
             check(
@@ -3629,11 +3964,7 @@ fn test_differential_fuzz_dangerous_sequences() {
             );
 
             // --- MakeList(0) - edge case ---
-            check(
-                vec![Op::MakeList(0), Op::Return],
-                vec![],
-                "makelist_zero",
-            );
+            check(vec![Op::MakeList(0), Op::Return], vec![], "makelist_zero");
 
             // --- StoreSlot on empty → writes Nil, then LoadSlot reads it back ---
             check(
@@ -3653,9 +3984,9 @@ fn test_differential_fuzz_dangerous_sequences() {
             // --- Random dangerous programs (structured) ---
             let mut rng = Rng::new(31415);
             let dangerous_ops: &[Op] = &[
-                Op::Pop,    // underflow-safe
-                Op::Dup,    // no-op on empty
-                Op::Add,    // Nil+Nil on empty
+                Op::Pop, // underflow-safe
+                Op::Dup, // no-op on empty
+                Op::Add, // Nil+Nil on empty
                 Op::Sub,
                 Op::Mul,
                 Op::Eq,
@@ -3741,8 +4072,11 @@ fn test_specvm_fused_hof_placeholders() {
         Op::Return,
     ];
     let spec = SpecVm::new(code, vec![LispVal::Num(0)]).run(1000);
-    assert!(matches!(spec, SpecResult::Value(LispVal::List(ref l)) if l.is_empty()),
-        "MapOp placeholder should return empty list, got {:?}", spec);
+    assert!(
+        matches!(spec, SpecResult::Value(LispVal::List(ref l)) if l.is_empty()),
+        "MapOp placeholder should return empty list, got {:?}",
+        spec
+    );
 
     // FilterOp: SpecVM pops list, pushes empty list
     let code2 = vec![
@@ -3753,31 +4087,37 @@ fn test_specvm_fused_hof_placeholders() {
         Op::Return,
     ];
     let spec2 = SpecVm::new(code2, vec![LispVal::Num(0)]).run(1000);
-    assert!(matches!(spec2, SpecResult::Value(LispVal::List(ref l)) if l.is_empty()),
-        "FilterOp placeholder should return empty list, got {:?}", spec2);
+    assert!(
+        matches!(spec2, SpecResult::Value(LispVal::List(ref l)) if l.is_empty()),
+        "FilterOp placeholder should return empty list, got {:?}",
+        spec2
+    );
 
     // ReduceOp: SpecVM pops list + init, pushes init
     let code3 = vec![
-        Op::PushI64(42),  // init
+        Op::PushI64(42), // init
         Op::PushI64(1),
         Op::PushI64(2),
-        Op::MakeList(2),  // list
+        Op::MakeList(2), // list
         Op::ReduceOp(0),
         Op::Return,
     ];
     let spec3 = SpecVm::new(code3, vec![LispVal::Num(0)]).run(1000);
-    assert_eq!(spec3, SpecResult::Value(LispVal::Num(42)),
-        "ReduceOp placeholder should return init value, got {:?}", spec3);
+    assert_eq!(
+        spec3,
+        SpecResult::Value(LispVal::Num(42)),
+        "ReduceOp placeholder should return init value, got {:?}",
+        spec3
+    );
 
     // MapOp on empty list: should still return empty list
-    let code4 = vec![
-        Op::MakeList(0),
-        Op::MapOp(0),
-        Op::Return,
-    ];
+    let code4 = vec![Op::MakeList(0), Op::MapOp(0), Op::Return];
     let spec4 = SpecVm::new(code4, vec![LispVal::Num(0)]).run(1000);
-    assert!(matches!(spec4, SpecResult::Value(LispVal::List(ref l)) if l.is_empty()),
-        "MapOp empty list should return empty list, got {:?}", spec4);
+    assert!(
+        matches!(spec4, SpecResult::Value(LispVal::List(ref l)) if l.is_empty()),
+        "MapOp empty list should return empty list, got {:?}",
+        spec4
+    );
 
     // ReduceOp on empty list: should return init
     let code5 = vec![
@@ -3787,6 +4127,10 @@ fn test_specvm_fused_hof_placeholders() {
         Op::Return,
     ];
     let spec5 = SpecVm::new(code5, vec![LispVal::Num(0)]).run(1000);
-    assert_eq!(spec5, SpecResult::Value(LispVal::Num(99)),
-        "ReduceOp empty list should return init, got {:?}", spec5);
+    assert_eq!(
+        spec5,
+        SpecResult::Value(LispVal::Num(99)),
+        "ReduceOp empty list should return init, got {:?}",
+        spec5
+    );
 }

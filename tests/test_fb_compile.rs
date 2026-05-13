@@ -1,5 +1,4 @@
-
-use lisp_rlm_wasm::{LispVal, Env, EvalState, parse_all};
+use lisp_rlm_wasm::{parse_all, Env, EvalState, LispVal};
 
 fn eval(src: &str, env: &mut Env, state: &mut EvalState) -> LispVal {
     let exprs = parse_all(src).unwrap();
@@ -14,10 +13,14 @@ fn eval(src: &str, env: &mut Env, state: &mut EvalState) -> LispVal {
 fn test_find_best_compiled_status() {
     let mut env = Env::new();
     let mut state = EvalState::new();
-    
+
     // Load harness
-    eval(include_str!("../runtime/harness.lisp"), &mut env, &mut state);
-    
+    eval(
+        include_str!("../runtime/harness.lisp"),
+        &mut env,
+        &mut state,
+    );
+
     // Check if find-best has compiled bytecode
     let fb = env.get("find-best").unwrap();
     match &fb {
@@ -35,14 +38,22 @@ fn test_find_best_compiled_status() {
         }
         _ => eprintln!("find-best is not a lambda"),
     }
-    
+
     // Test with actual data
-    eval(r#"(define items (list (dict "id" "low" "score" 0.3) (dict "id" "high" "score" 0.9) (dict "id" "mid" "score" 0.6)))"#, &mut env, &mut state);
-    
+    eval(
+        r#"(define items (list (dict "id" "low" "score" 0.3) (dict "id" "high" "score" 0.9) (dict "id" "mid" "score" 0.6)))"#,
+        &mut env,
+        &mut state,
+    );
+
     let best = eval(r#"(find-best items)"#, &mut env, &mut state);
     eprintln!("find-best result: {:?}", best);
-    
-    let best_id = eval(r#"(get-default (find-best items) "id" "?")"#, &mut env, &mut state);
+
+    let best_id = eval(
+        r#"(get-default (find-best items) "id" "?")"#,
+        &mut env,
+        &mut state,
+    );
     eprintln!("best id: {:?}", best_id);
     assert_eq!(best_id, LispVal::Str("high".into()));
 }

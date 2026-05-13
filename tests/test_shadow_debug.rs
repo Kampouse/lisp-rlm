@@ -27,10 +27,10 @@ fn test_shadow_debug() {
     // Key case: shadow then use outer
     let r2 = eval("(let ((x 1)) (let ((x 2)) x) x)");
     println!("(let ((x 1)) (let ((x 2)) x) x) = {}", r2);
-    assert_eq!(r2, "1");  // This is the bug: should be 1 after restore
+    assert_eq!(r2, "1"); // This is the bug: should be 1 after restore
 
     // set! shadow case
     let r3 = eval("(map (lambda (x) (let ((x 0)) (set! x 99)) x) (list 1 2 3))");
     println!("map shadow set! = {}", r3);
-    assert_eq!(r3, "(1 2 3)");  // After restore, x should be param value
+    assert_eq!(r3, "(1 2 3)"); // After restore, x should be param value
 }

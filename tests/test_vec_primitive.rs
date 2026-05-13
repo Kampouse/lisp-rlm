@@ -2,9 +2,7 @@ use lisp_rlm_wasm::EvalState;
 use lisp_rlm_wasm::*;
 
 fn run_program(code: &str, env: &mut Env, state: &mut EvalState) -> Result<String, String> {
-    let result = lisp_rlm_wasm::program::run_program(
-        &parse_all(code)?, env, state
-    )?;
+    let result = lisp_rlm_wasm::program::run_program(&parse_all(code)?, env, state)?;
     Ok(result.to_string())
 }
 
@@ -59,7 +57,10 @@ fn test_vec_nested() {
 
 #[test]
 fn test_vec_mixed_types() {
-    assert_eq!(eval_str("(vec 1 \"hello\" true nil)"), "[1 \"hello\" true nil]");
+    assert_eq!(
+        eval_str("(vec 1 \"hello\" true nil)"),
+        "[1 \"hello\" true nil]"
+    );
 }
 
 // === vec? predicate ===
@@ -155,7 +156,10 @@ fn test_vec_contains_non_vec() {
 
 #[test]
 fn test_vec_contains_string() {
-    assert_eq!(eval_str("(vec-contains? (vec \"a\" \"b\" \"c\") \"b\")"), "true");
+    assert_eq!(
+        eval_str("(vec-contains? (vec \"a\" \"b\" \"c\") \"b\")"),
+        "true"
+    );
 }
 
 // === vec-slice ===
@@ -206,10 +210,7 @@ fn test_filter_on_vec() {
 
 #[test]
 fn test_reduce_on_vec() {
-    assert_eq!(
-        eval_str_with_stdlib("(reduce + 0 (vec 1 2 3 4 5))"),
-        "15"
-    );
+    assert_eq!(eval_str_with_stdlib("(reduce + 0 (vec 1 2 3 4 5))"), "15");
 }
 
 // === Type checking ===

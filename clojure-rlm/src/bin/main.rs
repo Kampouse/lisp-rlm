@@ -2,8 +2,8 @@ use std::env;
 use std::fs;
 use std::io::{self, BufRead, Write};
 
-use clojure_rlm::parser::CljParser;
 use clojure_rlm::desugar::desugar;
+use clojure_rlm::parser::CljParser;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -16,8 +16,10 @@ fn main() {
 
     if args.len() > 1 {
         let filename = &args[1];
-        let code = fs::read_to_string(filename)
-            .unwrap_or_else(|e| { eprintln!("Error reading {}: {}", filename, e); std::process::exit(1) });
+        let code = fs::read_to_string(filename).unwrap_or_else(|e| {
+            eprintln!("Error reading {}: {}", filename, e);
+            std::process::exit(1)
+        });
         run_file(&code);
     } else {
         println!("clj-rlm. Clojure frontend for Lisp-RLM VM. Type (exit) to quit.");
@@ -33,11 +35,16 @@ fn main() {
                 Ok(0) => break,
                 Ok(_) => {
                     let trimmed = line.trim();
-                    if trimmed == "(exit)" || trimmed == "(quit)" { break; }
-                    if trimmed.is_empty() { continue; }
+                    if trimmed == "(exit)" || trimmed == "(quit)" {
+                        break;
+                    }
+                    if trimmed.is_empty() {
+                        continue;
+                    }
                     match CljParser::parse_all(&line) {
                         Ok(clj_exprs) => {
-                            let lisp_exprs: Vec<lisp_rlm_wasm::LispVal> = clj_exprs.iter().map(desugar).collect();
+                            let lisp_exprs: Vec<lisp_rlm_wasm::LispVal> =
+                                clj_exprs.iter().map(desugar).collect();
                             match lisp_rlm_wasm::run_program(&lisp_exprs, &mut env, &mut state) {
                                 Ok(val) => println!("{}", val),
                                 Err(e) => eprintln!("Error: {}", e),
@@ -55,7 +62,10 @@ fn main() {
 fn inline_eval(code: &str) {
     let clj_exprs = match CljParser::parse_all(code) {
         Ok(e) => e,
-        Err(e) => { eprintln!("Parse error: {}", e); std::process::exit(1) }
+        Err(e) => {
+            eprintln!("Parse error: {}", e);
+            std::process::exit(1)
+        }
     };
     let lisp_exprs: Vec<lisp_rlm_wasm::LispVal> = clj_exprs.iter().map(desugar).collect();
     let mut env = lisp_rlm_wasm::Env::new();
@@ -67,7 +77,10 @@ fn inline_eval(code: &str) {
                     println!("{}", val);
                 }
             }
-            Err(e) => { eprintln!("Error: {}", e); std::process::exit(1); }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
         }
     }
 }
@@ -75,7 +88,10 @@ fn inline_eval(code: &str) {
 fn run_file(code: &str) {
     let clj_exprs = match CljParser::parse_all(code) {
         Ok(e) => e,
-        Err(e) => { eprintln!("Parse error: {}", e); std::process::exit(1) }
+        Err(e) => {
+            eprintln!("Parse error: {}", e);
+            std::process::exit(1)
+        }
     };
 
     let lisp_exprs: Vec<lisp_rlm_wasm::LispVal> = clj_exprs.iter().map(desugar).collect();
@@ -89,7 +105,10 @@ fn run_file(code: &str) {
                     println!("{}", val);
                 }
             }
-            Err(e) => { eprintln!("Error: {}", e); std::process::exit(1); }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
         }
     }
 }

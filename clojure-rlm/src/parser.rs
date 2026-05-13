@@ -11,12 +11,12 @@ pub enum CljVal {
     Num(f64),
     Str(String),
     Sym(String),
-    Keyword(String),     // :foo
-    List(Vec<CljVal>),   // (a b c) — evaluates as call
-    Vec(Vec<CljVal>),    // [a b c] — literal data
+    Keyword(String),            // :foo
+    List(Vec<CljVal>),          // (a b c) — evaluates as call
+    Vec(Vec<CljVal>),           // [a b c] — literal data
     Map(Vec<(CljVal, CljVal)>), // {:a 1 :b 2}
-    Set(Vec<CljVal>),    // #{1 2 3}
-    AnonFn(Vec<CljVal>), // #(...) — anonymous fn
+    Set(Vec<CljVal>),           // #{1 2 3}
+    AnonFn(Vec<CljVal>),        // #(...) — anonymous fn
 }
 
 impl fmt::Display for CljVal {
@@ -37,7 +37,9 @@ impl fmt::Display for CljVal {
             CljVal::List(items) => {
                 write!(f, "(")?;
                 for (i, item) in items.iter().enumerate() {
-                    if i > 0 { write!(f, " ")?; }
+                    if i > 0 {
+                        write!(f, " ")?;
+                    }
                     item.fmt(f)?;
                 }
                 write!(f, ")")
@@ -45,7 +47,9 @@ impl fmt::Display for CljVal {
             CljVal::Vec(items) => {
                 write!(f, "[")?;
                 for (i, item) in items.iter().enumerate() {
-                    if i > 0 { write!(f, " ")?; }
+                    if i > 0 {
+                        write!(f, " ")?;
+                    }
                     item.fmt(f)?;
                 }
                 write!(f, "]")
@@ -53,7 +57,9 @@ impl fmt::Display for CljVal {
             CljVal::Map(pairs) => {
                 write!(f, "{{")?;
                 for (i, (k, v)) in pairs.iter().enumerate() {
-                    if i > 0 { write!(f, " ")?; }
+                    if i > 0 {
+                        write!(f, " ")?;
+                    }
                     k.fmt(f)?;
                     write!(f, " ")?;
                     v.fmt(f)?;
@@ -63,7 +69,9 @@ impl fmt::Display for CljVal {
             CljVal::Set(items) => {
                 write!(f, "#{{")?;
                 for (i, item) in items.iter().enumerate() {
-                    if i > 0 { write!(f, " ")?; }
+                    if i > 0 {
+                        write!(f, " ")?;
+                    }
                     item.fmt(f)?;
                 }
                 write!(f, "}}")
@@ -71,7 +79,9 @@ impl fmt::Display for CljVal {
             CljVal::AnonFn(body) => {
                 write!(f, "#(")?;
                 for (i, item) in body.iter().enumerate() {
-                    if i > 0 { write!(f, " ")?; }
+                    if i > 0 {
+                        write!(f, " ")?;
+                    }
                     item.fmt(f)?;
                 }
                 write!(f, ")")
@@ -87,7 +97,10 @@ pub struct CljParser {
 
 impl CljParser {
     pub fn new(input: &str) -> Self {
-        Self { chars: input.chars().collect(), pos: 0 }
+        Self {
+            chars: input.chars().collect(),
+            pos: 0,
+        }
     }
 
     fn peek(&self) -> Option<char> {
@@ -103,11 +116,15 @@ impl CljParser {
     fn skip_whitespace_and_comments(&mut self) {
         loop {
             match self.peek() {
-                Some(c) if c.is_whitespace() => { self.advance(); }
+                Some(c) if c.is_whitespace() => {
+                    self.advance();
+                }
                 Some(';') => {
                     // Line comment
                     while let Some(c) = self.advance() {
-                        if c == '\n' { break; }
+                        if c == '\n' {
+                            break;
+                        }
                     }
                 }
                 _ => break,
@@ -169,7 +186,9 @@ impl CljParser {
                 return Ok(CljVal::Map(pairs));
             }
             let key = self.read_val()?;
-            let val = self.read_val().map_err(|e| format!("map value after key: {}", e))?;
+            let val = self
+                .read_val()
+                .map_err(|e| format!("map value after key: {}", e))?;
             pairs.push((key, val));
         }
     }
@@ -257,9 +276,15 @@ impl CljParser {
             return Err("empty atom".into());
         }
         // Classify
-        if s == "nil" { return Ok(CljVal::Nil); }
-        if s == "true" { return Ok(CljVal::Bool(true)); }
-        if s == "false" { return Ok(CljVal::Bool(false)); }
+        if s == "nil" {
+            return Ok(CljVal::Nil);
+        }
+        if s == "true" {
+            return Ok(CljVal::Bool(true));
+        }
+        if s == "false" {
+            return Ok(CljVal::Bool(false));
+        }
         // Try number
         if let Ok(n) = s.parse::<f64>() {
             return Ok(CljVal::Num(n));
@@ -272,7 +297,9 @@ impl CljParser {
         let mut results = Vec::new();
         loop {
             parser.skip_whitespace_and_comments();
-            if parser.peek().is_none() { break; }
+            if parser.peek().is_none() {
+                break;
+            }
             results.push(parser.read_val()?);
         }
         Ok(results)

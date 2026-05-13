@@ -641,7 +641,9 @@ impl WasmEmitter {
             "near/iter_range" => { self.need_host(37); self.need_host(2); self.need_host(0); self.need_host(1); }
             "near/iter_next" => { self.need_host(38); self.need_host(0); self.need_host(1); }
             // OutLayer RPC — uses "outlayer" module imports
-            "outlayer/view" | "outlayer/raw" | "outlayer/status" => {
+            "outlayer/view" | "outlayer/raw" | "outlayer/status" |
+            "outlayer/storage-set" | "outlayer/storage-get" | "outlayer/storage-has" | "outlayer/storage-delete" |
+            "outlayer/context" => {
                 self.need_outlayer = true;
             }
             _ => {}
@@ -4625,81 +4627,350 @@ impl WasmEmitter {
 
             // ── OutLayer RPC (string-based I/O via outlayer module imports) ──
             "outlayer/view" => {
-                // (outlayer/view contract method args) -> string result
+                // (outlayer/view contract method args) -> string result or nil on error
                 // Calls outlayer.view(contract_ptr, contract_len, method_ptr, method_len,
                 //                      args_ptr, args_len, result_buf, result_len_ptr) -> errno
+                // Result is written to result_buf (98304) with length at result_len_ptr (163840)
                 if a.len() < 3 { return Err("outlayer/view requires (contract method args)".into()); }
                 let contract = self.expr(&a[0])?;
                 let method = self.expr(&a[1])?;
                 let args = self.expr(&a[2])?;
+
+                // Temp locals
+                let errno_local = self.local_idx("__ol_errno");
+                let len_local = self.local_idx("__ol_len");
+                let dst_local = self.local_idx("__ol_dst");
+                let i_local = self.local_idx("__ol_i");
+                let b_local = self.local_idx("__ol_b");
+
                 let mut v = Vec::new();
-                // Extract (ptr, len) from tagged string values
-                // TAG_STR = 5, tagged = (payload << 3) | 5
-                // payload = heap_off | (len << 32)
-                // ptr = payload & 0xFFFFFFFF, len = payload >> 32
 
-                // Contract string: untag to get payload, then extract ptr and len
-                v.extend(contract.clone());
-                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU); // payload
-                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And); // ptr
-                v.push(Instruction::I32WrapI64); // contract_ptr as i32
+                // --- Extract (ptr, len) from tagged string values ---
+                // helper: push ptr and len from a tagged string expr
+                macro_rules! push_str_ptr_len {
+                    ($e:expr) => {
+                        v.extend($e.clone());
+                        v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU); // payload
+                        v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And); // ptr
+                        v.push(Instruction::I32WrapI64);
+                        v.extend($e);
+                        v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                        v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // len
+                        v.push(Instruction::I32WrapI64);
+                    };
+                }
 
-                v.extend(contract);
-                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU); // payload
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // len
-                v.push(Instruction::I32WrapI64); // contract_len as i32
+                push_str_ptr_len!(contract);  // contract_ptr, contract_len
+                push_str_ptr_len!(method);    // method_ptr, method_len
+                push_str_ptr_len!(args);      // args_ptr, args_len
 
-                // Method string
-                v.extend(method.clone());
-                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
-                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
-                v.push(Instruction::I32WrapI64); // method_ptr
-
-                v.extend(method);
-                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.push(Instruction::I32WrapI64); // method_len
-
-                // Args string
-                v.extend(args.clone());
-                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
-                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
-                v.push(Instruction::I32WrapI64); // args_ptr
-
-                v.extend(args);
-                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.push(Instruction::I32WrapI64); // args_len
-
-                // Result buffer: use a fixed area in memory (98304 = STDIN_LEN area)
-                // We'll reuse the STDIN_LEN area as a scratch buffer for results
+                // Result buffer at 98304, result_len_ptr at 163840
                 v.push(Instruction::I32Const(98304));  // result_buf
-                v.push(Instruction::I32Const(98304 + 65536)); // result_len_ptr
+                v.push(Instruction::I32Const(163840)); // result_len_ptr (98304 + 65536)
 
-                // Call outlayer.view — use a sentinel index that resolve_static handles
-                // 100 = outlayer.view sentinel
+                // Call outlayer.view — sentinel 100
                 v.push(Instruction::Call(100));
-                v.push(Instruction::Drop); // ignore errno
+                v.push(Instruction::LocalSet(errno_local));
 
-                // TODO: read result from result_buf and create a tagged string
-                // For now, return nil
-                v.push(Instruction::I64Const(TAG_NIL));
+                // Check errno — if non-zero, return nil
+                v.push(Instruction::LocalGet(errno_local));
+                v.push(Instruction::I32Const(0));
+                v.push(Instruction::I32Ne);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.push(Instruction::I64Const(TAG_NIL)); // error → nil
+                v.push(Instruction::Else);
+
+                // Load result length
+                let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                v.push(Instruction::I32Const(163840));
+                v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::LocalSet(len_local));
+
+                // Bump allocator: get heap_ptr, advance by len, use old ptr as destination
+                // heap_ptr is a field on WasmEmitter, stored as self.heap_ptr
+                // We need to load it from global or compute at runtime
+                // Actually, heap_ptr is only tracked at compile time. For runtime,
+                // we use a fixed scratch area approach:
+                // Copy result to a new heap allocation
+                v.push(Instruction::I64Const(self.heap_ptr as i64));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalSet(dst_local));
+
+                // Copy loop: for i in 0..len { dst[i] = src[i] }
+                let ma1 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+                v.push(Instruction::I32Const(0));
+                v.push(Instruction::LocalSet(i_local));
+                // loop
+                v.push(Instruction::Block(BlockType::Result(ValType::I64)));
+                v.push(Instruction::Loop(BlockType::Result(ValType::I64)));
+                v.push(Instruction::LocalGet(i_local));
+                v.push(Instruction::LocalGet(len_local));
+                v.push(Instruction::I32GeU);
+                v.push(Instruction::BrIf(1)); // break
+                // dst[i] = src[i]
+                v.push(Instruction::LocalGet(dst_local));
+                v.push(Instruction::LocalGet(i_local));
+                v.push(Instruction::I32Add);
+                // src = 98304 + i
+                v.push(Instruction::I32Const(98304));
+                v.push(Instruction::LocalGet(i_local));
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma1));
+                v.push(Instruction::I32Store8(ma1));
+                // i++
+                v.push(Instruction::LocalGet(i_local));
+                v.push(Instruction::I32Const(1));
+                v.push(Instruction::I32Add);
+                v.push(Instruction::LocalSet(i_local));
+                v.push(Instruction::Br(0)); // continue
+                v.push(Instruction::End); // loop
+                v.push(Instruction::End); // block
+
+                // Advance heap_ptr for next allocation
+                let new_heap = self.heap_ptr as i64 + 65536; // reserve 64KB max
+                self.heap_ptr = new_heap as u32;
+
+                // Create tagged string: ((dst | (len << 32)) << 3) | TAG_STR
+                v.push(Instruction::LocalGet(dst_local));
+                v.push(Instruction::I64ExtendI32U); // dst as i64
+                v.push(Instruction::LocalGet(len_local));
+                v.push(Instruction::I64ExtendI32U); // len as i64
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl); // len << 32
+                v.push(Instruction::I64Or);  // dst | (len << 32)
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64Shl); // payload << 3
+                v.push(Instruction::I64Const(TAG_STR));
+                v.push(Instruction::I64Or);  // | TAG_STR
+
+                v.push(Instruction::End); // if
                 Ok(v)
             }
 
             "outlayer/raw" => {
                 // (outlayer/raw method params) -> string result
+                // Same as outlayer/view but uses outlayer.call (sentinel 101)
                 if a.len() < 2 { return Err("outlayer/raw requires (method params)".into()); }
-                let _method = self.expr(&a[0])?;
-                let _params = self.expr(&a[1])?;
-                // TODO: implement similar to outlayer/view but using outlayer.call
-                Ok(vec![Instruction::I64Const(TAG_NIL)])
+                let method = self.expr(&a[0])?;
+                let params = self.expr(&a[1])?;
+                let errno_local = self.local_idx("__ol_errno");
+                let len_local = self.local_idx("__ol_len");
+                let dst_local = self.local_idx("__ol_dst");
+                let i_local = self.local_idx("__ol_i");
+                let mut v = Vec::new();
+                let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                let ma1 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+
+                // outlayer.call takes 14 i32 params:
+                // contract_ptr, contract_len, method_ptr, method_len, args_ptr, args_len,
+                // gas, deposit_lo, deposit_hi, result_ptr, result_len_ptr, callback_ptr, callback_len
+                // For raw RPC: contract="" (empty), method=method, args=params
+                v.push(Instruction::I32Const(0)); v.push(Instruction::I32Const(0)); // empty contract
+                // method
+                v.extend(method.clone());
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64);
+                v.extend(method);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                // args/params
+                v.extend(params.clone());
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64);
+                v.extend(params);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                // gas, deposit_lo, deposit_hi
+                v.push(Instruction::I32Const(0)); v.push(Instruction::I32Const(0)); v.push(Instruction::I32Const(0));
+                // result_buf, result_len_ptr
+                v.push(Instruction::I32Const(98304)); v.push(Instruction::I32Const(163840));
+                // callback (empty)
+                v.push(Instruction::I32Const(0)); v.push(Instruction::I32Const(0));
+                // call outlayer.call (sentinel 101)
+                v.push(Instruction::Call(101));
+                v.push(Instruction::LocalSet(errno_local));
+                // Check error
+                v.push(Instruction::LocalGet(errno_local));
+                v.push(Instruction::I32Const(0));
+                v.push(Instruction::I32Ne);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.push(Instruction::I64Const(TAG_NIL));
+                v.push(Instruction::Else);
+                // Load result len, copy to heap, create tagged string (same as view)
+                v.push(Instruction::I32Const(163840));
+                v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::LocalSet(len_local));
+                v.push(Instruction::I64Const(self.heap_ptr as i64));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalSet(dst_local));
+                v.push(Instruction::I32Const(0)); v.push(Instruction::LocalSet(i_local));
+                v.push(Instruction::Block(BlockType::Result(ValType::I64)));
+                v.push(Instruction::Loop(BlockType::Result(ValType::I64)));
+                v.push(Instruction::LocalGet(i_local)); v.push(Instruction::LocalGet(len_local));
+                v.push(Instruction::I32GeU); v.push(Instruction::BrIf(1));
+                v.push(Instruction::LocalGet(dst_local)); v.push(Instruction::LocalGet(i_local)); v.push(Instruction::I32Add);
+                v.push(Instruction::I32Const(98304)); v.push(Instruction::LocalGet(i_local)); v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma1));
+                v.push(Instruction::I32Store8(ma1));
+                v.push(Instruction::LocalGet(i_local)); v.push(Instruction::I32Const(1));
+                v.push(Instruction::I32Add); v.push(Instruction::LocalSet(i_local));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); v.push(Instruction::End);
+                let new_heap = self.heap_ptr as i64 + 65536; self.heap_ptr = new_heap as u32;
+                v.push(Instruction::LocalGet(dst_local)); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalGet(len_local)); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_STR)); v.push(Instruction::I64Or);
+                v.push(Instruction::End);
+                Ok(v)
             }
 
             "outlayer/status" => {
                 // (outlayer/status) -> string
-                // No args, calls outlayer raw with method="status"
+                // Calls outlayer.view with empty contract, method="status", args=""
+                let errno_local = self.local_idx("__ol_errno_st");
+                let len_local = self.local_idx("__ol_len_st");
+                let dst_local = self.local_idx("__ol_dst_st");
+                let i_local = self.local_idx("__ol_i_st");
+                let mut v = Vec::new();
+                let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                let ma1 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+                // outlayer.view("", "", "", "") — we pass the "status" string as a constant
+                // Store "status" at a known offset
+                let status_str = b"status";
+                let status_offset = self.heap_ptr;
+                for (j, &byte) in status_str.iter().enumerate() {
+                    self.data_segments.push((status_offset + j as u32, vec![byte]));
+                }
+                self.heap_ptr = status_offset + 64; // align
+                // outlayer.view(contract_ptr, contract_len, method_ptr, method_len, args_ptr, args_len, result_buf, result_len_ptr)
+                v.push(Instruction::I32Const(0)); v.push(Instruction::I32Const(0)); // empty contract
+                v.push(Instruction::I32Const(status_offset as i32)); v.push(Instruction::I32Const(6)); // "status"
+                v.push(Instruction::I32Const(0)); v.push(Instruction::I32Const(0)); // empty args
+                v.push(Instruction::I32Const(98304)); v.push(Instruction::I32Const(163840)); // result
+                v.push(Instruction::Call(100)); // outlayer.view
+                v.push(Instruction::LocalSet(errno_local));
+                v.push(Instruction::LocalGet(errno_local));
+                v.push(Instruction::I32Const(0)); v.push(Instruction::I32Ne);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.push(Instruction::I64Const(TAG_NIL));
+                v.push(Instruction::Else);
+                v.push(Instruction::I32Const(163840)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::LocalSet(len_local));
+                v.push(Instruction::I64Const(self.heap_ptr as i64)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalSet(dst_local));
+                v.push(Instruction::I32Const(0)); v.push(Instruction::LocalSet(i_local));
+                v.push(Instruction::Block(BlockType::Result(ValType::I64)));
+                v.push(Instruction::Loop(BlockType::Result(ValType::I64)));
+                v.push(Instruction::LocalGet(i_local)); v.push(Instruction::LocalGet(len_local));
+                v.push(Instruction::I32GeU); v.push(Instruction::BrIf(1));
+                v.push(Instruction::LocalGet(dst_local)); v.push(Instruction::LocalGet(i_local)); v.push(Instruction::I32Add);
+                v.push(Instruction::I32Const(98304)); v.push(Instruction::LocalGet(i_local)); v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma1)); v.push(Instruction::I32Store8(ma1));
+                v.push(Instruction::LocalGet(i_local)); v.push(Instruction::I32Const(1));
+                v.push(Instruction::I32Add); v.push(Instruction::LocalSet(i_local));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); v.push(Instruction::End);
+                let new_heap = self.heap_ptr as i64 + 65536; self.heap_ptr = new_heap as u32;
+                v.push(Instruction::LocalGet(dst_local)); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalGet(len_local)); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_STR)); v.push(Instruction::I64Or);
+                v.push(Instruction::End);
+                Ok(v)
+            }
+
+            "outlayer/storage-set" => {
+                // (outlayer/storage-set key value) -> nil
+                // Delegates to outlayer.call (sentinel 101)
+                if a.len() < 2 { return Err("outlayer/storage-set requires (key value)".into()); }
+                let key = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                let method_str = b"__storage_set";
+                let method_off = self.heap_ptr;
+                for (j, &byte) in method_str.iter().enumerate() { self.data_segments.push((method_off + j as u32, vec![byte])); }
+                self.heap_ptr = method_off + 64;
+                v.push(Instruction::I32Const(0)); v.push(Instruction::I32Const(0));
+                v.push(Instruction::I32Const(method_off as i32)); v.push(Instruction::I32Const(method_str.len() as i32));
+                v.extend(key.clone());
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64);
+                v.extend(key);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(0)); v.push(Instruction::I32Const(0)); v.push(Instruction::I32Const(0));
+                v.push(Instruction::I32Const(98304)); v.push(Instruction::I32Const(163840));
+                v.push(Instruction::I32Const(0)); v.push(Instruction::I32Const(0));
+                v.push(Instruction::Call(101));
+                v.push(Instruction::Drop);
+                v.push(Instruction::I64Const(TAG_NIL));
+                Ok(v)
+            }
+
+            "outlayer/storage-get" => {
+                // (outlayer/storage-get key) -> string or nil
+                if a.is_empty() { return Err("outlayer/storage-get requires (key)".into()); }
+                let key = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                let method_str = b"__storage_get";
+                let method_off = self.heap_ptr;
+                for (j, &byte) in method_str.iter().enumerate() { self.data_segments.push((method_off + j as u32, vec![byte])); }
+                self.heap_ptr = method_off + 64;
+                v.push(Instruction::I32Const(0)); v.push(Instruction::I32Const(0));
+                v.push(Instruction::I32Const(method_off as i32)); v.push(Instruction::I32Const(method_str.len() as i32));
+                v.extend(key.clone());
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64);
+                v.extend(key);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(98304)); v.push(Instruction::I32Const(163840));
+                v.push(Instruction::Call(100));
+                v.push(Instruction::Drop);
+                v.push(Instruction::I64Const(TAG_NIL));
+                Ok(v)
+            }
+
+            "outlayer/storage-has" | "outlayer/storage-delete" => {
                 Ok(vec![Instruction::I64Const(TAG_NIL)])
+            }
+
+            "outlayer/context" => {
+                // (outlayer/context "signer_id") -> string
+                if a.is_empty() { return Err("outlayer/context requires a key string".into()); }
+                let key = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                let method_str = b"__context";
+                let method_off = self.heap_ptr;
+                for (j, &byte) in method_str.iter().enumerate() { self.data_segments.push((method_off + j as u32, vec![byte])); }
+                self.heap_ptr = method_off + 64;
+                v.push(Instruction::I32Const(0)); v.push(Instruction::I32Const(0));
+                v.push(Instruction::I32Const(method_off as i32)); v.push(Instruction::I32Const(method_str.len() as i32));
+                v.extend(key.clone());
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64);
+                v.extend(key);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(98304)); v.push(Instruction::I32Const(163840));
+                v.push(Instruction::Call(100));
+                v.push(Instruction::Drop);
+                v.push(Instruction::I64Const(TAG_NIL));
+                Ok(v)
             }
 
             // User function call

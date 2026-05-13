@@ -8,8 +8,8 @@
 //!   bottom 3 bits = type tag, upper 61 bits = payload
 //!   TAG_NUM=0, TAG_BOOL=1, TAG_FNREF=2, TAG_CLOSURE=3, TAG_NIL=4, TAG_STR=5
 
-use lisp_rlm_wasm::types::{Env, EvalState, LispVal};
 use lisp_rlm_wasm::parser::parse_all;
+use lisp_rlm_wasm::types::{Env, EvalState, LispVal};
 use lisp_rlm_wasm::wasm_emit::compile_fuzz;
 
 // Tag constants (must match wasm_emit.rs)
@@ -44,11 +44,19 @@ fn lispval_to_tagged(val: &LispVal) -> Option<i64> {
         LispVal::Bool(b) => Some(((if *b { 1i64 } else { 0 }) << TAG_BITS) | TAG_BOOL),
         LispVal::Nil => Some(TAG_NIL),
         // These can't round-trip through i64 tagging
-        LispVal::Str(_) | LispVal::List(_) | LispVal::Lambda { .. }
-        | LispVal::Float(_) | LispVal::Map(_) | LispVal::BuiltinFn(_)
-        | LispVal::Macro { .. } | LispVal::CaseLambda { .. }
-        | LispVal::Recur(_) | LispVal::Memoized { .. }
-        | LispVal::Tagged { .. } | LispVal::Sym(_) | LispVal::Delay { .. }
+        LispVal::Str(_)
+        | LispVal::List(_)
+        | LispVal::Lambda { .. }
+        | LispVal::Float(_)
+        | LispVal::Map(_)
+        | LispVal::BuiltinFn(_)
+        | LispVal::Macro { .. }
+        | LispVal::CaseLambda { .. }
+        | LispVal::Recur(_)
+        | LispVal::Memoized { .. }
+        | LispVal::Tagged { .. }
+        | LispVal::Sym(_)
+        | LispVal::Delay { .. }
         | LispVal::Vec(_) => None,
     }
 }
@@ -65,12 +73,15 @@ fn run_wasm_fuzz(wasm: &[u8]) -> Result<i64, String> {
     let mut linker = Linker::new(&engine);
 
     // Check if module imports memory (NEAR mode) or declares it internally
-    let needs_imported_memory = module.imports().any(|i| i.module() == "env" && i.name() == "memory");
+    let needs_imported_memory = module
+        .imports()
+        .any(|i| i.module() == "env" && i.name() == "memory");
 
     if needs_imported_memory {
         let memory = Memory::new(&mut store, MemoryType::new(4, None))
             .map_err(|e| format!("memory: {}", e))?;
-        linker.define(&store, "env", "memory", memory)
+        linker
+            .define(&store, "env", "memory", memory)
             .map_err(|e| format!("link memory: {}", e))?;
     }
 
@@ -89,23 +100,28 @@ fn run_wasm_fuzz(wasm: &[u8]) -> Result<i64, String> {
                     }
                     Ok(())
                 });
-                linker.define(&store, "env", import.name(), stub)
+                linker
+                    .define(&store, "env", import.name(), stub)
                     .map_err(|e| format!("link {}: {}", import.name(), e))?;
             }
         }
     }
 
-    let instance = linker.instantiate(&mut store, &module)
+    let instance = linker
+        .instantiate(&mut store, &module)
         .map_err(|e| format!("instantiate: {}", e))?;
 
     // Get memory from instance export (works for both internal and imported memory)
-    let memory = instance.get_memory(&mut store, "memory")
+    let memory = instance
+        .get_memory(&mut store, "memory")
         .ok_or_else(|| "no memory export".to_string())?;
 
     // Call "run" export
-    let run = instance.get_typed_func::<(), ()>(&mut store, "run")
+    let run = instance
+        .get_typed_func::<(), ()>(&mut store, "run")
         .map_err(|e| format!("no 'run' export: {}", e))?;
-    run.call(&mut store, ()).map_err(|e| format!("trap: {}", e))?;
+    run.call(&mut store, ())
+        .map_err(|e| format!("trap: {}", e))?;
 
     // Read tagged value from TEMP_MEM
     let mem = memory.data(&store);
@@ -119,7 +135,11 @@ fn fuzz_one(source: &str) -> Result<(), String> {
     let result = fuzz_one_inner(source);
     if let Err(ref e) = result {
         use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/fuzz_errors.log") {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/fuzz_errors.log")
+        {
             let _ = writeln!(f, "FAIL {:?}: {}", source, e);
         }
     }
@@ -253,13 +273,19 @@ mod tests {
     #[test]
     fn fuzz_subtraction() {
         let r = fuzz_one("(- 10 3)");
-        if r.is_err() { eprintln!("sub: {:?}", r); }
+        if r.is_err() {
+            eprintln!("sub: {:?}", r);
+        }
         assert!(r.is_ok());
         let r = fuzz_one("(- 0 0)");
-        if r.is_err() { eprintln!("0-0: {:?}", r); }
+        if r.is_err() {
+            eprintln!("0-0: {:?}", r);
+        }
         assert!(r.is_ok());
         let r = fuzz_one("(- 5)");
-        if r.is_err() { eprintln!("neg5: {:?}", r); }
+        if r.is_err() {
+            eprintln!("neg5: {:?}", r);
+        }
         assert!(r.is_ok());
     }
 
@@ -352,7 +378,10 @@ mod tests {
 
     #[test]
     fn fuzz_fibonacci() {
-        assert!(fuzz_one("(define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))\n(fib 10)").is_ok());
+        assert!(fuzz_one(
+            "(define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))\n(fib 10)"
+        )
+        .is_ok());
     }
 
     // ClosureVM doesn't support `while` as a built-in
@@ -368,9 +397,10 @@ mod tests {
     #[test]
     #[ignore]
     fn fuzz_for_loop() {
-        assert!(fuzz_one(
-            "(define (run) (let ((sum 0)) (for i 1 11 (set! sum (+ sum i))) sum))"
-        ).is_ok());
+        assert!(
+            fuzz_one("(define (run) (let ((sum 0)) (for i 1 11 (set! sum (+ sum i))) sum))")
+                .is_ok()
+        );
     }
 
     #[test]
@@ -384,19 +414,29 @@ mod tests {
     fn fuzz_zero_distinguishing() {
         // The whole point of tagging: Num(0), Bool(false), Nil are all different
         let r = fuzz_one("0");
-        if r.is_err() { eprintln!("0: {:?}", r); }
+        if r.is_err() {
+            eprintln!("0: {:?}", r);
+        }
         assert!(r.is_ok(), "0");
         let r = fuzz_one("false");
-        if r.is_err() { eprintln!("false: {:?}", r); }
+        if r.is_err() {
+            eprintln!("false: {:?}", r);
+        }
         assert!(r.is_ok(), "false");
         let r = fuzz_one("nil");
-        if r.is_err() { eprintln!("nil: {:?}", r); }
+        if r.is_err() {
+            eprintln!("nil: {:?}", r);
+        }
         assert!(r.is_ok(), "nil");
         let r = fuzz_one("true");
-        if r.is_err() { eprintln!("true: {:?}", r); }
+        if r.is_err() {
+            eprintln!("true: {:?}", r);
+        }
         assert!(r.is_ok(), "true");
         let r = fuzz_one("1");
-        if r.is_err() { eprintln!("1: {:?}", r); }
+        if r.is_err() {
+            eprintln!("1: {:?}", r);
+        }
         assert!(r.is_ok(), "1");
     }
 
@@ -408,7 +448,10 @@ mod tests {
 
     #[test]
     fn fuzz_closure() {
-        assert!(fuzz_one("(define (make-adder n) (lambda (x) (+ x n)))\n(define (run) ((make-adder 10) 5))").is_ok());
+        assert!(fuzz_one(
+            "(define (make-adder n) (lambda (x) (+ x n)))\n(define (run) ((make-adder 10) 5))"
+        )
+        .is_ok());
     }
 
     #[test]
@@ -451,7 +494,8 @@ mod tests {
         // sum(n) = 0 + 1 + ... + n via recursion
         assert!(fuzz_one(
             "(define (sum n) (if (= n 0) 0 (+ n (sum (- n 1)))))\n(define (run) (sum 10))"
-        ).is_ok());
+        )
+        .is_ok());
     }
 
     #[test]
@@ -465,25 +509,21 @@ mod tests {
     #[test]
     fn fuzz_nested_let_arithmetic() {
         // Three levels of nested let, each building on the previous
-        assert!(fuzz_one(
-            "(let ((a 3)) (let ((b (+ a 4))) (let ((c (* b 2))) (+ a b c))))"
-        ).is_ok());
+        assert!(
+            fuzz_one("(let ((a 3)) (let ((b (+ a 4))) (let ((c (* b 2))) (+ a b c))))").is_ok()
+        );
     }
 
     #[test]
     fn fuzz_multi_let() {
         // let with 3 bindings
-        assert!(fuzz_one(
-            "(let ((a 10) (b 20) (c 30)) (+ a (+ b c)))"
-        ).is_ok());
+        assert!(fuzz_one("(let ((a 10) (b 20) (c 30)) (+ a (+ b c)))").is_ok());
     }
 
     #[test]
     fn fuzz_let_with_if() {
         // let binding whose value depends on if
-        assert!(fuzz_one(
-            "(let ((x (if (> 3 2) 10 20))) x)"
-        ).is_ok());
+        assert!(fuzz_one("(let ((x (if (> 3 2) 10 20))) x)").is_ok());
     }
 
     #[test]
@@ -491,23 +531,22 @@ mod tests {
         // Factorial via recursion
         assert!(fuzz_one(
             "(define (fact n) (if (< n 2) 1 (* n (fact (- n 1)))))\n(define (run) (fact 6))"
-        ).is_ok());
+        )
+        .is_ok());
     }
 
     #[test]
     fn fuzz_closure_in_let() {
         // Closure defined in let, immediately invoked
-        assert!(fuzz_one(
-            "(let ((add3 (lambda (x) (+ x 3)))) (add3 7))"
-        ).is_ok());
+        assert!(fuzz_one("(let ((add3 (lambda (x) (+ x 3)))) (add3 7))").is_ok());
     }
 
     #[test]
     fn fuzz_set_in_nested_let() {
         // set! mutates a binding from an outer let scope
-        assert!(fuzz_one(
-            "(define (run) (let ((x 10)) (let ((y 20)) (set! x (+ x y)) x)))"
-        ).is_ok());
+        assert!(
+            fuzz_one("(define (run) (let ((x 10)) (let ((y 20)) (set! x (+ x y)) x)))").is_ok()
+        );
     }
 }
 
@@ -534,7 +573,14 @@ mod prop {
 
     /// Generate a random comparison operator.
     fn cmp_op() -> impl Strategy<Value = &'static str> {
-        prop_oneof![Just(">"), Just("<"), Just(">="), Just("<="), Just("="), Just("!=")]
+        prop_oneof![
+            Just(">"),
+            Just("<"),
+            Just(">="),
+            Just("<="),
+            Just("="),
+            Just("!=")
+        ]
     }
 
     /// Generate a random logic operator.
@@ -562,9 +608,12 @@ mod prop {
     /// WASM vs ClosureVM type coercion divergence (WASM coerces bool/nil to numbers).
     fn binary_expr() -> impl Strategy<Value = String> {
         prop_oneof![
-            (arith_op(), num_leaf(), num_leaf()).prop_map(|(op, l, r)| format!("({} {} {})", op, l, r)),
-            (cmp_op(), num_leaf(), num_leaf()).prop_map(|(op, l, r)| format!("({} {} {})", op, l, r)),
-            (logic_op(), leaf_expr(), leaf_expr()).prop_map(|(op, l, r)| format!("({} {} {})", op, l, r)),
+            (arith_op(), num_leaf(), num_leaf())
+                .prop_map(|(op, l, r)| format!("({} {} {})", op, l, r)),
+            (cmp_op(), num_leaf(), num_leaf())
+                .prop_map(|(op, l, r)| format!("({} {} {})", op, l, r)),
+            (logic_op(), leaf_expr(), leaf_expr())
+                .prop_map(|(op, l, r)| format!("({} {} {})", op, l, r)),
         ]
     }
 
@@ -576,30 +625,27 @@ mod prop {
 
     /// Generate a let expression: (let ((x val)) body).
     fn let_expr() -> impl Strategy<Value = String> {
-        (leaf_expr(), leaf_expr())
-            .prop_map(|(val, body)| format!("(let ((x {})) {})", val, body))
+        (leaf_expr(), leaf_expr()).prop_map(|(val, body)| format!("(let ((x {})) {})", val, body))
     }
 
     /// Generate a begin expression: (begin a b).
     fn begin_expr() -> impl Strategy<Value = String> {
-        (leaf_expr(), leaf_expr())
-            .prop_map(|(a, b)| format!("(begin {} {})", a, b))
+        (leaf_expr(), leaf_expr()).prop_map(|(a, b)| format!("(begin {} {})", a, b))
     }
 
     /// Generate a recursive function definition + call that returns a number.
     /// Produces a full multi-expression program (no program() wrapping needed).
     /// Pattern: (define (f x) (if (< x base) base (+ step (f (- x step)))))
     fn recursive_fn_expr() -> impl Strategy<Value = String> {
-        (safe_int(), safe_int(), safe_int())
-            .prop_map(|(base, step, arg)| {
-                let base = base % 5;   // keep base small to limit recursion depth
-                let step = if step % 2 == 0 { 1 } else { -1 }; // ±1 step
-                let arg = arg % 10;    // keep arg small
-                format!(
-                    "(define (f x) (if (< x {}) {} (+ 1 (f (- x {})))))\n(define (run) (f {}))",
-                    base, base, step, arg
-                )
-            })
+        (safe_int(), safe_int(), safe_int()).prop_map(|(base, step, arg)| {
+            let base = base % 5; // keep base small to limit recursion depth
+            let step = if step % 2 == 0 { 1 } else { -1 }; // ±1 step
+            let arg = arg % 10; // keep arg small
+            format!(
+                "(define (f x) (if (< x {}) {} (+ 1 (f (- x {})))))\n(define (run) (f {}))",
+                base, base, step, arg
+            )
+        })
     }
 
     /// Generate a closure that captures a number and returns a number.
@@ -612,43 +658,32 @@ mod prop {
     /// Generate a set! expression that returns a number.
     /// Pattern: (let ((x N)) (set! x M) x)
     fn set_expr() -> impl Strategy<Value = String> {
-        (safe_int(), safe_int())
-            .prop_map(|(n, m)| format!("(let ((x {})) (set! x {}) x)", n, m))
+        (safe_int(), safe_int()).prop_map(|(n, m)| format!("(let ((x {})) (set! x {}) x)", n, m))
     }
 
     /// Generate a let with two bindings that returns a number.
     /// Pattern: (let ((x N) (y M)) (+ x y))
     fn multi_let_expr() -> impl Strategy<Value = String> {
-        (safe_int(), safe_int())
-            .prop_map(|(n, m)| format!("(let ((x {}) (y {})) (+ x y))", n, m))
+        (safe_int(), safe_int()).prop_map(|(n, m)| format!("(let ((x {}) (y {})) (+ x y))", n, m))
     }
 
     /// Generate a nested let that returns a number.
     /// Pattern: (let ((x N)) (let ((y (+ x 1))) (+ x y)))
     fn nested_let_expr() -> impl Strategy<Value = String> {
-        safe_int().prop_map(|n| {
-            format!("(let ((x {})) (let ((y (+ x 1))) (+ x y)))", n)
-        })
+        safe_int().prop_map(|n| format!("(let ((x {})) (let ((y (+ x 1))) (+ x y)))", n))
     }
 
     /// Generate a loop/recur expression that returns a number.
     /// Pattern: (loop [i 0] (< i N) (recur (+ i 1)) i)
     fn loop_expr() -> impl Strategy<Value = String> {
-        (1i64..10i64).prop_map(|n| {
-            format!("(loop [i 0] (< i {}) (recur (+ i 1)) i)", n)
-        })
+        (1i64..10i64).prop_map(|n| format!("(loop [i 0] (< i {}) (recur (+ i 1)) i)", n))
     }
 
     /// Generate a define + call pattern that returns a number.
     /// Produces a full multi-expression program (no program() wrapping needed).
     fn fn_call_expr() -> impl Strategy<Value = String> {
         (safe_int(), safe_int())
-            .prop_map(|(a, b)| {
-                format!(
-                    "(define (f x) (+ x {}))\n(define (run) (f {}))",
-                    a, b
-                )
-            })
+            .prop_map(|(a, b)| format!("(define (f x) (+ x {}))\n(define (run) (f {}))", a, b))
     }
 
     /// Wrap any expression in (define (run) ...).

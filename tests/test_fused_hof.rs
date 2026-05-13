@@ -35,55 +35,37 @@ fn eval_with_env(src: &str, prelude: &str) -> String {
 
 #[test]
 fn map_double_list() {
-    let result = eval_with_env(
-        "(map double '(1 2 3 4 5))",
-        "(define (double x) (* x 2))",
-    );
+    let result = eval_with_env("(map double '(1 2 3 4 5))", "(define (double x) (* x 2))");
     assert_eq!(result, "(2 4 6 8 10)");
 }
 
 #[test]
 fn map_square_list() {
-    let result = eval_with_env(
-        "(map square '(1 2 3))",
-        "(define (square x) (* x x))",
-    );
+    let result = eval_with_env("(map square '(1 2 3))", "(define (square x) (* x x))");
     assert_eq!(result, "(1 4 9)");
 }
 
 #[test]
 fn map_empty_list() {
-    let result = eval_with_env(
-        "(map double '())",
-        "(define (double x) (* x 2))",
-    );
+    let result = eval_with_env("(map double '())", "(define (double x) (* x 2))");
     assert_eq!(result, "()");
 }
 
 #[test]
 fn map_single_element() {
-    let result = eval_with_env(
-        "(map inc '(42))",
-        "(define (inc x) (+ x 1))",
-    );
+    let result = eval_with_env("(map inc '(42))", "(define (inc x) (+ x 1))");
     assert_eq!(result, "(43)");
 }
 
 #[test]
 fn map_identity_list() {
-    let result = eval_with_env(
-        "(map identity '(1 2 3))",
-        "(define (identity x) x)",
-    );
+    let result = eval_with_env("(map identity '(1 2 3))", "(define (identity x) x)");
     assert_eq!(result, "(1 2 3)");
 }
 
 #[test]
 fn map_negate_list() {
-    let result = eval_with_env(
-        "(map negate '(1 -2 3 -4))",
-        "(define (negate x) (* x -1))",
-    );
+    let result = eval_with_env("(map negate '(1 -2 3 -4))", "(define (negate x) (* x -1))");
     assert_eq!(result, "(-1 2 -3 4)");
 }
 
@@ -122,10 +104,7 @@ fn filter_even() {
 
 #[test]
 fn filter_empty_list() {
-    let result = eval_with_env(
-        "(filter positive? '())",
-        "(define (positive? x) (> x 0))",
-    );
+    let result = eval_with_env("(filter positive? '())", "(define (positive? x) (> x 0))");
     assert_eq!(result, "()");
 }
 
@@ -161,37 +140,25 @@ fn filter_result_equals_builtin() {
 
 #[test]
 fn reduce_sum() {
-    let result = eval_with_env(
-        "(reduce add 0 '(1 2 3 4 5))",
-        "(define (add a b) (+ a b))",
-    );
+    let result = eval_with_env("(reduce add 0 '(1 2 3 4 5))", "(define (add a b) (+ a b))");
     assert_eq!(result, "15");
 }
 
 #[test]
 fn reduce_product() {
-    let result = eval_with_env(
-        "(reduce mul 1 '(1 2 3 4))",
-        "(define (mul a b) (* a b))",
-    );
+    let result = eval_with_env("(reduce mul 1 '(1 2 3 4))", "(define (mul a b) (* a b))");
     assert_eq!(result, "24");
 }
 
 #[test]
 fn reduce_empty_list() {
-    let result = eval_with_env(
-        "(reduce add 42 '())",
-        "(define (add a b) (+ a b))",
-    );
+    let result = eval_with_env("(reduce add 42 '())", "(define (add a b) (+ a b))");
     assert_eq!(result, "42");
 }
 
 #[test]
 fn reduce_single_element() {
-    let result = eval_with_env(
-        "(reduce add 0 '(7))",
-        "(define (add a b) (+ a b))",
-    );
+    let result = eval_with_env("(reduce add 0 '(7))", "(define (add a b) (+ a b))");
     assert_eq!(result, "7");
 }
 
@@ -237,10 +204,7 @@ fn pipeline_filter_map() {
         (define (positive? x) (> x 0))
         (define (square x) (* x x))
     "#;
-    let result = eval_with_env(
-        "(map square (filter positive? '(-3 -1 0 1 2 3)))",
-        prelude,
-    );
+    let result = eval_with_env("(map square (filter positive? '(-3 -1 0 1 2 3)))", prelude);
     // filter: (1 2 3), map square: (1 4 9)
     assert_eq!(result, "(1 4 9)");
 }

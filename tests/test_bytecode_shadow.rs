@@ -5,7 +5,9 @@ use lisp_rlm_wasm::*;
 fn test_simple_shadow() {
     let exprs = parse_all("(lambda (x) (let ((x 42)) x))").unwrap();
     let mut env = Env::new();
-    if let LispVal::Lambda { compiled, body, .. } = lisp_rlm_wasm::program::run_program(&exprs[0..1], &mut env, &mut EvalState::new()).unwrap() {
+    if let LispVal::Lambda { compiled, body, .. } =
+        lisp_rlm_wasm::program::run_program(&exprs[0..1], &mut env, &mut EvalState::new()).unwrap()
+    {
         eprintln!("Simple body: {:?}", body);
         match compiled {
             Some(cl) => eprintln!("Simple shadow compiled: {:?}", cl.code),
@@ -18,7 +20,9 @@ fn test_simple_shadow() {
 fn test_shadow_restore() {
     let exprs = parse_all("(lambda (x) (let ((x 0)) (set! x 99)) x)").unwrap();
     let mut env = Env::new();
-    if let LispVal::Lambda { compiled, body, .. } = lisp_rlm_wasm::program::run_program(&exprs[0..1], &mut env, &mut EvalState::new()).unwrap() {
+    if let LispVal::Lambda { compiled, body, .. } =
+        lisp_rlm_wasm::program::run_program(&exprs[0..1], &mut env, &mut EvalState::new()).unwrap()
+    {
         eprintln!("Restore body: {:?}", body);
         match compiled {
             Some(cl) => {
@@ -28,8 +32,13 @@ fn test_shadow_restore() {
             None => eprintln!("Restore NOT compiled - falls back to CPS"),
         }
     }
-    
+
     // Also test evaluation
-    let r = lisp_rlm_wasm::program::run_program(&parse_all("(map (lambda (x) (let ((x 0)) (set! x 99)) x) (list 1 2 3))").unwrap(), &mut Env::new(), &mut EvalState::new()).unwrap();
+    let r = lisp_rlm_wasm::program::run_program(
+        &parse_all("(map (lambda (x) (let ((x 0)) (set! x 99)) x) (list 1 2 3))").unwrap(),
+        &mut Env::new(),
+        &mut EvalState::new(),
+    )
+    .unwrap();
     eprintln!("map result: {}", r);
 }

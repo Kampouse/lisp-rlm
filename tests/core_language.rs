@@ -2,9 +2,7 @@ use lisp_rlm_wasm::EvalState;
 use lisp_rlm_wasm::*;
 
 fn run_program(code: &str, env: &mut Env, state: &mut EvalState) -> Result<String, String> {
-    let result = lisp_rlm_wasm::program::run_program(
-        &parse_all(code)?, env, state
-    )?;
+    let result = lisp_rlm_wasm::program::run_program(&parse_all(code)?, env, state)?;
     Ok(result.to_string())
 }
 
@@ -480,8 +478,16 @@ fn test_mod_positive() {
 fn test_mod_zero_divisor() {
     // mod by zero returns an error, not a panic
     let result = eval_str("(mod 5 0)");
-    assert!(result.starts_with("ERROR:"), "expected error, got: {}", result);
-    assert!(result.contains("mod by zero"), "expected 'mod by zero', got: {}", result);
+    assert!(
+        result.starts_with("ERROR:"),
+        "expected error, got: {}",
+        result
+    );
+    assert!(
+        result.contains("mod by zero"),
+        "expected 'mod by zero', got: {}",
+        result
+    );
 }
 #[test]
 fn test_native_filter() {

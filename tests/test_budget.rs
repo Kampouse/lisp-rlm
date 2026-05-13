@@ -207,7 +207,8 @@ fn test_budget_large_computation_completes() {
     let exprs = parse_all(code).unwrap();
     let mut result = LispVal::Nil;
     for expr in &exprs {
-        result = lisp_rlm_wasm::program::run_program(&[expr.clone()], &mut env, &mut state).unwrap();
+        result =
+            lisp_rlm_wasm::program::run_program(&[expr.clone()], &mut env, &mut state).unwrap();
     }
     // Sum 1..5000 = 12_502_500
     assert_eq!(result, LispVal::Num(12_502_500));

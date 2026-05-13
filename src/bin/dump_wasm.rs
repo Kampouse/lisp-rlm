@@ -1,8 +1,10 @@
-use wasmtime::{Engine, Module};
 use wasmparser::Validator;
+use wasmtime::{Engine, Module};
 
 fn main() {
-    let source = std::env::args().nth(1).unwrap_or_else(|| "(define (run) (if 1 42 99))".to_string());
+    let source = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "(define (run) (if 1 42 99))".to_string());
     let wasm = lisp_rlm_wasm::wasm_emit::compile_fuzz(&source).unwrap();
     let path = "/tmp/test_fuzz.wasm";
     std::fs::write(path, &wasm).unwrap();

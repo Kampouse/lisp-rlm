@@ -24,7 +24,6 @@
 /// 18. Higher-order (compose, apply)
 /// 19. Deftype / sum types
 /// 20. Stdlib modules (require)
-
 use lisp_rlm_wasm::*;
 
 fn eval_str(code: &str) -> Result<LispVal, String> {
@@ -66,7 +65,10 @@ fn test_literal_float() {
 
 #[test]
 fn test_literal_string() {
-    assert_eq!(eval_str(r#""hello""#).unwrap(), LispVal::Str("hello".into()));
+    assert_eq!(
+        eval_str(r#""hello""#).unwrap(),
+        LispVal::Str("hello".into())
+    );
 }
 
 #[test]
@@ -96,9 +98,10 @@ fn test_quote_symbol() {
 
 #[test]
 fn test_quote_list() {
-    assert_eq!(eval_str("'(1 2 3)").unwrap(), LispVal::List(vec![
-        LispVal::Num(1), LispVal::Num(2), LispVal::Num(3)
-    ]));
+    assert_eq!(
+        eval_str("'(1 2 3)").unwrap(),
+        LispVal::List(vec![LispVal::Num(1), LispVal::Num(2), LispVal::Num(3)])
+    );
 }
 
 // ============================================================
@@ -191,7 +194,10 @@ fn test_or_true() {
 
 #[test]
 fn test_or_false() {
-    assert_eq!(eval_str("(or false nil false)").unwrap(), LispVal::Bool(false));
+    assert_eq!(
+        eval_str("(or false nil false)").unwrap(),
+        LispVal::Bool(false)
+    );
 }
 
 #[test]
@@ -363,23 +369,29 @@ fn test_quote_shorthand() {
 fn test_quasiquote_unquote() {
     let code = "(let ((x 42)) (quasiquote (+ (unquote x) 1)))";
     // Should produce the list (+ 42 1), not evaluate it
-    assert_eq!(eval_str(code).unwrap(), LispVal::List(vec![
-        LispVal::Sym("+".into()),
-        LispVal::Num(42),
-        LispVal::Num(1),
-    ]));
+    assert_eq!(
+        eval_str(code).unwrap(),
+        LispVal::List(vec![
+            LispVal::Sym("+".into()),
+            LispVal::Num(42),
+            LispVal::Num(1),
+        ])
+    );
 }
 
 #[test]
 fn test_quasiquote_splicing() {
     let code = "(let ((xs (list 1 2 3))) (quasiquote (0 (unquote-splicing xs) 4)))";
-    assert_eq!(eval_str(code).unwrap(), LispVal::List(vec![
-        LispVal::Num(0),
-        LispVal::Num(1),
-        LispVal::Num(2),
-        LispVal::Num(3),
-        LispVal::Num(4),
-    ]));
+    assert_eq!(
+        eval_str(code).unwrap(),
+        LispVal::List(vec![
+            LispVal::Num(0),
+            LispVal::Num(1),
+            LispVal::Num(2),
+            LispVal::Num(3),
+            LispVal::Num(4),
+        ])
+    );
 }
 
 // ============================================================
@@ -408,17 +420,23 @@ fn test_do() {
 #[test]
 fn test_defmacro_basic() {
     let code = "(begin (defmacro swap (a b) (list (quote list) b a)) (swap 1 2))";
-    assert_eq!(eval_str(code).unwrap(), LispVal::List(vec![
-        LispVal::Num(2), LispVal::Num(1)
-    ]));
+    assert_eq!(
+        eval_str(code).unwrap(),
+        LispVal::List(vec![LispVal::Num(2), LispVal::Num(1)])
+    );
 }
 
 #[test]
 fn test_macroexpand() {
     let code = "(begin (defmacro double (x) (list (quote +) x x)) (macroexpand (double 5)))";
-    assert_eq!(eval_str(code).unwrap(), LispVal::List(vec![
-        LispVal::Sym("+".into()), LispVal::Num(5), LispVal::Num(5)
-    ]));
+    assert_eq!(
+        eval_str(code).unwrap(),
+        LispVal::List(vec![
+            LispVal::Sym("+".into()),
+            LispVal::Num(5),
+            LispVal::Num(5)
+        ])
+    );
 }
 
 #[test]
@@ -429,9 +447,10 @@ fn test_macro_rest_params() {
                 (cons (quote list) items))
             (my-list 1 2 3))
     "#;
-    assert_eq!(eval_str(code).unwrap(), LispVal::List(vec![
-        LispVal::Num(1), LispVal::Num(2), LispVal::Num(3)
-    ]));
+    assert_eq!(
+        eval_str(code).unwrap(),
+        LispVal::List(vec![LispVal::Num(1), LispVal::Num(2), LispVal::Num(3)])
+    );
 }
 
 // ============================================================
@@ -443,7 +462,7 @@ fn test_match_wildcard() {
     // This should fail if match isn't in the compiler
     let r = eval_str("(match 42 (_ \"matched\"))");
     match r {
-        Ok(LispVal::Str(s)) if s == "matched" => {},
+        Ok(LispVal::Str(s)) if s == "matched" => {}
         Ok(v) => panic!("Expected \"matched\", got {:?}", v),
         Err(e) => panic!("match not compiled: {}", e),
     }
@@ -453,7 +472,7 @@ fn test_match_wildcard() {
 fn test_match_literal() {
     let r = eval_str("(match 42 (1 \"one\") (42 \"found\") (_ \"other\"))");
     match r {
-        Ok(LispVal::Str(s)) if s == "found" => {},
+        Ok(LispVal::Str(s)) if s == "found" => {}
         Ok(v) => panic!("Expected \"found\", got {:?}", v),
         Err(e) => panic!("match not compiled: {}", e),
     }
@@ -467,7 +486,7 @@ fn test_match_literal() {
 fn test_try_catch() {
     let r = eval_str("(try (/ 1 0) (catch e (str-concat \"caught: \" e)))");
     match r {
-        Ok(LispVal::Str(s)) if s.starts_with("caught:") => {},
+        Ok(LispVal::Str(s)) if s.starts_with("caught:") => {}
         Ok(v) => panic!("Expected caught string, got {:?}", v),
         Err(e) => panic!("try/catch not compiled: {}", e),
     }
@@ -477,7 +496,7 @@ fn test_try_catch() {
 fn test_try_success() {
     let r = eval_str("(try (+ 1 2) (catch e 0))");
     match r {
-        Ok(LispVal::Num(3)) => {},
+        Ok(LispVal::Num(3)) => {}
         Ok(v) => panic!("Expected 3, got {:?}", v),
         Err(e) => panic!("try not compiled: {}", e),
     }
@@ -489,9 +508,10 @@ fn test_try_success() {
 
 #[test]
 fn test_list() {
-    assert_eq!(eval_str("(list 1 2 3)").unwrap(), LispVal::List(vec![
-        LispVal::Num(1), LispVal::Num(2), LispVal::Num(3)
-    ]));
+    assert_eq!(
+        eval_str("(list 1 2 3)").unwrap(),
+        LispVal::List(vec![LispVal::Num(1), LispVal::Num(2), LispVal::Num(3)])
+    );
 }
 
 #[test]
@@ -501,16 +521,18 @@ fn test_car() {
 
 #[test]
 fn test_cdr() {
-    assert_eq!(eval_str("(cdr (list 1 2 3))").unwrap(), LispVal::List(vec![
-        LispVal::Num(2), LispVal::Num(3)
-    ]));
+    assert_eq!(
+        eval_str("(cdr (list 1 2 3))").unwrap(),
+        LispVal::List(vec![LispVal::Num(2), LispVal::Num(3)])
+    );
 }
 
 #[test]
 fn test_cons() {
-    assert_eq!(eval_str("(cons 0 (list 1 2))").unwrap(), LispVal::List(vec![
-        LispVal::Num(0), LispVal::Num(1), LispVal::Num(2)
-    ]));
+    assert_eq!(
+        eval_str("(cons 0 (list 1 2))").unwrap(),
+        LispVal::List(vec![LispVal::Num(0), LispVal::Num(1), LispVal::Num(2)])
+    );
 }
 
 #[test]
@@ -520,54 +542,77 @@ fn test_len() {
 
 #[test]
 fn test_append() {
-    assert_eq!(eval_str("(append (list 1 2) (list 3 4))").unwrap(), LispVal::List(vec![
-        LispVal::Num(1), LispVal::Num(2), LispVal::Num(3), LispVal::Num(4)
-    ]));
+    assert_eq!(
+        eval_str("(append (list 1 2) (list 3 4))").unwrap(),
+        LispVal::List(vec![
+            LispVal::Num(1),
+            LispVal::Num(2),
+            LispVal::Num(3),
+            LispVal::Num(4)
+        ])
+    );
 }
 
 #[test]
 fn test_nth() {
-    assert_eq!(eval_str("(nth (list 10 20 30) 1)").unwrap(), LispVal::Num(20));
+    assert_eq!(
+        eval_str("(nth (list 10 20 30) 1)").unwrap(),
+        LispVal::Num(20)
+    );
 }
 
 #[test]
 fn test_map() {
-    assert_eq!(eval_str("(map (lambda (x) (* x 2)) (list 1 2 3))").unwrap(), LispVal::List(vec![
-        LispVal::Num(2), LispVal::Num(4), LispVal::Num(6)
-    ]));
+    assert_eq!(
+        eval_str("(map (lambda (x) (* x 2)) (list 1 2 3))").unwrap(),
+        LispVal::List(vec![LispVal::Num(2), LispVal::Num(4), LispVal::Num(6)])
+    );
 }
 
 #[test]
 fn test_filter() {
-    assert_eq!(eval_str("(filter (lambda (x) (> x 2)) (list 1 2 3))").unwrap(), LispVal::List(vec![
-        LispVal::Num(3)
-    ]));
+    assert_eq!(
+        eval_str("(filter (lambda (x) (> x 2)) (list 1 2 3))").unwrap(),
+        LispVal::List(vec![LispVal::Num(3)])
+    );
 }
 
 #[test]
 fn test_reduce() {
-    assert_eq!(eval_str("(reduce + 0 (list 1 2 3))").unwrap(), LispVal::Num(6));
+    assert_eq!(
+        eval_str("(reduce + 0 (list 1 2 3))").unwrap(),
+        LispVal::Num(6)
+    );
 }
 
 #[test]
 fn test_reverse() {
-    assert_eq!(eval_str("(reverse (list 1 2 3))").unwrap(), LispVal::List(vec![
-        LispVal::Num(3), LispVal::Num(2), LispVal::Num(1)
-    ]));
+    assert_eq!(
+        eval_str("(reverse (list 1 2 3))").unwrap(),
+        LispVal::List(vec![LispVal::Num(3), LispVal::Num(2), LispVal::Num(1)])
+    );
 }
 
 #[test]
 fn test_sort() {
-    assert_eq!(eval_str("(sort (list 3 1 2))").unwrap(), LispVal::List(vec![
-        LispVal::Num(1), LispVal::Num(2), LispVal::Num(3)
-    ]));
+    assert_eq!(
+        eval_str("(sort (list 3 1 2))").unwrap(),
+        LispVal::List(vec![LispVal::Num(1), LispVal::Num(2), LispVal::Num(3)])
+    );
 }
 
 #[test]
 fn test_range() {
-    assert_eq!(eval_str("(range 0 5)").unwrap(), LispVal::List(vec![
-        LispVal::Num(0), LispVal::Num(1), LispVal::Num(2), LispVal::Num(3), LispVal::Num(4)
-    ]));
+    assert_eq!(
+        eval_str("(range 0 5)").unwrap(),
+        LispVal::List(vec![
+            LispVal::Num(0),
+            LispVal::Num(1),
+            LispVal::Num(2),
+            LispVal::Num(3),
+            LispVal::Num(4)
+        ])
+    );
 }
 
 #[test]
@@ -582,30 +627,47 @@ fn test_dict() {
 
 #[test]
 fn test_str_concat() {
-    assert_eq!(eval_str(r#"(str-concat "hello" " " "world")"#).unwrap(), LispVal::Str("hello world".into()));
+    assert_eq!(
+        eval_str(r#"(str-concat "hello" " " "world")"#).unwrap(),
+        LispVal::Str("hello world".into())
+    );
 }
 
 #[test]
 fn test_str_contains() {
-    assert_eq!(eval_str(r#"(str-contains "hello" "ell")"#).unwrap(), LispVal::Bool(true));
+    assert_eq!(
+        eval_str(r#"(str-contains "hello" "ell")"#).unwrap(),
+        LispVal::Bool(true)
+    );
 }
 
 #[test]
 fn test_str_length() {
-    assert_eq!(eval_str(r#"(str-length "hello")"#).unwrap(), LispVal::Num(5));
+    assert_eq!(
+        eval_str(r#"(str-length "hello")"#).unwrap(),
+        LispVal::Num(5)
+    );
 }
 
 #[test]
 fn test_str_split() {
     let r = eval_str(r#"(str-split "a,b,c" ",")"#).unwrap();
-    assert_eq!(r, LispVal::List(vec![
-        LispVal::Str("a".into()), LispVal::Str("b".into()), LispVal::Str("c".into())
-    ]));
+    assert_eq!(
+        r,
+        LispVal::List(vec![
+            LispVal::Str("a".into()),
+            LispVal::Str("b".into()),
+            LispVal::Str("c".into())
+        ])
+    );
 }
 
 #[test]
 fn test_to_string() {
-    assert_eq!(eval_str("(to-string 42)").unwrap(), LispVal::Str("42".into()));
+    assert_eq!(
+        eval_str("(to-string 42)").unwrap(),
+        LispVal::Str("42".into())
+    );
 }
 
 // ============================================================
@@ -614,8 +676,14 @@ fn test_to_string() {
 
 #[test]
 fn test_type_of() {
-    assert_eq!(eval_str("(type? 42)").unwrap(), LispVal::Str("number".into()));
-    assert_eq!(eval_str("(type? \"hi\")").unwrap(), LispVal::Str("string".into()));
+    assert_eq!(
+        eval_str("(type? 42)").unwrap(),
+        LispVal::Str("number".into())
+    );
+    assert_eq!(
+        eval_str("(type? \"hi\")").unwrap(),
+        LispVal::Str("string".into())
+    );
 }
 
 #[test]
@@ -631,7 +699,10 @@ fn test_check_fail() {
 #[test]
 fn test_matches() {
     assert_eq!(eval_str("(matches? 42 :int)").unwrap(), LispVal::Bool(true));
-    assert_eq!(eval_str("(matches? \"hi\" :int)").unwrap(), LispVal::Bool(false));
+    assert_eq!(
+        eval_str("(matches? \"hi\" :int)").unwrap(),
+        LispVal::Bool(false)
+    );
 }
 
 #[test]
@@ -672,9 +743,10 @@ fn test_apply() {
 #[test]
 fn test_builtin_as_value() {
     let code = "(map (lambda (f) (f 5)) (list (lambda (x) (+ x 1)) (lambda (x) (* x 2))))";
-    assert_eq!(eval_str(code).unwrap(), LispVal::List(vec![
-        LispVal::Num(6), LispVal::Num(10)
-    ]));
+    assert_eq!(
+        eval_str(code).unwrap(),
+        LispVal::List(vec![LispVal::Num(6), LispVal::Num(10)])
+    );
 }
 
 // ============================================================
@@ -691,7 +763,11 @@ fn test_deftype_nullary() {
     let r = eval_str(code).unwrap();
     // Should be a tagged value
     match r {
-        LispVal::Tagged { type_name, variant_id, fields } => {
+        LispVal::Tagged {
+            type_name,
+            variant_id,
+            fields,
+        } => {
             assert_eq!(type_name, "Color");
             assert_eq!(variant_id, 0);
             assert!(fields.is_empty());
@@ -709,7 +785,11 @@ fn test_deftype_with_fields() {
     "#;
     let r = eval_str(code).unwrap();
     match r {
-        LispVal::Tagged { type_name, variant_id, fields } => {
+        LispVal::Tagged {
+            type_name,
+            variant_id,
+            fields,
+        } => {
             assert_eq!(type_name, "Shape");
             assert_eq!(variant_id, 0);
             assert_eq!(fields.len(), 1);

@@ -19,35 +19,57 @@ struct MiniSpec {
 
 impl MiniSpec {
     fn new(code: Vec<Op>, slots: Vec<LispVal>) -> Self {
-        Self { stack: Vec::new(), slots, pc: 0, code }
+        Self {
+            stack: Vec::new(),
+            slots,
+            pc: 0,
+            code,
+        }
     }
-    
-    fn pop(&mut self) -> LispVal { self.stack.pop().unwrap_or(LispVal::Nil) }
+
+    fn pop(&mut self) -> LispVal {
+        self.stack.pop().unwrap_or(LispVal::Nil)
+    }
     fn num_val(v: &LispVal) -> i64 {
-        match v { LispVal::Num(n) => *n, LispVal::Float(f) => *f as i64, _ => 0 }
+        match v {
+            LispVal::Num(n) => *n,
+            LispVal::Float(f) => *f as i64,
+            _ => 0,
+        }
     }
-    
+
     fn run(&mut self, max_steps: usize) -> SpecResult {
         for _ in 0..max_steps {
-            if self.pc >= self.code.len() { break; }
+            if self.pc >= self.code.len() {
+                break;
+            }
             let op = self.code[self.pc].clone();
             eprintln!("  pc={} op={:?} stack={:?}", self.pc, op, self.stack);
             match &op {
                 Op::SlotAddImm(s, imm) => {
                     let v = Self::num_val(&self.slots[*s]);
                     match v.checked_add(*imm) {
-                        Some(r) => { self.stack.push(LispVal::Num(r)); self.pc += 1; }
+                        Some(r) => {
+                            self.stack.push(LispVal::Num(r));
+                            self.pc += 1;
+                        }
                         None => return SpecResult::Error("integer overflow in add".into()),
                     }
                 }
-                Op::PushI64(n) => { self.stack.push(LispVal::Num(*n)); self.pc += 1; }
+                Op::PushI64(n) => {
+                    self.stack.push(LispVal::Num(*n));
+                    self.pc += 1;
+                }
                 Op::Add => {
                     let b = self.pop();
                     let a = self.pop();
                     let av = Self::num_val(&a);
                     let bv = Self::num_val(&b);
                     match av.checked_add(bv) {
-                        Some(r) => { self.stack.push(LispVal::Num(r)); self.pc += 1; }
+                        Some(r) => {
+                            self.stack.push(LispVal::Num(r));
+                            self.pc += 1;
+                        }
                         None => return SpecResult::Error("integer overflow in add".into()),
                     }
                 }
@@ -58,7 +80,10 @@ impl MiniSpec {
                     let bv = Self::num_val(&b);
                     eprintln!("    Sub: a={:?} b={:?} av={} bv={}", a, b, av, bv);
                     match av.checked_sub(bv) {
-                        Some(r) => { self.stack.push(LispVal::Num(r)); self.pc += 1; }
+                        Some(r) => {
+                            self.stack.push(LispVal::Num(r));
+                            self.pc += 1;
+                        }
                         None => return SpecResult::Error("integer overflow in sub".into()),
                     }
                 }
@@ -68,14 +93,19 @@ impl MiniSpec {
                     let av = Self::num_val(&a);
                     let bv = Self::num_val(&b);
                     match av.checked_mul(bv) {
-                        Some(r) => { self.stack.push(LispVal::Num(r)); self.pc += 1; }
+                        Some(r) => {
+                            self.stack.push(LispVal::Num(r));
+                            self.pc += 1;
+                        }
                         None => return SpecResult::Error("integer overflow in mul".into()),
                     }
                 }
                 Op::Return => {
                     return SpecResult::Value(self.pop());
                 }
-                _ => { self.pc += 1; }
+                _ => {
+                    self.pc += 1;
+                }
             }
         }
         SpecResult::StepLimit
@@ -114,15 +144,14 @@ fn trace_mismatch_80() {
 #[test]
 fn test_div_overflow_returns_error() {
     // i64::MIN / -1 overflows
-    let code = vec![
-        Op::PushI64(i64::MIN),
-        Op::PushI64(-1),
-        Op::Div,
-        Op::Return,
-    ];
+    let code = vec![Op::PushI64(i64::MIN), Op::PushI64(-1), Op::Div, Op::Return];
     let cl = make_test_compiled_lambda(0, 0, code);
     let result = run_lambda_test(&cl, &[]);
     eprintln!("Div overflow result: {:?}", result);
-    assert!(result.is_err(), "Expected error for div overflow, got {:?}", result);
+    assert!(
+        result.is_err(),
+        "Expected error for div overflow, got {:?}",
+        result
+    );
     assert!(result.unwrap_err().contains("overflow"));
 }

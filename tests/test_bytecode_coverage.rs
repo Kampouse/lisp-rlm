@@ -298,8 +298,18 @@ fn test_scheduler_run_compiles_with_closure() {
     assert_eq!(cl.closures.len(), 1);
     // Inner closure captures execute-action and handle-result
     let inner = &cl.closures[0];
-    assert!(inner.captured.read().unwrap().iter().any(|(k, _)| k == "execute-action"));
-    assert!(inner.captured.read().unwrap().iter().any(|(k, _)| k == "handle-result"));
+    assert!(inner
+        .captured
+        .read()
+        .unwrap()
+        .iter()
+        .any(|(k, _)| k == "execute-action"));
+    assert!(inner
+        .captured
+        .read()
+        .unwrap()
+        .iter()
+        .any(|(k, _)| k == "handle-result"));
 }
 
 #[test]
@@ -312,7 +322,12 @@ fn test_rank_intentions_compiles() {
         "rank-intentions",
     );
     let cl = result.unwrap().expect("rank-intentions should compile");
-    assert!(cl.captured.read().unwrap().iter().any(|(k, _)| k == "score-intention"));
+    assert!(cl
+        .captured
+        .read()
+        .unwrap()
+        .iter()
+        .any(|(k, _)| k == "score-intention"));
     // Correctness: map over list with compiled lambda
     let output = eval_program(
         r#"
@@ -369,9 +384,3 @@ fn test_float_peephole_in_arithmetic() {
     let result2 = eval_program("(define (tfs x) (- 1.0 x)) (tfs 0.3)").unwrap();
     assert_eq!(result2, "0.7");
 }
-
-
-
-
-
-
