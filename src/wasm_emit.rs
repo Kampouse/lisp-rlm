@@ -21,7 +21,7 @@ use wasm_encoder::{
 // NEAR host function signatures — from nearcore imports.rs, verified on testnet Apr 30 2026
 // Format: (wasm_name, params, results)
 // [] = void return, [I64] = returns u64
-const HOST_FUNCS: &[(&str, &[ValType], &[ValType])] = &[
+pub(crate) const HOST_FUNCS: &[(&str, &[ValType], &[ValType])] = &[
     // Registers
     ("read_register",               &[ValType::I64, ValType::I64], &[]),           // 0
     ("register_len",                &[ValType::I64], &[ValType::I64]),             // 1
@@ -111,34 +111,34 @@ const GAS_LIMIT: i64 = 1_000_000_000;
 const DEPTH_LIMIT: i64 = 512;
 const DEPTH_GLOBAL: u32 = 0; // mutable i64 global for call depth
 
-struct FuncDef {
-    name: String,
-    param_count: usize,
-    local_count: usize,
-    instrs: Vec<Instruction<'static>>,
+pub(crate) struct FuncDef {
+    pub name: String,
+    pub param_count: usize,
+    pub local_count: usize,
+    pub instrs: Vec<Instruction<'static>>,
 }
 
 pub struct WasmEmitter {
-    locals: HashMap<String, u32>,
-    next_local: u32,
-    current_func: Option<String>,
-    current_param_count: usize,
-    while_id: Cell<usize>,
-    funcs: Vec<FuncDef>,
-    memory_pages: u32,
-    exports: Vec<(String, String, bool)>,
-    data_segments: Vec<(u32, Vec<u8>)>,
-    next_data_offset: u32,
-    host_needed: HashSet<usize>,
-    gas_local: Option<u32>, // index of the gas counter local (i64)
-    heap_ptr: u32, // bump allocator for closures
-    lambda_counter: u32, // unique lambda id
-    fuzz_mode: bool, // if true, export wrappers store tagged values (no untag, no value_return)
+    pub(crate) locals: HashMap<String, u32>,
+    pub(crate) next_local: u32,
+    pub(crate) current_func: Option<String>,
+    pub(crate) current_param_count: usize,
+    pub(crate) while_id: Cell<usize>,
+    pub(crate) funcs: Vec<FuncDef>,
+    pub(crate) memory_pages: u32,
+    pub(crate) exports: Vec<(String, String, bool)>,
+    pub(crate) data_segments: Vec<(u32, Vec<u8>)>,
+    pub(crate) next_data_offset: u32,
+    pub(crate) host_needed: HashSet<usize>,
+    pub(crate) gas_local: Option<u32>, // index of the gas counter local (i64)
+    pub(crate) heap_ptr: u32, // bump allocator for closures
+    pub(crate) lambda_counter: u32, // unique lambda id
+    pub(crate) fuzz_mode: bool, // if true, export wrappers store tagged values (no untag, no value_return)
     // Track which function each lambda maps to, and its captured var count
     // lambda_id -> (func_array_idx, captured_count)
-    lambda_info: Vec<(usize, usize)>, 
+    pub(crate) lambda_info: Vec<(usize, usize)>, 
     // When compiling a lambda, maps captured var names to their offset in the closure
-    captured_map: HashMap<String, usize>,
+    pub(crate) captured_map: HashMap<String, usize>,
 }
 
 impl WasmEmitter {
@@ -5822,7 +5822,7 @@ impl WasmEmitter {
 
     // ── Tree-shaking ──
 
-    fn tree_shake(&mut self) {
+    pub(crate) fn tree_shake(&mut self) {
         if self.funcs.is_empty() { return; }
 
         // Build call graph: for each func index, which other func indices does it call?
@@ -6000,7 +6000,7 @@ impl WasmEmitter {
         for f in &self.funcs {
             let extra = f.local_count.saturating_sub(f.param_count);
             let locals: Vec<(u32, ValType)> = if extra > 0 { vec![(extra as u32, ValType::I64)] } else { vec![] };
-            let resolved = Self::resolve_static(&f.instrs, &host_idx, &name_map, &self.funcs);
+            let resolved = Self::resolve_static_pub(&f.instrs, &host_idx, &name_map, &self.funcs);
             let mut fb = Function::new(locals);
             for instr in &resolved { fb.instruction(instr); }
             fb.instruction(&Instruction::End);
@@ -6104,7 +6104,7 @@ impl WasmEmitter {
         m.finish()
     }
 
-    fn resolve_static(
+    pub(crate) fn resolve_static_pub(
         instrs: &[Instruction<'static>],
         host_map: &HashMap<usize, u32>,
         name_map: &HashMap<&str, u32>,
