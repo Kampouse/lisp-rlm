@@ -614,6 +614,18 @@ fn finish_outlayer(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
         let extra = f.local_count.saturating_sub(f.param_count);
         let locals: Vec<(u32, ValType)> = if extra > 0 { vec![(extra as u32, ValType::I64)] } else { vec![] };
         let resolved = WasmEmitter::resolve_static_pub(&f.instrs, &near_host_idx, &name_map, &em.funcs);
+        let resolved = if em.need_outlayer {
+            let mut ol_map: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+            // outlayer.view is at import index wasi_count + 0
+            // outlayer.call is at import index wasi_count + 1
+            // outlayer.transfer is at import index wasi_count + 2
+            ol_map.insert(100, wasi_count); // sentinel 100 -> outlayer.view
+            ol_map.insert(101, wasi_count + 1); // sentinel 101 -> outlayer.call
+            ol_map.insert(102, wasi_count + 2); // sentinel 102 -> outlayer.transfer
+            WasmEmitter::resolve_static_pub_ex(&f.instrs, &near_host_idx, &name_map, &em.funcs, &ol_map)
+        } else {
+            resolved
+        };
         let mut fb = Function::new(locals);
         for instr in &resolved { fb.instruction(instr); }
         fb.instruction(&Instruction::End);

@@ -134,6 +134,7 @@ pub struct WasmEmitter {
     pub(crate) heap_ptr: u32, // bump allocator for closures
     pub(crate) lambda_counter: u32, // unique lambda id
     pub(crate) fuzz_mode: bool, // if true, export wrappers store tagged values (no untag, no value_return)
+    pub(crate) need_outlayer: bool, // true if outlayer/* dispatch forms are used
     // Track which function each lambda maps to, and its captured var count
     // lambda_id -> (func_array_idx, captured_count)
     pub(crate) lambda_info: Vec<(usize, usize)>, 
@@ -147,7 +148,7 @@ impl WasmEmitter {
             locals: HashMap::new(), next_local: 0, current_func: None, current_param_count: 0,
             while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 1, exports: Vec::new(),
             data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(),
-            gas_local: None, heap_ptr: HEAP_START as u32, lambda_counter: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(),
+            gas_local: None, heap_ptr: HEAP_START as u32, lambda_counter: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false,
         }
     }
 
@@ -639,6 +640,10 @@ impl WasmEmitter {
             "near/iter_prefix" => { self.need_host(36); self.need_host(2); self.need_host(0); self.need_host(1); }
             "near/iter_range" => { self.need_host(37); self.need_host(2); self.need_host(0); self.need_host(1); }
             "near/iter_next" => { self.need_host(38); self.need_host(0); self.need_host(1); }
+            // OutLayer RPC — uses "outlayer" module imports
+            "outlayer/view" | "outlayer/raw" | "outlayer/status" => {
+                self.need_outlayer = true;
+            }
             _ => {}
         }
     }
@@ -4618,6 +4623,85 @@ impl WasmEmitter {
                 Ok(v)
             }
 
+            // ── OutLayer RPC (string-based I/O via outlayer module imports) ──
+            "outlayer/view" => {
+                // (outlayer/view contract method args) -> string result
+                // Calls outlayer.view(contract_ptr, contract_len, method_ptr, method_len,
+                //                      args_ptr, args_len, result_buf, result_len_ptr) -> errno
+                if a.len() < 3 { return Err("outlayer/view requires (contract method args)".into()); }
+                let contract = self.expr(&a[0])?;
+                let method = self.expr(&a[1])?;
+                let args = self.expr(&a[2])?;
+                let mut v = Vec::new();
+                // Extract (ptr, len) from tagged string values
+                // TAG_STR = 5, tagged = (payload << 3) | 5
+                // payload = heap_off | (len << 32)
+                // ptr = payload & 0xFFFFFFFF, len = payload >> 32
+
+                // Contract string: untag to get payload, then extract ptr and len
+                v.extend(contract.clone());
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU); // payload
+                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And); // ptr
+                v.push(Instruction::I32WrapI64); // contract_ptr as i32
+
+                v.extend(contract);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU); // payload
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // len
+                v.push(Instruction::I32WrapI64); // contract_len as i32
+
+                // Method string
+                v.extend(method.clone());
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64); // method_ptr
+
+                v.extend(method);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64); // method_len
+
+                // Args string
+                v.extend(args.clone());
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64); // args_ptr
+
+                v.extend(args);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64); // args_len
+
+                // Result buffer: use a fixed area in memory (98304 = STDIN_LEN area)
+                // We'll reuse the STDIN_LEN area as a scratch buffer for results
+                v.push(Instruction::I32Const(98304));  // result_buf
+                v.push(Instruction::I32Const(98304 + 65536)); // result_len_ptr
+
+                // Call outlayer.view — use a sentinel index that resolve_static handles
+                // 100 = outlayer.view sentinel
+                v.push(Instruction::Call(100));
+                v.push(Instruction::Drop); // ignore errno
+
+                // TODO: read result from result_buf and create a tagged string
+                // For now, return nil
+                v.push(Instruction::I64Const(TAG_NIL));
+                Ok(v)
+            }
+
+            "outlayer/raw" => {
+                // (outlayer/raw method params) -> string result
+                if a.len() < 2 { return Err("outlayer/raw requires (method params)".into()); }
+                let _method = self.expr(&a[0])?;
+                let _params = self.expr(&a[1])?;
+                // TODO: implement similar to outlayer/view but using outlayer.call
+                Ok(vec![Instruction::I64Const(TAG_NIL)])
+            }
+
+            "outlayer/status" => {
+                // (outlayer/status) -> string
+                // No args, calls outlayer raw with method="status"
+                Ok(vec![Instruction::I64Const(TAG_NIL)])
+            }
+
             // User function call
             _ => {
                 let pos = self.funcs.iter().position(|f| f.name == op).ok_or_else(|| format!("in {}: unknown function '{}'", self.current_func.as_deref().unwrap_or("top"), op))?;
@@ -6110,6 +6194,19 @@ impl WasmEmitter {
         name_map: &HashMap<&str, u32>,
         funcs: &[FuncDef],
     ) -> Vec<Instruction<'static>> {
+        Self::resolve_static_pub_ex(instrs, host_map, name_map, funcs, &HashMap::new())
+    }
+
+    /// Extended resolve with outlayer function mapping
+    /// outlayer_map: sentinel_index -> actual_func_idx
+    ///   100 -> outlayer.view, 101 -> outlayer.call, 102 -> outlayer.transfer
+    pub(crate) fn resolve_static_pub_ex(
+        instrs: &[Instruction<'static>],
+        host_map: &HashMap<usize, u32>,
+        name_map: &HashMap<&str, u32>,
+        funcs: &[FuncDef],
+        outlayer_map: &HashMap<u32, u32>,
+    ) -> Vec<Instruction<'static>> {
         instrs.iter().map(|i| match i {
             Instruction::Call(idx) if *idx >= HOST_BASE && *idx < USER_BASE => {
                 Instruction::Call(host_map[&((*idx - HOST_BASE) as usize)])
@@ -6117,6 +6214,9 @@ impl WasmEmitter {
             Instruction::Call(idx) if *idx >= USER_BASE => {
                 let pos = (*idx - USER_BASE) as usize;
                 Instruction::Call(name_map[funcs[pos].name.as_str()])
+            }
+            Instruction::Call(idx) if outlayer_map.contains_key(idx) => {
+                Instruction::Call(outlayer_map[idx])
             }
             other => other.clone(),
         }).collect()
