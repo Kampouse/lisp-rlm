@@ -358,42 +358,30 @@ fn finish_outlayer(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
             (1u32, ValType::I64), // local 3: result/tmp (i64)
         ]);
 
-        // fd_read(0, iov_ptr, 1, &stdin_len)
-        // iov structure at offset 0: [buf_ptr:i32, buf_len:i32] = [STDIN_BUF, 65536]
-        // Store iov at TEMP_MEM (offset 64)
-        let ma = MemArg { offset: 0, align: 3, memory_index: 0 };
+        // fd_read(0, iov, 1, &nread)
+        // Set up iov at offset 64: [buf_ptr:i32, buf_len:i32]
         let ma4 = MemArg { offset: 0, align: 2, memory_index: 0 };
-        
         // iov[0].buf = STDIN_BUF
-        fb.instruction(&Instruction::I64Const(64)); // TEMP_MEM offset
-        fb.instruction(&Instruction::I32WrapI64);
-        fb.instruction(&Instruction::I32Const(STDIN_BUF as i32));
+        fb.instruction(&Instruction::I32Const(64)); // iov offset
+        fb.instruction(&Instruction::I32Const(STDIN_BUF as i32)); // buf ptr
         fb.instruction(&Instruction::I32Store(ma4));
         // iov[0].len = 65536
-        fb.instruction(&Instruction::I64Const(64 + 4));
-        fb.instruction(&Instruction::I32WrapI64);
-        fb.instruction(&Instruction::I32Const(65536));
+        fb.instruction(&Instruction::I32Const(68)); // iov+4
+        fb.instruction(&Instruction::I32Const(65536)); // buf len
         fb.instruction(&Instruction::I32Store(ma4));
 
         // fd_read(0, 64, 1, STDIN_LEN)
         fb.instruction(&Instruction::I32Const(0)); // fd=stdin
-        fb.instruction(&Instruction::I64Const(64)); // iovs_ptr
-        fb.instruction(&Instruction::I32WrapI64);
+        fb.instruction(&Instruction::I32Const(64)); // iovs_ptr
         fb.instruction(&Instruction::I32Const(1)); // iovs_len=1
-        fb.instruction(&Instruction::I64Const(STDIN_LEN)); // nread_ptr
-        fb.instruction(&Instruction::I32WrapI64);
+        fb.instruction(&Instruction::I32Const(STDIN_LEN as i32)); // nread_ptr
         fb.instruction(&Instruction::Call(0)); // fd_read (import 0)
-        fb.instruction(&Instruction::Drop); // ignore errno for now
-
-        // Load the actual bytes read
-        fb.instruction(&Instruction::I64Const(STDIN_LEN));
-        fb.instruction(&Instruction::I32WrapI64);
-        fb.instruction(&Instruction::I32Load(ma4));
-        fb.instruction(&Instruction::LocalSet(0)); // stdin_len
+        fb.instruction(&Instruction::Drop); // ignore errno
 
         // Call the last user function
         // For 0-param: just call
         // For N-param: load N i64s from STDIN_BUF (same pattern as NEAR input)
+        let ma = MemArg { offset: 0, align: 3, memory_index: 0 };
         if param_count == 0 {
             fb.instruction(&Instruction::Call(last_idx));
             fb.instruction(&Instruction::LocalSet(3)); // save result
@@ -419,28 +407,7 @@ fn finish_outlayer(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
         fb.instruction(&Instruction::I64ShrS); // untag
         fb.instruction(&Instruction::I64Store(ma));
 
-        // fd_write(1, iov_ptr, 1, &written)
-        // Build iov for stdout: [RESULT_BUF, 8]
-        fb.instruction(&Instruction::I64Const(64));
-        fb.instruction(&Instruction::I32WrapI64);
-        fb.instruction(&Instruction::I32Const(RESULT_BUF as i32));
-        fb.instruction(&Instruction::I32Store(ma4));
-        fb.instruction(&Instruction::I64Const(64 + 4));
-        fb.instruction(&Instruction::I32WrapI64);
-        fb.instruction(&Instruction::I32Const(8)); // 8 bytes output
-        fb.instruction(&Instruction::I32Store(ma4));
-
-        // fd_write(1, 64, 1, STDIN_LEN) — reuse STDIN_LEN for nwritten
-        fb.instruction(&Instruction::I32Const(1)); // fd=stdout
-        fb.instruction(&Instruction::I64Const(64));
-        fb.instruction(&Instruction::I32WrapI64);
-        fb.instruction(&Instruction::I32Const(1));
-        fb.instruction(&Instruction::I64Const(STDIN_LEN));
-        fb.instruction(&Instruction::I32WrapI64);
-        fb.instruction(&Instruction::Call(1)); // fd_write (import 1)
-        fb.instruction(&Instruction::Drop);
-
-        // proc_exit(0)
+        // proc_exit(0) — skip fd_write for now
         fb.instruction(&Instruction::I32Const(0));
         fb.instruction(&Instruction::Call(2)); // proc_exit (import 2)
 
@@ -546,4 +513,144 @@ mod tests {
         assert!(wat.contains("wasi_snapshot_preview1"));
         assert!(wat.contains("outlayer"));
     }
+
+    /// Test with wasmtime: compile and run a simple function
+    #[test]
+    fn test_outlayer_wasmtime_square() {
+        let src = "(define (square x) (* x x))";
+        let wasm = compile_outlayer(src).unwrap();
+        let wat = wasmprinter::print_bytes(&wasm).unwrap();
+        eprintln!("Square OutLayer WAT:\n{}", wat);
+        let result = run_outlayer_wasm(&wasm, &7i64.to_le_bytes());
+        assert_eq!(result, 49, "square(7) should be 49");
+    }
+
+    #[test]
+    fn test_outlayer_wasmtime_const() {
+        let src = "(define (main) 42)";
+        let wasm = compile_outlayer(src).unwrap();
+        let wat = wasmprinter::print_bytes(&wasm).unwrap();
+        eprintln!("Const OutLayer WAT:\n{}", wat);
+        let result = run_outlayer_wasm(&wasm, &[]);
+        assert_eq!(result, 42, "main() should return 42");
+    }
+
+    #[test]
+    fn test_outlayer_wasmtime_fib() {
+        let src = "(define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))";
+        let wasm = compile_outlayer(src).unwrap();
+        let result = run_outlayer_wasm(&wasm, &10i64.to_le_bytes());
+        assert_eq!(result, 55, "fib(10) should be 55");
+    }
+
+    #[test]
+    fn test_outlayer_wasmtime_double() {
+        let src = "(define (double x) (* x 2))";
+        let wasm = compile_outlayer(src).unwrap();
+        let result = run_outlayer_wasm(&wasm, &21i64.to_le_bytes());
+        assert_eq!(result, 42, "double(21) should be 42");
+    }
+}
+
+/// Run an OutLayer WASM module with wasmtime, providing stdin data.
+/// Returns the i64 result read from RESULT_BUF (offset 65536 in memory).
+fn run_outlayer_wasm(wasm: &[u8], stdin_data: &[u8]) -> i64 {
+    use std::sync::Arc;
+    use wasmtime::*;
+
+    let engine = Engine::default();
+    let module = Module::new(&engine, wasm).expect("WASM should be valid");
+
+    let stdin_arc = Arc::new(stdin_data.to_vec());
+    let mut store = Store::new(&engine, ());
+
+    // Create all host functions first (before linker.define borrows store)
+    let sd = stdin_arc.clone();
+    let fd_read_fn = Func::new(
+        &mut store,
+        FuncType::new(&engine,
+            vec![ValType::I32, ValType::I32, ValType::I32, ValType::I32],
+            vec![ValType::I32]),
+        move |mut caller, args, results| {
+            let iov_ptr = args[1].unwrap_i32() as usize;
+            let nread_ptr = args[3].unwrap_i32() as usize;
+            if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                let data = mem.data_mut(&mut caller);
+                if iov_ptr + 8 <= data.len() {
+                    let buf_ptr = u32::from_le_bytes(data[iov_ptr..iov_ptr+4].try_into().unwrap()) as usize;
+                    let buf_len = u32::from_le_bytes(data[iov_ptr+4..iov_ptr+8].try_into().unwrap()) as usize;
+                    let copy_len = sd.len().min(buf_len);
+                    if buf_ptr + copy_len <= data.len() {
+                        data[buf_ptr..buf_ptr+copy_len].copy_from_slice(&sd[..copy_len]);
+                    }
+                    if nread_ptr + 4 <= data.len() {
+                        data[nread_ptr..nread_ptr+4].copy_from_slice(&(copy_len as u32).to_le_bytes());
+                    }
+                }
+            }
+            results[0] = Val::I32(0);
+            Ok(())
+        },
+    );
+
+    let fd_write_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
+
+    let proc_exit_fn = Func::new(
+        &mut store,
+        FuncType::new(&engine, vec![ValType::I32], vec![]),
+        |_, args, _| {
+            let code = args[0].unwrap_i32();
+            eprintln!("  [host] proc_exit({})", code);
+            Err(wasmtime::Error::msg(format!("proc_exit({})", code)))
+        },
+    );
+
+    let random_get_fn = Func::wrap(&mut store, |_: i32, _: i32| -> i32 { 0 });
+    let environ_sizes_fn = Func::wrap(&mut store, |_: i32, _: i32| -> i32 { 0 });
+    let environ_get_fn = Func::wrap(&mut store, |_: i32, _: i32| -> i32 { 0 });
+    let fd_seek_fn = Func::wrap(&mut store, |_: i32, _: i64, _: i32, _: i32| -> i32 { 0 });
+
+    let ol_view_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
+    let ol_call_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
+    let ol_transfer_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
+
+    let read_reg_fn = Func::wrap(&mut store, |_: i64, _: i64| {});
+    let reg_len_fn = Func::wrap(&mut store, |_: i64| -> i64 { 0 });
+
+    // Now define all in linker
+    let mut linker = Linker::new(&engine);
+    linker.define(&store, "wasi_snapshot_preview1", "fd_read", fd_read_fn).unwrap();
+    linker.define(&store, "wasi_snapshot_preview1", "fd_write", fd_write_fn).unwrap();
+    linker.define(&store, "wasi_snapshot_preview1", "proc_exit", proc_exit_fn).unwrap();
+    linker.define(&store, "wasi_snapshot_preview1", "random_get", random_get_fn).unwrap();
+    linker.define(&store, "wasi_snapshot_preview1", "environ_sizes_get", environ_sizes_fn).unwrap();
+    linker.define(&store, "wasi_snapshot_preview1", "environ_get", environ_get_fn).unwrap();
+    linker.define(&store, "wasi_snapshot_preview1", "fd_seek", fd_seek_fn).unwrap();
+    linker.define(&store, "outlayer", "view", ol_view_fn).unwrap();
+    linker.define(&store, "outlayer", "call", ol_call_fn).unwrap();
+    linker.define(&store, "outlayer", "transfer", ol_transfer_fn).unwrap();
+    linker.define(&store, "env", "read_register", read_reg_fn).unwrap();
+    linker.define(&store, "env", "register_len", reg_len_fn).unwrap();
+
+    let instance = linker.instantiate(&mut store, &module).expect("instantiate");
+    let start = instance.get_typed_func::<(), ()>(&mut store, "_start").expect("_start export");
+
+    match start.call(&mut store, ()) {
+        Ok(()) => {}
+        Err(trap) => {
+            // proc_exit raises a trap — check if it's our proc_exit or a real error
+            let msg = trap.to_string();
+            // The wasmtime error chain includes our original "proc_exit(N)" message
+            let is_exit = msg.contains("proc_exit") 
+                || trap.source().map(|s| s.to_string().contains("proc_exit")).unwrap_or(false);
+            eprintln!("Trap (is_exit={}): {}", is_exit, msg);
+            if !is_exit {
+                panic!("_start failed: {}", msg);
+            }
+        }
+    }
+
+    let memory = instance.get_memory(&mut store, "memory").expect("memory export");
+    let data = memory.data(&store);
+    i64::from_le_bytes(data[65536..65536+8].try_into().unwrap())
 }
