@@ -633,72 +633,144 @@ fn finish_outlayer(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
     }
 
     // ── _start() wrapper ──
-    // Reads stdin into STDIN_BUF, calls last user function, writes result to stdout
+    // Reads stdin → tagged string → calls run(input) → writes result to stdout
     {
         let last_func = em.funcs.last().unwrap();
         let last_idx = internal_base + (em.funcs.len() - 1) as u32;
         let param_count = last_func.param_count;
         
-        // Locals: stdin_len (i32), errno (i32), i (i32), tmp (i64)
+        // Locals: all i64 (matching the i64-only convention)
         let mut fb = Function::new(vec![
-            (1u32, W),  // local 0: stdin_len (i32)
-            (1u32, W),  // local 1: errno (i32) 
-            (1u32, W),  // local 2: loop counter (i32)
-            (1u32, ValType::I64), // local 3: result/tmp (i64)
+            (1u32, W),  // local 0: temp i32 (stdin_len etc) — actually we need i32 for fd_read
+            (1u32, ValType::I64), // local 1: result
+            (1u32, ValType::I64), // local 2: input_str (tagged)
         ]);
 
-        // fd_read(0, iov, 1, &nread)
-        // Set up iov at offset 64: [buf_ptr:i32, buf_len:i32]
         let ma4 = MemArg { offset: 0, align: 2, memory_index: 0 };
-        // iov[0].buf = STDIN_BUF
-        fb.instruction(&Instruction::I32Const(64)); // iov offset
-        fb.instruction(&Instruction::I32Const(STDIN_BUF as i32)); // buf ptr
-        fb.instruction(&Instruction::I32Store(ma4));
-        // iov[0].len = 65536
-        fb.instruction(&Instruction::I32Const(68)); // iov+4
-        fb.instruction(&Instruction::I32Const(65536)); // buf len
-        fb.instruction(&Instruction::I32Store(ma4));
-
-        // fd_read(0, 64, 1, STDIN_LEN)
-        fb.instruction(&Instruction::I32Const(0)); // fd=stdin
-        fb.instruction(&Instruction::I32Const(64)); // iovs_ptr
-        fb.instruction(&Instruction::I32Const(1)); // iovs_len=1
-        fb.instruction(&Instruction::I32Const(STDIN_LEN as i32)); // nread_ptr
-        fb.instruction(&Instruction::Call(0)); // fd_read (import 0)
-        fb.instruction(&Instruction::Drop); // ignore errno
-
-        // Call the last user function
-        // For 0-param: just call
-        // For N-param: load N i64s from STDIN_BUF (same pattern as NEAR input)
         let ma = MemArg { offset: 0, align: 3, memory_index: 0 };
+        let ma1 = MemArg { offset: 0, align: 0, memory_index: 0 };
+
+        // ── fd_read: read stdin into STDIN_BUF ──
+        // Set up iov at offset 64
+        fb.instruction(&Instruction::I32Const(64));
+        fb.instruction(&Instruction::I32Const(STDIN_BUF as i32));
+        fb.instruction(&Instruction::I32Store(ma4));
+        fb.instruction(&Instruction::I32Const(68));
+        fb.instruction(&Instruction::I32Const(65536));
+        fb.instruction(&Instruction::I32Store(ma4));
+        // fd_read(0, 64, 1, STDIN_LEN)
+        fb.instruction(&Instruction::I32Const(0));
+        fb.instruction(&Instruction::I32Const(64));
+        fb.instruction(&Instruction::I32Const(1));
+        fb.instruction(&Instruction::I32Const(STDIN_LEN as i32));
+        fb.instruction(&Instruction::Call(0)); // fd_read
+        fb.instruction(&Instruction::Drop);
+
+        // ── Create tagged string from stdin ──
+        // Load stdin_len, create tagged string: ((STDIN_BUF | (len << 32)) << 3) | TAG_STR
+        // STDIN_BUF = 32768 (fits in i32), len from memory at STDIN_LEN
+        // We need to create: ((32768 | (stdin_len << 32)) << 3) | 5
+        fb.instruction(&Instruction::I64Const(STDIN_BUF)); // ptr as i64
+        fb.instruction(&Instruction::I32Const(STDIN_LEN as i32));
+        fb.instruction(&Instruction::I32Load(ma4)); // stdin_len as i32
+        fb.instruction(&Instruction::I64ExtendI32U); // len as i64
+        fb.instruction(&Instruction::I64Const(32));
+        fb.instruction(&Instruction::I64Shl); // len << 32
+        fb.instruction(&Instruction::I64Or); // STDIN_BUF | (len << 32) = payload
+        fb.instruction(&Instruction::I64Const(3));
+        fb.instruction(&Instruction::I64Shl); // payload << 3
+        fb.instruction(&Instruction::I64Const(5)); // TAG_STR
+        fb.instruction(&Instruction::I64Or); // tagged string
+        fb.instruction(&Instruction::LocalSet(2)); // input_str
+
+        // ── Call user function ──
         if param_count == 0 {
             fb.instruction(&Instruction::Call(last_idx));
-            fb.instruction(&Instruction::LocalSet(3)); // save result
         } else {
-            // Load params from STDIN_BUF (raw i64 values, like NEAR input)
+            // Load params from STDIN_BUF as raw tagged i64s (same as NEAR pattern)
             for i in 0..param_count {
                 fb.instruction(&Instruction::I64Const(STDIN_BUF + (i as i64) * 8));
                 fb.instruction(&Instruction::I32WrapI64);
                 fb.instruction(&Instruction::I64Load(ma));
-                // Tag as Num: (val << 3) | 0
                 fb.instruction(&Instruction::I64Const(3));
-                fb.instruction(&Instruction::I64Shl);
+                fb.instruction(&Instruction::I64Shl); // tag as Num
             }
             fb.instruction(&Instruction::Call(last_idx));
-            fb.instruction(&Instruction::LocalSet(3));
         }
+        fb.instruction(&Instruction::LocalSet(1)); // result
 
-        // Untag result and store at RESULT_BUF
+        // ── Write result to stdout AND store at RESULT_BUF ──
+        // Always store untagged payload at RESULT_BUF (for testing)
         fb.instruction(&Instruction::I64Const(RESULT_BUF));
         fb.instruction(&Instruction::I32WrapI64);
-        fb.instruction(&Instruction::LocalGet(3));
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::I64Const(3));
+        fb.instruction(&Instruction::I64ShrS);
+        fb.instruction(&Instruction::I64Store(ma));
+
+        // Check tag for fd_write output
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::I64Const(7));
+        fb.instruction(&Instruction::I64And);
+        fb.instruction(&Instruction::I64Const(5)); // TAG_STR
+        fb.instruction(&Instruction::I64Eq);
+
+        fb.instruction(&Instruction::If(BlockType::Empty));
+        // ── String result: extract ptr and len, write to stdout via fd_write ──
+        // payload = result >> 3
+        // ptr = payload & 0xFFFFFFFF, len = payload >> 32
+        // Build iov at offset 64: [ptr, len]
+        fb.instruction(&Instruction::I32Const(64)); // iov ptr
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::I64Const(3));
+        fb.instruction(&Instruction::I64ShrU); // payload
+        fb.instruction(&Instruction::I64Const(0xFFFFFFFF));
+        fb.instruction(&Instruction::I64And); // ptr
+        fb.instruction(&Instruction::I32WrapI64);
+        fb.instruction(&Instruction::I32Store(ma4)); // iov[0].buf = ptr
+        fb.instruction(&Instruction::I32Const(68)); // iov+4
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::I64Const(3));
+        fb.instruction(&Instruction::I64ShrU); // payload
+        fb.instruction(&Instruction::I64Const(32));
+        fb.instruction(&Instruction::I64ShrU); // len
+        fb.instruction(&Instruction::I32WrapI64);
+        fb.instruction(&Instruction::I32Store(ma4)); // iov[0].len = len
+        // fd_write(1, 64, 1, STDIN_LEN)
+        fb.instruction(&Instruction::I32Const(1)); // fd=stdout
+        fb.instruction(&Instruction::I32Const(64)); // iovs
+        fb.instruction(&Instruction::I32Const(1));
+        fb.instruction(&Instruction::I32Const(STDIN_LEN as i32)); // nwritten ptr
+        fb.instruction(&Instruction::Call(1)); // fd_write
+        fb.instruction(&Instruction::Drop);
+
+        fb.instruction(&Instruction::Else);
+        // ── Non-string result: write raw i64 payload to stdout ──
+        fb.instruction(&Instruction::I64Const(RESULT_BUF));
+        fb.instruction(&Instruction::I32WrapI64);
+        fb.instruction(&Instruction::LocalGet(1));
         fb.instruction(&Instruction::I64Const(3));
         fb.instruction(&Instruction::I64ShrS); // untag
         fb.instruction(&Instruction::I64Store(ma));
+        // Write 8 bytes via fd_write
+        fb.instruction(&Instruction::I32Const(64));
+        fb.instruction(&Instruction::I32Const(RESULT_BUF as i32));
+        fb.instruction(&Instruction::I32Store(ma4));
+        fb.instruction(&Instruction::I32Const(68));
+        fb.instruction(&Instruction::I32Const(8));
+        fb.instruction(&Instruction::I32Store(ma4));
+        fb.instruction(&Instruction::I32Const(1));
+        fb.instruction(&Instruction::I32Const(64));
+        fb.instruction(&Instruction::I32Const(1));
+        fb.instruction(&Instruction::I32Const(STDIN_LEN as i32));
+        fb.instruction(&Instruction::Call(1)); // fd_write
+        fb.instruction(&Instruction::Drop);
 
-        // proc_exit(0) — skip fd_write for now
+        fb.instruction(&Instruction::End); // if
+
+        // proc_exit(0)
         fb.instruction(&Instruction::I32Const(0));
-        fb.instruction(&Instruction::Call(2)); // proc_exit (import 2)
+        fb.instruction(&Instruction::Call(2)); // proc_exit
 
         fb.instruction(&Instruction::End);
         code.function(&fb);

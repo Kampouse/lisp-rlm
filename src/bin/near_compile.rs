@@ -412,10 +412,18 @@ fn run_test_legacy(_dir: Option<&str>) {
         }
     };
     let src = fs::read_to_string(src_path).expect("read input");
-    run_test_from_source(&src);
+    run_test_from_source_target(&src, "near");
 }
 
 fn run_test_from_source(src: &str) {
+    run_test_from_source_target(src, "near")
+}
+
+fn run_tests(base_src: &str, tests: &[TestCase]) -> (usize, usize) {
+    run_tests_target(base_src, tests, "near")
+}
+
+fn run_test_from_source_target(src: &str, target: &str) {
     let exprs = match lisp_rlm_wasm::parser::parse_all(src) {
         Ok(e) => e,
         Err(e) => {
@@ -449,8 +457,8 @@ fn run_test_from_source(src: &str) {
         return;
     }
 
-    println!("Running {} test(s)...\n", tests.len());
-    let (passed, failed) = run_tests(&clean_src, &tests);
+    println!("Running {} test(s) [target={}]...\n", tests.len(), target);
+    let (passed, failed) = run_tests_target(&clean_src, &tests, target);
     println!("\n{} passed, {} failed", passed, failed);
     if failed > 0 {
         std::process::exit(1);
@@ -492,7 +500,7 @@ fn extract_tests(exprs: &[lisp_rlm_wasm::types::LispVal]) -> Vec<TestCase> {
     tests
 }
 
-fn run_tests(base_src: &str, tests: &[TestCase]) -> (usize, usize) {
+fn run_tests_target(base_src: &str, tests: &[TestCase], target: &str) -> (usize, usize) {
     let mut passed = 0;
     let mut failed = 0;
 
@@ -507,23 +515,46 @@ fn run_tests(base_src: &str, tests: &[TestCase]) -> (usize, usize) {
             i, tc.expected_src, i, i
         ));
 
-        let wasm = match lisp_rlm_wasm::wasm_emit::compile_near(&test_src) {
-            Ok(w) => w,
-            Err(e) => {
-                println!("  ❌ {}: compile error: {}", tc.name, e);
+        let wasm = match target {
+            "near" => match lisp_rlm_wasm::wasm_emit::compile_near(&test_src) {
+                Ok(w) => w,
+                Err(e) => {
+                    println!("  ❌ {}: compile error: {}", tc.name, e);
+                    failed += 1;
+                    continue;
+                }
+            },
+            "outlayer" | "wasi" | "wasi-p1" => match lisp_rlm_wasm::wasi_emit::compile_outlayer(&test_src) {
+                Ok(w) => w,
+                Err(e) => {
+                    println!("  ❌ {}: compile error: {}", tc.name, e);
+                    failed += 1;
+                    continue;
+                }
+            },
+            _ => {
+                println!("  ❌ {}: unknown target '{}'", tc.name, target);
                 failed += 1;
                 continue;
             }
         };
 
-        let mut validator = wasmparser::Validator::new();
-        if let Err(e) = validator.validate_all(&wasm) {
-            println!("  ❌ {}: WASM validation: {}", tc.name, e);
-            failed += 1;
-            continue;
+        // For non-NEAR targets, skip validation and just compile
+        if target == "near" {
+            let mut validator = wasmparser::Validator::new();
+            if let Err(e) = validator.validate_all(&wasm) {
+                println!("  ❌ {}: WASM validation: {}", tc.name, e);
+                failed += 1;
+                continue;
+            }
         }
 
-        let expr_val = match run_test_fn(&wasm, &format!("__test_{}_expr", i)) {
+        // Run test function — for outlayer, use a simplified runner
+        let expr_val = match target {
+            "near" => run_test_fn(&wasm, &format!("__test_{}_expr", i)),
+            _ => run_outlayer_test_fn(&wasm, &format!("__test_{}_expr", i)),
+        };
+        let expr_val = match expr_val {
             Ok(v) => v,
             Err(e) => {
                 println!("  ❌ {}: runtime error: {}", tc.name, e);
@@ -532,7 +563,11 @@ fn run_tests(base_src: &str, tests: &[TestCase]) -> (usize, usize) {
             }
         };
 
-        let expected_val = match run_test_fn(&wasm, &format!("__test_{}_expected", i)) {
+        let expected_val = match target {
+            "near" => run_test_fn(&wasm, &format!("__test_{}_expected", i)),
+            _ => run_outlayer_test_fn(&wasm, &format!("__test_{}_expected", i)),
+        };
+        let expected_val = match expected_val {
             Ok(v) => v,
             Err(e) => {
                 println!("  ❌ {}: expected runtime error: {}", tc.name, e);
@@ -557,6 +592,49 @@ fn run_tests(base_src: &str, tests: &[TestCase]) -> (usize, usize) {
 }
 
 // ── LEGACY COMPILE ──
+
+/// Run a test function from an OutLayer WASM module via wasmtime.
+/// Provides WASI P1 + OutLayer stubs, calls the named function, returns i64 result.
+fn run_outlayer_test_fn(wasm: &[u8], fn_name: &str) -> Result<i64, String> {
+    use wasmtime::*;
+
+    let engine = Engine::default();
+    let module = Module::new(&engine, wasm).map_err(|e| format!("module: {}", e))?;
+    let mut store = Store::new(&engine, ());
+
+    let fd_read_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
+    let fd_write_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
+    let proc_exit_fn = Func::new(&mut store, FuncType::new(&engine, [ValType::I32], []),
+        |_, _, _| Err(wasmtime::Error::msg("proc_exit")));
+    let random_fn = Func::wrap(&mut store, |_: i32, _: i32| -> i32 { 0 });
+    let env_sizes_fn = Func::wrap(&mut store, |_: i32, _: i32| -> i32 { 0 });
+    let env_get_fn = Func::wrap(&mut store, |_: i32, _: i32| -> i32 { 0 });
+    let fd_seek_fn = Func::wrap(&mut store, |_: i32, _: i64, _: i32, _: i32| -> i32 { 0 });
+    let ol_view = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
+    let ol_call = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
+    let ol_transfer = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
+    let read_reg = Func::wrap(&mut store, |_: i64, _: i64| {});
+    let reg_len = Func::wrap(&mut store, |_: i64| -> i64 { 0 });
+
+    let mut linker = Linker::new(&engine);
+    linker.define(&store, "wasi_snapshot_preview1", "fd_read", fd_read_fn).unwrap();
+    linker.define(&store, "wasi_snapshot_preview1", "fd_write", fd_write_fn).unwrap();
+    linker.define(&store, "wasi_snapshot_preview1", "proc_exit", proc_exit_fn).unwrap();
+    linker.define(&store, "wasi_snapshot_preview1", "random_get", random_fn).unwrap();
+    linker.define(&store, "wasi_snapshot_preview1", "environ_sizes_get", env_sizes_fn).unwrap();
+    linker.define(&store, "wasi_snapshot_preview1", "environ_get", env_get_fn).unwrap();
+    linker.define(&store, "wasi_snapshot_preview1", "fd_seek", fd_seek_fn).unwrap();
+    linker.define(&store, "outlayer", "view", ol_view).unwrap();
+    linker.define(&store, "outlayer", "call", ol_call).unwrap();
+    linker.define(&store, "outlayer", "transfer", ol_transfer).unwrap();
+    linker.define(&store, "env", "read_register", read_reg).unwrap();
+    linker.define(&store, "env", "register_len", reg_len).unwrap();
+
+    let instance = linker.instantiate(&mut store, &module).map_err(|e| format!("instantiate: {}", e))?;
+    let func = instance.get_typed_func::<(), i64>(&mut store, fn_name)
+        .map_err(|e| format!("get func {}: {}", fn_name, e))?;
+    func.call(&mut store, ()).map_err(|e| format!("call: {}", e))
+}
 
 fn run_test(args: &[String]) {
     let positional: Vec<&str> = args
