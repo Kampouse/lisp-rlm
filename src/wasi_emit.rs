@@ -178,87 +178,89 @@ pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
     // Simplest approach (what we do now): just embed the core module and
     // instantiate with empty args. The runtime provides P1 imports directly.
 
+
+    let near_host_used_for_p2: Vec<usize> = (0..50).filter(|i| em.host_needed.contains(i)).collect();
     let core_bytes = finish_outlayer(&mut em)?;
+
+    // Analyze which import modules the core module actually references
+    let core_imports = analyze_core_imports(&core_bytes);
+        let needs_wasi = core_imports.iter().any(|s| *s == "wasi_snapshot_preview1");
+    let needs_outlayer = core_imports.iter().any(|s| *s == "outlayer");
+    let needs_env = core_imports.iter().any(|s| *s == "env");
+
     let mut comp = wasm_encoder::Component::new();
 
-    // ── Component Import Section ──
-    // Import the WASI P1 adapter module and OutLayer env as component imports.
-    // The runtime provides these.
+    // ── Build module types and imports dynamically ──
+    let mut module_type_count = 0u32;
+    let mut wasi_mod_idx: Option<u32> = None;
+    let mut ol_mod_idx: Option<u32> = None;
+    let mut env_mod_idx: Option<u32> = None;
     let mut comp_imports = wasm_encoder::ComponentImportSection::new();
-    
-    // Import 0: core module "wasi_snapshot_preview1" — provides fd_read, fd_write, etc.
-    // We import it as a core module type
-    let mut core_types = wasm_encoder::CoreTypeSection::new();
-    // Core module type 0: the WASI P1 adapter module
-    // We describe the module's exports so the component model can validate linkage
-    core_types.ty().module(&{
-        let mut mt = wasm_encoder::ModuleType::new();
-        // Export all P1 functions
-        mt.ty().function([W, W, W, W], [W]); // type 0: fd_read, fd_write
-        mt.ty().function([W], []); // type 1: proc_exit
-        mt.ty().function([W, W], [W]); // type 2: random_get, environ_sizes_get, environ_get
-        mt.ty().function([W, ValType::I64, W, W], [W]); // type 3: fd_seek
-        mt.export("fd_read", wasm_encoder::EntityType::Function(0));
-        mt.export("fd_write", wasm_encoder::EntityType::Function(0));
-        mt.export("proc_exit", wasm_encoder::EntityType::Function(1));
-        mt.export("random_get", wasm_encoder::EntityType::Function(2));
-        mt.export("environ_sizes_get", wasm_encoder::EntityType::Function(2));
-        mt.export("environ_get", wasm_encoder::EntityType::Function(2));
-        mt.export("fd_seek", wasm_encoder::EntityType::Function(3));
-        mt
-    });
-    comp.section(&core_types);
 
-    comp_imports.import("wasi:cli/environment@0.2.1", wasm_encoder::ComponentTypeRef::Module(0));
-    
-    // Import stub modules for outlayer and env (runtime provides real implementations)
-    // These are described as module types so the linker can validate signatures
-    {
-        // OutLayer module type
-        let mut core_types2 = wasm_encoder::CoreTypeSection::new();
-        core_types2.ty().module(&{
+    if needs_wasi {
+        let mut ct = wasm_encoder::CoreTypeSection::new();
+        ct.ty().module(&{
             let mut mt = wasm_encoder::ModuleType::new();
-            mt.ty().function(vec![W; 8], [W]); // view
-            mt.ty().function(vec![W; 14], [W]); // call
-            mt.ty().function(vec![W; 10], [W]); // transfer
+            mt.ty().function([W, W, W, W], [W]);
+            mt.ty().function([W], []);
+            mt.ty().function([W, W], [W]);
+            mt.ty().function([W, ValType::I64, W, W], [W]);
+            mt.export("fd_read", wasm_encoder::EntityType::Function(0));
+            mt.export("fd_write", wasm_encoder::EntityType::Function(0));
+            mt.export("proc_exit", wasm_encoder::EntityType::Function(1));
+            mt.export("random_get", wasm_encoder::EntityType::Function(2));
+            mt.export("environ_sizes_get", wasm_encoder::EntityType::Function(2));
+            mt.export("environ_get", wasm_encoder::EntityType::Function(2));
+            mt.export("fd_seek", wasm_encoder::EntityType::Function(3));
+            mt
+        });
+        comp.section(&ct);
+        comp_imports.import("wasi-snapshot-preview1", wasm_encoder::ComponentTypeRef::Module(module_type_count));
+        wasi_mod_idx = Some(module_type_count);
+        module_type_count += 1;
+    }
+
+    if needs_outlayer {
+        let mut ct = wasm_encoder::CoreTypeSection::new();
+        ct.ty().module(&{
+            let mut mt = wasm_encoder::ModuleType::new();
+            mt.ty().function(vec![W; 8], [W]);
+            mt.ty().function(vec![W; 14], [W]);
+            mt.ty().function(vec![W; 10], [W]);
             mt.export("view", wasm_encoder::EntityType::Function(0));
             mt.export("call", wasm_encoder::EntityType::Function(1));
             mt.export("transfer", wasm_encoder::EntityType::Function(2));
             mt
         });
-        comp.section(&core_types2);
+        comp.section(&ct);
+        comp_imports.import("outlayer", wasm_encoder::ComponentTypeRef::Module(module_type_count));
+        ol_mod_idx = Some(module_type_count);
+        module_type_count += 1;
     }
-    comp_imports.import("outlayer", wasm_encoder::ComponentTypeRef::Module(1));
-    
-    // env module type — matches whatever NEAR host functions are used
-    {
-        let mut core_types3 = wasm_encoder::CoreTypeSection::new();
-        core_types3.ty().module(&{
+
+    if needs_env {
+        let mut ct = wasm_encoder::CoreTypeSection::new();
+        ct.ty().module(&{
             let mut mt = wasm_encoder::ModuleType::new();
-            // We only export the specific NEAR host functions used
-            // For now, export common ones as stubs
-            let mut type_idx = 0u32;
-            // (i64, i64) -> () — read_register
-            mt.ty().function([ValType::I64, ValType::I64], []);
-            mt.export("read_register", wasm_encoder::EntityType::Function(type_idx));
-            type_idx += 1;
-            // (i64) -> i64 — register_len
-            mt.ty().function([ValType::I64], [ValType::I64]);
-            mt.export("register_len", wasm_encoder::EntityType::Function(type_idx));
-            type_idx += 1;
-            // (i64, i64, i64, i64, i64) -> i64 — storage_write
-            mt.ty().function([ValType::I64; 5], [ValType::I64]);
-            mt.export("storage_write", wasm_encoder::EntityType::Function(type_idx));
-            type_idx += 1;
-            // (i64, i64, i64) -> i64 — storage_read
-            mt.ty().function([ValType::I64, ValType::I64, ValType::I64], [ValType::I64]);
-            mt.export("storage_read", wasm_encoder::EntityType::Function(type_idx));
+            // Build env module type from the actual HOST_FUNCS signatures
+            // that appear in the core module's imports
+            let mut ti = 0u32;
+            // Re-use the same analysis — for each NEAR host function the core module imports,
+            // add the corresponding export to the env module type
+            for &host_idx in &near_host_used_for_p2 {
+                let (name, params, results) = crate::wasm_emit::HOST_FUNCS[host_idx];
+                mt.ty().function(params.iter().cloned(), results.iter().cloned());
+                mt.export(name, wasm_encoder::EntityType::Function(ti));
+                ti += 1;
+            }
             mt
         });
-        comp.section(&core_types3);
+        comp.section(&ct);
+        comp_imports.import("env", wasm_encoder::ComponentTypeRef::Module(module_type_count));
+        env_mod_idx = Some(module_type_count);
+        module_type_count += 1;
     }
-    comp_imports.import("env", wasm_encoder::ComponentTypeRef::Module(2));
-    
+
     comp.section(&comp_imports);
 
     // ── Component Type Section ──
@@ -272,67 +274,111 @@ pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
     comp.section(&RawModuleSection(&core_bytes));
 
     // ── Core Instance Section ──
-    // 1. Instantiate WASI module (import 0) → core instance 0
-    // 2. Instantiate outlayer module (import 1) → core instance 1  
-    // 3. Instantiate env module (import 2) → core instance 2
-    // 4. Instantiate our core module with all three → core instance 3
+    let our_mod_idx = module_type_count;
     let mut instances = wasm_encoder::InstanceSection::new();
-    instances.instantiate(0, <[(&str, wasm_encoder::ModuleArg); 0]>::default()); // WASI
-    instances.instantiate(1, <[(&str, wasm_encoder::ModuleArg); 0]>::default()); // outlayer
-    instances.instantiate(2, <[(&str, wasm_encoder::ModuleArg); 0]>::default()); // env
-    // Our module (module section index 3 = the embedded core module)
-    // Module index space: 0=WASI import, 1=outlayer import, 2=env import, 3=our module
-    instances.instantiate(3, [
-        ("wasi_snapshot_preview1", wasm_encoder::ModuleArg::Instance(0)),
-        ("outlayer", wasm_encoder::ModuleArg::Instance(1)),
-        ("env", wasm_encoder::ModuleArg::Instance(2)),
-    ]);
+    let mut inst_count = 0u32;
+    let mut wasi_inst: Option<u32> = None;
+    let mut ol_inst: Option<u32> = None;
+    let mut env_inst: Option<u32> = None;
+
+    if let Some(idx) = wasi_mod_idx {
+        instances.instantiate(idx, <[(&str, wasm_encoder::ModuleArg); 0]>::default());
+        wasi_inst = Some(inst_count); inst_count += 1;
+    }
+    if let Some(idx) = ol_mod_idx {
+        instances.instantiate(idx, <[(&str, wasm_encoder::ModuleArg); 0]>::default());
+        ol_inst = Some(inst_count); inst_count += 1;
+    }
+    if let Some(idx) = env_mod_idx {
+        instances.instantiate(idx, <[(&str, wasm_encoder::ModuleArg); 0]>::default());
+        env_inst = Some(inst_count); inst_count += 1;
+    }
+
+    let mut our_args: Vec<(&str, wasm_encoder::ModuleArg)> = Vec::new();
+    if let Some(inst) = wasi_inst { our_args.push(("wasi_snapshot_preview1", wasm_encoder::ModuleArg::Instance(inst))); }
+    if let Some(inst) = ol_inst { our_args.push(("outlayer", wasm_encoder::ModuleArg::Instance(inst))); }
+    if let Some(inst) = env_inst { our_args.push(("env", wasm_encoder::ModuleArg::Instance(inst))); }
+
+    instances.instantiate(our_mod_idx, our_args);
+    let our_inst = inst_count;
     comp.section(&instances);
 
     // ── Alias Section ──
-    // Alias _start and memory from core instance 3 (our module)
     let mut aliases = wasm_encoder::ComponentAliasSection::new();
     aliases.alias(wasm_encoder::Alias::CoreInstanceExport {
-        instance: 3, // our module instance
-        kind: wasm_encoder::ExportKind::Func,
-        name: "_start",
+        instance: our_inst, kind: wasm_encoder::ExportKind::Func, name: "_start",
     });
     aliases.alias(wasm_encoder::Alias::CoreInstanceExport {
-        instance: 3, // our module instance
-        kind: wasm_encoder::ExportKind::Memory,
-        name: "memory",
+        instance: our_inst, kind: wasm_encoder::ExportKind::Memory, name: "memory",
     });
     comp.section(&aliases);
 
     // ── Canonical Function Section ──
-    // Lift _start (core func 0 after alias) to component func with type 0
     let mut canon = wasm_encoder::CanonicalFunctionSection::new();
-    // lift(core_func_idx=0, type_idx=0, options=[memory(0)])
-    // After aliasing _start + memory, core func 0 = _start, memory 0 = aliased memory
-    canon.lift(
-        0, // core func index (first aliased = _start)
-        0, // type index 0 (our () -> result<void,_> type)
-        [
-            wasm_encoder::CanonicalOption::Memory(0), // memory index 0 (aliased from core instance)
-        ],
-    );
+    canon.lift(0, 0, [wasm_encoder::CanonicalOption::Memory(0)]);
     comp.section(&canon);
 
     // ── Component Export Section ──
-    // Export as wasi:cli/run@0.2.1 instance with run function
     let mut exports = wasm_encoder::ComponentExportSection::new();
-    exports.export(
-        "wasi:cli/run@0.2.1",
-        wasm_encoder::ComponentExportKind::Func,
-        0, // component func index 0 (the lifted _start)
-        None,
-    );
+    exports.export("wasi:cli/run@0.2.1", wasm_encoder::ComponentExportKind::Func, 0, None);
     comp.section(&exports);
 
     Ok(comp.finish())
 }
 
-/// Raw core module section — embeds pre-built module bytes into a component.
+/// Analyze a core WASM module to find which import module names are referenced.
+fn analyze_core_imports(wasm: &[u8]) -> Vec<&str> {
+    let mut modules = Vec::new();
+    let mut pos = 8;
+    while pos < wasm.len() {
+        let section_id = wasm[pos];
+        pos += 1;
+        let (size, leb) = read_leb128_outlayer(&wasm[pos..]);
+        pos += leb;
+        if section_id == 2 {
+            let _end = pos + size;
+            let (count, cl) = read_leb128_outlayer(&wasm[pos..]);
+            pos += cl;
+            for _ in 0..count {
+                let (mod_len, ml) = read_leb128_outlayer(&wasm[pos..]);
+                pos += ml;
+                let module = std::str::from_utf8(&wasm[pos..pos + mod_len]).unwrap_or("");
+                pos += mod_len;
+                let (name_len, nl) = read_leb128_outlayer(&wasm[pos..]);
+                pos += nl + name_len;
+                let kind = wasm[pos];
+                pos += 1;
+                // Skip type-specific bytes
+                match kind {
+                    0 => { let (tl, tl2) = read_leb128_outlayer(&wasm[pos..]); pos += tl2; }
+                    1 => { pos += 3; let (tl, tl2) = read_leb128_outlayer(&wasm[pos..]); pos += tl2; }
+                    2 => { let (tl, tl2) = read_leb128_outlayer(&wasm[pos..]); pos += tl2; }
+                    3 => { pos += 1; let (tl, tl2) = read_leb128_outlayer(&wasm[pos..]); pos += tl2; }
+                    _ => {}
+                }
+                if !modules.contains(&module) && !module.is_empty() {
+                    modules.push(module);
+                }
+            }
+            break;
+        }
+        pos += size;
+    }
+    modules
+}
+
+fn read_leb128_outlayer(data: &[u8]) -> (usize, usize) {
+    let mut result = 0usize;
+    let mut shift = 0;
+    for (i, &byte) in data.iter().enumerate() {
+        result |= ((byte & 0x7F) as usize) << shift;
+        shift += 7;
+        if byte & 0x80 == 0 { return (result, i + 1); }
+        if shift > 63 { return (0, 1); }
+    }
+    (0, 1)
+}
+
 struct RawModuleSection<'a>(&'a [u8]);
 
 impl wasm_encoder::Encode for RawModuleSection<'_> {
@@ -675,13 +721,14 @@ fn near_host_type_for(
         // () -> i64
         8 | 9 | 10 | 11 | 15 | 16 | 33 => void_to_i64,
         // (i64) -> ()
-        0 | 3 | 7 | 25 | 27 | 28 | 29 | 35 => i64_to_void, // read_register, current_account_id, etc
+        3 | 4 | 5 | 6 | 7 | 25 | 27 | 28 | 29 | 35 => i64_to_void,
         // (i64) -> i64  
         1 | 12 | 13 | 14 | 20 => i64_to_i64,
         // (i64, i64) -> ()
-        2 | 19 | 21 | 22 | 36 => _2i64_to_void, // write_register, storage_remove, sha256, etc
+        0 | 2 | 19 | 21 | 22 | 36 => _2i64_to_void, // write_register, storage_remove, sha256, etc
         // (i64, i64) -> i64
-        18 | 32 | 39 | 40 => _2i64_to_i64,
+        18 => _3i64_to_i64,
+        32 | 39 | 40 => _2i64_to_i64,
         // (i64, i64, i64) -> ()
         42 | 44 | 48 => _3i64_to_void,
         // (i64, i64, i64) -> i64
