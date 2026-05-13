@@ -84,6 +84,8 @@ fn print_usage() {
     eprintln!("Usage:");
     eprintln!("  near-compile init <name>              Scaffold a new project");
     eprintln!("  near-compile build [dir]              Build project from near.json");
+    eprintln!("  near-compile build --target=outlayer   Build for OutLayer WASI");
+    eprintln!("  near-compile build --target=outlayer-p2 Build for WASI P2 Component");
     eprintln!("  near-compile deploy [dir]             Build and deploy to NEAR");
     eprintln!("  near-compile test [dir]               Build and run tests");
     eprintln!("  near-compile --repl                   Interactive REPL");
@@ -163,16 +165,52 @@ fn do_build(project_dir: &str) -> Result<(ProjectConfig, Vec<u8>), String> {
 }
 
 fn run_build(dir: Option<&str>) {
+    let args: Vec<String> = std::env::args().collect();
+    let target = args.iter().find_map(|a| a.strip_prefix("--target=")).unwrap_or("near");
     let project_dir = dir.unwrap_or(".");
-    match do_build(project_dir) {
-        Ok((config, wasm)) => {
-            println!("✅ {} ({} bytes) — validated", config.output, wasm.len());
+    match do_build_target(project_dir, target) {
+        Ok((output, wasm)) => {
+            println!("✅ {} ({} bytes) — validated [target={}]", output, wasm.len(), target);
         }
         Err(e) => {
             eprintln!("❌ Build failed: {}", e);
             std::process::exit(1);
         }
     }
+}
+
+fn do_build_target(project_dir: &str, target: &str) -> Result<(String, Vec<u8>), String> {
+    let config = load_project_config(project_dir)?;
+
+    let src_path = Path::new(project_dir).join(&config.src);
+    let source = fs::read_to_string(&src_path)
+        .map_err(|e| format!("read {}: {}", config.src, e))?;
+
+    let wasm_bytes = match target {
+        "near" => {
+            let wasm = lisp_rlm_wasm::wasm_emit::compile_near(&source)?;
+            let func_names: Vec<String> = extract_func_names(&source).unwrap_or_default();
+            validate_wasm(&wasm, &func_names).map_err(|e| format!("WASM validation: {}", e))?;
+            wasm
+        }
+        "outlayer" | "wasi" | "wasi-p1" => {
+            let wasm = lisp_rlm_wasm::wasi_emit::compile_outlayer(&source)?;
+            wasm
+        }
+        "outlayer-p2" | "wasi-p2" | "component" => {
+            let wasm = lisp_rlm_wasm::wasi_emit::compile_outlayer_p2(&source)?;
+            wasm
+        }
+        _ => return Err(format!("unknown target '{}'. Use: near, outlayer, outlayer-p2", target)),
+    };
+
+    let out_path = Path::new(project_dir).join(&config.output);
+    if let Some(parent) = out_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("create output dir: {}", e))?;
+    }
+    fs::write(&out_path, &wasm_bytes).map_err(|e| format!("write {}: {}", config.output, e))?;
+
+    Ok((config.output.clone(), wasm_bytes))
 }
 
 // ── DEPLOY ──
@@ -483,6 +521,7 @@ fn run_compile(args: &[String]) {
         eprintln!("Usage: near-compile [--repl] <input.lisp> [output.wasm]");
         eprintln!();
         eprintln!("  near-compile file.lisp           Compile to WASM (validated)");
+        eprintln!("  near-compile file.lisp --target=outlayer   Compile for OutLayer WASI");
         eprintln!("  near-compile --repl              Interactive REPL (WASM + wasmtime)");
         eprintln!("  near-compile test file.lisp       Run inline tests");
         std::process::exit(1);
@@ -493,16 +532,32 @@ fn run_compile(args: &[String]) {
     let src = fs::read_to_string(src_path).expect("read input");
 
     let src = strip_test_forms(&src);
-    let wasm_bytes = match lisp_rlm_wasm::wasm_emit::compile_near(&src) {
-        Ok(w) => w,
-        Err(e) => { eprintln!("❌ Compile error: {}", e); std::process::exit(1); }
+
+    let target = args.iter().find_map(|a| a.strip_prefix("--target=")).unwrap_or("near");
+    let wasm_bytes = match target {
+        "near" => match lisp_rlm_wasm::wasm_emit::compile_near(&src) {
+            Ok(w) => w,
+            Err(e) => { eprintln!("❌ Compile error: {}", e); std::process::exit(1); }
+        },
+        "outlayer" | "wasi" | "wasi-p1" => match lisp_rlm_wasm::wasi_emit::compile_outlayer(&src) {
+            Ok(w) => w,
+            Err(e) => { eprintln!("❌ Compile error: {}", e); std::process::exit(1); }
+        },
+        "outlayer-p2" | "wasi-p2" | "component" => match lisp_rlm_wasm::wasi_emit::compile_outlayer_p2(&src) {
+            Ok(w) => w,
+            Err(e) => { eprintln!("❌ Compile error: {}", e); std::process::exit(1); }
+        },
+        _ => { eprintln!("❌ Unknown target '{}'. Use: near, outlayer, outlayer-p2", target); std::process::exit(1); }
     };
     let func_names: Vec<String> = extract_func_names(&src).unwrap_or_default();
 
-    if let Err(_e) = wasmparser::Validator::new().validate_all(&wasm_bytes) {
-        let out = positional.get(1).map(|s| s.to_string()).unwrap_or_else(|| src_path.replace(".lisp", ".wasm"));
-        let _ = fs::write(&out, &wasm_bytes);
-        std::process::exit(1);
+    // Validate only for NEAR target (component model has different format)
+    if target == "near" {
+        if let Err(_e) = wasmparser::Validator::new().validate_all(&wasm_bytes) {
+            let out = positional.get(1).map(|s| s.to_string()).unwrap_or_else(|| src_path.replace(".lisp", ".wasm"));
+            let _ = fs::write(&out, &wasm_bytes);
+            std::process::exit(1);
+        }
     }
 
     let out = positional.get(1).map(|s| s.to_string()).unwrap_or_else(|| src_path.replace(".lisp", ".wasm"));
