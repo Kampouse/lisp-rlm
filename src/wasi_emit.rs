@@ -842,6 +842,26 @@ mod tests {
     }
 
     #[test]
+    fn test_outlayer_wasmtime_view() {
+        // Test outlayer/view with mock host that writes "hello" as response
+        let src = r#"
+(define (get_price)
+  (outlayer/view "ref.near" "get_price" "{}")
+)
+(define (run) (get_price))
+"#;
+        let wasm = compile_outlayer(src).unwrap();
+        let result = run_outlayer_wasm_with_view(&wasm, &[], b"hello");
+        // _start wrapper untags and stores raw payload at RESULT_BUF
+        // payload = ptr | (len << 32)
+        eprintln!("result payload = {:x}", result);
+        let ptr = result & 0xFFFFFFFF;
+        let len = (result >> 32) as u32;
+        assert_eq!(len, 5, "result should be 5 bytes ('hello'), got len={}", len);
+        assert!(ptr > 0, "ptr should be non-zero, got {}", ptr);
+    }
+
+    #[test]
     fn test_outlayer_p2_const() {
         let src = "(define (main) 42)";
         let comp_bytes = compile_outlayer_p2(src).unwrap();
@@ -962,6 +982,95 @@ fn run_outlayer_wasm(wasm: &[u8], stdin_data: &[u8]) -> i64 {
         }
     }
 
+    let memory = instance.get_memory(&mut store, "memory").expect("memory export");
+    let data = memory.data(&store);
+    i64::from_le_bytes(data[65536..65536+8].try_into().unwrap())
+}
+
+/// Like run_outlayer_wasm but outlayer.view mock writes response to result buffer
+fn run_outlayer_wasm_with_view(wasm: &[u8], stdin_data: &[u8], response: &[u8]) -> i64 {
+    use std::sync::Arc;
+    use wasmtime::*;
+
+    let engine = Engine::default();
+    let module = Module::new(&engine, wasm).expect("WASM should be valid");
+
+    let stdin_arc = Arc::new(stdin_data.to_vec());
+    let response_arc = Arc::new(response.to_vec());
+    let mut store = Store::new(&engine, ());
+
+    let sd = stdin_arc.clone();
+    let fd_read_fn = Func::new(&mut store,
+        FuncType::new(&engine, vec![ValType::I32; 4], vec![ValType::I32]),
+        move |mut caller, args, results| {
+            let iov_ptr = args[1].unwrap_i32() as usize;
+            let nread_ptr = args[3].unwrap_i32() as usize;
+            if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                let data = mem.data_mut(&mut caller);
+                if iov_ptr + 8 <= data.len() {
+                    let buf_ptr = u32::from_le_bytes(data[iov_ptr..iov_ptr+4].try_into().unwrap()) as usize;
+                    let buf_len = u32::from_le_bytes(data[iov_ptr+4..iov_ptr+8].try_into().unwrap()) as usize;
+                    let copy_len = sd.len().min(buf_len);
+                    if buf_ptr + copy_len <= data.len() { data[buf_ptr..buf_ptr+copy_len].copy_from_slice(&sd[..copy_len]); }
+                    if nread_ptr + 4 <= data.len() { data[nread_ptr..nread_ptr+4].copy_from_slice(&(copy_len as u32).to_le_bytes()); }
+                }
+            }
+            results[0] = Val::I32(0); Ok(())
+        },
+    );
+    let fd_write_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
+    let proc_exit_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32], vec![]),
+        |_, args, _| Err(wasmtime::Error::msg(format!("proc_exit({})", args[0].unwrap_i32()))));
+    let random_get_fn = Func::wrap(&mut store, |_: i32, _: i32| -> i32 { 0 });
+    let environ_sizes_fn = Func::wrap(&mut store, |_: i32, _: i32| -> i32 { 0 });
+    let environ_get_fn = Func::wrap(&mut store, |_: i32, _: i32| -> i32 { 0 });
+    let fd_seek_fn = Func::wrap(&mut store, |_: i32, _: i64, _: i32, _: i32| -> i32 { 0 });
+
+    // Mock outlayer.view: writes response to result_buf
+    let resp = response_arc.clone();
+    let ol_view_fn = Func::new(&mut store,
+        FuncType::new(&engine, vec![ValType::I32; 8], vec![ValType::I32]),
+        move |mut caller, args, results| {
+            let result_buf = args[6].unwrap_i32() as usize;
+            let result_len_ptr = args[7].unwrap_i32() as usize;
+            if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                let data = mem.data_mut(&mut caller);
+                let copy_len = resp.len().min(65536);
+                if result_buf + copy_len <= data.len() { data[result_buf..result_buf+copy_len].copy_from_slice(&resp[..copy_len]); }
+                if result_len_ptr + 4 <= data.len() { data[result_len_ptr..result_len_ptr+4].copy_from_slice(&(copy_len as u32).to_le_bytes()); }
+            }
+            results[0] = Val::I32(0); Ok(())
+        },
+    );
+    let ol_call_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
+    let ol_transfer_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
+    let read_reg_fn = Func::wrap(&mut store, |_: i64, _: i64| {});
+    let reg_len_fn = Func::wrap(&mut store, |_: i64| -> i64 { 0 });
+
+    let mut linker = Linker::new(&engine);
+    linker.define(&store, "wasi_snapshot_preview1", "fd_read", fd_read_fn).unwrap();
+    linker.define(&store, "wasi_snapshot_preview1", "fd_write", fd_write_fn).unwrap();
+    linker.define(&store, "wasi_snapshot_preview1", "proc_exit", proc_exit_fn).unwrap();
+    linker.define(&store, "wasi_snapshot_preview1", "random_get", random_get_fn).unwrap();
+    linker.define(&store, "wasi_snapshot_preview1", "environ_sizes_get", environ_sizes_fn).unwrap();
+    linker.define(&store, "wasi_snapshot_preview1", "environ_get", environ_get_fn).unwrap();
+    linker.define(&store, "wasi_snapshot_preview1", "fd_seek", fd_seek_fn).unwrap();
+    linker.define(&store, "outlayer", "view", ol_view_fn).unwrap();
+    linker.define(&store, "outlayer", "call", ol_call_fn).unwrap();
+    linker.define(&store, "outlayer", "transfer", ol_transfer_fn).unwrap();
+    linker.define(&store, "env", "read_register", read_reg_fn).unwrap();
+    linker.define(&store, "env", "register_len", reg_len_fn).unwrap();
+
+    let instance = linker.instantiate(&mut store, &module).expect("instantiate");
+    let start = instance.get_typed_func::<(), ()>(&mut store, "_start").expect("_start export");
+    match start.call(&mut store, ()) {
+        Ok(()) => {}
+        Err(trap) => {
+            let msg = trap.to_string();
+            let is_exit = msg.contains("proc_exit") || trap.source().map(|s| s.to_string().contains("proc_exit")).unwrap_or(false);
+            if !is_exit { panic!("_start failed: {}", msg); }
+        }
+    }
     let memory = instance.get_memory(&mut store, "memory").expect("memory export");
     let data = memory.data(&store);
     i64::from_le_bytes(data[65536..65536+8].try_into().unwrap())

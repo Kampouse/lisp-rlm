@@ -4627,122 +4627,96 @@ impl WasmEmitter {
 
             // ── OutLayer RPC (string-based I/O via outlayer module imports) ──
             "outlayer/view" => {
-                // (outlayer/view contract method args) -> string result or nil on error
-                // Calls outlayer.view(contract_ptr, contract_len, method_ptr, method_len,
-                //                      args_ptr, args_len, result_buf, result_len_ptr) -> errno
-                // Result is written to result_buf (98304) with length at result_len_ptr (163840)
+                // (outlayer/view contract method args) -> string or nil
+                // Strategy: all locals are i64. Widen i32→i64 and narrow i64→i32 at boundaries.
                 if a.len() < 3 { return Err("outlayer/view requires (contract method args)".into()); }
                 let contract = self.expr(&a[0])?;
                 let method = self.expr(&a[1])?;
-                let args = self.expr(&a[2])?;
-
-                // Temp locals
-                let errno_local = self.local_idx("__ol_errno");
-                let len_local = self.local_idx("__ol_len");
-                let dst_local = self.local_idx("__ol_dst");
-                let i_local = self.local_idx("__ol_i");
-                let b_local = self.local_idx("__ol_b");
-
+                let args_val = self.expr(&a[2])?;
+                let errno_l = self.local_idx("__ol_err");
+                let len_l = self.local_idx("__ol_len");
+                let dst_l = self.local_idx("__ol_dst");
+                let i_l = self.local_idx("__ol_i");
                 let mut v = Vec::new();
-
-                // --- Extract (ptr, len) from tagged string values ---
-                // helper: push ptr and len from a tagged string expr
-                macro_rules! push_str_ptr_len {
-                    ($e:expr) => {
-                        v.extend($e.clone());
-                        v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU); // payload
-                        v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And); // ptr
-                        v.push(Instruction::I32WrapI64);
-                        v.extend($e);
-                        v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
-                        v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // len
-                        v.push(Instruction::I32WrapI64);
-                    };
-                }
-
-                push_str_ptr_len!(contract);  // contract_ptr, contract_len
-                push_str_ptr_len!(method);    // method_ptr, method_len
-                push_str_ptr_len!(args);      // args_ptr, args_len
-
-                // Result buffer at 98304, result_len_ptr at 163840
-                v.push(Instruction::I32Const(98304));  // result_buf
-                v.push(Instruction::I32Const(163840)); // result_len_ptr (98304 + 65536)
-
-                // Call outlayer.view — sentinel 100
-                v.push(Instruction::Call(100));
-                v.push(Instruction::LocalSet(errno_local));
-
-                // Check errno — if non-zero, return nil
-                v.push(Instruction::LocalGet(errno_local));
-                v.push(Instruction::I32Const(0));
-                v.push(Instruction::I32Ne);
-                v.push(Instruction::If(BlockType::Result(ValType::I64)));
-                v.push(Instruction::I64Const(TAG_NIL)); // error → nil
-                v.push(Instruction::Else);
-
-                // Load result length
                 let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
-                v.push(Instruction::I32Const(163840));
-                v.push(Instruction::I32Load(ma4));
-                v.push(Instruction::LocalSet(len_local));
-
-                // Bump allocator: get heap_ptr, advance by len, use old ptr as destination
-                // heap_ptr is a field on WasmEmitter, stored as self.heap_ptr
-                // We need to load it from global or compute at runtime
-                // Actually, heap_ptr is only tracked at compile time. For runtime,
-                // we use a fixed scratch area approach:
-                // Copy result to a new heap allocation
-                v.push(Instruction::I64Const(self.heap_ptr as i64));
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::LocalSet(dst_local));
-
-                // Copy loop: for i in 0..len { dst[i] = src[i] }
                 let ma1 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
-                v.push(Instruction::I32Const(0));
-                v.push(Instruction::LocalSet(i_local));
-                // loop
-                v.push(Instruction::Block(BlockType::Result(ValType::I64)));
-                v.push(Instruction::Loop(BlockType::Result(ValType::I64)));
-                v.push(Instruction::LocalGet(i_local));
-                v.push(Instruction::LocalGet(len_local));
-                v.push(Instruction::I32GeU);
-                v.push(Instruction::BrIf(1)); // break
-                // dst[i] = src[i]
-                v.push(Instruction::LocalGet(dst_local));
-                v.push(Instruction::LocalGet(i_local));
-                v.push(Instruction::I32Add);
-                // src = 98304 + i
+
+                // Push 8 x i32 params for outlayer.view
+                // contract ptr/len
+                v.extend(contract.clone());
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64); // contract_ptr
+                v.extend(contract);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64); // contract_len
+                // method ptr/len
+                v.extend(method.clone());
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64);
+                v.extend(method);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                // args ptr/len
+                v.extend(args_val.clone());
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64);
+                v.extend(args_val);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                // result_buf, result_len_ptr
                 v.push(Instruction::I32Const(98304));
-                v.push(Instruction::LocalGet(i_local));
+                v.push(Instruction::I32Const(163840));
+                // call outlayer.view (returns i32 errno)
+                v.push(Instruction::Call(100));
+                v.push(Instruction::I64ExtendI32U); // errno i32 → i64
+                v.push(Instruction::LocalSet(errno_l));
+                // if errno != 0 → nil
+                v.push(Instruction::LocalGet(errno_l));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Ne);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.push(Instruction::I64Const(TAG_NIL));
+                v.push(Instruction::Else);
+                // Load result length (i32 from memory → widen to i64)
+                v.push(Instruction::I32Const(163840)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(len_l));
+                // dst = heap_ptr
+                v.push(Instruction::I64Const(self.heap_ptr as i64)); v.push(Instruction::LocalSet(dst_l));
+                // i = 0
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(i_l));
+                // Copy loop — no result type needed
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(i_l)); v.push(Instruction::LocalGet(len_l));
+                v.push(Instruction::I64GeU); v.push(Instruction::BrIf(1));
+                // dst[i] = src[98304 + i] — narrow to i32 for addresses
+                v.push(Instruction::LocalGet(dst_l)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i_l)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Const(98304));
+                v.push(Instruction::LocalGet(i_l)); v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I32Add);
                 v.push(Instruction::I32Load8U(ma1));
                 v.push(Instruction::I32Store8(ma1));
                 // i++
-                v.push(Instruction::LocalGet(i_local));
-                v.push(Instruction::I32Const(1));
-                v.push(Instruction::I32Add);
-                v.push(Instruction::LocalSet(i_local));
-                v.push(Instruction::Br(0)); // continue
+                v.push(Instruction::LocalGet(i_l)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(i_l));
+                v.push(Instruction::Br(0));
                 v.push(Instruction::End); // loop
                 v.push(Instruction::End); // block
-
-                // Advance heap_ptr for next allocation
-                let new_heap = self.heap_ptr as i64 + 65536; // reserve 64KB max
-                self.heap_ptr = new_heap as u32;
-
+                // advance heap
+                let new_heap = self.heap_ptr as i64 + 65536; self.heap_ptr = new_heap as u32;
                 // Create tagged string: ((dst | (len << 32)) << 3) | TAG_STR
-                v.push(Instruction::LocalGet(dst_local));
-                v.push(Instruction::I64ExtendI32U); // dst as i64
-                v.push(Instruction::LocalGet(len_local));
-                v.push(Instruction::I64ExtendI32U); // len as i64
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64Shl); // len << 32
-                v.push(Instruction::I64Or);  // dst | (len << 32)
-                v.push(Instruction::I64Const(3));
-                v.push(Instruction::I64Shl); // payload << 3
-                v.push(Instruction::I64Const(TAG_STR));
-                v.push(Instruction::I64Or);  // | TAG_STR
-
+                v.push(Instruction::LocalGet(dst_l));
+                v.push(Instruction::LocalGet(len_l)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_STR)); v.push(Instruction::I64Or);
                 v.push(Instruction::End); // if
                 Ok(v)
             }
