@@ -87,6 +87,7 @@ const HOST_BASE: u32 = 0xFF00_0000;
 const USER_BASE: u32 = 0xFF01_0000;
 const TEMP_MEM: i64 = 64;
 const INPUT_BUF: i64 = 16384;  // 16KB for input JSON args
+const RETURN_BUF: i64 = 32768;
 const STORAGE_BUF: i64 = 8192;  // 8 bytes for storage read/write buffer
 const STORAGE_U128_BUF: i64 = 8208;  // 16 bytes for u128 storage ops
 const HEAP_START: i64 = 4096; // heap starts at page 0 offset 4096 (after data segments)
@@ -633,10 +634,10 @@ impl WasmEmitter {
             "near/storage_has" => { self.need_host(20); }
             "near/storage_remove" => { self.need_host(19); }
             "near/log_num" => self.need_host(28),
-            "near/json_get_int" | "near/json_get_str" | "near/json_get_u128" => { self.need_host(7); self.need_host(0); self.need_host(1); }
+            "near/json_get_int" | "near/json_get_str" | "near/json_get_u128" | "json-get" => { self.need_host(7); self.need_host(0); self.need_host(1); }
             "u128/store_storage" => { self.need_host(17); }
             "u128/load_storage" => { self.need_host(18); self.need_host(0); }
-            "near/json_return_int" | "near/json_return_str" => self.need_host(25),
+            "near/json_return_int" | "near/json_return_str" | "json-return" => self.need_host(25),
             "near/iter_prefix" => { self.need_host(36); self.need_host(2); self.need_host(0); self.need_host(1); }
             "near/iter_range" => { self.need_host(37); self.need_host(2); self.need_host(0); self.need_host(1); }
             "near/iter_next" => { self.need_host(38); self.need_host(0); self.need_host(1); }
@@ -1835,6 +1836,29 @@ impl WasmEmitter {
             "near/json_return_str" => {
                 let packed_expr = self.expr(&a[0])?;
                 self.json_return_str(packed_expr)
+            }
+            "json-get" => {
+                if a.is_empty() { return Err("json-get requires a string key argument".into()); }
+                match &a[0] {
+                    LispVal::Str(key) => {
+                        let mut v = self.json_get_with_scanner(key)?;
+                        v.extend(self.emit_tag_num());
+                        Ok(v)
+                    }
+                    _ => Err("json-get key must be a string literal".into()),
+                }
+            }
+            "json-return" => {
+                self.need_host(25);
+                let val_expr = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                v.push(Instruction::I32Const(TEMP_MEM as i32));
+                v.extend(val_expr);
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Const(8)); v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Self::host_call(25));
+                v.push(Instruction::I64Const(1)); v.push(Instruction::GlobalSet(1));
+                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
             "near/current_account_id" => self.read_to_register(3, a),
             "near/signer_account_id" => self.read_to_register(4, a),
@@ -5243,6 +5267,227 @@ impl WasmEmitter {
     }
 
     // ── JSON parsing methods ──
+
+    /// JSON get with dot-path support: "data.amount" scans for "data":{..."amount":nnn}
+    fn json_get_with_scanner(&mut self, key: &str) -> Result<Vec<Instruction<'static>>, String> {
+        self.need_host(7); self.need_host(0); self.need_host(1);
+        let keys: Vec<&str> = key.split('.').collect();
+        let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+        let ib = INPUT_BUF;
+        let pos = self.local_idx("__jgs_pos");
+        let ilen = self.local_idx("__jgs_len");
+        let depth = self.local_idx("__jgs_depth");
+        let sb = self.local_idx("__jgs_sb");
+        let mi = self.local_idx("__jgs_mi");
+        let jj = self.local_idx("__jgs_j");
+        let pb = self.local_idx("__jgs_pb");
+        let ws = self.local_idx("__jgs_ws");
+        let dg = self.local_idx("__jgs_dg");
+        let ng = self.local_idx("__jgs_ng");
+        let rv = self.local_idx("__jgs_rv");
+        let mut v = Vec::new();
+
+        // Read input to INPUT_BUF
+        v.push(Instruction::I64Const(0)); v.push(Self::host_call(7));
+        v.push(Instruction::I64Const(0)); v.push(Self::host_call(1));
+        v.push(Instruction::LocalSet(ilen));
+        v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(ib)); v.push(Self::host_call(0));
+
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(pos));
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(depth));
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(rv));
+
+        for (ki, k) in keys.iter().enumerate() {
+            let is_last = ki == keys.len() - 1;
+            let target_depth = 1i64;
+            let mut pattern = vec![b'"'];
+            pattern.extend(k.as_bytes());
+            pattern.extend_from_slice(b"\":" );
+            let pat_off = self.alloc_data(&pattern);
+            let pat_len = pattern.len() as i64;
+
+            // --- Scan loop ---
+            v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
+            // if pos + pat_len > ilen: break
+            v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(pat_len));
+            v.push(Instruction::I64Add); v.push(Instruction::LocalGet(ilen));
+            v.push(Instruction::I64GtS); v.push(Instruction::If(BlockType::Empty));
+            v.push(Instruction::Br(2)); v.push(Instruction::End);
+            // Track depth
+            v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+            v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+            v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+            v.push(Instruction::LocalSet(sb));
+            v.push(Instruction::LocalGet(sb)); v.push(Instruction::I64Const(0x7B));
+            v.push(Instruction::I64Eq);
+            v.push(Instruction::If(BlockType::Empty));
+            v.push(Instruction::LocalGet(depth)); v.push(Instruction::I64Const(1));
+            v.push(Instruction::I64Add); v.push(Instruction::LocalSet(depth));
+            v.push(Instruction::End);
+            v.push(Instruction::LocalGet(sb)); v.push(Instruction::I64Const(0x7D));
+            v.push(Instruction::I64Eq);
+            v.push(Instruction::If(BlockType::Empty));
+            v.push(Instruction::LocalGet(depth)); v.push(Instruction::I64Const(1));
+            v.push(Instruction::I64Sub); v.push(Instruction::LocalSet(depth));
+            v.push(Instruction::End);
+            // Only match at target_depth
+            v.push(Instruction::LocalGet(depth)); v.push(Instruction::I64Const(target_depth));
+            v.push(Instruction::I64Ne);
+            v.push(Instruction::If(BlockType::Empty));
+            v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+            v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+            v.push(Instruction::Br(1)); v.push(Instruction::End);
+            // Pattern match
+            v.push(Instruction::I64Const(1)); v.push(Instruction::LocalSet(mi));
+            v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(jj));
+            v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
+            v.push(Instruction::LocalGet(jj)); v.push(Instruction::I64Const(pat_len));
+            v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
+            v.push(Instruction::Br(2)); v.push(Instruction::End);
+            v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+            v.push(Instruction::I64Add); v.push(Instruction::LocalGet(jj));
+            v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+            v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+            v.push(Instruction::I64Const(pat_off as i64)); v.push(Instruction::LocalGet(jj));
+            v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+            v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+            v.push(Instruction::I64Eq);
+            v.push(Instruction::If(BlockType::Empty));
+            v.push(Instruction::Else);
+            v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(mi));
+            v.push(Instruction::Br(2)); v.push(Instruction::End);
+            v.push(Instruction::LocalGet(jj)); v.push(Instruction::I64Const(1));
+            v.push(Instruction::I64Add); v.push(Instruction::LocalSet(jj));
+            v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
+            // Preceding byte boundary check
+            v.push(Instruction::LocalGet(mi)); v.push(Instruction::I64Const(1));
+            v.push(Instruction::I64Eq);
+            v.push(Instruction::If(BlockType::Empty));
+            v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(0));
+            v.push(Instruction::I64GtS);
+            v.push(Instruction::If(BlockType::Empty));
+            v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+            v.push(Instruction::I64Const(1)); v.push(Instruction::I64Sub);
+            v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+            v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+            v.push(Instruction::LocalSet(pb));
+            v.push(Instruction::LocalGet(pb)); v.push(Instruction::I64Const(0x7B)); v.push(Instruction::I64Eq);
+            v.push(Instruction::LocalGet(pb)); v.push(Instruction::I64Const(0x2C)); v.push(Instruction::I64Eq);
+            v.push(Instruction::I32Or);
+            v.push(Instruction::LocalGet(pb)); v.push(Instruction::I64Const(0x20)); v.push(Instruction::I64Eq);
+            v.push(Instruction::I32Or);
+            v.push(Instruction::LocalGet(pb)); v.push(Instruction::I64Const(0x09)); v.push(Instruction::I64Eq);
+            v.push(Instruction::I32Or);
+            v.push(Instruction::LocalGet(pb)); v.push(Instruction::I64Const(0x0A)); v.push(Instruction::I64Eq);
+            v.push(Instruction::I32Or);
+            v.push(Instruction::I32Eqz);
+            v.push(Instruction::If(BlockType::Empty));
+            v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(mi));
+            v.push(Instruction::End);
+            v.push(Instruction::End); // pos > 0
+            v.push(Instruction::End); // mi == 1
+            // If match: break
+            v.push(Instruction::LocalGet(mi)); v.push(Instruction::I64Const(1));
+            v.push(Instruction::I64Eq);
+            v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
+            v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+            v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+            v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End); // scan loop
+
+            // After scan: check found
+            v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
+            v.push(Instruction::I64LtS);
+            v.push(Instruction::If(BlockType::Empty));
+            // Advance past pattern
+            v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(pat_len));
+            v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+
+            // Skip ws (shared by both branches)
+            v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
+            v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
+            v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
+            v.push(Instruction::Br(2)); v.push(Instruction::End);
+            v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+            v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+            v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+            v.push(Instruction::LocalSet(ws));
+            v.push(Instruction::LocalGet(ws)); v.push(Instruction::I64Const(0x20)); v.push(Instruction::I64Eq);
+            v.push(Instruction::LocalGet(ws)); v.push(Instruction::I64Const(0x09)); v.push(Instruction::I64Eq);
+            v.push(Instruction::I32Or);
+            v.push(Instruction::LocalGet(ws)); v.push(Instruction::I64Const(0x0A)); v.push(Instruction::I64Eq);
+            v.push(Instruction::I32Or);
+            v.push(Instruction::If(BlockType::Empty));
+            v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+            v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+            v.push(Instruction::Br(1)); v.push(Instruction::End);
+            v.push(Instruction::End); v.push(Instruction::End);
+
+            if is_last {
+                // Skip quote if present
+                v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
+                v.push(Instruction::I64LtS);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+                v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0x22)); v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+                v.push(Instruction::End); v.push(Instruction::End);
+                // Check negative
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(ng));
+                v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
+                v.push(Instruction::I64LtS);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+                v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0x2D)); v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::I64Const(1)); v.push(Instruction::LocalSet(ng));
+                v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+                v.push(Instruction::End); v.push(Instruction::End);
+                // Parse digits into rv
+                v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
+                v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Br(2)); v.push(Instruction::End);
+                v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+                v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(dg));
+                v.push(Instruction::LocalGet(dg)); v.push(Instruction::I64Const(0x30));
+                v.push(Instruction::I64LtS);
+                v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
+                v.push(Instruction::LocalGet(dg)); v.push(Instruction::I64Const(0x39));
+                v.push(Instruction::I64GtS);
+                v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
+                v.push(Instruction::LocalGet(rv)); v.push(Instruction::I64Const(10)); v.push(Instruction::I64Mul);
+                v.push(Instruction::LocalGet(dg)); v.push(Instruction::I64Const(0x30)); v.push(Instruction::I64Sub);
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(rv));
+                v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+                v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
+                // Apply negative
+                v.push(Instruction::LocalGet(ng)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalGet(rv)); v.push(Instruction::I64Sub);
+                v.push(Instruction::LocalSet(rv));
+                v.push(Instruction::End);
+            } else {
+                // Intermediate key: reset depth for next scan iteration
+                // The '{' of nested object will be seen by next scan's depth tracker
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(depth));
+            }
+            v.push(Instruction::End); // if pos < ilen
+        }
+
+        // Return rv (0 if not found, parsed value otherwise)
+        v.push(Instruction::LocalGet(rv));
+        Ok(v)
+    }
 
     fn json_get_int(&mut self, key: &str) -> Result<Vec<Instruction<'static>>, String> {
         self.need_host(7); self.need_host(0); self.need_host(1);

@@ -95,10 +95,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         FuncType::new(&engine, vec![ValType::I64; 2], vec![]),
         move |mut caller, args, _| {
             let (len, ptr) = (args[0].unwrap_i64() as usize, args[1].unwrap_i64() as usize);
+            eprintln!("  → value_return(len={}, ptr={})", len, ptr);
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 let data = mem.data(&caller);
                 if ptr + len <= data.len() {
-                    s2.lock().unwrap().return_data = Some(data[ptr..ptr + len].to_vec());
+                    let mut st = s2.lock().unwrap();
+                    if st.return_data.is_none() {
+                        st.return_data = Some(data[ptr..ptr + len].to_vec());
+                    }
                 }
             }
             Ok(())
@@ -232,7 +236,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let found = if let Some(key) = &key_from_mem {
                 let mut st = s7.lock().unwrap();
                 if let Some(val) = st.storage.get(key).cloned() {
-                    st.registers.insert(rid, val);
+                    st.registers.insert(rid, val.clone());
                     eprintln!("  → storage_read found {}b", val.len());
                     true
                 } else {
@@ -661,9 +665,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("✅ Success");
             let st = state.lock().unwrap();
             if let Some(ref data) = st.return_data {
-                let s = String::from_utf8_lossy(data);
-                if !s.is_empty() {
-                    println!("📄 {}", s);
+                if data.len() == 8 {
+                    let val = i64::from_le_bytes(data[..8].try_into().unwrap());
+                    // Untag: remove low 3 tag bits
+                    println!("📄 {} (raw i64, untagged: {})", val, val >> 3);
+                } else {
+                    let s = String::from_utf8_lossy(data);
+                    if !s.is_empty() {
+                        println!("📄 {}", s);
+                    }
                 }
             }
             if !st.storage.is_empty() {

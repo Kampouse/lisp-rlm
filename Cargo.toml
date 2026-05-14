@@ -54,3 +54,7 @@ path = "src/bin/dump_wasm.rs"
 [[bin]]
 name = "near-mock"
 path = "src/bin/near_mock.rs"
+
+[[bin]]
+name = "compile"
+path = "src/bin/compile.rs"
