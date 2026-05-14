@@ -91,6 +91,12 @@ fn outlayer_imports() -> Vec<WasiFunc> {
         // 8: storage_increment(key_ptr, key_len, delta_lo, delta_hi, result_lo_ptr, result_hi_ptr) -> errno
         WasiFunc { module: "outlayer", name: "storage_increment",
             params: vec![W, W, W, W, W, W], results: vec![W] },
+        // 9: env_signer(buf_ptr, buf_len, len_ptr) -> errno
+        WasiFunc { module: "outlayer", name: "env_signer",
+            params: vec![W, W, W], results: vec![W] },
+        // 10: env_predecessor(buf_ptr, buf_len, len_ptr) -> errno
+        WasiFunc { module: "outlayer", name: "env_predecessor",
+            params: vec![W, W, W], results: vec![W] },
     ]
 }
 
@@ -478,6 +484,10 @@ fn finish_outlayer(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
     types.ty().function(vec![W; 2], [W]);
     // type 15: storage_increment — 6 i32 params -> i32
     types.ty().function(vec![W; 6], [W]);
+    // type 16: env_signer — 3 i32 params -> i32
+    types.ty().function(vec![W; 3], [W]);
+    // type 17: env_predecessor — 3 i32 params -> i32
+    types.ty().function(vec![W; 3], [W]);
 
     // NEAR-style host function types (for NEAR compat stubs)
     // We need types for each unique NEAR host function signature used
@@ -485,7 +495,7 @@ fn finish_outlayer(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
     let _ = &near_host_used; // used below
     // User function types: each function has (i64 × param_count) -> i64
     let max_p = em.funcs.iter().map(|f| f.param_count).max().unwrap_or(0);
-    let user_type_base: u32 = 16;
+    let user_type_base: u32 = 18;
     for p in 0..=max_p {
         let params: Vec<ValType> = (0..p).map(|_| ValType::I64).collect();
         types.ty().function(params, [ValType::I64]);
@@ -660,6 +670,8 @@ fn finish_outlayer(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
             ol_map.insert(112, wasi_count + 6); // sentinel 112 -> outlayer.storage_has
             ol_map.insert(113, wasi_count + 7); // sentinel 113 -> outlayer.storage_delete
             ol_map.insert(114, wasi_count + 8); // sentinel 114 -> outlayer.storage_increment
+            ol_map.insert(120, wasi_count + 9); // sentinel 120 -> outlayer.env_signer
+            ol_map.insert(121, wasi_count + 10); // sentinel 121 -> outlayer.env_predecessor
             WasmEmitter::resolve_static_pub_ex(&resolved, &near_host_idx, &name_map, &em.funcs, &ol_map)
         } else {
             resolved
@@ -1077,6 +1089,8 @@ fn run_outlayer_wasm(wasm: &[u8], stdin_data: &[u8]) -> i64 {
     let storage_stub_2 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 2], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_has", storage_stub_2).unwrap();
     let storage_stub_2d = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 2], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_delete", storage_stub_2d).unwrap();
     let storage_stub_6 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 6], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_increment", storage_stub_6).unwrap();
+    let env_signer_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 3], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "env_signer", env_signer_fn).unwrap();
+    let env_pred_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 3], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "env_predecessor", env_pred_fn).unwrap();
     linker.define(&store, "env", "read_register", read_reg_fn).unwrap();
     linker.define(&store, "env", "register_len", reg_len_fn).unwrap();
 
@@ -1180,6 +1194,8 @@ fn run_outlayer_wasm_with_view(wasm: &[u8], stdin_data: &[u8], response: &[u8]) 
     let storage_stub_2 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 2], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_has", storage_stub_2).unwrap();
     let storage_stub_2d = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 2], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_delete", storage_stub_2d).unwrap();
     let storage_stub_6 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 6], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_increment", storage_stub_6).unwrap();
+    let env_signer_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 3], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "env_signer", env_signer_fn).unwrap();
+    let env_pred_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 3], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "env_predecessor", env_pred_fn).unwrap();
     linker.define(&store, "env", "read_register", read_reg_fn).unwrap();
     linker.define(&store, "env", "register_len", reg_len_fn).unwrap();
 
