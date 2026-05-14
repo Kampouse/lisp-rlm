@@ -859,24 +859,69 @@ fn finish_outlayer(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
         fb.instruction(&Instruction::Drop);
 
         fb.instruction(&Instruction::Else);
-        // ── Non-string result: write raw i64 payload to stdout ──
-        fb.instruction(&Instruction::I64Const(RESULT_BUF));
-        fb.instruction(&Instruction::I32WrapI64);
+        // ── Non-string result: convert to decimal string, write to stdout ──
+        // Untag the value
         fb.instruction(&Instruction::LocalGet(1));
-        fb.instruction(&Instruction::I64Const(3));
-        fb.instruction(&Instruction::I64ShrS); // untag
-        fb.instruction(&Instruction::I64Store(ma));
-        // Write 8 bytes via fd_write
-        fb.instruction(&Instruction::I32Const(64));
-        fb.instruction(&Instruction::I32Const(RESULT_BUF as i32));
-        fb.instruction(&Instruction::I32Store(ma4));
-        fb.instruction(&Instruction::I32Const(68));
-        fb.instruction(&Instruction::I32Const(8));
-        fb.instruction(&Instruction::I32Store(ma4));
-        fb.instruction(&Instruction::I32Const(1));
-        fb.instruction(&Instruction::I32Const(64));
-        fb.instruction(&Instruction::I32Const(1));
-        fb.instruction(&Instruction::I32Const(STDIN_LEN as i32));
+        fb.instruction(&Instruction::I64Const(3)); fb.instruction(&Instruction::I64ShrS);
+        // Convert to decimal string at STDOUT_BUF
+        // Simple divmod loop: extract digits backward at STDOUT_BUF+31, then adjust ptr
+        let sb: i64 = STDOUT_BUF;
+        let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+        // local 2 = value (untagged), local 3 = digit count, local 4 = negative flag, local 5 = write ptr
+        fb.instruction(&Instruction::LocalSet(2)); // value
+        fb.instruction(&Instruction::I64Const(0)); fb.instruction(&Instruction::LocalSet(3)); // digit_count = 0
+        fb.instruction(&Instruction::I64Const(0)); fb.instruction(&Instruction::LocalSet(4)); // negative = 0
+        // Check negative
+        fb.instruction(&Instruction::LocalGet(2)); fb.instruction(&Instruction::I64Const(0)); fb.instruction(&Instruction::I64LtS);
+        fb.instruction(&Instruction::If(BlockType::Empty));
+        fb.instruction(&Instruction::I64Const(1)); fb.instruction(&Instruction::LocalSet(4));
+        fb.instruction(&Instruction::I64Const(0)); fb.instruction(&Instruction::LocalGet(2)); fb.instruction(&Instruction::I64Sub); fb.instruction(&Instruction::LocalSet(2));
+        fb.instruction(&Instruction::End);
+        // Check zero
+        fb.instruction(&Instruction::LocalGet(2)); fb.instruction(&Instruction::I64Eqz);
+        fb.instruction(&Instruction::If(BlockType::Empty));
+        fb.instruction(&Instruction::I32Const(sb as i32)); fb.instruction(&Instruction::I32Const(0x30)); fb.instruction(&Instruction::I32Store8(ma8.clone()));
+        fb.instruction(&Instruction::I64Const(1)); fb.instruction(&Instruction::LocalSet(3));
+        fb.instruction(&Instruction::Else);
+        // Digits backward at sb+31
+        fb.instruction(&Instruction::I64Const(sb + 31)); fb.instruction(&Instruction::LocalSet(5)); // write ptr
+        fb.instruction(&Instruction::Block(BlockType::Empty)); fb.instruction(&Instruction::Loop(BlockType::Empty));
+        fb.instruction(&Instruction::LocalGet(2)); fb.instruction(&Instruction::I64Eqz);
+        fb.instruction(&Instruction::If(BlockType::Empty)); fb.instruction(&Instruction::Br(2)); fb.instruction(&Instruction::End);
+        // *ptr = (val % 10) + '0'; val /= 10; ptr--; count++
+        fb.instruction(&Instruction::LocalGet(5)); fb.instruction(&Instruction::I32WrapI64);
+        fb.instruction(&Instruction::LocalGet(2)); fb.instruction(&Instruction::I64Const(10)); fb.instruction(&Instruction::I64RemU);
+        fb.instruction(&Instruction::I64Const(0x30)); fb.instruction(&Instruction::I64Add); fb.instruction(&Instruction::I32WrapI64);
+        fb.instruction(&Instruction::I32Store8(ma8.clone()));
+        fb.instruction(&Instruction::LocalGet(2)); fb.instruction(&Instruction::I64Const(10)); fb.instruction(&Instruction::I64DivU); fb.instruction(&Instruction::LocalSet(2));
+        fb.instruction(&Instruction::LocalGet(5)); fb.instruction(&Instruction::I64Const(1)); fb.instruction(&Instruction::I64Sub); fb.instruction(&Instruction::LocalSet(5));
+        fb.instruction(&Instruction::LocalGet(3)); fb.instruction(&Instruction::I64Const(1)); fb.instruction(&Instruction::I64Add); fb.instruction(&Instruction::LocalSet(3));
+        fb.instruction(&Instruction::Br(0));
+        fb.instruction(&Instruction::End); fb.instruction(&Instruction::End);
+        // ptr+1 is now the start of the digit string, count = digit count
+        fb.instruction(&Instruction::LocalGet(5)); fb.instruction(&Instruction::I64Const(1)); fb.instruction(&Instruction::I64Add); fb.instruction(&Instruction::LocalSet(5));
+        // If negative: write '-' at ptr, then ptr--, count++
+        fb.instruction(&Instruction::LocalGet(4)); fb.instruction(&Instruction::I64Const(0)); fb.instruction(&Instruction::I64Ne);
+        fb.instruction(&Instruction::If(BlockType::Empty));
+        fb.instruction(&Instruction::LocalGet(5)); fb.instruction(&Instruction::I64Const(1)); fb.instruction(&Instruction::I64Sub); fb.instruction(&Instruction::LocalSet(5));
+        fb.instruction(&Instruction::LocalGet(5)); fb.instruction(&Instruction::I32WrapI64);
+        fb.instruction(&Instruction::I32Const(0x2D)); // '-'
+        fb.instruction(&Instruction::I32Store8(ma8.clone()));
+        fb.instruction(&Instruction::LocalGet(3)); fb.instruction(&Instruction::I64Const(1)); fb.instruction(&Instruction::I64Add); fb.instruction(&Instruction::LocalSet(3));
+        fb.instruction(&Instruction::End);
+        fb.instruction(&Instruction::End); // else (zero case)
+        // fd_write(1, iovec, 1, nwritten)
+        // iovec at TEMP+64: {ptr, len}
+        fb.instruction(&Instruction::I32Const(TEMP_MEM as i32 + 64));
+        fb.instruction(&Instruction::LocalGet(5)); fb.instruction(&Instruction::I32WrapI64);
+        fb.instruction(&Instruction::I32Store(ma8.clone()));
+        fb.instruction(&Instruction::I32Const(TEMP_MEM as i32 + 68));
+        fb.instruction(&Instruction::LocalGet(3)); fb.instruction(&Instruction::I32WrapI64);
+        fb.instruction(&Instruction::I32Store(ma8.clone()));
+        fb.instruction(&Instruction::I32Const(1)); // stdout fd
+        fb.instruction(&Instruction::I32Const(TEMP_MEM as i32 + 64)); // iovec ptr
+        fb.instruction(&Instruction::I32Const(1)); // 1 iov
+        fb.instruction(&Instruction::I32Const(STDIN_LEN as i32)); // nwritten ptr
         fb.instruction(&Instruction::Call(1)); // fd_write
         fb.instruction(&Instruction::Drop);
 
