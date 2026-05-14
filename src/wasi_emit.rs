@@ -87,6 +87,7 @@ pub fn compile_outlayer(source: &str) -> Result<Vec<u8>, String> {
     let resolved = crate::wasm_emit::resolve_modules(source, std::path::Path::new("."))?;
     let exprs = crate::parser::parse_all(&resolved)?;
     let mut em = WasmEmitter::new();
+    em.wasi_mode = true;
     for e in &exprs {
         if let crate::types::LispVal::List(items) = e {
             if items.is_empty() { continue; }
@@ -136,6 +137,7 @@ pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
     let resolved = crate::wasm_emit::resolve_modules(source, std::path::Path::new("."))?;
     let exprs = crate::parser::parse_all(&resolved)?;
     let mut em = WasmEmitter::new();
+    em.wasi_mode = true;
     for e in &exprs {
         if let crate::types::LispVal::List(items) = e {
             if items.is_empty() { continue; }
@@ -1146,4 +1148,28 @@ fn run_outlayer_wasm_with_view(wasm: &[u8], stdin_data: &[u8], response: &[u8]) 
     let memory = instance.get_memory(&mut store, "memory").expect("memory export");
     let data = memory.data(&store);
     i64::from_le_bytes(data[65536..65536+8].try_into().unwrap())
+}
+
+#[test]
+fn test_outlayer_json_nested() {
+    let src = r#"(define (run input) (let ((amount (json-get "data.amount"))) (+ amount 1)))"#;
+    let wasm = compile_outlayer(src).unwrap();
+    let result = run_outlayer_wasm(&wasm, br#"{"data":{"amount":42}}"#);
+    assert_eq!(result, 43, "nested json-get should parse data.amount=42 and add 1");
+}
+
+#[test]
+fn test_outlayer_json_flat() {
+    let src = r#"(define (run input) (json-get "amount"))"#;
+    let wasm = compile_outlayer(src).unwrap();
+    let result = run_outlayer_wasm(&wasm, br#"{"amount":99}"#);
+    assert_eq!(result, 99, "flat json-get should parse amount=99");
+}
+
+#[test]
+fn test_outlayer_json_deep() {
+    let src = r#"(define (run input) (json-get "a.b.c"))"#;
+    let wasm = compile_outlayer(src).unwrap();
+    let result = run_outlayer_wasm(&wasm, br#"{"a":{"b":{"c":7}}}"#);
+    assert_eq!(result, 7, "deep nested json-get should parse a.b.c=7");
 }

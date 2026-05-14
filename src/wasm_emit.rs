@@ -136,6 +136,7 @@ pub struct WasmEmitter {
     pub(crate) lambda_counter: u32, // unique lambda id
     pub(crate) fuzz_mode: bool, // if true, export wrappers store tagged values (no untag, no value_return)
     pub(crate) need_outlayer: bool, // true if outlayer/* dispatch forms are used
+    pub(crate) wasi_mode: bool, // true when targeting WASI/OutLayer
     // Track which function each lambda maps to, and its captured var count
     // lambda_id -> (func_array_idx, captured_count)
     pub(crate) lambda_info: Vec<(usize, usize)>, 
@@ -149,7 +150,7 @@ impl WasmEmitter {
             locals: HashMap::new(), next_local: 0, current_func: None, current_param_count: 0,
             while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 1, exports: Vec::new(),
             data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(),
-            gas_local: None, heap_ptr: HEAP_START as u32, lambda_counter: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false,
+            gas_local: None, heap_ptr: HEAP_START as u32, lambda_counter: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, wasi_mode: false,
         }
     }
 
@@ -634,10 +635,10 @@ impl WasmEmitter {
             "near/storage_has" => { self.need_host(20); }
             "near/storage_remove" => { self.need_host(19); }
             "near/log_num" => self.need_host(28),
-            "near/json_get_int" | "near/json_get_str" | "near/json_get_u128" | "json-get" => { self.need_host(7); self.need_host(0); self.need_host(1); }
+            "near/json_get_int" | "near/json_get_str" | "near/json_get_u128" | "json-get" | "json-get-str" | "json-get-float" => { if !self.wasi_mode { self.need_host(7); self.need_host(0); self.need_host(1); } }
             "u128/store_storage" => { self.need_host(17); }
             "u128/load_storage" => { self.need_host(18); self.need_host(0); }
-            "near/json_return_int" | "near/json_return_str" | "json-return" => self.need_host(25),
+            "near/json_return_int" | "near/json_return_str" | "json-return" => { if !self.wasi_mode { self.need_host(25); } },
             "near/iter_prefix" => { self.need_host(36); self.need_host(2); self.need_host(0); self.need_host(1); }
             "near/iter_range" => { self.need_host(37); self.need_host(2); self.need_host(0); self.need_host(1); }
             "near/iter_next" => { self.need_host(38); self.need_host(0); self.need_host(1); }
@@ -1854,7 +1855,7 @@ impl WasmEmitter {
                 if a.is_empty() { return Err("json-get requires a string key argument".into()); }
                 match &a[0] {
                     LispVal::Str(key) => {
-                        let mut v = self.json_get_with_scanner(key, "int")?;
+                        let mut v = if self.wasi_mode { self.json_get_wasi(key, "int")? } else { self.json_get_with_scanner(key, "int")? };
                         v.extend(self.emit_tag_num());
                         Ok(v)
                     }
@@ -1865,7 +1866,7 @@ impl WasmEmitter {
                 if a.is_empty() { return Err("json-get-str requires a string key argument".into()); }
                 match &a[0] {
                     LispVal::Str(key) => {
-                        let mut v = self.json_get_with_scanner(key, "str")?;
+                        let mut v = if self.wasi_mode { self.json_get_wasi(key, "str")? } else { self.json_get_with_scanner(key, "str")? };
                         v.extend(self.emit_tag_str());
                         Ok(v)
                     }
@@ -1876,7 +1877,7 @@ impl WasmEmitter {
                 if a.is_empty() { return Err("json-get-float requires a string key argument".into()); }
                 match &a[0] {
                     LispVal::Str(key) => {
-                        let mut v = self.json_get_with_scanner(key, "float")?;
+                        let mut v = if self.wasi_mode { self.json_get_wasi(key, "float")? } else { self.json_get_with_scanner(key, "float")? };
                         v.extend(self.emit_tag_num());
                         Ok(v)
                     }
@@ -5302,11 +5303,35 @@ impl WasmEmitter {
     }
 
     // ── JSON parsing methods ──
+    /// NEAR-specific wrapper: reads input via host functions, then scans
     fn json_get_with_scanner(&mut self, key: &str, value_type: &str) -> Result<Vec<Instruction<'static>>, String> {
         self.need_host(7); self.need_host(0); self.need_host(1);
+        // Read input to INPUT_BUF via host functions
+        let mut setup = Vec::new();
+        setup.push(Instruction::I64Const(0)); setup.push(Self::host_call(7)); // input(0)
+        setup.push(Instruction::I64Const(0)); setup.push(Self::host_call(1)); // register_len(0) → pushes len
+        setup.push(Instruction::I64Const(0)); setup.push(Instruction::I64Const(INPUT_BUF)); setup.push(Self::host_call(0)); // read_register(0, INPUT_BUF)
+        self.json_get_from_buf(key, value_type, INPUT_BUF, &mut setup)
+    }
+
+    /// WASI-specific wrapper: scans stdin already in memory
+    pub fn json_get_wasi(&mut self, key: &str, value_type: &str) -> Result<Vec<Instruction<'static>>, String> {
+        // In WASI, stdin is at STDIN_BUF with length at STDIN_LEN (i32 in memory)
+        let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+        let mut setup = Vec::new();
+        setup.push(Instruction::I32Const(98304)); // STDIN_LEN address
+        setup.push(Instruction::I32Load(ma4));    // load stdin_len as i32
+        setup.push(Instruction::I64ExtendI32U);   // extend to i64
+        self.json_get_from_buf(key, value_type, 32768, &mut setup) // STDIN_BUF = 32768
+    }
+
+    /// JSON get from a memory buffer (no host functions needed).
+    /// Reads from `buf` with length from `buf_len_local` (a local that holds the length).
+    /// For WASI: buf=STDIN_BUF, len from memory[STDIN_LEN]
+    /// For NEAR: buf=INPUT_BUF, len from host register_len
+    fn json_get_from_buf(&mut self, key: &str, value_type: &str, buf: i64, buf_len_setup: &mut Vec<Instruction<'static>>) -> Result<Vec<Instruction<'static>>, String> {
         let keys: Vec<&str> = key.split('.').collect();
         let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
-        let ib = INPUT_BUF;
         let pos = self.local_idx("__jgs_pos");
         let ilen = self.local_idx("__jgs_len");
         let depth = self.local_idx("__jgs_depth");
@@ -5320,11 +5345,9 @@ impl WasmEmitter {
         let rv = self.local_idx("__jgs_rv");
         let mut v = Vec::new();
 
-        // Read input to INPUT_BUF
-        v.push(Instruction::I64Const(0)); v.push(Self::host_call(7));
-        v.push(Instruction::I64Const(0)); v.push(Self::host_call(1));
+        // Set up buf_len (provided by caller)
+        v.extend(buf_len_setup.iter().cloned());
         v.push(Instruction::LocalSet(ilen));
-        v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(ib)); v.push(Self::host_call(0));
 
         v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(pos));
         v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(depth));
@@ -5345,7 +5368,7 @@ impl WasmEmitter {
             v.push(Instruction::I64GtS); v.push(Instruction::If(BlockType::Empty));
             v.push(Instruction::Br(2)); v.push(Instruction::End);
             // Track depth
-            v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+            v.push(Instruction::I64Const(buf)); v.push(Instruction::LocalGet(pos));
             v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
             v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
             v.push(Instruction::LocalSet(sb));
@@ -5375,7 +5398,7 @@ impl WasmEmitter {
             v.push(Instruction::LocalGet(jj)); v.push(Instruction::I64Const(pat_len));
             v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
             v.push(Instruction::Br(2)); v.push(Instruction::End);
-            v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+            v.push(Instruction::I64Const(buf)); v.push(Instruction::LocalGet(pos));
             v.push(Instruction::I64Add); v.push(Instruction::LocalGet(jj));
             v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
             v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
@@ -5397,7 +5420,7 @@ impl WasmEmitter {
             v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(0));
             v.push(Instruction::I64GtS);
             v.push(Instruction::If(BlockType::Empty));
-            v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+            v.push(Instruction::I64Const(buf)); v.push(Instruction::LocalGet(pos));
             v.push(Instruction::I64Const(1)); v.push(Instruction::I64Sub);
             v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
             v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
@@ -5429,16 +5452,15 @@ impl WasmEmitter {
             v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
             v.push(Instruction::I64LtS);
             v.push(Instruction::If(BlockType::Empty));
-            // Advance past pattern
             v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(pat_len));
             v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
 
-            // Skip ws (shared by all branches)
+            // Skip ws (shared)
             v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
             v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
             v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
             v.push(Instruction::Br(2)); v.push(Instruction::End);
-            v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+            v.push(Instruction::I64Const(buf)); v.push(Instruction::LocalGet(pos));
             v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
             v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
             v.push(Instruction::LocalSet(ws));
@@ -5456,21 +5478,19 @@ impl WasmEmitter {
             if is_last {
                 match value_type {
                     "str" => {
-                        // String extraction: expect opening ", copy to RETURN_BUF, return packed (len<<32|ptr)
-                        // Check for opening quote
                         let str_ptr = self.local_idx("__jgs_sp");
                         let str_len = self.local_idx("__jgs_sl");
                         let esc = self.local_idx("__jgs_esc");
                         let dst = self.local_idx("__jgs_dst");
                         let ch = self.local_idx("__jgs_ch");
+                        let stdout_buf = 65536i64; // STDOUT_BUF
 
                         v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(str_len));
                         v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(esc));
-                        // Check opening quote
                         v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
                         v.push(Instruction::I64LtS);
                         v.push(Instruction::If(BlockType::Empty));
-                        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+                        v.push(Instruction::I64Const(buf)); v.push(Instruction::LocalGet(pos));
                         v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
                         v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
                         v.push(Instruction::I64Const(0x22)); v.push(Instruction::I64Eq);
@@ -5478,30 +5498,25 @@ impl WasmEmitter {
                         v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
                         v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
                         v.push(Instruction::End); v.push(Instruction::End);
-                        // Record start
                         v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalSet(str_ptr));
-                        v.push(Instruction::I64Const(RETURN_BUF)); v.push(Instruction::LocalSet(dst));
-                        // Copy loop: copy chars to RETURN_BUF, stop at unescaped "
+                        v.push(Instruction::I64Const(stdout_buf)); v.push(Instruction::LocalSet(dst));
                         v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
                         v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
                         v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
                         v.push(Instruction::Br(2)); v.push(Instruction::End);
-                        // Load char
-                        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+                        v.push(Instruction::I64Const(buf)); v.push(Instruction::LocalGet(pos));
                         v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
                         v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
                         v.push(Instruction::LocalSet(ch));
-                        // If not escaping: check for closing quote
                         v.push(Instruction::LocalGet(esc)); v.push(Instruction::I64Const(0));
                         v.push(Instruction::I64Eq);
                         v.push(Instruction::If(BlockType::Empty));
                         v.push(Instruction::LocalGet(ch)); v.push(Instruction::I64Const(0x22));
                         v.push(Instruction::I64Eq);
                         v.push(Instruction::If(BlockType::Empty));
-                        v.push(Instruction::Br(3)); // end of string — break out of Block+Loop+2 Ifs
+                        v.push(Instruction::Br(3)); // end of string
                         v.push(Instruction::End);
                         v.push(Instruction::End);
-                        // Check for backslash escape
                         v.push(Instruction::LocalGet(ch)); v.push(Instruction::I64Const(0x5C));
                         v.push(Instruction::I64Eq);
                         v.push(Instruction::If(BlockType::Empty));
@@ -5510,7 +5525,6 @@ impl WasmEmitter {
                         v.push(Instruction::Else);
                         v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(esc));
                         v.push(Instruction::End);
-                        // Copy byte to RETURN_BUF[dst]
                         v.push(Instruction::LocalGet(dst)); v.push(Instruction::I32WrapI64);
                         v.push(Instruction::LocalGet(ch)); v.push(Instruction::I32WrapI64);
                         v.push(Instruction::I32Store8(ma8.clone()));
@@ -5521,23 +5535,19 @@ impl WasmEmitter {
                         v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
                         v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
                         v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
-                        // Pack: rv = (str_len << 32) | RETURN_BUF
                         v.push(Instruction::LocalGet(str_len)); v.push(Instruction::I64Const(32));
                         v.push(Instruction::I64Shl);
-                        v.push(Instruction::I64Const(RETURN_BUF));
+                        v.push(Instruction::I64Const(stdout_buf));
                         v.push(Instruction::I64Or); v.push(Instruction::LocalSet(rv));
                     }
                     "float" => {
-                        // Parse integer + fractional parts: result = (whole * 1000000 + frac) as tagged float
-                        // Store as: whole in rv, fractional digits count in dg
                         let frac = self.local_idx("__jgs_frac");
                         let frac_div = self.local_idx("__jgs_fdiv");
                         v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(ng));
-                        // Check negative
                         v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
                         v.push(Instruction::I64LtS);
                         v.push(Instruction::If(BlockType::Empty));
-                        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+                        v.push(Instruction::I64Const(buf)); v.push(Instruction::LocalGet(pos));
                         v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
                         v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
                         v.push(Instruction::I64Const(0x2D)); v.push(Instruction::I64Eq);
@@ -5546,12 +5556,11 @@ impl WasmEmitter {
                         v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
                         v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
                         v.push(Instruction::End); v.push(Instruction::End);
-                        // Parse whole digits
                         v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
                         v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
                         v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
                         v.push(Instruction::Br(2)); v.push(Instruction::End);
-                        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+                        v.push(Instruction::I64Const(buf)); v.push(Instruction::LocalGet(pos));
                         v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
                         v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
                         v.push(Instruction::LocalSet(dg));
@@ -5567,25 +5576,23 @@ impl WasmEmitter {
                         v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
                         v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
                         v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
-                        // Check for decimal point
                         v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(frac));
                         v.push(Instruction::I64Const(100000)); v.push(Instruction::LocalSet(frac_div));
                         v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
                         v.push(Instruction::I64LtS);
                         v.push(Instruction::If(BlockType::Empty));
-                        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+                        v.push(Instruction::I64Const(buf)); v.push(Instruction::LocalGet(pos));
                         v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
                         v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
                         v.push(Instruction::I64Const(0x2E)); v.push(Instruction::I64Eq);
                         v.push(Instruction::If(BlockType::Empty));
                         v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
                         v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
-                        // Parse fractional digits
                         v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
                         v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
                         v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
                         v.push(Instruction::Br(2)); v.push(Instruction::End);
-                        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+                        v.push(Instruction::I64Const(buf)); v.push(Instruction::LocalGet(pos));
                         v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
                         v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
                         v.push(Instruction::LocalSet(dg));
@@ -5603,27 +5610,23 @@ impl WasmEmitter {
                         v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
                         v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
                         v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
-                        v.push(Instruction::End); // decimal point check
-                        v.push(Instruction::End); // pos < ilen
-                        // rv = whole * 1000000 + frac, where frac is already padded
-                        // frac_div starts at 1000000 and divides by 10 each digit
+                        v.push(Instruction::End);
+                        v.push(Instruction::End);
                         v.push(Instruction::LocalGet(rv)); v.push(Instruction::I64Const(1000000));
                         v.push(Instruction::I64Mul); v.push(Instruction::LocalGet(frac));
                         v.push(Instruction::LocalGet(frac_div));
                         v.push(Instruction::I64Mul); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(rv));
-                        // Apply negative
                         v.push(Instruction::LocalGet(ng)); v.push(Instruction::I32WrapI64);
                         v.push(Instruction::If(BlockType::Empty));
                         v.push(Instruction::I64Const(0)); v.push(Instruction::LocalGet(rv)); v.push(Instruction::I64Sub);
                         v.push(Instruction::LocalSet(rv));
                         v.push(Instruction::End);
                     }
-                    _ => { // "int" (default)
-                        // Skip quote if present
+                    _ => { // "int"
                         v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
                         v.push(Instruction::I64LtS);
                         v.push(Instruction::If(BlockType::Empty));
-                        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+                        v.push(Instruction::I64Const(buf)); v.push(Instruction::LocalGet(pos));
                         v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
                         v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
                         v.push(Instruction::I64Const(0x22)); v.push(Instruction::I64Eq);
@@ -5631,12 +5634,11 @@ impl WasmEmitter {
                         v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
                         v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
                         v.push(Instruction::End); v.push(Instruction::End);
-                        // Check negative
                         v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(ng));
                         v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
                         v.push(Instruction::I64LtS);
                         v.push(Instruction::If(BlockType::Empty));
-                        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+                        v.push(Instruction::I64Const(buf)); v.push(Instruction::LocalGet(pos));
                         v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
                         v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
                         v.push(Instruction::I64Const(0x2D)); v.push(Instruction::I64Eq);
@@ -5645,12 +5647,11 @@ impl WasmEmitter {
                         v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
                         v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
                         v.push(Instruction::End); v.push(Instruction::End);
-                        // Parse digits into rv
                         v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
                         v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
                         v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
                         v.push(Instruction::Br(2)); v.push(Instruction::End);
-                        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+                        v.push(Instruction::I64Const(buf)); v.push(Instruction::LocalGet(pos));
                         v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
                         v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
                         v.push(Instruction::LocalSet(dg));
@@ -5666,7 +5667,6 @@ impl WasmEmitter {
                         v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
                         v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
                         v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
-                        // Apply negative
                         v.push(Instruction::LocalGet(ng)); v.push(Instruction::I32WrapI64);
                         v.push(Instruction::If(BlockType::Empty));
                         v.push(Instruction::I64Const(0)); v.push(Instruction::LocalGet(rv)); v.push(Instruction::I64Sub);
@@ -5675,16 +5675,14 @@ impl WasmEmitter {
                     }
                 }
             } else {
-                // Intermediate key: reset depth for next scan iteration
                 v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(depth));
             }
-            v.push(Instruction::End); // if pos < ilen
+            v.push(Instruction::End);
         }
-
-        // Return rv
         v.push(Instruction::LocalGet(rv));
         Ok(v)
     }
+
 
 
     fn json_get_int(&mut self, key: &str) -> Result<Vec<Instruction<'static>>, String> {
