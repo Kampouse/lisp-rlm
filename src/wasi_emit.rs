@@ -97,6 +97,33 @@ fn outlayer_imports() -> Vec<WasiFunc> {
         // 10: env_predecessor(buf_ptr, buf_len, len_ptr) -> errno
         WasiFunc { module: "outlayer", name: "env_predecessor",
             params: vec![W, W, W], results: vec![W] },
+        // 11: storage_decrement — same sig as increment
+        WasiFunc { module: "outlayer", name: "storage_decrement",
+            params: vec![W; 6], results: vec![W] },
+        // 12: storage_set_if_absent(key, val) -> bool (0=not inserted, 1=inserted)
+        WasiFunc { module: "outlayer", name: "storage_set_if_absent",
+            params: vec![W; 4], results: vec![W] },
+        // 13: storage_set_if_equals(key, expected, new, old_buf, old_len_ptr) -> errno
+        WasiFunc { module: "outlayer", name: "storage_set_if_equals",
+            params: vec![W; 8], results: vec![W] },
+        // 14: storage_list_keys(prefix, buf, buf_len, len_ptr) -> errno
+        WasiFunc { module: "outlayer", name: "storage_list_keys",
+            params: vec![W; 5], results: vec![W] },
+        // 15: storage_clear_all() -> errno
+        WasiFunc { module: "outlayer", name: "storage_clear_all",
+            params: vec![], results: vec![W] },
+        // 16: storage_set_worker(key, val) -> errno
+        WasiFunc { module: "outlayer", name: "storage_set_worker",
+            params: vec![W; 4], results: vec![W] },
+        // 17: storage_get_worker(key, buf, buf_len, len_ptr) -> errno
+        WasiFunc { module: "outlayer", name: "storage_get_worker",
+            params: vec![W; 5], results: vec![W] },
+        // 18: storage_set_worker_public(key, val) -> errno
+        WasiFunc { module: "outlayer", name: "storage_set_worker_public",
+            params: vec![W; 4], results: vec![W] },
+        // 19: storage_get_worker_from_project(key, project, buf, buf_len, len_ptr) -> errno
+        WasiFunc { module: "outlayer", name: "storage_get_worker_from_project",
+            params: vec![W; 7], results: vec![W] },
     ]
 }
 
@@ -488,6 +515,12 @@ fn finish_outlayer(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
     types.ty().function(vec![W; 3], [W]);
     // type 17: env_predecessor — 3 i32 params -> i32
     types.ty().function(vec![W; 3], [W]);
+    // type 18: () -> i32 (storage_clear_all)
+    types.ty().function([], [W]);
+    // type 19: 7 i32 -> i32 (get_worker_from_project)
+    types.ty().function(vec![W; 7], [W]);
+    // type 20: 8 i32 -> i32 (set_if_equals)
+    types.ty().function(vec![W; 8], [W]);
 
     // NEAR-style host function types (for NEAR compat stubs)
     // We need types for each unique NEAR host function signature used
@@ -495,7 +528,7 @@ fn finish_outlayer(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
     let _ = &near_host_used; // used below
     // User function types: each function has (i64 × param_count) -> i64
     let max_p = em.funcs.iter().map(|f| f.param_count).max().unwrap_or(0);
-    let user_type_base: u32 = 18;
+    let user_type_base: u32 = 21;
     for p in 0..=max_p {
         let params: Vec<ValType> = (0..p).map(|_| ValType::I64).collect();
         types.ty().function(params, [ValType::I64]);
@@ -580,8 +613,30 @@ fn finish_outlayer(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
         imports.import(f.module, f.name, EntityType::Function(type_idx));
     }
     // OutLayer imports (indices wasi_count..wasi_count+ol_count)
+    let ol_type_map: Vec<u32> = vec![
+        7,  // view: 8 i32 -> i32
+        8,  // call: 14 i32 -> i32
+        9,  // transfer: 10 i32 -> i32
+        10, // http_get: 5 i32 -> i32
+        11, // storage_set: 4 i32 -> i32
+        12, // storage_get: 5 i32 -> i32
+        13, // storage_has: 2 i32 -> i32
+        14, // storage_delete: 2 i32 -> i32
+        15, // storage_increment: 6 i32 -> i32
+        16, // env_signer: 3 i32 -> i32
+        17, // env_predecessor: 3 i32 -> i32
+        15, // storage_decrement: 6 i32 -> i32 (reuse type 15)
+        11, // storage_set_if_absent: 4 i32 -> i32 (reuse type 11)
+        20, // storage_set_if_equals: 8 i32 -> i32
+        12, // storage_list_keys: 5 i32 -> i32 (reuse type 12)
+        18, // storage_clear_all: () -> i32
+        11, // storage_set_worker: 4 i32 -> i32 (reuse type 11)
+        12, // storage_get_worker: 5 i32 -> i32 (reuse type 12)
+        11, // storage_set_worker_public: 4 i32 -> i32 (reuse type 11)
+        19, // storage_get_worker_from_project: 7 i32 -> i32
+    ];
     for (i, f) in ol.iter().enumerate() {
-        let type_idx = 7 + i as u32; // types 7, 8, 9
+        let type_idx = ol_type_map[i];
         imports.import(f.module, f.name, EntityType::Function(type_idx));
     }
     // NEAR host stubs as imports from "env" — same as NEAR target
@@ -672,6 +727,15 @@ fn finish_outlayer(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
             ol_map.insert(114, wasi_count + 8); // sentinel 114 -> outlayer.storage_increment
             ol_map.insert(120, wasi_count + 9); // sentinel 120 -> outlayer.env_signer
             ol_map.insert(121, wasi_count + 10); // sentinel 121 -> outlayer.env_predecessor
+            ol_map.insert(130, wasi_count + 11); // sentinel 130 -> outlayer.storage_decrement
+            ol_map.insert(131, wasi_count + 12); // sentinel 131 -> outlayer.storage_set_if_absent
+            ol_map.insert(132, wasi_count + 13); // sentinel 132 -> outlayer.storage_set_if_equals
+            ol_map.insert(133, wasi_count + 14); // sentinel 133 -> outlayer.storage_list_keys
+            ol_map.insert(134, wasi_count + 15); // sentinel 134 -> outlayer.storage_clear_all
+            ol_map.insert(135, wasi_count + 16); // sentinel 135 -> outlayer.storage_set_worker
+            ol_map.insert(136, wasi_count + 17); // sentinel 136 -> outlayer.storage_get_worker
+            ol_map.insert(137, wasi_count + 18); // sentinel 137 -> outlayer.storage_set_worker_public
+            ol_map.insert(138, wasi_count + 19); // sentinel 138 -> outlayer.storage_get_worker_from_project
             WasmEmitter::resolve_static_pub_ex(&resolved, &near_host_idx, &name_map, &em.funcs, &ol_map)
         } else {
             resolved
@@ -1091,6 +1155,15 @@ fn run_outlayer_wasm(wasm: &[u8], stdin_data: &[u8]) -> i64 {
     let storage_stub_6 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 6], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_increment", storage_stub_6).unwrap();
     let env_signer_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 3], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "env_signer", env_signer_fn).unwrap();
     let env_pred_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 3], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "env_predecessor", env_pred_fn).unwrap();
+    let stub_11 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 6], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_decrement", stub_11).unwrap();
+    let stub_12 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 4], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_set_if_absent", stub_12).unwrap();
+    let stub_13 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 8], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "storage_set_if_equals", stub_13).unwrap();
+    let stub_14 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 5], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "storage_list_keys", stub_14).unwrap();
+    let stub_15 = Func::new(&mut store, FuncType::new(&engine, vec![], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_clear_all", stub_15).unwrap();
+    let stub_16 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 4], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_set_worker", stub_16).unwrap();
+    let stub_17 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 5], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "storage_get_worker", stub_17).unwrap();
+    let stub_18 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 4], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_set_worker_public", stub_18).unwrap();
+    let stub_19 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 7], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "storage_get_worker_from_project", stub_19).unwrap();
     linker.define(&store, "env", "read_register", read_reg_fn).unwrap();
     linker.define(&store, "env", "register_len", reg_len_fn).unwrap();
 
@@ -1196,6 +1269,15 @@ fn run_outlayer_wasm_with_view(wasm: &[u8], stdin_data: &[u8], response: &[u8]) 
     let storage_stub_6 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 6], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_increment", storage_stub_6).unwrap();
     let env_signer_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 3], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "env_signer", env_signer_fn).unwrap();
     let env_pred_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 3], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "env_predecessor", env_pred_fn).unwrap();
+    let stub_11 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 6], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_decrement", stub_11).unwrap();
+    let stub_12 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 4], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_set_if_absent", stub_12).unwrap();
+    let stub_13 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 8], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "storage_set_if_equals", stub_13).unwrap();
+    let stub_14 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 5], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "storage_list_keys", stub_14).unwrap();
+    let stub_15 = Func::new(&mut store, FuncType::new(&engine, vec![], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_clear_all", stub_15).unwrap();
+    let stub_16 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 4], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_set_worker", stub_16).unwrap();
+    let stub_17 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 5], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "storage_get_worker", stub_17).unwrap();
+    let stub_18 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 4], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_set_worker_public", stub_18).unwrap();
+    let stub_19 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 7], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "storage_get_worker_from_project", stub_19).unwrap();
     linker.define(&store, "env", "read_register", read_reg_fn).unwrap();
     linker.define(&store, "env", "register_len", reg_len_fn).unwrap();
 
