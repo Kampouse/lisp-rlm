@@ -73,6 +73,9 @@ fn outlayer_imports() -> Vec<WasiFunc> {
         //             callback_ptr, callback_len) -> errno
         WasiFunc { module: "outlayer", name: "transfer",
             params: vec![W; 10], results: vec![W] },
+        // 3: http_get(url_ptr, url_len, response_buf_ptr, response_buf_len, response_len_ptr) -> errno
+        WasiFunc { module: "outlayer", name: "http_get",
+            params: vec![W, W, W, W, W], results: vec![W] },
     ]
 }
 
@@ -448,6 +451,8 @@ fn finish_outlayer(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
     types.ty().function(vec![W; 14], [W]);
     // type 9: transfer — 10 i32 params -> i32
     types.ty().function(vec![W; 10], [W]);
+    // type 10: http_get — 5 i32 params -> i32
+    types.ty().function(vec![W; 5], [W]);
 
     // NEAR-style host function types (for NEAR compat stubs)
     // We need types for each unique NEAR host function signature used
@@ -455,7 +460,7 @@ fn finish_outlayer(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
     let _ = &near_host_used; // used below
     // User function types: each function has (i64 × param_count) -> i64
     let max_p = em.funcs.iter().map(|f| f.param_count).max().unwrap_or(0);
-    let user_type_base: u32 = 10;
+    let user_type_base: u32 = 11;
     for p in 0..=max_p {
         let params: Vec<ValType> = (0..p).map(|_| ValType::I64).collect();
         types.ty().function(params, [ValType::I64]);
@@ -616,7 +621,7 @@ fn finish_outlayer(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
         let extra = f.local_count.saturating_sub(f.param_count);
         let locals: Vec<(u32, ValType)> = if extra > 0 { vec![(extra as u32, ValType::I64)] } else { vec![] };
         let resolved = WasmEmitter::resolve_static_pub(&f.instrs, &near_host_idx, &name_map, &em.funcs);
-        let resolved = if em.need_outlayer {
+        let resolved = if em.need_outlayer || em.wasi_mode {
             let mut ol_map: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
             // outlayer.view is at import index wasi_count + 0
             // outlayer.call is at import index wasi_count + 1
@@ -624,7 +629,8 @@ fn finish_outlayer(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
             ol_map.insert(100, wasi_count); // sentinel 100 -> outlayer.view
             ol_map.insert(101, wasi_count + 1); // sentinel 101 -> outlayer.call
             ol_map.insert(102, wasi_count + 2); // sentinel 102 -> outlayer.transfer
-            WasmEmitter::resolve_static_pub_ex(&f.instrs, &near_host_idx, &name_map, &em.funcs, &ol_map)
+            ol_map.insert(103, wasi_count + 3); // sentinel 103 -> outlayer.http_get
+            WasmEmitter::resolve_static_pub_ex(&resolved, &near_host_idx, &name_map, &em.funcs, &ol_map)
         } else {
             resolved
         };
@@ -1035,6 +1041,7 @@ fn run_outlayer_wasm(wasm: &[u8], stdin_data: &[u8]) -> i64 {
     linker.define(&store, "outlayer", "view", ol_view_fn).unwrap();
     linker.define(&store, "outlayer", "call", ol_call_fn).unwrap();
     linker.define(&store, "outlayer", "transfer", ol_transfer_fn).unwrap();
+    let ol_http_get_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 5], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "http_get", ol_http_get_fn).unwrap();
     linker.define(&store, "env", "read_register", read_reg_fn).unwrap();
     linker.define(&store, "env", "register_len", reg_len_fn).unwrap();
 
@@ -1132,6 +1139,7 @@ fn run_outlayer_wasm_with_view(wasm: &[u8], stdin_data: &[u8], response: &[u8]) 
     linker.define(&store, "outlayer", "view", ol_view_fn).unwrap();
     linker.define(&store, "outlayer", "call", ol_call_fn).unwrap();
     linker.define(&store, "outlayer", "transfer", ol_transfer_fn).unwrap();
+    let ol_http_get_fn2 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 5], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "http_get", ol_http_get_fn2).unwrap();
     linker.define(&store, "env", "read_register", read_reg_fn).unwrap();
     linker.define(&store, "env", "register_len", reg_len_fn).unwrap();
 

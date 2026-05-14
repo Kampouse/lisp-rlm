@@ -645,7 +645,7 @@ impl WasmEmitter {
             // OutLayer RPC — uses "outlayer" module imports
             "outlayer/view" | "outlayer/raw" | "outlayer/status" |
             "outlayer/storage-set" | "outlayer/storage-get" | "outlayer/storage-has" | "outlayer/storage-delete" |
-            "outlayer/context" => {
+            "outlayer/context" | "http-get" => {
                 self.need_outlayer = true;
             }
             _ => {}
@@ -1855,7 +1855,84 @@ impl WasmEmitter {
                 if a.is_empty() { return Err("json-get requires a string key argument".into()); }
                 match &a[0] {
                     LispVal::Str(key) => {
-                        let mut v = if self.wasi_mode { self.json_get_wasi(key, "int")? } else { self.json_get_with_scanner(key, "int")? };
+                        let mut v = if a.len() > 1 {
+                            // (json-get "key" buffer) — scan the provided tagged string
+                            let buf_expr = self.expr(&a[1])?;
+                            let mut buf_setup = Vec::new();
+                            // Untag to get payload, extract len, then extract ptr
+                            buf_setup.extend(buf_expr.clone());
+                            buf_setup.push(Instruction::I64Const(3)); buf_setup.push(Instruction::I64ShrU); // payload
+                            buf_setup.push(Instruction::I64Const(32)); buf_setup.push(Instruction::I64ShrU); // len
+                            // payload & 0xFFFFFFFF = ptr, we need buf = ptr
+                            let buf_val = self.alloc_data(&[]); // dummy — we compute at runtime
+                            // Actually we need to compute buf at runtime from the tagged string
+                            // Setup: push len from payload >> 32, but buf needs to be ptr
+                            // We'll make buf_setup push the length, and pass buf=0 as sentinel
+                            // Actually let's do it differently: extract ptr and len at runtime
+                            let mut setup = Vec::new();
+                            setup.extend(buf_expr.clone());
+                            // Untag: >> 3 to get payload
+                            setup.push(Instruction::I64Const(3)); setup.push(Instruction::I64ShrU);
+                            // Now payload = (len << 32) | ptr
+                            // Extract len: payload >> 32
+                            setup.push(Instruction::I64Const(32)); setup.push(Instruction::I64ShrU);
+                            // len is now on stack — but json_get_from_buf expects (ilen) as setup
+                            // We also need the ptr. Store payload in a temp, compute both.
+                            let tmp = self.local_idx("__jgs_tmp");
+                            let buf_ptr = self.local_idx("__jgs_bptr");
+                            setup.extend(buf_expr);
+                            setup.push(Instruction::I64Const(3)); setup.push(Instruction::I64ShrU);
+                            setup.push(Instruction::LocalSet(tmp));
+                            // len = tmp >> 32
+                            setup.push(Instruction::LocalGet(tmp));
+                            setup.push(Instruction::I64Const(32)); setup.push(Instruction::I64ShrU);
+                            // buf_ptr = tmp & 0xFFFFFFFF (but we need a fixed buf value for json_get_from_buf)
+                            // Problem: json_get_from_buf takes a fixed buf address. The ptr is runtime.
+                            // We need a version that takes buf from a local, not a constant.
+                            // Quick fix: copy the string to a fixed buffer first, then scan it.
+                            drop(buf_val);
+                            // Copy string to INPUT_BUF (NEAR) or STDIN_BUF (WASI), then scan
+                            let target_buf = if self.wasi_mode { 32768i64 } else { INPUT_BUF };
+                            let src_ptr_l = self.local_idx("__jgs_sp");
+                            let copy_i = self.local_idx("__jgs_ci");
+                            let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+                            // src_ptr = tmp & 0xFFFFFFFF
+                            setup.push(Instruction::LocalGet(tmp));
+                            setup.push(Instruction::I64Const(0xFFFFFFFF)); setup.push(Instruction::I64And);
+                            setup.push(Instruction::LocalSet(src_ptr_l));
+                            // Copy src[i] -> target_buf[i] for i in 0..len
+                            // We need len on stack first. Already pushed tmp >> 32 above.
+                            // Store len to ilen local
+                            let mut copy_setup = Vec::new();
+                            copy_setup.push(Instruction::LocalGet(tmp));
+                            copy_setup.push(Instruction::I64Const(32)); copy_setup.push(Instruction::I64ShrU);
+                            // Copy loop
+                            copy_setup.push(Instruction::I64Const(0)); copy_setup.push(Instruction::LocalSet(copy_i));
+                            copy_setup.push(Instruction::Block(BlockType::Empty));
+                            copy_setup.push(Instruction::Loop(BlockType::Empty));
+                            copy_setup.push(Instruction::LocalGet(copy_i)); copy_setup.push(Instruction::LocalGet(tmp));
+                            copy_setup.push(Instruction::I64Const(32)); copy_setup.push(Instruction::I64ShrU);
+                            copy_setup.push(Instruction::I64GeU); copy_setup.push(Instruction::BrIf(1));
+                            // target_buf[i] = src[i]
+                            copy_setup.push(Instruction::I64Const(target_buf));
+                            copy_setup.push(Instruction::LocalGet(copy_i)); copy_setup.push(Instruction::I64Add);
+                            copy_setup.push(Instruction::I32WrapI64);
+                            copy_setup.push(Instruction::LocalGet(src_ptr_l));
+                            copy_setup.push(Instruction::LocalGet(copy_i)); copy_setup.push(Instruction::I64Add);
+                            copy_setup.push(Instruction::I32WrapI64);
+                            copy_setup.push(Instruction::I32Load8U(ma8.clone()));
+                            copy_setup.push(Instruction::I32Store8(ma8.clone()));
+                            copy_setup.push(Instruction::LocalGet(copy_i)); copy_setup.push(Instruction::I64Const(1));
+                            copy_setup.push(Instruction::I64Add); copy_setup.push(Instruction::LocalSet(copy_i));
+                            copy_setup.push(Instruction::Br(0));
+                            copy_setup.push(Instruction::End); copy_setup.push(Instruction::End);
+                            // Now scan from target_buf with the length
+                            self.json_get_from_buf(key, "int", target_buf, &mut copy_setup)?
+                        } else if self.wasi_mode {
+                            self.json_get_wasi(key, "int")?
+                        } else {
+                            self.json_get_with_scanner(key, "int")?
+                        };
                         v.extend(self.emit_tag_num());
                         Ok(v)
                     }
@@ -4682,6 +4759,79 @@ impl WasmEmitter {
                 for x in a { v.extend(self.expr(x)?); }
                 // Call current function (which has the self-param)
                 v.push(Instruction::Call(USER_BASE | pos as u32));
+                Ok(v)
+            }
+
+            // ── HTTP GET (OutLayer host function) ──
+            "http-get" => {
+                // (http-get "https://api.example.com/data") -> string or nil
+                if a.is_empty() { return Err("http-get requires a URL string argument".into()); }
+                if !self.wasi_mode { return Err("http-get is only available on OutLayer (WASI) target".into()); }
+                let url_expr = self.expr(&a[0])?;
+                let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                let ma1 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+                let errno_l = self.local_idx("__http_err");
+                let len_l = self.local_idx("__http_len");
+                let dst_l = self.local_idx("__http_dst");
+                let i_l = self.local_idx("__http_i");
+                let mut v = Vec::new();
+
+                // outlayer.http_get(url_ptr, url_len, response_buf, response_buf_len, response_len_ptr)
+                // URL ptr/len from tagged string
+                v.extend(url_expr.clone());
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64); // url_ptr
+                v.extend(url_expr);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64); // url_len
+                // response_buf at 98304, buf_len = 65536, response_len_ptr at 163840
+                v.push(Instruction::I32Const(98304));
+                v.push(Instruction::I32Const(65536));
+                v.push(Instruction::I32Const(163840));
+                // Call http_get (sentinel 103)
+                v.push(Instruction::Call(103));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(errno_l));
+                // if errno != 0 → nil
+                v.push(Instruction::LocalGet(errno_l));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Ne);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.push(Instruction::I64Const(TAG_NIL));
+                v.push(Instruction::Else);
+                // Load response length
+                v.push(Instruction::I32Const(163840)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(len_l));
+                // dst = heap_ptr
+                v.push(Instruction::I64Const(self.heap_ptr as i64)); v.push(Instruction::LocalSet(dst_l));
+                // Copy response to heap
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(i_l));
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(i_l)); v.push(Instruction::LocalGet(len_l));
+                v.push(Instruction::I64GeU); v.push(Instruction::BrIf(1));
+                v.push(Instruction::LocalGet(dst_l)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i_l)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Const(98304));
+                v.push(Instruction::LocalGet(i_l)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma1));
+                v.push(Instruction::I32Store8(ma1));
+                v.push(Instruction::LocalGet(i_l)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(i_l));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); v.push(Instruction::End);
+                // Advance heap
+                let new_heap = self.heap_ptr as i64 + 65536; self.heap_ptr = new_heap as u32;
+                // Tagged string: ((dst | (len << 32)) << 3) | TAG_STR
+                v.push(Instruction::LocalGet(dst_l));
+                v.push(Instruction::LocalGet(len_l)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_STR)); v.push(Instruction::I64Or);
+                v.push(Instruction::End); // if
                 Ok(v)
             }
 
