@@ -85,6 +85,7 @@ pub(crate) const HOST_FUNCS: &[(&str, &[ValType], &[ValType])] = &[
 
 const HOST_BASE: u32 = 0xFF00_0000;
 const USER_BASE: u32 = 0xFF01_0000;
+pub const WASI_FD_WRITE: u32 = 90; // sentinel for WASI fd_write in outlayer mode
 const TEMP_MEM: i64 = 64;
 const INPUT_BUF: i64 = 16384;  // 16KB for input JSON args
 const RETURN_BUF: i64 = 32768;
@@ -137,7 +138,8 @@ pub struct WasmEmitter {
     pub(crate) fuzz_mode: bool, // if true, export wrappers store tagged values (no untag, no value_return)
     pub(crate) need_outlayer: bool, // true if outlayer/* dispatch forms are used
     pub(crate) wasi_mode: bool, // true when targeting WASI/OutLayer
-    pub(crate) p2_mode: bool,   // true when targeting P2 component (export "run" instead of "_start")
+    pub(crate) p2_mode: bool,   // true when targeting P2 component (return i32 from _start)
+    pub(crate) no_proc_exit: bool, // true when wrapping with wit-component adapter (return cleanly, don't call proc_exit)
     // Track which function each lambda maps to, and its captured var count
     // lambda_id -> (func_array_idx, captured_count)
     pub(crate) lambda_info: Vec<(usize, usize)>, 
@@ -151,7 +153,7 @@ impl WasmEmitter {
             locals: HashMap::new(), next_local: 0, current_func: None, current_param_count: 0,
             while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 1, exports: Vec::new(),
             data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(),
-            gas_local: None, heap_ptr: HEAP_START as u32, lambda_counter: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, wasi_mode: false, p2_mode: false,
+            gas_local: None, heap_ptr: HEAP_START as u32, lambda_counter: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, wasi_mode: false, p2_mode: false, no_proc_exit: false,
         }
     }
 
@@ -636,6 +638,7 @@ impl WasmEmitter {
             "near/storage_has" => { self.need_host(20); }
             "near/storage_remove" => { self.need_host(19); }
             "near/log_num" => self.need_host(28),
+            "print" | "println" => { if !self.wasi_mode { self.need_host(28); } }
             "near/json_get_int" | "near/json_get_str" | "near/json_get_u128" | "json-get" | "json-get-str" | "json-get-float" => { if !self.wasi_mode { self.need_host(7); self.need_host(0); self.need_host(1); } }
             "u128/store_storage" => { self.need_host(17); }
             "u128/load_storage" => { self.need_host(18); self.need_host(0); }
@@ -5788,6 +5791,208 @@ impl WasmEmitter {
                 v.push(Instruction::I32Const(98304)); v.push(Instruction::I32Const(163840));
                 v.push(Instruction::Call(100));
                 v.push(Instruction::Drop);
+                v.push(Instruction::I64Const(TAG_NIL));
+                Ok(v)
+            }
+
+            "print" | "println" => {
+                // Evaluate arg, write to stdout (WASI) or log (NEAR), return nil
+                if a.is_empty() {
+                    return Ok(vec![Instruction::I64Const(TAG_NIL)]);
+                }
+                let val = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                if self.wasi_mode {
+                    // WASI: fd_write to stdout
+                    // Check tag: if string (TAG_STR=5), extract ptr/len and fd_write
+                    // If number, convert to decimal at STDOUT_BUF and fd_write
+                    let tagged = self.local_idx("__print_val");
+                    let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                    let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+                    // Store tagged value
+                    v.extend(val);
+                    v.push(Instruction::LocalSet(tagged));
+                    // Check if string: (tagged & 7) == TAG_STR (5)
+                    v.push(Instruction::LocalGet(tagged));
+                    v.push(Instruction::I64Const(7));
+                    v.push(Instruction::I64And);
+                    v.push(Instruction::I64Const(5)); // TAG_STR
+                    v.push(Instruction::I64Eq);
+                    // i64.eq produces i32 directly, no wrap needed
+                    v.push(Instruction::If(BlockType::Empty));
+                    // ── String path ──
+                    // Build iov at offset 64: [ptr, len]
+                    v.push(Instruction::I32Const(64));
+                    v.push(Instruction::LocalGet(tagged));
+                    v.push(Instruction::I64Const(3));
+                    v.push(Instruction::I64ShrU); // payload
+                    v.push(Instruction::I64Const(0xFFFFFFFF));
+                    v.push(Instruction::I64And);
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::I32Store(ma4.clone())); // iov[0].buf
+                    v.push(Instruction::I32Const(68));
+                    v.push(Instruction::LocalGet(tagged));
+                    v.push(Instruction::I64Const(3));
+                    v.push(Instruction::I64ShrU);
+                    v.push(Instruction::I64Const(32));
+                    v.push(Instruction::I64ShrU); // len
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::I32Store(ma4.clone())); // iov[0].len
+                    // fd_write(1, 64, 1, STDIN_LEN=98304)
+                    v.push(Instruction::I32Const(1));
+                    v.push(Instruction::I32Const(64));
+                    v.push(Instruction::I32Const(1));
+                    v.push(Instruction::I32Const(98304));
+                    v.push(Instruction::Call(WASI_FD_WRITE));
+                    v.push(Instruction::Drop);
+                    // If println, write newline
+                    if op == "println" {
+                        v.push(Instruction::I32Const(64));
+                        v.push(Instruction::I32Const(0x0A)); // '\n'
+                        v.push(Instruction::I32Store8(ma8.clone()));
+                        v.push(Instruction::I32Const(1));
+                        v.push(Instruction::I32Const(64));
+                        v.push(Instruction::I32Const(1));
+                        v.push(Instruction::I32Const(98304));
+                        v.push(Instruction::Call(WASI_FD_WRITE));
+                        v.push(Instruction::Drop);
+                    }
+                    v.push(Instruction::Else);
+                    // ── Non-string path: convert i64 to decimal ──
+                    let untagged = self.local_idx("__print_un");
+                    let digit_count = self.local_idx("__print_dc");
+                    let is_neg = self.local_idx("__print_neg");
+                    let wptr = self.local_idx("__print_wp");
+                    let sb: i64 = 65536; // STDOUT_BUF
+                    // Untag: >> 3 (arithmetic shift to preserve sign)
+                    v.push(Instruction::LocalGet(tagged));
+                    v.push(Instruction::I64Const(3));
+                    v.push(Instruction::I64ShrS);
+                    v.push(Instruction::LocalSet(untagged));
+                    v.push(Instruction::I64Const(0));
+                    v.push(Instruction::LocalSet(digit_count));
+                    v.push(Instruction::I64Const(0));
+                    v.push(Instruction::LocalSet(is_neg));
+                    // Check negative
+                    v.push(Instruction::LocalGet(untagged));
+                    v.push(Instruction::I64Const(0));
+                    v.push(Instruction::I64LtS);
+                    v.push(Instruction::If(BlockType::Empty));
+                    v.push(Instruction::I64Const(1));
+                    v.push(Instruction::LocalSet(is_neg));
+                    v.push(Instruction::I64Const(0));
+                    v.push(Instruction::LocalGet(untagged));
+                    v.push(Instruction::I64Sub);
+                    v.push(Instruction::LocalSet(untagged));
+                    v.push(Instruction::End);
+                    // Check zero
+                    v.push(Instruction::LocalGet(untagged));
+                    v.push(Instruction::I64Eqz);
+                    v.push(Instruction::If(BlockType::Empty));
+                    v.push(Instruction::I32Const(sb as i32));
+                    v.push(Instruction::I32Const(0x30));
+                    v.push(Instruction::I32Store8(ma8.clone()));
+                    v.push(Instruction::I64Const(1));
+                    v.push(Instruction::LocalSet(digit_count));
+                    v.push(Instruction::Else);
+                    // Digits backward at sb+31
+                    v.push(Instruction::I64Const(sb + 31));
+                    v.push(Instruction::LocalSet(wptr));
+                    v.push(Instruction::Block(BlockType::Empty));
+                    v.push(Instruction::Loop(BlockType::Empty));
+                    v.push(Instruction::LocalGet(untagged));
+                    v.push(Instruction::I64Eqz);
+                    v.push(Instruction::If(BlockType::Empty));
+                    v.push(Instruction::Br(2));
+                    v.push(Instruction::End);
+                    v.push(Instruction::LocalGet(wptr));
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::LocalGet(untagged));
+                    v.push(Instruction::I64Const(10));
+                    v.push(Instruction::I64RemU);
+                    v.push(Instruction::I64Const(0x30));
+                    v.push(Instruction::I64Add);
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::I32Store8(ma8.clone()));
+                    v.push(Instruction::LocalGet(untagged));
+                    v.push(Instruction::I64Const(10));
+                    v.push(Instruction::I64DivU);
+                    v.push(Instruction::LocalSet(untagged));
+                    v.push(Instruction::LocalGet(wptr));
+                    v.push(Instruction::I64Const(1));
+                    v.push(Instruction::I64Sub);
+                    v.push(Instruction::LocalSet(wptr));
+                    v.push(Instruction::LocalGet(digit_count));
+                    v.push(Instruction::I64Const(1));
+                    v.push(Instruction::I64Add);
+                    v.push(Instruction::LocalSet(digit_count));
+                    v.push(Instruction::Br(0));
+                    v.push(Instruction::End); // loop
+                    v.push(Instruction::End); // block
+                    // ptr+1 = start
+                    v.push(Instruction::LocalGet(wptr));
+                    v.push(Instruction::I64Const(1));
+                    v.push(Instruction::I64Add);
+                    v.push(Instruction::LocalSet(wptr));
+                    // If negative: write '-'
+                    v.push(Instruction::LocalGet(is_neg));
+                    v.push(Instruction::I64Const(0));
+                    v.push(Instruction::I64Ne);
+                    v.push(Instruction::If(BlockType::Empty));
+                    v.push(Instruction::LocalGet(wptr));
+                    v.push(Instruction::I64Const(1));
+                    v.push(Instruction::I64Sub);
+                    v.push(Instruction::LocalSet(wptr));
+                    v.push(Instruction::LocalGet(wptr));
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::I32Const(0x2D)); // '-'
+                    v.push(Instruction::I32Store8(ma8.clone()));
+                    v.push(Instruction::LocalGet(digit_count));
+                    v.push(Instruction::I64Const(1));
+                    v.push(Instruction::I64Add);
+                    v.push(Instruction::LocalSet(digit_count));
+                    v.push(Instruction::End);
+                    v.push(Instruction::End); // else (zero)
+                    // fd_write: iov at TEMP+64
+                    v.push(Instruction::I32Const(64));
+                    v.push(Instruction::LocalGet(wptr));
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::I32Store(ma4.clone()));
+                    v.push(Instruction::I32Const(68));
+                    v.push(Instruction::LocalGet(digit_count));
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::I32Store(ma4.clone()));
+                    v.push(Instruction::I32Const(1));
+                    v.push(Instruction::I32Const(64));
+                    v.push(Instruction::I32Const(1));
+                    v.push(Instruction::I32Const(98304));
+                    v.push(Instruction::Call(WASI_FD_WRITE));
+                    v.push(Instruction::Drop);
+                    // If println, newline
+                    if op == "println" {
+                        v.push(Instruction::I32Const(64));
+                        v.push(Instruction::I32Const(0x0A));
+                        v.push(Instruction::I32Store8(ma8.clone()));
+                        v.push(Instruction::I32Const(1));
+                        v.push(Instruction::I32Const(64));
+                        v.push(Instruction::I32Const(1));
+                        v.push(Instruction::I32Const(98304));
+                        v.push(Instruction::Call(WASI_FD_WRITE));
+                        v.push(Instruction::Drop);
+                    }
+                    v.push(Instruction::End); // if string/else
+                } else {
+                    // NEAR: use near/log (host func 28) for strings
+                    self.need_host(28);
+                    // For now: if arg is string literal, log it
+                    v.extend(val.clone());
+                    v.push(Instruction::I64Const(32));
+                    v.push(Instruction::I64ShrU); // len
+                    v.extend(val);
+                    v.push(Instruction::I32WrapI64); // ptr
+                    v.push(Instruction::I64ExtendI32U);
+                    v.push(Self::host_call(28));
+                }
                 v.push(Instruction::I64Const(TAG_NIL));
                 Ok(v)
             }

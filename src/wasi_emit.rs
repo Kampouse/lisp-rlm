@@ -142,8 +142,41 @@ fn outlayer_imports() -> Vec<WasiFunc> {
     ]
 }
 
-/// Compile Lisp source to OutLayer WASI binary.
-///
+/// Compile to WASI P1 core module with minimal imports (no outlayer).
+/// Suitable for wrapping with `wasm-tools component new --adapt`.
+pub fn compile_wasi_p1(source: &str) -> Result<Vec<u8>, String> {
+    let resolved = crate::wasm_emit::resolve_modules(source, std::path::Path::new("."))?;
+    let exprs = crate::parser::parse_all(&resolved)?;
+    let mut em = WasmEmitter::new();
+    em.wasi_mode = true;
+    em.no_proc_exit = true; // wit-component adapter handles exit cleanly
+    for e in &exprs {
+        if let crate::types::LispVal::List(items) = e {
+            if items.is_empty() { continue; }
+            if items.len() >= 3 {
+                if let (crate::types::LispVal::Sym(s), crate::types::LispVal::List(sig)) = (&items[0], &items[1]) {
+                    if s == "define" && !sig.is_empty() {
+                        if let crate::types::LispVal::Sym(name) = &sig[0] {
+                            let params: Vec<String> = sig[1..].iter().map(|p| match p {
+                                crate::types::LispVal::Sym(s) => Ok(s.clone()),
+                                _ => Err("param must be symbol".into()),
+                            }).collect::<Result<_, String>>()?;
+                            let body = if items.len() > 3 {
+                                let mut b = vec![crate::types::LispVal::Sym("begin".into())];
+                                b.extend(items[2..].iter().cloned());
+                                crate::types::LispVal::List(b)
+                            } else {
+                                items[2].clone()
+                            };
+                            em.emit_define(name, &params, &body)?;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    finish_outlayer_no_ol(&mut em)
+}
 /// Produces a WASM module that:
 /// - Exports `_start()` (WASI entry point)
 /// - Reads input from stdin → calls last defined function → writes result to stdout
@@ -239,8 +272,8 @@ pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
     let exprs = crate::parser::parse_all(&resolved)?;
     let mut em = WasmEmitter::new();
     em.wasi_mode = true;
+    em.no_proc_exit = true; // wit-component adapter handles exit
     for e in &exprs {
-    // em.p2_mode = true; // WASI adapter handles _start -> run
         if let crate::types::LispVal::List(items) = e {
             if items.is_empty() { continue; }
             if items.len() >= 3 {
@@ -266,13 +299,39 @@ pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
         }
     }
 
-    let mut core_bytes = finish_outlayer(&mut em)?;
+    let core_bytes = if em.need_outlayer {
+        finish_outlayer(&mut em)?
+    } else {
+        // No outlayer functions used — build minimal WASI-only core module
+        finish_outlayer_no_ol(&mut em)?
+    };
 
-
-    // 2. Build native P2 component using wasm-encoder ComponentBuilder
-    let bytes = crate::p2_native::build_native_p2_component(&core_bytes)?;
-    eprintln!("✅ Native P2 component: {} bytes", bytes.len());
+    // 2. Build P2 component using wit-component + WASI adapter
+    let bytes = build_p2_with_adapter(&core_bytes)?;
     Ok(bytes)
+}
+
+/// Build a P2 component by wrapping a P1 core module with the WASI adapter.
+fn build_p2_with_adapter(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
+    // Load WASI adapter
+    let adapter_bytes = crate::p2_native::load_wasi_adapter();
+    if adapter_bytes.len() < 100 {
+        return Err("WASI adapter not found. Set WASI_ADAPTER_PATH or place wasi_snapshot_preview1.command.wasm in /tmp/".into());
+    }
+
+    // Use wit-component to encode the P1 core + adapter into a P2 component
+    let mut encoder = wit_component::ComponentEncoder::default()
+        .module(core_bytes)
+        .map_err(|e| format!("wit-component: failed to set module: {}", e))?
+        .validate(true)
+        .adapter("wasi_snapshot_preview1", &adapter_bytes)
+        .map_err(|e| format!("wit-component: failed to set adapter: {}", e))?;
+
+    let component = encoder.encode()
+        .map_err(|e| format!("wit-component encode failed: {}", e))?;
+
+    eprintln!("✅ P2 component via wit-component: {} bytes", component.len());
+    Ok(component)
 }
 
 /// Analyze a core WASM module to find which import module names are referenced.
@@ -394,8 +453,13 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
 
     // ── Type section ──
     let mut types = TypeSection::new();
-    // type 0: () -> () — for _start, proc_exit, etc
-    types.ty().function([], []);
+    // P2: _start returns i32 (result code, 0=success) for wasi:cli/run compatibility
+    // P1: _start returns () and calls proc_exit
+    if em.p2_mode {
+        types.ty().function([], [ValType::I32]); // type 0: () -> i32 (_start for P2)
+    } else {
+        types.ty().function([], []); // type 0: () -> () (_start for P1)
+    }
     // type 1: (i32, i32, i32, i32) -> i32 — fd_read, fd_write
     types.ty().function([W, W, W, W], [W]);
     // type 2: (i32) -> () — proc_exit
@@ -614,7 +678,7 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     // _start is the last function
     let start_func_idx = internal_base + em.funcs.len() as u32;
     // P2 components export "run", WASI P1 exports "_start"
-    let entry_name = if em.p2_mode { "run" } else { "_start" };
+    let entry_name = "_start"; // always _start; P2 wrapper handles naming
     exps.export(entry_name, ExportKind::Func, start_func_idx);
     m.section(&exps);
 
@@ -655,6 +719,7 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
             ol_map.insert(136, wasi_count + 17); // sentinel 136 -> outlayer.storage_get_worker
             ol_map.insert(137, wasi_count + 18); // sentinel 137 -> outlayer.storage_set_worker_public
             ol_map.insert(138, wasi_count + 19); // sentinel 138 -> outlayer.storage_get_worker_from_project
+            ol_map.insert(crate::wasm_emit::WASI_FD_WRITE, 1); // fd_write is WASI import index 1
             WasmEmitter::resolve_static_pub_ex(&resolved, &near_host_idx, &name_map, &em.funcs, &ol_map)
         } else {
             resolved
@@ -849,9 +914,16 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
 
         fb.instruction(&Instruction::End); // if
 
-        // proc_exit(0)
-        fb.instruction(&Instruction::I32Const(0));
-        fb.instruction(&Instruction::Call(2)); // proc_exit
+        // P1: proc_exit(0) — terminates process
+        // P2: return i32 0 — signals success to wasi:cli/run  
+        // no_proc_exit: just return cleanly (wit-component adapter handles exit)
+        if em.p2_mode {
+            fb.instruction(&Instruction::I32Const(0));
+        } else if !em.no_proc_exit {
+            fb.instruction(&Instruction::I32Const(0));
+            fb.instruction(&Instruction::Call(2)); // proc_exit
+        }
+        // else: no_proc_exit && !p2_mode — just fall through (return void)
 
         fb.instruction(&Instruction::End);
         code.function(&fb);
