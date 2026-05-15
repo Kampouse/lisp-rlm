@@ -56,6 +56,21 @@ fn wasi_p1_imports() -> Vec<WasiFunc> {
     ]
 }
 
+/// Minimal WASI imports for P2 (only what _start actually uses)
+fn wasi_p1_imports_minimal() -> Vec<WasiFunc> {
+    vec![
+        // 0: fd_read(fd, iovs_ptr, iovs_len, nread_ptr) -> errno
+        WasiFunc { module: "wasi_snapshot_preview1", name: "fd_read",
+            params: vec![W, W, W, W], results: vec![W] },
+        // 1: fd_write(fd, iovs_ptr, iovs_len, nwritten_ptr) -> errno
+        WasiFunc { module: "wasi_snapshot_preview1", name: "fd_write",
+            params: vec![W, W, W, W], results: vec![W] },
+        // 2: proc_exit(code)
+        WasiFunc { module: "wasi_snapshot_preview1", name: "proc_exit",
+            params: vec![W], results: vec![] },
+    ]
+}
+
 /// OutLayer host function imports (view, call, transfer via WIT)
 fn outlayer_imports() -> Vec<WasiFunc> {
     vec![
@@ -344,7 +359,7 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
 
     em.tree_shake();
 
-    let wasi = wasi_p1_imports();
+    let wasi = if skip_outlayer { wasi_p1_imports_minimal() } else { wasi_p1_imports() };
     let ol: Vec<WasiFunc> = if skip_outlayer { vec![] } else { outlayer_imports() };
     let wasi_count = wasi.len() as u32;
     let ol_count = ol.len() as u32;
