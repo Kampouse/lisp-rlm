@@ -1,0 +1,29 @@
+package outlayer:api;
+
+interface host {
+    view: func(a: s32, b: s32, c: s32, d: s32, e: s32, f: s32, g: s32, h: s32) -> s32;
+    call: func(a: s32, b: s32, c: s32, d: s32, e: s32, f: s32, g: s32, h: s32, i: s32, j: s32, k: s32, l: s32, m: s32) -> s32;
+    transfer: func(a: s32, b: s32, c: s32, d: s32, e: s32, f: s32, g: s32, h: s32, i: s32) -> s32;
+    http-get: func(a: s32, b: s32, c: s32, d: s32, e: s32) -> s32;
+    storage-set: func(a: s32, b: s32, c: s32, d: s32) -> s32;
+    storage-get: func(a: s32, b: s32, c: s32, d: s32, e: s32) -> s32;
+    storage-has: func(a: s32, b: s32) -> s32;
+    storage-delete: func(a: s32, b: s32) -> s32;
+    storage-increment: func(a: s32, b: s32, c: s32, d: s32, e: s32, f: s32) -> s32;
+    storage-decrement: func(a: s32, b: s32, c: s32, d: s32, e: s32, f: s32) -> s32;
+    env-signer: func(a: s32, b: s32, c: s32) -> s32;
+    env-predecessor: func(a: s32, b: s32, c: s32) -> s32;
+    storage-set-if-absent: func(a: s32, b: s32, c: s32, d: s32) -> s32;
+    storage-set-if-equals: func(a: s32, b: s32, c: s32, d: s32, e: s32, f: s32, g: s32, h: s32) -> s32;
+    storage-list-keys: func(a: s32, b: s32, c: s32, d: s32, e: s32) -> s32;
+    storage-clear-all: func() -> s32;
+    storage-set-worker: func(a: s32, b: s32, c: s32, d: s32) -> s32;
+    storage-get-worker: func(a: s32, b: s32, c: s32, d: s32, e: s32) -> s32;
+    storage-set-worker-public: func(a: s32, b: s32, c: s32, d: s32) -> s32;
+    storage-get-worker-from-project: func(a: s32, b: s32, c: s32, d: s32, e: s32, f: s32, g: s32) -> s32;
+}
+
+world outlayer-world {
+    import host;
+    export run: func() -> result;
+}

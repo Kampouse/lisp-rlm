@@ -25,7 +25,16 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3.27.0"
+wasmparser = "0.248.0"
 
 [[bin]]
 name = "near-compile"
 path = "src/bin/near_compile.rs"
+
+[[bin]]
+name = "rlm"
+path = "src/bin/rlm.rs"
+
+[[bin]]
+name = "emit_p2"
+path = "src/bin/emit_p2.rs"
