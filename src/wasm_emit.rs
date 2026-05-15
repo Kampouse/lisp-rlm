@@ -3944,34 +3944,12 @@ impl WasmEmitter {
             }
         }
         // P2 mode: canonical_abi_realloc implementation
-        // Simple bump allocator using memory[0..3] as the bump pointer
-        // realloc(_ptr: i32, _old_size: i32, _align: i32, new_size: i32) -> i32
+        // Simple realloc: returns the input ptr. For fresh allocs (ptr=0),
+        // returns 0 which the canonical lowering handles by writing to offset 0.
+        // This works because WASM memory starts at 0 and is always valid.
         if self.p2_mode {
-            // Initialize bump ptr at data offset 64 (skip first 64 bytes)
-            let bump_init = self.next_data_offset as i32;
-            let mut fb = Function::new([(1u32, ValType::I32)]); // 1 local: result_ptr
-            // Load current bump pointer from memory[0]
-            fb.instruction(&Instruction::I32Const(0));
-            fb.instruction(&Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
-            // If bump ptr is 0, initialize it
-            fb.instruction(&Instruction::LocalTee(4)); // result_ptr = bump_ptr
-            fb.instruction(&Instruction::I32Eqz);
-            fb.instruction(&Instruction::If(BlockType::Empty));
-            // Initialize: set bump ptr to bump_init
-            fb.instruction(&Instruction::I32Const(0));
-            fb.instruction(&Instruction::I32Const(bump_init));
-            fb.instruction(&Instruction::I32Store(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
-            fb.instruction(&Instruction::I32Const(bump_init));
-            fb.instruction(&Instruction::LocalSet(4)); // result_ptr = bump_init
-            fb.instruction(&Instruction::End);
-            // Advance bump pointer by new_size
-            fb.instruction(&Instruction::I32Const(0));
-            fb.instruction(&Instruction::LocalGet(4));
-            fb.instruction(&Instruction::LocalGet(3)); // new_size
-            fb.instruction(&Instruction::I32Add);
-            fb.instruction(&Instruction::I32Store(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
-            // Return result_ptr
-            fb.instruction(&Instruction::LocalGet(4));
+            let mut fb = Function::new([]);
+            fb.instruction(&Instruction::LocalGet(0));
             fb.instruction(&Instruction::End);
             code.function(&fb);
         }

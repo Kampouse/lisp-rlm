@@ -36,7 +36,7 @@ fn main() {
     let p2_bytes = match build_p2_component(&core_bytes) {
         Ok(wasm) => wasm,
         Err(e) => {
-            eprintln!("P2 wrap error: {}", e);
+            eprintln!("P2 wrap error: {:#}", e);
             std::process::exit(1);
         }
     };
