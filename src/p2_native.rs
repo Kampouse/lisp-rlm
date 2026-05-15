@@ -60,13 +60,23 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
     let wasi_stub_mod = b.core_module_raw(None, &wasi_stub);
     
     // 6. Lower each outlayer function from the imported instance
-    // 6. Build outlayer core stub module (matching exact signatures)
-    //    The component imports outlayer:api/outlayer, but the core module
-    //    needs stack-based i32 returns. We provide stubs that return 0.
-    //    The runtime replaces these via the component-level outlayer import.
-    let outlayer_stub = build_outlayer_core_stubs(&info);
-    let outlayer_stub_mod = b.core_module_raw(None, &outlayer_stub);
-    let outlayer_inst = b.core_instantiate(None, outlayer_stub_mod, []);
+    // 6. Lower each outlayer function from the imported instance
+    //    Canonical lowering converts component s32→core i32 on the stack
+    let mut lowered_funcs: Vec<u32> = Vec::new();
+    for (i, name) in info.names.iter().enumerate() {
+        let kebab = name.replace('_', "-");
+        let comp_func = b.alias_export(0, &leak_str(kebab), ComponentExportKind::Func);
+        // Lower without memory — s32 fits in i32 on the stack
+        let core_func = b.lower_func(None, comp_func, []);
+        lowered_funcs.push(core_func);
+    }
+    
+    // 7. Create outlayer core instance from lowered funcs
+    let outlayer_inst = b.core_instantiate_exports(
+        None,
+        info.names.iter().zip(lowered_funcs.iter())
+            .map(|(n, &idx)| (n.as_str(), ExportKind::Func, idx)),
+    );
 
     // 9. Instantiate WASI stub
     let wasi_stub_inst = b.core_instantiate(None, wasi_stub_mod, []);
