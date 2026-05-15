@@ -83,8 +83,34 @@ const HOST_FUNCS: &[(&str, &[ValType], &[ValType])] = &[
     ("promise_batch_action_delete_account", &[ValType::I64, ValType::I64, ValType::I64], &[]),      // 49
 ];
 
+// ── Outlayer host functions (i32 flat params, i32 return) ──
+// Imported from "outlayer" namespace (not "env" like NEAR)
+const OUTLAYER_FUNCS: &[(&str, &[ValType], &[ValType])] = &[
+    ("view",                   &[ValType::I32; 8],  &[ValType::I32]),  // 0
+    ("call",                   &[ValType::I32; 13], &[ValType::I32]),  // 1
+    ("transfer",               &[ValType::I32; 10], &[ValType::I32]),  // 2
+    ("http_get",               &[ValType::I32; 5],  &[ValType::I32]),  // 3
+    ("storage_set",            &[ValType::I32; 4],  &[ValType::I32]),  // 4
+    ("storage_get",            &[ValType::I32; 5],  &[ValType::I32]),  // 5
+    ("storage_has",            &[ValType::I32; 2],  &[ValType::I32]),  // 6
+    ("storage_delete",         &[ValType::I32; 2],  &[ValType::I32]),  // 7
+    ("storage_increment",      &[ValType::I32; 6],  &[ValType::I32]),  // 8
+    ("storage_decrement",      &[ValType::I32; 6],  &[ValType::I32]),  // 9
+    ("env_signer",             &[ValType::I32; 3],  &[ValType::I32]),  // 10
+    ("env_predecessor",        &[ValType::I32; 3],  &[ValType::I32]),  // 11
+    ("storage_set_if_absent",  &[ValType::I32; 4],  &[ValType::I32]),  // 12
+    ("storage_set_if_equals",  &[ValType::I32; 8],  &[ValType::I32]),  // 13
+    ("storage_list_keys",      &[ValType::I32; 5],  &[ValType::I32]),  // 14
+    ("storage_clear_all",      &[],                  &[ValType::I32]),  // 15
+    ("storage_set_worker",     &[ValType::I32; 4],  &[ValType::I32]),  // 16
+    ("storage_get_worker",     &[ValType::I32; 5],  &[ValType::I32]),  // 17
+    ("storage_set_worker_public", &[ValType::I32; 4], &[ValType::I32]), // 18
+    ("storage_get_worker_from_project", &[ValType::I32; 7], &[ValType::I32]), // 19
+];
+
 const HOST_BASE: u32 = 0xFF00_0000;
 const USER_BASE: u32 = 0xFF01_0000;
+const OUTLAYER_BASE: u32 = 0xFF02_0000;
 const TEMP_MEM: i64 = 64;
 // ~300 Tgas on NEAR ≈ ~10B simple ops. Cap at 1B to be safe (stops runaway, still uses full NEAR runtime).
 const GAS_LIMIT: i64 = 1_000_000_000;
@@ -110,6 +136,8 @@ pub struct WasmEmitter {
     data_segments: Vec<(u32, Vec<u8>)>,
     next_data_offset: u32,
     host_needed: HashSet<usize>,
+    outlayer_needed: HashSet<usize>,
+    p2_mode: bool,
     gas_local: Option<u32>, // index of the gas counter local (i64)
 }
 
@@ -118,7 +146,7 @@ impl WasmEmitter {
         Self {
             locals: HashMap::new(), next_local: 0, current_func: None, current_param_count: 0,
             while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 1, exports: Vec::new(),
-            data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(),
+            data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(), outlayer_needed: HashSet::new(), p2_mode: false,
             gas_local: None,
         }
     }
@@ -140,6 +168,7 @@ impl WasmEmitter {
     }
 
     fn need_host(&mut self, idx: usize) { self.host_needed.insert(idx); }
+    fn need_outlayer(&mut self, idx: usize) { self.outlayer_needed.insert(idx); }
 
     fn host_call(idx: usize) -> Instruction<'static> {
         Instruction::Call(HOST_BASE | idx as u32)
@@ -213,6 +242,28 @@ impl WasmEmitter {
             "near/iter_prefix" => { self.need_host(36); self.need_host(2); self.need_host(0); self.need_host(1); }
             "near/iter_range" => { self.need_host(37); self.need_host(2); self.need_host(0); self.need_host(1); }
             "near/iter_next" => { self.need_host(38); self.need_host(0); self.need_host(1); }
+            // Outlayer builtins
+            "outlayer/view" => self.need_outlayer(0),
+            "outlayer/call" => self.need_outlayer(1),
+            "outlayer/transfer" => self.need_outlayer(2),
+            "outlayer/http-get" => self.need_outlayer(3),
+            "outlayer/storage-set" => self.need_outlayer(4),
+            "outlayer/storage-get" => self.need_outlayer(5),
+            "outlayer/storage-has" => self.need_outlayer(6),
+            "outlayer/storage-delete" => self.need_outlayer(7),
+            "outlayer/storage-increment" => self.need_outlayer(8),
+            "outlayer/storage-decrement" => self.need_outlayer(9),
+            "outlayer/env-signer" => self.need_outlayer(10),
+            "outlayer/env-predecessor" => self.need_outlayer(11),
+            "outlayer/storage-set-if-absent" => self.need_outlayer(12),
+            "outlayer/storage-set-if-equals" => self.need_outlayer(13),
+            "outlayer/storage-list-keys" => self.need_outlayer(14),
+            "outlayer/storage-clear-all" => self.need_outlayer(15),
+            "outlayer/storage-set-worker" => self.need_outlayer(16),
+            "outlayer/storage-get-worker" => self.need_outlayer(17),
+            "outlayer/storage-set-worker-public" => self.need_outlayer(18),
+            "outlayer/storage-get-worker-from-project" => self.need_outlayer(19),
+            // Also scan children for outlayer usage
             _ => {}
         }
     }
@@ -1209,6 +1260,61 @@ impl WasmEmitter {
                 v.extend(key_ptr);
                 v.extend(val_ptr);
                 v.push(Self::host_call(38));
+                Ok(v)
+            }
+
+            // ── Outlayer builtins (flat i32 params, i32 return) ──
+            "outlayer/view" |
+            "outlayer/call" |
+            "outlayer/transfer" |
+            "outlayer/http-get" |
+            "outlayer/storage-set" |
+            "outlayer/storage-get" |
+            "outlayer/storage-has" |
+            "outlayer/storage-delete" |
+            "outlayer/storage-increment" |
+            "outlayer/storage-decrement" |
+            "outlayer/env-signer" |
+            "outlayer/env-predecessor" |
+            "outlayer/storage-set-if-absent" |
+            "outlayer/storage-set-if-equals" |
+            "outlayer/storage-list-keys" |
+            "outlayer/storage-clear-all" |
+            "outlayer/storage-set-worker" |
+            "outlayer/storage-get-worker" |
+            "outlayer/storage-set-worker-public" |
+            "outlayer/storage-get-worker-from-project" => {
+                // All outlayer functions take flat i32 params and return i32.
+                // Args are already i64 on stack; wrap to i32, call, extend result back to i64.
+                let ol_idx: usize = if op == "outlayer/view" { 0 }
+                    else if op == "outlayer/call" { 1 }
+                    else if op == "outlayer/transfer" { 2 }
+                    else if op == "outlayer/http-get" { 3 }
+                    else if op == "outlayer/storage-set" { 4 }
+                    else if op == "outlayer/storage-get" { 5 }
+                    else if op == "outlayer/storage-has" { 6 }
+                    else if op == "outlayer/storage-delete" { 7 }
+                    else if op == "outlayer/storage-increment" { 8 }
+                    else if op == "outlayer/storage-decrement" { 9 }
+                    else if op == "outlayer/env-signer" { 10 }
+                    else if op == "outlayer/env-predecessor" { 11 }
+                    else if op == "outlayer/storage-set-if-absent" { 12 }
+                    else if op == "outlayer/storage-set-if-equals" { 13 }
+                    else if op == "outlayer/storage-list-keys" { 14 }
+                    else if op == "outlayer/storage-clear-all" { 15 }
+                    else if op == "outlayer/storage-set-worker" { 16 }
+                    else if op == "outlayer/storage-get-worker" { 17 }
+                    else if op == "outlayer/storage-set-worker-public" { 18 }
+                    else { 19 };
+                let mut v = Vec::new();
+                // Push all args as i32 (wrap from i64)
+                for arg in a.iter() {
+                    v.extend(self.expr(arg)?);
+                    v.push(Instruction::I32WrapI64);
+                }
+                v.push(Instruction::Call(OUTLAYER_BASE | ol_idx as u32));
+                // Extend i32 result back to i64 for the Lisp runtime
+                v.push(Instruction::I64ExtendI32S);
                 Ok(v)
             }
 
@@ -3683,7 +3789,8 @@ impl WasmEmitter {
     pub fn finish(&self, default_export: &str) -> Vec<u8> {
         let mut m = Module::new();
         let host_list: Vec<usize> = (0..HOST_FUNCS.len()).filter(|i| self.host_needed.contains(i)).collect();
-        let host_count = host_list.len() as u32;
+        let outlayer_list: Vec<usize> = (0..OUTLAYER_FUNCS.len()).filter(|i| self.outlayer_needed.contains(i)).collect();
+        let host_count = (host_list.len() + outlayer_list.len()) as u32;
 
         // Type section
         let mut types = TypeSection::new();
@@ -3697,6 +3804,19 @@ impl WasmEmitter {
         for &hi in &host_list {
             types.ty().function(HOST_FUNCS[hi].1.iter().copied(), HOST_FUNCS[hi].2.iter().copied());
         }
+        // Outlayer function types (i32 flat)
+        for &oi in &outlayer_list {
+            types.ty().function(OUTLAYER_FUNCS[oi].1.iter().copied(), OUTLAYER_FUNCS[oi].2.iter().copied());
+        }
+        // P2 wrapper type: () -> i32 (for result<()> representation) — only used if WIT exports run
+        // Standard WASI command expects _start: () -> ()
+        // We keep P2 wrapper type None since _start returns void
+        let _p2_wrapper_type: Option<u32> = if self.p2_mode {
+            // Don't add i32 return — _start is () -> ()
+            None
+        } else {
+            None
+        };
         m.section(&types);
 
         // Import section
@@ -3706,13 +3826,28 @@ impl WasmEmitter {
             imports.import("env", HOST_FUNCS[hi].0, EntityType::Function(host_type_base + i as u32));
             host_idx.insert(hi, i as u32);
         }
+        // Outlayer imports (from "outlayer:api/host" in P2 mode, "outlayer" in P1)
+        let mut outlayer_idx: HashMap<usize, u32> = HashMap::new();
+        let outlayer_type_base = host_type_base + host_list.len() as u32;
+        let outlayer_func_base = host_list.len() as u32;
+        let ol_namespace = if self.p2_mode { "outlayer:api/host" } else { "outlayer" };
+        for (i, &oi) in outlayer_list.iter().enumerate() {
+            let func_name = if self.p2_mode {
+                OUTLAYER_FUNCS[oi].0.replace('_', "-")
+            } else {
+                OUTLAYER_FUNCS[oi].0.to_string()
+            };
+            imports.import(ol_namespace, &func_name, EntityType::Function(outlayer_type_base + i as u32));
+            outlayer_idx.insert(oi, outlayer_func_base + i as u32);
+        }
         m.section(&imports);
 
         // Function section
         let mut funcs = FunctionSection::new();
         for f in &self.funcs { funcs.function(f.param_count as u32 + 1); }
         let wrapper_count = if self.exports.is_empty() { 1 } else { self.exports.len() as u32 };
-        for _ in 0..wrapper_count { funcs.function(0); }
+        let wrapper_type_idx = 0; // () -> ()
+        for _ in 0..wrapper_count { funcs.function(wrapper_type_idx); }
         m.section(&funcs);
 
         // Memory
@@ -3749,7 +3884,7 @@ impl WasmEmitter {
         for f in &self.funcs {
             let extra = f.local_count.saturating_sub(f.param_count);
             let locals: Vec<(u32, ValType)> = if extra > 0 { vec![(extra as u32, ValType::I64)] } else { vec![] };
-            let resolved = Self::resolve_static(&f.instrs, &host_idx, &name_map, &self.funcs);
+            let resolved = Self::resolve_static(&f.instrs, &host_idx, &name_map, &self.funcs, &outlayer_idx);
             let mut fb = Function::new(locals);
             for instr in &resolved { fb.instruction(instr); }
             fb.instruction(&Instruction::End);
@@ -3760,7 +3895,9 @@ impl WasmEmitter {
             if let Some(_) = self.funcs.last() {
                 let idx = internal_base + (self.funcs.len()-1) as u32;
                 let mut fb = Function::new(Vec::<(u32, ValType)>::new());
-                fb.instruction(&Instruction::Call(idx)); fb.instruction(&Instruction::Drop); fb.instruction(&Instruction::End);
+                fb.instruction(&Instruction::Call(idx)); fb.instruction(&Instruction::Drop);
+                if self.p2_mode { /* no return value for _start */ }
+                fb.instruction(&Instruction::End);
                 code.function(&fb);
             }
         } else {
@@ -3791,10 +3928,14 @@ impl WasmEmitter {
         host_map: &HashMap<usize, u32>,
         name_map: &HashMap<&str, u32>,
         funcs: &[FuncDef],
+        outlayer_map: &HashMap<usize, u32>,
     ) -> Vec<Instruction<'static>> {
         instrs.iter().map(|i| match i {
             Instruction::Call(idx) if *idx >= HOST_BASE && *idx < USER_BASE => {
                 Instruction::Call(host_map[&((*idx - HOST_BASE) as usize)])
+            }
+            Instruction::Call(idx) if *idx >= OUTLAYER_BASE && *idx < OUTLAYER_BASE + 20 => {
+                Instruction::Call(outlayer_map[&((*idx - OUTLAYER_BASE) as usize)])
             }
             Instruction::Call(idx) if *idx >= USER_BASE => {
                 let pos = (*idx - USER_BASE) as usize;
@@ -3848,6 +3989,12 @@ fn parse_and_compile(source: &str, near: bool) -> Result<WasmEmitter, String> {
 
 pub fn compile_pure(source: &str) -> Result<Vec<u8>, String> {
     Ok(parse_and_compile(source, false)?.finish("run"))
+}
+
+pub fn compile_p2(source: &str) -> Result<Vec<u8>, String> {
+    let mut em = parse_and_compile(source, false)?;
+    em.p2_mode = true;
+    Ok(em.finish("_start"))
 }
 
 pub fn compile_near(source: &str) -> Result<Vec<u8>, String> {

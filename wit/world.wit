@@ -25,5 +25,4 @@ interface host {
 
 world outlayer-world {
     import host;
-    export run: func() -> result;
 }

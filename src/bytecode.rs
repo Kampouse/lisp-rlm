@@ -1,8 +1,26 @@
 use crate::helpers::is_truthy;
 use crate::types::{Env, EvalState, LispVal};
 
+/// Replace `(old_name args...)` with `(new_name args...)` recursively in an expression.
+fn replace_sym_call(expr: &LispVal, old_name: &str, new_name: &str) -> LispVal {
+    match expr {
+        LispVal::List(list) => {
+            let replaced: Vec<LispVal> = list.iter().map(|e| replace_sym_call(e, old_name, new_name)).collect();
+            // Check if this is a call to old_name
+            if let Some(LispVal::Sym(s)) = replaced.first() {
+                if s == old_name {
+                    let mut result = replaced;
+                    result[0] = LispVal::Sym(new_name.into());
+                    return LispVal::List(result);
+                }
+            }
+            LispVal::List(replaced)
+        }
+        other => other.clone(),
+    }
+}
+
 // ---------------------------------------------------------------------------
-// Loop Bytecode Compiler — tight VM for loop/recur
 // ---------------------------------------------------------------------------
 // Compiles (loop ((i init) ...) body) into flat opcodes with slot-indexed
 // env. Falls back to lisp_eval for unsupported expressions.
@@ -655,6 +673,19 @@ impl LoopCompiler {
                                 "%" => Op::Mod,
                                 _ => unreachable!(),
                             };
+                            if list.len() < 2 {
+                                return false;
+                            }
+                            // Unary minus: (- x) → push 0, push x, sub
+                            if list.len() == 2 && op.as_str() == "-" {
+                                self.code.push(Op::PushI64(0));
+                                if !self.compile_expr(&list[1], outer_env) {
+                                    return false;
+                                }
+                                self.code.push(Op::Sub);
+                                // Result type follows operand
+                                return true;
+                            }
                             if list.len() < 3 {
                                 return false;
                             }
@@ -885,6 +916,29 @@ impl LoopCompiler {
                         }
                         // let: (let ((x init) ...) body)
                         "let" | "let*" => {
+                            // Named let: (let name ((var init) ...) body ...)
+                            // Desugar to: (loop ((var init) ...) body ...) with (name args...) → (recur args...)
+                            if let Some(LispVal::Sym(loop_name)) = list.get(1) {
+                                let bindings = match list.get(2) {
+                                    Some(LispVal::List(b)) => b,
+                                    _ => return false,
+                                };
+                                let body_forms = if list.len() > 3 { &list[3..] } else { &[] };
+                                let body = if body_forms.len() == 1 {
+                                    body_forms[0].clone()
+                                } else {
+                                    LispVal::List(std::iter::once(LispVal::Sym("begin".into()))
+                                        .chain(body_forms.iter().cloned()).collect())
+                                };
+                                // Replace (loop_name args...) with (recur args...) in body
+                                let body = replace_sym_call(&body, loop_name, "recur");
+                                let new_form = LispVal::List(vec![
+                                    LispVal::Sym("loop".into()),
+                                    LispVal::List(bindings.clone()),
+                                    body,
+                                ]);
+                                return self.compile_expr(&new_form, outer_env);
+                            }
                             let bindings = match list.get(1) {
                                 Some(LispVal::List(b)) => b,
                                 _ => return false,
@@ -964,6 +1018,8 @@ impl LoopCompiler {
                             }
                             if all_ok {
                                 all_ok = self.compile_expr(body, outer_env);
+                                if !all_ok {
+                                }
                             }
                             // Restore shadowed slots (reverse order)
                             for (i, &original_slot) in shadowed.iter().enumerate().rev() {

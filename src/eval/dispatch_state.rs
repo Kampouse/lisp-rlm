@@ -349,6 +349,23 @@ pub fn handle(
             Ok(Some(super::json_to_lisp(json)))
         }
 
+        // --- LLM / RLM builtins ---
+        "llm" | "llm-code" => {
+            let prompt = args.first()
+                .ok_or("llm: need prompt string")?
+                .to_string();
+            let provider = crate::eval::llm_provider::GenericProvider::from_env()
+                .map_err(|e| format!("llm: {}", e))?;
+            let messages = vec![
+                ("system".to_string(), "You are a helpful assistant. Respond concisely.".to_string()),
+                ("user".to_string(), prompt),
+            ];
+            use crate::eval::llm_provider::LlmProvider;
+            let response = provider.complete(&messages, Some(1024))
+                .map_err(|e| format!("llm: {}", e))?;
+            Ok(Some(LispVal::Str(response.content)))
+        }
+
         _ => Ok(None),
     }
 }

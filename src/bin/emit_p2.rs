@@ -1,5 +1,5 @@
 use lisp_rlm_wasm::p2_component::build_p2_component;
-use lisp_rlm_wasm::wasm_emit::compile_pure;
+use lisp_rlm_wasm::wasm_emit::compile_p2;
 use std::env;
 use std::fs;
 
@@ -22,7 +22,7 @@ fn main() {
     };
 
     // Step 1: Compile Lisp → core WASM (P1)
-    let core_bytes = match compile_pure(&source) {
+    let core_bytes = match compile_p2(&source) {
         Ok(wasm) => wasm,
         Err(e) => {
             eprintln!("Compile error: {}", e);
@@ -30,6 +30,7 @@ fn main() {
         }
     };
     eprintln!("Core WASM: {} bytes", core_bytes.len());
+    std::fs::write("/tmp/_p2_core_debug.wasm", &core_bytes).ok();
 
     // Step 2: Wrap into P2 component
     let p2_bytes = match build_p2_component(&core_bytes) {
