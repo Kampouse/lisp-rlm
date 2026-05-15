@@ -151,6 +151,7 @@ impl WasmEmitter {
             locals: HashMap::new(), next_local: 0, current_func: None, current_param_count: 0,
             while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 1, exports: Vec::new(),
             data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(), outlayer_needed: HashSet::new(), p2_mode: false,
+            
             gas_local: None,
         }
     }
@@ -173,6 +174,8 @@ impl WasmEmitter {
 
     fn need_host(&mut self, idx: usize) { self.host_needed.insert(idx); }
     fn need_outlayer(&mut self, idx: usize) { self.outlayer_needed.insert(idx); }
+    
+
 
     fn host_call(idx: usize) -> Instruction<'static> {
         Instruction::Call(HOST_BASE | idx as u32)
@@ -1314,18 +1317,41 @@ impl WasmEmitter {
                     else if op == "outlayer/env-signer" { 19 }
                     else { 20 };
                 let sig = OUTLAYER_FUNCS[ol_idx];
-                let has_i64_param = sig.1.iter().any(|t| *t == ValType::I64);
                 let mut v = Vec::new();
-                // Push args: i32 params get I32WrapI64, i64 params stay as-is
+                // Push args according to canonical ABI parameter types.
+                // String/List<u8> arg: i64(ptr|len<<32) → two i32 params (ptr, len)
+                // s64 arg: i64 directly
+                // ret_ptr: pushed automatically at the end
                 let mut param_idx = 0;
                 for arg in a.iter() {
-                    v.extend(self.expr(arg)?);
-                    if sig.1[param_idx] == ValType::I64 {
-                        // i64 param — keep as-is
+                    v.extend(self.expr(arg)?); // pushes i64
+                    if param_idx < sig.1.len() && sig.1[param_idx] == ValType::I64 {
+                        // s64 param — keep i64 on stack
+                        param_idx += 1;
                     } else {
+                        // String/list arg: i64 → split into ptr(i32) + len(i32)
+                        // Use stack manipulation: i64 → wrap ptr, then shift+wrap len
+                        // Need to duplicate i64 first
+                        // Actually: store to stack via a data stack approach
+                        // Simplest: push ptr via wrap, then reconstruct len from the original
+                        // We need the i64 twice. Use memory[TEMP] as scratch.
+                        // Better: use the stack directly
+                        // i64 is on stack. We need: i32(ptr), i32(len)
+                        // Stack: [i64] → local.set $tmp → local.get $tmp → i32.wrap → local.get $tmp → i64.shr_u 32 → i32.wrap
+                        // But we don't have a local. Allocate one via alloc_local.
+                        let tmp = self.alloc_local();
+                        v.push(Instruction::LocalSet(tmp));
+                        // ptr (low 32)
+                        v.push(Instruction::LocalGet(tmp));
                         v.push(Instruction::I32WrapI64);
+                        // len (high 32)
+                        v.push(Instruction::LocalGet(tmp));
+                        v.push(Instruction::I64Const(32));
+                        v.push(Instruction::I64ShrU);
+                        v.push(Instruction::I32WrapI64);
+                        self.free_local();
+                        param_idx += 2;
                     }
-                    param_idx += 1;
                 }
                 // Push ret_ptr (allocate from TEMP area)
                 // Use TEMP_MEM area (offset 64+) for return buffers
