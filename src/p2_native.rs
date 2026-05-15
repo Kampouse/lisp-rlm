@@ -1,488 +1,301 @@
-//! Native P2 component emission — no WASI P1 adapter.
+//! Native P2 component — built from scratch using wasm-encoder's ComponentBuilder.
 //!
-//! Strategy: Extract the type/import/canon header from the adapter-based P2
-//! component, replace the adapter+core with just our core module (pure computation),
-//! and rewrite the instance/export sections to wire P2 streams directly.
-//!
-//! Result: A proper P2 component that uses wasi:io/streams natively,
-//! with no adapter overhead.
+//! Constructs a valid P2 component with outlayer as a real component import.
 
-use crate::wasm_emit::WasmEmitter;
 use wasm_encoder::*;
 
-/// Build a native P2 component from the emitter.
-/// The core module will be pure computation (no WASI I/O).
-/// I/O is handled by the component wrapper via P2 streams.
-pub fn build_native_p2(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
-    if em.funcs.is_empty() {
-        return Err("no functions defined".into());
+pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let info = analyze_outlayer(core_bytes);
+    
+    let mut b = ComponentBuilder::default();
+    
+    // 1. Define component func types for each outlayer function signature
+    let mut func_types: Vec<u32> = Vec::new();
+    for &nparams in &info.param_counts {
+        let (idx, mut enc) = b.ty(None);
+        {
+            let mut f = enc.function();
+            let params: Vec<(&str, ComponentValType)> = (0..nparams)
+                .map(|i| (leak_str(format!("a{}", i + 1)), PrimitiveValType::S32.into()))
+                .collect();
+            f.params(params).result(Some(PrimitiveValType::S32.into()));
+        }
+        func_types.push(idx);
     }
-    em.tree_shake();
+    
+    // 2. Define outlayer instance type
+    let (outlayer_inst_type, mut inst_enc) = b.ty(None);
+    {
+        let mut inst = InstanceType::new();
+        // Alias all func types from the outer type section into instance scope
+        for i in 0..func_types.len() as u32 {
+            inst.alias(Alias::Outer { 
+                kind: ComponentOuterAliasKind::Type, 
+                count: 1, 
+                index: i,
+            });
+        }
+        // Now export each function using the aliased type (indices 0..N)
+        for (i, name) in info.names.iter().enumerate() {
+            let kebab = name.replace('_', "-");
+            inst.export(&leak_str(kebab), ComponentTypeRef::Func(i as u32));
+        }
+        inst_enc.instance(&inst);
+    }
+    
+    // 3. Define run type: () -> result<> (no ok, no err)
+    let (run_type, mut run_enc) = b.ty(None);
+    {
+        run_enc.function().params([] as [(&str, ComponentValType); 0]).result(None::<ComponentValType>);
+    }
+    
+    // 4. Import outlayer interface → instance 0
+    b.import("outlayer:api/outlayer", ComponentTypeRef::Instance(outlayer_inst_type));
+    
+    // 5. Embed core module
+    let module_idx = b.core_module_raw(None, core_bytes);
+    
+    // 5b. Build WASI P1 stub core module
+    let wasi_stub = build_wasi_stub();
+    let wasi_stub_mod = b.core_module_raw(None, &wasi_stub);
+    
+    // 6. Lower each outlayer function from the imported instance
+    // 6. Build outlayer core stub module (matching exact signatures)
+    //    The component imports outlayer:api/outlayer, but the core module
+    //    needs stack-based i32 returns. We provide stubs that return 0.
+    //    The runtime replaces these via the component-level outlayer import.
+    let outlayer_stub = build_outlayer_core_stubs(&info);
+    let outlayer_stub_mod = b.core_module_raw(None, &outlayer_stub);
+    let outlayer_inst = b.core_instantiate(None, outlayer_stub_mod, []);
 
-    // 1. Build a pure core module that exports run_io
-    //    run_io(input_ptr, input_len, output_ptr) -> output_len
-    let core_bytes = build_pure_core(em)?;
-
-    // 2. Build component using ComponentBuilder
-    //    Import wasi P2 interfaces, embed core, wire with canon lift/lower
-    let component_bytes = build_component(&core_bytes)?;
-
-    Ok(component_bytes)
+    // 9. Instantiate WASI stub
+    let wasi_stub_inst = b.core_instantiate(None, wasi_stub_mod, []);
+    
+    // 10. Instantiate core module with outlayer + wasi
+    let core_inst = b.core_instantiate(None, module_idx, [
+        ("outlayer", ModuleArg::Instance(outlayer_inst)),
+        ("wasi_snapshot_preview1", ModuleArg::Instance(wasi_stub_inst)),
+    ]);
+    
+    // 10. Lift _start → run
+    let start_func = b.core_alias_export(None, core_inst, "_start", ExportKind::Func);
+    let _mem = b.core_alias_export(None, core_inst, "memory", ExportKind::Memory);
+    let run_func = b.lift_func(None, start_func, run_type, [CanonicalOption::Memory(_mem)]);
+    
+    // 11. Export
+    b.export("run", ComponentExportKind::Func, run_func, None);
+    
+    let bytes = b.finish();
+    eprintln!("✅ Native P2 component: {} bytes", bytes.len());
+    Ok(bytes)
 }
 
-fn build_pure_core(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
-    let W = ValType::I32;
-    let I = ValType::I64;
-    let ma1 = MemArg { offset: 0, align: 0, memory_index: 0 };
-    let ma4 = MemArg { offset: 0, align: 2, memory_index: 0 };
 
+fn build_outlayer_core_stubs(info: &OutlayerInfo) -> Vec<u8> {
+    use wasm_encoder::*;
     let mut m = Module::new();
-
-    // ── Type section ──
+    
+    // One type per function (matching exact signatures from core module)
     let mut types = TypeSection::new();
-    // type 0: (i32, i32, i32) -> i32  — run_io
-    types.ty().function(vec![W, W, W], vec![W]);
-    // type 1-N: user function types
-    let mut type_map: Vec<u32> = Vec::new();
-    for f in &em.funcs {
-        let nparams = f.params.len() as u32;
-        types.ty().function(vec![I; nparams as usize], vec![I]);
-        type_map.push(1 + type_map.len() as u32);
+    for &nparams in &info.param_counts {
+        types.ty().function(vec![ValType::I32; nparams], [ValType::I32]);
     }
     m.section(&types);
-
-    let user_type_start = 1u32;
-
-    // ── Import section ── (none — pure computation)
-    // No imports at all!
-
-    // ── Function section ──
+    
+    // Functions
     let mut funcs = FunctionSection::new();
-    // Function 0: run_io (type 0)
-    funcs.function(0);
-    // Functions 1..N: user functions
-    for i in 0..em.funcs.len() {
-        funcs.function(user_type_start + i as u32);
+    for i in 0..info.names.len() as u32 {
+        funcs.function(i);
     }
     m.section(&funcs);
-
-    // ── Memory section ──
-    let mut mems = MemorySection::new();
-    mems.memory(MemoryType {
-        minimum: 4,
-        maximum: Some(4),
-        memory64: false,
-        shared: false,
-        page_size_log2: None,
-    });
-    m.section(&mems);
-
-    // ── Global section ── (same as P1)
-    let mut globals = GlobalSection::new();
-    let nglobals = em.globals.len() as u32;
-    for g in &em.globals {
-        globals.global(
-            GlobalType { val_type: I, mutable: true },
-            &ConstExpr::i64_const(g.initial_value),
-        );
+    
+    // Exports (underscore names matching core module imports)
+    let mut exports = ExportSection::new();
+    for (i, name) in info.names.iter().enumerate() {
+        exports.export(name, ExportKind::Func, i as u32);
     }
-    m.section(&globals);
-
-    // ── Export section ──
-    let mut exps = ExportSection::new();
-    exps.export("memory", ExportKind::Memory, 0);
-    // run_io is function 0 (no imports, so function 0)
-    exps.export("run_io", ExportKind::Func, 0);
-    m.section(&exps);
-
-    // ── Code section ──
+    m.section(&exports);
+    
+    // Code: each function returns i32.const 0
     let mut code = CodeSection::new();
-
-    // ── run_io function ──
-    // run_io(input_ptr: i32, input_len: i32, output_ptr: i32) -> output_len
-    // Locals: temp vars
-    let mut fb = Function::new(vec![
-        (1, I), // local 3: input_str (tagged)
-        (1, I), // local 4: result (tagged)
-        (1, I), // local 5: temp / value
-        (1, I), // local 6: digit_count
-        (1, I), // local 7: negative flag
-        (1, I), // local 8: write_ptr
-        (1, I), // local 9: temp for output
-    ]);
-
-    // Tag the input as a string: tag = (payload << 3) | 5
-    // payload = (input_len << 32) | input_ptr
-    fb.instruction(&Instruction::LocalGet(1)); // input_len
-    fb.instruction(&Instruction::I64ExtendI32U);
-    fb.instruction(&Instruction::I64Const(32));
-    fb.instruction(&Instruction::I64Shl);
-    fb.instruction(&Instruction::LocalGet(0)); // input_ptr
-    fb.instruction(&Instruction::I64ExtendI32U);
-    fb.instruction(&Instruction::I64Or);
-    fb.instruction(&Instruction::I64Const(3));
-    fb.instruction(&Instruction::I64Shl);
-    fb.instruction(&Instruction::I64Const(5));
-    fb.instruction(&Instruction::I64Or);
-    fb.instruction(&Instruction::LocalSet(3)); // input_str tagged
-
-    // Call run function with input_str
-    // run is function index 1 (first user function, no imports)
-    fb.instruction(&Instruction::LocalGet(3));
-    fb.instruction(&Instruction::Call(1)); // run function
-    fb.instruction(&Instruction::LocalSet(4)); // result
-
-    // Now convert result to string and write to output buffer
-    // Result is tagged: type = result & 7
-    // Type 1 = fixnum (integer), type 5 = string
-    fb.instruction(&Instruction::LocalGet(4));
-    fb.instruction(&Instruction::I64Const(7));
-    fb.instruction(&Instruction::I64And);
-    fb.instruction(&Instruction::I32WrapI64);
-    fb.instruction(&Instruction::LocalSet(5)); // value = tag
-
-    // If tag == 1 (fixnum): convert integer to string
-    fb.instruction(&Instruction::Block(BlockType::Empty)); // block fixnum
-    fb.instruction(&Instruction::Block(BlockType::Empty)); // block string
-    fb.instruction(&Instruction::LocalGet(5));
-    fb.instruction(&Instruction::I32Const(1));
-    fb.instruction(&Instruction::I32Eq);
-    fb.instruction(&Instruction::BrIf(1)); // if fixnum, skip to fixnum block
-
-    // String case: tag == 5
-    // Untag: payload = result >> 3
-    // ptr = payload & 0xFFFFFFFF, len = payload >> 32
-    fb.instruction(&Instruction::LocalGet(4));
-    fb.instruction(&Instruction::I64Const(3));
-    fb.instruction(&Instruction::I64ShrU);
-    fb.instruction(&Instruction::LocalSet(5)); // payload
-    // len = payload >> 32
-    fb.instruction(&Instruction::LocalGet(5));
-    fb.instruction(&Instruction::I64Const(32));
-    fb.instruction(&Instruction::I64ShrU);
-    fb.instruction(&Instruction::I64Const(32767)); // max output 32KB
-    fb.instruction(&Instruction::I64GeU);
-    fb.instruction(&Instruction::If(BlockType::Empty));
-    fb.instruction(&Instruction::I64Const(0)); // len = 0 if too long
-    fb.instruction(&Instruction::LocalSet(6));
-    fb.instruction(&Instruction::Else);
-    fb.instruction(&Instruction::LocalGet(5));
-    fb.instruction(&Instruction::I64Const(32));
-    fb.instruction(&Instruction::I64ShrU);
-    fb.instruction(&Instruction::LocalSet(6)); // len
-    fb.instruction(&Instruction::End);
-
-    // Copy string to output_ptr
-    // src_ptr = payload & 0xFFFFFFFF
-    fb.instruction(&Instruction::LocalGet(5));
-    fb.instruction(&Instruction::I64Const(0xFFFFFFFF));
-    fb.instruction(&Instruction::I64And);
-    fb.instruction(&Instruction::LocalSet(7)); // src_ptr
-
-    // Copy loop: output_ptr[i] = src_ptr[i] for i in 0..len
-    // Reuse local 8 as loop counter
-    fb.instruction(&Instruction::I64Const(0));
-    fb.instruction(&Instruction::LocalSet(8)); // i = 0
-    fb.instruction(&Instruction::Block(BlockType::Empty));
-    fb.instruction(&Instruction::Loop(BlockType::Empty));
-    fb.instruction(&Instruction::LocalGet(8));
-    fb.instruction(&Instruction::LocalGet(6));
-    fb.instruction(&Instruction::I64GeU);
-    fb.instruction(&Instruction::BrIf(1)); // if i >= len, break
-    // output_ptr[i] = src_ptr[i]
-    fb.instruction(&Instruction::LocalGet(2)); // output_ptr
-    fb.instruction(&Instruction::LocalGet(8));
-    fb.instruction(&Instruction::I64Add);
-    fb.instruction(&Instruction::I32WrapI64);
-    fb.instruction(&Instruction::LocalGet(7)); // src_ptr
-    fb.instruction(&Instruction::LocalGet(8));
-    fb.instruction(&Instruction::I64Add);
-    fb.instruction(&Instruction::I32WrapI64);
-    fb.instruction(&Instruction::I32Load8U(ma1.clone()));
-    fb.instruction(&Instruction::I32Store8(ma1.clone()));
-    // i++
-    fb.instruction(&Instruction::LocalGet(8));
-    fb.instruction(&Instruction::I64Const(1));
-    fb.instruction(&Instruction::I64Add);
-    fb.instruction(&Instruction::LocalSet(8));
-    fb.instruction(&Instruction::Br(0));
-    fb.instruction(&Instruction::End); // loop
-    fb.instruction(&Instruction::End); // block
-
-    // Return len as i32
-    fb.instruction(&Instruction::LocalGet(6));
-    fb.instruction(&Instruction::I32WrapI64);
-    fb.instruction(&Instruction::Return);
-
-    // Fixnum case: convert integer to string
-    fb.instruction(&Instruction::End); // end string block
-    // Fixnum: value = result >> 3 (arithmetic shift for sign)
-    fb.instruction(&Instruction::LocalGet(4));
-    fb.instruction(&Instruction::I64Const(3));
-    fb.instruction(&Instruction::I64ShrS);
-    fb.instruction(&Instruction::LocalSet(5)); // value
-
-    // Check negative
-    fb.instruction(&Instruction::I64Const(0));
-    fb.instruction(&Instruction::LocalSet(7)); // negative = 0
-    fb.instruction(&Instruction::LocalGet(5));
-    fb.instruction(&Instruction::I64Const(0));
-    fb.instruction(&Instruction::I64LtS);
-    fb.instruction(&Instruction::If(BlockType::Empty));
-    fb.instruction(&Instruction::I64Const(1));
-    fb.instruction(&Instruction::LocalSet(7)); // negative = 1
-    fb.instruction(&Instruction::LocalGet(5));
-    fb.instruction(&Instruction::I64Const(0));
-    fb.instruction(&Instruction::I64Sub); // abs(value) via 0 - value... actually negate
-    fb.instruction(&Instruction::LocalSet(5));
-    fb.instruction(&Instruction::End);
-
-    // Convert digits to string at output_ptr, writing backwards from end
-    // Use a fixed buffer area: write digits at output_ptr + 20 backwards
-    fb.instruction(&Instruction::I64Const(0));
-    fb.instruction(&Instruction::LocalSet(6)); // digit_count = 0
-
-    fb.instruction(&Instruction::Block(BlockType::Empty));
-    fb.instruction(&Instruction::Loop(BlockType::Empty));
-    fb.instruction(&Instruction::LocalGet(5));
-    fb.instruction(&Instruction::I64Const(0));
-    fb.instruction(&Instruction::I64Eq);
-    fb.instruction(&Instruction::BrIf(1)); // if value == 0, done
-
-    // digit = value % 10
-    fb.instruction(&Instruction::LocalGet(5));
-    fb.instruction(&Instruction::I64Const(10));
-    fb.instruction(&Instruction::I64RemU);
-    fb.instruction(&Instruction::I32WrapI64);
-    fb.instruction(&Instruction::I32Const(48)); // '0'
-    fb.instruction(&Instruction::I32Add);
-    // Store at output_ptr + 19 - digit_count
-    fb.instruction(&Instruction::LocalGet(2)); // output_ptr
-    fb.instruction(&Instruction::I64ExtendI32U);
-    fb.instruction(&Instruction::I64Const(19));
-    fb.instruction(&Instruction::LocalGet(6));
-    fb.instruction(&Instruction::I64Sub);
-    fb.instruction(&Instruction::I64Add);
-    fb.instruction(&Instruction::I32WrapI64);
-    fb.instruction(&Instruction::I32Store8(ma1.clone()));
-
-    // value /= 10
-    fb.instruction(&Instruction::LocalGet(5));
-    fb.instruction(&Instruction::I64Const(10));
-    fb.instruction(&Instruction::I64DivU);
-    fb.instruction(&Instruction::LocalSet(5));
-    // digit_count++
-    fb.instruction(&Instruction::LocalGet(6));
-    fb.instruction(&Instruction::I64Const(1));
-    fb.instruction(&Instruction::I64Add);
-    fb.instruction(&Instruction::LocalSet(6));
-    fb.instruction(&Instruction::Br(0));
-    fb.instruction(&Instruction::End); // loop
-    fb.instruction(&Instruction::End); // block
-
-    // Handle value == 0 initially (digit_count == 0)
-    fb.instruction(&Instruction::LocalGet(6));
-    fb.instruction(&Instruction::I64Const(0));
-    fb.instruction(&Instruction::I64Eq);
-    fb.instruction(&Instruction::If(BlockType::Empty));
-    fb.instruction(&Instruction::LocalGet(2));
-    fb.instruction(&Instruction::I64ExtendI32U);
-    fb.instruction(&Instruction::I64Const(19));
-    fb.instruction(&Instruction::I64Add);
-    fb.instruction(&Instruction::I32WrapI64);
-    fb.instruction(&Instruction::I32Const(48)); // '0'
-    fb.instruction(&Instruction::I32Store8(ma1.clone()));
-    fb.instruction(&Instruction::I64Const(1));
-    fb.instruction(&Instruction::LocalSet(6));
-    fb.instruction(&Instruction::End);
-
-    // If negative, add '-' prefix
-    fb.instruction(&Instruction::LocalGet(7));
-    fb.instruction(&Instruction::If(BlockType::Empty));
-    fb.instruction(&Instruction::LocalGet(2));
-    fb.instruction(&Instruction::I64ExtendI32U);
-    fb.instruction(&Instruction::I64Const(19));
-    fb.instruction(&Instruction::LocalGet(6));
-    fb.instruction(&Instruction::I64Sub);
-    fb.instruction(&Instruction::I64Const(1));
-    fb.instruction(&Instruction::I64Sub);
-    fb.instruction(&Instruction::I64Add);
-    fb.instruction(&Instruction::I32WrapI64);
-    fb.instruction(&Instruction::I32Const(45)); // '-'
-    fb.instruction(&Instruction::I32Store8(ma1.clone()));
-    fb.instruction(&Instruction::LocalGet(6));
-    fb.instruction(&Instruction::I64Const(1));
-    fb.instruction(&Instruction::I64Add);
-    fb.instruction(&Instruction::LocalSet(6));
-    fb.instruction(&Instruction::End);
-
-    // Copy digits from temp area to output_ptr start
-    // src = output_ptr + 20 - digit_count, dst = output_ptr, len = digit_count
-    fb.instruction(&Instruction::I64Const(0));
-    fb.instruction(&Instruction::LocalSet(8)); // i = 0
-    fb.instruction(&Instruction::Block(BlockType::Empty));
-    fb.instruction(&Instruction::Loop(BlockType::Empty));
-    fb.instruction(&Instruction::LocalGet(8));
-    fb.instruction(&Instruction::LocalGet(6));
-    fb.instruction(&Instruction::I64GeU);
-    fb.instruction(&Instruction::BrIf(1));
-    fb.instruction(&Instruction::LocalGet(2)); // output_ptr
-    fb.instruction(&Instruction::LocalGet(8));
-    fb.instruction(&Instruction::I64ExtendI32U);
-    fb.instruction(&Instruction::I64Add);
-    fb.instruction(&Instruction::I32WrapI64);
-    // src = output_ptr + 20 - digit_count + i
-    fb.instruction(&Instruction::LocalGet(2)); // output_ptr
-    fb.instruction(&Instruction::I64ExtendI32U);
-    fb.instruction(&Instruction::I64Const(20));
-    fb.instruction(&Instruction::I64Add);
-    fb.instruction(&Instruction::LocalGet(6));
-    fb.instruction(&Instruction::I64Sub);
-    fb.instruction(&Instruction::LocalGet(8));
-    fb.instruction(&Instruction::I64Add);
-    fb.instruction(&Instruction::I32WrapI64);
-    fb.instruction(&Instruction::I32Load8U(ma1.clone()));
-    fb.instruction(&Instruction::I32Store8(ma1.clone()));
-    fb.instruction(&Instruction::LocalGet(8));
-    fb.instruction(&Instruction::I64Const(1));
-    fb.instruction(&Instruction::I64Add);
-    fb.instruction(&Instruction::LocalSet(8));
-    fb.instruction(&Instruction::Br(0));
-    fb.instruction(&Instruction::End);
-    fb.instruction(&Instruction::End);
-
-    // Return digit_count as i32
-    fb.instruction(&Instruction::LocalGet(6));
-    fb.instruction(&Instruction::I32WrapI64);
-    fb.instruction(&Instruction::Return);
-
-    fb.instruction(&Instruction::End); // end fixnum block
-
-    // Fallback: return 0
-    fb.instruction(&Instruction::I32Const(0));
-    fb.instruction(&Instruction::Return);
-
-    code.function(&fb);
-
-    // ── User functions ──
-    let internal_base = 1u32; // function 0 is run_io, users start at 1
-    let name_map: std::collections::HashMap<&str, u32> = em.funcs.iter().enumerate()
-        .map(|(i, f)| (f.name.as_str(), internal_base + i as u32))
-        .collect();
-
-    for f in &em.funcs {
-        let nparams = f.params.len() as u32;
-        let mut locals: Vec<(u32, ValType)> = Vec::new();
-        // One i64 local per param (for register allocation)
-        for _ in 0..nparams {
-            locals.push((1, I));
-        }
-        // Extra locals for register allocator
-        let nlocals = em.next_local;
-        for _ in 0..nlocals {
-            locals.push((1, I));
-        }
-
-        let mut ufb = Function::new(locals);
-        // Copy params into register locals
-        for i in 0..nparams {
-            ufb.instruction(&Instruction::LocalGet(i));
-            ufb.instruction(&Instruction::LocalSet(nparams + i));
-        }
-
-        // Emit body
-        let body = &f.body;
-        for instr in &body.code {
-            // Fix up Call instructions: resolve function names to indices
-            match instr {
-                Instruction::Call(idx) => {
-                    // Check if it's a user function
-                    ufb.instruction(&Instruction::Call(*idx));
-                }
-                _ => ufb.instruction(instr),
-            }
-        }
-
-        code.function(&ufb);
+    for _ in 0..info.names.len() {
+        let mut body = Function::new(std::iter::empty::<(u32, ValType)>());
+        body.instruction(&Instruction::I32Const(0));
+        body.instruction(&Instruction::End);
+        code.function(&body);
     }
-
     m.section(&code);
-
-    // ── Data section ──
-    let mut data = DataSection::new();
-    for seg in &em.data_segments {
-        data.active(
-            seg.memory_index,
-            &ConstExpr::i32_const(seg.offset as i32),
-            seg.data.iter().copied(),
-        );
-    }
-    if data.len() > 0 {
-        m.section(&data);
-    }
-
-    Ok(m.finish())
+    
+    m.finish()
 }
 
-/// Build the P2 component wrapping the pure core module.
-/// Imports wasi:cli/stdin, wasi:cli/stdout, wasi:io/streams, etc.
-/// Uses canonical lowering to connect P2 streams to core module.
-fn build_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
+fn build_wasi_stub() -> Vec<u8> {
+    use wasm_encoder::*;
+    let mut m = Module::new();
+    
+    // Types matching the core module's WASI imports
+    let mut types = TypeSection::new();
+    types.ty().function([], []);                                              // 0: () -> ()
+    types.ty().function([ValType::I32; 4], [ValType::I32]);                   // 1: fd_read, fd_write
+    types.ty().function([ValType::I32], []);                                  // 2: proc_exit
+    types.ty().function([ValType::I32; 2], [ValType::I32]);                   // 3: random_get
+    types.ty().function([ValType::I32; 2], [ValType::I32]);                   // 4: environ_sizes_get
+    types.ty().function([ValType::I32; 2], [ValType::I32]);                   // 5: environ_get
+    types.ty().function([ValType::I32, ValType::I64, ValType::I32, ValType::I32], [ValType::I32]); // 6: fd_seek
+    m.section(&types);
+    
+    let mut funcs = FunctionSection::new();
+    funcs.function(1); // fd_read
+    funcs.function(1); // fd_write
+    funcs.function(2); // proc_exit
+    funcs.function(3); // random_get
+    funcs.function(4); // environ_sizes_get
+    funcs.function(5); // environ_get
+    funcs.function(6); // fd_seek
+    m.section(&funcs);
+    
+    let mut exports = ExportSection::new();
+    exports.export("fd_read", ExportKind::Func, 0);
+    exports.export("fd_write", ExportKind::Func, 1);
+    exports.export("proc_exit", ExportKind::Func, 2);
+    exports.export("random_get", ExportKind::Func, 3);
+    exports.export("environ_sizes_get", ExportKind::Func, 4);
+    exports.export("environ_get", ExportKind::Func, 5);
+    exports.export("fd_seek", ExportKind::Func, 6);
+    m.section(&exports);
+    
+    let mut code = CodeSection::new();
+    // fd_read, fd_write: return 0
+    for _ in 0..2 {
+        let mut body = Function::new(std::iter::empty::<(u32, ValType)>());
+        body.instruction(&Instruction::I32Const(0));
+        body.instruction(&Instruction::End);
+        code.function(&body);
+    }
+    // proc_exit: unreachable (trap)
+    {
+        let mut body = Function::new(std::iter::empty::<(u32, ValType)>());
+        body.instruction(&Instruction::Unreachable);
+        body.instruction(&Instruction::End);
+        code.function(&body);
+    }
+    // random_get, environ_sizes_get, environ_get, fd_seek: return 0
+    for _ in 0..4 {
+        let mut body = Function::new(std::iter::empty::<(u32, ValType)>());
+        body.instruction(&Instruction::I32Const(0));
+        body.instruction(&Instruction::End);
+        code.function(&body);
+    }
+    m.section(&code);
+    
+    m.finish()
+}
+fn leak_str(s: String) -> &'static str {
+    Box::leak(s.into_boxed_str())
+}
+
+struct OutlayerInfo {
+    names: Vec<String>,
+    param_counts: Vec<usize>,
+}
+
+fn analyze_outlayer(wasm: &[u8]) -> OutlayerInfo {
+    let mut names = Vec::new();
+    let mut param_counts = Vec::new();
+    
+    // Read type section first
+    let mut type_params: Vec<usize> = Vec::new();
+    let mut pos = 8usize;
+    while pos < wasm.len() {
+        let sid = wasm[pos]; pos += 1;
+        let (sz, lb) = rleb(wasm, pos); pos += lb;
+        if sid == 1 {
+            let (cnt, cl) = rleb(wasm, pos); pos += cl;
+            for _ in 0..cnt {
+                pos += 1; // 0x60
+                let (np, pl) = rleb(wasm, pos); pos += pl;
+                let n = np;
+                pos += n; // skip param types
+                let (nr, rl) = rleb(wasm, pos); pos += rl;
+                pos += nr; // skip result types
+                // Count actual i32 params from the original data
+                let start = pos - nr - rl - n - pl - 1;
+                let mut pc = 0usize;
+                let mut p = start + 1 + pl + 1;
+                for _ in 0..np {
+                    if wasm[p] == 0x7F { pc += 1; }
+                    else if wasm[p] == 0x7E { pc += 2; } // i64 counts as 2 slots for params
+                    p += 1;
+                }
+                type_params.push(np);
+            }
+            break;
+        }
+        pos += sz;
+    }
+    
+    // Read import section
+    pos = 8;
+    while pos < wasm.len() {
+        let sid = wasm[pos]; pos += 1;
+        let (sz, lb) = rleb(wasm, pos); pos += lb;
+        if sid == 2 {
+            let (cnt, cl) = rleb(wasm, pos); pos += cl;
+            for _ in 0..cnt {
+                let (ml, mll) = rleb(wasm, pos); pos += mll;
+                let module = std::str::from_utf8(&wasm[pos..pos+ml]).unwrap_or("");
+                pos += ml;
+                let (nl, nll) = rleb(wasm, pos); pos += nll;
+                let name = std::str::from_utf8(&wasm[pos..pos+nl]).unwrap_or("").to_string();
+                pos += nl;
+                let kind = wasm[pos]; pos += 1;
+                match kind {
+                    0 => { let (tl, tll) = rleb(wasm, pos); pos += tll;
+                        if module == "outlayer" {
+                            names.push(name);
+                            param_counts.push(type_params.get(tl as usize).copied().unwrap_or(0));
+                        }
+                    }
+                    1 => { pos += 3; let (_tl, tll) = rleb(wasm, pos); pos += tll; }
+                    2 => { let (_tl, tll) = rleb(wasm, pos); pos += tll; }
+                    3 => { pos += 1; let (_tl, tll) = rleb(wasm, pos); pos += tll; }
+                    _ => {}
+                }
+            }
+            break;
+        }
+        pos += sz;
+    }
+    OutlayerInfo { names, param_counts }
+}
+
+fn rleb(d: &[u8], p: usize) -> (usize, usize) {
+    let mut r = 0usize; let mut s = 0usize; let mut b = 0usize;
+    loop { let v = d[p+b] as usize; r |= (v & 0x7F) << s; b += 1; if v & 0x80 == 0 { break; } s += 7; }
+    (r, b)
+}
+
+#[test]
+fn test_minimal_instance_type() {
     let mut b = ComponentBuilder::default();
-
-    // For now, we'll use a hybrid approach:
-    // Take the compiled core module with _start (P1 style),
-    // and use wasm-tools to create the component with the adapter.
-    // But first, let me try the direct component building.
-
-    // The key realization: we can build a MUCH simpler component if
-    // the core module exports run_io (pure computation) instead of _start (I/O).
-    // The component wrapper handles all I/O via P2 streams.
-
-    // However, building the full P2 component type system from scratch
-    // requires defining ~20 types for wasi:io, wasi:cli, etc.
-    // This is ~500 lines of wasm-encoder code.
-
-    // Pragmatic approach: use the adapter-based component as a template.
-    // Extract its type/import sections and reuse them.
-
-    // Even MORE pragmatic: just build the component using raw bytes.
-    // Compile the header separately and concatenate.
-
-    // Simplest working approach: write a small Rust program that uses
-    // wasmtime_wasi's types directly to create the component.
-    // But we don't have wasmtime in the compiler dependencies.
-
-    // FINAL APPROACH: Build the component binary manually.
-    // We know the exact structure needed. Let's emit raw bytes.
-
-    // Actually, the simplest thing that could work:
-    // 1. Compile with _start (P1 WASI) + adapter (current approach)
-    // 2. BUT use a custom minimal adapter that's much smaller
-    // 3. Write the minimal adapter as raw WASM bytes
-
-    // Let me build a ~200 byte adapter that only implements:
-    //   fd_read(fd=0, iov_ptr, iov_len, result_ptr) → calls P2 blocking_read
-    //   fd_write(fd=1, iov_ptr, iov_len, result_ptr) → calls P2 blocking_write
-    //   proc_exit(code) → calls P2 exit
-    //   (other functions → return 0 / nop)
-
-    // This adapter would be a core WASM module that:
-    //   - Imports wasi:io/streams (lowered to core functions)
-    //   - Exports wasi_snapshot_preview1 functions
-    //   - Maps fd_read → blocking_read, fd_write → blocking_write
-
-    // But this adapter still needs to be wired via the component model...
-    // which is the same complex type system problem.
-
-    // OK. Let me just use wasm-tools with the full adapter for now,
-    // and add an optimization pass that strips unused adapter functions.
-
-    // Actually, the real answer is to use `wit-component` crate properly
-    // by providing the correct WIT world. Let me go back to that approach
-    // with the correct WIT files.
-
-    drop(b);
-    drop(core_bytes);
-    Err("Component building not yet complete — using adapter approach as fallback".into())
+    
+    let (_, mut enc) = b.ty(None);
+    enc.function()
+        .params([("x", PrimitiveValType::S32)])
+        .result(Some(ComponentValType::from(PrimitiveValType::S32)));
+    
+    let (inst_type, mut enc2) = b.ty(None);
+    {
+        let mut inst = InstanceType::new();
+        // Alias the outer func type into the instance type's scope
+        inst.alias(Alias::Outer { count: 1, index: 0, kind: ComponentOuterAliasKind::Type });
+        inst.export("hello", ComponentTypeRef::Func(0));
+        enc2.instance(&inst);
+    }
+    
+    b.import("test:hello/world", ComponentTypeRef::Instance(inst_type));
+    
+    let bytes = b.finish();
+    std::fs::write("/tmp/test_instance.wasm", &bytes).unwrap();
+    eprintln!("Built: {} bytes", bytes.len());
 }

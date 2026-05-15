@@ -137,6 +137,7 @@ pub struct WasmEmitter {
     pub(crate) fuzz_mode: bool, // if true, export wrappers store tagged values (no untag, no value_return)
     pub(crate) need_outlayer: bool, // true if outlayer/* dispatch forms are used
     pub(crate) wasi_mode: bool, // true when targeting WASI/OutLayer
+    pub(crate) p2_mode: bool,   // true when targeting P2 component (export "run" instead of "_start")
     // Track which function each lambda maps to, and its captured var count
     // lambda_id -> (func_array_idx, captured_count)
     pub(crate) lambda_info: Vec<(usize, usize)>, 
@@ -150,7 +151,7 @@ impl WasmEmitter {
             locals: HashMap::new(), next_local: 0, current_func: None, current_param_count: 0,
             while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 1, exports: Vec::new(),
             data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(),
-            gas_local: None, heap_ptr: HEAP_START as u32, lambda_counter: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, wasi_mode: false,
+            gas_local: None, heap_ptr: HEAP_START as u32, lambda_counter: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, wasi_mode: false, p2_mode: false,
         }
     }
 

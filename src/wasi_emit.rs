@@ -195,6 +195,41 @@ pub fn compile_outlayer(source: &str) -> Result<Vec<u8>, String> {
 ///
 /// Produces a proper Component that:
 /// - Imports `wasi:cli/std{in,out}@0.2.1` and `wasi:random/random@0.2.1`
+/// Build a self-contained stub adapter for `outlayer` imports.
+/// Signatures must match the core module's actual import types exactly.
+fn build_outlayer_adapter() -> Vec<u8> {
+    use wasm_encoder::*;
+    let mut m = Module::new();
+    // Actual signatures from the core module (from wasm-tools print):
+    let names: [&str; 20] = [
+        "view", "call", "transfer", "http_get",
+        "storage_set", "storage_get", "storage_has", "storage_delete",
+        "storage_increment", "env_signer", "env_predecessor",
+        "storage_decrement", "storage_set_if_absent", "storage_set_if_equals",
+        "storage_list_keys", "storage_clear_all", "storage_set_worker",
+        "storage_get_worker", "storage_set_worker_public", "storage_get_worker_from_project",
+    ];
+    let param_counts: [usize; 20] = [8,14,10,5,4,5,2,2,6,3,3,6,4,8,5,0,4,5,4,7];
+    let mut types = TypeSection::new();
+    for &np in &param_counts { types.ty().function(vec![ValType::I32; np], vec![ValType::I32]); }
+    m.section(&types);
+    let mut funcs = FunctionSection::new();
+    for i in 0..20u32 { funcs.function(i); }
+    m.section(&funcs);
+    let mut exports = ExportSection::new();
+    for (i, n) in names.iter().enumerate() { exports.export(*n, ExportKind::Func, i as u32); }
+    m.section(&exports);
+    let mut code = CodeSection::new();
+    for _ in 0..20 {
+        let mut body = Function::new(std::iter::empty::<(u32, ValType)>());
+        body.instruction(&Instruction::I32Const(0));
+        body.instruction(&Instruction::End);
+        code.function(&body);
+    }
+    m.section(&code);
+    m.finish()
+}
+
 /// - Lowers them to core functions that satisfy P1 imports (fd_read, fd_write, etc.)
 /// - Instantiates core P1 module with lowered functions
 /// - Lifts `_start` and exports as `wasi:cli/run@0.2.1/run`
@@ -205,6 +240,7 @@ pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
     let mut em = WasmEmitter::new();
     em.wasi_mode = true;
     for e in &exprs {
+    // em.p2_mode = true; // WASI adapter handles _start -> run
         if let crate::types::LispVal::List(items) = e {
             if items.is_empty() { continue; }
             if items.len() >= 3 {
@@ -230,76 +266,13 @@ pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
         }
     }
 
-    let mut core_bytes = finish_outlayer_no_ol(&mut em)?;
+    let mut core_bytes = finish_outlayer(&mut em)?;
 
-    // 2. Use wit-component to wrap into P2 component
-    // First, try loading WASI WIT files from wit/ directory
-    let wit_dir = std::path::Path::new(file!()).parent().unwrap().parent().unwrap().join("wit");
-    
-    if wit_dir.join("command.wit").exists() {
-        // Use wit-parser to load the full WASI command world
-        let mut resolve = wit_parser::Resolve::new();
-        let (pkg, _source_map) = resolve.push_dir(&wit_dir)
-            .map_err(|e| format!("WIT push_dir failed: {}", e))?;
-        
-        // Find the "command" world
-        let world_id = resolve.packages[pkg].worlds.iter()
-            .find(|(name, _)| *name == "command")
-            .map(|(_, &id)| id)
-            .ok_or("world 'command' not found in WIT")?;
-        
-        eprintln!("Found WASI command world, embedding metadata...");
-        
-        // Embed component metadata
-        wit_component::embed_component_metadata(
-            &mut core_bytes,
-            &resolve,
-            world_id,
-            wit_component::StringEncoding::UTF8,
-        ).map_err(|e| format!("embed failed: {}", e))?;
-        
-        // Load adapter
-        let adapter_path = wit_dir.parent().unwrap().join("wasi_adapter.wasm");
-        let adapter_bytes = std::fs::read(&adapter_path)
-            .map_err(|e| format!("read adapter: {}", e))?;
-        
-        // Encode component
-        let mut encoder = wit_component::ComponentEncoder::default()
-            .module(&core_bytes)
-            .map_err(|e| format!("encoder module failed: {}", e))?
-            .adapter("wasi_snapshot_preview1", &adapter_bytes)
-            .map_err(|e| format!("encoder adapter failed: {}", e))?
-            .validate(true)
-            .realloc_via_memory_grow(true);
-        
-        let component_bytes = encoder.encode()
-            .map_err(|e| format!("encode failed: {}", e))?;
-        
-        eprintln!("✅ Native P2 component: {} bytes", component_bytes.len());
-        return Ok(component_bytes);
-    }
 
-    // Fallback: use wasm-tools CLI
-    let core_path = "/tmp/lisp_p2_core.wasm";
-    let p2_path = "/tmp/lisp_p2_component.wasm";
-    std::fs::write(core_path, &core_bytes).map_err(|e| format!("write core: {}", e))?;
-    
-    let adapter_path = std::path::Path::new(file!()).parent().unwrap().parent().unwrap().join("wasi_adapter.wasm");
-    let output = std::process::Command::new("wasm-tools")
-        .args([
-            "component", "new", core_path,
-            "--adapt", &format!("wasi_snapshot_preview1={}", adapter_path.display()),
-            "-o", p2_path,
-        ])
-        .output()
-        .map_err(|e| format!("wasm-tools failed: {}", e))?;
-    
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("wasm-tools component new failed: {}", stderr));
-    }
-    
-    std::fs::read(p2_path).map_err(|e| format!("read component: {}", e))
+    // 2. Build native P2 component using wasm-encoder ComponentBuilder
+    let bytes = crate::p2_native::build_native_p2_component(&core_bytes)?;
+    eprintln!("✅ Native P2 component: {} bytes", bytes.len());
+    Ok(bytes)
 }
 
 /// Analyze a core WASM module to find which import module names are referenced.
@@ -640,8 +613,9 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     exps.export("memory", ExportKind::Memory, 0);
     // _start is the last function
     let start_func_idx = internal_base + em.funcs.len() as u32;
-    // Always export _start for P2 (adapter maps it to wasi:cli/run)
-    exps.export("_start", ExportKind::Func, start_func_idx);
+    // P2 components export "run", WASI P1 exports "_start"
+    let entry_name = if em.p2_mode { "run" } else { "_start" };
+    exps.export(entry_name, ExportKind::Func, start_func_idx);
     m.section(&exps);
 
     // ── Code section ──
@@ -1312,3 +1286,4 @@ fn test_outlayer_json_deep() {
     let result = run_outlayer_wasm(&wasm, br#"{"a":{"b":{"c":7}}}"#);
     assert_eq!(result, 7, "deep nested json-get should parse a.b.c=7");
 }
+

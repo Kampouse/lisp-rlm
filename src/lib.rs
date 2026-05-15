@@ -36,6 +36,7 @@ mod typing;
 pub mod program;
 pub mod wasm_emit;
 pub mod wasi_emit;
+pub mod p2_native;
 pub mod near_validate;
 pub mod gas_estimate;
 pub mod verifier;

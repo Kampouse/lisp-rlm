@@ -1,0 +1,9 @@
+package outlayer:api@0.1.0;
+
+interface outlayer {
+    view: func(a1: s32, a2: s32, a3: s32, a4: s32, a5: s32, a6: s32, a7: s32, a8: s32) -> s32;
+}
+
+world outlayer-command {
+    import outlayer;
+}
