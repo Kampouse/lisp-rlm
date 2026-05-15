@@ -154,9 +154,9 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
 /// Looks for wasi_snapshot_preview1.command.wasm in known locations.
 pub fn load_wasi_adapter() -> Vec<u8> {
     let candidates = [
+        std::env::var("WASI_ADAPTER_PATH").unwrap_or_default().leak(),
         "/tmp/wasi_snapshot_preview1.command.wasm",
         "/tmp/wasi_adapter.wasm",
-        std::env::var("WASI_ADAPTER_PATH").unwrap_or_default().leak(),
     ];
     for path in &candidates {
         if !path.is_empty() {

@@ -1161,36 +1161,36 @@ impl WasmEmitter {
                 let LispVal::Sym(acc_var) = &a[3] else { return Err("reduce: acc must be symbol".into()) };
                 let acc_idx = self.local_idx(acc_var);
                 let it_idx = self.local_idx("__it");
-                // acc = init (untagged), it = start (untagged), while it < end: acc = body, it += 1
+                // Both acc and it are stored TAGGED so body can read them normally.
+                // The body result is untagged for accumulation, then re-tagged.
                 let mut v = Vec::new();
-                // acc = init
+                // acc = init (tagged)
                 v.extend(self.expr(&a[0])?);
-                v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(acc_idx));
-                // it = start
+                // it = start (tagged)
                 v.extend(self.expr(&a[1])?);
-                v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(it_idx));
                 // while loop
                 v.push(Instruction::Block(BlockType::Result(ValType::I64)));
                 v.push(Instruction::Loop(BlockType::Empty));
-                // it >= end → exit with acc (re-tag as Num)
+                // untag(it) >= untag(end) → exit with acc (already tagged)
                 v.push(Instruction::LocalGet(it_idx));
+                v.extend(self.emit_untag());
                 v.extend(self.expr(&a[2])?);
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64GeS);
                 v.push(Instruction::If(BlockType::Empty));
                 v.push(Instruction::LocalGet(acc_idx));
-                v.extend(self.emit_tag_num());
                 v.push(Instruction::Br(2));
                 v.push(Instruction::End);
-                // acc = body (untag body result, keep as raw number for accumulation)
+                // acc = body (untag body result, re-tag for storage)
                 v.extend(self.expr(&a[4])?);
                 v.extend(self.emit_untag());
+                v.extend(self.emit_tag_num());
                 v.push(Instruction::LocalSet(acc_idx));
-                // it += 1
+                // it += 1 (tagged: add 8 = 1<<3 since TAG_NUM=0)
                 v.push(Instruction::LocalGet(it_idx));
-                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Const(8)); // tagged increment
                 v.push(Instruction::I64Add);
                 v.push(Instruction::LocalSet(it_idx));
                 v.push(Instruction::Br(0));
@@ -5838,11 +5838,11 @@ impl WasmEmitter {
                     v.push(Instruction::I64ShrU); // len
                     v.push(Instruction::I32WrapI64);
                     v.push(Instruction::I32Store(ma4.clone())); // iov[0].len
-                    // fd_write(1, 64, 1, STDIN_LEN=98304)
+                    // fd_write(1, 64, 1, nwritten=98308) — use 98308 NOT 98304 (STDIN_LEN)
                     v.push(Instruction::I32Const(1));
                     v.push(Instruction::I32Const(64));
                     v.push(Instruction::I32Const(1));
-                    v.push(Instruction::I32Const(98304));
+                    v.push(Instruction::I32Const(98308));
                     v.push(Instruction::Call(WASI_FD_WRITE));
                     v.push(Instruction::Drop);
                     // If println, write newline
@@ -5853,7 +5853,7 @@ impl WasmEmitter {
                         v.push(Instruction::I32Const(1));
                         v.push(Instruction::I32Const(64));
                         v.push(Instruction::I32Const(1));
-                        v.push(Instruction::I32Const(98304));
+                        v.push(Instruction::I32Const(98308));
                         v.push(Instruction::Call(WASI_FD_WRITE));
                         v.push(Instruction::Drop);
                     }
@@ -5965,7 +5965,7 @@ impl WasmEmitter {
                     v.push(Instruction::I32Const(1));
                     v.push(Instruction::I32Const(64));
                     v.push(Instruction::I32Const(1));
-                    v.push(Instruction::I32Const(98304));
+                    v.push(Instruction::I32Const(98308));
                     v.push(Instruction::Call(WASI_FD_WRITE));
                     v.push(Instruction::Drop);
                     // If println, newline
@@ -5976,7 +5976,7 @@ impl WasmEmitter {
                         v.push(Instruction::I32Const(1));
                         v.push(Instruction::I32Const(64));
                         v.push(Instruction::I32Const(1));
-                        v.push(Instruction::I32Const(98304));
+                        v.push(Instruction::I32Const(98308));
                         v.push(Instruction::Call(WASI_FD_WRITE));
                         v.push(Instruction::Drop);
                     }
