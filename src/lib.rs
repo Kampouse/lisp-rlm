@@ -35,6 +35,7 @@ pub mod types;
 mod typing;
 pub mod program;
 pub mod wasm_emit;
+pub mod outlayer_adapter;
 pub mod wasi_emit;
 pub mod p2_native;
 pub mod near_validate;

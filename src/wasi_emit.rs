@@ -306,7 +306,6 @@ pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
         finish_outlayer_no_ol(&mut em)?
     };
 
-    // 2. Build P2 component using wit-component + WASI adapter
     let bytes = build_p2_with_adapter(&core_bytes)?;
     Ok(bytes)
 }
@@ -319,13 +318,20 @@ fn build_p2_with_adapter(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
         return Err("WASI adapter not found. Set WASI_ADAPTER_PATH or place wasi_snapshot_preview1.command.wasm in /tmp/".into());
     }
 
-    // Use wit-component to encode the P1 core + adapter into a P2 component
     let mut encoder = wit_component::ComponentEncoder::default()
         .module(core_bytes)
         .map_err(|e| format!("wit-component: failed to set module: {}", e))?
         .validate(true)
         .adapter("wasi_snapshot_preview1", &adapter_bytes)
-        .map_err(|e| format!("wit-component: failed to set adapter: {}", e))?;
+        .map_err(|e| format!("wit-component: failed to set WASI adapter: {}", e))?;
+
+    // Check if the core module imports "outlayer" — if so, add the outlayer adapter
+    let imports = analyze_core_imports(core_bytes);
+    if imports.contains(&"outlayer") {
+        let ol_adapter = crate::outlayer_adapter::build_outlayer_adapter();
+        encoder = encoder.adapter("outlayer", &ol_adapter)
+            .map_err(|e| format!("wit-component: failed to set outlayer adapter: {}", e))?;
+    }
 
     let component = encoder.encode()
         .map_err(|e| format!("wit-component encode failed: {}", e))?;
