@@ -82,7 +82,7 @@ fn outlayer_imports() -> Vec<WasiFunc> {
         //         args_ptr, args_len, gas, deposit_lo, deposit_hi,
         //         result_ptr, result_len_ptr, callback_ptr, callback_len) -> errno
         WasiFunc { module: "outlayer", name: "call",
-            params: vec![W; 14], results: vec![W] },
+            params: vec![W; 13], results: vec![W] },
         // 2: transfer(recipient_ptr, recipient_len, amount_lo, amount_hi,
         //             result_ptr, result_len_ptr, msg_ptr, msg_len,
         //             callback_ptr, callback_len) -> errno
@@ -412,8 +412,8 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     // OutLayer host types
     // type 7: view — 8 i32 params -> i32
     types.ty().function(vec![W; 8], [W]);
-    // type 8: call — 14 i32 params -> i32  
-    types.ty().function(vec![W; 14], [W]);
+    // type 8: call — 13 i32 params -> i32  
+    types.ty().function(vec![W; 13], [W]);
     // type 9: transfer — 10 i32 params -> i32
     types.ty().function(vec![W; 10], [W]);
     // type 10: http_get — 5 i32 params -> i32
@@ -1096,7 +1096,7 @@ fn run_outlayer_wasm(wasm: &[u8], stdin_data: &[u8]) -> i64 {
     let fd_seek_fn = Func::wrap(&mut store, |_: i32, _: i64, _: i32, _: i32| -> i32 { 0 });
 
     let ol_view_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
-    let ol_call_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
+    let ol_call_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
     let ol_transfer_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
 
     let read_reg_fn = Func::wrap(&mut store, |_: i64, _: i64| {});
@@ -1212,7 +1212,7 @@ fn run_outlayer_wasm_with_view(wasm: &[u8], stdin_data: &[u8], response: &[u8]) 
             results[0] = Val::I32(0); Ok(())
         },
     );
-    let ol_call_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
+    let ol_call_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
     let ol_transfer_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
     let read_reg_fn = Func::wrap(&mut store, |_: i64, _: i64| {});
     let reg_len_fn = Func::wrap(&mut store, |_: i64| -> i64 { 0 });
