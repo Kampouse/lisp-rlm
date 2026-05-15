@@ -215,81 +215,29 @@ pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
         }
     }
 
-    let mut core_bytes = finish_outlayer(&mut em)?;
+    let mut core_bytes = finish_outlayer_no_ol(&mut em)?;
 
-    // 2. Use wit-component to wrap the core module into a P2 component
-    // First, define the WIT world for our component
-    use wit_parser::{Resolve};
+    // For P2: use wasm-tools CLI to wrap the core module into a component
+    let core_path = "/tmp/lisp_p2_core.wasm";
+    let p2_path = "/tmp/lisp_p2_component.wasm";
+    std::fs::write(core_path, &core_bytes).map_err(|e| format!("write core: {}", e))?;
     
-    // Define WIT world inline
-    let wit_source = r#"
-package outlayer:host;
-
-interface api {
-    view: func(a: s32, b: s32, c: s32, d: s32, e: s32, f: s32, g: s32, h: s32) -> s32;
-    call: func(a: s32, b: s32, c: s32, d: s32, e: s32, f: s32, g: s32, h: s32, i: s32, j: s32, k: s32, l: s32, m: s32) -> s32;
-    transfer: func(a: s32, b: s32, c: s32, d: s32, e: s32, f: s32, g: s32, h: s32, i: s32) -> s32;
-    http-get: func(a: s32, b: s32, c: s32, d: s32, e: s32) -> s32;
-    storage-set: func(a: s32, b: s32, c: s32, d: s32) -> s32;
-    storage-get: func(a: s32, b: s32, c: s32, d: s32, e: s32) -> s32;
-    storage-has: func(a: s32, b: s32) -> s32;
-    storage-delete: func(a: s32, b: s32) -> s32;
-    storage-increment: func(a: s32, b: s32, c: s32, d: s32, e: s32, f: s32) -> s32;
-    storage-decrement: func(a: s32, b: s32, c: s32, d: s32, e: s32, f: s32) -> s32;
-    env-signer: func(a: s32, b: s32, c: s32) -> s32;
-    env-predecessor: func(a: s32, b: s32, c: s32) -> s32;
-    storage-set-if-absent: func(a: s32, b: s32, c: s32, d: s32) -> s32;
-    storage-set-if-equals: func(a: s32, b: s32, c: s32, d: s32, e: s32, f: s32, g: s32, h: s32) -> s32;
-    storage-list-keys: func(a: s32, b: s32, c: s32, d: s32, e: s32) -> s32;
-    storage-clear-all: func() -> s32;
-    storage-set-worker: func(a: s32, b: s32, c: s32, d: s32) -> s32;
-    storage-get-worker: func(a: s32, b: s32, c: s32, d: s32, e: s32) -> s32;
-    storage-set-worker-public: func(a: s32, b: s32, c: s32, d: s32) -> s32;
-    storage-get-worker-from-project: func(a: s32, b: s32, c: s32, d: s32, e: s32, f: s32, g: s32) -> s32;
-}
-
-world outlayer-world {
-    import api;
-    export run: func() -> result;
-}
-"#;
-
-    // Parse the WIT source
-    let mut resolve = Resolve::new();
-    let pkg = resolve.push_source("outlayer.wit", wit_source)
-        .map_err(|e| format!("WIT parse failed: {}", e))?;
+    let adapter_path = std::path::Path::new(file!()).parent().unwrap().parent().unwrap().join("wasi_adapter.wasm");
+    let output = std::process::Command::new("wasm-tools")
+        .args([
+            "component", "new", core_path,
+            "--adapt", &format!("wasi_snapshot_preview1={}", adapter_path.display()),
+            "-o", p2_path,
+        ])
+        .output()
+        .map_err(|e| format!("wasm-tools failed: {}", e))?;
     
-    // Find the world
-    let worlds = &resolve.packages[pkg].worlds;
-    eprintln!("Available worlds: {:?}", worlds);
-    let world_id = worlds.iter()
-        .find(|(name, _)| *name == "outlayer-world")
-        .map(|(_, &id)| id)
-        .ok_or_else(|| format!("world 'outlayer-world' not found in: {:?}", worlds.keys().collect::<Vec<_>>()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("wasm-tools component new failed: {}", stderr));
+    }
     
-    // Embed component metadata into the core module
-    wit_component::embed_component_metadata(
-        &mut core_bytes,
-        &resolve,
-        world_id,
-        wit_component::StringEncoding::UTF8,
-    ).map_err(|e| format!("embed failed: {}", e))?;
-    eprintln!("Embedded component metadata, module size now: {} bytes", core_bytes.len());
-    
-    // Load the WASI adapter
-    let adapter_bytes = include_bytes!("../../lisp-rlm/wasi_adapter.wasm");
-    
-    // Create the component encoder
-    let mut encoder = wit_component::ComponentEncoder::default()
-        .module(&core_bytes)
-        .map_err(|e| format!("encoder module failed: {}", e))?
-        .adapter("wasi_snapshot_preview1", adapter_bytes)
-        .map_err(|e| format!("encoder adapter failed: {}", e))?
-        .validate(false)
-        .realloc_via_memory_grow(true);
-    
-    let component_bytes = encoder.encode()
-        .map_err(|e| format!("encode failed: {}", e))?;
+    let component_bytes = std::fs::read(p2_path).map_err(|e| format!("read component: {}", e))?;
     
     Ok(component_bytes)
 }
@@ -335,6 +283,19 @@ fn analyze_core_imports(wasm: &[u8]) -> Vec<&str> {
     modules
 }
 
+/// Strip "outlayer" imports and rename _start → run for P2 component compatibility
+fn encode_leb128(mut value: u32, sink: &mut Vec<u8>) {
+    loop {
+        let byte = (value & 0x7F) as u8;
+        value >>= 7;
+        if value == 0 {
+            sink.push(byte);
+            break;
+        }
+        sink.push(byte | 0x80);
+    }
+}
+
 fn read_leb128_outlayer(data: &[u8]) -> (usize, usize) {
     let mut result = 0usize;
     let mut shift = 0;
@@ -369,6 +330,14 @@ struct WasiImportMap {
 }
 
 fn finish_outlayer(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
+    finish_outlayer_inner(em, false)
+}
+
+fn finish_outlayer_no_ol(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
+    finish_outlayer_inner(em, true)
+}
+
+fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Vec<u8>, String> {
     if em.funcs.is_empty() {
         return Err("no functions defined".into());
     }
@@ -376,7 +345,7 @@ fn finish_outlayer(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
     em.tree_shake();
 
     let wasi = wasi_p1_imports();
-    let ol = outlayer_imports();
+    let ol: Vec<WasiFunc> = if skip_outlayer { vec![] } else { outlayer_imports() };
     let wasi_count = wasi.len() as u32;
     let ol_count = ol.len() as u32;
     let total_imports = wasi_count + ol_count;
@@ -611,6 +580,7 @@ fn finish_outlayer(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
     exps.export("memory", ExportKind::Memory, 0);
     // _start is the last function
     let start_func_idx = internal_base + em.funcs.len() as u32;
+    // Always export _start for P2 (adapter maps it to wasi:cli/run)
     exps.export("_start", ExportKind::Func, start_func_idx);
     m.section(&exps);
 
