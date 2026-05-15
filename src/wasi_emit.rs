@@ -232,7 +232,54 @@ pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
 
     let mut core_bytes = finish_outlayer_no_ol(&mut em)?;
 
-    // For P2: use wasm-tools CLI to wrap the core module into a component
+    // 2. Use wit-component to wrap into P2 component
+    // First, try loading WASI WIT files from wit/ directory
+    let wit_dir = std::path::Path::new(file!()).parent().unwrap().parent().unwrap().join("wit");
+    
+    if wit_dir.join("command.wit").exists() {
+        // Use wit-parser to load the full WASI command world
+        let mut resolve = wit_parser::Resolve::new();
+        let (pkg, _source_map) = resolve.push_dir(&wit_dir)
+            .map_err(|e| format!("WIT push_dir failed: {}", e))?;
+        
+        // Find the "command" world
+        let world_id = resolve.packages[pkg].worlds.iter()
+            .find(|(name, _)| *name == "command")
+            .map(|(_, &id)| id)
+            .ok_or("world 'command' not found in WIT")?;
+        
+        eprintln!("Found WASI command world, embedding metadata...");
+        
+        // Embed component metadata
+        wit_component::embed_component_metadata(
+            &mut core_bytes,
+            &resolve,
+            world_id,
+            wit_component::StringEncoding::UTF8,
+        ).map_err(|e| format!("embed failed: {}", e))?;
+        
+        // Load adapter
+        let adapter_path = wit_dir.parent().unwrap().join("wasi_adapter.wasm");
+        let adapter_bytes = std::fs::read(&adapter_path)
+            .map_err(|e| format!("read adapter: {}", e))?;
+        
+        // Encode component
+        let mut encoder = wit_component::ComponentEncoder::default()
+            .module(&core_bytes)
+            .map_err(|e| format!("encoder module failed: {}", e))?
+            .adapter("wasi_snapshot_preview1", &adapter_bytes)
+            .map_err(|e| format!("encoder adapter failed: {}", e))?
+            .validate(true)
+            .realloc_via_memory_grow(true);
+        
+        let component_bytes = encoder.encode()
+            .map_err(|e| format!("encode failed: {}", e))?;
+        
+        eprintln!("✅ Native P2 component: {} bytes", component_bytes.len());
+        return Ok(component_bytes);
+    }
+
+    // Fallback: use wasm-tools CLI
     let core_path = "/tmp/lisp_p2_core.wasm";
     let p2_path = "/tmp/lisp_p2_component.wasm";
     std::fs::write(core_path, &core_bytes).map_err(|e| format!("write core: {}", e))?;
@@ -252,9 +299,7 @@ pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
         return Err(format!("wasm-tools component new failed: {}", stderr));
     }
     
-    let component_bytes = std::fs::read(p2_path).map_err(|e| format!("read component: {}", e))?;
-    
-    Ok(component_bytes)
+    std::fs::read(p2_path).map_err(|e| format!("read component: {}", e))
 }
 
 /// Analyze a core WASM module to find which import module names are referenced.
