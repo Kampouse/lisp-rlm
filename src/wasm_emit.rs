@@ -83,29 +83,33 @@ const HOST_FUNCS: &[(&str, &[ValType], &[ValType])] = &[
     ("promise_batch_action_delete_account", &[ValType::I64, ValType::I64, ValType::I64], &[]),      // 49
 ];
 
-// ── Outlayer host functions (i32 flat params, i32 return) ──
-// Imported from "outlayer" namespace (not "env" like NEAR)
+// ── Outlayer host functions (canonical ABI for typed WIT interface) ──
+// All functions use the canonical ABI: params are flattened, ret_ptr is LAST param,
+// functions return void. Results are written to the ret_ptr buffer.
+// Import module: "outlayer:api/host", names: kebab-case
 const OUTLAYER_FUNCS: &[(&str, &[ValType], &[ValType])] = &[
-    ("view",                   &[ValType::I32; 8],  &[ValType::I32]),  // 0
-    ("call",                   &[ValType::I32; 13], &[ValType::I32]),  // 1
-    ("transfer",               &[ValType::I32; 10], &[ValType::I32]),  // 2
-    ("http_get",               &[ValType::I32; 5],  &[ValType::I32]),  // 3
-    ("storage_set",            &[ValType::I32; 4],  &[ValType::I32]),  // 4
-    ("storage_get",            &[ValType::I32; 5],  &[ValType::I32]),  // 5
-    ("storage_has",            &[ValType::I32; 2],  &[ValType::I32]),  // 6
-    ("storage_delete",         &[ValType::I32; 2],  &[ValType::I32]),  // 7
-    ("storage_increment",      &[ValType::I32; 6],  &[ValType::I32]),  // 8
-    ("storage_decrement",      &[ValType::I32; 6],  &[ValType::I32]),  // 9
-    ("env_signer",             &[ValType::I32; 3],  &[ValType::I32]),  // 10
-    ("env_predecessor",        &[ValType::I32; 3],  &[ValType::I32]),  // 11
-    ("storage_set_if_absent",  &[ValType::I32; 4],  &[ValType::I32]),  // 12
-    ("storage_set_if_equals",  &[ValType::I32; 8],  &[ValType::I32]),  // 13
-    ("storage_list_keys",      &[ValType::I32; 5],  &[ValType::I32]),  // 14
-    ("storage_clear_all",      &[],                  &[ValType::I32]),  // 15
-    ("storage_set_worker",     &[ValType::I32; 4],  &[ValType::I32]),  // 16
-    ("storage_get_worker",     &[ValType::I32; 5],  &[ValType::I32]),  // 17
-    ("storage_set_worker_public", &[ValType::I32; 4], &[ValType::I32]), // 18
-    ("storage_get_worker_from_project", &[ValType::I32; 7], &[ValType::I32]), // 19
+    // name, params, results (all void)
+    ("view",                   &[ValType::I32; 7],  &[]),  // 0: 3 strings + ret
+    ("call",                   &[ValType::I32; 13], &[]),  // 1: 6 strings + ret
+    ("transfer",               &[ValType::I32; 7],  &[]),  // 2: 3 strings + ret
+    ("http_get",               &[ValType::I32; 3],  &[]),  // 3: 1 string + ret
+    ("http_post",              &[ValType::I32; 7],  &[]),  // 4: 2 strings + 1 list + ret
+    ("storage_set",            &[ValType::I32; 5],  &[]),  // 5: 1 string + 1 list + ret
+    ("storage_get",            &[ValType::I32; 3],  &[]),  // 6: 1 string + ret
+    ("storage_has",            &[ValType::I32; 3],  &[]),  // 7: 1 string + ret
+    ("storage_delete",         &[ValType::I32; 3],  &[]),  // 8: 1 string + ret
+    ("storage_increment",      &[ValType::I32, ValType::I32, ValType::I64, ValType::I32], &[]),  // 9: string + s64 + ret
+    ("storage_decrement",      &[ValType::I32, ValType::I32, ValType::I64, ValType::I32], &[]),  // 10: string + s64 + ret
+    ("storage_set_if_absent",  &[ValType::I32; 5],  &[]),  // 11: string + list + ret
+    ("storage_set_if_equals",  &[ValType::I32; 7],  &[]),  // 12: string + 2 lists + ret
+    ("storage_list_keys",      &[ValType::I32; 3],  &[]),  // 13: string + ret
+    ("storage_clear_all",      &[ValType::I32; 1],  &[]),  // 14: ret only
+    ("storage_set_worker",     &[ValType::I32; 5],  &[]),  // 15: string + list + ret
+    ("storage_get_worker",     &[ValType::I32; 3],  &[]),  // 16: string + ret
+    ("storage_set_worker_public", &[ValType::I32; 5], &[]), // 17: string + list + ret
+    ("storage_get_worker_from_project", &[ValType::I32; 5], &[]), // 18: 2 strings + ret
+    ("env_signer",             &[ValType::I32; 1],  &[]),  // 19: ret only
+    ("env_predecessor",        &[ValType::I32; 1],  &[]),  // 20: ret only
 ];
 
 const HOST_BASE: u32 = 0xFF00_0000;
@@ -247,22 +251,23 @@ impl WasmEmitter {
             "outlayer/call" => self.need_outlayer(1),
             "outlayer/transfer" => self.need_outlayer(2),
             "outlayer/http-get" => self.need_outlayer(3),
-            "outlayer/storage-set" => self.need_outlayer(4),
-            "outlayer/storage-get" => self.need_outlayer(5),
-            "outlayer/storage-has" => self.need_outlayer(6),
-            "outlayer/storage-delete" => self.need_outlayer(7),
-            "outlayer/storage-increment" => self.need_outlayer(8),
-            "outlayer/storage-decrement" => self.need_outlayer(9),
-            "outlayer/env-signer" => self.need_outlayer(10),
-            "outlayer/env-predecessor" => self.need_outlayer(11),
-            "outlayer/storage-set-if-absent" => self.need_outlayer(12),
-            "outlayer/storage-set-if-equals" => self.need_outlayer(13),
-            "outlayer/storage-list-keys" => self.need_outlayer(14),
-            "outlayer/storage-clear-all" => self.need_outlayer(15),
-            "outlayer/storage-set-worker" => self.need_outlayer(16),
-            "outlayer/storage-get-worker" => self.need_outlayer(17),
-            "outlayer/storage-set-worker-public" => self.need_outlayer(18),
-            "outlayer/storage-get-worker-from-project" => self.need_outlayer(19),
+            "outlayer/http-post" => self.need_outlayer(4),
+            "outlayer/storage-set" => self.need_outlayer(5),
+            "outlayer/storage-get" => self.need_outlayer(6),
+            "outlayer/storage-has" => self.need_outlayer(7),
+            "outlayer/storage-delete" => self.need_outlayer(8),
+            "outlayer/storage-increment" => self.need_outlayer(9),
+            "outlayer/storage-decrement" => self.need_outlayer(10),
+            "outlayer/env-signer" => self.need_outlayer(19),
+            "outlayer/env-predecessor" => self.need_outlayer(20),
+            "outlayer/storage-set-if-absent" => self.need_outlayer(11),
+            "outlayer/storage-set-if-equals" => self.need_outlayer(12),
+            "outlayer/storage-list-keys" => self.need_outlayer(13),
+            "outlayer/storage-clear-all" => self.need_outlayer(14),
+            "outlayer/storage-set-worker" => self.need_outlayer(15),
+            "outlayer/storage-get-worker" => self.need_outlayer(16),
+            "outlayer/storage-set-worker-public" => self.need_outlayer(17),
+            "outlayer/storage-get-worker-from-project" => self.need_outlayer(18),
             // Also scan children for outlayer usage
             _ => {}
         }
@@ -1284,37 +1289,53 @@ impl WasmEmitter {
             "outlayer/storage-get-worker" |
             "outlayer/storage-set-worker-public" |
             "outlayer/storage-get-worker-from-project" => {
-                // All outlayer functions take flat i32 params and return i32.
-                // Args are already i64 on stack; wrap to i32, call, extend result back to i64.
+                // Canonical ABI: all outlayer functions take flat params ending with ret_ptr, return void.
+                // The Lisp args are i64 on stack; wrap to i32 for params, push ret_ptr at end.
+                // ret_ptr points to a return buffer in linear memory.
                 let ol_idx: usize = if op == "outlayer/view" { 0 }
                     else if op == "outlayer/call" { 1 }
                     else if op == "outlayer/transfer" { 2 }
                     else if op == "outlayer/http-get" { 3 }
-                    else if op == "outlayer/storage-set" { 4 }
-                    else if op == "outlayer/storage-get" { 5 }
-                    else if op == "outlayer/storage-has" { 6 }
-                    else if op == "outlayer/storage-delete" { 7 }
-                    else if op == "outlayer/storage-increment" { 8 }
-                    else if op == "outlayer/storage-decrement" { 9 }
-                    else if op == "outlayer/env-signer" { 10 }
-                    else if op == "outlayer/env-predecessor" { 11 }
-                    else if op == "outlayer/storage-set-if-absent" { 12 }
-                    else if op == "outlayer/storage-set-if-equals" { 13 }
-                    else if op == "outlayer/storage-list-keys" { 14 }
-                    else if op == "outlayer/storage-clear-all" { 15 }
-                    else if op == "outlayer/storage-set-worker" { 16 }
-                    else if op == "outlayer/storage-get-worker" { 17 }
-                    else if op == "outlayer/storage-set-worker-public" { 18 }
-                    else { 19 };
+                    else if op == "outlayer/http-post" { 4 }
+                    else if op == "outlayer/storage-set" { 5 }
+                    else if op == "outlayer/storage-get" { 6 }
+                    else if op == "outlayer/storage-has" { 7 }
+                    else if op == "outlayer/storage-delete" { 8 }
+                    else if op == "outlayer/storage-increment" { 9 }
+                    else if op == "outlayer/storage-decrement" { 10 }
+                    else if op == "outlayer/storage-set-if-absent" { 11 }
+                    else if op == "outlayer/storage-set-if-equals" { 12 }
+                    else if op == "outlayer/storage-list-keys" { 13 }
+                    else if op == "outlayer/storage-clear-all" { 14 }
+                    else if op == "outlayer/storage-set-worker" { 15 }
+                    else if op == "outlayer/storage-get-worker" { 16 }
+                    else if op == "outlayer/storage-set-worker-public" { 17 }
+                    else if op == "outlayer/storage-get-worker-from-project" { 18 }
+                    else if op == "outlayer/env-signer" { 19 }
+                    else { 20 };
+                let sig = OUTLAYER_FUNCS[ol_idx];
+                let has_i64_param = sig.1.iter().any(|t| *t == ValType::I64);
                 let mut v = Vec::new();
-                // Push all args as i32 (wrap from i64)
+                // Push args: i32 params get I32WrapI64, i64 params stay as-is
+                let mut param_idx = 0;
                 for arg in a.iter() {
                     v.extend(self.expr(arg)?);
-                    v.push(Instruction::I32WrapI64);
+                    if sig.1[param_idx] == ValType::I64 {
+                        // i64 param — keep as-is
+                    } else {
+                        v.push(Instruction::I32WrapI64);
+                    }
+                    param_idx += 1;
                 }
+                // Push ret_ptr (allocate from TEMP area)
+                // Use TEMP_MEM area (offset 64+) for return buffers
+                let ret_ptr = self.next_data_offset;
+                self.next_data_offset += 32; // reserve 32 bytes for return area
+                v.push(Instruction::I32Const(ret_ptr as i32));
+                // Call the function
                 v.push(Instruction::Call(OUTLAYER_BASE | ol_idx as u32));
-                // Extend i32 result back to i64 for the Lisp runtime
-                v.push(Instruction::I64ExtendI32S);
+                // Function returns void — push i64(0) as the Lisp result
+                v.push(Instruction::I64Const(0));
                 Ok(v)
             }
 
@@ -3817,6 +3838,12 @@ impl WasmEmitter {
         } else {
             None
         };
+        // P2 mode: add canonical_abi_realloc type
+        let realloc_type_idx = if self.p2_mode {
+            let idx = (max_p + 2) as u32 + host_list.len() as u32 + outlayer_list.len() as u32;
+            types.ty().function([ValType::I32; 4], [ValType::I32]);
+            Some(idx)
+        } else { None };
         m.section(&types);
 
         // Import section
@@ -3848,6 +3875,8 @@ impl WasmEmitter {
         let wrapper_count = if self.exports.is_empty() { 1 } else { self.exports.len() as u32 };
         let wrapper_type_idx = 0; // () -> ()
         for _ in 0..wrapper_count { funcs.function(wrapper_type_idx); }
+        // P2 mode: add canonical_abi_realloc function entry
+        if let Some(rt) = realloc_type_idx { funcs.function(rt); }
         m.section(&funcs);
 
         // Memory
@@ -3874,6 +3903,11 @@ impl WasmEmitter {
             for (i, (_, en, _)) in self.exports.iter().enumerate() {
                 exps.export(en, ExportKind::Func, wrapper_base + i as u32);
             }
+        }
+        // P2 mode: export canonical_abi_realloc
+        if self.p2_mode {
+            let realloc_idx = wrapper_base + wrapper_count;
+            exps.export("canonical_abi_realloc", ExportKind::Func, realloc_idx);
         }
         m.section(&exps);
 
@@ -3909,7 +3943,40 @@ impl WasmEmitter {
                 }
             }
         }
+        // P2 mode: canonical_abi_realloc implementation
+        // Simple bump allocator using memory[0..3] as the bump pointer
+        // realloc(_ptr: i32, _old_size: i32, _align: i32, new_size: i32) -> i32
+        if self.p2_mode {
+            // Initialize bump ptr at data offset 64 (skip first 64 bytes)
+            let bump_init = self.next_data_offset as i32;
+            let mut fb = Function::new([(1u32, ValType::I32)]); // 1 local: result_ptr
+            // Load current bump pointer from memory[0]
+            fb.instruction(&Instruction::I32Const(0));
+            fb.instruction(&Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+            // If bump ptr is 0, initialize it
+            fb.instruction(&Instruction::LocalTee(4)); // result_ptr = bump_ptr
+            fb.instruction(&Instruction::I32Eqz);
+            fb.instruction(&Instruction::If(BlockType::Empty));
+            // Initialize: set bump ptr to bump_init
+            fb.instruction(&Instruction::I32Const(0));
+            fb.instruction(&Instruction::I32Const(bump_init));
+            fb.instruction(&Instruction::I32Store(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+            fb.instruction(&Instruction::I32Const(bump_init));
+            fb.instruction(&Instruction::LocalSet(4)); // result_ptr = bump_init
+            fb.instruction(&Instruction::End);
+            // Advance bump pointer by new_size
+            fb.instruction(&Instruction::I32Const(0));
+            fb.instruction(&Instruction::LocalGet(4));
+            fb.instruction(&Instruction::LocalGet(3)); // new_size
+            fb.instruction(&Instruction::I32Add);
+            fb.instruction(&Instruction::I32Store(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+            // Return result_ptr
+            fb.instruction(&Instruction::LocalGet(4));
+            fb.instruction(&Instruction::End);
+            code.function(&fb);
+        }
         m.section(&code);
+
 
         // Data (section 11 — must come after code section 10)
         if !self.data_segments.is_empty() {
@@ -3934,7 +4001,7 @@ impl WasmEmitter {
             Instruction::Call(idx) if *idx >= HOST_BASE && *idx < USER_BASE => {
                 Instruction::Call(host_map[&((*idx - HOST_BASE) as usize)])
             }
-            Instruction::Call(idx) if *idx >= OUTLAYER_BASE && *idx < OUTLAYER_BASE + 20 => {
+            Instruction::Call(idx) if *idx >= OUTLAYER_BASE && *idx < OUTLAYER_BASE + OUTLAYER_FUNCS.len() as u32 => {
                 Instruction::Call(outlayer_map[&((*idx - OUTLAYER_BASE) as usize)])
             }
             Instruction::Call(idx) if *idx >= USER_BASE => {
