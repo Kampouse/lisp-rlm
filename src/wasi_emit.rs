@@ -184,7 +184,7 @@ pub fn compile_outlayer(source: &str) -> Result<Vec<u8>, String> {
 /// - Instantiates core P1 module with lowered functions
 /// - Lifts `_start` and exports as `wasi:cli/run@0.2.1/run`
 pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
-    // 1. Parse and build emitter (same as P1)
+    // 1. Compile the core P1 module first
     let resolved = crate::wasm_emit::resolve_modules(source, std::path::Path::new("."))?;
     let exprs = crate::parser::parse_all(&resolved)?;
     let mut em = WasmEmitter::new();
@@ -215,168 +215,83 @@ pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
         }
     }
 
-    // 2. Build the core P1 module (but without WASI imports — we'll provide those via lowering)
-    // Actually, the core module already has P1 imports. We just need the runtime to satisfy them.
-    // For a proper P2 component, we:
-    //   - Import wasi:io/streams instances
-    //   - Lower them to core functions matching P1 signatures
-    //   - Instantiate core module with those
-    //
-    // However, this requires the component to also import an adapter that maps
-    // wasi:io/streams → fd_read/fd_write. This is complex.
-    //
-    // Simpler approach (what most toolchains do): import the P1 WASI adapter
-    // as a component import, and let the runtime provide it.
-    //
-    // Simplest approach (what we do now): just embed the core module and
-    // instantiate with empty args. The runtime provides P1 imports directly.
+    let mut core_bytes = finish_outlayer(&mut em)?;
 
+    // 2. Use wit-component to wrap the core module into a P2 component
+    // First, define the WIT world for our component
+    use wit_parser::{Resolve};
+    
+    // Define WIT world inline
+    let wit_source = r#"
+package outlayer:host;
 
-    let near_host_used_for_p2: Vec<usize> = (0..50).filter(|i| em.host_needed.contains(i)).collect();
-    let core_bytes = finish_outlayer(&mut em)?;
+interface api {
+    view: func(a: s32, b: s32, c: s32, d: s32, e: s32, f: s32, g: s32, h: s32) -> s32;
+    call: func(a: s32, b: s32, c: s32, d: s32, e: s32, f: s32, g: s32, h: s32, i: s32, j: s32, k: s32, l: s32, m: s32) -> s32;
+    transfer: func(a: s32, b: s32, c: s32, d: s32, e: s32, f: s32, g: s32, h: s32, i: s32) -> s32;
+    http-get: func(a: s32, b: s32, c: s32, d: s32, e: s32) -> s32;
+    storage-set: func(a: s32, b: s32, c: s32, d: s32) -> s32;
+    storage-get: func(a: s32, b: s32, c: s32, d: s32, e: s32) -> s32;
+    storage-has: func(a: s32, b: s32) -> s32;
+    storage-delete: func(a: s32, b: s32) -> s32;
+    storage-increment: func(a: s32, b: s32, c: s32, d: s32, e: s32, f: s32) -> s32;
+    storage-decrement: func(a: s32, b: s32, c: s32, d: s32, e: s32, f: s32) -> s32;
+    env-signer: func(a: s32, b: s32, c: s32) -> s32;
+    env-predecessor: func(a: s32, b: s32, c: s32) -> s32;
+    storage-set-if-absent: func(a: s32, b: s32, c: s32, d: s32) -> s32;
+    storage-set-if-equals: func(a: s32, b: s32, c: s32, d: s32, e: s32, f: s32, g: s32, h: s32) -> s32;
+    storage-list-keys: func(a: s32, b: s32, c: s32, d: s32, e: s32) -> s32;
+    storage-clear-all: func() -> s32;
+    storage-set-worker: func(a: s32, b: s32, c: s32, d: s32) -> s32;
+    storage-get-worker: func(a: s32, b: s32, c: s32, d: s32, e: s32) -> s32;
+    storage-set-worker-public: func(a: s32, b: s32, c: s32, d: s32) -> s32;
+    storage-get-worker-from-project: func(a: s32, b: s32, c: s32, d: s32, e: s32, f: s32, g: s32) -> s32;
+}
 
-    // Analyze which import modules the core module actually references
-    let core_imports = analyze_core_imports(&core_bytes);
-        let needs_wasi = core_imports.iter().any(|s| *s == "wasi_snapshot_preview1");
-    let needs_outlayer = core_imports.iter().any(|s| *s == "outlayer");
-    let needs_env = core_imports.iter().any(|s| *s == "env");
+world outlayer-world {
+    import api;
+    export run: func() -> result;
+}
+"#;
 
-    let mut comp = wasm_encoder::Component::new();
-
-    // ── Build module types and imports dynamically ──
-    let mut module_type_count = 0u32;
-    let mut wasi_mod_idx: Option<u32> = None;
-    let mut ol_mod_idx: Option<u32> = None;
-    let mut env_mod_idx: Option<u32> = None;
-    let mut comp_imports = wasm_encoder::ComponentImportSection::new();
-
-    if needs_wasi {
-        let mut ct = wasm_encoder::CoreTypeSection::new();
-        ct.ty().module(&{
-            let mut mt = wasm_encoder::ModuleType::new();
-            mt.ty().function([W, W, W, W], [W]);
-            mt.ty().function([W], []);
-            mt.ty().function([W, W], [W]);
-            mt.ty().function([W, ValType::I64, W, W], [W]);
-            mt.export("fd_read", wasm_encoder::EntityType::Function(0));
-            mt.export("fd_write", wasm_encoder::EntityType::Function(0));
-            mt.export("proc_exit", wasm_encoder::EntityType::Function(1));
-            mt.export("random_get", wasm_encoder::EntityType::Function(2));
-            mt.export("environ_sizes_get", wasm_encoder::EntityType::Function(2));
-            mt.export("environ_get", wasm_encoder::EntityType::Function(2));
-            mt.export("fd_seek", wasm_encoder::EntityType::Function(3));
-            mt
-        });
-        comp.section(&ct);
-        comp_imports.import("wasi-snapshot-preview1", wasm_encoder::ComponentTypeRef::Module(module_type_count));
-        wasi_mod_idx = Some(module_type_count);
-        module_type_count += 1;
-    }
-
-    if needs_outlayer {
-        let mut ct = wasm_encoder::CoreTypeSection::new();
-        ct.ty().module(&{
-            let mut mt = wasm_encoder::ModuleType::new();
-            mt.ty().function(vec![W; 8], [W]);
-            mt.ty().function(vec![W; 14], [W]);
-            mt.ty().function(vec![W; 10], [W]);
-            mt.export("view", wasm_encoder::EntityType::Function(0));
-            mt.export("call", wasm_encoder::EntityType::Function(1));
-            mt.export("transfer", wasm_encoder::EntityType::Function(2));
-            mt
-        });
-        comp.section(&ct);
-        comp_imports.import("outlayer", wasm_encoder::ComponentTypeRef::Module(module_type_count));
-        ol_mod_idx = Some(module_type_count);
-        module_type_count += 1;
-    }
-
-    if needs_env {
-        let mut ct = wasm_encoder::CoreTypeSection::new();
-        ct.ty().module(&{
-            let mut mt = wasm_encoder::ModuleType::new();
-            // Build env module type from the actual HOST_FUNCS signatures
-            // that appear in the core module's imports
-            let mut ti = 0u32;
-            // Re-use the same analysis — for each NEAR host function the core module imports,
-            // add the corresponding export to the env module type
-            for &host_idx in &near_host_used_for_p2 {
-                let (name, params, results) = crate::wasm_emit::HOST_FUNCS[host_idx];
-                mt.ty().function(params.iter().cloned(), results.iter().cloned());
-                mt.export(name, wasm_encoder::EntityType::Function(ti));
-                ti += 1;
-            }
-            mt
-        });
-        comp.section(&ct);
-        comp_imports.import("env", wasm_encoder::ComponentTypeRef::Module(module_type_count));
-        env_mod_idx = Some(module_type_count);
-        module_type_count += 1;
-    }
-
-    comp.section(&comp_imports);
-
-    // ── Component Type Section ──
-    let mut types = wasm_encoder::ComponentTypeSection::new();
-    types.function()
-        .params([] as [(&str, wasm_encoder::ComponentValType); 0])
-        .result(None);
-    comp.section(&types);
-
-    // ── Core Module Section ──
-    comp.section(&RawModuleSection(&core_bytes));
-
-    // ── Core Instance Section ──
-    let our_mod_idx = module_type_count;
-    let mut instances = wasm_encoder::InstanceSection::new();
-    let mut inst_count = 0u32;
-    let mut wasi_inst: Option<u32> = None;
-    let mut ol_inst: Option<u32> = None;
-    let mut env_inst: Option<u32> = None;
-
-    if let Some(idx) = wasi_mod_idx {
-        instances.instantiate(idx, <[(&str, wasm_encoder::ModuleArg); 0]>::default());
-        wasi_inst = Some(inst_count); inst_count += 1;
-    }
-    if let Some(idx) = ol_mod_idx {
-        instances.instantiate(idx, <[(&str, wasm_encoder::ModuleArg); 0]>::default());
-        ol_inst = Some(inst_count); inst_count += 1;
-    }
-    if let Some(idx) = env_mod_idx {
-        instances.instantiate(idx, <[(&str, wasm_encoder::ModuleArg); 0]>::default());
-        env_inst = Some(inst_count); inst_count += 1;
-    }
-
-    let mut our_args: Vec<(&str, wasm_encoder::ModuleArg)> = Vec::new();
-    if let Some(inst) = wasi_inst { our_args.push(("wasi_snapshot_preview1", wasm_encoder::ModuleArg::Instance(inst))); }
-    if let Some(inst) = ol_inst { our_args.push(("outlayer", wasm_encoder::ModuleArg::Instance(inst))); }
-    if let Some(inst) = env_inst { our_args.push(("env", wasm_encoder::ModuleArg::Instance(inst))); }
-
-    instances.instantiate(our_mod_idx, our_args);
-    let our_inst = inst_count;
-    comp.section(&instances);
-
-    // ── Alias Section ──
-    let mut aliases = wasm_encoder::ComponentAliasSection::new();
-    aliases.alias(wasm_encoder::Alias::CoreInstanceExport {
-        instance: our_inst, kind: wasm_encoder::ExportKind::Func, name: "_start",
-    });
-    aliases.alias(wasm_encoder::Alias::CoreInstanceExport {
-        instance: our_inst, kind: wasm_encoder::ExportKind::Memory, name: "memory",
-    });
-    comp.section(&aliases);
-
-    // ── Canonical Function Section ──
-    let mut canon = wasm_encoder::CanonicalFunctionSection::new();
-    canon.lift(0, 0, [wasm_encoder::CanonicalOption::Memory(0)]);
-    comp.section(&canon);
-
-    // ── Component Export Section ──
-    let mut exports = wasm_encoder::ComponentExportSection::new();
-    exports.export("wasi:cli/run@0.2.1", wasm_encoder::ComponentExportKind::Func, 0, None);
-    comp.section(&exports);
-
-    Ok(comp.finish())
+    // Parse the WIT source
+    let mut resolve = Resolve::new();
+    let pkg = resolve.push_source("outlayer.wit", wit_source)
+        .map_err(|e| format!("WIT parse failed: {}", e))?;
+    
+    // Find the world
+    let worlds = &resolve.packages[pkg].worlds;
+    eprintln!("Available worlds: {:?}", worlds);
+    let world_id = worlds.iter()
+        .find(|(name, _)| *name == "outlayer-world")
+        .map(|(_, &id)| id)
+        .ok_or_else(|| format!("world 'outlayer-world' not found in: {:?}", worlds.keys().collect::<Vec<_>>()))?;
+    
+    // Embed component metadata into the core module
+    wit_component::embed_component_metadata(
+        &mut core_bytes,
+        &resolve,
+        world_id,
+        wit_component::StringEncoding::UTF8,
+    ).map_err(|e| format!("embed failed: {}", e))?;
+    eprintln!("Embedded component metadata, module size now: {} bytes", core_bytes.len());
+    
+    // Load the WASI adapter
+    let adapter_bytes = include_bytes!("../../lisp-rlm/wasi_adapter.wasm");
+    
+    // Create the component encoder
+    let mut encoder = wit_component::ComponentEncoder::default()
+        .module(&core_bytes)
+        .map_err(|e| format!("encoder module failed: {}", e))?
+        .adapter("wasi_snapshot_preview1", adapter_bytes)
+        .map_err(|e| format!("encoder adapter failed: {}", e))?
+        .validate(false)
+        .realloc_via_memory_grow(true);
+    
+    let component_bytes = encoder.encode()
+        .map_err(|e| format!("encode failed: {}", e))?;
+    
+    Ok(component_bytes)
 }
 
 /// Analyze a core WASM module to find which import module names are referenced.
@@ -757,7 +672,10 @@ fn finish_outlayer(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
         let mut fb = Function::new(vec![
             (1u32, W),  // local 0: temp i32 (stdin_len etc) — actually we need i32 for fd_read
             (1u32, ValType::I64), // local 1: result
-            (1u32, ValType::I64), // local 2: input_str (tagged)
+            (1u32, ValType::I64), // local 2: value (untagged) / input_str
+            (1u32, ValType::I64), // local 3: digit_count
+            (1u32, ValType::I64), // local 4: negative flag
+            (1u32, ValType::I64), // local 5: write ptr
         ]);
 
         let ma4 = MemArg { offset: 0, align: 2, memory_index: 0 };
@@ -912,14 +830,14 @@ fn finish_outlayer(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
         fb.instruction(&Instruction::End); // else (zero case)
         // fd_write(1, iovec, 1, nwritten)
         // iovec at TEMP+64: {ptr, len}
-        fb.instruction(&Instruction::I32Const(TEMP_MEM as i32 + 64));
+        fb.instruction(&Instruction::I32Const(STDOUT_BUF as i32 + 16384));
         fb.instruction(&Instruction::LocalGet(5)); fb.instruction(&Instruction::I32WrapI64);
         fb.instruction(&Instruction::I32Store(ma8.clone()));
-        fb.instruction(&Instruction::I32Const(TEMP_MEM as i32 + 68));
+        fb.instruction(&Instruction::I32Const(STDOUT_BUF as i32 + 16388));
         fb.instruction(&Instruction::LocalGet(3)); fb.instruction(&Instruction::I32WrapI64);
         fb.instruction(&Instruction::I32Store(ma8.clone()));
         fb.instruction(&Instruction::I32Const(1)); // stdout fd
-        fb.instruction(&Instruction::I32Const(TEMP_MEM as i32 + 64)); // iovec ptr
+        fb.instruction(&Instruction::I32Const(STDOUT_BUF as i32 + 16384)); // iovec ptr
         fb.instruction(&Instruction::I32Const(1)); // 1 iov
         fb.instruction(&Instruction::I32Const(STDIN_LEN as i32)); // nwritten ptr
         fb.instruction(&Instruction::Call(1)); // fd_write

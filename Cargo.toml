@@ -12,6 +12,8 @@ autobins = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+wit-component = "0.248.0"
+wit-parser = "0.248.0"
 base64 = "0.22"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
