@@ -397,6 +397,25 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
     exports.export("cabi_realloc", ExportKind::Func, HTTP_IMPORT_COUNT + 1);
     module.section(&exports);
     
+    // ── Table (section 8) ──
+    // The component model adapter uses call_indirect to dispatch to exports.
+    // Without this table, call_indirect traps with "undefined element".
+    let run_func_idx = HTTP_IMPORT_COUNT as u32;
+    let realloc_func_idx = HTTP_IMPORT_COUNT as u32 + 1;
+    let mut table = TableSection::new();
+    table.table(TableType { element_type: RefType::FUNCREF, minimum: 2, maximum: Some(2), table64: false, shared: false });
+    module.section(&table);
+    
+    // ── Element (section 9) ──
+    // Populate table[0] = run, table[1] = cabi_realloc
+    let mut elements = ElementSection::new();
+    elements.active(
+        None, // table 0
+        &ConstExpr::i32_const(0),
+        Elements::Functions(vec![run_func_idx, realloc_func_idx].into()),
+    );
+    module.section(&elements);
+    
     let url = b"https://httpbin.org/get";
     
     // ── Code (section 10) ──

@@ -4784,8 +4784,7 @@ impl WasmEmitter {
                 // (http-get "https://api.example.com/data") -> string or nil
                 if a.is_empty() { return Err("http-get requires a URL string argument".into()); }
                 if !self.wasi_mode { return Err("http-get is only available on OutLayer (WASI) target".into()); }
-                self.need_wasi_http = true;
-                self.need_outlayer = true; // still needed for P1 path
+                self.need_outlayer = true; // uses outlayer.http_get host function directly
                 let url_expr = self.expr(&a[0])?;
                 let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
                 let ma1 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
