@@ -382,7 +382,7 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
     
     // ── Memory (section 5) ──
     let mut memory = MemorySection::new();
-    memory.memory(MemoryType { minimum: 17, maximum: None, memory64: false, shared: false, page_size_log2: None });
+    memory.memory(MemoryType { minimum: 64, maximum: None, memory64: false, shared: false, page_size_log2: None }); // 4MB
     module.section(&memory);
     
     // ── Globals (section 6) ──
@@ -403,25 +403,82 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
     let mut codes = CodeSection::new();
     let mut start_func = Function::new([(12, ValType::I32)]);
     
-    // Full HTTP GET: create request → send → read response → write to stdout
-    start_func.instruction(&Instruction::I32Const(32768));
-    start_func.instruction(&Instruction::LocalSet(10)); // url_ptr
-    start_func.instruction(&Instruction::I32Const(url.len() as i32));
-    start_func.instruction(&Instruction::LocalSet(11)); // url_len
+    // Step-by-step HTTP GET (testing which call crashes)
+    // Step 1: fields = constructor
+    start_func.instruction(&Instruction::Call(FN_CONSTRUCTOR_FIELDS)); // () -> i32
+    start_func.instruction(&Instruction::LocalSet(0));
     
-    crate::wasi_http::emit_http_get(&mut start_func, 10, 11);
+    // Step 2: req = constructor(fields)
+    start_func.instruction(&Instruction::LocalGet(0));
+    start_func.instruction(&Instruction::Call(FN_CONSTRUCTOR_OUTGOING_REQUEST)); // (i32) -> i32
+    start_func.instruction(&Instruction::LocalSet(1));
     
-    // Return 0 (success for result<(), ()>)
+    // Step 3: set-method GET
+    start_func.instruction(&Instruction::LocalGet(1));  // req
+    start_func.instruction(&Instruction::I32Const(0));  // disc=0 (get)
+    start_func.instruction(&Instruction::I32Const(0));  // ptr
+    start_func.instruction(&Instruction::I32Const(0));  // len
+    start_func.instruction(&Instruction::Call(FN_SET_METHOD)); // -> i32
+    start_func.instruction(&Instruction::Drop);
+    
+    // Step 4: set-scheme HTTPS — SKIP (crashes, canonical ABI issue with variant)
+    // Step 5: set-authority — SKIP
+    
+    // Step 6: SKIP set-path (also crashes with variant)
+    
+    // Step 7: get body (writes result<outgoing-body> to scratch)
+    start_func.instruction(&Instruction::LocalGet(1));
+    start_func.instruction(&Instruction::I32Const(SCRATCH_BODY_RESULT));
+    start_func.instruction(&Instruction::Call(FN_OUTGOING_REQUEST_BODY)); // (i32,i32) -> ()
+    start_func.instruction(&Instruction::I32Const(0));
+    start_func.instruction(&Instruction::I32Load(MemArg { offset: (SCRATCH_BODY_RESULT + 4) as u64, align: 2, memory_index: 0 }));
+    start_func.instruction(&Instruction::LocalSet(2)); // body handle
+    
+    // Step 8: finish body (no trailers)
+    start_func.instruction(&Instruction::LocalGet(2));
+    start_func.instruction(&Instruction::I32Const(0)); // none
+    start_func.instruction(&Instruction::I32Const(0));
+    start_func.instruction(&Instruction::I32Const(0));
+    start_func.instruction(&Instruction::Call(FN_OUTGOING_BODY_FINISH)); // (i32,i32,i32,i32) -> ()
+    
+    // NOTE: Don't drop body after finish — finish consumes the resource
+    
+    // Step 9: handle(req, none, dst, dst_len) — sends request
+    // Result area needs space for result<future, error-code> = up to 24 bytes
+    start_func.instruction(&Instruction::LocalGet(1));
+    start_func.instruction(&Instruction::I32Const(0)); // none (no options)
+    start_func.instruction(&Instruction::I32Const(SCRATCH_FUTURE_RESULT)); // dst ptr
+    start_func.instruction(&Instruction::I32Const(24)); // dst len (enough for result<future, error-code>)
+    start_func.instruction(&Instruction::Call(FN_HANDLE)); // (i32,i32,i32,i32) -> ()
+    // NOTE: handle consumes the request — don't drop it
+    // Load future handle from +4 (after discriminant)
+    start_func.instruction(&Instruction::I32Const(0));
+    start_func.instruction(&Instruction::I32Load(MemArg { offset: (SCRATCH_FUTURE_RESULT + 4) as u64, align: 2, memory_index: 0 }));
+    start_func.instruction(&Instruction::LocalSet(3)); // future handle
+    
+    // Drop request — NO, handle consumed it
+    
+    // Step 10: future.get(future_handle, dst_ptr)
+    start_func.instruction(&Instruction::LocalGet(3));
+    start_func.instruction(&Instruction::I32Const(SCRATCH_GET_RESULT));
+    start_func.instruction(&Instruction::Call(FN_FUTURE_GET));
+    
+    // Drop future
+    start_func.instruction(&Instruction::LocalGet(3));
+    start_func.instruction(&Instruction::Call(FN_DROP_FUTURE_INCOMING_RESPONSE));
+    
+    // Just exit — test if future.get succeeds
     start_func.instruction(&Instruction::I32Const(0));
     start_func.instruction(&Instruction::End);
     codes.function(&start_func);
     
     // cabi_realloc: bump allocator using global 0 (heap_ptr)
     // (old_ptr: i32, old_len: i32, align: i32, new_len: i32) -> i32
-    let mut realloc = Function::new([(1, ValType::I32)]); // local 0 = result
+    // params = locals 0-3, additional local 4 = result
+    let mut realloc = Function::new([(1, ValType::I32)]); // 1 additional local (index 4)
     // Read current heap_ptr from global 0
     realloc.instruction(&Instruction::GlobalGet(0)); // heap_ptr
-    realloc.instruction(&Instruction::LocalSet(0)); // result = heap_ptr
+    realloc.instruction(&Instruction::LocalSet(4)); // result = heap_ptr (use local 4, not 0!)
     // Advance heap_ptr by new_len (aligned)
     realloc.instruction(&Instruction::GlobalGet(0)); // heap_ptr
     realloc.instruction(&Instruction::LocalGet(3));  // new_len (param 3)
@@ -433,7 +490,7 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
     realloc.instruction(&Instruction::I32And);
     realloc.instruction(&Instruction::GlobalSet(0)); // heap_ptr = aligned(heap_ptr + new_len)
     // Return old ptr
-    realloc.instruction(&Instruction::LocalGet(0));
+    realloc.instruction(&Instruction::LocalGet(4));
     realloc.instruction(&Instruction::End);
     codes.function(&realloc);
     
@@ -462,7 +519,7 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
     
     let component = wit_component::ComponentEncoder::default()
         .module(&core_bytes).map_err(|e| format!("encoder: {:#}", e))?
-        .validate(false)  // Skip validation to see what we get
+        .validate(true)  // Enable validation to catch issues
         .encode().map_err(|e| format!("encode: {:#}", e))?;
     
     eprintln!("✅ P2 wasi:http component: {} bytes", component.len());

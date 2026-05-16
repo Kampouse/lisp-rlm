@@ -1,12 +1,14 @@
-package lisp:wasi-http@0.1.0;
+package lisp:simple-http@0.1.0;
 
-world wasi-http-world {
+world simple-http {
+  // Only import what we need — outgoing HTTP + CLI run
   import wasi:http/types@0.2.2;
   import wasi:http/outgoing-handler@0.2.2;
   import wasi:io/error@0.2.2;
   import wasi:io/poll@0.2.2;
   import wasi:io/streams@0.2.2;
   import wasi:cli/environment@0.2.2;
+  import wasi:cli/exit@0.2.2;
   import wasi:cli/stdin@0.2.2;
   import wasi:cli/stdout@0.2.2;
   export wasi:cli/run@0.2.2;

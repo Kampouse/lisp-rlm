@@ -338,8 +338,8 @@ pub fn build_http_wit_metadata() -> Result<(wit_parser::Resolve, wit_parser::Wor
     
     let pkg = &resolve.packages[pkg_id];
     let world = pkg.worlds.iter()
-        .find_map(|(name, id)| if name == "wasi-http-world" { Some(*id) } else { None })
-        .ok_or("world 'wasi-http-world' not found")?;
+        .find_map(|(name, id)| if name == "simple-http" { Some(*id) } else { None })
+        .ok_or("world 'simple-http' not found")?;
     
     Ok((resolve, world))
 }
