@@ -115,7 +115,27 @@ const OUTLAYER_FUNCS: &[(&str, &[ValType], &[ValType])] = &[
 const HOST_BASE: u32 = 0xFF00_0000;
 const USER_BASE: u32 = 0xFF01_0000;
 const OUTLAYER_BASE: u32 = 0xFF02_0000;
+const WASI_BASE: u32 = 0xFF03_0000;
 const TEMP_MEM: i64 = 64;
+
+// WASI Preview 1 functions for P2/OutLayer stdin/stdout
+// (name, params, results)
+const WASI_FUNCS: &[(&str, &[ValType], &[ValType])] = &[
+    ("fd_read",  &[ValType::I32, ValType::I32, ValType::I32, ValType::I32], &[ValType::I32]),  // 0
+    ("fd_write", &[ValType::I32, ValType::I32, ValType::I32, ValType::I32], &[ValType::I32]),  // 1
+];
+
+// Memory layout for WASI stdin/stdout (P2 mode)
+// [2000..2007] = iov struct: {ptr=i32, len=i32}
+// [2008..2011] = nread/nwritten (i32)
+// [2012..6147] = stdin buffer (4096 bytes)
+// [6148..10243] = stdout buffer (4096)
+const WASI_IOV: u32 = 2000;
+const WASI_NREAD: u32 = 2008;
+const STDIN_BUF: u32 = 2012;
+const STDOUT_BUF: u32 = 6148;
+const STDIN_BUF_SIZE: u32 = 4096;
+const STDOUT_BUF_SIZE: u32 = 4096;
 // ~300 Tgas on NEAR ≈ ~10B simple ops. Cap at 1B to be safe (stops runaway, still uses full NEAR runtime).
 const GAS_LIMIT: i64 = 1_000_000_000;
 const DEPTH_LIMIT: i64 = 512;
@@ -141,6 +161,7 @@ pub struct WasmEmitter {
     next_data_offset: u32,
     host_needed: HashSet<usize>,
     outlayer_needed: HashSet<usize>,
+    wasi_needed: HashSet<usize>,
     p2_mode: bool,
     gas_local: Option<u32>, // index of the gas counter local (i64)
 }
@@ -150,7 +171,7 @@ impl WasmEmitter {
         Self {
             locals: HashMap::new(), next_local: 0, current_func: None, current_param_count: 0,
             while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 1, exports: Vec::new(),
-            data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(), outlayer_needed: HashSet::new(), p2_mode: false,
+            data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(), outlayer_needed: HashSet::new(), wasi_needed: HashSet::new(), p2_mode: false,
             
             gas_local: None,
         }
@@ -174,6 +195,7 @@ impl WasmEmitter {
 
     fn need_host(&mut self, idx: usize) { self.host_needed.insert(idx); }
     fn need_outlayer(&mut self, idx: usize) { self.outlayer_needed.insert(idx); }
+    fn need_wasi(&mut self, idx: usize) { self.wasi_needed.insert(idx); }
     
 
 
@@ -272,6 +294,9 @@ impl WasmEmitter {
             "outlayer/storage-set-worker-public" => self.need_outlayer(17),
             "outlayer/storage-get-worker-from-project" => self.need_outlayer(18),
             // Also scan children for outlayer usage
+            // WASI builtins
+            "wasi/read_stdin" => { self.need_wasi(0); }
+            "wasi/write_stdout" => { self.need_wasi(1); }
             _ => {}
         }
     }
@@ -1324,43 +1349,124 @@ impl WasmEmitter {
                 // ret_ptr: pushed automatically at the end
                 let mut param_idx = 0;
                 for arg in a.iter() {
-                    v.extend(self.expr(arg)?); // pushes i64
                     if param_idx < sig.1.len() && sig.1[param_idx] == ValType::I64 {
-                        // s64 param — keep i64 on stack
+                        // s64 param — push i64 directly
+                        v.extend(self.expr(arg)?);
                         param_idx += 1;
                     } else {
-                        // String/list arg: i64 → split into ptr(i32) + len(i32)
-                        // Use stack manipulation: i64 → wrap ptr, then shift+wrap len
-                        // Need to duplicate i64 first
-                        // Actually: store to stack via a data stack approach
-                        // Simplest: push ptr via wrap, then reconstruct len from the original
-                        // We need the i64 twice. Use memory[TEMP] as scratch.
-                        // Better: use the stack directly
-                        // i64 is on stack. We need: i32(ptr), i32(len)
-                        // Stack: [i64] → local.set $tmp → local.get $tmp → i32.wrap → local.get $tmp → i64.shr_u 32 → i32.wrap
-                        // But we don't have a local. Allocate one via alloc_local.
-                        let tmp = self.alloc_local();
-                        v.push(Instruction::LocalSet(tmp));
-                        // ptr (low 32)
-                        v.push(Instruction::LocalGet(tmp));
-                        v.push(Instruction::I32WrapI64);
-                        // len (high 32)
-                        v.push(Instruction::LocalGet(tmp));
-                        v.push(Instruction::I64Const(32));
-                        v.push(Instruction::I64ShrU);
-                        v.push(Instruction::I32WrapI64);
-                        self.free_local();
+                        // String/list arg: store i64(ptr|len<<32) to memory[16..23]
+                        // Then load ptr(i32) from [16] and len(i32) from [20]
+                        // WASM i64.store needs [i32(addr), i64(value)] on stack
+                        v.push(Instruction::I32Const(16)); // addr first
+                        v.extend(self.expr(arg)?); // value second
+                        v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                        v.push(Instruction::I32Const(16));
+                        v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+                        v.push(Instruction::I32Const(20));
+                        v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
                         param_idx += 2;
                     }
                 }
                 // Push ret_ptr (allocate from TEMP area)
-                // Use TEMP_MEM area (offset 64+) for return buffers
                 let ret_ptr = self.next_data_offset;
-                self.next_data_offset += 32; // reserve 32 bytes for return area
+                self.next_data_offset += 32;
                 v.push(Instruction::I32Const(ret_ptr as i32));
                 // Call the function
                 v.push(Instruction::Call(OUTLAYER_BASE | ol_idx as u32));
-                // Function returns void — push i64(0) as the Lisp result
+                // Read result from ret_ptr area:
+                // result<list<u8>, string>: [0]=discrim(i32), [4]=ptr(i32), [8]=len(i32)
+                // Return i64(ptr | len << 32) for list<u8> results, i64(0) for void
+                let sig = OUTLAYER_FUNCS[ol_idx];
+                if !sig.2.is_empty() && (sig.2[0] == ValType::I32 || sig.2[0] == ValType::I64) {
+                    // Scalar return — not handling yet
+                    v.push(Instruction::I64Const(0));
+                } else if sig.2.is_empty() && (op.contains("http") || op.contains("storage-get") || op.contains("storage-list") || op == "outlayer/view" || op == "outlayer/call") {
+                    // Returns result<list<u8>, string> or result<string, string>
+                    // Read: check discriminator, if ok: read ptr+len, pack as i64
+                    // For simplicity: always read ptr+len from ret_ptr+4 and ret_ptr+8
+                    // (if error, ptr points to error string — still useful)
+                    let rp = ret_ptr as i32;
+                    // Push ptr (ret_ptr+4) and len (ret_ptr+8), combine to i64
+                    v.push(Instruction::I32Const(rp + 4));
+                    v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+                    v.push(Instruction::I64ExtendI32S);
+                    // Shift ptr to low 32 bits, then OR with len in high bits
+                    v.push(Instruction::I32Const(rp + 8));
+                    v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+                    v.push(Instruction::I64ExtendI32S);
+                    v.push(Instruction::I64Const(32));
+                    v.push(Instruction::I64Shl);
+                    v.push(Instruction::I64Or);
+                } else {
+                    // void return
+                    v.push(Instruction::I64Const(0));
+                }
+                Ok(v)
+            }
+
+            // ── WASI stdin/stdout (P2/OutLayer mode) ──
+
+            // (wasi/read_stdin) → packed_string — reads all of stdin into memory buffer
+            // Returns i64(ptr | len << 32) where ptr=STDIN_BUF, len=bytes_read
+            "wasi/read_stdin" => {
+                self.need_wasi(0);
+                let len_local = self.local_idx("__wasi_len");
+                let mut v = Vec::new();
+                // Set up iov at WASI_IOV: {ptr=STDIN_BUF, len=STDIN_BUF_SIZE}
+                // store ptr (i32)
+                v.push(Instruction::I32Const(WASI_IOV as i32));
+                v.push(Instruction::I32Const(STDIN_BUF as i32));
+                v.push(Instruction::I32Store(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+                // store len (i32)
+                v.push(Instruction::I32Const((WASI_IOV + 4) as i32));
+                v.push(Instruction::I32Const(STDIN_BUF_SIZE as i32));
+                v.push(Instruction::I32Store(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+                // fd_read(fd=0, iovs=WASI_IOV, iovs_len=1, nread_ptr=WASI_NREAD)
+                v.push(Instruction::I32Const(0)); // fd = stdin
+                v.push(Instruction::I32Const(WASI_IOV as i32)); // iovs ptr
+                v.push(Instruction::I32Const(1)); // iov count
+                v.push(Instruction::I32Const(WASI_NREAD as i32)); // nread ptr
+                v.push(Instruction::Call(WASI_BASE | 0));
+                v.push(Instruction::Drop); // ignore error
+                // Load nread
+                v.push(Instruction::I32Const(WASI_NREAD as i32));
+                v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(len_local));
+                // Return packed string: (len << 32) | STDIN_BUF
+                v.push(Instruction::LocalGet(len_local));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(STDIN_BUF as i64));
+                v.push(Instruction::I64Or);
+                Ok(v)
+            }
+
+            // (wasi/write_stdout packed_string) — writes string to stdout
+            // packed_string = low32(ptr), high32(len)
+            "wasi/write_stdout" => {
+                self.need_wasi(1);
+                let packed = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                // Store ptr at WASI_IOV
+                v.push(Instruction::I32Const(WASI_IOV as i32));
+                v.extend(packed.clone());
+                v.push(Instruction::I32WrapI64); // ptr (low 32 bits)
+                v.push(Instruction::I32Store(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+                // Store len at WASI_IOV+4
+                v.push(Instruction::I32Const((WASI_IOV + 4) as i32));
+                v.extend(packed);
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64); // len (high 32 bits)
+                v.push(Instruction::I32Store(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+                // fd_write(fd=1, iovs=WASI_IOV, iovs_len=1, nwritten_ptr=WASI_NREAD)
+                v.push(Instruction::I32Const(1)); // fd = stdout
+                v.push(Instruction::I32Const(WASI_IOV as i32));
+                v.push(Instruction::I32Const(1));
+                v.push(Instruction::I32Const(WASI_NREAD as i32));
+                v.push(Instruction::Call(WASI_BASE | 1));
+                v.push(Instruction::Drop);
                 v.push(Instruction::I64Const(0));
                 Ok(v)
             }
@@ -3837,7 +3943,8 @@ impl WasmEmitter {
         let mut m = Module::new();
         let host_list: Vec<usize> = (0..HOST_FUNCS.len()).filter(|i| self.host_needed.contains(i)).collect();
         let outlayer_list: Vec<usize> = (0..OUTLAYER_FUNCS.len()).filter(|i| self.outlayer_needed.contains(i)).collect();
-        let host_count = (host_list.len() + outlayer_list.len()) as u32;
+        let wasi_list: Vec<usize> = (0..WASI_FUNCS.len()).filter(|i| self.wasi_needed.contains(i)).collect();
+        let host_count = (host_list.len() + outlayer_list.len() + wasi_list.len()) as u32;
 
         // Type section
         let mut types = TypeSection::new();
@@ -3854,6 +3961,10 @@ impl WasmEmitter {
         // Outlayer function types (i32 flat)
         for &oi in &outlayer_list {
             types.ty().function(OUTLAYER_FUNCS[oi].1.iter().copied(), OUTLAYER_FUNCS[oi].2.iter().copied());
+        }
+        // WASI function types (only in P2 mode)
+        for &wi in &wasi_list {
+            types.ty().function(WASI_FUNCS[wi].1.iter().copied(), WASI_FUNCS[wi].2.iter().copied());
         }
         // P2 wrapper type: () -> i32 (for result<()> representation) — only used if WIT exports run
         // Standard WASI command expects _start: () -> ()
@@ -3893,6 +4004,14 @@ impl WasmEmitter {
             imports.import(ol_namespace, &func_name, EntityType::Function(outlayer_type_base + i as u32));
             outlayer_idx.insert(oi, outlayer_func_base + i as u32);
         }
+        // WASI imports (only in P2 mode)
+        let mut wasi_idx: HashMap<usize, u32> = HashMap::new();
+        let wasi_type_base = outlayer_type_base + outlayer_list.len() as u32;
+        let wasi_func_base = host_list.len() as u32 + outlayer_list.len() as u32;
+        for (i, &wi) in wasi_list.iter().enumerate() {
+            imports.import("wasi_snapshot_preview1", WASI_FUNCS[wi].0, EntityType::Function(wasi_type_base + i as u32));
+            wasi_idx.insert(wi, wasi_func_base + i as u32);
+        }
         m.section(&imports);
 
         // Function section
@@ -3907,7 +4026,7 @@ impl WasmEmitter {
 
         // Memory
         let mut mems = MemorySection::new();
-        mems.memory(MemoryType { minimum: self.memory_pages.max(1) as u64, maximum: None, memory64: false, shared: false, page_size_log2: None });
+        mems.memory(MemoryType { minimum: self.memory_pages.max(4) as u64, maximum: None, memory64: false, shared: false, page_size_log2: None });
         m.section(&mems);
 
         // Global section: mutable i64 for call depth tracking
@@ -3944,7 +4063,7 @@ impl WasmEmitter {
         for f in &self.funcs {
             let extra = f.local_count.saturating_sub(f.param_count);
             let locals: Vec<(u32, ValType)> = if extra > 0 { vec![(extra as u32, ValType::I64)] } else { vec![] };
-            let resolved = Self::resolve_static(&f.instrs, &host_idx, &name_map, &self.funcs, &outlayer_idx);
+            let resolved = Self::resolve_static(&f.instrs, &host_idx, &name_map, &self.funcs, &outlayer_idx, &wasi_idx);
             let mut fb = Function::new(locals);
             for instr in &resolved { fb.instruction(instr); }
             fb.instruction(&Instruction::End);
@@ -3969,23 +4088,94 @@ impl WasmEmitter {
                 }
             }
         }
-        // P2 mode: canonical_abi_realloc implementation
-        // Simple realloc: returns the input ptr. For fresh allocs (ptr=0),
-        // returns 0 which the canonical lowering handles by writing to offset 0.
-        // This works because WASM memory starts at 0 and is always valid.
+        // P2 mode: canonical_abi_realloc — bump allocator
+        // mem[10240] = bump pointer (i32), initialized to 10244
+        // realloc(ptr, old_size, align, new_size) -> new_ptr
         if self.p2_mode {
-            let mut fb = Function::new([]);
-            fb.instruction(&Instruction::LocalGet(0));
+            // 3 extra locals: bump(4), aligned(5), new_bump(6)
+            let mut fb = Function::new([(3, ValType::I32)]);
+            // Helper: bump allocate and return aligned ptr
+            // Leaves aligned ptr on stack, updates mem[10240]
+            // Check ptr != 0 && new_size <= old_size
+            fb.instruction(&Instruction::LocalGet(0)); // ptr
+            fb.instruction(&Instruction::I32Eqz); // ptr == 0?
+            fb.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
+            // ptr == 0: fresh bump allocate
+            // Load bump
+            fb.instruction(&Instruction::I32Const(10240));
+            fb.instruction(&Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+            fb.instruction(&Instruction::LocalTee(4)); // bump
+            // Align: (bump + align - 1) & ~(align - 1)
+            fb.instruction(&Instruction::LocalGet(2)); // align
+            fb.instruction(&Instruction::I32Const(1));
+            fb.instruction(&Instruction::I32Sub);
+            fb.instruction(&Instruction::I32Add);
+            fb.instruction(&Instruction::LocalGet(2)); // align
+            fb.instruction(&Instruction::I32Const(1));
+            fb.instruction(&Instruction::I32Sub);
+            fb.instruction(&Instruction::I32Const(-1));
+            fb.instruction(&Instruction::I32Xor);
+            fb.instruction(&Instruction::I32And);
+            fb.instruction(&Instruction::LocalTee(5)); // aligned
+            // new_bump = aligned + new_size
+            fb.instruction(&Instruction::LocalGet(3)); // new_size
+            fb.instruction(&Instruction::I32Add);
+            fb.instruction(&Instruction::LocalSet(6)); // new_bump
+            // mem[10240] = new_bump
+            fb.instruction(&Instruction::I32Const(10240));
+            fb.instruction(&Instruction::LocalGet(6));
+            fb.instruction(&Instruction::I32Store(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+            // Return aligned
+            fb.instruction(&Instruction::LocalGet(5));
+            fb.instruction(&Instruction::Else);
+            // ptr != 0: check if can reuse
+            fb.instruction(&Instruction::LocalGet(3)); // new_size
+            fb.instruction(&Instruction::LocalGet(1)); // old_size
+            fb.instruction(&Instruction::I32LeU); // new_size <= old_size?
+            fb.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
+            fb.instruction(&Instruction::LocalGet(0)); // return ptr
+            fb.instruction(&Instruction::Else);
+            // Need to grow: bump allocate (same as fresh)
+            fb.instruction(&Instruction::I32Const(10240));
+            fb.instruction(&Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+            fb.instruction(&Instruction::LocalTee(4)); // bump
+            fb.instruction(&Instruction::LocalGet(2)); // align
+            fb.instruction(&Instruction::I32Const(1));
+            fb.instruction(&Instruction::I32Sub);
+            fb.instruction(&Instruction::I32Add);
+            fb.instruction(&Instruction::LocalGet(2));
+            fb.instruction(&Instruction::I32Const(1));
+            fb.instruction(&Instruction::I32Sub);
+            fb.instruction(&Instruction::I32Const(-1));
+            fb.instruction(&Instruction::I32Xor);
+            fb.instruction(&Instruction::I32And);
+            fb.instruction(&Instruction::LocalTee(5)); // aligned
+            fb.instruction(&Instruction::LocalGet(3)); // new_size
+            fb.instruction(&Instruction::I32Add);
+            fb.instruction(&Instruction::LocalSet(6)); // new_bump
+            fb.instruction(&Instruction::I32Const(10240));
+            fb.instruction(&Instruction::LocalGet(6));
+            fb.instruction(&Instruction::I32Store(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+            fb.instruction(&Instruction::LocalGet(5)); // return aligned
+            fb.instruction(&Instruction::End); // end inner if
+            fb.instruction(&Instruction::End); // end outer if
             fb.instruction(&Instruction::End);
             code.function(&fb);
         }
         m.section(&code);
 
 
+        // Build final data segments (including P2 bump pointer init)
+        let mut final_data = self.data_segments.clone();
+        if self.p2_mode {
+            // Initialize bump pointer at mem[10240] = 10244
+            final_data.push((10240, 10244i32.to_le_bytes().to_vec()));
+        }
+
         // Data (section 11 — must come after code section 10)
-        if !self.data_segments.is_empty() {
+        if !final_data.is_empty() {
             let mut data = DataSection::new();
-            for (off, bytes) in &self.data_segments {
+            for (off, bytes) in &final_data {
                 data.active(0, &ConstExpr::i32_const(*off as i32), bytes.iter().copied());
             }
             m.section(&data);
@@ -4000,6 +4190,7 @@ impl WasmEmitter {
         name_map: &HashMap<&str, u32>,
         funcs: &[FuncDef],
         outlayer_map: &HashMap<usize, u32>,
+        wasi_map: &HashMap<usize, u32>,
     ) -> Vec<Instruction<'static>> {
         instrs.iter().map(|i| match i {
             Instruction::Call(idx) if *idx >= HOST_BASE && *idx < USER_BASE => {
@@ -4007,6 +4198,9 @@ impl WasmEmitter {
             }
             Instruction::Call(idx) if *idx >= OUTLAYER_BASE && *idx < OUTLAYER_BASE + OUTLAYER_FUNCS.len() as u32 => {
                 Instruction::Call(outlayer_map[&((*idx - OUTLAYER_BASE) as usize)])
+            }
+            Instruction::Call(idx) if *idx >= WASI_BASE => {
+                Instruction::Call(wasi_map[&((*idx - WASI_BASE) as usize)])
             }
             Instruction::Call(idx) if *idx >= USER_BASE => {
                 let pos = (*idx - USER_BASE) as usize;
