@@ -89,104 +89,32 @@ const HOST_FUNCS: &[(&str, &[ValType], &[ValType])] = &[
 // All return void (results written to ret_ptr via canonical ABI).
 // Import module: "near:rpc/api" for RPC, "near:storage/api" for storage, etc.
 // String params = 2 i32s (ptr, len). tuple<string,string> return = 4 i32s (ptr1,len1,ptr2,len2) at ret_ptr.
+// OutLayer host functions — matches wit-outlayer/world.wit (outlayer:api/host)
+// All return void. Results written to ret_ptr via canonical ABI.
+// Import module: "outlayer:api/host", names: kebab-case in P2 mode
 const OUTLAYER_FUNCS: &[(&str, &[ValType], &[ValType])] = &[
-    // ── near:rpc/api ──
-    // view(contract, method, args, finality, ret_ptr) — 4 strings + ret = 9 i32s
-    ("view",                   &[ValType::I32; 9],  &[]),  // 0
-    // view-account(account, finality, ret) — 2 str + ret = 5
-    ("view-account",           &[ValType::I32; 5],  &[]),  // 1
-    // view-access-key(account, pubkey, finality, ret) — 3 str + ret = 7
-    ("view-access-key",        &[ValType::I32; 7],  &[]),  // 2
-    // view-access-key-list(account, finality, ret) — 2 str + ret = 5
-    ("view-access-key-list",   &[ValType::I32; 5],  &[]),  // 3
-    // view-code(account, finality, ret) — 2 str + ret = 5
-    ("view-code",              &[ValType::I32; 5],  &[]),  // 4
-    // view-state(account, prefix, finality, ret) — 3 str + ret = 7
-    ("view-state",             &[ValType::I32; 7],  &[]),  // 5
-    // block(finality, ret) — 1 str + ret = 3
-    ("block",                  &[ValType::I32; 3],  &[]),  // 6
-    // chunk(id, ret) — 1 str + ret = 3
-    ("chunk",                  &[ValType::I32; 3],  &[]),  // 7
-    // changes(finality, ret) — 1 str + ret = 3
-    ("changes",                &[ValType::I32; 3],  &[]),  // 8
-    // send-tx(tx, wait, ret) — 2 str + ret = 5
-    ("send-tx",                &[ValType::I32; 5],  &[]),  // 9
-    // tx-status(hash, sender, wait, ret) — 3 str + ret = 7
-    ("tx-status",              &[ValType::I32; 7],  &[]),  // 10
-    // receipt(id, ret) — 1 str + ret = 3
-    ("receipt",                &[ValType::I32; 3],  &[]),  // 11
-    // call(signer-id, signer-key, receiver, method, args, deposit, gas, wait, ret) — 8 str + ret = 17
-    ("call",                   &[ValType::I32; 17], &[]),  // 12
-    // transfer(signer-id, signer-key, receiver, amount, wait, ret) — 5 str + ret = 11
-    ("transfer",               &[ValType::I32; 11], &[]),  // 13
-    // gas-price(block, ret) — 1 str + ret = 3
-    ("gas-price",              &[ValType::I32; 3],  &[]),  // 14
-    // status(ret) — ret only = 1
-    ("status",                 &[ValType::I32; 1],  &[]),  // 15
-    // network-info(ret) — ret only = 1
-    ("network-info",           &[ValType::I32; 1],  &[]),  // 16
-    // validators(epoch, ret) — 1 str + ret = 3
-    ("validators",             &[ValType::I32; 3],  &[]),  // 17
-    // raw(method, params, ret) — 2 str + ret = 5
-    ("raw",                    &[ValType::I32; 5],  &[]),  // 18
-
-    // ── near:storage/api ──
-    // storage-set(key, val_ptr, val_len, ret) — 1 str + 1 list + ret = 5
-    ("storage-set",            &[ValType::I32; 5],  &[]),  // 19
-    // storage-get(key, ret) — 1 str + ret = 3
-    ("storage-get",            &[ValType::I32; 3],  &[]),  // 20
-    // storage-has(key, ret) — 1 str + ret = 3  (returns bool at ret[0])
-    ("storage-has",            &[ValType::I32; 3],  &[]),  // 21
-    // storage-delete(key, ret) — 1 str + ret = 3
-    ("storage-delete",         &[ValType::I32; 3],  &[]),  // 22
-    // storage-list-keys(prefix, ret) — 1 str + ret = 3
-    ("storage-list-keys",      &[ValType::I32; 3],  &[]),  // 23
-    // storage-set-if-absent(key, val_ptr, val_len, ret) — 1 str + 1 list + ret = 5
-    ("storage-set-if-absent",  &[ValType::I32; 5],  &[]),  // 24
-    // storage-set-if-equals(key, exp_ptr, exp_len, new_ptr, new_len, ret) — 1 str + 2 list + ret = 7
-    ("storage-set-if-equals",  &[ValType::I32; 7],  &[]),  // 25
-    // storage-increment(key, delta_lo, delta_hi, ret) — string + s64 + ret
-    ("storage-increment",      &[ValType::I32, ValType::I32, ValType::I64, ValType::I32], &[]),  // 26
-    // storage-decrement(key, delta_lo, delta_hi, ret) — string + s64 + ret
-    ("storage-decrement",      &[ValType::I32, ValType::I32, ValType::I64, ValType::I32], &[]),  // 27
-    // storage-set-worker(key, val_ptr, val_len, enc_ptr, enc_len, ret) — 1 str + 1 list + 1 opt bool + ret
-    ("storage-set-worker",     &[ValType::I32; 7],  &[]),  // 28
-    // storage-get-worker(key, proj_ptr, proj_len, ret) — 1 str + 1 opt str + ret = 7
-    ("storage-get-worker",     &[ValType::I32; 7],  &[]),  // 29
-    // storage-clear-all(ret) — ret only = 1
-    ("storage-clear-all",      &[ValType::I32; 1],  &[]),  // 30
-
-    // ── near:payment/api ──
-    // refund-usd(amount_lo, amount_hi, ret) — u64 + ret
-    ("refund-usd",             &[ValType::I32, ValType::I64, ValType::I32], &[]),  // 31
-
-    // ── outlayer:wallet/api ──
-    // wallet-get-id(ret) — 1
-    ("wallet-get-id",          &[ValType::I32; 1],  &[]),  // 32
-    // wallet-get-address(chain, ret) — 1 str + ret = 3
-    ("wallet-get-address",     &[ValType::I32; 3],  &[]),  // 33
-    // wallet-withdraw(chain, to, amount, token, ret) — 4 str + ret = 9
-    ("wallet-withdraw",        &[ValType::I32; 9],  &[]),  // 34
-    // wallet-withdraw-dry-run(chain, to, amount, token, ret) — 4 str + ret = 9
-    ("wallet-withdraw-dry-run",&[ValType::I32; 9],  &[]),  // 35
-    // wallet-get-request-status(id, ret) — 1 str + ret = 3
-    ("wallet-get-request-status", &[ValType::I32; 3], &[]),  // 36
-    // wallet-list-tokens(ret) — 1
-    ("wallet-list-tokens",     &[ValType::I32; 1],  &[]),  // 37
-    // wallet-transfer(chain, to, amount, ret) — 3 str + ret = 7
-    ("wallet-transfer",        &[ValType::I32; 7],  &[]),  // 38
-    // wallet-get-balance(chain, token, ret) — 2 str + ret = 5
-    ("wallet-get-balance",     &[ValType::I32; 5],  &[]),  // 39
-    // wallet-intents-deposit(token, amount, ret) — 2 str + ret = 5
-    ("wallet-intents-deposit", &[ValType::I32; 5],  &[]),  // 40
-    // wallet-swap(token-in, token-out, amount-in, min-out, ret) — 4 str + ret = 9
-    ("wallet-swap",            &[ValType::I32; 9],  &[]),  // 41
-
-    // ── HTTP (near:rpc/api) ──
-    // http-get(url, ret) — 1 str + ret = 3
-    ("http-get",               &[ValType::I32; 3],  &[]),  // 42
-    // http-post(url, body_ptr, body_len, content-type, ret) — 1 str + 1 list + 1 str + ret = 7
-    ("http-post",              &[ValType::I32; 7],  &[]),  // 43
+    // name, params, results (all void)
+    ("view",                   &[ValType::I32; 7],  &[]),  // 0: 3 strings + ret
+    ("call",                   &[ValType::I32; 13], &[]),  // 1: 6 strings + ret
+    ("transfer",               &[ValType::I32; 7],  &[]),  // 2: 3 strings + ret
+    ("http-get",               &[ValType::I32; 3],  &[]),  // 3: 1 string + ret
+    ("http-post",              &[ValType::I32; 7],  &[]),  // 4: 2 strings + 1 list + ret
+    ("storage-set",            &[ValType::I32; 5],  &[]),  // 5: 1 string + 1 list + ret
+    ("storage-get",            &[ValType::I32; 3],  &[]),  // 6: 1 string + ret
+    ("storage-has",            &[ValType::I32; 3],  &[]),  // 7: 1 string + ret
+    ("storage-delete",         &[ValType::I32; 3],  &[]),  // 8: 1 string + ret
+    ("storage-increment",      &[ValType::I32, ValType::I32, ValType::I64, ValType::I32], &[]),  // 9: string + s64 + ret
+    ("storage-decrement",      &[ValType::I32, ValType::I32, ValType::I64, ValType::I32], &[]),  // 10: string + s64 + ret
+    ("storage-set-if-absent",  &[ValType::I32; 5],  &[]),  // 11: string + list + ret
+    ("storage-set-if-equals",  &[ValType::I32; 7],  &[]),  // 12: string + 2 lists + ret
+    ("storage-list-keys",      &[ValType::I32; 3],  &[]),  // 13: string + ret
+    ("storage-clear-all",      &[ValType::I32; 1],  &[]),  // 14: ret only
+    ("storage-set-worker",     &[ValType::I32; 5],  &[]),  // 15: string + list + ret
+    ("storage-get-worker",     &[ValType::I32; 3],  &[]),  // 16: string + ret
+    ("storage-set-worker-public", &[ValType::I32; 5], &[]), // 17: string + list + ret
+    ("storage-get-worker-from-project", &[ValType::I32; 5], &[]), // 18: 2 strings + ret
+    ("env-signer",             &[ValType::I32; 1],  &[]),  // 19: ret only
+    ("env-predecessor",        &[ValType::I32; 1],  &[]),  // 20: ret only
 ];
 
 const HOST_BASE: u32 = 0xFF00_0000;
@@ -197,23 +125,16 @@ const TEMP_MEM: i64 = 64;
 
 fn outlayer_name_idx(name: &str) -> usize {
     match name {
-        "rpc/view" => 0, "rpc/view-account" => 1, "rpc/view-access-key" => 2,
-        "rpc/view-access-key-list" => 3, "rpc/view-code" => 4, "rpc/view-state" => 5,
-        "rpc/block" => 6, "rpc/chunk" => 7, "rpc/changes" => 8,
-        "rpc/send-tx" => 9, "rpc/tx-status" => 10, "rpc/receipt" => 11,
-        "rpc/call" => 12, "rpc/transfer" => 13, "rpc/gas-price" => 14,
-        "rpc/status" => 15, "rpc/network-info" => 16, "rpc/validators" => 17, "rpc/raw" => 18,
-        "storage/set" => 19, "storage/get" => 20, "storage/has" => 21, "storage/delete" => 22,
-        "storage/list-keys" => 23, "storage/set-if-absent" => 24, "storage/set-if-equals" => 25,
-        "storage/increment" => 26, "storage/decrement" => 27,
-        "storage/set-worker" => 28, "storage/get-worker" => 29, "storage/clear-all" => 30,
-        "payment/refund-usd" => 31,
-        "wallet/get-id" => 32, "wallet/get-address" => 33,
-        "wallet/withdraw" => 34, "wallet/withdraw-dry-run" => 35,
-        "wallet/get-request-status" => 36, "wallet/list-tokens" => 37,
-        "wallet/transfer" => 38, "wallet/get-balance" => 39,
-        "wallet/intents-deposit" => 40, "wallet/swap" => 41,
-        "http/get" => 42, "http/post" => 43,
+        "outlayer/view" => 0, "outlayer/call" => 1, "outlayer/transfer" => 2,
+        "outlayer/http-get" => 3, "outlayer/http-post" => 4,
+        "outlayer/storage-set" => 5, "outlayer/storage-get" => 6,
+        "outlayer/storage-has" => 7, "outlayer/storage-delete" => 8,
+        "outlayer/storage-increment" => 9, "outlayer/storage-decrement" => 10,
+        "outlayer/storage-set-if-absent" => 11, "outlayer/storage-set-if-equals" => 12,
+        "outlayer/storage-list-keys" => 13, "outlayer/storage-clear-all" => 14,
+        "outlayer/storage-set-worker" => 15, "outlayer/storage-get-worker" => 16,
+        "outlayer/storage-set-worker-public" => 17, "outlayer/storage-get-worker-from-project" => 18,
+        "outlayer/env-signer" => 19, "outlayer/env-predecessor" => 20,
         _ => 0,
     }
 }
@@ -371,55 +292,28 @@ impl WasmEmitter {
             "near/iter_prefix" => { self.need_host(36); self.need_host(2); self.need_host(0); self.need_host(1); }
             "near/iter_range" => { self.need_host(37); self.need_host(2); self.need_host(0); self.need_host(1); }
             "near/iter_next" => { self.need_host(38); self.need_host(0); self.need_host(1); }
-            // Outlayer builtins — RPC (near:rpc/api)
-            "rpc/view" => self.need_outlayer(0),
-            "rpc/view-account" => self.need_outlayer(1),
-            "rpc/view-access-key" => self.need_outlayer(2),
-            "rpc/view-access-key-list" => self.need_outlayer(3),
-            "rpc/view-code" => self.need_outlayer(4),
-            "rpc/view-state" => self.need_outlayer(5),
-            "rpc/block" => self.need_outlayer(6),
-            "rpc/chunk" => self.need_outlayer(7),
-            "rpc/changes" => self.need_outlayer(8),
-            "rpc/send-tx" => self.need_outlayer(9),
-            "rpc/tx-status" => self.need_outlayer(10),
-            "rpc/receipt" => self.need_outlayer(11),
-            "rpc/call" => self.need_outlayer(12),
-            "rpc/transfer" => self.need_outlayer(13),
-            "rpc/gas-price" => self.need_outlayer(14),
-            "rpc/status" => self.need_outlayer(15),
-            "rpc/network-info" => self.need_outlayer(16),
-            "rpc/validators" => self.need_outlayer(17),
-            "rpc/raw" => self.need_outlayer(18),
-            // Storage (near:storage/api)
-            "storage/set" => self.need_outlayer(19),
-            "storage/get" => self.need_outlayer(20),
-            "storage/has" => self.need_outlayer(21),
-            "storage/delete" => self.need_outlayer(22),
-            "storage/list-keys" => self.need_outlayer(23),
-            "storage/set-if-absent" => self.need_outlayer(24),
-            "storage/set-if-equals" => self.need_outlayer(25),
-            "storage/increment" => self.need_outlayer(26),
-            "storage/decrement" => self.need_outlayer(27),
-            "storage/set-worker" => self.need_outlayer(28),
-            "storage/get-worker" => self.need_outlayer(29),
-            "storage/clear-all" => self.need_outlayer(30),
-            // Payment (near:payment/api)
-            "payment/refund-usd" => self.need_outlayer(31),
-            // Wallet (outlayer:wallet/api)
-            "wallet/get-id" => self.need_outlayer(32),
-            "wallet/get-address" => self.need_outlayer(33),
-            "wallet/withdraw" => self.need_outlayer(34),
-            "wallet/withdraw-dry-run" => self.need_outlayer(35),
-            "wallet/get-request-status" => self.need_outlayer(36),
-            "wallet/list-tokens" => self.need_outlayer(37),
-            "wallet/transfer" => self.need_outlayer(38),
-            "wallet/get-balance" => self.need_outlayer(39),
-            "wallet/intents-deposit" => self.need_outlayer(40),
-            "wallet/swap" => self.need_outlayer(41),
-            // HTTP
-            "http/get" => self.need_outlayer(42),
-            "http/post" => self.need_outlayer(43),
+            // Outlayer builtins
+            "outlayer/view" => self.need_outlayer(0),
+            "outlayer/call" => self.need_outlayer(1),
+            "outlayer/transfer" => self.need_outlayer(2),
+            "outlayer/http-get" => self.need_outlayer(3),
+            "outlayer/http-post" => self.need_outlayer(4),
+            "outlayer/storage-set" => self.need_outlayer(5),
+            "outlayer/storage-get" => self.need_outlayer(6),
+            "outlayer/storage-has" => self.need_outlayer(7),
+            "outlayer/storage-delete" => self.need_outlayer(8),
+            "outlayer/storage-increment" => self.need_outlayer(9),
+            "outlayer/storage-decrement" => self.need_outlayer(10),
+            "outlayer/storage-set-if-absent" => self.need_outlayer(11),
+            "outlayer/storage-set-if-equals" => self.need_outlayer(12),
+            "outlayer/storage-list-keys" => self.need_outlayer(13),
+            "outlayer/storage-clear-all" => self.need_outlayer(14),
+            "outlayer/storage-set-worker" => self.need_outlayer(15),
+            "outlayer/storage-get-worker" => self.need_outlayer(16),
+            "outlayer/storage-set-worker-public" => self.need_outlayer(17),
+            "outlayer/storage-get-worker-from-project" => self.need_outlayer(18),
+            "outlayer/env-signer" => self.need_outlayer(19),
+            "outlayer/env-predecessor" => self.need_outlayer(20),
             // Also scan children for outlayer usage
             // WASI builtins
             "wasi/read_stdin" => { self.need_wasi(0); }
@@ -1424,7 +1318,7 @@ impl WasmEmitter {
             }
 
             // ── Outlayer builtins (flat i32 params, void return, result via ret_ptr) ──
-            op if op.starts_with("rpc/") || op.starts_with("storage/") || op.starts_with("payment/") || op.starts_with("wallet/") || op.starts_with("http/") => {
+            op if op.starts_with("outlayer/") => {
                 let ol_idx = outlayer_name_idx(op);
                 let sig = OUTLAYER_FUNCS[ol_idx];
                 let mut v = Vec::new();
@@ -1450,7 +1344,7 @@ impl WasmEmitter {
                 v.push(Instruction::Call(OUTLAYER_BASE | ol_idx as u32));
                 // All outlayer funcs return tuple<string,string> or string via ret_ptr
                 // Read ptr+len from ret_ptr for the result string
-                if sig.2.is_empty() && !op.ends_with("-has") && op != "storage/clear-all" && !op.starts_with("storage/set") && !op.starts_with("storage/delete") {
+                if sig.2.is_empty() && !op.ends_with("-has") && op != "outlayer/storage-clear-all" && !op.starts_with("outlayer/storage-set") && !op.starts_with("outlayer/storage-delete") {
                     let rp = ret_ptr as i32;
                     v.push(Instruction::I32Const(rp + 4));
                     v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
@@ -4064,15 +3958,7 @@ impl WasmEmitter {
                 OUTLAYER_FUNCS[oi].0.to_string()
             };
             let namespace = if self.p2_mode {
-                // Map index to WIT namespace (with version)
-                match oi {
-                    0..=18 => "near:rpc/api@0.1.0",
-                    19..=30 => "near:storage/api@0.1.0",
-                    31 => "near:payment/api@0.1.0",
-                    32..=41 => "outlayer:wallet/api@0.1.0",
-                    42..=43 => "near:rpc/api@0.1.0",
-                    _ => "outlayer:api/host",
-                }
+                "outlayer:api/host"
             } else {
                 "outlayer"
             };

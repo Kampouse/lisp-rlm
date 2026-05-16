@@ -13,7 +13,7 @@ pub fn build_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>> {
     
     // Find a world — prefer "outlayer-host", fall back to any world
     let world_id = resolve.packages[pkg].worlds.iter()
-        .find_map(|(name, &id)| if name == "outlayer-host" { Some(id) } else { None })
+        .find_map(|(name, &id)| if name == "outlayer-world" { Some(id) } else { None })
         .or_else(|| resolve.packages[pkg].worlds.values().next().copied())
         .ok_or_else(|| anyhow::anyhow!("No world found in WIT"))?;
 
