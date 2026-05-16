@@ -137,6 +137,7 @@ pub struct WasmEmitter {
     pub(crate) lambda_counter: u32, // unique lambda id
     pub(crate) fuzz_mode: bool, // if true, export wrappers store tagged values (no untag, no value_return)
     pub(crate) need_outlayer: bool, // true if outlayer/* dispatch forms are used
+    pub(crate) need_wasi_http: bool, // true if http-get is used (for P2 wasi:http path)
     pub(crate) wasi_mode: bool, // true when targeting WASI/OutLayer
     pub(crate) p2_mode: bool,   // true when targeting P2 component (return i32 from _start)
     pub(crate) no_proc_exit: bool, // true when wrapping with wit-component adapter (return cleanly, don't call proc_exit)
@@ -153,7 +154,7 @@ impl WasmEmitter {
             locals: HashMap::new(), next_local: 0, current_func: None, current_param_count: 0,
             while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 1, exports: Vec::new(),
             data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(),
-            gas_local: None, heap_ptr: HEAP_START as u32, lambda_counter: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, wasi_mode: false, p2_mode: false, no_proc_exit: false,
+            gas_local: None, heap_ptr: HEAP_START as u32, lambda_counter: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, wasi_mode: false, p2_mode: false, no_proc_exit: false,
         }
     }
 
@@ -4783,6 +4784,8 @@ impl WasmEmitter {
                 // (http-get "https://api.example.com/data") -> string or nil
                 if a.is_empty() { return Err("http-get requires a URL string argument".into()); }
                 if !self.wasi_mode { return Err("http-get is only available on OutLayer (WASI) target".into()); }
+                self.need_wasi_http = true;
+                self.need_outlayer = true; // still needed for P1 path
                 let url_expr = self.expr(&a[0])?;
                 let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
                 let ma1 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };

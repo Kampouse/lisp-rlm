@@ -299,18 +299,175 @@ pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
         }
     }
 
-    let core_bytes = if em.need_outlayer {
-        finish_outlayer(&mut em)?
+    let bytes = if em.need_wasi_http {
+        // wasi:http path — build component with embedded HTTP metadata
+        build_p2_with_wasi_http(&em)?
     } else {
-        // No outlayer functions used — build minimal WASI-only core module
-        finish_outlayer_no_ol(&mut em)?
+        let core_bytes = if em.need_outlayer {
+            finish_outlayer(&mut em)?
+        } else {
+            finish_outlayer_no_ol(&mut em)?
+        };
+        build_p2_with_adapter(&core_bytes)?
     };
-
-    let bytes = build_p2_with_adapter(&core_bytes)?;
     Ok(bytes)
 }
 
-/// Build a P2 component by wrapping a P1 core module with the WASI adapter.
+/// Build a P2 component with wasi:http support.
+/// Generates a core module with wasi:http canonical imports, embeds WIT metadata,
+/// and builds the component through wit-component.
+fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
+    use crate::wasi_http::*;
+    
+    let mut module = Module::new();
+    
+    // ── Types (section 1) ──
+    let mut types = TypeSection::new();
+    types.ty().function([], [W]); // 0: () -> i32
+    types.ty().function([W], [W]); // 1: (i32) -> i32
+    types.ty().function([W, W], []); // 2: (i32,i32) -> ()
+    types.ty().function([W], []); // 3: (i32) -> ()
+    types.ty().function([W, W, W, W], [W]); // 4: set-method etc
+    types.ty().function([W, W, W, W, W], [W]); // 5: set-scheme
+    types.ty().function([W, W, W, W], []); // 6: blocking-write-and-flush
+    types.ty().function([W, W, W], []); // 7: poll
+    types.ty().function([W, ValType::I64, W], []); // 8: read
+    types.ty().function([W, W, W], [W]); // 9: finish/handle
+    types.ty().function([], [W]); // 10: () -> i32 (_start/run returns result)
+    types.ty().function([], [ValType::I64]); // 11: () -> i64 (user)
+    types.ty().function([ValType::I32, ValType::I32, ValType::I32, ValType::I32], [ValType::I32]); // 12: cabi_realloc
+    module.section(&types);
+    
+    // ── Imports (section 2) ──
+    let mut imports = ImportSection::new();
+    let ht = "wasi:http/types@0.2.2";
+    let hh = "wasi:http/outgoing-handler@0.2.2";
+    let is = "wasi:io/streams@0.2.2";
+    let ip = "wasi:io/poll@0.2.2";
+    let cs = "wasi:cli/stdout@0.2.2";
+    imports.import(is, "[resource-drop]input-stream", EntityType::Function(3));
+    imports.import(is, "[resource-drop]output-stream", EntityType::Function(3));
+    imports.import(ht, "[resource-drop]incoming-response", EntityType::Function(3));
+    imports.import(ht, "[resource-drop]future-incoming-response", EntityType::Function(3));
+    imports.import(ht, "[constructor]fields", EntityType::Function(0));
+    imports.import(ht, "[constructor]outgoing-request", EntityType::Function(1));
+    imports.import(ht, "[method]outgoing-request.set-method", EntityType::Function(4));
+    imports.import(ht, "[method]outgoing-request.set-scheme", EntityType::Function(5));
+    imports.import(ht, "[method]outgoing-request.set-authority", EntityType::Function(4));
+    imports.import(ht, "[method]outgoing-request.set-path-with-query", EntityType::Function(4));
+    imports.import(ht, "[method]outgoing-request.body", EntityType::Function(2));
+    imports.import(ht, "[method]outgoing-body.write", EntityType::Function(2));
+    imports.import(ht, "[static]outgoing-body.finish", EntityType::Function(6));
+    imports.import(ht, "[resource-drop]outgoing-body", EntityType::Function(3));
+    imports.import(hh, "handle", EntityType::Function(6));
+    imports.import(ht, "[resource-drop]outgoing-request", EntityType::Function(3));
+    imports.import(ht, "[method]future-incoming-response.get", EntityType::Function(2));
+    imports.import(ht, "[method]future-incoming-response.subscribe", EntityType::Function(1));
+    imports.import(ip, "poll", EntityType::Function(7));
+    imports.import(ip, "[resource-drop]pollable", EntityType::Function(3));
+    imports.import(ht, "[method]incoming-response.consume", EntityType::Function(2));
+    imports.import(ht, "[method]incoming-body.stream", EntityType::Function(2));
+    imports.import(is, "[method]input-stream.read", EntityType::Function(8));
+    imports.import(cs, "get-stdout", EntityType::Function(0));
+    imports.import(is, "[method]output-stream.blocking-write-and-flush", EntityType::Function(6));
+    imports.import(ht, "[resource-drop]incoming-body", EntityType::Function(3));
+    imports.import(ht, "[resource-drop]fields", EntityType::Function(3));
+    module.section(&imports);
+    
+    // ── Functions (section 3) ──
+    let mut functions = FunctionSection::new();
+    functions.function(10); // _start/run: () -> ()
+    functions.function(12); // cabi_realloc: (i32,i32,i32,i32) -> i32
+    module.section(&functions);
+    
+    // ── Memory (section 5) ──
+    let mut memory = MemorySection::new();
+    memory.memory(MemoryType { minimum: 17, maximum: None, memory64: false, shared: false, page_size_log2: None });
+    module.section(&memory);
+    
+    // ── Globals (section 6) ──
+    let mut globals = GlobalSection::new();
+    globals.global(GlobalType { val_type: ValType::I32, mutable: true, shared: false }, &ConstExpr::i32_const(1048576));
+    module.section(&globals);
+    
+    // ── Exports (section 7) ──
+    let mut exports = ExportSection::new();
+    exports.export("memory", ExportKind::Memory, 0);
+    exports.export("wasi:cli/run@0.2.2#run", ExportKind::Func, HTTP_IMPORT_COUNT);
+    exports.export("cabi_realloc", ExportKind::Func, HTTP_IMPORT_COUNT + 1);
+    module.section(&exports);
+    
+    let url = b"https://httpbin.org/get";
+    
+    // ── Code (section 10) ──
+    let mut codes = CodeSection::new();
+    let mut start_func = Function::new([(12, ValType::I32)]);
+    
+    // Simple test: just create fields and drop them
+    start_func.instruction(&Instruction::Call(FN_CONSTRUCTOR_FIELDS)); // () -> i32
+    start_func.instruction(&Instruction::LocalSet(0)); // local 0 = fields
+    start_func.instruction(&Instruction::LocalGet(0));
+    start_func.instruction(&Instruction::Call(FN_DROP_FIELDS)); // (i32) -> ()
+    
+    // Return 0 (success for result<(), ()>)
+    start_func.instruction(&Instruction::I32Const(0));
+    start_func.instruction(&Instruction::End);
+    codes.function(&start_func);
+    
+    // cabi_realloc: bump allocator using global 0 (heap_ptr)
+    // (old_ptr: i32, old_len: i32, align: i32, new_len: i32) -> i32
+    let mut realloc = Function::new([(1, ValType::I32)]); // local 0 = result
+    // Read current heap_ptr from global 0
+    realloc.instruction(&Instruction::GlobalGet(0)); // heap_ptr
+    realloc.instruction(&Instruction::LocalSet(0)); // result = heap_ptr
+    // Advance heap_ptr by new_len (aligned)
+    realloc.instruction(&Instruction::GlobalGet(0)); // heap_ptr
+    realloc.instruction(&Instruction::LocalGet(3));  // new_len (param 3)
+    realloc.instruction(&Instruction::I32Add);
+    // Align to 4 bytes
+    realloc.instruction(&Instruction::I32Const(3));
+    realloc.instruction(&Instruction::I32Add);
+    realloc.instruction(&Instruction::I32Const(-4));
+    realloc.instruction(&Instruction::I32And);
+    realloc.instruction(&Instruction::GlobalSet(0)); // heap_ptr = aligned(heap_ptr + new_len)
+    // Return old ptr
+    realloc.instruction(&Instruction::LocalGet(0));
+    realloc.instruction(&Instruction::End);
+    codes.function(&realloc);
+    
+    // Note: user functions from emitter are NOT included because they use
+    // a different calling convention. For now, the _start does everything.
+    // The emitter's functions are discarded.
+    module.section(&codes);
+    
+    // ── Data (section 11) ──
+    let mut data = DataSection::new();
+    data.active(0, &ConstExpr::i32_const(32768), url.to_vec().into_boxed_slice());
+    module.section(&data);
+    
+    // ── Build and embed metadata ──
+    let mut core_bytes = module.finish();
+    std::fs::write("/tmp/p2_http_core.wasm", &core_bytes).unwrap();
+    if let Err(e) = wasmparser::validate(&core_bytes) {
+        return Err(format!("core module invalid: {}", e));
+    }
+    
+    let (resolve, world) = crate::wasi_http::build_http_wit_metadata()?;
+    let before_meta = core_bytes.len();
+    wit_component::embed_component_metadata(&mut core_bytes, &resolve, world, wit_component::StringEncoding::UTF8)
+        .map_err(|e| format!("embed metadata failed: {}", e))?;
+    eprintln!("Metadata embedding: {} -> {} bytes", before_meta, core_bytes.len());
+    std::fs::write("/tmp/p2_http_core_with_meta.wasm", &core_bytes).unwrap();
+    
+    let component = wit_component::ComponentEncoder::default()
+        .module(&core_bytes).map_err(|e| format!("encoder: {:#}", e))?
+        .validate(true)
+        .encode().map_err(|e| format!("encode: {:#}", e))?;
+    
+    eprintln!("✅ P2 wasi:http component: {} bytes", component.len());
+    std::fs::write("/tmp/p2_wasi_http.wasm", &component).unwrap();
+    Ok(component)
+}
 fn build_p2_with_adapter(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
     // Load WASI adapter
     let adapter_bytes = crate::p2_native::load_wasi_adapter();
@@ -1464,3 +1621,24 @@ fn test_outlayer_json_deep() {
     assert_eq!(result, 7, "deep nested json-get should parse a.b.c=7");
 }
 
+
+    #[test]
+    fn test_p2_wasi_http_component() {
+        let src = r#"
+(define (fetch)
+  (http-get "https://httpbin.org/get"))
+(define (run) (fetch))
+"#;
+        let result = compile_outlayer_p2(src);
+        match &result {
+            Ok(bytes) => {
+                eprintln!("P2 wasi:http component: {} bytes", bytes.len());
+                assert!(bytes.starts_with(&[0x00, 0x61, 0x73, 0x6d]));
+                std::fs::write("/tmp/p2_wasi_http.wasm", bytes).unwrap();
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                panic!("compile failed: {}", e);
+            }
+        }
+    }

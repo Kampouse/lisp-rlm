@@ -341,25 +341,27 @@ pub fn emit_http_get(func: &mut Function, url_ptr_local: u32, url_len_local: u32
     func.instruction(&Instruction::Call(FN_DROP_OUTPUT_STREAM));
 }
 
-/// Build the WIT metadata custom section for the wasi:http world.
-/// This tells wit-component how to wire up the canonical ABI.
-pub fn build_http_wit_metadata() -> Result<Vec<u8>, String> {
+/// Build WIT metadata for the wasi:http world.
+/// Returns (Resolve, WorldId) for use with embed_component_metadata.
+pub fn build_http_wit_metadata() -> Result<(wit_parser::Resolve, wit_parser::WorldId), String> {
     let mut resolve = wit_parser::Resolve::new();
-    
-    // Push the WIT directory containing world.wit and deps/
     let wit_dir = find_wit_dir()?;
-    
     let (pkg_id, _) = resolve.push_dir(&wit_dir).map_err(|e| format!("push_dir failed: {}", e))?;
-    encode_metadata(&resolve, pkg_id)
+    
+    let pkg = &resolve.packages[pkg_id];
+    let world = pkg.worlds.iter()
+        .find_map(|(name, id)| if name == "wasi-http-world" { Some(*id) } else { None })
+        .ok_or("world 'wasi-http-world' not found")?;
+    
+    Ok((resolve, world))
 }
 
 fn find_wit_dir() -> Result<std::path::PathBuf, String> {
-    // Try multiple paths
     let candidates = [
+        concat!(env!("CARGO_MANIFEST_DIR"), "/wit"),
         "wit",
         "lisp-rlm/wit",
         "/Users/asil/.openclaw/workspace/lisp-rlm/wit",
-        concat!(env!("CARGO_MANIFEST_DIR"), "/wit"),
     ];
     for dir in &candidates {
         let p = std::path::Path::new(dir);
@@ -368,38 +370,19 @@ fn find_wit_dir() -> Result<std::path::PathBuf, String> {
     Err(format!("WIT directory not found, tried: {:?}", candidates))
 }
 
-fn encode_metadata(resolve: &wit_parser::Resolve, pkg_id: wit_parser::PackageId) -> Result<Vec<u8>, String> {
-    // Find the world in this package
-    let pkg = &resolve.packages[pkg_id];
-    let world = pkg.worlds.iter()
-        .find_map(|(name, id)| if name == "wasi-http-world" { Some(*id) } else { None })
-        .ok_or("world 'wasi-http-world' not found")?;
-    
-    // Create a minimal module and embed metadata
-    let mut module = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
-    
-    wit_component::embed_component_metadata(&mut module, resolve, world, wit_component::StringEncoding::UTF8)
-        .map_err(|e| format!("embed failed: {}", e))?;
-    
-    Ok(module)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_wit_metadata_embedding() {
-        // Use CARGO_MANIFEST_DIR for reliable path
-        let wit_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("wit");
-        eprintln!("WIT dir: {:?}", wit_dir);
-        assert!(wit_dir.exists(), "wit dir should exist");
+        let (resolve, world) = build_http_wit_metadata().unwrap();
         
-        let mut resolve = wit_parser::Resolve::new();
-        let (pkg_id, _) = resolve.push_dir(&wit_dir).unwrap();
-        let metadata = super::encode_metadata(&resolve, pkg_id).unwrap();
-        assert!(!metadata.is_empty(), "metadata should not be empty");
-        assert!(metadata.starts_with(&[0x00, 0x61, 0x73, 0x6d]), "should be valid WASM");
-        eprintln!("WIT metadata module: {} bytes", metadata.len());
+        let mut module = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+        wit_component::embed_component_metadata(&mut module, &resolve, world, wit_component::StringEncoding::UTF8).unwrap();
+        
+        assert!(!module.is_empty());
+        assert!(module.starts_with(&[0x00, 0x61, 0x73, 0x6d]));
+        eprintln!("WIT metadata module: {} bytes", module.len());
     }
 }
