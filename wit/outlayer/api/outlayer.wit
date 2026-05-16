@@ -1,10 +1,11 @@
 package outlayer:api@0.1.0;
 
-interface outlayer {
+interface host {
     view: func(a1: s32, a2: s32, a3: s32, a4: s32, a5: s32, a6: s32, a7: s32, a8: s32) -> s32;
     call: func(a1: s32, a2: s32, a3: s32, a4: s32, a5: s32, a6: s32, a7: s32, a8: s32, a9: s32, a10: s32, a11: s32, a12: s32, a13: s32) -> s32;
     transfer: func(a1: s32, a2: s32, a3: s32, a4: s32, a5: s32, a6: s32, a7: s32, a8: s32, a9: s32, a10: s32) -> s32;
     http-get: func(a1: s32, a2: s32, a3: s32, a4: s32, a5: s32) -> s32;
+    http-post: func(a1: s32, a2: s32, a3: s32, a4: s32, a5: s32, a6: s32, a7: s32) -> s32;
     storage-set: func(a1: s32, a2: s32, a3: s32, a4: s32) -> s32;
     storage-get: func(a1: s32, a2: s32, a3: s32, a4: s32, a5: s32) -> s32;
     storage-has: func(a1: s32, a2: s32) -> s32;
@@ -24,5 +25,5 @@ interface outlayer {
 }
 
 world outlayer-world {
-    import outlayer;
+    import host;
 }

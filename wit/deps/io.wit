@@ -1,0 +1,36 @@
+package wasi:io@0.2.2;
+
+interface error {
+  resource error;
+}
+
+interface poll {
+  resource pollable {
+    block: func();
+  }
+  poll: func(in: list<pollable>) -> list<u32>;
+}
+
+interface streams {
+  use error.{error};
+  use poll.{pollable};
+
+  resource input-stream {
+    read: func(len: u64) -> result<list<u8>, stream-error>;
+    blocking-read: func(len: u64) -> result<list<u8>, stream-error>;
+    subscribe: func() -> pollable;
+  }
+
+  resource output-stream {
+    check-write: func() -> result<u64, stream-error>;
+    write: func(contents: list<u8>) -> result<stream-error>;
+    blocking-write-and-flush: func(contents: list<u8>) -> result<stream-error>;
+    blocking-flush: func() -> result<stream-error>;
+    subscribe: func() -> pollable;
+  }
+
+  variant stream-error {
+    last-operation-failed(error),
+    closed,
+  }
+}

@@ -1103,6 +1103,7 @@ mod tests {
         // Module version: 0x01 0x00, Component version: 0x0D 0x01
         assert!(comp_bytes.starts_with(&[0x00, 0x61, 0x73, 0x6D]),
             "should start with WASM magic, got {:?}", &comp_bytes[..4.min(comp_bytes.len())]);
+        std::fs::write("/tmp/p2_const.wasm", &comp_bytes).unwrap();
     }
 
     #[test]
@@ -1112,6 +1113,104 @@ mod tests {
         assert!(comp_bytes.starts_with(&[0x00, 0x61, 0x73, 0x6D]),
             "should start with WASM magic");
         eprintln!("P2 component: {} bytes", comp_bytes.len());
+    }
+
+    #[test]
+    fn test_outlayer_p2_http_get() {
+        // Test that http-get compiles to a valid P2 component
+        let src = r#"
+(define (fetch)
+  (http-get "https://api.example.com/price"))
+(define (run) (fetch))
+"#;
+        // First compile to P1 to count core instructions
+        let core = compile_outlayer(src).unwrap();
+        eprintln!("Core P1 WASM: {} bytes", core.len());
+        std::fs::write("/tmp/core_http.wasm", &core).unwrap();
+        
+        let comp_bytes = compile_outlayer_p2(src).unwrap();
+        assert!(comp_bytes.starts_with(&[0x00, 0x61, 0x73, 0x6D]),
+            "should start with WASM magic");
+        eprintln!("P2 HTTP component: {} bytes", comp_bytes.len());
+        
+        // Validate with wasm-tools if available
+        std::fs::write("/tmp/test_p2_http.wasm", &comp_bytes).unwrap();
+        let output = std::process::Command::new("wasm-tools")
+            .args(["validate", "/tmp/test_p2_http.wasm"])
+            .output();
+        match output {
+            Ok(o) => {
+                let valid = o.status.success();
+                eprintln!("wasm-tools validate: {} ({})", 
+                    if valid { "✅ valid" } else { "❌ invalid" },
+                    String::from_utf8_lossy(&o.stderr));
+                assert!(valid, "P2 component should validate");
+            }
+            Err(_) => {
+                eprintln!("⚠️ wasm-tools not available, skipping validation");
+            }
+        }
+    }
+
+    #[test]
+    fn test_outlayer_echo_instruction_count() {
+        // Count instructions for the minimal echo: (print (json-get "amount"))
+        let src = r#"(define (main) (print (json-get "amount")))"#;
+        let core = compile_outlayer(src).unwrap();
+        std::fs::write("/tmp/echo_p1.wasm", &core).unwrap();
+        eprintln!("Echo core WASM: {} bytes", core.len());
+        
+        // Also build P2 and save
+        let echo_p2_src = r#"(define (main) (print (json-get "amount")))"#;
+        let echo_p2 = compile_outlayer_p2(echo_p2_src).unwrap();
+        std::fs::write("/tmp/echo_p2.wasm", &echo_p2).unwrap();
+        eprintln!("Echo P2 component: {} bytes", echo_p2.len());
+        
+        // Count instructions in code section
+        let mut pos = 8usize;
+        while pos < core.len() {
+            let sid = core[pos]; pos += 1;
+            let mut sz = 0usize; let mut shift = 0usize;
+            loop { let b = core[pos] as usize; pos += 1; sz |= (b & 0x7F) << shift; shift += 7; if b & 0x80 == 0 { break; } }
+            if sid == 10 {
+                let end = pos + sz;
+                let (cnt, cl) = { let mut r = 0usize; let mut s = 0usize; let mut i = 0usize; loop { let b = core[pos+i] as usize; r |= (b & 0x7F) << s; i += 1; if b & 0x80 == 0 { break; } s += 7; } (r, i) };
+                pos += cl;
+                let mut total = 0usize;
+                for fi in 0..cnt {
+                    let (bsz, bl) = { let mut r = 0usize; let mut s = 0usize; let mut i = 0usize; loop { let b = core[pos+i] as usize; r |= (b & 0x7F) << s; i += 1; if b & 0x80 == 0 { break; } s += 7; } (r, i) };
+                    pos += bl;
+                    let body_end = pos + bsz;
+                    // skip locals
+                    let (nlc, nl) = { let mut r = 0usize; let mut s = 0usize; let mut i = 0usize; loop { let b = core[pos+i] as usize; r |= (b & 0x7F) << s; i += 1; if b & 0x80 == 0 { break; } s += 7; } (r, i) };
+                    pos += nl;
+                    for _ in 0..nlc { let (c, cl) = { let mut r = 0usize; let mut s = 0usize; let mut i = 0usize; loop { let b = core[pos+i] as usize; r |= (b & 0x7F) << s; i += 1; if b & 0x80 == 0 { break; } s += 7; } (r, i) }; pos += cl; pos += 1; }
+                    let mut ic = 0usize;
+                    while pos < body_end {
+                        let op = core[pos]; pos += 1;
+                        if op == 0x0B { ic += 1; break; }
+                        ic += 1;
+                        // Skip operands (rough)
+                        match op {
+                            0x02 | 0x03 | 0x04 => { pos += 1; }
+                            0x0C | 0x0D => { while pos < body_end && core[pos] & 0x80 != 0 { pos += 1; } pos += 1; }
+                            0x10 => { while pos < body_end && core[pos] & 0x80 != 0 { pos += 1; } pos += 1; }
+                            0x20..=0x24 => { while pos < body_end && core[pos] & 0x80 != 0 { pos += 1; } pos += 1; }
+                            0x28..=0x3E => { while pos < body_end && core[pos] & 0x80 != 0 { pos += 1; } pos += 1; while pos < body_end && core[pos] & 0x80 != 0 { pos += 1; } pos += 1; }
+                            0x41 => { while pos < body_end && core[pos] & 0x80 != 0 { pos += 1; } pos += 1; }
+                            0x42 => { while pos < body_end && core[pos] & 0x80 != 0 { pos += 1; } pos += 1; }
+                            _ => {}
+                        }
+                    }
+                    eprintln!("  Func {}: {} instructions", fi, ic);
+                    total += ic;
+                    pos = body_end;
+                }
+                eprintln!("Echo total instructions: {}", total);
+                break;
+            }
+            pos += sz;
+        }
     }
 }
 

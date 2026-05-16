@@ -1,0 +1,55 @@
+package wasi:http@0.2.2;
+
+interface types {
+  use wasi:io/streams@0.2.2.{input-stream, output-stream};
+  use wasi:io/poll@0.2.2.{pollable};
+
+  variant method {
+    get, head, post, put, delete, connect, options, trace, patch, other(string),
+  }
+
+  variant scheme {
+    HTTP, HTTPS, other(string),
+  }
+
+  resource fields { constructor(); }
+
+  resource outgoing-request {
+    constructor(headers: fields);
+    body: func() -> result<outgoing-body>;
+    set-method: func(method: method) -> result;
+    set-path-with-query: func(path-with-query: option<string>) -> result;
+    set-scheme: func(scheme: option<scheme>) -> result;
+    set-authority: func(authority: option<string>) -> result;
+  }
+
+  resource outgoing-body {
+    write: func() -> result<output-stream>;
+  }
+
+  resource incoming-response {
+    consume: func() -> result<incoming-body>;
+  }
+
+  resource incoming-body {
+    into-stream: func() -> result<input-stream>;
+  }
+
+  resource future-incoming-response {
+    get: func() -> option<result<result<incoming-response, error-code>>>;
+    subscribe: func() -> pollable;
+  }
+
+  resource request-options { constructor(); }
+
+  variant error-code {
+    DNS-timeout, DNS-error(string), destination-not-found, destination-unavailable,
+    connection-timeout, TLS-protocol-error, TLS-certificate-error(string),
+    HTTP-request-denied, internal-error(option<string>),
+  }
+}
+
+interface outgoing-handler {
+  use types.{outgoing-request, request-options, future-incoming-response, error-code};
+  handle: func(request: outgoing-request, options: option<request-options>) -> result<future-incoming-response, error-code>;
+}

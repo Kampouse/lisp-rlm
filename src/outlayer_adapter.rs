@@ -51,7 +51,7 @@ pub fn build_outlayer_adapter() -> Vec<u8> {
     let mut imports = ImportSection::new();
     for (i, name) in WIT_NAMES.iter().enumerate() {
         imports.import(
-            "outlayer:api/outlayer@0.1.0",
+            "outlayer:api/host@0.1.0",
             *name,
             EntityType::Function(i as u32),
         );
