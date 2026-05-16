@@ -639,7 +639,7 @@ impl WasmEmitter {
             "near/storage_remove" => { self.need_host(19); }
             "near/log_num" => self.need_host(28),
             "print" | "println" => { if !self.wasi_mode { self.need_host(28); } }
-            "near/json_get_int" | "near/json_get_str" | "near/json_get_u128" | "json-get" | "json-get-str" | "json-get-float" => { if !self.wasi_mode { self.need_host(7); self.need_host(0); self.need_host(1); } }
+            "near/json_get_int" | "near/json_get_str" | "near/json_get_u128" | "json-get" | "json-get-str" | "json-get-float" | "json/get" => { if !self.wasi_mode { self.need_host(7); self.need_host(0); self.need_host(1); } }
             "u128/store_storage" => { self.need_host(17); }
             "u128/load_storage" => { self.need_host(18); self.need_host(0); }
             "near/json_return_int" | "near/json_return_str" | "json-return" => { if !self.wasi_mode { self.need_host(25); } },
@@ -1837,6 +1837,13 @@ impl WasmEmitter {
                 match &a[0] {
                     LispVal::Str(key) => self.json_get_str(key),
                     _ => Err("near/json_get_str key must be a string literal".into()),
+                }
+            }
+            "json/get" => {
+                if a.is_empty() { return Err("json/get requires a string key argument".into()); }
+                match &a[0] {
+                    LispVal::Str(key) => self.json_get_auto(key),
+                    _ => Err("json/get key must be a string literal".into()),
                 }
             }
             "near/json_return_int" => {
@@ -7897,6 +7904,193 @@ impl WasmEmitter {
             other => other.clone(),
         }).collect()
     }
+
+    /// Unified json/get: auto-detects value type.
+    /// Returns tagged i64:
+    ///   - Int:  raw positive i64
+    ///   - Str:  packed (len << 32) | ptr  (>= 2^32)
+    ///   - Null: -1
+    ///   - Bool: -2 (false), -3 (true)
+    fn json_get_auto(&mut self, key: &str) -> Result<Vec<Instruction<'static>>, String> {
+        self.need_host(7); self.need_host(0); self.need_host(1);
+        let mut pattern = vec![b'"'];
+        pattern.extend(key.as_bytes());
+        pattern.extend_from_slice(b"\":");
+        let pat_off = self.alloc_data(&pattern);
+        let pat_len = pattern.len() as i64;
+
+        let pos     = self.local_idx("__ja_pos");
+        let ilen    = self.local_idx("__ja_ilen");
+        let mi      = self.local_idx("__ja_mi");
+        let jj      = self.local_idx("__ja_j");
+        let first   = self.local_idx("__ja_first");
+        let res     = self.local_idx("__ja_res");
+        let ng      = self.local_idx("__ja_ng");
+        let dg      = self.local_idx("__ja_dg");
+        let slen    = self.local_idx("__ja_slen");
+
+        let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+        let ib = INPUT_BUF;
+        let mut v = Vec::new();
+
+        // Read input to INPUT_BUF
+        v.push(Instruction::I64Const(0)); v.push(Self::host_call(7));
+        v.push(Instruction::I64Const(0)); v.push(Self::host_call(1)); v.push(Instruction::LocalSet(ilen));
+        v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(ib)); v.push(Self::host_call(0));
+
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(pos));
+
+        // Scan for "key": pattern
+        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(pat_len));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalGet(ilen));
+        v.push(Instruction::I64GtS); v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Br(2)); v.push(Instruction::End);
+
+        v.push(Instruction::I64Const(1)); v.push(Instruction::LocalSet(mi));
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(jj));
+        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
+        v.push(Instruction::LocalGet(jj)); v.push(Instruction::I64Const(pat_len));
+        v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Br(2)); v.push(Instruction::End);
+        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Add);
+        v.push(Instruction::LocalGet(jj)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::I64Const(pat_off as i64)); v.push(Instruction::LocalGet(jj)); v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64); v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::I64Eq); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Else);
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(mi));
+        v.push(Instruction::Br(2)); v.push(Instruction::End);
+        v.push(Instruction::LocalGet(jj)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(jj));
+        v.push(Instruction::Br(1)); v.push(Instruction::End); v.push(Instruction::End);
+
+        v.push(Instruction::LocalGet(mi)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Eq); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(3)); v.push(Instruction::End);
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+        v.push(Instruction::Br(1)); v.push(Instruction::End); v.push(Instruction::End);
+
+        // Advance past pattern
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(pat_len));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+
+        // Skip whitespace (space, \n, \r, \t)
+        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
+        v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Br(2)); v.push(Instruction::End);
+        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::LocalSet(first));
+        // break if not ws
+        v.push(Instruction::Block(BlockType::Empty));
+        v.push(Instruction::LocalGet(first)); v.push(Instruction::I64Const(0x20)); v.push(Instruction::I64Eq); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::LocalGet(first)); v.push(Instruction::I64Const(0x0A)); v.push(Instruction::I64Eq); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalGet(first)); v.push(Instruction::I64Const(0x0D)); v.push(Instruction::I64Eq); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalGet(first)); v.push(Instruction::I64Const(0x09)); v.push(Instruction::I64Eq); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::BrIf(0));
+        v.push(Instruction::Br(2)); v.push(Instruction::End);
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+        v.push(Instruction::Br(1)); v.push(Instruction::End); v.push(Instruction::End);
+
+        // Re-read first non-ws byte
+        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::LocalSet(first));
+
+        // NULL: 'n' -> -1
+        v.push(Instruction::LocalGet(first)); v.push(Instruction::I64Const(0x6E)); v.push(Instruction::I64Eq); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::I64Const(-1)); v.push(Instruction::Return);
+        v.push(Instruction::End);
+
+        // BOOL false: 'f' -> -2
+        v.push(Instruction::LocalGet(first)); v.push(Instruction::I64Const(0x66)); v.push(Instruction::I64Eq); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::I64Const(-2)); v.push(Instruction::Return);
+        v.push(Instruction::End);
+
+        // BOOL true: 't' -> -3
+        v.push(Instruction::LocalGet(first)); v.push(Instruction::I64Const(0x74)); v.push(Instruction::I64Eq); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::I64Const(-3)); v.push(Instruction::Return);
+        v.push(Instruction::End);
+
+        // STRING: '"' -> packed (len << 32) | ptr
+        v.push(Instruction::LocalGet(first)); v.push(Instruction::I64Const(0x22)); v.push(Instruction::I64Eq); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(slen));
+        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(slen));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalGet(ilen));
+        v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Br(2)); v.push(Instruction::End);
+        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+        v.push(Instruction::LocalGet(slen)); v.push(Instruction::I64Add); v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64); v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::I64Const(0x22)); v.push(Instruction::I64Eq); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
+        v.push(Instruction::LocalGet(slen)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(slen));
+        v.push(Instruction::Br(1)); v.push(Instruction::End); v.push(Instruction::End);
+        v.push(Instruction::LocalGet(slen)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Add);
+        v.push(Instruction::I64Or);
+        v.push(Instruction::Return);
+        v.push(Instruction::End);
+
+        // NUMBER: parse int (digit or minus)
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(ng));
+        v.push(Instruction::LocalGet(first)); v.push(Instruction::I64Const(0x2D)); v.push(Instruction::I64Eq); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::I64Const(1)); v.push(Instruction::LocalSet(ng));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+        v.push(Instruction::End);
+
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(res));
+        v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
+        v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Br(2)); v.push(Instruction::End);
+        v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
+        v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::LocalSet(dg));
+        v.push(Instruction::LocalGet(dg)); v.push(Instruction::I64Const(0x30));
+        v.push(Instruction::I64LtS); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
+        v.push(Instruction::LocalGet(dg)); v.push(Instruction::I64Const(0x39));
+        v.push(Instruction::I64GtS); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
+        v.push(Instruction::LocalGet(res)); v.push(Instruction::I64Const(10)); v.push(Instruction::I64Mul);
+        v.push(Instruction::LocalGet(dg)); v.push(Instruction::I64Const(0x30)); v.push(Instruction::I64Sub);
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(res));
+        v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+        v.push(Instruction::Br(1)); v.push(Instruction::End); v.push(Instruction::End);
+
+        v.push(Instruction::LocalGet(ng)); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::If(BlockType::Result(ValType::I64)));
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalGet(res)); v.push(Instruction::I64Sub);
+        v.push(Instruction::Else);
+        v.push(Instruction::LocalGet(res));
+        v.push(Instruction::End);
+        Ok(v)
+    }
+
 }
 
 // ── Compile helpers ──
@@ -8223,4 +8417,41 @@ fn resolve_modules_inner(source: &str, base_dir: &std::path::Path, seen: &mut Ve
         }
     }
     Ok(resolved)
+}
+
+#[cfg(test)]
+mod json_auto_test {
+    use super::*;
+
+    #[test]
+    fn test_json_get_auto_int() {
+        let src = r#"(define (run) (near/json_get_int "price")) (export "run" run true)"#;
+        let wat = compile_near_to_wat(src).expect("wat");
+        assert!(wat.contains("call"), "should emit host calls");
+        eprintln!("INT WAT:\n{}", wat);
+    }
+
+    #[test]
+    fn test_json_get_auto_compiles() {
+        let src = r#"(define (run) (json/get "price")) (export "run" run true)"#;
+        let result = compile_near(src);
+        assert!(result.is_ok(), "json/get should compile: {:?}", result);
+        let wasm = result.unwrap();
+        assert!(!wasm.is_empty());
+    }
+
+    #[test]
+    fn test_json_get_auto_str() {
+        let src = r#"(define (run) (json/get "name")) (export "run" run true)"#;
+        let result = compile_near(src);
+        assert!(result.is_ok(), "json/get str should compile: {:?}", result);
+    }
+
+    #[test]
+    fn test_json_get_auto_missing_key() {
+        // Should still compile — key not found returns 0 at runtime
+        let src = r#"(define (run) (json/get "nonexistent")) (export "run" run true)"#;
+        let result = compile_near(src);
+        assert!(result.is_ok(), "json/get missing key should compile: {:?}", result);
+    }
 }

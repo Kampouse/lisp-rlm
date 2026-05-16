@@ -101,6 +101,17 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
                 None => Ok(Some(LispVal::Nil)),
             }
         }
+        "json/get" => {
+            // Unified: parse JSON, extract key, return typed LispVal
+            let s = as_str(&args[0])?;
+            let key = as_str(&args[1])?;
+            let v: serde_json::Value =
+                serde_json::from_str(&s).map_err(|e| format!("json/get: parse error: {}", e))?;
+            match v.get(&key) {
+                Some(val) => Ok(Some(json_to_lisp(val.clone()))),
+                None => Ok(Some(LispVal::Nil)),
+            }
+        }
         "json-get-in" => {
             let s = as_str(&args[0])?;
             let v: serde_json::Value =
