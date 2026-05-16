@@ -37,6 +37,7 @@ pub mod program;
 pub mod wasm_emit;
 pub mod p2_component;
 pub mod wasi_p2_native;
+pub mod wasi_p2_echo;
 
 pub use bytecode::{exec_compiled_loop, run_compiled_lambda, try_compile_lambda, try_compile_loop};
 #[cfg(not(target_arch = "wasm32"))]

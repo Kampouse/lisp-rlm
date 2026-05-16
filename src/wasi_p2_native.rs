@@ -46,7 +46,8 @@ const NUM_IMPORTS: u32 = 24;
 // Function indices (after imports)
 const F_RUN: u32 = NUM_IMPORTS + 0;       // 24: () -> i64
 const F_START: u32 = NUM_IMPORTS + 1;     // 25: () -> ()
-const F_REALLOC: u32 = NUM_IMPORTS + 2;   // 26: (i32,i32,i32,i32) -> i32
+const F_RUN_EXPORT: u32 = NUM_IMPORTS + 2; // 26: () -> ()
+const F_REALLOC: u32 = NUM_IMPORTS + 3;   // 27: (i32,i32,i32,i32) -> i32
 
 // ── Memory layout ──
 const BUMP_PTR: i32 = 128;        // bump allocator pointer
@@ -81,6 +82,8 @@ pub fn build_native() -> Vec<u8> {
     types.ty().function([ValType::I32; 5], [ValType::I32]);              // 7: (5xi32) -> i32
     types.ty().function([ValType::I32, ValType::I64, ValType::I32], []); // 8: stream read
     types.ty().function([], [ValType::I64]);                             // 9: () -> i64
+    types.ty().function([], [ValType::I32]);                            // 10: () -> i32 (run export)
+    types.ty().function([ValType::I32; 5], []);                         // 11: (5xi32) -> () (set-scheme returns result)
     m.section(&types);
 
     // ── Import section ──
@@ -119,9 +122,10 @@ pub fn build_native() -> Vec<u8> {
 
     // ── Functions (must come before memory section) ──
     let mut funcs = FunctionSection::new();
-    funcs.function(9); // run: () -> i64
-    funcs.function(0); // _start: () -> ()
-    funcs.function(6); // realloc: (4xi32) -> i32
+    funcs.function(9);  // run (main logic): () -> i64
+    funcs.function(0);  // _start: () -> ()
+    funcs.function(10); // run_export: () -> i32 (wasi:cli/run result<()>)
+    funcs.function(6);  // realloc: (4xi32) -> i32
     m.section(&funcs);
 
     // ── Memory ──
@@ -132,8 +136,9 @@ pub fn build_native() -> Vec<u8> {
     // ── Exports ──
     let mut exps = ExportSection::new();
     exps.export("memory", ExportKind::Memory, 0);
-    // WASI P2 command: export _start for adapter mode, or "run" for native mode
     exps.export("_start", ExportKind::Func, F_START as u32);
+    // wit-component expects interface#function format for component exports
+    exps.export("wasi:cli/run@0.2.2#run", ExportKind::Func, F_RUN_EXPORT as u32);
     exps.export("canonical_abi_realloc", ExportKind::Func, F_REALLOC as u32);
     m.section(&exps);
 
@@ -141,6 +146,7 @@ pub fn build_native() -> Vec<u8> {
     let mut code = wasm_encoder::CodeSection::new();
     code.function(&build_run());
     code.function(&build_start());
+    code.function(&build_run_export());
     code.function(&build_realloc());
     m.section(&code);
 
@@ -192,11 +198,13 @@ fn build_run() -> Function {
     f.instruction(&Instruction::I64Const(STDIN_BUF_SIZE as i64));
     f.instruction(&Instruction::I32Const(RET)); // ret_ptr
     f.instruction(&Instruction::Call(I_BLOCKING_READ));
-    // Read result: ret_ptr = ptr, ret_ptr+4 = len
-    f.instruction(&Instruction::I32Const(RET));
+    // blocking-read result: result<list<u8>, error> via ret_ptr
+    // [discrim i32, ptr i32, len i32]
+    // discrim 0 = ok
+    f.instruction(&Instruction::I32Const(RET + 4)); // ptr (skip discriminant)
     f.instruction(&Instruction::I32Load(mem_arg(0)));
     f.instruction(&Instruction::LocalSet(url_ptr));
-    f.instruction(&Instruction::I32Const(RET + 4));
+    f.instruction(&Instruction::I32Const(RET + 8)); // len (skip discrim + ptr)
     f.instruction(&Instruction::I32Load(mem_arg(0)));
     f.instruction(&Instruction::LocalSet(url_len));
 
@@ -313,14 +321,14 @@ fn build_run() -> Function {
     // For HTTPS (scheme variant 1): some tag=0, then scheme discriminant=1
     // But the type signature is (i32,i32,i32,i32,i32) -> i32
     // That's (self, option_discriminant, scheme_discriminant, string_ptr, string_len) -> result<i32>
-    // For HTTPS: (req, 0, 1, 0, 0) — some, HTTPS, no string
+    // For HTTPS: (req, 1=some, 1=HTTPS, 0, 0)
     f.instruction(&Instruction::LocalGet(req_h));
-    f.instruction(&Instruction::I32Const(0)); // option: some
+    f.instruction(&Instruction::I32Const(1)); // option: some (not 0!)
     f.instruction(&Instruction::I32Const(1)); // scheme: HTTPS
-    f.instruction(&Instruction::I32Const(0)); // string ptr (unused)
+    f.instruction(&Instruction::I32Const(0)); // string ptr (unused for HTTPS)
     f.instruction(&Instruction::I32Const(0)); // string len
     f.instruction(&Instruction::Call(I_SET_SCHEME));
-    f.instruction(&Instruction::Drop); // drop result
+    f.instruction(&Instruction::Drop); // drop result i32
 
     // set-authority(request, option<tuple<string>>)
     // Type: (i32, i32, i32, i32) -> i32
@@ -330,9 +338,9 @@ fn build_run() -> Function {
     // But option<tuple<string>> is different from option<string>
     // In the WIT: set-authority takes option<authority> where authority = tuple<string>
     // canonical ABI: option has discriminant, then the inner value
-    // For option<tuple<string>>: if some: tag=0, ptr, len. if none: tag=1
+    // option<string>: some → discrim=1, ptr, len
     f.instruction(&Instruction::LocalGet(req_h));
-    f.instruction(&Instruction::I32Const(0)); // some
+    f.instruction(&Instruction::I32Const(1)); // option: some
     f.instruction(&Instruction::LocalGet(url_ptr));
     f.instruction(&Instruction::I32Const(AUTH_OFF));
     f.instruction(&Instruction::I32Load(mem_arg(0))); // authority offset
@@ -347,9 +355,9 @@ fn build_run() -> Function {
     // The authority ptr is computed as url_ptr + AUTH_OFF value. That's fine.
 
     // set-path-with-query(request, option<string>)
-    // Same pattern as authority
+    // Same pattern as authority: discrim=1 for some
     f.instruction(&Instruction::LocalGet(req_h));
-    f.instruction(&Instruction::I32Const(0)); // some
+    f.instruction(&Instruction::I32Const(1)); // option: some
     f.instruction(&Instruction::I32Const(PATH_OFF));
     f.instruction(&Instruction::I32Load(mem_arg(0))); // path ptr
     f.instruction(&Instruction::I32Const(PATH_LEN_LOC));
@@ -539,6 +547,15 @@ fn build_start() -> Function {
     let mut f = Function::new([]);
     f.instruction(&Instruction::Call(F_RUN as u32));
     f.instruction(&Instruction::Drop);
+    f.instruction(&Instruction::End);
+    f
+}
+
+fn build_run_export() -> Function {
+    let mut f = Function::new([]);
+    f.instruction(&Instruction::Call(F_RUN as u32));
+    f.instruction(&Instruction::Drop);
+    f.instruction(&Instruction::I32Const(0)); // 0 = Ok(())
     f.instruction(&Instruction::End);
     f
 }
