@@ -17,13 +17,20 @@ fn tokenize(input: &str) -> Vec<(String, usize)> {
         let ch = chars[i];
 
         if in_str {
-            cur.push(ch);
-            if ch == '"' {
-                tokens.push((cur.clone(), cur_start));
-                cur.clear();
-                in_str = false;
+            if ch == '\\' && i + 1 < len {
+                // Escaped character — consume both \ and next char
+                cur.push(ch);
+                cur.push(chars[i + 1]);
+                i += 2;
+            } else {
+                cur.push(ch);
+                if ch == '"' {
+                    tokens.push((cur.clone(), cur_start));
+                    cur.clear();
+                    in_str = false;
+                }
+                i += 1;
             }
-            i += 1;
         } else if ch == '"' && !in_str {
             in_str = true;
             cur_start = i;
