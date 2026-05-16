@@ -93,6 +93,20 @@ interface api {
 
     /// Raw JSON-RPC call (for any method not covered above)
     raw: func(method: string, params-json: string) -> tuple<string, string>;
+
+    // ==================== HTTP Methods ====================
+
+    /// HTTP GET request
+    /// url: full URL to fetch
+    /// Returns (body, error) - body is UTF-8 string on success
+    http-get: func(url: string) -> tuple<string, string>;
+
+    /// HTTP POST request
+    /// url: full URL to post to
+    /// body: request body as bytes
+    /// content-type: MIME type (e.g. "application/json")
+    /// Returns (body, error) - body is UTF-8 string on success
+    http-post: func(url: string, body: list<u8>, content-type: string) -> tuple<string, string>;
 }
 
 world rpc-host {

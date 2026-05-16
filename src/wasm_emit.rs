@@ -181,6 +181,12 @@ const OUTLAYER_FUNCS: &[(&str, &[ValType], &[ValType])] = &[
     ("wallet-intents-deposit", &[ValType::I32; 5],  &[]),  // 40
     // wallet-swap(token-in, token-out, amount-in, min-out, ret) — 4 str + ret = 9
     ("wallet-swap",            &[ValType::I32; 9],  &[]),  // 41
+
+    // ── HTTP (near:rpc/api) ──
+    // http-get(url, ret) — 1 str + ret = 3
+    ("http-get",               &[ValType::I32; 3],  &[]),  // 42
+    // http-post(url, body_ptr, body_len, content-type, ret) — 1 str + 1 list + 1 str + ret = 7
+    ("http-post",              &[ValType::I32; 7],  &[]),  // 43
 ];
 
 const HOST_BASE: u32 = 0xFF00_0000;
@@ -207,6 +213,7 @@ fn outlayer_name_idx(name: &str) -> usize {
         "wallet/get-request-status" => 36, "wallet/list-tokens" => 37,
         "wallet/transfer" => 38, "wallet/get-balance" => 39,
         "wallet/intents-deposit" => 40, "wallet/swap" => 41,
+        "http/get" => 42, "http/post" => 43,
         _ => 0,
     }
 }
@@ -410,6 +417,9 @@ impl WasmEmitter {
             "wallet/get-balance" => self.need_outlayer(39),
             "wallet/intents-deposit" => self.need_outlayer(40),
             "wallet/swap" => self.need_outlayer(41),
+            // HTTP
+            "http/get" => self.need_outlayer(42),
+            "http/post" => self.need_outlayer(43),
             // Also scan children for outlayer usage
             // WASI builtins
             "wasi/read_stdin" => { self.need_wasi(0); }
@@ -1414,7 +1424,7 @@ impl WasmEmitter {
             }
 
             // ── Outlayer builtins (flat i32 params, void return, result via ret_ptr) ──
-            op if op.starts_with("rpc/") || op.starts_with("storage/") || op.starts_with("payment/") || op.starts_with("wallet/") => {
+            op if op.starts_with("rpc/") || op.starts_with("storage/") || op.starts_with("payment/") || op.starts_with("wallet/") || op.starts_with("http/") => {
                 let ol_idx = outlayer_name_idx(op);
                 let sig = OUTLAYER_FUNCS[ol_idx];
                 let mut v = Vec::new();
@@ -4060,6 +4070,7 @@ impl WasmEmitter {
                     19..=30 => "near:storage/api@0.1.0",
                     31 => "near:payment/api@0.1.0",
                     32..=41 => "outlayer:wallet/api@0.1.0",
+                    42..=43 => "near:rpc/api@0.1.0",
                     _ => "outlayer:api/host",
                 }
             } else {
