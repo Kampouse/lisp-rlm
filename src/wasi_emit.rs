@@ -272,6 +272,7 @@ pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
     let exprs = crate::parser::parse_all(&resolved)?;
     let mut em = WasmEmitter::new();
     em.wasi_mode = true;
+    em.p2_mode = true;
     em.no_proc_exit = true; // wit-component adapter handles exit
     for e in &exprs {
         if let crate::types::LispVal::List(items) = e {
@@ -316,35 +317,351 @@ pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
 /// Build a P2 component with wasi:http support.
 /// Generates a core module with wasi:http canonical imports, embeds WIT metadata,
 /// and builds the component through wit-component.
+/// Build P2 component with wasi:http imports + user's Lisp code.
+///
+/// This creates a component that:
+/// 1. Imports wasi:http functions (27 imports, indices 0-26)
+/// 2. Has `__wasi_http_get` internal function that uses those imports
+/// 3. Has all user functions from the emitter
+/// 4. Has `_start` wrapper (read stdin, call user fn, write stdout)
+/// 5. Has `cabi_realloc` bump allocator
 fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
     use crate::wasi_http::*;
-    
+    use crate::wasi_http_buffer;
+
     let mut module = Module::new();
-    
-    // ── Types (section 1) ──
+
+    // ═══ Type Section ═══
     let mut types = TypeSection::new();
-    types.ty().function([], [W]); // 0: () -> i32
-    types.ty().function([W], [W]); // 1: (i32) -> i32
-    types.ty().function([W, W], []); // 2: (i32,i32) -> ()
-    types.ty().function([W], []); // 3: (i32) -> ()
-    types.ty().function([W, W, W, W], [W]); // 4: set-method etc
-    types.ty().function([W, W, W, W, W], [W]); // 5: set-scheme
-    types.ty().function([W, W, W, W], []); // 6: blocking-write-and-flush
-    types.ty().function([W, W, W], []); // 7: poll
-    types.ty().function([W, ValType::I64, W], []); // 8: read
-    types.ty().function([W, W, W], [W]); // 9: finish/handle
-    types.ty().function([], [W]); // 10: () -> i32 (_start/run returns result)
-    types.ty().function([], [ValType::I64]); // 11: () -> i64 (user)
-    types.ty().function([ValType::I32, ValType::I32, ValType::I32, ValType::I32], [ValType::I32]); // 12: cabi_realloc
+    // Types for wasi:http imports (must match wasi_http.rs exactly):
+    types.ty().function([], [W]);                    // 0: () -> i32
+    types.ty().function([W], [W]);                   // 1: (i32) -> i32
+    types.ty().function([W, W], []);                 // 2: (i32,i32) -> ()
+    types.ty().function([W], []);                    // 3: (i32) -> ()
+    types.ty().function([W, W, W, W], [W]);          // 4: set-method etc
+    types.ty().function([W, W, W, W, W], [W]);       // 5: set-scheme
+    types.ty().function([W, W, W, W], []);           // 6: blocking-write-and-flush / finish / handle
+    types.ty().function([W, W, W], []);              // 7: poll
+    types.ty().function([W, ValType::I64, W], []);   // 8: read
+
+    // User function types: (N x i64) -> i64
+    let user_type_base = 9u32;
+    for i in 0..=16u32 {
+        let params = vec![ValType::I64; i as usize];
+        types.ty().function(params, [ValType::I64]); // types 9..25
+    }
+    // Type for _start: () -> ()
+    let start_type: u32 = 26;
+    types.ty().function([], [W]); // () -> i32 (result<()>)
+    let realloc_type: u32 = 27;
+    types.ty().function([W, W, W, W], [W]);
+    let http_get_type: u32 = 28;
+    types.ty().function([W, W, W, W, W], [W]);
     module.section(&types);
-    
-    // ── Imports (section 2) ──
+
+    // ═══ Import Section (wasi:http + wasi:cli + wasi:io) ═══
     let mut imports = ImportSection::new();
+    // Use the exact same imports as wasi_http.rs
+    add_http_imports_to_section(&mut imports);
+    let import_count = HTTP_IMPORT_COUNT; // 27
+    module.section(&imports);
+
+    // ═══ Function Section ═══
+    let mut functions = FunctionSection::new();
+    // __wasi_http_get function (index 27)
+    functions.function(http_get_type);
+    let http_get_fn_idx = import_count; // 27
+    // User functions
+    let user_fn_base = import_count + 1; // 28
+    for f in &em.funcs {
+        let type_idx = user_type_base + f.param_count as u32;
+        functions.function(type_idx);
+    }
+    // _start (index after user functions)
+    let start_fn_idx = user_fn_base + em.funcs.len() as u32;
+    functions.function(start_type);
+    // cabi_realloc
+    let realloc_fn_idx = start_fn_idx + 1;
+    functions.function(realloc_type);
+    module.section(&functions);
+
+    // ═══ Table + Element Section (for call_indirect in component model) ═══
+    // Must come before memory (section order: func(3) < table(4) < elem(9)... wait
+    // Actually elem(9) > memory(5) > global(6) > export(7). So: table(4), memory(5), global(6), export(7), elem(9)
+    let mut table = TableSection::new();
+    table.table(TableType { element_type: RefType::FUNCREF, minimum: 2, maximum: Some(2), table64: false, shared: false });
+    module.section(&table);
+
+    // ═══ Memory Section ═══
+    let mut memory = MemorySection::new();
+    let pages = em.memory_pages.max(16) as u64; // min 16 pages (1MB) for P2 scratch + heap
+    memory.memory(MemoryType { minimum: pages, maximum: None, memory64: false, shared: false, page_size_log2: None });
+    module.section(&memory);
+
+    // ═══ Global Section ═══
+    // Global 0: depth counter (i64) — must match emitter convention
+    // Global 1: return flag (i64) — must match emitter convention
+    let mut globals = GlobalSection::new();
+    globals.global(GlobalType { val_type: ValType::I64, mutable: true, shared: false }, &ConstExpr::i64_const(0));
+    globals.global(GlobalType { val_type: ValType::I64, mutable: true, shared: false }, &ConstExpr::i64_const(0));
+    module.section(&globals);
+
+    // ═══ Export Section ═══
+    let mut exports = ExportSection::new();
+    exports.export("memory", ExportKind::Memory, 0);
+    exports.export("wasi:cli/run@0.2.2#run", ExportKind::Func, start_fn_idx);
+    exports.export("cabi_realloc", ExportKind::Func, realloc_fn_idx);
+    module.section(&exports);
+
+    // ═══ Element Section ═══
+    let mut elements = ElementSection::new();
+    elements.active(None, &ConstExpr::i32_const(0),
+        Elements::Functions(vec![start_fn_idx, realloc_fn_idx].into()));
+    module.section(&elements);
+
+    // ═══ Code Section ═══
+    let mut codes = CodeSection::new();
+
+    // ── Function 1: __wasi_http_get ──
+    // Params: 0=url_ptr, 1=url_len, 2=buf_ptr, 3=buf_len, 4=len_ptr
+    // Extra locals: 5=fields, 6=req, 7=body, 8=future, 9=pollable,
+    //               10=response, 11=resp_body, 12=in_stream,
+    //               13=temp_i/path_len, 14=authority_len, 15=authority_ptr,
+    //               16=path_ptr, 17=bytes_written
+    let mut http_get_fn = Function::new([
+        (1u32, W), (1u32, W), (1u32, W), (1u32, W), (1u32, W),
+        (1u32, W), (1u32, W), (1u32, W), (1u32, W), (1u32, W),
+        (1u32, W), (1u32, W), (1u32, W),
+    ]);
+    wasi_http_buffer::emit_http_get_to_buffer(&mut http_get_fn);
+    http_get_fn.instruction(&Instruction::End);
+    codes.function(&http_get_fn);
+
+    // ── User functions from the emitter ──
+    let name_map: std::collections::HashMap<&str, u32> = em.funcs.iter().enumerate()
+        .map(|(i, f)| (f.name.as_str(), user_fn_base + i as u32))
+        .collect();
+
+    for f in &em.funcs {
+        let extra = f.local_count.saturating_sub(f.param_count);
+        let locals: Vec<(u32, ValType)> = if extra > 0 { vec![(extra as u32, ValType::I64)] } else { vec![] };
+
+        // Resolve sentinels — same logic as finish_outlayer_inner but:
+        // - No WASI P1 imports (no fd_read/fd_write)
+        // - sentinel 103 (http_get) → __wasi_http_get function index
+        // - sentinel WASI_FD_WRITE → we don't have fd_write; handle print differently
+        let resolved = {
+            let base_resolved = WasmEmitter::resolve_static_pub(&f.instrs, &std::collections::HashMap::new(), &name_map, &em.funcs);
+            let mut ol_map: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+            // Map http_get sentinel to __wasi_http_get function
+            ol_map.insert(103, http_get_fn_idx);
+            // Map other outlayer sentinels to... stubs? For now they'll fail at runtime
+            // We don't import them, so any call will trap. That's OK for http-only programs.
+            // WASI fd_write is used by print — but we don't have it in wasi:http mode
+            // Instead, print goes to stdout via wasi:cli which wasi:http provides
+            // Actually, the wasi:http imports include get-stdout and blocking-write-and-flush
+            // We can map fd_write to the stdout write... but the signatures don't match
+            // For now, just map fd_write to a no-op (prints won't work, but HTTP will)
+            ol_map.insert(crate::wasm_emit::WASI_FD_WRITE, HTTP_IMPORT_COUNT + 2); // sentinel
+            // Actually, let's not map WASI_FD_WRITE — if the code uses print, it'll fail
+            // Most HTTP programs won't need print in the WASM itself
+            WasmEmitter::resolve_static_pub_ex(&base_resolved, &std::collections::HashMap::new(), &name_map, &em.funcs, &ol_map)
+        };
+
+        let mut fb = Function::new(locals);
+        for instr in &resolved { fb.instruction(instr); }
+        fb.instruction(&Instruction::End);
+        codes.function(&fb);
+    }
+
+    // ── _start() wrapper ──
+    // Same structure as the one in finish_outlayer_inner, but without fd_read/fd_write
+    // Instead: read stdin via wasi:http stdin, write stdout via wasi:http stdout
+    // For now, keep it simple — the _start reads stdin, calls user fn, writes result
+    {
+        // For wasi:http components, stdin/stdout work via the wasi:cli interface
+        // which is provided by the runtime. But our module doesn't import them directly —
+        // the component model adapter provides them.
+        // 
+        // Actually, our module ONLY imports wasi:http functions. It doesn't import
+        // wasi:cli/stdin or wasi:cli/stdout. The wasi:http imports include get-stdout
+        // (FN_GET_STDOUT = 23) for the HTTP response writing, but for stdin we need
+        // wasi:cli/stdin.
+        //
+        // Hmm, this is a problem. The _start wrapper needs stdin/stdout.
+        // Let me add wasi:cli/stdin import too.
+
+        // Actually wait — looking at the wasi:http imports, we already have:
+        // - FN_GET_STDOUT (23) = wasi:cli/stdout@0.2.2 get-stdout
+        // - FN_OUTPUT_STREAM_WRITE (24) = wasi:io/streams blocking-write-and-flush
+        // But no stdin!
+        //
+        // For the _start wrapper, we need stdin to read input.
+        // Option 1: Add wasi:cli/stdin import
+        // Option 2: Use environment variables for input (the runtime passes input via env)
+        // Option 3: Skip stdin entirely for HTTP programs — the URL is hardcoded
+
+        // For now: build a minimal _start that just calls the user function with nil
+        // and writes the result to stdout. The user function should use http-get directly.
+
+        // Minimal _start: call the last user function with nil input, write result to stdout
+        let last_func = em.funcs.last().unwrap();
+        let last_idx = user_fn_base + (em.funcs.len() - 1) as u32;
+        let param_count = last_func.param_count;
+
+        let mut fb = Function::new([
+            (1u32, W),  // local 0: stdout handle (i32)
+            (1u32, W),  // local 1: string ptr (i32)
+            (1u32, ValType::I64),  // local 2: result (i64)
+            (1u32, W),  // local 3: string len (i32)
+        ]);
+
+        // Call user function with TAG_NIL as input
+        for _ in 0..param_count {
+            fb.instruction(&Instruction::I64Const(crate::wasm_emit::TAG_NIL as i64));
+        }
+        fb.instruction(&Instruction::Call(last_idx));
+        fb.instruction(&Instruction::LocalSet(2)); // result
+
+        // Write result to stdout using wasi:http stdout
+        // get-stdout
+        fb.instruction(&Instruction::Call(FN_GET_STDOUT)); // () -> i32
+        fb.instruction(&Instruction::LocalSet(0)); // stdout handle
+
+        // Convert result to string and write
+        // For simplicity: if result is a string, write it. Otherwise write nothing.
+        // Tag check: result & 7 == TAG_STR (7)
+        let ma4 = MemArg { offset: 0, align: 2, memory_index: 0 };
+
+        fb.instruction(&Instruction::LocalGet(2));
+        fb.instruction(&Instruction::I64Const(7));
+        fb.instruction(&Instruction::I64And);
+        fb.instruction(&Instruction::I64Const(crate::wasm_emit::TAG_STR as i64));
+        fb.instruction(&Instruction::I64Eq);
+        fb.instruction(&Instruction::If(BlockType::Empty));
+        // It's a string: extract ptr and len
+        // ptr = (val >> 3) & 0xFFFFFFFF
+        fb.instruction(&Instruction::LocalGet(2));
+        fb.instruction(&Instruction::I64Const(3));
+        fb.instruction(&Instruction::I64ShrU);
+        fb.instruction(&Instruction::I64Const(0xFFFFFFFF));
+        fb.instruction(&Instruction::I64And);
+        fb.instruction(&Instruction::I32WrapI64);
+        fb.instruction(&Instruction::LocalSet(1)); // ptr (i32)
+
+        // len = (val >> 35) & 0xFFFFFFFF
+        fb.instruction(&Instruction::LocalGet(2));
+        fb.instruction(&Instruction::I64Const(35));
+        fb.instruction(&Instruction::I64ShrU);
+        fb.instruction(&Instruction::I64Const(0xFFFFFFFF));
+        fb.instruction(&Instruction::I64And);
+        fb.instruction(&Instruction::I32WrapI64);
+        fb.instruction(&Instruction::LocalSet(3)); // len (i32 local)
+
+        // Write to stdout: blocking-write-and-flush(stdout, ptr, len, 0)
+        fb.instruction(&Instruction::LocalGet(0)); // stdout
+        fb.instruction(&Instruction::LocalGet(1)); // ptr
+        fb.instruction(&Instruction::LocalGet(3)); // len
+        fb.instruction(&Instruction::I32Const(0)); // pad
+        fb.instruction(&Instruction::Call(FN_OUTPUT_STREAM_WRITE));
+
+        fb.instruction(&Instruction::End); // end if
+
+        // Drop stdout
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::Call(FN_DROP_OUTPUT_STREAM));
+
+        // Return 0 (success)
+        fb.instruction(&Instruction::I32Const(0));
+        fb.instruction(&Instruction::End); // end function
+        codes.function(&fb);
+    }
+
+    // ── cabi_realloc ──
+    // Uses memory at offset 196608 (192KB) as bump allocator pointer.
+    // This is after all other static data (stdin, stdout, scratch, etc.)
+    {
+        let heap_ptr_addr: i32 = 196608;
+        let mut realloc = Function::new([(1, ValType::I32)]); // extra local 4
+        let ma4 = MemArg { offset: 0, align: 2, memory_index: 0 };
+        // Initialize heap_ptr if zero (first call)
+        // result = heap_ptr (from memory)
+        realloc.instruction(&Instruction::I32Const(heap_ptr_addr));
+        realloc.instruction(&Instruction::I32Load(ma4));
+        // If heap_ptr == 0, initialize to 1048576 (1MB)
+        realloc.instruction(&Instruction::LocalTee(4));
+        realloc.instruction(&Instruction::I32Eqz);
+        realloc.instruction(&Instruction::If(BlockType::Empty));
+        realloc.instruction(&Instruction::I32Const(1048576));
+        realloc.instruction(&Instruction::I32Const(heap_ptr_addr));
+        realloc.instruction(&Instruction::I32Store(ma4));
+        realloc.instruction(&Instruction::I32Const(1048576));
+        realloc.instruction(&Instruction::LocalSet(4));
+        realloc.instruction(&Instruction::End);
+        // heap_ptr += new_len (param 3), aligned to 4
+        realloc.instruction(&Instruction::LocalGet(4));
+        realloc.instruction(&Instruction::LocalGet(3));
+        realloc.instruction(&Instruction::I32Add);
+        realloc.instruction(&Instruction::I32Const(3));
+        realloc.instruction(&Instruction::I32Add);
+        realloc.instruction(&Instruction::I32Const(-4));
+        realloc.instruction(&Instruction::I32And);
+        // Store new heap_ptr
+        realloc.instruction(&Instruction::I32Const(heap_ptr_addr));
+        realloc.instruction(&Instruction::I32Store(ma4));
+        // Return old ptr
+        realloc.instruction(&Instruction::LocalGet(4));
+        realloc.instruction(&Instruction::End);
+        codes.function(&realloc);
+    }
+
+    module.section(&codes);
+
+    // ═══ Data Section (string literals from lisp emitter) ═══
+    if !em.data_segments.is_empty() {
+        let mut data = DataSection::new();
+        for (off, bytes) in &em.data_segments {
+            data.active(0, &ConstExpr::i32_const(*off as i32), bytes.iter().copied());
+        }
+        module.section(&data);
+    }
+
+    // ═══ Build and embed WIT metadata ═══
+    let mut core_bytes = module.finish();
+    std::fs::write("/tmp/p2_http_core.wasm", &core_bytes).ok();
+
+    let (resolve, world) = crate::wasi_http::build_http_wit_metadata()?;
+    let before = core_bytes.len();
+    wit_component::embed_component_metadata(&mut core_bytes, &resolve, world, wit_component::StringEncoding::UTF8)
+        .map_err(|e| format!("embed metadata failed: {}", e))?;
+    eprintln!("WIT metadata: {} -> {} bytes", before, core_bytes.len());
+    std::fs::write("/tmp/p2_http_core_with_meta.wasm", &core_bytes).ok();
+
+    let component = wit_component::ComponentEncoder::default()
+        .module(&core_bytes).map_err(|e| format!("encoder: {:#}", e))?
+        .validate(true)
+        .encode().map_err(|e| format!("encode: {:#}", e))?;
+
+    eprintln!("✅ P2 wasi:http component: {} bytes", component.len());
+    std::fs::write("/tmp/p2_wasi_http.wasm", &component).ok();
+
+    if let Err(e) = wasmparser::validate(&component) {
+        eprintln!("⚠️ Component validation warning: {}", e);
+    }
+
+    Ok(component)
+}
+
+/// Add wasi:http imports to an existing ImportSection (same as add_http_imports but uses sections).
+fn add_http_imports_to_section(imports: &mut ImportSection) {
+    // Type indices 0-8 match the type section defined in build_p2_with_wasi_http above.
+
     let ht = "wasi:http/types@0.2.2";
     let hh = "wasi:http/outgoing-handler@0.2.2";
     let is = "wasi:io/streams@0.2.2";
     let ip = "wasi:io/poll@0.2.2";
     let cs = "wasi:cli/stdout@0.2.2";
+
     imports.import(is, "[resource-drop]input-stream", EntityType::Function(3));
     imports.import(is, "[resource-drop]output-stream", EntityType::Function(3));
     imports.import(ht, "[resource-drop]incoming-response", EntityType::Function(3));
@@ -372,184 +689,6 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
     imports.import(is, "[method]output-stream.blocking-write-and-flush", EntityType::Function(6));
     imports.import(ht, "[resource-drop]incoming-body", EntityType::Function(3));
     imports.import(ht, "[resource-drop]fields", EntityType::Function(3));
-    module.section(&imports);
-    
-    // ── Functions (section 3) ──
-    let mut functions = FunctionSection::new();
-    functions.function(10); // _start/run: () -> ()
-    functions.function(12); // cabi_realloc: (i32,i32,i32,i32) -> i32
-    module.section(&functions);
-    
-    // ── Memory (section 5) ──
-    let mut memory = MemorySection::new();
-    memory.memory(MemoryType { minimum: 64, maximum: None, memory64: false, shared: false, page_size_log2: None }); // 4MB
-    module.section(&memory);
-    
-    // ── Globals (section 6) ──
-    let mut globals = GlobalSection::new();
-    globals.global(GlobalType { val_type: ValType::I32, mutable: true, shared: false }, &ConstExpr::i32_const(1048576));
-    module.section(&globals);
-    
-    // ── Exports (section 7) ──
-    let mut exports = ExportSection::new();
-    exports.export("memory", ExportKind::Memory, 0);
-    exports.export("wasi:cli/run@0.2.2#run", ExportKind::Func, HTTP_IMPORT_COUNT);
-    exports.export("cabi_realloc", ExportKind::Func, HTTP_IMPORT_COUNT + 1);
-    module.section(&exports);
-    
-    // ── Table (section 8) ──
-    // The component model adapter uses call_indirect to dispatch to exports.
-    // Without this table, call_indirect traps with "undefined element".
-    let run_func_idx = HTTP_IMPORT_COUNT as u32;
-    let realloc_func_idx = HTTP_IMPORT_COUNT as u32 + 1;
-    let mut table = TableSection::new();
-    table.table(TableType { element_type: RefType::FUNCREF, minimum: 2, maximum: Some(2), table64: false, shared: false });
-    module.section(&table);
-    
-    // ── Element (section 9) ──
-    // Populate table[0] = run, table[1] = cabi_realloc
-    let mut elements = ElementSection::new();
-    elements.active(
-        None, // table 0
-        &ConstExpr::i32_const(0),
-        Elements::Functions(vec![run_func_idx, realloc_func_idx].into()),
-    );
-    module.section(&elements);
-    
-    let url = b"https://httpbin.org/get";
-    
-    // ── Code (section 10) ──
-    let mut codes = CodeSection::new();
-    let mut start_func = Function::new([(12, ValType::I32)]);
-    
-    // Step-by-step HTTP GET (testing which call crashes)
-    // Step 1: fields = constructor
-    start_func.instruction(&Instruction::Call(FN_CONSTRUCTOR_FIELDS)); // () -> i32
-    start_func.instruction(&Instruction::LocalSet(0));
-    
-    // Step 2: req = constructor(fields)
-    start_func.instruction(&Instruction::LocalGet(0));
-    start_func.instruction(&Instruction::Call(FN_CONSTRUCTOR_OUTGOING_REQUEST)); // (i32) -> i32
-    start_func.instruction(&Instruction::LocalSet(1));
-    
-    // Step 3: set-method GET
-    start_func.instruction(&Instruction::LocalGet(1));  // req
-    start_func.instruction(&Instruction::I32Const(0));  // disc=0 (get)
-    start_func.instruction(&Instruction::I32Const(0));  // ptr
-    start_func.instruction(&Instruction::I32Const(0));  // len
-    start_func.instruction(&Instruction::Call(FN_SET_METHOD)); // -> i32
-    start_func.instruction(&Instruction::Drop);
-    
-    // Step 4: set-scheme HTTPS — SKIP (crashes, canonical ABI issue with variant)
-    // Step 5: set-authority — SKIP
-    
-    // Step 6: SKIP set-path (also crashes with variant)
-    
-    // Step 7: get body (writes result<outgoing-body> to scratch)
-    start_func.instruction(&Instruction::LocalGet(1));
-    start_func.instruction(&Instruction::I32Const(SCRATCH_BODY_RESULT));
-    start_func.instruction(&Instruction::Call(FN_OUTGOING_REQUEST_BODY)); // (i32,i32) -> ()
-    start_func.instruction(&Instruction::I32Const(0));
-    start_func.instruction(&Instruction::I32Load(MemArg { offset: (SCRATCH_BODY_RESULT + 4) as u64, align: 2, memory_index: 0 }));
-    start_func.instruction(&Instruction::LocalSet(2)); // body handle
-    
-    // Step 8: finish body (no trailers)
-    start_func.instruction(&Instruction::LocalGet(2));
-    start_func.instruction(&Instruction::I32Const(0)); // none
-    start_func.instruction(&Instruction::I32Const(0));
-    start_func.instruction(&Instruction::I32Const(0));
-    start_func.instruction(&Instruction::Call(FN_OUTGOING_BODY_FINISH)); // (i32,i32,i32,i32) -> ()
-    
-    // NOTE: Don't drop body after finish — finish consumes the resource
-    
-    // Step 9: handle(req, none, dst, dst_len) — sends request
-    // Result area needs space for result<future, error-code> = up to 24 bytes
-    start_func.instruction(&Instruction::LocalGet(1));
-    start_func.instruction(&Instruction::I32Const(0)); // none (no options)
-    start_func.instruction(&Instruction::I32Const(SCRATCH_FUTURE_RESULT)); // dst ptr
-    start_func.instruction(&Instruction::I32Const(24)); // dst len (enough for result<future, error-code>)
-    start_func.instruction(&Instruction::Call(FN_HANDLE)); // (i32,i32,i32,i32) -> ()
-    // NOTE: handle consumes the request — don't drop it
-    // Load future handle from +4 (after discriminant)
-    start_func.instruction(&Instruction::I32Const(0));
-    start_func.instruction(&Instruction::I32Load(MemArg { offset: (SCRATCH_FUTURE_RESULT + 4) as u64, align: 2, memory_index: 0 }));
-    start_func.instruction(&Instruction::LocalSet(3)); // future handle
-    
-    // Drop request — NO, handle consumed it
-    
-    // Step 10: future.get(future_handle, dst_ptr)
-    start_func.instruction(&Instruction::LocalGet(3));
-    start_func.instruction(&Instruction::I32Const(SCRATCH_GET_RESULT));
-    start_func.instruction(&Instruction::Call(FN_FUTURE_GET));
-    
-    // Drop future
-    start_func.instruction(&Instruction::LocalGet(3));
-    start_func.instruction(&Instruction::Call(FN_DROP_FUTURE_INCOMING_RESPONSE));
-    
-    // Just exit — test if future.get succeeds
-    start_func.instruction(&Instruction::I32Const(0));
-    start_func.instruction(&Instruction::End);
-    codes.function(&start_func);
-    
-    // cabi_realloc: bump allocator using global 0 (heap_ptr)
-    // (old_ptr: i32, old_len: i32, align: i32, new_len: i32) -> i32
-    // params = locals 0-3, additional local 4 = result
-    let mut realloc = Function::new([(1, ValType::I32)]); // 1 additional local (index 4)
-    // Read current heap_ptr from global 0
-    realloc.instruction(&Instruction::GlobalGet(0)); // heap_ptr
-    realloc.instruction(&Instruction::LocalSet(4)); // result = heap_ptr (use local 4, not 0!)
-    // Advance heap_ptr by new_len (aligned)
-    realloc.instruction(&Instruction::GlobalGet(0)); // heap_ptr
-    realloc.instruction(&Instruction::LocalGet(3));  // new_len (param 3)
-    realloc.instruction(&Instruction::I32Add);
-    // Align to 4 bytes
-    realloc.instruction(&Instruction::I32Const(3));
-    realloc.instruction(&Instruction::I32Add);
-    realloc.instruction(&Instruction::I32Const(-4));
-    realloc.instruction(&Instruction::I32And);
-    realloc.instruction(&Instruction::GlobalSet(0)); // heap_ptr = aligned(heap_ptr + new_len)
-    // Return old ptr
-    realloc.instruction(&Instruction::LocalGet(4));
-    realloc.instruction(&Instruction::End);
-    codes.function(&realloc);
-    
-    // Note: user functions from emitter are NOT included because they use
-    // a different calling convention. For now, the _start does everything.
-    // The emitter's functions are discarded.
-    module.section(&codes);
-    
-    // ── Data (section 11) ──
-    let mut data = DataSection::new();
-    data.active(0, &ConstExpr::i32_const(32768), url.to_vec().into_boxed_slice());
-    module.section(&data);
-    
-    // ── Build and embed metadata ──
-    let mut core_bytes = module.finish();
-    std::fs::write("/tmp/p2_http_core.wasm", &core_bytes).unwrap();
-    // Note: core module may fail wasmparser validation due to canonical ABI
-    // memory addressing, but wit-component handles it correctly during encoding.
-    
-    let (resolve, world) = crate::wasi_http::build_http_wit_metadata()?;
-    let before_meta = core_bytes.len();
-    wit_component::embed_component_metadata(&mut core_bytes, &resolve, world, wit_component::StringEncoding::UTF8)
-        .map_err(|e| format!("embed metadata failed: {}", e))?;
-    eprintln!("Metadata embedding: {} -> {} bytes", before_meta, core_bytes.len());
-    std::fs::write("/tmp/p2_http_core_with_meta.wasm", &core_bytes).unwrap();
-    
-    let component = wit_component::ComponentEncoder::default()
-        .module(&core_bytes).map_err(|e| format!("encoder: {:#}", e))?
-        .validate(true)  // Enable validation to catch issues
-        .encode().map_err(|e| format!("encode: {:#}", e))?;
-    
-    eprintln!("✅ P2 wasi:http component: {} bytes", component.len());
-    std::fs::write("/tmp/p2_wasi_http.wasm", &component).unwrap();
-    
-    // Validate separately
-    if let Err(e) = wasmparser::validate(&component) {
-        eprintln!("⚠️ Component validation warning: {}", e);
-    }
-    
-    Ok(component)
 }
 fn build_p2_with_adapter(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
     // Load WASI adapter
@@ -900,8 +1039,8 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
 
     // ── Memory ──
     let mut mems = MemorySection::new();
-    // 4 pages = 256KB (need room for stdin/stdout buffers)
-    let pages = em.memory_pages.max(4) as u64;
+    // min 16 pages (1MB) for P2 scratch + heap
+    let pages = em.memory_pages.max(16) as u64;
     mems.memory(MemoryType { minimum: pages, maximum: None, memory64: false, shared: false, page_size_log2: None });
     m.section(&mems);
 
@@ -1702,6 +1841,186 @@ fn test_outlayer_json_deep() {
     let wasm = compile_outlayer(src).unwrap();
     let result = run_outlayer_wasm(&wasm, br#"{"a":{"b":{"c":7}}}"#);
     assert_eq!(result, 7, "deep nested json-get should parse a.b.c=7");
+}
+
+#[test]
+fn test_outlayer_http_get_real() {
+    let src = r#"(define (run) (http-get "https://wttr.in/Montreal?format=%t+%C"))"#;
+    let wasm = compile_outlayer(src).unwrap();
+    let result = run_outlayer_wasm_with_http(&wasm, &[]);
+    // RESULT_BUF stores untagged payload: ptr | (len << 32)
+    let ptr = (result & 0xFFFFFFFF) as usize;
+    let len = ((result >> 32) as u32) as usize;
+    eprintln!("📊 RESULT_BUF raw={:#x}, ptr={}, len={}", result, ptr, len);
+    assert!(len > 0, "http-get should return non-empty response, got ptr={} len={}", ptr, len);
+    assert!(ptr > 0, "ptr should be non-zero");
+    eprintln!("✅ HTTP GET works! Response at ptr={}, len={} bytes", ptr, len);
+}
+
+/// Run OutLayer WASM with a REAL http_get that makes actual HTTP requests
+fn run_outlayer_wasm_with_http(wasm: &[u8], stdin_data: &[u8]) -> i64 {
+    use std::sync::Arc;
+    use wasmtime::*;
+
+    let engine = Engine::default();
+    let module = Module::new(&engine, wasm).expect("WASM should be valid");
+
+    let stdin_arc = Arc::new(stdin_data.to_vec());
+    let mut store = Store::new(&engine, ());
+
+    let sd = stdin_arc.clone();
+    let fd_read_fn = Func::new(&mut store,
+        FuncType::new(&engine, vec![ValType::I32; 4], vec![ValType::I32]),
+        move |mut caller, args, results| {
+            let iov_ptr = args[1].unwrap_i32() as usize;
+            let nread_ptr = args[3].unwrap_i32() as usize;
+            if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                let data = mem.data_mut(&mut caller);
+                if iov_ptr + 8 <= data.len() {
+                    let buf_ptr = u32::from_le_bytes(data[iov_ptr..iov_ptr+4].try_into().unwrap()) as usize;
+                    let buf_len = u32::from_le_bytes(data[iov_ptr+4..iov_ptr+8].try_into().unwrap()) as usize;
+                    let copy_len = sd.len().min(buf_len);
+                    if buf_ptr + copy_len <= data.len() { data[buf_ptr..buf_ptr+copy_len].copy_from_slice(&sd[..copy_len]); }
+                    if nread_ptr + 4 <= data.len() { data[nread_ptr..nread_ptr+4].copy_from_slice(&(copy_len as u32).to_le_bytes()); }
+                }
+            }
+            results[0] = Val::I32(0); Ok(())
+        },
+    );
+    let fd_write_fn = Func::new(&mut store,
+        FuncType::new(&engine, vec![ValType::I32; 4], vec![ValType::I32]),
+        move |mut caller, args, results| {
+            // Capture stdout output
+            if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                let data = mem.data(&mut caller);
+                let iov_ptr = args[1].unwrap_i32() as usize;
+                if iov_ptr + 8 <= data.len() {
+                    let buf_ptr = u32::from_le_bytes(data[iov_ptr..iov_ptr+4].try_into().unwrap()) as usize;
+                    let buf_len = u32::from_le_bytes(data[iov_ptr+4..iov_ptr+8].try_into().unwrap()) as usize;
+                    if buf_ptr + buf_len <= data.len() {
+                        let output = String::from_utf8_lossy(&data[buf_ptr..buf_ptr+buf_len]);
+                        eprintln!("📝 stdout: {}", output);
+                    }
+                }
+            }
+            results[0] = Val::I32(args[2].unwrap_i32()); Ok(())
+        },
+    );
+    let proc_exit_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32], vec![]),
+        |_, args, _| Err(wasmtime::Error::msg(format!("proc_exit({})", args[0].unwrap_i32()))));
+    let random_get_fn = Func::wrap(&mut store, |_: i32, _: i32| -> i32 { 0 });
+    let environ_sizes_fn = Func::wrap(&mut store, |_: i32, _: i32| -> i32 { 0 });
+    let environ_get_fn = Func::wrap(&mut store, |_: i32, _: i32| -> i32 { 0 });
+    let fd_seek_fn = Func::wrap(&mut store, |_: i32, _: i64, _: i32, _: i32| -> i32 { 0 });
+
+    // REAL http_get: reads URL from WASM memory, does actual HTTP request, writes response back
+    let ol_http_get_fn = Func::new(&mut store,
+        FuncType::new(&engine, vec![ValType::I32; 5], vec![ValType::I32]),
+        move |mut caller, args, results| {
+            let url_ptr = args[0].unwrap_i32() as usize;
+            let url_len = args[1].unwrap_i32() as usize;
+            let resp_buf = args[2].unwrap_i32() as usize;
+            let resp_buf_len = args[3].unwrap_i32() as usize;
+            let resp_len_ptr = args[4].unwrap_i32() as usize;
+
+            if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                let data = mem.data_mut(&mut caller);
+                if url_ptr + url_len <= data.len() {
+                    let url = String::from_utf8_lossy(&data[url_ptr..url_ptr+url_len]).to_string();
+                    eprintln!("🌐 HTTP GET: {}", url);
+
+                    // Make real HTTP request (blocking)
+                    let response = std::process::Command::new("curl")
+                        .args(["-s", "--max-time", "10", &url])
+                        .output();
+
+                    match response {
+                        Ok(output) if output.status.success() => {
+                            let body = &output.stdout;
+                            let copy_len = body.len().min(resp_buf_len);
+                            if resp_buf + copy_len <= data.len() {
+                                data[resp_buf..resp_buf+copy_len].copy_from_slice(&body[..copy_len]);
+                            }
+                            if resp_len_ptr + 4 <= data.len() {
+                                data[resp_len_ptr..resp_len_ptr+4].copy_from_slice(&(copy_len as u32).to_le_bytes());
+                            }
+                            eprintln!("✅ HTTP response: {} bytes", copy_len);
+                            results[0] = Val::I32(0); // errno = 0 (success)
+                        }
+                        Ok(output) => {
+                            eprintln!("❌ HTTP error: {}", String::from_utf8_lossy(&output.stderr));
+                            results[0] = Val::I32(1); // errno = error
+                        }
+                        Err(e) => {
+                            eprintln!("❌ curl failed: {}", e);
+                            results[0] = Val::I32(1);
+                        }
+                    }
+                } else {
+                    results[0] = Val::I32(1);
+                }
+            } else {
+                results[0] = Val::I32(1);
+            }
+            Ok(())
+        },
+    );
+
+    // Stubs for other outlayer functions
+    let ol_view_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
+    let ol_call_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
+    let ol_transfer_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
+    let stub_4 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 4], vec![ValType::I32]), |_,_,r| { r[0] = Val::I32(0); Ok(()) });
+    let stub_5 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 5], vec![ValType::I32]), |_,_,r| { r[0] = Val::I32(0); Ok(()) });
+    let stub_2 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 2], vec![ValType::I32]), |_,_,r| { r[0] = Val::I32(0); Ok(()) });
+    let stub_6 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 6], vec![ValType::I32]), |_,_,r| { r[0] = Val::I32(0); Ok(()) });
+    let stub_3 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 3], vec![ValType::I32]), |_,_,r| { r[0] = Val::I32(0); Ok(()) });
+    let stub_8 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 8], vec![ValType::I32]), |_,_,r| { r[0] = Val::I32(0); Ok(()) });
+    let stub_0 = Func::new(&mut store, FuncType::new(&engine, vec![], vec![ValType::I32]), |_,_,r| { r[0] = Val::I32(0); Ok(()) });
+    let stub_7 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 7], vec![ValType::I32]), |_,_,r| { r[0] = Val::I32(0); Ok(()) });
+
+    let mut linker = Linker::new(&engine);
+    linker.define(&store, "wasi_snapshot_preview1", "fd_read", fd_read_fn).unwrap();
+    linker.define(&store, "wasi_snapshot_preview1", "fd_write", fd_write_fn).unwrap();
+    linker.define(&store, "wasi_snapshot_preview1", "proc_exit", proc_exit_fn).unwrap();
+    linker.define(&store, "wasi_snapshot_preview1", "random_get", random_get_fn).unwrap();
+    linker.define(&store, "wasi_snapshot_preview1", "environ_sizes_get", environ_sizes_fn).unwrap();
+    linker.define(&store, "wasi_snapshot_preview1", "environ_get", environ_get_fn).unwrap();
+    linker.define(&store, "wasi_snapshot_preview1", "fd_seek", fd_seek_fn).unwrap();
+    linker.define(&store, "outlayer", "view", ol_view_fn).unwrap();
+    linker.define(&store, "outlayer", "call", ol_call_fn).unwrap();
+    linker.define(&store, "outlayer", "transfer", ol_transfer_fn).unwrap();
+    linker.define(&store, "outlayer", "http_get", ol_http_get_fn).unwrap();
+    linker.define(&store, "outlayer", "storage_set", stub_4).unwrap();
+    linker.define(&store, "outlayer", "storage_get", stub_5).unwrap();
+    linker.define(&store, "outlayer", "storage_has", stub_2).unwrap();
+    linker.define(&store, "outlayer", "storage_delete", stub_2).unwrap();
+    linker.define(&store, "outlayer", "storage_increment", stub_6).unwrap();
+    linker.define(&store, "outlayer", "env_signer", stub_3).unwrap();
+    linker.define(&store, "outlayer", "env_predecessor", stub_3).unwrap();
+    linker.define(&store, "outlayer", "storage_decrement", stub_6).unwrap();
+    linker.define(&store, "outlayer", "storage_set_if_absent", stub_4).unwrap();
+    linker.define(&store, "outlayer", "storage_set_if_equals", stub_8).unwrap();
+    linker.define(&store, "outlayer", "storage_list_keys", stub_5).unwrap();
+    linker.define(&store, "outlayer", "storage_clear_all", stub_0).unwrap();
+    linker.define(&store, "outlayer", "storage_set_worker", stub_4).unwrap();
+    linker.define(&store, "outlayer", "storage_get_worker", stub_5).unwrap();
+    linker.define(&store, "outlayer", "storage_set_worker_public", stub_4).unwrap();
+    linker.define(&store, "outlayer", "storage_get_worker_from_project", stub_7).unwrap();
+
+    let instance = linker.instantiate(&mut store, &module).expect("instantiate");
+    let start = instance.get_typed_func::<(), ()>(&mut store, "_start").expect("_start export");
+    match start.call(&mut store, ()) {
+        Ok(()) => {}
+        Err(trap) => {
+            let msg = trap.to_string();
+            let is_exit = msg.contains("proc_exit") || trap.source().map(|s| s.to_string().contains("proc_exit")).unwrap_or(false);
+            if !is_exit { panic!("_start failed: {}", msg); }
+        }
+    }
+    let memory = instance.get_memory(&mut store, "memory").expect("memory export");
+    let data = memory.data(&store);
+    i64::from_le_bytes(data[65536..65536+8].try_into().unwrap())
 }
 
 

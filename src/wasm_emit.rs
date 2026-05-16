@@ -102,8 +102,8 @@ const TAG_NUM:     i64 = 0; // payload = integer value (61-bit signed)
 const TAG_BOOL:    i64 = 1; // payload = 0 (false) or 1 (true)
 const TAG_FNREF:   i64 = 2; // payload = function index
 const TAG_CLOSURE: i64 = 3; // payload = heap pointer
-const TAG_NIL:     i64 = 4;
-const TAG_STR:     i64 = 5; // payload = (heap_off | (len << 32))
+pub const TAG_NIL:     i64 = 4;
+pub const TAG_STR:     i64 = 5; // payload = (heap_off | (len << 32))
 const TAG_BITS: i64 = 3;
 // Sentinel falsy values (used for truthiness check)
 const TAGGED_FALSE: i64 = TAG_BOOL;       // 1
@@ -650,13 +650,16 @@ impl WasmEmitter {
             // OutLayer RPC — uses "outlayer" module imports
             "outlayer/view" | "outlayer/raw" | "outlayer/status" |
             "outlayer/storage-set" | "outlayer/storage-get" | "outlayer/storage-has" | "outlayer/storage-delete" |
-            "outlayer/context" | "http-get" |
+            "outlayer/context" |
             "storage-set" | "storage-get" | "storage-has" | "storage-delete" | "storage-increment" |
             "env/signer" | "env/predecessor" |
             "storage-decrement" | "storage-set-if-absent" | "storage-set-if-equals" |
             "storage-list-keys" | "storage-clear-all" |
             "storage-set-worker" | "storage-get-worker" | "storage-set-worker-public" | "storage-get-worker-from-project" => {
                 self.need_outlayer = true;
+            }
+            "http-get" => {
+                if self.p2_mode { self.need_wasi_http = true; } else { self.need_outlayer = true; }
             }
             _ => {}
         }
@@ -4784,7 +4787,7 @@ impl WasmEmitter {
                 // (http-get "https://api.example.com/data") -> string or nil
                 if a.is_empty() { return Err("http-get requires a URL string argument".into()); }
                 if !self.wasi_mode { return Err("http-get is only available on OutLayer (WASI) target".into()); }
-                self.need_outlayer = true; // uses outlayer.http_get host function directly
+                if self.p2_mode { self.need_wasi_http = true; } else { self.need_outlayer = true; }
                 let url_expr = self.expr(&a[0])?;
                 let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
                 let ma1 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };

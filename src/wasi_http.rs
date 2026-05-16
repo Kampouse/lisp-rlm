@@ -135,34 +135,31 @@ pub fn emit_http_get(func: &mut Function, url_ptr_local: u32, url_len_local: u32
     func.instruction(&ls(0));
 
     // Step 2: req = [constructor]outgoing-request(fields)  -- (i32) -> i32
+    // NOTE: constructor takes ownership (own) of fields, so do NOT drop it
     func.instruction(&lg(0));
     func.instruction(&cl(FN_CONSTRUCTOR_OUTGOING_REQUEST));
     func.instruction(&ls(1));
 
-    // Step 3: drop fields  -- (i32) -> ()
-    func.instruction(&lg(0));
-    func.instruction(&cl(FN_DROP_FIELDS));
-
     // Step 4: set-method GET  -- (i32,i32,i32,i32) -> i32
     func.instruction(&lg(1));  // req
     func.instruction(&cst(0)); // disc=0 (get)
-    func.instruction(&cst(0)); // ptr
-    func.instruction(&cst(0)); // len
+    func.instruction(&cst(SCRATCH)); func.instruction(&cst(0)); // valid ptr, len=0
     func.instruction(&cl(FN_SET_METHOD));
     func.instruction(&Instruction::Drop);
 
     // Step 5: set-scheme HTTPS  -- (i32,i32,i32,i32,i32) -> i32
+    // option<scheme>: Some(HTTPS) → (1=Some, 1=HTTPS, valid_ptr, 0)
     func.instruction(&lg(1));
-    func.instruction(&cst(1)); // disc=1 (HTTPS)
-    func.instruction(&cst(0));
-    func.instruction(&cst(0));
-    func.instruction(&cst(0)); // pad
+    func.instruction(&cst(0)); // Some = 0
+    func.instruction(&cst(1)); // HTTPS = 1
+    func.instruction(&cst(SCRATCH)); func.instruction(&cst(0)); // valid ptr, len=0
     func.instruction(&cl(FN_SET_SCHEME));
     func.instruction(&Instruction::Drop);
 
     // Step 6: set-authority = URL  -- (i32,i32,i32,i32) -> i32
+    // option<string> Some → disc=1
     func.instruction(&lg(1));
-    func.instruction(&cst(0)); // disc=0 (some)
+    func.instruction(&cst(1)); // Some = 1
     func.instruction(&lg(url_ptr_local));
     func.instruction(&lg(url_len_local));
     func.instruction(&cl(FN_SET_AUTHORITY));
@@ -173,7 +170,7 @@ pub fn emit_http_get(func: &mut Function, url_ptr_local: u32, url_len_local: u32
     func.instruction(&cst(0x2F));
     func.instruction(&Instruction::I32Store8(MemArg { offset: 0, align: 0, memory_index: 0 }));
     func.instruction(&lg(1));
-    func.instruction(&cst(0)); // some
+    func.instruction(&cst(1)); // Some = 1
     func.instruction(&cst(SCRATCH));
     func.instruction(&cst(1));
     func.instruction(&cl(FN_SET_PATH_WITH_QUERY));
@@ -184,40 +181,42 @@ pub fn emit_http_get(func: &mut Function, url_ptr_local: u32, url_len_local: u32
     func.instruction(&lg(1));
     func.instruction(&cst(SCRATCH_BODY_RESULT));
     func.instruction(&cl(FN_OUTGOING_REQUEST_BODY));
-    // Load body handle from memory
+    // Load body handle from memory: result<outgoing-body> at +0=disc, +4=handle
     func.instruction(&cst(0));
-    func.instruction(&ld(SCRATCH_BODY_RESULT));
+    func.instruction(&ld(SCRATCH_BODY_RESULT + 4));
     func.instruction(&ls(2));
 
     // Step 9: get output stream from body, drop it (empty body for GET)
     func.instruction(&lg(2));
     func.instruction(&cst(SCRATCH_STREAM_RESULT));
     func.instruction(&cl(FN_OUTGOING_BODY_WRITE));
+    // result<output-stream>: +0=disc, +4=handle
     func.instruction(&cst(0));
-    func.instruction(&ld(SCRATCH_STREAM_RESULT));
+    func.instruction(&ld(SCRATCH_STREAM_RESULT + 4));
     func.instruction(&cl(FN_DROP_OUTPUT_STREAM));
 
     // Step 10: finish body (no trailers)  -- (i32,i32,i32,i32) -> ()
+    // option<trailers>=None: disc=0 (None in canonical ABI)
     func.instruction(&lg(2));
-    func.instruction(&cst(0)); // none
-    func.instruction(&cst(0));
-    func.instruction(&cst(0));
+    func.instruction(&cst(0)); // None = 0
+    func.instruction(&cst(0)); // pad
+    func.instruction(&cst(SCRATCH_WRITE_RESULT)); // valid dst
     func.instruction(&cl(FN_OUTGOING_BODY_FINISH));
 
     // Step 11: drop body
     func.instruction(&lg(2));
     func.instruction(&cl(FN_DROP_OUTGOING_BODY));
 
-    // Step 12: handle(req, none, dst, pad)  -- (i32,i32,i32,i32) -> ()
-    // Writes future handle to SCRATCH_FUTURE_RESULT
+    // Step 12: handle(req, None, dst, pad)  -- (i32,i32,i32,i32) -> ()
+    // option<request-options>=None: disc=0 (None in canonical ABI)
     func.instruction(&lg(1));
-    func.instruction(&cst(0)); // none
-    func.instruction(&cst(SCRATCH_FUTURE_RESULT)); // dst
+    func.instruction(&cst(0)); // None = 0
     func.instruction(&cst(0)); // pad
+    func.instruction(&cst(SCRATCH_FUTURE_RESULT)); // dst
     func.instruction(&cl(FN_HANDLE));
-    // Load future handle
+    // Load future handle from result: +0=disc, +4=handle
     func.instruction(&cst(0));
-    func.instruction(&ld(SCRATCH_FUTURE_RESULT));
+    func.instruction(&ld(SCRATCH_FUTURE_RESULT + 4));
     func.instruction(&ls(3));
 
     // Drop request
@@ -231,10 +230,10 @@ pub fn emit_http_get(func: &mut Function, url_ptr_local: u32, url_len_local: u32
     func.instruction(&lg(3));
     func.instruction(&cst(SCRATCH_GET_RESULT));
     func.instruction(&cl(FN_FUTURE_GET));
-    // Load discriminant
+    // Load discriminant: 1=Some (ready)
     func.instruction(&cst(0));
     func.instruction(&ld(SCRATCH_GET_RESULT));
-    func.instruction(&cst(1)); // Some(Ok) = 1
+    func.instruction(&cst(1)); // Some = 1 (response ready)
     func.instruction(&Instruction::I32Eq);
     func.instruction(&Instruction::BrIf(1)); // break out of both loop+block if ready
 
@@ -256,7 +255,8 @@ pub fn emit_http_get(func: &mut Function, url_ptr_local: u32, url_len_local: u32
     func.instruction(&Instruction::End); // end block
 
     // Step 14: Extract response handle
-    // Layout: disc(4) + inner_result_disc(4) + handle(4) = offset 8
+    // option<result<incoming-response, error-code>>:
+    // +0=option disc, +4=result disc, +8=handle
     func.instruction(&cst(0));
     func.instruction(&ld(SCRATCH_GET_RESULT + 8));
     func.instruction(&ls(5));
@@ -266,11 +266,12 @@ pub fn emit_http_get(func: &mut Function, url_ptr_local: u32, url_len_local: u32
     func.instruction(&cl(FN_DROP_FUTURE_INCOMING_RESPONSE));
 
     // Step 15: consume response  -- (i32,i32) -> ()
+    // result<incoming-body>: +0=disc, +4=handle
     func.instruction(&lg(5));
     func.instruction(&cst(SCRATCH_CONSUME_RESULT));
     func.instruction(&cl(FN_INCOMING_RESPONSE_CONSUME));
     func.instruction(&cst(0));
-    func.instruction(&ld(SCRATCH_CONSUME_RESULT));
+    func.instruction(&ld(SCRATCH_CONSUME_RESULT + 4));
     func.instruction(&ls(6));
 
     // Drop response
@@ -281,8 +282,9 @@ pub fn emit_http_get(func: &mut Function, url_ptr_local: u32, url_len_local: u32
     func.instruction(&lg(6));
     func.instruction(&cst(SCRATCH_STREAM_RESULT));
     func.instruction(&cl(FN_INCOMING_BODY_STREAM));
+    // result<input-stream>: +0=disc, +4=handle
     func.instruction(&cst(0));
-    func.instruction(&ld(SCRATCH_STREAM_RESULT));
+    func.instruction(&ld(SCRATCH_STREAM_RESULT + 4));
     func.instruction(&ls(7));
 
     // Drop body

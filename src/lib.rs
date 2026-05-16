@@ -93,3 +93,4 @@ pub extern "C" fn eval_lisp(input_ptr: *const u8, input_len: usize, out_len: *mu
     }
 }
 pub mod wasi_http;
+pub mod wasi_http_buffer;
