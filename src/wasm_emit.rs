@@ -121,6 +121,7 @@ const HOST_BASE: u32 = 0xFF00_0000;
 const USER_BASE: u32 = 0xFF01_0000;
 const OUTLAYER_BASE: u32 = 0xFF02_0000;
 const WASI_BASE: u32 = 0xFF03_0000;
+const HTTPLIB_BASE: u32 = 0xFF04_0000;
 const TEMP_MEM: i64 = 64;
 
 fn outlayer_name_idx(name: &str) -> usize {
@@ -135,6 +136,7 @@ fn outlayer_name_idx(name: &str) -> usize {
         "outlayer/storage-set-worker" => 15, "outlayer/storage-get-worker" => 16,
         "outlayer/storage-set-worker-public" => 17, "outlayer/storage-get-worker-from-project" => 18,
         "outlayer/env-signer" => 19, "outlayer/env-predecessor" => 20,
+        "http/get" => 100, // HTTPLIB_BASE | 0
         _ => 0,
     }
 }
@@ -183,6 +185,7 @@ pub struct WasmEmitter {
     host_needed: HashSet<usize>,
     outlayer_needed: HashSet<usize>,
     wasi_needed: HashSet<usize>,
+    httplib_needed: bool,
     p2_mode: bool,
     gas_local: Option<u32>, // index of the gas counter local (i64)
 }
@@ -192,7 +195,7 @@ impl WasmEmitter {
         Self {
             locals: HashMap::new(), next_local: 0, current_func: None, current_param_count: 0,
             while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 1, exports: Vec::new(),
-            data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(), outlayer_needed: HashSet::new(), wasi_needed: HashSet::new(), p2_mode: false,
+            data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(), outlayer_needed: HashSet::new(), wasi_needed: HashSet::new(), httplib_needed: false, p2_mode: false,
             
             gas_local: None,
         }
@@ -314,6 +317,8 @@ impl WasmEmitter {
             "outlayer/storage-get-worker-from-project" => self.need_outlayer(18),
             "outlayer/env-signer" => self.need_outlayer(19),
             "outlayer/env-predecessor" => self.need_outlayer(20),
+            // HTTP lib (lisp:http/http-lib)
+            "http/get" => { self.httplib_needed = true; }
             // Also scan children for outlayer usage
             // WASI builtins
             "wasi/read_stdin" => { self.need_wasi(0); }
@@ -1358,6 +1363,40 @@ impl WasmEmitter {
                 } else {
                     v.push(Instruction::I64Const(0));
                 }
+                Ok(v)
+            }
+
+            // ── WASI stdin/stdout (P2/OutLayer mode) ──
+
+            // ── HTTP lib (lisp:http/http-lib@0.1.0) ──
+            // (http/get url) → result string via lisp:http/http-lib
+            "http/get" => {
+                self.httplib_needed = true;
+                let mut v = Vec::new();
+                // Push url string arg: store i64 to mem[16], load ptr+i32, len+i32
+                v.push(Instruction::I32Const(16));
+                v.extend(self.expr(&a[0])?);
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I32Const(16));
+                v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+                v.push(Instruction::I32Const(20));
+                v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+                // ret_ptr
+                let ret_ptr = self.next_data_offset;
+                self.next_data_offset += 32;
+                v.push(Instruction::I32Const(ret_ptr as i32));
+                v.push(Instruction::Call(HTTPLIB_BASE));
+                // Read result: ret_ptr+4 (ok_ptr), ret_ptr+8 (ok_len) — result<string,string>
+                // Canonical ABI: [discrim i32, ok_ptr i32, ok_len i32] or [1, err_ptr, err_len]
+                v.push(Instruction::I32Const(ret_ptr as i32 + 4));
+                v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+                v.push(Instruction::I64ExtendI32S);
+                v.push(Instruction::I32Const(ret_ptr as i32 + 8));
+                v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+                v.push(Instruction::I64ExtendI32S);
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Or);
                 Ok(v)
             }
 
@@ -3901,7 +3940,7 @@ impl WasmEmitter {
         let host_list: Vec<usize> = (0..HOST_FUNCS.len()).filter(|i| self.host_needed.contains(i)).collect();
         let outlayer_list: Vec<usize> = (0..OUTLAYER_FUNCS.len()).filter(|i| self.outlayer_needed.contains(i)).collect();
         let wasi_list: Vec<usize> = (0..WASI_FUNCS.len()).filter(|i| self.wasi_needed.contains(i)).collect();
-        let host_count = (host_list.len() + outlayer_list.len() + wasi_list.len()) as u32;
+        let host_count = (host_list.len() + outlayer_list.len() + wasi_list.len() + if self.httplib_needed { 1 } else { 0 }) as u32;
 
         // Type section
         let mut types = TypeSection::new();
@@ -3922,6 +3961,14 @@ impl WasmEmitter {
         // WASI function types (only in P2 mode)
         for &wi in &wasi_list {
             types.ty().function(WASI_FUNCS[wi].1.iter().copied(), WASI_FUNCS[wi].2.iter().copied());
+        }
+        // HTTPLIB type (lisp:http/http-lib@0.1.0.http-get)
+        let mut httplib_type_idx: Option<u32> = None;
+        let mut httplib_func_idx: Option<u32> = None;
+        if self.httplib_needed {
+            let ty = host_type_base + host_list.len() as u32 + outlayer_list.len() as u32 + wasi_list.len() as u32;
+            types.ty().function([ValType::I32; 3], []); // (url_ptr, url_len, ret_ptr) -> ()
+            httplib_type_idx = Some(ty);
         }
         // P2 wrapper type: () -> i32 (for result<()> representation) — only used if WIT exports run
         // Standard WASI command expects _start: () -> ()
@@ -3972,6 +4019,14 @@ impl WasmEmitter {
         for (i, &wi) in wasi_list.iter().enumerate() {
             imports.import("wasi_snapshot_preview1", WASI_FUNCS[wi].0, EntityType::Function(wasi_type_base + i as u32));
             wasi_idx.insert(wi, wasi_func_base + i as u32);
+        }
+        // HTTPLIB import (lisp:http/http-lib@0.1.0)
+        let mut httplib_resolve: HashMap<u32, u32> = HashMap::new();
+        if self.httplib_needed {
+            let fi = host_list.len() as u32 + outlayer_list.len() as u32 + wasi_list.len() as u32;
+            imports.import("lisp:http/http-lib@0.1.0", "http-get", EntityType::Function(httplib_type_idx.unwrap()));
+            httplib_func_idx = Some(fi);
+            httplib_resolve.insert(HTTPLIB_BASE, fi);
         }
         m.section(&imports);
 
@@ -4024,7 +4079,7 @@ impl WasmEmitter {
         for f in &self.funcs {
             let extra = f.local_count.saturating_sub(f.param_count);
             let locals: Vec<(u32, ValType)> = if extra > 0 { vec![(extra as u32, ValType::I64)] } else { vec![] };
-            let resolved = Self::resolve_static(&f.instrs, &host_idx, &name_map, &self.funcs, &outlayer_idx, &wasi_idx);
+            let resolved = Self::resolve_static(&f.instrs, &host_idx, &name_map, &self.funcs, &outlayer_idx, &wasi_idx, &httplib_resolve);
             let mut fb = Function::new(locals);
             for instr in &resolved { fb.instruction(instr); }
             fb.instruction(&Instruction::End);
@@ -4152,6 +4207,7 @@ impl WasmEmitter {
         funcs: &[FuncDef],
         outlayer_map: &HashMap<usize, u32>,
         wasi_map: &HashMap<usize, u32>,
+        httplib_map: &HashMap<u32, u32>,
     ) -> Vec<Instruction<'static>> {
         instrs.iter().map(|i| match i {
             Instruction::Call(idx) if *idx >= HOST_BASE && *idx < USER_BASE => {
@@ -4160,8 +4216,11 @@ impl WasmEmitter {
             Instruction::Call(idx) if *idx >= OUTLAYER_BASE && *idx < OUTLAYER_BASE + OUTLAYER_FUNCS.len() as u32 => {
                 Instruction::Call(outlayer_map[&((*idx - OUTLAYER_BASE) as usize)])
             }
-            Instruction::Call(idx) if *idx >= WASI_BASE => {
+            Instruction::Call(idx) if *idx >= WASI_BASE && *idx < HTTPLIB_BASE => {
                 Instruction::Call(wasi_map[&((*idx - WASI_BASE) as usize)])
+            }
+            Instruction::Call(idx) if *idx >= HTTPLIB_BASE => {
+                Instruction::Call(httplib_map[idx])
             }
             Instruction::Call(idx) if *idx >= USER_BASE => {
                 let pos = (*idx - USER_BASE) as usize;
