@@ -106,11 +106,29 @@ Same pattern but with body writing through outgoing-body stream.
 - Core module imports: captured in chat history (exact signatures)
 - WASI P2 WIT: `~/.cargo/registry/src/.../wasmtime-wasi-http-28.0.1/wit/deps/http/`
 
-## Risk / Unknowns
-- Canonical ABI encoding for option<http-scheme> — need to verify exact parameter layout
-- Resource handle lifecycle — dropping in wrong order may crash
-- Response body might be chunked — need loop for blocking-read until EOF
-- URL parsing for edge cases (no path, query params, port numbers)
+## Current Blockers
+
+### Phase 1 Blocked: wasi:cli/run export required
+- Layerd instantiates components via `wasi:cli/run@0.2.2` export
+- The preview1 adapter converts core `_start` → `wasi:cli/run.run`
+- Without the adapter, we need to emit `wasi:cli/run` as a component export
+- **Options:**
+  A. Modify layerd worker to accept `_start` without `wasi:cli/run` wrapper
+  B. Build our own minimal "command adapter" that just wraps `_start` → `wasi:cli/run`
+  C. Emit the component export directly using wit-component encoding
+
+### Phase 2 Partially Working
+- wasi_p2_native.rs emits 2KB core WASM with 24 native wasi:http imports
+- Validates clean, embeds with custom WIT, produces 11KB component
+- Cannot run on layerd due to wasi:cli/run blocker above
+- Canonical ABI details need runtime verification (authority/path params, result discriminants)
+
+### Realistic Next Step
+The adapter tax (48K instructions) is unavoidable without worker changes.
+Focus on optimizing the HTTP provider instead:
+- Current Rust provider: 443KB, ~23K instructions
+- Could build a C provider using raw wasi:http imports → ~5KB, ~1K instructions
+- Or strip Rust provider deps (no url crate, no icu_normalizer)
 
 ## Execution Order
 1. Phase 1 first (stdin/stdout) — biggest win, simpler
