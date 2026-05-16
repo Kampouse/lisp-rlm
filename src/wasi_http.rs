@@ -119,230 +119,218 @@ pub fn add_http_imports(module: &mut Module) {
 ///   locals[7]: incoming body handle
 ///   locals[8]: input stream handle
 ///   locals[9]: stdout handle
+/// Emit full HTTP GET via wasi:http canonical ABI.
+/// 
+/// Locals: 0=fields, 1=req, 2=body, 3=future, 4=pollable, 
+///         5=response, 6=resp_body, 7=in_stream, 8=stdout, 9=scratch, 10=url_ptr, 11=url_len
 pub fn emit_http_get(func: &mut Function, url_ptr_local: u32, url_len_local: u32) {
-    // ── Step 1: Create headers ──
-    // fields = [constructor]fields()
-    func.instruction(&Instruction::Call(FN_CONSTRUCTOR_FIELDS));
-    func.instruction(&Instruction::LocalSet(0)); // local 0 = fields handle
+    let ld = |off: i32| Instruction::I32Load(MemArg { offset: off as u64, align: 2, memory_index: 0 });
+    let cst = |v: i32| Instruction::I32Const(v);
+    let lg = |i: u32| Instruction::LocalGet(i);
+    let ls = |i: u32| Instruction::LocalSet(i);
+    let cl = |i: u32| Instruction::Call(i);
 
-    // ── Step 2: Create outgoing request ──
-    // req = [constructor]outgoing-request(fields)
-    func.instruction(&Instruction::LocalGet(0));
-    func.instruction(&Instruction::Call(FN_CONSTRUCTOR_OUTGOING_REQUEST));
-    func.instruction(&Instruction::LocalSet(1)); // local 1 = request handle
+    // Step 1: fields = [constructor]fields()  -- () -> i32
+    func.instruction(&cl(FN_CONSTRUCTOR_FIELDS));
+    func.instruction(&ls(0));
 
-    // ── Step 3: Drop fields (no longer needed) ──
-    func.instruction(&Instruction::LocalGet(0));
-    func.instruction(&Instruction::Call(FN_DROP_FIELDS));
+    // Step 2: req = [constructor]outgoing-request(fields)  -- (i32) -> i32
+    func.instruction(&lg(0));
+    func.instruction(&cl(FN_CONSTRUCTOR_OUTGOING_REQUEST));
+    func.instruction(&ls(1));
 
-    // ── Step 4: Set method = GET (discriminant 0 = "get") ──
-    // set-method(req, disc=0, ptr=0, len=0) — for "get" variant, no string payload
-    func.instruction(&Instruction::LocalGet(1));
-    func.instruction(&Instruction::I32Const(0)); // discriminant: 0 = get
-    func.instruction(&Instruction::I32Const(0)); // ptr (unused for "get")
-    func.instruction(&Instruction::I32Const(0)); // len (unused for "get")
-    func.instruction(&Instruction::Call(FN_SET_METHOD));
-    func.instruction(&Instruction::Drop); // discard result
+    // Step 3: drop fields  -- (i32) -> ()
+    func.instruction(&lg(0));
+    func.instruction(&cl(FN_DROP_FIELDS));
 
-    // ── Step 5: Set scheme = HTTPS (discriminant 1) ──
-    // set-scheme(req, disc=1, ptr=0, len=0, pad=0) — for "HTTPS" variant
-    func.instruction(&Instruction::LocalGet(1));
-    func.instruction(&Instruction::I32Const(1)); // discriminant: 1 = HTTPS
-    func.instruction(&Instruction::I32Const(0));
-    func.instruction(&Instruction::I32Const(0));
-    func.instruction(&Instruction::I32Const(0)); // padding
-    func.instruction(&Instruction::Call(FN_SET_SCHEME));
+    // Step 4: set-method GET  -- (i32,i32,i32,i32) -> i32
+    func.instruction(&lg(1));  // req
+    func.instruction(&cst(0)); // disc=0 (get)
+    func.instruction(&cst(0)); // ptr
+    func.instruction(&cst(0)); // len
+    func.instruction(&cl(FN_SET_METHOD));
     func.instruction(&Instruction::Drop);
 
-    // ── Step 6: Set authority from URL ──
-    // For now, assume the full URL is the authority (host)
-    // TODO: Parse URL properly to extract host and path
-    // set-authority(req, disc=0 (some), ptr, len)
-    func.instruction(&Instruction::LocalGet(1));
-    func.instruction(&Instruction::I32Const(0)); // discriminant: 0 = some(string)
-    func.instruction(&Instruction::LocalGet(url_ptr_local));
-    func.instruction(&Instruction::LocalGet(url_len_local));
-    func.instruction(&Instruction::Call(FN_SET_AUTHORITY));
+    // Step 5: set-scheme HTTPS  -- (i32,i32,i32,i32,i32) -> i32
+    func.instruction(&lg(1));
+    func.instruction(&cst(1)); // disc=1 (HTTPS)
+    func.instruction(&cst(0));
+    func.instruction(&cst(0));
+    func.instruction(&cst(0)); // pad
+    func.instruction(&cl(FN_SET_SCHEME));
     func.instruction(&Instruction::Drop);
 
-    // ── Step 7: Set path-with-query = "/" ──
-    // set-path-with-query(req, disc=0 (some), ptr, len)
-    // Write "/" to memory at a known location first
-    func.instruction(&Instruction::I32Const(SCRATCH));
-    func.instruction(&Instruction::I32Const(0x2F)); // '/'
-    func.instruction(&Instruction::I32Store8(MemArg { offset: SCRATCH as u64, align: 0, memory_index: 0 }));
-    
-    func.instruction(&Instruction::LocalGet(1));
-    func.instruction(&Instruction::I32Const(0)); // some
-    func.instruction(&Instruction::I32Const(SCRATCH));
-    func.instruction(&Instruction::I32Const(1)); // len = 1
-    func.instruction(&Instruction::Call(FN_SET_PATH_WITH_QUERY));
+    // Step 6: set-authority = URL  -- (i32,i32,i32,i32) -> i32
+    func.instruction(&lg(1));
+    func.instruction(&cst(0)); // disc=0 (some)
+    func.instruction(&lg(url_ptr_local));
+    func.instruction(&lg(url_len_local));
+    func.instruction(&cl(FN_SET_AUTHORITY));
     func.instruction(&Instruction::Drop);
 
-    // ── Step 8: Get body and finish it (empty body for GET) ──
-    // body = outgoing-request.body(req) → writes to SCRATCH_BODY_RESULT
-    func.instruction(&Instruction::LocalGet(1));
-    func.instruction(&Instruction::I32Const(SCRATCH_BODY_RESULT));
-    func.instruction(&Instruction::Call(FN_OUTGOING_REQUEST_BODY));
-    // Load body handle from result
-    func.instruction(&Instruction::I32Load(MemArg { offset: SCRATCH_BODY_RESULT as u64, align: 2, memory_index: 0 }));
-    func.instruction(&Instruction::LocalSet(2)); // local 2 = body handle
+    // Step 7: set-path-with-query = "/"  -- (i32,i32,i32,i32) -> i32
+    func.instruction(&cst(SCRATCH));
+    func.instruction(&cst(0x2F));
+    func.instruction(&Instruction::I32Store8(MemArg { offset: 0, align: 0, memory_index: 0 }));
+    func.instruction(&lg(1));
+    func.instruction(&cst(0)); // some
+    func.instruction(&cst(SCRATCH));
+    func.instruction(&cst(1));
+    func.instruction(&cl(FN_SET_PATH_WITH_QUERY));
+    func.instruction(&Instruction::Drop);
 
-    // stream = outgoing-body.write(body) → SCRATCH_STREAM_RESULT
-    func.instruction(&Instruction::LocalGet(2));
-    func.instruction(&Instruction::I32Const(SCRATCH_STREAM_RESULT));
-    func.instruction(&Instruction::Call(FN_OUTGOING_BODY_WRITE));
-    // Load stream handle and drop it (we don't write anything for GET)
-    func.instruction(&Instruction::I32Load(MemArg { offset: SCRATCH_STREAM_RESULT as u64, align: 2, memory_index: 0 }));
-    func.instruction(&Instruction::Call(FN_DROP_OUTPUT_STREAM));
+    // Step 8: body = outgoing-request.body(req)  -- (i32,i32) -> ()
+    // Writes body handle to SCRATCH_BODY_RESULT
+    func.instruction(&lg(1));
+    func.instruction(&cst(SCRATCH_BODY_RESULT));
+    func.instruction(&cl(FN_OUTGOING_REQUEST_BODY));
+    // Load body handle from memory
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_BODY_RESULT));
+    func.instruction(&ls(2));
 
-    // outgoing-body.finish(body, trailers=none(0), ptr=0, len=0)
-    func.instruction(&Instruction::LocalGet(2));
-    func.instruction(&Instruction::I32Const(0)); // none
-    func.instruction(&Instruction::I32Const(0));
-    func.instruction(&Instruction::I32Const(0));
-    func.instruction(&Instruction::Call(FN_OUTGOING_BODY_FINISH));
-    func.instruction(&Instruction::Call(FN_DROP_OUTGOING_BODY)); // drop body
+    // Step 9: get output stream from body, drop it (empty body for GET)
+    func.instruction(&lg(2));
+    func.instruction(&cst(SCRATCH_STREAM_RESULT));
+    func.instruction(&cl(FN_OUTGOING_BODY_WRITE));
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_STREAM_RESULT));
+    func.instruction(&cl(FN_DROP_OUTPUT_STREAM));
 
-    // ── Step 9: Send request ──
-    // handle(req, options=none) → writes future to SCRATCH_FUTURE_RESULT
-    func.instruction(&Instruction::LocalGet(1));
-    func.instruction(&Instruction::I32Const(0)); // none (no options)
-    func.instruction(&Instruction::I32Const(0));
-    func.instruction(&Instruction::I32Const(0));
-    func.instruction(&Instruction::Call(FN_HANDLE));
-    
+    // Step 10: finish body (no trailers)  -- (i32,i32,i32,i32) -> ()
+    func.instruction(&lg(2));
+    func.instruction(&cst(0)); // none
+    func.instruction(&cst(0));
+    func.instruction(&cst(0));
+    func.instruction(&cl(FN_OUTGOING_BODY_FINISH));
+
+    // Step 11: drop body
+    func.instruction(&lg(2));
+    func.instruction(&cl(FN_DROP_OUTGOING_BODY));
+
+    // Step 12: handle(req, none, dst, pad)  -- (i32,i32,i32,i32) -> ()
+    // Writes future handle to SCRATCH_FUTURE_RESULT
+    func.instruction(&lg(1));
+    func.instruction(&cst(0)); // none
+    func.instruction(&cst(SCRATCH_FUTURE_RESULT)); // dst
+    func.instruction(&cst(0)); // pad
+    func.instruction(&cl(FN_HANDLE));
     // Load future handle
-    func.instruction(&Instruction::I32Load(MemArg { offset: SCRATCH_FUTURE_RESULT as u64, align: 2, memory_index: 0 }));
-    func.instruction(&Instruction::LocalSet(4)); // local 4 = future handle
-    
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_FUTURE_RESULT));
+    func.instruction(&ls(3));
+
     // Drop request
-    func.instruction(&Instruction::Call(FN_DROP_OUTGOING_REQUEST));
+    func.instruction(&lg(1));
+    func.instruction(&cl(FN_DROP_OUTGOING_REQUEST));
 
-    // ── Step 10: Wait for response (poll loop) ──
-    // loop {
-    //   result = future.get() → SCRATCH_GET_RESULT
-    //   if result is Some(Ok(response)) → break with response
-    //   if result is Some(Err(_)) → trap/error
-    //   if result is None → subscribe + poll
-    // }
-    // loop { ... }
-    // Note: block/loop management is manual with wasm_encoder
+    // Step 13: Poll loop
     func.instruction(&Instruction::Block(BlockType::Empty));
-    
-    // future.get(future, SCRATCH_GET_RESULT)
-    func.instruction(&Instruction::LocalGet(4));
-    func.instruction(&Instruction::I32Const(SCRATCH_GET_RESULT));
-    func.instruction(&Instruction::Call(FN_FUTURE_GET));
-    
-    // Check discriminant at SCRATCH_GET_RESULT
-    // 0 = None (not ready), 1 = Some(Ok(response)), 2 = Some(Err(error)), 3 = Some(Err(()))
-    func.instruction(&Instruction::I32Load(MemArg { offset: SCRATCH_GET_RESULT as u64, align: 2, memory_index: 0 }));
-    func.instruction(&Instruction::I32Const(1)); // Some(Ok) = discriminant 1
+    func.instruction(&Instruction::Loop(BlockType::Empty));
+    // future.get(future, dst) -- (i32,i32) -> ()
+    func.instruction(&lg(3));
+    func.instruction(&cst(SCRATCH_GET_RESULT));
+    func.instruction(&cl(FN_FUTURE_GET));
+    // Load discriminant
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_GET_RESULT));
+    func.instruction(&cst(1)); // Some(Ok) = 1
     func.instruction(&Instruction::I32Eq);
-    func.instruction(&Instruction::BrIf(1)); // break out of block if ready
+    func.instruction(&Instruction::BrIf(1)); // break out of both loop+block if ready
 
-    // Not ready — subscribe and poll
-    func.instruction(&Instruction::LocalGet(4));
-    func.instruction(&Instruction::Call(FN_FUTURE_SUBSCRIBE));
-    func.instruction(&Instruction::LocalSet(5)); // pollable handle
-    
-    // poll([pollable], 1, SCRATCH_POLL_RESULT)
-    func.instruction(&Instruction::I32Const(SCRATCH_POLL_RESULT)); // pointer to pollable list
-    func.instruction(&Instruction::I32Const(1)); // count
-    func.instruction(&Instruction::I32Const(SCRATCH_POLL_RESULT + 8)); // result dst
-    func.instruction(&Instruction::Call(FN_POLL));
-    
+    // Not ready: subscribe + poll
+    func.instruction(&lg(3));
+    func.instruction(&cl(FN_FUTURE_SUBSCRIBE)); // (i32) -> i32
+    func.instruction(&ls(4));
+    // poll(ptr, len, dst)
+    func.instruction(&cst(SCRATCH_POLL_RESULT));
+    func.instruction(&cst(1));
+    func.instruction(&cst(SCRATCH_POLL_RESULT + 8));
+    func.instruction(&cl(FN_POLL)); // (i32,i32,i32) -> ()
     // Drop pollable
-    func.instruction(&Instruction::LocalGet(5));
-    func.instruction(&Instruction::Call(FN_DROP_POLLABLE));
-    
+    func.instruction(&lg(4));
+    func.instruction(&cl(FN_DROP_POLLABLE));
     // Loop back
-    func.instruction(&Instruction::Br(0)); // back to block start
+    func.instruction(&Instruction::Br(0)); // back to loop start
+    func.instruction(&Instruction::End); // end loop
     func.instruction(&Instruction::End); // end block
 
-    // ── Step 11: Extract response ──
-    // Response handle is at SCRATCH_GET_RESULT + 4
-    func.instruction(&Instruction::I32Load(MemArg { offset: (SCRATCH_GET_RESULT + 4) as u64, align: 2, memory_index: 0 }));
-    func.instruction(&Instruction::LocalSet(6)); // incoming response handle
+    // Step 14: Extract response handle
+    // Layout: disc(4) + inner_result_disc(4) + handle(4) = offset 8
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_GET_RESULT + 8));
+    func.instruction(&ls(5));
 
     // Drop future
-    func.instruction(&Instruction::LocalGet(4));
-    func.instruction(&Instruction::Call(FN_DROP_FUTURE_INCOMING_RESPONSE));
+    func.instruction(&lg(3));
+    func.instruction(&cl(FN_DROP_FUTURE_INCOMING_RESPONSE));
 
-    // ── Step 12: Consume response body ──
-    // consume(response) → SCRATCH_CONSUME_RESULT
-    func.instruction(&Instruction::LocalGet(6));
-    func.instruction(&Instruction::I32Const(SCRATCH_CONSUME_RESULT));
-    func.instruction(&Instruction::Call(FN_INCOMING_RESPONSE_CONSUME));
-    
-    func.instruction(&Instruction::I32Load(MemArg { offset: SCRATCH_CONSUME_RESULT as u64, align: 2, memory_index: 0 }));
-    func.instruction(&Instruction::LocalSet(7)); // incoming body handle
-    
+    // Step 15: consume response  -- (i32,i32) -> ()
+    func.instruction(&lg(5));
+    func.instruction(&cst(SCRATCH_CONSUME_RESULT));
+    func.instruction(&cl(FN_INCOMING_RESPONSE_CONSUME));
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_CONSUME_RESULT));
+    func.instruction(&ls(6));
+
     // Drop response
-    func.instruction(&Instruction::LocalGet(6));
-    func.instruction(&Instruction::Call(FN_DROP_INCOMING_RESPONSE));
+    func.instruction(&lg(5));
+    func.instruction(&cl(FN_DROP_INCOMING_RESPONSE));
 
-    // stream = incoming-body.stream(body) → SCRATCH_STREAM_RESULT
-    func.instruction(&Instruction::LocalGet(7));
-    func.instruction(&Instruction::I32Const(SCRATCH_STREAM_RESULT));
-    func.instruction(&Instruction::Call(FN_INCOMING_BODY_STREAM));
-    
-    func.instruction(&Instruction::I32Load(MemArg { offset: SCRATCH_STREAM_RESULT as u64, align: 2, memory_index: 0 }));
-    func.instruction(&Instruction::LocalSet(8)); // input stream handle
-    
+    // stream = incoming-body.stream(body)
+    func.instruction(&lg(6));
+    func.instruction(&cst(SCRATCH_STREAM_RESULT));
+    func.instruction(&cl(FN_INCOMING_BODY_STREAM));
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_STREAM_RESULT));
+    func.instruction(&ls(7));
+
     // Drop body
-    func.instruction(&Instruction::LocalGet(7));
-    func.instruction(&Instruction::Call(FN_DROP_INCOMING_BODY));
+    func.instruction(&lg(6));
+    func.instruction(&cl(FN_DROP_INCOMING_BODY));
 
-    // ── Step 13: Read response and write to stdout ──
-    // Get stdout
-    func.instruction(&Instruction::Call(FN_GET_STDOUT));
-    func.instruction(&Instruction::LocalSet(9)); // stdout handle
+    // Step 16: get stdout
+    func.instruction(&cl(FN_GET_STDOUT)); // () -> i32
+    func.instruction(&ls(8));
 
-    // Read loop: read 64KB chunks and write to stdout
+    // Step 17: Read loop
+    func.instruction(&Instruction::Block(BlockType::Empty));
     func.instruction(&Instruction::Loop(BlockType::Empty));
-    
-    // input-stream.read(stream, 65536, SCRATCH_READ_RESULT)
-    func.instruction(&Instruction::LocalGet(8));
+    // read(stream, 65536, dst)  -- (i32,i64,i32) -> ()
+    func.instruction(&lg(7));
     func.instruction(&Instruction::I64Const(65536));
-    func.instruction(&Instruction::I32Const(SCRATCH_READ_RESULT));
-    func.instruction(&Instruction::Call(FN_INPUT_STREAM_READ));
-    
-    // Read result is a result<list<u8>, stream-error>
-    // At SCRATCH_READ_RESULT: discriminant (0=ok, 1=error)
-    // If ok: SCRATCH_READ_RESULT+4 = ptr, SCRATCH_READ_RESULT+8 = len
-    func.instruction(&Instruction::I32Load(MemArg { offset: SCRATCH_READ_RESULT as u64, align: 2, memory_index: 0 }));
-    func.instruction(&Instruction::I32Const(0)); // 0 = ok
+    func.instruction(&cst(SCRATCH_READ_RESULT));
+    func.instruction(&cl(FN_INPUT_STREAM_READ));
+    // Check result disc (0=ok, 1=error)
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_READ_RESULT));
+    func.instruction(&cst(0));
     func.instruction(&Instruction::I32Ne);
-    func.instruction(&Instruction::BrIf(1)); // break on error → end read loop
-
-    // Get length of data
-    func.instruction(&Instruction::I32Load(MemArg { offset: (SCRATCH_READ_RESULT + 8) as u64, align: 2, memory_index: 0 }));
-    // If len == 0, break (EOF)
+    func.instruction(&Instruction::BrIf(1)); // break on error
+    // Check len (0=EOF)
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_READ_RESULT + 8));
     func.instruction(&Instruction::I32Eqz);
-    func.instruction(&Instruction::BrIf(1)); // break if len == 0
-
-    // Write to stdout: blocking-write-and-flush(stdout, ptr, len, _)
-    func.instruction(&Instruction::LocalGet(9));
-    func.instruction(&Instruction::I32Load(MemArg { offset: (SCRATCH_READ_RESULT + 4) as u64, align: 2, memory_index: 0 })); // ptr
-    func.instruction(&Instruction::I32Load(MemArg { offset: (SCRATCH_READ_RESULT + 8) as u64, align: 2, memory_index: 0 })); // len
-    func.instruction(&Instruction::I32Const(0)); // padding
-    func.instruction(&Instruction::Call(FN_OUTPUT_STREAM_WRITE));
-    
-    // Loop back
-    func.instruction(&Instruction::Br(0));
+    func.instruction(&Instruction::BrIf(1)); // break on EOF
+    // Write to stdout
+    func.instruction(&lg(8));
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_READ_RESULT + 4)); // ptr
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_READ_RESULT + 8)); // len
+    func.instruction(&cst(0)); // pad
+    func.instruction(&cl(FN_OUTPUT_STREAM_WRITE)); // (i32,i32,i32,i32) -> ()
+    // Loop
+    func.instruction(&Instruction::Br(0)); // back to loop start
     func.instruction(&Instruction::End); // end loop
+    func.instruction(&Instruction::End); // end block
 
-    // ── Step 14: Cleanup ──
-    func.instruction(&Instruction::LocalGet(8));
-    func.instruction(&Instruction::Call(FN_DROP_INPUT_STREAM));
-    func.instruction(&Instruction::LocalGet(9));
-    func.instruction(&Instruction::Call(FN_DROP_OUTPUT_STREAM));
+    // Step 18: Cleanup
+    func.instruction(&lg(7));
+    func.instruction(&cl(FN_DROP_INPUT_STREAM));
+    func.instruction(&lg(8));
+    func.instruction(&cl(FN_DROP_OUTPUT_STREAM));
 }
-
-/// Build WIT metadata for the wasi:http world.
-/// Returns (Resolve, WorldId) for use with embed_component_metadata.
 pub fn build_http_wit_metadata() -> Result<(wit_parser::Resolve, wit_parser::WorldId), String> {
     let mut resolve = wit_parser::Resolve::new();
     let wit_dir = find_wit_dir()?;
