@@ -1,2 +1,2 @@
 (define (run input)
-  (print "hello from lisp on outlayer!"))
+  (print "{\"message\":\"hello from outlayer\",\"got_input\":true}"))
