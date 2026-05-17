@@ -512,10 +512,27 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
         // For now: build a minimal _start that just calls the user function with nil
         // and writes the result to stdout. The user function should use http-get directly.
 
-        // Minimal _start: call the last user function with nil input, write result to stdout
-        let last_func = em.funcs.last().unwrap();
-        let last_idx = user_fn_base + (em.funcs.len() - 1) as u32;
-        let param_count = last_func.param_count;
+        // Minimal _start: resolve through trivial wrappers to find the real function
+        // Pattern: (define (run) (fetch)) — the last func is a trivial wrapper.
+        // Walk back until we find a function that does more than just call another user fn.
+        let mut real_func_idx = user_fn_base + (em.funcs.len() - 1) as u32;
+        let mut real_param_count = em.funcs.last().unwrap().param_count;
+        // Simple heuristic: if the last function has 0 params and its body is just depth+gas+call+epilogue,
+        // try the second-to-last function instead.
+        // In P2 mode (no gas/depth), a trivial wrapper body is just: Call(N); LocalSet; LocalGet
+        if em.funcs.len() > 1 {
+            let last = em.funcs.last().unwrap();
+            if last.param_count == 0 {
+                // Check if body is essentially just a call to another user function
+                let call_count = last.instrs.iter().filter(|i| matches!(i, Instruction::Call(_))).count();
+                if call_count == 1 {
+                    // It's a trivial wrapper — use the previous function instead
+                    real_func_idx = user_fn_base + (em.funcs.len() - 2) as u32;
+                    real_param_count = em.funcs[em.funcs.len() - 2].param_count;
+                }
+            }
+        }
+        let param_count = real_param_count;
 
         let mut fb = Function::new([
             (1u32, W),  // local 0: stdout handle (i32)
@@ -528,7 +545,7 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
         for _ in 0..param_count {
             fb.instruction(&Instruction::I64Const(crate::wasm_emit::TAG_NIL as i64));
         }
-        fb.instruction(&Instruction::Call(last_idx));
+        fb.instruction(&Instruction::Call(real_func_idx));
         fb.instruction(&Instruction::LocalSet(2)); // result
 
         // Write result to stdout using wasi:http stdout
