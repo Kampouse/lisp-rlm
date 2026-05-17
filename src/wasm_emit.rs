@@ -694,22 +694,23 @@ impl WasmEmitter {
 
         // Build prologue: init gas + depth increment/check
         let mut prologue = Vec::new();
-        // gas = GAS_LIMIT
-        prologue.push(Instruction::I64Const(GAS_LIMIT));
-        prologue.push(Instruction::LocalSet(gas_local));
-        // depth++
-        prologue.push(Instruction::GlobalGet(DEPTH_GLOBAL));
-        prologue.push(Instruction::I64Const(1));
-        prologue.push(Instruction::I64Add);
-        prologue.push(Instruction::GlobalSet(DEPTH_GLOBAL));
-        // if depth > DEPTH_LIMIT: trap
-        prologue.push(Instruction::GlobalGet(DEPTH_GLOBAL));
-        prologue.push(Instruction::I64Const(DEPTH_LIMIT));
-        prologue.push(Instruction::I64GtS);
-        // I64GtS produces i32, use directly for If
-        prologue.push(Instruction::If(BlockType::Empty));
-        prologue.push(Instruction::Unreachable);
-        prologue.push(Instruction::End);
+        if !self.p2_mode {
+            // gas = GAS_LIMIT
+            prologue.push(Instruction::I64Const(GAS_LIMIT));
+            prologue.push(Instruction::LocalSet(gas_local));
+            // depth++
+            prologue.push(Instruction::GlobalGet(DEPTH_GLOBAL));
+            prologue.push(Instruction::I64Const(1));
+            prologue.push(Instruction::I64Add);
+            prologue.push(Instruction::GlobalSet(DEPTH_GLOBAL));
+            // if depth > DEPTH_LIMIT: trap
+            prologue.push(Instruction::GlobalGet(DEPTH_GLOBAL));
+            prologue.push(Instruction::I64Const(DEPTH_LIMIT));
+            prologue.push(Instruction::I64GtS);
+            prologue.push(Instruction::If(BlockType::Empty));
+            prologue.push(Instruction::Unreachable);
+            prologue.push(Instruction::End);
+        }
 
         // Build body
         let mut body_instrs = if tc { self.tc_body(body)? } else { self.expr(body)? };
@@ -717,11 +718,13 @@ impl WasmEmitter {
         // Epilogue: save return, depth--, restore return
         let mut epilogue = Vec::new();
         epilogue.push(Instruction::LocalSet(ret_local));
-        // depth--
-        epilogue.push(Instruction::GlobalGet(DEPTH_GLOBAL));
-        epilogue.push(Instruction::I64Const(1));
-        epilogue.push(Instruction::I64Sub);
-        epilogue.push(Instruction::GlobalSet(DEPTH_GLOBAL));
+        if !self.p2_mode {
+            // depth--
+            epilogue.push(Instruction::GlobalGet(DEPTH_GLOBAL));
+            epilogue.push(Instruction::I64Const(1));
+            epilogue.push(Instruction::I64Sub);
+            epilogue.push(Instruction::GlobalSet(DEPTH_GLOBAL));
+        }
         epilogue.push(Instruction::LocalGet(ret_local));
 
         // Combine: prologue + body + epilogue
@@ -729,8 +732,8 @@ impl WasmEmitter {
         instrs.append(&mut body_instrs);
         instrs.append(&mut epilogue);
 
-        // Inject gas checks before every Br(0) back-edge and host_call
-        let instrs = Self::inject_gas_checks(instrs, gas_local);
+        // Inject gas checks before every Br(0) back-edge and host_call (skip in P2 mode)
+        let instrs = if self.p2_mode { instrs } else { Self::inject_gas_checks(instrs, gas_local) };
 
         let total = self.next_local as usize;
         self.current_func = None;
@@ -4824,29 +4827,15 @@ impl WasmEmitter {
                 // Load response length
                 v.push(Instruction::I32Const(163840)); v.push(Instruction::I32Load(ma4));
                 v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(len_l));
-                // dst = heap_ptr
-                v.push(Instruction::I64Const(self.heap_ptr as i64)); v.push(Instruction::LocalSet(dst_l));
-                // Copy response to heap
-                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(i_l));
-                v.push(Instruction::Block(BlockType::Empty));
-                v.push(Instruction::Loop(BlockType::Empty));
-                v.push(Instruction::LocalGet(i_l)); v.push(Instruction::LocalGet(len_l));
-                v.push(Instruction::I64GeU); v.push(Instruction::BrIf(1));
-                v.push(Instruction::LocalGet(dst_l)); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::LocalGet(i_l)); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Add);
+                // Copy response to heap using memory.copy (single instruction vs byte-by-byte loop)
+                v.push(Instruction::I64Const(self.heap_ptr as i64)); v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I32Const(98304));
-                v.push(Instruction::LocalGet(i_l)); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Add);
-                v.push(Instruction::I32Load8U(ma1));
-                v.push(Instruction::I32Store8(ma1));
-                v.push(Instruction::LocalGet(i_l)); v.push(Instruction::I64Const(1));
-                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(i_l));
-                v.push(Instruction::Br(0));
-                v.push(Instruction::End); v.push(Instruction::End);
+                v.push(Instruction::LocalGet(len_l)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
                 // Advance heap
                 let new_heap = self.heap_ptr as i64 + 65536; self.heap_ptr = new_heap as u32;
                 // Tagged string: ((dst | (len << 32)) << 3) | TAG_STR
+                v.push(Instruction::I64Const(self.heap_ptr as i64 - 65536)); v.push(Instruction::LocalSet(dst_l));
                 v.push(Instruction::LocalGet(dst_l));
                 v.push(Instruction::LocalGet(len_l)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
                 v.push(Instruction::I64Or);

@@ -429,7 +429,8 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
         (1u32, W), (1u32, W), (1u32, W), (1u32, W), (1u32, W),
         (1u32, W), (1u32, W), (1u32, W),
     ]);
-    wasi_http_buffer::emit_http_get_to_buffer(&mut http_get_fn);
+    let http_data = wasi_http_buffer::build_url_data_segments();
+    wasi_http_buffer::emit_http_get_to_buffer(&mut http_get_fn, &http_data);
     http_get_fn.instruction(&Instruction::End);
     codes.function(&http_get_fn);
 
@@ -624,13 +625,23 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
 
     module.section(&codes);
 
-    // ═══ Data Section (string literals from lisp emitter) ═══
-    if !em.data_segments.is_empty() {
+    // ═══ Data Section (string literals + URL data segments) ═══
+    {
         let mut data = DataSection::new();
+        let mut has_data = false;
+        // String literals from lisp emitter
         for (off, bytes) in &em.data_segments {
             data.active(0, &ConstExpr::i32_const(*off as i32), bytes.iter().copied());
+            has_data = true;
         }
-        module.section(&data);
+        // URL data segments (authority + path pre-loaded at instantiation)
+        for (off, bytes) in &http_data.segments {
+            data.active(0, &ConstExpr::i32_const(*off as i32), bytes.iter().copied());
+            has_data = true;
+        }
+        if has_data {
+            module.section(&data);
+        }
     }
 
     // ═══ Build and embed WIT metadata ═══

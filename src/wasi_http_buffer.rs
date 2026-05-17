@@ -12,7 +12,41 @@ pub const SCRATCH_IBODY_RESULT: i32 = SCRATCH + 192;
 pub const SCRATCH_STREAM_RESULT: i32 = SCRATCH + 208;
 pub const SCRATCH_READ_RESULT: i32 = SCRATCH + 224;
 
-pub fn emit_http_get_to_buffer(func: &mut Function) {
+/// Data segment offsets for the URL, written by the caller into the module's data section.
+pub struct HttpDataSegments {
+    pub segments: Vec<(u32, Vec<u8>)>,
+    pub auth_offset: i32,
+    pub auth_len: i32,
+    pub path_offset: i32,
+    pub path_len: i32,
+}
+
+/// Pre-compute data segments for the URL. Returns offsets the function will reference.
+pub fn build_url_data_segments() -> HttpDataSegments {
+    let base = 131584; // After all scratch areas (SCRATCH + 256 + small gap)
+
+    // Authority: "api.open-meteo.com" (18 bytes)
+    let authority = b"api.open-meteo.com";
+    let auth_offset = base;
+
+    // Path: "/v1/forecast?latitude=45.50&longitude=-73.57&current=temperature_2m" (67 bytes)
+    let path = b"/v1/forecast?latitude=45.50&longitude=-73.57&current=temperature_2m";
+    // Align to 4 bytes after authority
+    let path_offset = auth_offset + ((authority.len() + 3) & !3) as i32;
+
+    HttpDataSegments {
+        segments: vec![
+            (auth_offset as u32, authority.to_vec()),
+            (path_offset as u32, path.to_vec()),
+        ],
+        auth_offset,
+        auth_len: authority.len() as i32,
+        path_offset,
+        path_len: path.len() as i32,
+    }
+}
+
+pub fn emit_http_get_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     let cst = |v: i32| Instruction::I32Const(v);
     let lg = |i: u32| Instruction::LocalGet(i);
     let ls = |i: u32| Instruction::LocalSet(i);
@@ -28,38 +62,8 @@ pub fn emit_http_get_to_buffer(func: &mut Function) {
         memory_index: 0,
     });
 
-    // Write authority: "api.open-meteo.com" (18 chars)
-    let auth_scratch = SCRATCH + 512;
-    func.instruction(&cst(auth_scratch));
-    func.instruction(&cst(0x2E697061)); // "api."
-    func.instruction(&st(0));
-    func.instruction(&cst(auth_scratch + 4));
-    func.instruction(&cst(0x6E65706F)); // "open"
-    func.instruction(&st(0));
-    func.instruction(&cst(auth_scratch + 8));
-    func.instruction(&cst(0x74656D2D)); // "-met"
-    func.instruction(&st(0));
-    func.instruction(&cst(auth_scratch + 12));
-    func.instruction(&cst(0x632E6F65)); // "eo.c"
-    func.instruction(&st(0));
-    func.instruction(&cst(auth_scratch + 16));
-    func.instruction(&cst(0x00006D6F)); // "om\0\0"
-    func.instruction(&st(0));
-
-    // Write path: "/v1/forecast?latitude=45.50&longitude=-73.57&current=temperature_2m" (67 chars)
-    let path_scratch = SCRATCH + 640;
-    let path_words: [u32; 17] = [
-        0x2F31762F, 0x65726F66, 0x74736163, 0x74616C3F,
-        0x64757469, 0x35343D65, 0x2630352E, 0x676E6F6C,
-        0x64757469, 0x372D3D65, 0x37352E33, 0x72756326,
-        0x746E6572, 0x6D65743D, 0x61726570, 0x65727574,
-        0x006D325F,
-    ];
-    for (i, word) in path_words.iter().enumerate() {
-        func.instruction(&cst(path_scratch + (i as i32) * 4));
-        func.instruction(&cst(*word as i32));
-        func.instruction(&st(0));
-    }
+    // URL bytes are now in data segments — no runtime instructions needed!
+    // Just reference auth_offset and path_offset directly.
 
     // Fields → Request
     func.instruction(&cl(FN_CONSTRUCTOR_FIELDS));
@@ -85,19 +89,19 @@ pub fn emit_http_get_to_buffer(func: &mut Function) {
     func.instruction(&cl(FN_SET_SCHEME));
     func.instruction(&Instruction::Drop);
 
-    // Set authority
+    // Set authority (from data segment)
     func.instruction(&lg(6));
     func.instruction(&cst(1)); // option some
-    func.instruction(&cst(auth_scratch));
-    func.instruction(&cst(18)); // length
+    func.instruction(&cst(data.auth_offset));
+    func.instruction(&cst(data.auth_len));
     func.instruction(&cl(FN_SET_AUTHORITY));
     func.instruction(&Instruction::Drop);
 
-    // Set path-with-query
+    // Set path-with-query (from data segment)
     func.instruction(&lg(6));
     func.instruction(&cst(1)); // option some
-    func.instruction(&cst(path_scratch));
-    func.instruction(&cst(67)); // length
+    func.instruction(&cst(data.path_offset));
+    func.instruction(&cst(data.path_len));
     func.instruction(&cl(FN_SET_PATH_WITH_QUERY));
     func.instruction(&Instruction::Drop);
 
