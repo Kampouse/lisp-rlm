@@ -120,6 +120,18 @@ pub(crate) struct FuncDef {
     pub instrs: Vec<Instruction<'static>>,
 }
 
+/// Parse a URL string into (authority, path).
+/// Strips `https://` or `http://` prefix, splits on first `/`.
+/// E.g. `"https://api.open-meteo.com/v1/forecast?lat=45"` → `("api.open-meteo.com", "/v1/forecast?lat=45")`
+pub(crate) fn parse_url(url: &str) -> (String, String) {
+    let stripped = url.strip_prefix("https://").unwrap_or(url);
+    let stripped = stripped.strip_prefix("http://").unwrap_or(stripped);
+    match stripped.find('/') {
+        Some(idx) => (stripped[..idx].to_string(), stripped[idx..].to_string()),
+        None => (stripped.to_string(), "/".to_string()),
+    }
+}
+
 pub struct WasmEmitter {
     pub(crate) locals: HashMap<String, u32>,
     pub(crate) next_local: u32,
@@ -138,6 +150,7 @@ pub struct WasmEmitter {
     pub(crate) fuzz_mode: bool, // if true, export wrappers store tagged values (no untag, no value_return)
     pub(crate) need_outlayer: bool, // true if outlayer/* dispatch forms are used
     pub(crate) need_wasi_http: bool, // true if http-get is used (for P2 wasi:http path)
+    pub(crate) http_urls: Vec<(String, String)>, // (authority, path) per http-get call in p2_mode
     pub(crate) wasi_mode: bool, // true when targeting WASI/OutLayer
     pub(crate) p2_mode: bool,   // true when targeting P2 component (return i32 from _start)
     pub(crate) no_proc_exit: bool, // true when wrapping with wit-component adapter (return cleanly, don't call proc_exit)
@@ -154,7 +167,7 @@ impl WasmEmitter {
             locals: HashMap::new(), next_local: 0, current_func: None, current_param_count: 0,
             while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 1, exports: Vec::new(),
             data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(),
-            gas_local: None, heap_ptr: HEAP_START as u32, lambda_counter: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, wasi_mode: false, p2_mode: false, no_proc_exit: false,
+            gas_local: None, heap_ptr: HEAP_START as u32, lambda_counter: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false,
         }
     }
 
@@ -4791,13 +4804,47 @@ impl WasmEmitter {
                 if a.is_empty() { return Err("http-get requires a URL string argument".into()); }
                 if !self.wasi_mode { return Err("http-get is only available on OutLayer (WASI) target".into()); }
                 if self.p2_mode { self.need_wasi_http = true; } else { self.need_outlayer = true; }
+
+                // For P2 mode: parse the URL string literal from the source and register it
+                // so that a dedicated WASM function is generated for this URL.
+                let url_sentinel = if self.p2_mode {
+                    // Extract URL string from the Lisp source argument
+                    let url_str = match &a[0] {
+                        crate::types::LispVal::Str(s) => Some(s.clone()),
+                        _ => {
+                            // Non-literal URL — fall back to sentinel 103 (first HTTP fn)
+                            // This shouldn't happen in well-formed P2 code
+                            eprintln!("⚠️ http-get with non-literal URL in P2 mode, using sentinel 103");
+                            None
+                        }
+                    };
+                    if let Some(url) = url_str {
+                        if !url.is_empty() {
+                            // Parse URL into (authority, path)
+                            let (authority, path) = parse_url(&url);
+                            // Check if this exact (authority, path) is already registered
+                            let idx = if let Some(existing) = self.http_urls.iter().position(|(a, p)| a == &authority && p == &path) {
+                                existing
+                            } else {
+                                self.http_urls.push((authority, path));
+                                self.http_urls.len() - 1
+                            };
+                            103 + idx as u32
+                        } else {
+                            103u32
+                        }
+                    } else {
+                        103u32
+                    }
+                } else {
+                    103u32 // P1 mode: single sentinel
+                };
+
                 let url_expr = self.expr(&a[0])?;
                 let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
-                let ma1 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
                 let errno_l = self.local_idx("__http_err");
                 let len_l = self.local_idx("__http_len");
                 let dst_l = self.local_idx("__http_dst");
-                let i_l = self.local_idx("__http_i");
                 let mut v = Vec::new();
 
                 // outlayer.http_get(url_ptr, url_len, response_buf, response_buf_len, response_len_ptr)
@@ -4814,8 +4861,8 @@ impl WasmEmitter {
                 v.push(Instruction::I32Const(98304));
                 v.push(Instruction::I32Const(65536));
                 v.push(Instruction::I32Const(163840));
-                // Call http_get (sentinel 103)
-                v.push(Instruction::Call(103));
+                // Call http_get (sentinel 103 + url_index for P2, or 103 for P1)
+                v.push(Instruction::Call(url_sentinel));
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::LocalSet(errno_l));
                 // if errno != 0 → nil

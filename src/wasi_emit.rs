@@ -331,60 +331,54 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
 
     let mut module = Module::new();
 
+    // Determine URL list: if the emitter collected URLs from http-get calls, use those;
+    // otherwise fall back to a single hardcoded URL for backward compatibility.
+    let http_urls: Vec<(String, String)> = if em.http_urls.is_empty() {
+        vec![(
+            "api.open-meteo.com".to_string(),
+            "/v1/forecast?latitude=45.50&longitude=-73.57&current=temperature_2m".to_string(),
+        )]
+    } else {
+        em.http_urls.clone()
+    };
+    let http_get_count = http_urls.len() as u32;
+
+    // Compute all indices dynamically
+    let layout = WasiHttpLayout::new(em.funcs.len() as u32, http_get_count);
+
     // ═══ Type Section ═══
     let mut types = TypeSection::new();
-    // Types for wasi:http imports (must match wasi_http.rs exactly):
-    types.ty().function([], [W]);                    // 0: () -> i32
-    types.ty().function([W], [W]);                   // 1: (i32) -> i32
-    types.ty().function([W, W], []);                 // 2: (i32,i32) -> ()
-    types.ty().function([W], []);                    // 3: (i32) -> ()
-    types.ty().function([W, W, W, W], [W]);          // 4: set-method etc
-    types.ty().function([W, W, W, W, W], [W]);       // 5: set-scheme
-    types.ty().function([W, W, W, W], []);           // 6: blocking-write-and-flush / finish / handle
-    types.ty().function([W, W, W], []);              // 7: poll
-    types.ty().function([W, ValType::I64, W], []);   // 8: read
+    let mut imports = ImportSection::new();
+    // Single source of truth for HTTP types + imports
+    add_http_imports_to_sections(&mut types, &mut imports);
 
     // User function types: (N x i64) -> i64
-    let user_type_base = 9u32;
     for i in 0..=16u32 {
         let params = vec![ValType::I64; i as usize];
-        types.ty().function(params, [ValType::I64]); // types 9..25
+        types.ty().function(params, [ValType::I64]);
     }
-    // Type for _start: () -> ()
-    let start_type: u32 = 26;
-    types.ty().function([], [W]); // () -> i32 (result<()>)
-    let realloc_type: u32 = 27;
-    types.ty().function([W, W, W, W], [W]);
-    let http_get_type: u32 = 28;
-    types.ty().function([W, W, W, W, W], [W]);
+    // _start: () -> i32 (result<()>)
+    types.ty().function([], [ValType::I32]);
+    // cabi_realloc: (i32,i32,i32,i32) -> i32
+    types.ty().function([ValType::I32; 4], [ValType::I32]);
+    // __wasi_http_get: (i32,i32,i32,i32,i32) -> i32
+    types.ty().function([ValType::I32; 5], [ValType::I32]);
     module.section(&types);
-
-    // ═══ Import Section (wasi:http + wasi:cli + wasi:io) ═══
-    let mut imports = ImportSection::new();
-    // Use the exact same imports as wasi_http.rs
-    add_http_imports_to_section(&mut imports);
-    let import_count = HTTP_IMPORT_COUNT; // 27
     module.section(&imports);
 
     // ═══ Function Section ═══
     let mut functions = FunctionSection::new();
-    // __wasi_http_get function (index 27)
-    functions.function(http_get_type);
-    let http_get_fn_idx = import_count; // 27
-    // http_poll_read function (index 28) — same type as http_get
-    functions.function(http_get_type);
-    // User functions
-    let user_fn_base = import_count + 2; // 29
+    // For each URL, emit an http_get + poll_read pair
+    for _ in &http_urls {
+        functions.function(layout.http_get_type);
+        functions.function(layout.http_get_type); // poll_read — same type
+    }
     for f in &em.funcs {
-        let type_idx = user_type_base + f.param_count as u32;
+        let type_idx = layout.user_type_base + f.param_count as u32;
         functions.function(type_idx);
     }
-    // _start (index after user functions)
-    let start_fn_idx = user_fn_base + em.funcs.len() as u32;
-    functions.function(start_type);
-    // cabi_realloc
-    let realloc_fn_idx = start_fn_idx + 1;
-    functions.function(realloc_type);
+    functions.function(layout.start_type);
+    functions.function(layout.realloc_type);
     module.section(&functions);
 
     // ═══ Table + Element Section ═══
@@ -408,8 +402,8 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
     // ═══ Export Section ═══
     let mut exports = ExportSection::new();
     exports.export("memory", ExportKind::Memory, 0);
-    exports.export("wasi:cli/run@0.2.2#run", ExportKind::Func, start_fn_idx);
-    exports.export("cabi_realloc", ExportKind::Func, realloc_fn_idx);
+    exports.export("wasi:cli/run@0.2.2#run", ExportKind::Func, layout.start_fn_idx);
+    exports.export("cabi_realloc", ExportKind::Func, layout.realloc_fn_idx);
     module.section(&exports);
 
     // ═══ Element Section ═══
@@ -418,61 +412,76 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
     // ═══ Code Section ═══
     let mut codes = CodeSection::new();
 
-    // ── Function 1: __wasi_http_get ──
-    // Params: 0=url_ptr, 1=url_len, 2=buf_ptr, 3=buf_len, 4=len_ptr
-    // Extra locals: 5=fields, 6=req, 7=body, 8=future, 9=pollable,
-    //               10=response, 11=resp_body, 12=in_stream,
-    //               13=temp_i/path_len, 14=authority_len, 15=authority_ptr,
-    //               16=path_ptr, 17=bytes_written
-    let mut http_get_fn = Function::new([
-        (1u32, W), (1u32, W), (1u32, W), (1u32, W), (1u32, W),
-        (1u32, W), (1u32, W), (1u32, W), (1u32, W), (1u32, W),
-        (1u32, W), (1u32, W), (1u32, W),
-    ]);
-    let http_data = wasi_http_buffer::build_url_data_segments();
-    wasi_http_buffer::emit_http_get_to_buffer(&mut http_get_fn, &http_data);
-    http_get_fn.instruction(&Instruction::End);
-    codes.function(&http_get_fn);
+    // ── Generate HTTP functions: one (get + poll_read) pair per URL ──
+    // Build data segments for ALL URLs, with offsets stacked after each other
+    let mut all_http_data_segments: Vec<(u32, Vec<u8>)> = Vec::new();
+    let mut current_data_offset = wasi_http_buffer::DATA_BASE;
 
-    // ── Function 28: http_poll_read ──
-    // Params: 0=future_handle, 1=buf_ptr, 2=buf_len, 3=len_ptr, 4=unused
-    // Extra locals: 5=pollable, 6=response, 7=resp_body, 8=in_stream, 9=bytes_written
-    let mut poll_read_fn = Function::new([
-        (1u32, W), (1u32, W), (1u32, W), (1u32, W), (1u32, W),
-        (1u32, W), (1u32, W), (1u32, W), (1u32, W),
-    ]);
-    wasi_http_buffer::emit_http_poll_read(&mut poll_read_fn);
-    poll_read_fn.instruction(&Instruction::End);
-    codes.function(&poll_read_fn);
+    let headers: &[( &[u8], &[u8] )] = &[
+        (b"User-Agent", b"lisp-rlm/0.1 (wasi:http)"),
+        (b"Accept", b"application/json"),
+    ];
+
+    for (_url_idx, (authority, path)) in http_urls.iter().enumerate() {
+        // Build data segments at the current offset
+        let http_data = wasi_http_buffer::build_url_data_segments_with_base(
+            authority.as_bytes(),
+            path.as_bytes(),
+            headers,
+            current_data_offset,
+        );
+
+        // ── __wasi_http_get for this URL ──
+        // Params: 0=url_ptr, 1=url_len, 2=buf_ptr, 3=buf_len, 4=len_ptr
+        // Extra locals: 5=fields, 6=req, 7=body, 8=future, 9=pollable,
+        //               10=response, 11=resp_body, 12=in_stream,
+        //               13=temp_i/path_len, 14=authority_len, 15=authority_ptr,
+        //               16=path_ptr, 17=bytes_written
+        let mut http_get_fn = Function::new([
+            (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32),
+            (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32),
+            (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32),
+        ]);
+        wasi_http_buffer::emit_http_get_to_buffer(&mut http_get_fn, &http_data);
+        http_get_fn.instruction(&Instruction::End);
+        codes.function(&http_get_fn);
+
+        // ── http_poll_read for this URL ──
+        let mut poll_read_fn = Function::new([
+            (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32),
+            (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32),
+        ]);
+        wasi_http_buffer::emit_http_poll_read(&mut poll_read_fn);
+        poll_read_fn.instruction(&Instruction::End);
+        codes.function(&poll_read_fn);
+
+        // Collect data segments and advance offset
+        let span = http_data.total_span();
+        for (off, bytes) in http_data.segments {
+            all_http_data_segments.push((off, bytes));
+        }
+        current_data_offset = span;
+        // Align to 4 bytes for the next URL's data
+        current_data_offset = (current_data_offset + 3) & !3;
+    }
 
     // ── User functions from the emitter ──
     let name_map: std::collections::HashMap<&str, u32> = em.funcs.iter().enumerate()
-        .map(|(i, f)| (f.name.as_str(), user_fn_base + i as u32))
+        .map(|(i, f)| (f.name.as_str(), layout.user_fn_base + i as u32))
         .collect();
 
     for f in &em.funcs {
         let extra = f.local_count.saturating_sub(f.param_count);
         let locals: Vec<(u32, ValType)> = if extra > 0 { vec![(extra as u32, ValType::I64)] } else { vec![] };
 
-        // Resolve sentinels — same logic as finish_outlayer_inner but:
-        // - No WASI P1 imports (no fd_read/fd_write)
-        // - sentinel 103 (http_get) → __wasi_http_get function index
-        // - sentinel WASI_FD_WRITE → we don't have fd_write; handle print differently
         let resolved = {
             let base_resolved = WasmEmitter::resolve_static_pub(&f.instrs, &std::collections::HashMap::new(), &name_map, &em.funcs);
             let mut ol_map: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
-            // Map http_get sentinel to __wasi_http_get function
-            ol_map.insert(103, http_get_fn_idx);
-            // Map other outlayer sentinels to... stubs? For now they'll fail at runtime
-            // We don't import them, so any call will trap. That's OK for http-only programs.
-            // WASI fd_write is used by print — but we don't have it in wasi:http mode
-            // Instead, print goes to stdout via wasi:cli which wasi:http provides
-            // Actually, the wasi:http imports include get-stdout and blocking-write-and-flush
-            // We can map fd_write to the stdout write... but the signatures don't match
-            // For now, just map fd_write to a no-op (prints won't work, but HTTP will)
-            ol_map.insert(crate::wasm_emit::WASI_FD_WRITE, HTTP_IMPORT_COUNT + 2); // sentinel
-            // Actually, let's not map WASI_FD_WRITE — if the code uses print, it'll fail
-            // Most HTTP programs won't need print in the WASM itself
+            // Map each sentinel 103+i to the corresponding HTTP function
+            for i in 0..http_get_count {
+                ol_map.insert(103 + i, layout.http_get_fn_idx + (i * 2));
+            }
+            ol_map.insert(crate::wasm_emit::WASI_FD_WRITE, layout.user_fn_base + em.funcs.len() as u32 + 2); // sentinel
             WasmEmitter::resolve_static_pub_ex(&base_resolved, &std::collections::HashMap::new(), &name_map, &em.funcs, &ol_map)
         };
 
@@ -513,9 +522,7 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
         // and writes the result to stdout. The user function should use http-get directly.
 
         // Minimal _start: resolve through trivial wrappers to find the real function
-        // Pattern: (define (run) (fetch)) — the last func is a trivial wrapper.
-        // Walk back until we find a function that does more than just call another user fn.
-        let mut real_func_idx = user_fn_base + (em.funcs.len() - 1) as u32;
+        let mut real_func_idx = layout.user_fn_base + (em.funcs.len() - 1) as u32;
         let mut real_param_count = em.funcs.last().unwrap().param_count;
         // Simple heuristic: if the last function has 0 params and its body is just depth+gas+call+epilogue,
         // try the second-to-last function instead.
@@ -526,8 +533,7 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
                 // Check if body is essentially just a call to another user function
                 let call_count = last.instrs.iter().filter(|i| matches!(i, Instruction::Call(_))).count();
                 if call_count == 1 {
-                    // It's a trivial wrapper — use the previous function instead
-                    real_func_idx = user_fn_base + (em.funcs.len() - 2) as u32;
+                    real_func_idx = layout.user_fn_base + (em.funcs.len() - 2) as u32;
                     real_param_count = em.funcs[em.funcs.len() - 2].param_count;
                 }
             }
@@ -652,7 +658,7 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
             has_data = true;
         }
         // URL data segments (authority + path pre-loaded at instantiation)
-        for (off, bytes) in &http_data.segments {
+        for (off, bytes) in &all_http_data_segments {
             data.active(0, &ConstExpr::i32_const(*off as i32), bytes.iter().copied());
             has_data = true;
         }
@@ -687,44 +693,7 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
     Ok(component)
 }
 
-/// Add wasi:http imports to an existing ImportSection (same as add_http_imports but uses sections).
-fn add_http_imports_to_section(imports: &mut ImportSection) {
-    // Type indices 0-8 match the type section defined in build_p2_with_wasi_http above.
 
-    let ht = "wasi:http/types@0.2.2";
-    let hh = "wasi:http/outgoing-handler@0.2.2";
-    let is = "wasi:io/streams@0.2.2";
-    let ip = "wasi:io/poll@0.2.2";
-    let cs = "wasi:cli/stdout@0.2.2";
-
-    imports.import(is, "[resource-drop]input-stream", EntityType::Function(3));
-    imports.import(is, "[resource-drop]output-stream", EntityType::Function(3));
-    imports.import(ht, "[resource-drop]incoming-response", EntityType::Function(3));
-    imports.import(ht, "[resource-drop]future-incoming-response", EntityType::Function(3));
-    imports.import(ht, "[constructor]fields", EntityType::Function(0));
-    imports.import(ht, "[constructor]outgoing-request", EntityType::Function(1));
-    imports.import(ht, "[method]outgoing-request.set-method", EntityType::Function(4));
-    imports.import(ht, "[method]outgoing-request.set-scheme", EntityType::Function(5));
-    imports.import(ht, "[method]outgoing-request.set-authority", EntityType::Function(4));
-    imports.import(ht, "[method]outgoing-request.set-path-with-query", EntityType::Function(4));
-    imports.import(ht, "[method]outgoing-request.body", EntityType::Function(2));
-    imports.import(ht, "[method]outgoing-body.write", EntityType::Function(2));
-    imports.import(ht, "[static]outgoing-body.finish", EntityType::Function(6));
-    imports.import(ht, "[resource-drop]outgoing-body", EntityType::Function(3));
-    imports.import(hh, "handle", EntityType::Function(6));
-    imports.import(ht, "[resource-drop]outgoing-request", EntityType::Function(3));
-    imports.import(ht, "[method]future-incoming-response.get", EntityType::Function(2));
-    imports.import(ht, "[method]future-incoming-response.subscribe", EntityType::Function(1));
-    imports.import(ip, "poll", EntityType::Function(7));
-    imports.import(ip, "[resource-drop]pollable", EntityType::Function(3));
-    imports.import(ht, "[method]incoming-response.consume", EntityType::Function(2));
-    imports.import(ht, "[method]incoming-body.stream", EntityType::Function(2));
-    imports.import(is, "[method]input-stream.read", EntityType::Function(8));
-    imports.import(cs, "get-stdout", EntityType::Function(0));
-    imports.import(is, "[method]output-stream.blocking-write-and-flush", EntityType::Function(6));
-    imports.import(ht, "[resource-drop]incoming-body", EntityType::Function(3));
-    imports.import(ht, "[resource-drop]fields", EntityType::Function(3));
-}
 fn build_p2_with_adapter(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
     // Load WASI adapter
     let adapter_bytes = crate::p2_native::load_wasi_adapter();
@@ -2262,6 +2231,101 @@ fn run_outlayer_wasm_with_http(wasm: &[u8], stdin_data: &[u8]) -> i64 {
             Err(e) => {
                 eprintln!("❌ run failed: {:?}", e);
                 panic!("Lisp P2 component execution failed: {:?}", e);
+            }
+        }
+    }
+
+    /// Test multi-URL http-get: compare Montreal vs Toronto weather
+    #[tokio::test]
+    async fn test_lisp_p2_multi_url_http_get() {
+        use wasmtime::{Engine, Config};
+        use wasmtime::component::{Linker, ResourceTable};
+        use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView, WasiCtxBuilder, p2::pipe::MemoryInputPipe};
+        use wasmtime_wasi_http::{WasiHttpCtx, p2::{WasiHttpView, WasiHttpCtxView}};
+
+        struct TestState {
+            ctx: WasiCtx,
+            http_ctx: WasiHttpCtx,
+            table: ResourceTable,
+        }
+        impl WasiHttpView for TestState {
+            fn http(&mut self) -> WasiHttpCtxView<'_> {
+                WasiHttpCtxView { ctx: &mut self.http_ctx, table: &mut self.table, hooks: Default::default() }
+            }
+        }
+        impl WasiView for TestState {
+            fn ctx(&mut self) -> WasiCtxView<'_> { WasiCtxView { ctx: &mut self.ctx, table: &mut self.table } }
+        }
+
+        // Compare Montreal vs Toronto weather using json-get to extract temps
+        let source = r#"
+(define (compare)
+  (let ((mtl (http-get "https://api.open-meteo.com/v1/forecast?latitude=45.50&longitude=-73.57&current=temperature_2m"))
+        (tor (http-get "https://api.open-meteo.com/v1/forecast?latitude=43.65&longitude=-79.38&current=temperature_2m")))
+    (let ((mtl-temp (json-get "temperature_2m" mtl))
+          (tor-temp (json-get "temperature_2m" tor)))
+      (if (> mtl-temp tor-temp)
+          "Montreal is warmer!"
+          "Toronto is warmer!"))))
+"#;
+        let comp_bytes = compile_outlayer_p2(source)
+            .expect("Lisp P2 multi-URL compilation failed");
+        eprintln!("Multi-URL component: {} bytes", comp_bytes.len());
+        std::fs::write("/tmp/lisp_p2_multi_url_test.wasm", &comp_bytes).ok();
+
+        // Set up wasmtime with wasi:http support
+        let mut config = Config::new();
+        config.wasm_component_model(true);
+        config.async_support(true);
+        config.wasm_backtrace_details(wasmtime::WasmBacktraceDetails::Enable);
+        let engine = Engine::new(&config).expect("engine");
+        let component = wasmtime::component::Component::from_binary(&engine, &comp_bytes)
+            .expect("component deserialize");
+
+        let mut linker = Linker::<TestState>::new(&engine);
+        wasmtime_wasi::p2::add_to_linker_async(&mut linker).expect("add wasi");
+        wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker).expect("add wasi:http");
+
+        let stdout_pipe = wasmtime_wasi::p2::pipe::MemoryOutputPipe::new(65536);
+        let table = ResourceTable::new();
+        let ctx = WasiCtxBuilder::new()
+            .stdin(MemoryInputPipe::new(vec![]))
+            .stdout(stdout_pipe.clone())
+            .build();
+
+        let state = TestState { ctx, http_ctx: WasiHttpCtx::new(), table };
+        let mut store = wasmtime::Store::new(&engine, state);
+
+        let instance = linker.instantiate_async(&mut store, &component)
+            .await
+            .expect("instantiate");
+
+        // Get wasi:cli/run#run
+        let (_, run_instance_idx) = instance
+            .get_export(&mut store, None, "wasi:cli/run@0.2.2")
+            .expect("get wasi:cli/run instance");
+        let (_, run_func_idx) = instance
+            .get_export(&mut store, Some(&run_instance_idx), "run")
+            .expect("get run func");
+        let run_fn = instance
+            .get_func(&mut store, &run_func_idx)
+            .expect("get run Func");
+
+        eprintln!("📦 Multi-URL component ready, calling run...");
+
+        let mut result_val = [wasmtime::component::Val::Bool(false)];
+        match run_fn.call_async(&mut store, &[], &mut result_val).await {
+            Ok(()) => {
+                eprintln!("📦 run completed");
+                let output = stdout_pipe.contents();
+                let output_str = String::from_utf8_lossy(&output);
+                eprintln!("📝 stdout: {}", output_str);
+                // Verify that both responses are present in the output
+                assert!(output_str.contains("warmer"), "expected comparison result, got: {}", output_str);
+            }
+            Err(e) => {
+                eprintln!("❌ run failed: {:?}", e);
+                panic!("Multi-URL P2 component execution failed: {:?}", e);
             }
         }
     }

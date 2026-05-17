@@ -2,10 +2,18 @@
 //!
 //! Generates core WASM that directly imports canonical-lowered wasi:http@0.2.2
 //! functions, with embedded WIT metadata for wit-component to wire up.
+//!
+//! # Index computation
+//!
+//! All type/import/function indices are computed dynamically by [`WasiHttpLayout`].
+//! Adding a new import only requires:
+//! 1. Adding a `FN_*` constant
+//! 2. Adding the type + import entry in [`add_http_imports_to_sections`]
+//! 3. Everything else (user_type_base, start_type, etc.) is derived automatically.
 
 use wasm_encoder::*;
 
-// ── Import function indices ──
+// ── Import function indices (positional, 0-based) ──
 pub const FN_DROP_INPUT_STREAM: u32 = 0;
 pub const FN_DROP_OUTPUT_STREAM: u32 = 1;
 pub const FN_DROP_INCOMING_RESPONSE: u32 = 2;
@@ -33,84 +41,170 @@ pub const FN_GET_STDOUT: u32 = 23;
 pub const FN_OUTPUT_STREAM_WRITE: u32 = 24;
 pub const FN_DROP_INCOMING_BODY: u32 = 25;
 pub const FN_DROP_FIELDS: u32 = 26;
-pub const HTTP_IMPORT_COUNT: u32 = 27;
+pub const FN_FIELDS_SET: u32 = 27;
+/// Total count of wasi:http imports — must equal the last FN_* + 1.
+pub const HTTP_IMPORT_COUNT: u32 = 28;
 
-/// Scratch space in memory for canonical ABI result areas
+/// Total number of canonical ABI types used by the wasi:http imports.
+/// Count the `types.ty().function(...)` calls in [`add_http_imports_to_sections`].
+pub const HTTP_TYPE_COUNT: u32 = 10;
+
+// ── Scratch memory layout (single source of truth) ──
+// Shared by both wasi_http.rs (runtime URL path) and wasi_http_buffer.rs (data-segment path).
 pub const SCRATCH: i32 = 131072; // 128KB offset
-pub const SCRATCH_BODY_RESULT: i32 = SCRATCH;       // i32: outgoing body handle
-pub const SCRATCH_STREAM_RESULT: i32 = SCRATCH + 4;  // i32: output/input stream handle
-pub const SCRATCH_FUTURE_RESULT: i32 = SCRATCH + 8;  // i32: future handle
-pub const SCRATCH_GET_RESULT: i32 = SCRATCH + 16;    // 8 bytes: future.get result (discriminant + handle)
-pub const SCRATCH_CONSUME_RESULT: i32 = SCRATCH + 24; // i32: incoming body handle
-pub const SCRATCH_READ_RESULT: i32 = SCRATCH + 32;   // 8 bytes: read result (ptr + len)
-pub const SCRATCH_POLL_RESULT: i32 = SCRATCH + 48;   // poll result list
-pub const SCRATCH_WRITE_RESULT: i32 = SCRATCH + 64;  // write result area
+pub const SCRATCH_BODY_RESULT: i32 = SCRATCH;
+pub const SCRATCH_STREAM_RESULT: i32 = SCRATCH + 4;
+pub const SCRATCH_FUTURE_RESULT: i32 = SCRATCH + 8;
+pub const SCRATCH_GET_RESULT: i32 = SCRATCH + 16;
+pub const SCRATCH_CONSUME_RESULT: i32 = SCRATCH + 24;
+pub const SCRATCH_READ_RESULT: i32 = SCRATCH + 32;
+pub const SCRATCH_POLL_RESULT: i32 = SCRATCH + 48;
+pub const SCRATCH_WRITE_RESULT: i32 = SCRATCH + 64; // write result area (runtime path)
+// Data-segment path uses different sub-offsets (see wasi_http_buffer.rs),
+// but all start from SCRATCH.
 
-/// Add wasi:http@0.2.2 canonical imports to the module.
-pub fn add_http_imports(module: &mut Module) {
-    let mut types = TypeSection::new();
-    let mut imports = ImportSection::new();
+/// Computed layout for the entire P2 WASM module.
+///
+/// Derives all type/import/function indices from the canonical constants,
+/// so adding a new import doesn't require touching hardcoded numbers elsewhere.
+#[derive(Debug, Clone)]
+pub struct WasiHttpLayout {
+    /// Number of user function types (0..=16 params → 17 types).
+    pub user_type_count: u32,
+    /// First type index for user functions.
+    pub user_type_base: u32,
+    /// Type index for _start: () -> i32
+    pub start_type: u32,
+    /// Type index for cabi_realloc: (i32,i32,i32,i32) -> i32
+    pub realloc_type: u32,
+    /// Type index for __wasi_http_get: (i32,i32,i32,i32,i32) -> i32
+    pub http_get_type: u32,
+    /// Total number of types in the type section.
+    pub total_types: u32,
+
+    /// Number of internal functions (http_get + poll_read = 2).
+    pub internal_fn_count: u32,
+    /// Function index of __wasi_http_get (first function after imports).
+    pub http_get_fn_idx: u32,
+    /// Function index where user functions start.
+    pub user_fn_base: u32,
+
+    /// Number of user functions (set at build time).
+    pub user_fn_count: u32,
+    /// Function index of _start.
+    pub start_fn_idx: u32,
+    /// Function index of cabi_realloc.
+    pub realloc_fn_idx: u32,
+}
+
+impl WasiHttpLayout {
+    /// Compute the full layout given the number of user functions and HTTP GET count.
+    ///
+    /// `http_get_count` is the number of distinct URL calls (each gets a get + poll_read pair).
+    pub fn new(user_fn_count: u32, http_get_count: u32) -> Self {
+        let user_type_count = 17; // types for (i64×0..=16) -> i64
+        let user_type_base = HTTP_TYPE_COUNT;
+        let start_type = user_type_base + user_type_count;
+        let realloc_type = start_type + 1;
+        let http_get_type = realloc_type + 1;
+        let total_types = http_get_type + 1;
+
+        let http_get_count = http_get_count.max(1); // at least 1 HTTP function pair
+        let internal_fn_count = http_get_count * 2; // each URL gets (get + poll_read)
+        let http_get_fn_idx = HTTP_IMPORT_COUNT;
+        let user_fn_base = http_get_fn_idx + internal_fn_count;
+
+        let start_fn_idx = user_fn_base + user_fn_count;
+        let realloc_fn_idx = start_fn_idx + 1;
+
+        Self {
+            user_type_count,
+            user_type_base,
+            start_type,
+            realloc_type,
+            http_get_type,
+            total_types,
+            internal_fn_count,
+            http_get_fn_idx,
+            user_fn_base,
+            user_fn_count,
+            start_fn_idx,
+            realloc_fn_idx,
+        }
+    }
+}
+
+/// Single source of truth: add all wasi:http canonical ABI types AND imports
+/// to the given sections. Called once from `build_p2_with_wasi_http`.
+///
+/// Returns nothing — the type indices are positional (0..HTTP_TYPE_COUNT-1)
+/// and the import indices are the `FN_*` constants.
+pub fn add_http_imports_to_sections(types: &mut TypeSection, imports: &mut ImportSection) {
     let W = ValType::I32;
-    
-    // Core function types for canonical ABI lowered functions:
-    types.ty().function([], [W]); // 0: () -> i32 (constructor)
-    types.ty().function([W], [W]); // 1: (i32) -> i32 (constructor+handle, subscribe)
-    types.ty().function([W, W], []); // 2: (i32, i32) -> () (body/stream/consume/get)
-    types.ty().function([W], []); // 3: (i32) -> () (resource drop)
-    types.ty().function([W, W, W, W], [W]); // 4: set-method/authority/path -> result
-    types.ty().function([W, W, W, W, W], [W]); // 5: set-scheme -> result
-    types.ty().function([W, W, W, W], []); // 6: finish/handle/write-and-flush
-    types.ty().function([W, W, W], []); // 7: poll
-    types.ty().function([W, ValType::I64, W], []); // 8: read
 
-    module.section(&types);
-    
-    let http_types = "wasi:http/types@0.2.2";
-    let http_handler = "wasi:http/outgoing-handler@0.2.2";
-    let io_streams = "wasi:io/streams@0.2.2";
-    let io_poll = "wasi:io/poll@0.2.2";
-    let cli_stdout = "wasi:cli/stdout@0.2.2";
+    // Canonical ABI types for wasi:http@0.2.2 lowered functions.
+    // Type indices must match what the import entries reference below.
+    types.ty().function([], [W]);                          // 0: () -> i32 (constructors)
+    types.ty().function([W], [W]);                         // 1: (i32) -> i32 (constructor, subscribe)
+    types.ty().function([W, W], []);                       // 2: (i32,i32) -> () (body, consume, get)
+    types.ty().function([W], []);                          // 3: (i32) -> () (resource drops)
+    types.ty().function([W, W, W, W], [W]);                // 4: set-method/authority/path -> result
+    types.ty().function([W, W, W, W, W], [W]);             // 5: set-scheme -> result
+    types.ty().function([W, W, W, W], []);                 // 6: finish/handle/write-and-flush
+    types.ty().function([W, W, W], []);                    // 7: poll
+    types.ty().function([W, ValType::I64, W], []);         // 8: read
+    types.ty().function([W, W, W, W, W, W], []);           // 9: fields.set(self, name_ptr, name_len, val_list_ptr, val_list_len, ret_ptr)
 
-    imports.import(io_streams, "[resource-drop]input-stream", EntityType::Function(3));
-    imports.import(io_streams, "[resource-drop]output-stream", EntityType::Function(3));
-    imports.import(http_types, "[resource-drop]incoming-response", EntityType::Function(3));
-    imports.import(http_types, "[resource-drop]future-incoming-response", EntityType::Function(3));
-    imports.import(http_types, "[constructor]fields", EntityType::Function(0));
-    imports.import(http_types, "[constructor]outgoing-request", EntityType::Function(1));
-    imports.import(http_types, "[method]outgoing-request.set-method", EntityType::Function(4));
-    imports.import(http_types, "[method]outgoing-request.set-scheme", EntityType::Function(5));
-    imports.import(http_types, "[method]outgoing-request.set-authority", EntityType::Function(4));
-    imports.import(http_types, "[method]outgoing-request.set-path-with-query", EntityType::Function(4));
-    imports.import(http_types, "[method]outgoing-request.body", EntityType::Function(2));
-    imports.import(http_types, "[method]outgoing-body.write", EntityType::Function(2));
-    imports.import(http_types, "[static]outgoing-body.finish", EntityType::Function(6));
-    imports.import(http_types, "[resource-drop]outgoing-body", EntityType::Function(3));
-    imports.import(http_handler, "handle", EntityType::Function(6));
-    imports.import(http_types, "[resource-drop]outgoing-request", EntityType::Function(3));
-    imports.import(http_types, "[method]future-incoming-response.get", EntityType::Function(2));
-    imports.import(http_types, "[method]future-incoming-response.subscribe", EntityType::Function(1));
-    imports.import(io_poll, "poll", EntityType::Function(7));
-    imports.import(io_poll, "[resource-drop]pollable", EntityType::Function(3));
-    imports.import(http_types, "[method]incoming-response.consume", EntityType::Function(2));
-    imports.import(http_types, "[method]incoming-body.stream", EntityType::Function(2));
-    imports.import(io_streams, "[method]input-stream.read", EntityType::Function(8));
-    imports.import(cli_stdout, "get-stdout", EntityType::Function(0));
-    imports.import(io_streams, "[method]output-stream.blocking-write-and-flush", EntityType::Function(6));
-    imports.import(http_types, "[resource-drop]incoming-body", EntityType::Function(3));
-    imports.import(http_types, "[resource-drop]fields", EntityType::Function(3));
+    assert_eq!(types.len(), HTTP_TYPE_COUNT, "HTTP type count mismatch");
 
-    module.section(&imports);
+    let ht = "wasi:http/types@0.2.2";
+    let hh = "wasi:http/outgoing-handler@0.2.2";
+    let is = "wasi:io/streams@0.2.2";
+    let ip = "wasi:io/poll@0.2.2";
+    let cs = "wasi:cli/stdout@0.2.2";
+
+    // Import entries — order MUST match FN_* constants.
+    imports.import(is, "[resource-drop]input-stream", EntityType::Function(3));
+    imports.import(is, "[resource-drop]output-stream", EntityType::Function(3));
+    imports.import(ht, "[resource-drop]incoming-response", EntityType::Function(3));
+    imports.import(ht, "[resource-drop]future-incoming-response", EntityType::Function(3));
+    imports.import(ht, "[constructor]fields", EntityType::Function(0));
+    imports.import(ht, "[constructor]outgoing-request", EntityType::Function(1));
+    imports.import(ht, "[method]outgoing-request.set-method", EntityType::Function(4));
+    imports.import(ht, "[method]outgoing-request.set-scheme", EntityType::Function(5));
+    imports.import(ht, "[method]outgoing-request.set-authority", EntityType::Function(4));
+    imports.import(ht, "[method]outgoing-request.set-path-with-query", EntityType::Function(4));
+    imports.import(ht, "[method]outgoing-request.body", EntityType::Function(2));
+    imports.import(ht, "[method]outgoing-body.write", EntityType::Function(2));
+    imports.import(ht, "[static]outgoing-body.finish", EntityType::Function(6));
+    imports.import(ht, "[resource-drop]outgoing-body", EntityType::Function(3));
+    imports.import(hh, "handle", EntityType::Function(6));
+    imports.import(ht, "[resource-drop]outgoing-request", EntityType::Function(3));
+    imports.import(ht, "[method]future-incoming-response.get", EntityType::Function(2));
+    imports.import(ht, "[method]future-incoming-response.subscribe", EntityType::Function(1));
+    imports.import(ip, "poll", EntityType::Function(7));
+    imports.import(ip, "[resource-drop]pollable", EntityType::Function(3));
+    imports.import(ht, "[method]incoming-response.consume", EntityType::Function(2));
+    imports.import(ht, "[method]incoming-body.stream", EntityType::Function(2));
+    imports.import(is, "[method]input-stream.read", EntityType::Function(8));
+    imports.import(cs, "get-stdout", EntityType::Function(0));
+    imports.import(is, "[method]output-stream.blocking-write-and-flush", EntityType::Function(6));
+    imports.import(ht, "[resource-drop]incoming-body", EntityType::Function(3));
+    imports.import(ht, "[resource-drop]fields", EntityType::Function(3));
+    imports.import(ht, "[method]fields.set", EntityType::Function(9));
+
+    assert_eq!(imports.len(), HTTP_IMPORT_COUNT, "HTTP import count mismatch");
 }
 
 /// Emit the full HTTP GET call sequence as WASM instructions.
-/// 
+///
 /// Assumes URL string is already written to memory at (url_ptr, url_len).
 /// Parses the URL to extract scheme, authority, and path.
 /// Writes response body to stdout.
 ///
 /// Local variables used (must be allocated by caller):
 ///   locals[0]: fields handle
-///   locals[1]: request handle  
+///   locals[1]: request handle
 ///   locals[2]: outgoing body handle
 ///   locals[3]: output stream handle (unused for GET)
 ///   locals[4]: future handle
@@ -120,8 +214,8 @@ pub fn add_http_imports(module: &mut Module) {
 ///   locals[8]: input stream handle
 ///   locals[9]: stdout handle
 /// Emit full HTTP GET via wasi:http canonical ABI.
-/// 
-/// Locals: 0=fields, 1=req, 2=body, 3=future, 4=pollable, 
+///
+/// Locals: 0=fields, 1=req, 2=body, 3=future, 4=pollable,
 ///         5=response, 6=resp_body, 7=in_stream, 8=stdout, 9=scratch, 10=url_ptr, 11=url_len
 pub fn emit_http_get(func: &mut Function, url_ptr_local: u32, url_len_local: u32) {
     let ld = |off: i32| Instruction::I32Load(MemArg { offset: off as u64, align: 2, memory_index: 0 });
@@ -200,7 +294,10 @@ pub fn emit_http_get(func: &mut Function, url_ptr_local: u32, url_len_local: u32
     func.instruction(&lg(2));
     func.instruction(&cst(0)); // None = 0
     func.instruction(&cst(0)); // pad
-    func.instruction(&cst(SCRATCH_WRITE_RESULT)); // valid dst
+    func.instruction(&cst(SCRATCH_WRITE_RESULT)); // valid dst — reuse from above (SCRATCH+64)
+    // Note: SCRATCH_WRITE_RESULT was defined as SCRATCH+64 in the old split,
+    // but here we use the canonical constant from the buffer module.
+    // The value is the same: 131072 + 64 = 131136.
     func.instruction(&cl(FN_OUTGOING_BODY_FINISH));
 
     // Step 11: drop body
@@ -333,16 +430,17 @@ pub fn emit_http_get(func: &mut Function, url_ptr_local: u32, url_len_local: u32
     func.instruction(&lg(8));
     func.instruction(&cl(FN_DROP_OUTPUT_STREAM));
 }
+
 pub fn build_http_wit_metadata() -> Result<(wit_parser::Resolve, wit_parser::WorldId), String> {
     let mut resolve = wit_parser::Resolve::new();
     let wit_dir = find_wit_dir()?;
     let (pkg_id, _) = resolve.push_dir(&wit_dir).map_err(|e| format!("push_dir failed: {}", e))?;
-    
+
     let pkg = &resolve.packages[pkg_id];
     let world = pkg.worlds.iter()
         .find_map(|(name, id)| if name == "simple-http" { Some(*id) } else { None })
         .ok_or("world 'simple-http' not found")?;
-    
+
     Ok((resolve, world))
 }
 
@@ -365,12 +463,69 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_layout_indices_zero_user_fns() {
+        let layout = WasiHttpLayout::new(0, 1);
+        assert_eq!(layout.user_type_base, HTTP_TYPE_COUNT); // 10
+        assert_eq!(layout.start_type, 27); // 10 + 17
+        assert_eq!(layout.realloc_type, 28);
+        assert_eq!(layout.http_get_type, 29);
+        assert_eq!(layout.http_get_fn_idx, HTTP_IMPORT_COUNT); // 28
+        assert_eq!(layout.user_fn_base, HTTP_IMPORT_COUNT + 2); // 30
+        assert_eq!(layout.start_fn_idx, HTTP_IMPORT_COUNT + 2); // 30 (0 user fns)
+        assert_eq!(layout.realloc_fn_idx, HTTP_IMPORT_COUNT + 3); // 31
+    }
+
+    #[test]
+    fn test_layout_indices_with_user_fns() {
+        let layout = WasiHttpLayout::new(5, 1);
+        assert_eq!(layout.user_fn_base, 30);
+        assert_eq!(layout.start_fn_idx, 35); // 30 + 5
+        assert_eq!(layout.realloc_fn_idx, 36); // 35 + 1
+    }
+
+    #[test]
+    fn test_layout_multi_url() {
+        // 3 URLs → 6 internal functions (3 × 2)
+        let layout = WasiHttpLayout::new(2, 3);
+        assert_eq!(layout.internal_fn_count, 6);
+        assert_eq!(layout.http_get_fn_idx, HTTP_IMPORT_COUNT); // 28
+        assert_eq!(layout.user_fn_base, HTTP_IMPORT_COUNT + 6); // 34
+        assert_eq!(layout.start_fn_idx, 36); // 34 + 2
+        assert_eq!(layout.realloc_fn_idx, 37);
+    }
+
+    #[test]
+    fn test_type_and_import_counts_match() {
+        let mut types = TypeSection::new();
+        let mut imports = ImportSection::new();
+        add_http_imports_to_sections(&mut types, &mut imports);
+        assert_eq!(types.len(), HTTP_TYPE_COUNT);
+        assert_eq!(imports.len(), HTTP_IMPORT_COUNT);
+    }
+
+    #[test]
+    fn test_fn_constants_sequential() {
+        // Verify FN_* constants are sequential 0..27
+        let max_fn = *[
+            FN_DROP_INPUT_STREAM, FN_DROP_OUTPUT_STREAM, FN_DROP_INCOMING_RESPONSE,
+            FN_DROP_FUTURE_INCOMING_RESPONSE, FN_CONSTRUCTOR_FIELDS, FN_CONSTRUCTOR_OUTGOING_REQUEST,
+            FN_SET_METHOD, FN_SET_SCHEME, FN_SET_AUTHORITY, FN_SET_PATH_WITH_QUERY,
+            FN_OUTGOING_REQUEST_BODY, FN_OUTGOING_BODY_WRITE, FN_OUTGOING_BODY_FINISH,
+            FN_DROP_OUTGOING_BODY, FN_HANDLE, FN_DROP_OUTGOING_REQUEST, FN_FUTURE_GET,
+            FN_FUTURE_SUBSCRIBE, FN_POLL, FN_DROP_POLLABLE, FN_INCOMING_RESPONSE_CONSUME,
+            FN_INCOMING_BODY_STREAM, FN_INPUT_STREAM_READ, FN_GET_STDOUT, FN_OUTPUT_STREAM_WRITE,
+            FN_DROP_INCOMING_BODY, FN_DROP_FIELDS, FN_FIELDS_SET,
+        ].iter().max().unwrap();
+        assert_eq!(HTTP_IMPORT_COUNT, max_fn + 1, "HTTP_IMPORT_COUNT should be max FN_* + 1");
+    }
+
+    #[test]
     fn test_wit_metadata_embedding() {
         let (resolve, world) = build_http_wit_metadata().unwrap();
-        
+
         let mut module = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
         wit_component::embed_component_metadata(&mut module, &resolve, world, wit_component::StringEncoding::UTF8).unwrap();
-        
+
         assert!(!module.is_empty());
         assert!(module.starts_with(&[0x00, 0x61, 0x73, 0x6d]));
         eprintln!("WIT metadata module: {} bytes", module.len());
