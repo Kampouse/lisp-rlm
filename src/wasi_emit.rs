@@ -371,8 +371,10 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
     // __wasi_http_get function (index 27)
     functions.function(http_get_type);
     let http_get_fn_idx = import_count; // 27
+    // http_poll_read function (index 28) — same type as http_get
+    functions.function(http_get_type);
     // User functions
-    let user_fn_base = import_count + 1; // 28
+    let user_fn_base = import_count + 2; // 29
     for f in &em.funcs {
         let type_idx = user_type_base + f.param_count as u32;
         functions.function(type_idx);
@@ -385,16 +387,13 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
     functions.function(realloc_type);
     module.section(&functions);
 
-    // ═══ Table + Element Section (for call_indirect in component model) ═══
-    // Must come before memory (section order: func(3) < table(4) < elem(9)... wait
-    // Actually elem(9) > memory(5) > global(6) > export(7). So: table(4), memory(5), global(6), export(7), elem(9)
-    let mut table = TableSection::new();
-    table.table(TableType { element_type: RefType::FUNCREF, minimum: 2, maximum: Some(2), table64: false, shared: false });
-    module.section(&table);
+    // ═══ Table + Element Section ═══
+    // REMOVED: wit-component generates its own table via the shim/fixup modules.
+    // Our table was conflicting with the adapter's $imports table.
 
     // ═══ Memory Section ═══
     let mut memory = MemorySection::new();
-    let pages = em.memory_pages.max(16) as u64; // min 16 pages (1MB) for P2 scratch + heap
+    let pages = em.memory_pages.max(17) as u64; // min 17 pages (1.06MB) for P2 scratch + heap
     memory.memory(MemoryType { minimum: pages, maximum: None, memory64: false, shared: false, page_size_log2: None });
     module.section(&memory);
 
@@ -414,10 +413,7 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
     module.section(&exports);
 
     // ═══ Element Section ═══
-    let mut elements = ElementSection::new();
-    elements.active(None, &ConstExpr::i32_const(0),
-        Elements::Functions(vec![start_fn_idx, realloc_fn_idx].into()));
-    module.section(&elements);
+    // REMOVED: no table needed — wit-component handles indirect calls via shim/fixup.
 
     // ═══ Code Section ═══
     let mut codes = CodeSection::new();
@@ -436,6 +432,17 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
     wasi_http_buffer::emit_http_get_to_buffer(&mut http_get_fn);
     http_get_fn.instruction(&Instruction::End);
     codes.function(&http_get_fn);
+
+    // ── Function 28: http_poll_read ──
+    // Params: 0=future_handle, 1=buf_ptr, 2=buf_len, 3=len_ptr, 4=unused
+    // Extra locals: 5=pollable, 6=response, 7=resp_body, 8=in_stream, 9=bytes_written
+    let mut poll_read_fn = Function::new([
+        (1u32, W), (1u32, W), (1u32, W), (1u32, W), (1u32, W),
+        (1u32, W), (1u32, W), (1u32, W), (1u32, W),
+    ]);
+    wasi_http_buffer::emit_http_poll_read(&mut poll_read_fn);
+    poll_read_fn.instruction(&Instruction::End);
+    codes.function(&poll_read_fn);
 
     // ── User functions from the emitter ──
     let name_map: std::collections::HashMap<&str, u32> = em.funcs.iter().enumerate()
@@ -2041,6 +2048,192 @@ fn run_outlayer_wasm_with_http(wasm: &[u8], stdin_data: &[u8]) -> i64 {
             Err(e) => {
                 eprintln!("Error: {}", e);
                 panic!("compile failed: {}", e);
+            }
+        }
+    }
+
+    /// Live P2 component execution test: compile weather-rust reference to P2
+    /// wasi:http component, run it in wasmtime with real HTTP support.
+    #[tokio::test]
+    async fn test_p2_wasi_http_live() {
+        use wasmtime::{Engine, Config};
+        use wasmtime::component::{Linker, ResourceTable};
+        use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView, WasiCtxBuilder, p2::pipe::MemoryInputPipe};
+        use wasmtime_wasi_http::{WasiHttpCtx, p2::{WasiHttpView, WasiHttpCtxView}};
+
+        struct TestState {
+            ctx: WasiCtx,
+            http_ctx: WasiHttpCtx,
+            table: ResourceTable,
+        }
+        impl WasiHttpView for TestState {
+            fn http(&mut self) -> WasiHttpCtxView<'_> {
+                WasiHttpCtxView {
+                    ctx: &mut self.http_ctx,
+                    table: &mut self.table,
+                    hooks: Default::default(),
+                }
+            }
+        }
+        impl WasiView for TestState {
+            fn ctx(&mut self) -> WasiCtxView<'_> {
+                WasiCtxView { ctx: &mut self.ctx, table: &mut self.table }
+            }
+        }
+
+        // Use the reference weather-rust component (compiled from Rust with wasi-http-client)
+        let ref_path = "weather-rust/target/wasm32-wasip2/release/weather.wasm";
+        let comp_bytes = std::fs::read(ref_path)
+            .unwrap_or_else(|e| panic!("read {}: {}. Run: cd weather-rust && cargo build --target wasm32-wasip2 --release", ref_path, e));
+        eprintln!("Reference component: {} bytes", comp_bytes.len());
+
+        // Set up wasmtime with wasi:http support
+        let mut config = Config::new();
+        config.wasm_component_model(true);
+        config.async_support(true);
+        config.wasm_backtrace_details(wasmtime::WasmBacktraceDetails::Enable);
+        let engine = Engine::new(&config).expect("engine");
+        let component = wasmtime::component::Component::from_binary(&engine, &comp_bytes)
+            .expect("component deserialize");
+
+        let mut linker = Linker::<TestState>::new(&engine);
+        wasmtime_wasi::p2::add_to_linker_async(&mut linker)
+            .expect("add wasi to linker");
+        wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker)
+            .expect("add wasi:http to linker");
+
+        // Set up stdin (JSON input) and stdout (capture)
+        let stdin_json = r#"{"city":"Montreal"}"#;
+        let stdout_pipe = wasmtime_wasi::p2::pipe::MemoryOutputPipe::new(65536);
+        let table = ResourceTable::new();
+        let ctx = WasiCtxBuilder::new()
+            .stdin(MemoryInputPipe::new(stdin_json.as_bytes().to_vec()))
+            .stdout(stdout_pipe.clone())
+            .build();
+
+        let state = TestState {
+            ctx,
+            http_ctx: WasiHttpCtx::new(),
+            table,
+        };
+
+        let mut store = wasmtime::Store::new(&engine, state);
+
+        // Instantiate the component
+        let instance = linker.instantiate_async(&mut store, &component)
+            .await
+            .expect("instantiate");
+
+        // Get wasi:cli/run#run via the instance export
+        let (_, run_instance_idx) = instance
+            .get_export(&mut store, None, "wasi:cli/run@0.2.6")
+            .expect("get wasi:cli/run instance");
+        let (_, run_func_idx) = instance
+            .get_export(&mut store, Some(&run_instance_idx), "run")
+            .expect("get run func");
+
+        let run_fn = instance
+            .get_func(&mut store, &run_func_idx)
+            .expect("get run Func");
+        eprintln!("📦 run func ready");
+
+        // Call it — wasi:cli/run#run() -> result<(), _>
+        let mut result_val = [wasmtime::component::Val::Bool(false)];
+        run_fn.call_async(&mut store, &[], &mut result_val).await
+            .expect("run call failed");
+
+        // Read stdout
+        let output = stdout_pipe.contents();
+        let output_str = String::from_utf8_lossy(&output);
+        eprintln!("📝 stdout: {}", output_str);
+
+        // Verify we got weather data
+        assert!(output_str.contains("temp_c"), "expected weather JSON with temp_c, got: {}", output_str);
+        eprintln!("✅ Reference P2 component ran successfully with real HTTP!");
+    }
+
+    /// Test our Lisp-compiled P2 component in wasmtime with real HTTP
+    #[tokio::test]
+    async fn test_lisp_p2_wasi_http_live() {
+        use wasmtime::{Engine, Config};
+        use wasmtime::component::{Linker, ResourceTable};
+        use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView, WasiCtxBuilder, p2::pipe::MemoryInputPipe};
+        use wasmtime_wasi_http::{WasiHttpCtx, p2::{WasiHttpView, WasiHttpCtxView}};
+
+        struct TestState {
+            ctx: WasiCtx,
+            http_ctx: WasiHttpCtx,
+            table: ResourceTable,
+        }
+        impl WasiHttpView for TestState {
+            fn http(&mut self) -> WasiHttpCtxView<'_> {
+                WasiHttpCtxView { ctx: &mut self.http_ctx, table: &mut self.table, hooks: Default::default() }
+            }
+        }
+        impl WasiView for TestState {
+            fn ctx(&mut self) -> WasiCtxView<'_> { WasiCtxView { ctx: &mut self.ctx, table: &mut self.table } }
+        }
+
+        // Compile our Lisp code to P2 component
+        let source = r#"
+(define (weather) (http-get "https://httpbin.org/get"))
+"#;
+        let comp_bytes = compile_outlayer_p2(source)
+            .expect("Lisp P2 compilation failed");
+        eprintln!("Lisp component: {} bytes", comp_bytes.len());
+        std::fs::write("/tmp/lisp_p2_test.wasm", &comp_bytes).ok();
+
+        // Set up wasmtime with wasi:http support
+        let mut config = Config::new();
+        config.wasm_component_model(true);
+        config.async_support(true);
+        config.wasm_backtrace_details(wasmtime::WasmBacktraceDetails::Enable);
+        let engine = Engine::new(&config).expect("engine");
+        let component = wasmtime::component::Component::from_binary(&engine, &comp_bytes)
+            .expect("component deserialize");
+
+        let mut linker = Linker::<TestState>::new(&engine);
+        wasmtime_wasi::p2::add_to_linker_async(&mut linker).expect("add wasi");
+        wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker).expect("add wasi:http");
+
+        let stdout_pipe = wasmtime_wasi::p2::pipe::MemoryOutputPipe::new(65536);
+        let table = ResourceTable::new();
+        let ctx = WasiCtxBuilder::new()
+            .stdin(MemoryInputPipe::new(vec![]))
+            .stdout(stdout_pipe.clone())
+            .build();
+
+        let state = TestState { ctx, http_ctx: WasiHttpCtx::new(), table };
+        let mut store = wasmtime::Store::new(&engine, state);
+
+        let instance = linker.instantiate_async(&mut store, &component)
+            .await
+            .expect("instantiate");
+
+        // Get wasi:cli/run#run
+        let (_, run_instance_idx) = instance
+            .get_export(&mut store, None, "wasi:cli/run@0.2.2")
+            .expect("get wasi:cli/run instance");
+        let (_, run_func_idx) = instance
+            .get_export(&mut store, Some(&run_instance_idx), "run")
+            .expect("get run func");
+        let run_fn = instance
+            .get_func(&mut store, &run_func_idx)
+            .expect("get run Func");
+
+        eprintln!("📦 Lisp component ready, calling run...");
+
+        let mut result_val = [wasmtime::component::Val::Bool(false)];
+        match run_fn.call_async(&mut store, &[], &mut result_val).await {
+            Ok(()) => {
+                eprintln!("📦 run completed");
+                let output = stdout_pipe.contents();
+                let output_str = String::from_utf8_lossy(&output);
+                eprintln!("📝 stdout: {}", output_str);
+            }
+            Err(e) => {
+                eprintln!("❌ run failed: {:?}", e);
+                panic!("Lisp P2 component execution failed: {:?}", e);
             }
         }
     }
