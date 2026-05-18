@@ -5,7 +5,7 @@
   import { runWasiWithWorker } from './lib/runWasiWithWorker.ts';
   import { examples } from './lib/examples.ts';
   import { connectWallet, disconnectWallet, deployP1, deployP2, getWalletState, type WalletState, type DeployResult, type Network } from './lib/wallet.ts';
-  import { Play, Box, Cloud, Share2, Link, FlaskConical, Wallet, Zap, Rocket, CircleDot, Loader2, ChevronDown, ChevronUp, Menu, X } from '@lucide/svelte';
+  import { Play, Box, Cloud, Share2, Link, FlaskConical, Wallet, Zap, Rocket, CircleDot, Loader2, ChevronDown, ChevronUp, Menu, X, BookOpen } from '@lucide/svelte';
 
   // ============================================
   // State
@@ -39,6 +39,9 @@
 
   // Mobile examples menu
   let showExamplesMenu: boolean = $state(false);
+
+  // Learn panel
+  let showLearn: boolean = $state(false);
 
   // Resizable panes
   let outputPaneWidth: number = $state(40); // percentage
@@ -669,6 +672,16 @@
       >
         <Cloud size={14} /> <span class="pill-label">WASI</span>
       </button>
+      <button
+        class="pill-tab"
+        class:active={showLearn}
+        role="tab"
+        aria-selected={showLearn}
+        onclick={() => { showLearn = !showLearn; }}
+        title="Learn about Lisp and this platform"
+      >
+        <BookOpen size={14} /> <span class="pill-label">Learn</span>
+      </button>
     </div>
 
     <!-- Feature 5: Auto-compile toggle & Feature 7: Share -->
@@ -742,6 +755,88 @@
       {/if}
     </button>
   </header>
+
+  <!-- Learn Panel -->
+  {#if showLearn}
+    <div class="learn-panel">
+      <div class="learn-content">
+        <div class="learn-section">
+          <h3>Lisp Basics</h3>
+          <p>Lisp uses <strong>prefix notation</strong> — the operator comes first:</p>
+          <pre class="learn-code">(+ 1 2)       ; → 3
+(* 3 4)       ; → 12
+(- 10 3)      ; → 7
+(/ 20 4)      ; → 5</pre>
+          <p>Nest expressions for complex calculations:</p>
+          <pre class="learn-code">(+ (* 2 3) (- 10 5))  ; → 11</pre>
+        </div>
+
+        <div class="learn-section">
+          <h3>Variables & Functions</h3>
+          <p>Define variables with <code>let</code>:</p>
+          <pre class="learn-code">(let ((x 10) (y 20))
+  (+ x y))     ; → 30</pre>
+          <p>Define functions with <code>defun</code>:</p>
+          <pre class="learn-code">(defun square (n)
+  (* n n))
+
+(square 5)    ; → 25</pre>
+        </div>
+
+        <div class="learn-section">
+          <h3>Conditionals</h3>
+          <pre class="learn-code">(if (> x 0)
+    "positive"
+    "non-positive")</pre>
+          <p>Compare with: <code>=</code> <code>!=</code> <code>&lt;</code> <code>&gt;</code> <code>&lt;=</code> <code>&gt;=</code></p>
+        </div>
+
+        <div class="learn-section">
+          <h3>Platform Modes</h3>
+          <div class="learn-modes">
+            <div class="learn-mode">
+              <strong>Run</strong>
+              <span>Pure Lisp execution in browser</span>
+            </div>
+            <div class="learn-mode">
+              <strong>NEAR</strong>
+              <span>Deploy as smart contract on NEAR blockchain</span>
+            </div>
+            <div class="learn-mode">
+              <strong>WASI</strong>
+              <span>Run as off-chain WASM with HTTP capabilities</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="learn-section">
+          <h3>Available Functions</h3>
+          <div class="learn-functions">
+            <div class="learn-fn-group">
+              <strong>Arithmetic</strong>
+              <code>+ - * / mod</code>
+            </div>
+            <div class="learn-fn-group">
+              <strong>Comparison</strong>
+              <code>= != &lt; &gt; &lt;= &gt;=</code>
+            </div>
+            <div class="learn-fn-group">
+              <strong>Logic</strong>
+              <code>and or not</code>
+            </div>
+            <div class="learn-fn-group">
+              <strong>Control</strong>
+              <code>if cond let defun</code>
+            </div>
+            <div class="learn-fn-group">
+              <strong>Lists</strong>
+              <code>car cdr cons list length</code>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  {/if}
 
   <!-- Main Content - Split Layout -->
   <main class="main-content">
@@ -1005,6 +1100,96 @@
   }
   .resizer:active {
     background: var(--color-accent);
+  }
+  
+  /* Learn Panel */
+  .learn-panel {
+    background: var(--color-bg-surface);
+    border-bottom: 1px solid var(--color-border);
+    max-height: 400px;
+    overflow-y: auto;
+  }
+  .learn-content {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: var(--space-lg);
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: var(--space-lg);
+  }
+  .learn-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .learn-section h3 {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--color-accent);
+    margin: 0;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .learn-section p {
+    font-size: 13px;
+    color: var(--color-text-secondary);
+    margin: 0;
+    line-height: 1.5;
+  }
+  .learn-section code {
+    background: var(--color-bg-elevated);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+  }
+  .learn-code {
+    background: var(--color-bg-elevated);
+    padding: 12px;
+    border-radius: var(--radius-md);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--color-text-primary);
+    overflow-x: auto;
+    margin: 0;
+    line-height: 1.6;
+  }
+  .learn-modes {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .learn-mode {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .learn-mode strong {
+    color: var(--color-text-primary);
+    font-size: 13px;
+  }
+  .learn-mode span {
+    color: var(--color-text-muted);
+    font-size: 12px;
+  }
+  .learn-functions {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .learn-fn-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: baseline;
+  }
+  .learn-fn-group strong {
+    min-width: 80px;
+    font-size: 12px;
+    color: var(--color-text-secondary);
+  }
+  .learn-fn-group code {
+    font-size: 11px;
   }
   
   /* Scoped styles for additions */
