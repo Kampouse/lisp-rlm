@@ -2,47 +2,58 @@ export interface Example {
   name: string;
   icon: string;
   source: string;
-  target: 'p1' | 'p2';
+  target: 'p1' | 'p2' | 'pure';
 }
 
 export const examples: Example[] = [
   {
     name: 'Fibonacci',
     icon: '🌀',
-    target: 'p1',
-    source: `;; Fibonacci — NEAR Smart Contract
-;; Computes the nth Fibonacci number
+    target: 'pure',
+    source: `(define (fib n)
+  (if (<= n 1)
+    n
+    (+ (fib (- n 1)) (fib (- n 2)))))
 
-(define (fib n)
-  (if (<= n 1) n
-    (+ (fib (- n 1))
-       (fib (- n 2)))))
+(define (main)
+  (fib 10))`,
+  },
+  {
+    name: 'Factorial',
+    icon: '❗',
+    target: 'pure',
+    source: `(define (fact n)
+  (if (<= n 1)
+    1
+    (* n (fact (- n 1)))))
 
-(define (run) (fib 10))`,
+(define (main)
+  (fact 12))`,
   },
   {
     name: 'Counter',
     icon: '🔢',
     target: 'p1',
-    source: `;; Simple Counter — NEAR Smart Contract
-;; Stores and increments a counter
-
-(define (count-to n)
-  (if (<= n 0) 0
-    (+ 1 (count-to (- n 1)))))
-
-(define (run) (count-to 5))`,
+    source: `(memory 1)
+(define (get_counter) (near/load "c"))
+(define (set_counter val) (near/store "c" val))
+(define (new) (set_counter 0))
+(define (increment) (set_counter (+ (get_counter) 1)))
+(define (get) (near/return (get_counter)))
+(export "new" new false)
+(export "increment" increment false)
+(export "get" get true)`,
   },
   {
     name: 'HTTP Fetch',
     icon: '🌐',
     target: 'p2',
-    source: `;; HTTP Fetch Service (WASI/OutLayer P2)
-;; Fetches Bitcoin price from CoinGecko API
+    source: `(define (handler req)
+  (let ((url "https://httpbin.org/get"))
+    (let ((response (http-get url)))
+      response)))
 
-(define (fetch-price)
-  (http-get "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"))
-
-(define (run) (fetch-price))`,
+(define (main)
+  (handler "request"))`,
   },
 ];

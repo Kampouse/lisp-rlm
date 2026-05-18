@@ -1391,6 +1391,7 @@ dependencies = [
  "console_error_panic_hook",
  "lisp-rlm-wasm",
  "wasm-bindgen",
+ "wasmprinter 0.248.0",
  "web-sys",
 ]
 

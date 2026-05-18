@@ -10,6 +10,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 wasm-bindgen = "0.2"
 console_error_panic_hook = "0.1"
+wasmprinter = "0.248.0"
 lisp-rlm-wasm = { path = "../.." }
 
 [dependencies.web-sys]

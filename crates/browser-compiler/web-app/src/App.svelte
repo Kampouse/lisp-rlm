@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import * as monaco from 'monaco-editor';
-  import { initCompiler, compile, toHexDump, type CompileTarget, type CompileResult } from './lib/compiler.ts';
+  import { initCompiler, compile, runPure, toHexDump, type CompileTarget, type CompileResult } from './lib/compiler.ts';
   import { examples } from './lib/examples.ts';
   import { connectWallet, disconnectWallet, deployP1, deployP2, getWalletState, toExplorerUrl, type WalletState, type DeployResult, type Network } from './lib/wallet.ts';
 
@@ -20,6 +20,9 @@
   let contractName: string = $state('my-contract');
   let network: Network = $state('testnet');
   let showDeployPanel: boolean = $state(false);
+  let runResult: string | null = $state(null);
+  let running: boolean = $state(false);
+  let showWat: boolean = $state(false);
 
   // Derived
   let hexDump: string = $derived.by(() => {
@@ -156,11 +159,25 @@
     result = null;
     deployResult = null;
     showDeployPanel = false;
+    runResult = null;
     await new Promise(r => setTimeout(r, 50));
     try {
       result = compile(source, target);
     } finally {
       compiling = false;
+    }
+  }
+
+  async function handleRun() {
+    if (!result?.success || !result.wasmBytes || running) return;
+    running = true;
+    runResult = null;
+    try {
+      runResult = await runPure(result.wasmBytes);
+    } catch (err: unknown) {
+      runResult = `Error: ${err instanceof Error ? err.message : String(err)}`;
+    } finally {
+      running = false;
     }
   }
 
@@ -249,10 +266,19 @@
     <div class="pill-container" role="tablist">
       <button
         class="pill-tab"
+        class:active={target === 'pure'}
+        role="tab"
+        aria-selected={target === 'pure'}
+        onclick={() => { target = 'pure'; result = null; deployResult = null; showDeployPanel = false; runResult = null; }}
+      >
+        ▶ <span class="pill-label">Run</span>
+      </button>
+      <button
+        class="pill-tab"
         class:active={target === 'p1'}
         role="tab"
         aria-selected={target === 'p1'}
-        onclick={() => { target = 'p1'; result = null; deployResult = null; showDeployPanel = false; }}
+        onclick={() => { target = 'p1'; result = null; deployResult = null; showDeployPanel = false; runResult = null; }}
       >
         P1 <span class="pill-label">NEAR</span>
       </button>
@@ -261,7 +287,7 @@
         class:active={target === 'p2'}
         role="tab"
         aria-selected={target === 'p2'}
-        onclick={() => { target = 'p2'; result = null; deployResult = null; showDeployPanel = false; }}
+        onclick={() => { target = 'p2'; result = null; deployResult = null; showDeployPanel = false; runResult = null; }}
       >
         P2 <span class="pill-label">WASI</span>
       </button>
@@ -347,6 +373,17 @@
             >
               ⚡ Deploy
             </button>
+            <button
+              class="run-toggle-btn"
+              onclick={handleRun}
+              disabled={running}
+            >
+              {#if running}
+                <span class="spinner"></span>
+              {:else}
+                ▶ Run
+              {/if}
+            </button>
           {/if}
         </div>
 
@@ -364,13 +401,44 @@
                 </div>
                 <div class="stat">
                   <span class="stat-label">Target</span>
-                  <span class="stat-value">{target === 'p1' ? 'NEAR' : 'WASI'}</span>
+                  <span class="stat-value">{target === 'p1' ? 'NEAR' : target === 'p2' ? 'WASI' : 'Pure'}</span>
                 </div>
                 <div class="stat">
                   <span class="stat-label">Bytes</span>
                   <span class="stat-value">{result.size.toLocaleString()}</span>
                 </div>
               </div>
+
+              <!-- Run Result -->
+              {#if runResult !== null}
+                <div class="run-result-panel">
+                  <div class="run-result-header">
+                    <span class="run-result-icon">▶</span>
+                    <span class="run-result-title">Output</span>
+                  </div>
+                  <div class="run-result-value">{runResult}</div>
+                </div>
+              {/if}
+
+              <!-- Exports -->
+              {#if result.exports && result.exports.length > 0}
+                <div class="exports-panel">
+                  <span class="exports-label">Exports:</span>
+                  {#each result.exports as exp}
+                    <span class="export-tag">{exp}</span>
+                  {/each}
+                </div>
+              {/if}
+
+              <!-- WAT Disassembly -->
+              {#if result.wat}
+                <details class="hex-details">
+                  <summary class="hex-summary" onclick={() => { showWat = !showWat; }}>
+                    {showWat ? '▼' : '▶'} WAT Disassembly
+                  </summary>
+                  <pre class="wat-output">{result.wat}</pre>
+                </details>
+              {/if}
 
               <!-- Deploy Panel -->
               {#if showDeployPanel}
