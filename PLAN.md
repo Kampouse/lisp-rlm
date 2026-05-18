@@ -1,275 +1,263 @@
-# lisp-rlm — Master Plan
+# Lisp-RLM Browser Playground — Plan
 
-## Current State
-
-**Commit:** `f26a062` on `main`
-**Tests:** 557 pass / 248 fail / 805 total (69.2%)
-**Fuzz harness:** 22/22 pass (test_wasm_fuzz.rs)
-**F* Verification:** 54 files, 12,391 lines, 767 lemmas, 3 admits (0.39%)
-**WASM build:** 796KB release, 625KB wasm-opt -Oz, 0 errors
-**Lib tests:** 42/42 pass (0 regressions)
+A browser-based IDE where users write Lisp, compile to WASM client-side, and deploy/run on NEAR — supporting both on-chain smart contracts (P1) and off-chain wasi:http programs (P2), including hybrid programs that bridge both environments.
 
 ---
 
-## Completed Work
+## Vision
 
-### VM Correctness — All panics eliminated ✅
-- Checked arithmetic at all sites (both VMs) — overflow returns `Err` instead of panicking
-- `safe_slot` helper — OOB slot access returns `&LispVal::Nil` instead of panicking
-- Stack underflow protection — `MakeList` and `TypedBinOp` in both VMs
-- `num_arith_checked` Nil fallback fixed — was short-circuiting the overflow path
-- Slot*MImm ops do NOT write back to slot — `Recur`/`RecurDirect` pop from stack
-- `binop_name` helper for consistent error messages across all arithmetic paths
+**Write Lisp → Compile in Browser → Deploy to NEAR**
 
-### Differential fuzz — overflow fuzz passes ✅
-- `test_differential_fuzz_overflow`: 0 mismatches (was 22 failures)
-- Root cause analysis: 211 failures → 5 categories (60% VM panics, 25% unsupported opcodes, 3 float coercion, div-by-zero, 1 SlotAddImm writeback)
-- All panic categories fixed; remaining ~50 "slot index 0 out of bounds" in closure VM fixed with safe_slot
+- **P1 (On-Chain):** Compile Lisp → NEAR smart contract WASM → deploy as a contract. Uses NEAR host functions (storage_read/write, context, crypto). Gas-metered, stateful on-chain.
+- **P2 (Off-Chain):** Compile Lisp → wasi:http WASM → execute via OutLayer daemon. Can make HTTP requests, access NEAR storage through OutLayer API. Runs off-chain with on-chain settlement.
+- **Hybrid Programs:** P2 fetches external data (APIs, prices, feeds) and feeds results into P1 contract storage. Oracle/bridge pattern — best of both worlds.
 
-### F* Sync — Fixes 1-5 complete ✅
-- Full diff analysis: `verification/FSTAR_VS_RUST_DIFF.md`
-- Root cause #2 (`pure`/type annotations): all 8 sub-items done
-- `pure_type` stored on `CompiledLambda`, propagated via `pending_pure_type` on `LoopCompiler`
-- `desugar_define_to_pairs` returns `Vec<((String, LispVal), Option<String>)>`
+### Why Both Targets Matter
 
-### F* ClosureVM F64 TypedBinOp fix ✅
-- Bug: F64 branch matched `Num na` (int) but called `typed_add_f64` (needs `ffloat`) — type error
-- Fix: `to_ffloat a` / `to_ffloat b` for coercion, matching Rust's `Num(n) => *n as f64`
-- Added missing F64 binops: `Mod`, `Eq`, `Lt`, `Le`, `Gt`, `Ge`
-- Added `ff_rem` assume to `Lisp.Types.fst`
-- `OpMod` uses `typed_mod_i64` helper to avoid F* `nonzero` proof obligation
+A real dApp needs both:
+- On-chain contracts for trust-minimized state transitions and value transfers
+- Off-chain workers for HTTP access, heavy computation, and cross-chain data
 
-### F* Soundness audit ✅
-- 54 files, 12,391 lines, 767 lemmas
-- 3 admits total (0.39%) — all in test files, zero in core semantics
-- 1 pre-existing timeout in Soundness.fst `sound_add` (Z3 trigger issue, trivially true `x=x`)
-
-### WASM compilation ✅
-- Entire crate compiles to `wasm32-unknown-unknown` — 0 errors, 40 cosmetic warnings only
-- Wasmtime behind `cfg(not(target_arch = "wasm32"))` gate
-- Release WASM = 796KB, `wasm-opt -Oz` = 625KB
-
-### Fuel metering + `.wasm` bench support ✅ (pushed)
-- Commit `d0ea8a2`
-- `Config::new().consume_fuel(true)` + `store.set_fuel(initial)` + `initial - store.get_fuel()?` for consumed
-- `run_bench` auto-detects `.wasm` vs `.lisp` extension
-
-### Build/infra fixes ✅
-- `autobins = false` in Cargo.toml (Cargo auto-discovers `src/bin/*.rs`)
-- `near-compile` as explicit `[[bin]]`
-- Test helpers outside `#[cfg(test)]` (integration tests are separate crates)
+With hybrid programs, you write one Lisp program that declares which parts run where — the compiler handles the rest.
 
 ---
 
-## Phase 1: Emitter Correctness — Fuzz Harness ✅ (complete)
-
-**Goal:** Differential fuzz between ClosureVM and WASM emitter. Same compiler front-end, two execution engines, compare outputs.
-
-**Result:** 22/22 tests pass. 5 real emitter bugs found and fixed.
-
-### 3-bit Tag Scheme (implemented)
-- Bottom 3 bits = type tag, upper 61 bits = payload
-- `TAG_NUM=0, TAG_BOOL=1, TAG_FNREF=2, TAG_CLOSURE=3, TAG_NIL=4, TAG_STR=5`
-- Falsy set: `{Num(0)=0, Bool(false)=1, Nil=4}` — 0 is truthy (Lisp convention)
-- `emit_tag(val, tag)` = `(val << 3) | tag`, `emit_untag()` = `val >> 3` (arithmetic shift)
-- `finish_fuzz()` stores tagged value at `TEMP_MEM=64` (no untag, no value_return)
-
-### Fuzz Harness (`tests/test_wasm_fuzz.rs`)
-- `compile_fuzz(source)` → WASM with `fuzz_mode=true` (reuse `finish()` with gated untag)
-- Dynamic wasmtime host stubs: iterate `module.imports()`, match exact signatures
-- Handles both internal and imported memory
-- Auto-calls `(run)` after defining it in ClosureVM for result comparison
-
-### Bugs Found (all fixed)
-1. **`emit_dynamic_call` untag used `>> 2` instead of `>> TAG_BITS`** — closures read from wrong heap offset
-2. **`emit_is_truthy` stack corruption** — `I64Eq` consumed tagged value, breaking `if`/`and`/`or`
-3. **Falsy set included `Num(0)`** — in Lisp, 0 is truthy
-4. **`or` returned `Bool(true)` instead of actual truthy value**
-5. **`not` missing `I64ExtendI32U`** — `I64Eqz` produces i32, `emit_tag_bool` expects i64
-
-### Coverage
-- Arithmetic: +, -, *, /, mod, abs, chained, deep nesting
-- Comparisons: >, <, >=, <=, =, !=
-- Logic: and, or, not (all edge cases)
-- Control flow: if/then/else, begin, cond
-- Functions: define, call, recursion (fibonacci), nested calls
-- Closures: capture, higher-order (make-adder pattern)
-- State: let bindings, set! mutation
-- Zero-distinguishing: Num(0) ≠ Bool(false) ≠ Nil (the whole point)
-
-### Skipped (pre-existing ClosureVM limitations)
-- `for` loop — ClosureVM doesn't compile `for` the same way
-- `while` loop — not a builtin in the eval environment
-
----
-
-## Phase 2: Emitter Correctness — F* WASM Model
-
-**Goal:** Formal proof that the WASM emitter preserves bytecode semantics.
-
-**Why after fuzz:** Fuzz finds the bugs. F* proves there are no more. The fuzz corpus from Phase 1 guides what to model and what lemmas are needed. Each fuzz crash that gets fixed becomes a regression lemma.
-
-### Proof Chain
+## Architecture
 
 ```
-Source → CompilerSpec → Bytecode (DONE: 767 lemmas)
-                                    ↓
-                         WASM Emitter Spec (NEW)
-                                    ↓
-                         WASM Instructions (NEW)
-                                    ↓
-                         WASM Eval (NEW)
-                                    ↓
-              ≈ Bytecode VM (simulation proof, NEW)
+┌─────────────────────────────────────────────────┐
+│                  Browser App                     │
+│                                                  │
+│  ┌──────────┐   ┌────────────────────────────┐  │
+│  │  Monaco   │   │  Lisp Compiler (WASM)      │  │
+│  │  Editor   │──▶│  ┌──────────┐ ┌─────────┐  │  │
+│  │          │   │  │ P1 Emit  │ │ P2 Emit │  │  │
+│  │  .lisp   │   │  │ (NEAR)   │ │ (WASI)  │  │  │
+│  │  files   │   │  └──────────┘ └─────────┘  │  │
+│  └──────────┘   └────────────────────────────┘  │
+│        │                   │                     │
+│        │         ┌─────────┴─────────┐          │
+│        │         ▼                   ▼          │
+│        │   .wasm (P1)         .wasm (P2)        │
+│        │         │                   │          │
+└────────┼─────────┼───────────────────┼──────────┘
+         │         │                   │
+         │    ┌────▼────┐        ┌─────▼─────┐
+         │    │  NEAR   │        │  OutLayer  │
+         │    │  RPC    │        │  Daemon    │
+         │    │         │        │  (wasi:http)│
+         │    └─────────┘        └───────────┘
+         │                            │
+         │                       ┌────▼────┐
+         │                       │  NEAR   │
+         │                       │  RPC    │
+         │                       │(settle) │
+         │                       └─────────┘
+         │
+    ┌────▼──────────────────────────────┐
+    │          NEAR Wallet              │
+    │   (MyNearWallet / Meteor)         │
+    └───────────────────────────────────┘
 ```
 
-### Steps
+---
 
-- [ ] 2.1 `semantics/wasm/Wasm.Types.fst` — WASM instruction enum, memory model
-  - ~30 instruction types used by the emitter (i64.const, i64.add, i64.load, local.set, br, if, etc.)
-  - Linear memory model (i32 address space, little-endian)
-  - Stack machine state: `(instrs: list instr, stack: list i64, locals: list i64, memory: memory, pc: nat)`
+## Existing Code We Build On
 
-- [ ] 2.2 `semantics/wasm/Wasm.Eval.fst` — WASM step function
-  - One step per instruction type
-  - Determinism proof
-  - Fuel/budget parameter for termination
+### Already Working
 
-- [ ] 2.3 `semantics/wasm/Wasm.Emitter.fst` — bytecode → WASM translation spec
-  - For each bytecode opcode: what WASM instruction sequence the emitter produces
-  - Memory layout spec (tagged value encoding, slot layout, code table)
-  - Extract from `wasm_emit.rs` patterns
+| Component | Status | Location |
+|-----------|--------|----------|
+| Lisp parser & evaluator | ✅ 783 tests | `lisp-rlm/src/` |
+| P1 WASM emitter (NEAR) | ✅ Working | `lisp-rlm/src/wasm_emit.rs` |
+| P2 WASM emitter (WASI) | ✅ Working | `lisp-rlm/src/wasi_emit.rs` |
+| P2 wasi:http emitter | ✅ 752 instr verified | `lisp-rlm/src/p2_direct.rs` |
+| OutLayer adapter WIT | ✅ Working | `lisp-rlm/src/outlayer_adapter.rs` |
+| P1 on-chain contract | ✅ Deployed | `near-lisp/` |
+| InLayer CLI + daemon | ✅ Mainnet live | `near-inlayer/` |
+| Multi-URL http-get | ✅ On-chain | N requests from Lisp source |
 
-- [ ] 2.4 `semantics/wasm/Wasm.EmitterCorrectness.fst` — simulation proof
-  - **Main theorem:** For each bytecode step, the emitted WASM sequence has equivalent observable effect
-  - Step-indexed simulation relation: `rel(vm_state, wasm_state)`
-  - Key invariants: stack correspondence, memory correspondence, pc advancement
-  - ~200-300 lemmas estimated
+### Needs Building
 
-- [ ] 2.5 Verify against fuzz corpus
-  - Each program in the fuzz corpus becomes a concrete test lemma
-  - If all pass, high confidence the simulation is complete
-
-### What F* Already Provides (no rework needed)
-- Source → Bytecode compiler correctness (LispIR.CompilerCorrectness)
-- Bytecode VM determinism (LispIR.Determinism)
-- Stack height preservation (LispIR.StackHeight)
-- Universality (LispIR.Universality)
-
-### What F* Cannot Prove (fuzz covers these)
-- Actual wasmtime behavior (wasmtime IS the ground truth for WASM sem)
-- Host function interaction (storage, logging, promises)
-- Real memory layout bugs (off-by-one, alignment)
-- Integer overflow in WASM (WASM i64 wrapping vs checked arithmetic)
+| Component | Effort | Description |
+|-----------|--------|-------------|
+| Browser compiler (wasm-bindgen) | 2-3 days | Port `WasmEmitter` to compile in browser via WASM |
+| Web frontend (IDE) | 3-4 days | Monaco editor, file tabs, output panel, deploy buttons |
+| NEAR wallet integration | 1 day | MyNearWallet/Meteor for signing deployments |
+| P1 contract factory | 2-3 days | Factory contract to deploy user-compiled WASM as new contracts |
+| P2→P1 bridge (hybrid) | 1-2 days | P2 worker calls P1 contract after fetching data |
+| Template gallery | 1 day | Pre-built examples: counter, oracle, cross-chain fetch |
+| Hosting & CI | 1 day | Cloudflare Pages, auto-deploy |
 
 ---
 
-## Phase 3: Structural Refactor (in progress, paused)
+## Build Plan (~10-12 Days)
 
-### 3a: Extract wasmtime mock runtime (analysis done, no code yet)
-- 4 duplication sites in `src/bin/near_compile.rs` (run_test_fn, run_bench, eval_wasm, run_wasmtime)
-- ~40 `linker.define()` calls for NEAR host function stubs
-- Extract to `src/near_mock_runtime.rs` or `src/wasm_test_harness.rs`
-- Differences: fuel metering (bench only), shared state Arcs (REPL only), return type (i64 vs String+logs)
+### Phase 1: Browser Compiler (Days 1-3)
 
-### 3b: Split bytecode.rs (not started)
-- 4,342 lines — unmaintainable
-- Target: `loop_vm.rs` + `closure_vm.rs` + `shared.rs`
-- Must not break any of the 557 passing tests
+**Goal:** Lisp source → WASM binary, entirely in the browser.
 
-### 3c: Crate split (deferred — PLAN.md original phases 1-5)
-- Original plan: split into lisp-core, lisp-vm, lisp-wasm, near-vm
-- Blocked on: structural stability (bytecode split needs to land first)
-- See original PLAN.md phases for detailed task breakdown
+**Why it works:** The `WasmEmitter` is pure Rust — no filesystem, no network, no OS deps. It takes a string and returns `Vec<u8>`. Perfect for `wasm-bindgen`.
 
----
+**Tasks:**
+1. Create `crates/browser-compiler/` with `wasm-bindgen` + `wasm-pack` setup
+2. Expose two functions:
+   - `compile_p1(source: &str) -> Result<Vec<u8>, String>` — NEAR contract WASM
+   - `compile_p2(source: &str) -> Result<Vec<u8>, String>` — wasi:http WASM
+3. Strip `wasmtime`, `tokio`, `reqwest`, `rustyline` deps from browser build (already behind `cfg(not(target_arch = "wasm32"))`)
+4. Add `wasm-pack build --target web` to build pipeline
+5. Test: compile a `(define (hello) "world")` program in browser, verify output WASM
 
-## Phase 4: Remaining Verification Gaps
+**Pitfalls:**
+- `wasm-encoder` and `wit-component` compile fine to `wasm32-unknown-unknown` — already verified
+- `im::HashMap` (persistent data structures) works in WASM — already used in interpreter
+- Must avoid `std::fs`, `std::net`, `std::time::Instant` in browser path — these are already gated behind native-only deps
 
-### 4.1 F* Model — Semantic Mismatches (~1172 fuzz failures)
-- NaN propagation differences
-- Float→int coercion edge cases
-- Dict op error conditions
-- Mod overflow edge cases
-- Priority: LOW — fuzz finds these faster than formal proofs
+### Phase 2: Web IDE (Days 3-6)
 
-### 4.2 F* Model — Missing Opcodes
-- ~25% of original 211 fuzz failures from unsupported opcodes
-- SpecVm handles them, Rust VM has catch-all error
-- Fix: add opcode cases to F* ClosureVM model
+**Goal:** Functional editor with compile + output display.
 
-### 4.3 F* Model — Soundness.fst timeout
-- `sound_add` lemma (line 141): Z3 can't prove `val_eq_num (op_int_add a b) (op_int_add a b)`
-- Pre-existing trigger issue, not a soundness gap
-- Fix: add explicit unfold hints or reformulate
+**Tasks:**
+1. Svelte/Vite app (lightweight, fast)
+2. Monaco editor with Lisp syntax highlighting
+3. File tabs (multi-file support)
+4. Compile button → loads browser compiler WASM → runs `compile_p1` or `compile_p2`
+5. Output panel: show WASM size, disassembly preview, any compiler errors
+6. Download `.wasm` button
+7. Template selector with 5-6 starter programs:
+   - Counter (P1): storage-based increment
+   - Greeter (P1): read/write greeting
+   - HTTP Fetch (P2): single URL fetch
+   - Price Oracle (P2): multi-source price comparison
+   - Hybrid Oracle (P2→P1): fetch price → store on-chain
+   - Cross-chain Reader (P2): fetch from multiple APIs, aggregate
 
----
+### Phase 3: NEAR Integration (Days 6-8)
 
-## Phase 5: Test Suite Health
+**Goal:** Deploy compiled WASM to NEAR from the browser.
 
-### Fully green test files (17 files, 170 tests) ✅
-- lib unit tests, fuzz_test, bytecode_shadow, compiler_extensions, compiler_v3, compose, deep, hof_fastpaths, lambda_hof, let_debug, let_loop, proven_programs, repeat, repeat2, repeat3, shadow_minimal, trace_overflow
+**P1 Deploy Flow:**
+1. Factory contract (`lisp-factory.testnet`) — pre-deployed, holds creation code
+2. User compiles Lisp → gets WASM binary
+3. `near-api-js` sends `deploy_contract` transaction with user's WASM
+4. New contract lives at user's subaccount or a generated account
 
-### Mixed test files (15 files, 363 tests) ~
-- core_language (141/19), test_syntax_coverage (86/13), test_types_extended (9/32), test_runtime_features (15/25), test_macros (10/21), test_pure_probe_arrow (11/11), test_stdlib_tier1 (22/4), test_types (3/15), test_loop_recur (3/8), deftype_tests (13/2), test_pure_types (11/4), test_fast_path (12/2), test_budget (11/1), test_bytecode_coverage (7/4), test_closure_mutation (1/4), test_compiler_v2 (28/1)
+**P2 Execute Flow:**
+1. User compiles Lisp → gets wasi:http WASM
+2. Upload to IPFS or pass as base64 to OutLayer
+3. OutLayer daemon executes, settles result on-chain
+4. Frontend polls for result
 
-### Fully red test files (14 files, 116 tests) ✗
-- test_harness_extended (0/36), test_harness_full (0/29), test_compiler_bugs (0/4), test_edge (0/3), test_harness (0/3), norvig_tests (0/1), + 8 single-test failures
+**Tasks:**
+1. Factory contract: stores WASM template, deploys user variants
+2. `near-api-js` integration in frontend
+3. NEAR wallet connection (MyNearWallet / Meteor)
+4. P2 submit flow: upload WASM → execute → display result
+5. Transaction history: show recent P1/P2 executions
 
-### Priority for fixing
-1. Fully red files — likely API mismatches or missing features, high bug/effort ratio
-2. Mixed files with low pass rate — test_types (3/15), test_loop_recur (3/8)
-3. High-value single failures in mostly-green files
+### Phase 4: Hybrid Programs (Days 8-10)
 
----
+**Goal:** P2 fetches data → writes to P1 contract, orchestrated from browser.
 
-## Verification Status Summary
-
-### F* Core Semantics (18 files)
-| Module | Status | Notes |
-|--------|--------|-------|
-| Lisp.Types | ✅ verified | ffloat assume vals, added ff_rem |
-| Lisp.Values | ✅ verified | |
-| Lisp.Source | ✅ verified | |
-| Lisp.Closure | ✅ verified | |
-| Lisp.Compiler | ✅ verified | |
-| LispIR.Semantics | ✅ verified | |
-| LispIR.CompilerSpec | ✅ verified | |
-| LispIR.CompilerSpec3 | ✅ verified | |
-| LispIR.CompilerSpec4 | ✅ verified | |
-| LispIR.ClosureVM | ✅ verified | Fixed F64 TypedBinOp branch |
-| LispIR.CompilerCorrectness | ✅ verified | |
-| LispIR.Correctness | ✅ verified | |
-| LispIR.Determinism | ✅ verified | |
-| LispIR.PerExpr3 | ✅ verified | |
-| LispIR.Soundness | ⚠️ 1 timeout | sound_add trigger issue |
-| LispIR.StackHeight | ✅ verified | |
-| LispIR.Universality | ✅ verified | |
-
-### F* Test Proofs (37 files)
-- 35 files: ✅ all VCs discharged
-- 1 file (HardOpcodeProofs): ✅ verified, 2 admits (F64 TypedBinOp — Z3 can't unfold through to_ffloat)
-- 1 file (MapFilterReduce): ✅ verified, 1 admit (dict set — Z3 quantifier trigger)
-
-### Total Admits: 3 / 767 lemmas (0.39%)
-- All in test files, none in core semantics
-- All are Z3 automation limits, not specification gaps
-
----
-
-## Dependency Graph (current priority order)
-
-```
-Phase 1 (Fuzz harness) ✅ ──────────────────────────┐
-    ↓                                              │
-Phase 2 (F* WASM model) ← uses fuzz corpus ───────┘
-    ↓
-Phase 3 (Structural refactor) ← stable verification
-    ↓
-Phase 4 (Verification gaps) ← incrementally
-    ↓
-Phase 5 (Test suite health) ← ongoing
+**Pattern:**
+```lisp
+;; hybrid-oracle.lisp
+;; Runs as P2 (off-chain, can do HTTP)
+(define (main)
+  (let ((btc-price (http-get "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"))
+        (eth-price (http-get "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd")))
+    ;; P2 can also call NEAR contracts through OutLayer API
+    (storage-set "btc-usd" btc-price)
+    (storage-set "eth-usd" eth-price)
+    (string-append "Updated: BTC=" btc-price " ETH=" eth-price)))
 ```
 
-## Key Principle
-Phase 1 (fuzz) and Phase 2 (F*) are complementary. Fuzz finds bugs immediately — Phase 1 found 5 real emitter bugs. F* proves there are no more of that class. The fuzz corpus guides what to model in F*. When fuzz stops finding bugs, the F* proof tells you why.
+**Tasks:**
+1. Extend compiler to recognize `storage-*` calls in P2 mode → emit OutLayer adapter calls
+2. Frontend: "Run Hybrid" button → compile as P2 → submit → show result
+3. After P2 execution, read P1 contract state to verify storage was updated
+4. Display both off-chain result and on-chain state change
+
+### Phase 5: Polish & Deploy (Days 10-12)
+
+**Tasks:**
+1. Cloudflare Pages deployment
+2. Custom domain (e.g., `lisp.near.dev` or `rlm.sh`)
+3. CI: build compiler WASM + frontend on push
+4. Mobile-responsive layout
+5. Share button: encode Lisp source in URL hash for shareable links
+6. Error UX: clear compiler errors with source location highlighting
+7. Docs: README with architecture, how to add templates, API reference
+
+---
+
+## Technical Decisions
+
+### Compiler in Browser (not server)
+
+- **Zero infrastructure cost** — no backend needed
+- **Privacy** — user code never leaves their browser
+- **Offline capable** — works without network (compile only, not deploy)
+- **Instant** — no round-trip to server for compilation
+- **Possible because** the `WasmEmitter` is pure computation — no I/O
+
+### Svelte over React
+
+- Smaller bundle (~10KB vs ~40KB for React)
+- Simpler state management for this scope
+- Better DX for a focused tool (not a full platform)
+
+### Factory Contract Pattern
+
+Instead of deploying raw user WASM (which requires account creation), use a factory:
+- Factory holds the account/subaccount logic
+- Users get `username.lisp-factory.testnet` subaccounts
+- Factory manages access control (only owner can update their contract)
+
+### OutLayer for P2
+
+Already working — `inlayer submit ./program.wasm` → daemon executes → settles on mainnet. Browser just needs to upload the compiled WASM (via API call to daemon or IPFS pin).
+
+---
+
+## File Structure (New)
+
+```
+lisp-rlm/
+├── crates/
+│   └── browser-compiler/        # NEW: wasm-pack compatible crate
+│       ├── Cargo.toml
+│       └── src/
+│           └── lib.rs           # expose compile_p1(), compile_p2()
+├── web/                         # NEW: Svelte frontend
+│   ├── package.json
+│   ├── vite.config.ts
+│   ├── src/
+│   │   ├── App.svelte
+│   │   ├── lib/
+│   │   │   ├── compiler.ts      # wasm-pack glue
+│   │   │   ├── near.ts          # near-api-js integration
+│   │   │   └── templates.ts     # starter programs
+│   │   └── components/
+│   │       ├── Editor.svelte
+│   │       ├── Output.svelte
+│   │       └── Deploy.svelte
+│   └── public/
+├── contracts/
+│   └── lisp-factory/            # NEW: factory contract
+│       ├── Cargo.toml
+│       └── src/
+│           └── lib.rs
+└── plan.md                      # This file
+```
+
+---
+
+## Success Metrics
+
+1. **Compile in browser:** Type Lisp → get WASM in <500ms
+2. **Deploy P1:** One click → contract live on testnet in <10s
+3. **Execute P2:** Submit → result displayed in <15s
+4. **Hybrid:** Run oracle → see on-chain state update in <20s
+5. **Shareable:** URL with encoded source opens exact same program
+6. **Zero backend:** Only NEAR RPC + OutLayer daemon (already running)

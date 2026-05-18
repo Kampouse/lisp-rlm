@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lisp-RLM Browser Compiler</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            background: #0a0a0a;
+            color: #e0e0e0;
+            min-height: 100vh;
+            padding: 2rem;
+        }
+        h1 { color: #ff8c00; margin-bottom: 0.5rem; font-size: 1.5rem; }
+        .subtitle { color: #888; margin-bottom: 2rem; font-size: 0.9rem; }
+        .container { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; max-width: 1200px; }
+        .panel {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 1rem;
+        }
+        .panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+        }
+        .panel-title { color: #ff8c00; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px; }
+        .target-toggle {
+            display: flex;
+            gap: 0.5rem;
+        }
+        .target-btn {
+            padding: 4px 12px;
+            border: 1px solid #444;
+            border-radius: 4px;
+            background: transparent;
+            color: #888;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 0.8rem;
+        }
+        .target-btn.active { background: #ff8c00; color: #000; border-color: #ff8c00; }
+        textarea {
+            width: 100%;
+            height: 300px;
+            background: #111;
+            color: #e0e0e0;
+            border: 1px solid #333;
+            border-radius: 4px;
+            padding: 0.75rem;
+            font-family: inherit;
+            font-size: 0.9rem;
+            resize: vertical;
+        }
+        textarea:focus { outline: none; border-color: #ff8c00; }
+        .compile-btn {
+            margin-top: 1rem;
+            padding: 8px 24px;
+            background: #ff8c00;
+            color: #000;
+            border: none;
+            border-radius: 4px;
+            font-family: inherit;
+            font-size: 0.9rem;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .compile-btn:hover { background: #ffa333; }
+        .compile-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .output { margin-top: 0.5rem; }
+        .stats {
+            display: flex;
+            gap: 1.5rem;
+            margin-top: 0.75rem;
+            font-size: 0.85rem;
+            color: #888;
+        }
+        .stats span { color: #ff8c00; }
+        .error { color: #ff4444; margin-top: 0.5rem; white-space: pre-wrap; }
+        .success { color: #44ff44; }
+        .wasm-hex {
+            margin-top: 0.5rem;
+            font-size: 0.7rem;
+            color: #666;
+            max-height: 200px;
+            overflow-y: auto;
+            word-break: break-all;
+        }
+        #loading {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.9);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2rem;
+            color: #ff8c00;
+            z-index: 100;
+        }
+        .examples { margin-top: 1rem; }
+        .example-btn {
+            padding: 2px 8px;
+            border: 1px solid #444;
+            border-radius: 3px;
+            background: transparent;
+            color: #aaa;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 0.75rem;
+            margin-right: 4px;
+            margin-bottom: 4px;
+        }
+        .example-btn:hover { border-color: #ff8c00; color: #ff8c00; }
+    </style>
+</head>
+<body>
+    <div id="loading">⏳ Loading compiler (5MB WASM)...</div>
+    <h1>λ Lisp-RLM → WASM Compiler</h1>
+    <p class="subtitle">Write Lisp, compile to WASM in your browser. P1 = NEAR smart contract, P2 = WASI/OutLayer.</p>
+
+    <div class="container">
+        <div class="panel">
+            <div class="panel-header">
+                <span class="panel-title">Source</span>
+                <div class="target-toggle">
+                    <button class="target-btn active" data-target="p1">P1 (NEAR)</button>
+                    <button class="target-btn" data-target="p2">P2 (WASI)</button>
+                </div>
+            </div>
+            <textarea id="source" spellcheck="false">(define (add a b) (+ a b))
+(define (run) (add 3 4))</textarea>
+            <div class="examples">
+                <span style="color:#666;font-size:0.75rem">Examples:</span>
+                <button class="example-btn" data-example="counter">Counter</button>
+                <button class="example-btn" data-example="fib">Fibonacci</button>
+                <button class="example-btn" data-example="greeting">Greeting</button>
+                <button class="example-btn" data-example="http">HTTP Fetch (P2)</button>
+            </div>
+            <button class="compile-btn" id="compileBtn" disabled>Compile</button>
+        </div>
+
+        <div class="panel">
+            <div class="panel-header">
+                <span class="panel-title">Output</span>
+            </div>
+            <div class="output" id="output">
+                <p style="color:#666">Click "Compile" to generate WASM...</p>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import init, { compile_p1, compile_p2, wasm_size } from './pkg/lisp_rlm_browser.js';
+
+        let compilerReady = false;
+        let currentTarget = 'p1';
+
+        const examples = {
+            counter: `(define (get-count) (near/storage_read "count"))
+(define (increment)
+  (let ((current (near/storage_read "count")))
+    (near/storage_write "count" (+ current 1))
+    current))
+(define (run) (increment))`,
+            fib: `(define (fib n)
+  (if (<= n 1) n
+    (+ (fib (- n 1)) (fib (- n 2)))))
+(define (run) (fib 10))`,
+            greeting: `(define (set-greeting name)
+  (near/storage_write "greeting" (string-append "Hello, " name)))
+(define (run) (set-greeting "NEAR"))`,
+            http: `(define (fetch-price)
+  (http-get "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"))
+(define (run) (fetch-price))`
+        };
+
+        // Init WASM
+        async function initCompiler() {
+            try {
+                await init();
+                compilerReady = true;
+                document.getElementById('compileBtn').disabled = false;
+                document.getElementById('loading').style.display = 'none';
+            } catch (e) {
+                document.getElementById('loading').textContent = '❌ Failed to load compiler: ' + e.message;
+            }
+        }
+
+        // Compile
+        document.getElementById('compileBtn').addEventListener('click', () => {
+            if (!compilerReady) return;
+            const source = document.getElementById('source').value;
+            const outputDiv = document.getElementById('output');
+            const t0 = performance.now();
+
+            try {
+                const compile = currentTarget === 'p1' ? compile_p1 : compile_p2;
+                const wasmBytes = compile(source);
+                const elapsed = (performance.now() - t0).toFixed(1);
+
+                // Validate it's valid WASM
+                const magic = Array.from(wasmBytes.slice(0, 4)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+                const isWasm = wasmBytes[0] === 0x00 && wasmBytes[1] === 0x61 && wasmBytes[2] === 0x73 && wasmBytes[3] === 0x6d;
+
+                outputDiv.innerHTML = `
+                    <p class="success">✅ Compiled successfully (${currentTarget.toUpperCase()} target)</p>
+                    <div class="stats">
+                        <div>Size: <span>${(wasmBytes.length / 1024).toFixed(1)} KB</span></div>
+                        <div>Time: <span>${elapsed} ms</span></div>
+                        <div>Magic: <span>${magic}</span></div>
+                        <div>Valid: <span>${isWasm ? '✓' : '✗'}</span></div>
+                    </div>
+                    <div class="wasm-hex">${Array.from(wasmBytes.slice(0, 256)).map(b => b.toString(16).padStart(2, '0')).join(' ')}${wasmBytes.length > 256 ? ' ...' : ''}</div>
+                `;
+            } catch (e) {
+                outputDiv.innerHTML = `<p class="error">❌ ${e.message || e}</p>`;
+            }
+        });
+
+        // Target toggle
+        document.querySelectorAll('.target-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.target-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                currentTarget = btn.dataset.target;
+            });
+        });
+
+        // Example buttons
+        document.querySelectorAll('.example-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const example = examples[btn.dataset.example];
+                if (example) {
+                    document.getElementById('source').value = example;
+                    // Auto-switch to P2 for http example
+                    if (btn.dataset.example === 'http') {
+                        document.querySelectorAll('.target-btn').forEach(b => b.classList.remove('active'));
+                        document.querySelector('[data-target="p2"]').classList.add('active');
+                        currentTarget = 'p2';
+                    }
+                }
+            });
+        });
+
+        initCompiler();
+    </script>
+</body>
+</html>

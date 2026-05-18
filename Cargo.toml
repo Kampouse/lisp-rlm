@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "clojure-rlm"]
+members = [".", "clojure-rlm", "crates/browser-compiler"]
 
 [package]
 name = "lisp-rlm-wasm"

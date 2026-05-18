@@ -266,6 +266,58 @@ fn build_outlayer_adapter() -> Vec<u8> {
 /// - Lowers them to core functions that satisfy P1 imports (fd_read, fd_write, etc.)
 /// - Instantiates core P1 module with lowered functions
 /// - Lifts `_start` and exports as `wasi:cli/run@0.2.1/run`
+/// Browser-safe P2 compile — skips module resolution (no filesystem access).
+/// Use this from wasm-bindgen/browser builds.
+pub fn compile_outlayer_p2_browser(source: &str) -> Result<Vec<u8>, String> {
+    let exprs = crate::parser::parse_all(source)?;
+    compile_outlayer_p2_from_exprs(&exprs)
+}
+
+/// Compile pre-parsed expressions to P2 WASM — no filesystem access.
+pub fn compile_outlayer_p2_from_exprs(exprs: &[crate::types::LispVal]) -> Result<Vec<u8>, String> {
+    let mut em = WasmEmitter::new();
+    em.wasi_mode = true;
+    em.p2_mode = true;
+    em.no_proc_exit = true;
+    for e in exprs {
+        if let crate::types::LispVal::List(items) = e {
+            if items.is_empty() { continue; }
+            if items.len() >= 3 {
+                if let (crate::types::LispVal::Sym(s), crate::types::LispVal::List(sig)) = (&items[0], &items[1]) {
+                    if s == "define" && !sig.is_empty() {
+                        if let crate::types::LispVal::Sym(name) = &sig[0] {
+                            let params: Vec<String> = sig[1..].iter().map(|p| match p {
+                                crate::types::LispVal::Sym(s) => Ok(s.clone()),
+                                _ => Err("param must be symbol".into()),
+                            }).collect::<Result<_, String>>()?;
+                            let body = if items.len() > 3 {
+                                let mut b = vec![crate::types::LispVal::Sym("begin".into())];
+                                b.extend(items[2..].iter().cloned());
+                                crate::types::LispVal::List(b)
+                            } else {
+                                items[2].clone()
+                            };
+                            em.emit_define(name, &params, &body)?;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let bytes = if em.need_wasi_http {
+        build_p2_with_wasi_http(&em)?
+    } else {
+        let core_bytes = if em.need_outlayer {
+            finish_outlayer(&mut em)?
+        } else {
+            finish_outlayer_no_ol(&mut em)?
+        };
+        build_p2_with_adapter(&core_bytes)?
+    };
+    Ok(bytes)
+}
+
 pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
     // 1. Compile the core P1 module first
     let resolved = crate::wasm_emit::resolve_modules(source, std::path::Path::new("."))?;
@@ -1386,7 +1438,7 @@ fn near_host_type_for(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 
@@ -1597,6 +1649,7 @@ mod tests {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Run an OutLayer WASM module with wasmtime, providing stdin data.
 /// Returns the i64 result read from RESULT_BUF (offset 65536 in memory).
 fn run_outlayer_wasm(wasm: &[u8], stdin_data: &[u8]) -> i64 {
@@ -1718,6 +1771,7 @@ fn run_outlayer_wasm(wasm: &[u8], stdin_data: &[u8]) -> i64 {
 }
 
 /// Like run_outlayer_wasm but outlayer.view mock writes response to result buffer
+#[cfg(not(target_arch = "wasm32"))]
 fn run_outlayer_wasm_with_view(wasm: &[u8], stdin_data: &[u8], response: &[u8]) -> i64 {
     use std::sync::Arc;
     use wasmtime::*;
@@ -1862,6 +1916,7 @@ fn test_outlayer_http_get_real() {
 }
 
 /// Run OutLayer WASM with a REAL http_get that makes actual HTTP requests
+#[cfg(not(target_arch = "wasm32"))]
 fn run_outlayer_wasm_with_http(wasm: &[u8], stdin_data: &[u8]) -> i64 {
     use std::sync::Arc;
     use wasmtime::*;
@@ -2051,6 +2106,7 @@ fn run_outlayer_wasm_with_http(wasm: &[u8], stdin_data: &[u8]) -> i64 {
 
     /// Live P2 component execution test: compile weather-rust reference to P2
     /// wasi:http component, run it in wasmtime with real HTTP support.
+    #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
     async fn test_p2_wasi_http_live() {
         use wasmtime::{Engine, Config};
@@ -2150,6 +2206,7 @@ fn run_outlayer_wasm_with_http(wasm: &[u8], stdin_data: &[u8]) -> i64 {
     }
 
     /// Test our Lisp-compiled P2 component in wasmtime with real HTTP
+    #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
     async fn test_lisp_p2_wasi_http_live() {
         use wasmtime::{Engine, Config};
@@ -2236,6 +2293,7 @@ fn run_outlayer_wasm_with_http(wasm: &[u8], stdin_data: &[u8]) -> i64 {
     }
 
     /// Test multi-URL http-get: compare Montreal vs Toronto weather
+    #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
     async fn test_lisp_p2_multi_url_http_get() {
         use wasmtime::{Engine, Config};
