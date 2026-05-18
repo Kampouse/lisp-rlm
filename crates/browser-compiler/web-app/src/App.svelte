@@ -930,14 +930,15 @@
   {/if}
 
   <!-- Main Content - Split Layout -->
-  <main class="main-content">
-    <div class="split-container">
-      <!-- Editor Pane -->
-      <div class="editor-pane" class:full-height={outputCollapsed} style="flex: 1 1 {outputCollapsed ? '100' : '60'}%;">
-        <section class="editor-section">
-          <div class="editor-wrapper">
-            <div class="editor-container" bind:this={editorContainer}></div>
-          </div>
+  {#if !showLearn}
+    <main class="main-content">
+      <div class="split-container">
+        <!-- Editor Pane -->
+        <div class="editor-pane" class:full-height={outputCollapsed} style="flex: 1 1 {outputCollapsed ? '100' : '60'}%;">
+          <section class="editor-section">
+            <div class="editor-wrapper">
+              <div class="editor-container" bind:this={editorContainer}></div>
+            </div>
 
           <!-- Examples + REPL toggle -->
           {#if !outputCollapsed}
@@ -1178,6 +1179,7 @@
       </button>
     </div>
   </main>
+  {/if}
 
   <footer class="footer">
     Lisp RLM — Write Lisp, Deploy Smart Contracts
@@ -1197,7 +1199,7 @@
   .learn-panel {
     background: var(--color-bg-surface);
     border-bottom: 1px solid var(--color-border);
-    max-height: 400px;
+    flex: 1;
     overflow-y: auto;
   }
   .learn-content {
