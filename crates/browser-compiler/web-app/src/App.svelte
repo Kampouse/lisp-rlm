@@ -876,7 +876,13 @@
           <pre class="learn-code">;; Example: HTTP request from WASI
 (defun fetch-price ()
   (let ((response (http-get "https://api.example.com/price")))
-    (json-parse response)  ; Parse JSON response))</pre>
+    (json-parse response)))  ; Parse JSON response
+
+;; Example: P2 Storage (browser localStorage in browser, OutLayer on NEAR)
+(defun main ()
+  (begin
+    (storage-set "count" "42")
+    (storage-get "count")))  ; → "42"</pre>
         </div>
 
         <div class="learn-section">
@@ -917,6 +923,10 @@
             <div class="learn-fn-group">
               <strong>WASI Only</strong>
               <code>http-get http-post json-parse from-json</code>
+            </div>
+            <div class="learn-fn-group">
+              <strong>P2 Storage</strong>
+              <code>storage-set storage-get storage-has storage-delete</code>
             </div>
           </div>
         </div>
