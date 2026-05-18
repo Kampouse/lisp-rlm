@@ -293,6 +293,17 @@ export async function runPure(wasmBytes: Uint8Array): Promise<string> {
 
 /** Run P2 WASI WASM in the browser with polyfilled imports. */
 export async function runWasi(wasmBytes: Uint8Array, stdinData?: Uint8Array): Promise<string> {
+  // Check if SharedArrayBuffer is available (requires COOP/COEP headers)
+  if (typeof SharedArrayBuffer === 'undefined') {
+    return runWasiSync(wasmBytes, stdinData);
+  }
+  
+  // Use Worker + Atomics for synchronous HTTP
+  return runWasiWithWorker(wasmBytes, stdinData);
+}
+
+/** Fallback: Run without Worker (mock HTTP) */
+async function runWasiSync(wasmBytes: Uint8Array, stdinData?: Uint8Array): Promise<string> {
   // WASI state - will be populated after instantiation when memory is available
   let stdout = '';
   const stdin = stdinData ?? new Uint8Array(0);
@@ -350,26 +361,20 @@ export async function runWasi(wasmBytes: Uint8Array, stdinData?: Uint8Array): Pr
   };
 
   const outlayer = {
-    http_get: async (urlPtr: number, urlLen: number, respBufPtr: number, respBufLen: number, respLenPtr: number): Promise<number> => {
+    // http_get must be SYNCHRONOUS — WASM imports cannot be async.
+    // For browser testing, return mock JSON. Real HTTP requires OutLayer deployment.
+    http_get: (urlPtr: number, urlLen: number, respBufPtr: number, respBufLen: number, respLenPtr: number): number => {
       const mem = getMemory();
       if (!mem) return 1;
       const bytes = new Uint8Array(mem.buffer);
       const url = new TextDecoder().decode(bytes.slice(urlPtr, urlPtr + urlLen));
-      try {
-        const resp = await fetch(url);
-        const text = await resp.text();
-        const textBytes = new TextEncoder().encode(text);
-        const toCopy = Math.min(textBytes.length, respBufLen);
-        bytes.set(textBytes.slice(0, toCopy), respBufPtr);
-        new DataView(mem.buffer).setUint32(respLenPtr, toCopy, true);
-        return 0;
-      } catch (e) {
-        const errBytes = new TextEncoder().encode(`error: ${e instanceof Error ? e.message : String(e)}`);
-        const toCopy = Math.min(errBytes.length, respBufLen);
-        bytes.set(errBytes.slice(0, toCopy), respBufPtr);
-        new DataView(mem.buffer).setUint32(respLenPtr, toCopy, true);
-        return 1;
-      }
+      // Return mock JSON for browser testing — real HTTP happens on OutLayer
+      const mockData = JSON.stringify({ mocked: true, url, message: 'Browser test mode — deploy to OutLayer for real HTTP' });
+      const dataBytes = new TextEncoder().encode(mockData);
+      const toCopy = Math.min(dataBytes.length, respBufLen);
+      bytes.set(dataBytes.slice(0, toCopy), respBufPtr);
+      new DataView(mem.buffer).setUint32(respLenPtr, toCopy, true);
+      return 0;
     },
     storage_set: (k: number, kl: number, v: number, vl: number): number => {
       const mem = getMemory();
@@ -516,4 +521,99 @@ export function toHexDump(bytes: Uint8Array, maxBytes: number = 256): string {
   }
 
   return lines.join('\n');
+}
+
+/** Run WASM in Worker with Atomics.wait() for synchronous HTTP */
+async function runWasiWithWorker(wasmBytes: Uint8Array, stdinData?: Uint8Array): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL('./wasm-worker.ts', import.meta.url), { type: 'module' });
+    
+    // Shared buffer for coordination (64KB for HTTP responses)
+    const sharedBuffer = new SharedArrayBuffer(65536);
+    const int32 = new Int32Array(sharedBuffer);
+    
+    let httpPending = false;
+    let pendingHttpInfo: { respBufPtr: number; respBufLen: number; respLenPtr: number } | null = null;
+    
+    worker.onmessage = async (e: MessageEvent) => {
+      const { type, data } = e.data as { type: string; data?: any };
+      
+      switch (type) {
+        case 'done':
+          worker.terminate();
+          resolve(data.stdout);
+          break;
+          
+        case 'error':
+          worker.terminate();
+          reject(new Error(data.error));
+          break;
+          
+        case 'http_request': {
+          // Main thread handles async fetch
+          const { url, respBufPtr, respBufLen, respLenPtr } = data;
+          httpPending = true;
+          pendingHttpInfo = { respBufPtr, respBufLen, respLenPtr };
+          
+          try {
+            const resp = await fetch(url, { headers: { 'User-Agent': 'lisp-rlm-browser' } });
+            const text = await resp.text();
+            worker.postMessage({ type: 'http_response', data: { response: text } });
+          } catch (err) {
+            worker.postMessage({ type: 'http_response', data: { response: JSON.stringify({ error: true, message: String(err) }) } });
+          }
+          break;
+        }
+        
+        case 'storage_get': {
+          const { key, buf, bl, lp } = data;
+          const val = localStorage.getItem(`lisp-rlm:${key}`) ?? '';
+          const vb = new TextEncoder().encode(val);
+          // Can't write to worker memory directly — use shared buffer
+          const sharedBytes = new Uint8Array(sharedBuffer);
+          sharedBytes.set(vb.slice(0, Math.min(vb.length, 65532)), 4);
+          int32[0] = vb.length; // Worker reads length from index 0
+          Atomics.store(int32, 0, 1);
+          Atomics.notify(int32, 0);
+          break;
+        }
+        
+        case 'storage_has': {
+          const { key } = data;
+          const exists = localStorage.getItem(`lisp-rlm:${key}`) !== null;
+          int32[1] = exists ? 1 : 0;
+          Atomics.store(int32, 0, 1);
+          Atomics.notify(int32, 0);
+          break;
+        }
+        
+        case 'storage_set': {
+          const { key, val } = data;
+          localStorage.setItem(`lisp-rlm:${key}`, val);
+          break;
+        }
+        
+        case 'storage_delete': {
+          const { key } = data;
+          localStorage.removeItem(`lisp-rlm:${key}`);
+          break;
+        }
+        
+        case 'storage_clear':
+          localStorage.clear();
+          break;
+      }
+    };
+    
+    worker.onerror = (e) => {
+      worker.terminate();
+      reject(new Error(e.message));
+    };
+    
+    // Initialize worker
+    worker.postMessage({ type: 'init', data: { sharedBuffer } });
+    
+    // Run WASM
+    worker.postMessage({ type: 'run', data: { wasmBytes, stdinData } });
+  });
 }

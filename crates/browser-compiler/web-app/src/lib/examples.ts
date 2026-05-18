@@ -48,12 +48,12 @@ export const examples: Example[] = [
     name: 'HTTP Fetch',
     icon: '🌐',
     target: 'p2',
-    source: `(define (handler req)
-  (let ((url "https://httpbin.org/get"))
+    source: `(define (get-weather)
+  (let ((url "https://api.open-meteo.com/v1/forecast?latitude=45.50&longitude=-73.57&current_weather=true"))
     (http-get url)))
 
 (define (main)
-  (handler "request"))`,
+  (get-weather))`,
   },
   {
     name: 'P2 Echo',

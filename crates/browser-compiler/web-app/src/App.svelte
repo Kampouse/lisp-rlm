@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import * as monaco from 'monaco-editor';
-  import { initCompiler, compile, runPure, runWasi, compileP2Core, toHexDump, type CompileTarget, type CompileResult } from './lib/compiler.ts';
+  import { initCompiler, compile, runPure, compileP2Core, toHexDump, type CompileTarget, type CompileResult } from './lib/compiler.ts';
+  import { runWasiWithWorker } from './lib/runWasiWithWorker.ts';
   import { examples } from './lib/examples.ts';
   import { connectWallet, disconnectWallet, deployP1, deployP2, getWalletState, type WalletState, type DeployResult, type Network } from './lib/wallet.ts';
 
@@ -34,6 +35,31 @@
   let replMode: boolean = $state(false);
   let replHistory: { expr: string; result: string }[] = $state([]);
   let replInput: string = $state('');
+
+  // Resizable panes
+  let outputPaneWidth: number = $state(40); // percentage
+  let isResizing: boolean = $state(false);
+
+  function startResize(e: MouseEvent) {
+    isResizing = true;
+    document.addEventListener('mousemove', handleResize);
+    document.addEventListener('mouseup', stopResize);
+  }
+
+  function handleResize(e: MouseEvent) {
+    if (!isResizing) return;
+    const container = document.querySelector('.split-container');
+    if (!container) return;
+    const containerRect = container.getBoundingClientRect();
+    const newWidth = ((containerRect.right - e.clientX) / containerRect.width) * 100;
+    outputPaneWidth = Math.max(20, Math.min(70, newWidth));
+  }
+
+  function stopResize() {
+    isResizing = false;
+    document.removeEventListener('mousemove', handleResize);
+    document.removeEventListener('mouseup', stopResize);
+  }
 
   // Derived
   let hexDump: string = $derived.by(() => {
@@ -329,7 +355,8 @@
         // P2 Component → re-compile as core WASM for browser execution
         runResult = 'Compiling core WASM...';
         const coreBytes = compileP2Core(source);
-        runResult = await runWasi(coreBytes);
+        runResult = 'Running WASI with real HTTP...';
+        runResult = await runWasiWithWorker(coreBytes);
       } else {
         runResult = await runPure(result.wasmBytes!);
       }
@@ -627,260 +654,245 @@
     </button>
   </header>
 
-  <!-- Main Content -->
+  <!-- Main Content - Split Layout -->
   <main class="main-content">
-    <!-- Editor Section -->
-    <section class="editor-section">
-      <div class="editor-wrapper">
-        <div class="editor-container" bind:this={editorContainer}></div>
-      </div>
+    <div class="split-container">
+      <!-- Editor Pane -->
+      <div class="editor-pane" style="flex: 1 1 60%;">
+        <section class="editor-section">
+          <div class="editor-wrapper">
+            <div class="editor-container" bind:this={editorContainer}></div>
+          </div>
 
-      <!-- Examples + REPL toggle -->
-      <div class="examples-bar">
-        {#each examples as example, i}
-          <button
-            class="example-btn"
-            class:active={activeExample === i}
-            onclick={() => selectExample(i)}
-          >
-            <span class="example-icon">{example.icon}</span>
-            {example.name}
-          </button>
-        {/each}
-
-        <!-- Feature 9: REPL mode toggle -->
-        <button
-          class="example-btn repl-toggle"
-          class:active={replMode}
-          onclick={() => { replMode = !replMode; saveState(); }}
-          title="Toggle REPL mode"
-        >
-          <span class="example-icon">⚡</span>
-          REPL
-        </button>
-      </div>
-
-      <!-- Shortcut hint -->
-      <div class="shortcut-hint">
-        <kbd>⌘</kbd><kbd>Enter</kbd> to compile
-      </div>
-    </section>
-
-    <!-- Feature 9: REPL Panel -->
-    {#if replMode}
-      <section class="output-section repl-mode">
-        <div class="repl-panel">
-          <div class="repl-output">
-            {#each replHistory as entry}
-              <div class="repl-line">
-                <span class="repl-prompt">&gt;</span>
-                <span class="repl-expr">{entry.expr}</span>
-              </div>
-              <div class="repl-result-line">
-                <span class="repl-result-val">{entry.result}</span>
-              </div>
-            {:else}
-              <div class="repl-line" style="color: var(--color-text-muted)">
-                // Enter a Lisp expression and press Enter
-              </div>
+          <!-- Examples + REPL toggle -->
+          <div class="examples-bar">
+            {#each examples as example, i}
+              <button
+                class="example-btn"
+                class:active={activeExample === i}
+                onclick={() => selectExample(i)}
+              >
+                <span class="example-icon">{example.icon}</span>
+                {example.name}
+              </button>
             {/each}
+
+            <!-- Feature 9: REPL mode toggle -->
+            <button
+              class="example-btn repl-toggle"
+              class:active={replMode}
+              onclick={() => { replMode = !replMode; saveState(); }}
+              title="Toggle REPL mode"
+            >
+              <span class="example-icon">⚡</span>
+              REPL
+            </button>
           </div>
-          <div class="repl-input-row">
-            <span class="repl-prompt">&gt;</span>
-            <input
-              type="text"
-              class="repl-input"
-              bind:value={replInput}
-              onkeydown={handleReplSubmit}
-              placeholder="(+ 1 2)"
-              disabled={!wasmReady}
-            />
+
+          <!-- Shortcut hint -->
+          <div class="shortcut-hint">
+            <kbd>⌘</kbd><kbd>Enter</kbd> to compile
           </div>
-        </div>
-      </section>
-    {:else}
-      <!-- Output Section -->
-      <section class="output-section">
-        <div class="output-panel" class:animate-slide-up={result}>
-          <div class="output-header">
-            <span class="output-title">Output</span>
-            {#if result}
-              <span class="status-badge" class:success={result.success} class:error={!result.success}>
-                <span class="status-dot"></span>
-                {result.success ? 'Success' : 'Error'}
-              </span>
-            {/if}
-            {#if result?.success}
-              <button
-                class="deploy-toggle-btn"
-                onclick={() => { showDeployPanel = !showDeployPanel; deployResult = null; }}
-              >
-                ⚡ Deploy
-              </button>
-              <button
-                class="run-toggle-btn"
-                onclick={handleRun}
-                disabled={running}
-              >
-                {#if running}
-                  <span class="spinner"></span>
+        </section>
+      </div>
+
+      <!-- Resizer -->
+      <div class="resizer" onmousedown={startResize}></div>
+
+      <!-- Output Pane -->
+      <div class="output-pane" style="width: {outputPaneWidth}%;">
+        {#if replMode}
+          <section class="output-section repl-mode">
+            <div class="repl-panel">
+              <div class="repl-output">
+                {#each replHistory as entry}
+                  <div class="repl-line">
+                    <span class="repl-prompt">></span>
+                    <span class="repl-expr">{entry.expr}</span>
+                  </div>
+                  <div class="repl-result-line">
+                    <span class="repl-result-val">{entry.result}</span>
+                  </div>
                 {:else}
-                  ▶ Run
-                {/if}
-              </button>
-            {/if}
-          </div>
-
-          {#if result}
-            <div class="output-body">
-              {#if result.success}
-                <div class="output-stats" style="margin-bottom: var(--space-md);">
-                  <div class="stat">
-                    <span class="stat-label">WASM Size</span>
-                    <span class="stat-value success">{formatSize(result.size)}</span>
+                  <div class="repl-line" style="color: var(--color-text-muted)">
+                    // Enter a Lisp expression and press Enter
                   </div>
-                  <div class="stat">
-                    <span class="stat-label">Compile Time</span>
-                    <span class="stat-value">{formatTime(result.timeMs)}</span>
-                  </div>
-                  <div class="stat">
-                    <span class="stat-label">Target</span>
-                    <span class="stat-value">{target === 'p1' ? 'NEAR' : target === 'p2' ? 'WASI' : 'Pure'}</span>
-                  </div>
-                  <div class="stat">
-                    <span class="stat-label">Bytes</span>
-                    <span class="stat-value">{result.size.toLocaleString()}</span>
-                  </div>
-                </div>
-
-                <!-- Run Result -->
-                {#if runResult !== null}
-                  <div class="run-result-panel" class:info={runResult.startsWith('ℹ')}>
-                    <div class="run-result-header">
-                      <span class="run-result-icon">{runResult.startsWith('Error') ? '✗' : '▶'}</span>
-                      <span class="run-result-title">Output</span>
-                    </div>
-                    <div class="run-result-value" class:error={runResult.startsWith('Error')} class:info-text={runResult.startsWith('ℹ')}>
-                      {runResult}
-                    </div>
-                  </div>
-                {/if}
-
-                <!-- Exports -->
-                {#if result.exports && result.exports.length > 0}
-                  <div class="exports-panel">
-                    <span class="exports-label">Exports:</span>
-                    {#each result.exports as exp}
-                      <span class="export-tag">{exp}</span>
-                    {/each}
-                  </div>
-                {/if}
-
-                <!-- WAT Disassembly -->
-                {#if result.wat}
-                  <details class="hex-details">
-                    <summary class="hex-summary" onclick={() => { showWat = !showWat; }}>
-                      {showWat ? '▼' : '▶'} WAT Disassembly
-                    </summary>
-                    <pre class="wat-output">{result.wat}</pre>
-                  </details>
-                {/if}
-
-                <!-- Deploy Panel -->
-                {#if showDeployPanel}
-                  <div class="deploy-panel">
-                    <div class="deploy-header">
-                      <span>Deploy to {target === 'p1' ? 'NEAR' : 'OutLayer'}</span>
-                    </div>
-                    {#if !walletState.connected}
-                      <div class="deploy-wallet-prompt">
-                        <p>Connect your NEAR wallet to deploy</p>
-                        <button class="deploy-connect-btn" onclick={handleConnectWallet}>
-                          Connect Wallet
-                        </button>
-                      </div>
-                    {:else}
-                      <div class="deploy-form">
-                        {#if target === 'p1'}
-                          <div class="deploy-field">
-                            <label class="deploy-label">Contract Name</label>
-                            <div class="deploy-input-group">
-                              <input
-                                type="text"
-                                class="deploy-input"
-                                bind:value={contractName}
-                                placeholder="my-contract"
-                              />
-                              <span class="deploy-suffix">.{walletState.accountId}</span>
-                            </div>
-                          </div>
-                        {:else}
-                          <div class="deploy-field">
-                            <label class="deploy-label">OutLayer Contract</label>
-                            <span class="deploy-readonly">
-                              {network === 'testnet' ? 'outlayer.testnet' : 'outlayer.kampouse.near'}
-                            </span>
-                          </div>
-                        {/if}
-                        <button
-                          class="deploy-btn"
-                          onclick={handleDeploy}
-                          disabled={deploying}
-                        >
-                          {#if deploying}
-                            <span class="spinner"></span>
-                            Deploying...
-                          {:else}
-                            🚀 Deploy to {target === 'p1' ? 'NEAR' : 'OutLayer'}
-                          {/if}
-                        </button>
-                      </div>
-                    {/if}
-
-                    <!-- Deploy Result -->
-                    {#if deployResult}
-                      <div class="deploy-result" class:success={deployResult.success} class:error={!deployResult.success}>
-                        {#if deployResult.success}
-                          <div class="deploy-result-icon">✅</div>
-                          <div class="deploy-result-text">Contract deployed!</div>
-                          {#if deployResult.explorerUrl}
-                            <a
-                              class="deploy-tx-link"
-                              href={deployResult.explorerUrl}
-                              target="_blank"
-                              rel="noopener"
-                            >
-                              View on Explorer →
-                            </a>
-                          {/if}
-                        {:else}
-                          <div class="deploy-result-icon">❌</div>
-                          <div class="deploy-result-text">{deployResult.error}</div>
-                        {/if}
-                      </div>
-                    {/if}
-                  </div>
-                {/if}
-
-                <details class="hex-details">
-                  <summary class="hex-summary">WASM Hex Dump</summary>
-                  <div class="hex-dump">{hexDump}</div>
-                </details>
-              {:else}
-                <div class="error-message">{result.error}</div>
-              {/if}
-            </div>
-          {:else}
-            <div class="empty-output">
-              <div class="empty-output-icon">⚡</div>
-              <div class="empty-output-text">
-                Write Lisp code and hit Compile to generate WASM
+                {/each}
+              </div>
+              <div class="repl-input-row">
+                <span class="repl-prompt">></span>
+                <input
+                  type="text"
+                  class="repl-input"
+                  bind:value={replInput}
+                  onkeydown={handleReplSubmit}
+                  placeholder="(+ 1 2)"
+                  disabled={!wasmReady}
+                />
               </div>
             </div>
-          {/if}
-        </div>
-      </section>
-    {/if}
+          </section>
+        {:else}
+          <section class="output-section">
+            <div class="output-panel" class:animate-slide-up={result}>
+              <div class="output-header">
+                <span class="output-title">Output</span>
+                {#if result}
+                  <span class="status-badge" class:success={result.success} class:error={!result.success}>
+                    <span class="status-dot"></span>
+                    {result.success ? 'Success' : 'Error'}
+                  </span>
+                {/if}
+                {#if result?.success}
+                  <button
+                    class="deploy-toggle-btn"
+                    onclick={() => { showDeployPanel = !showDeployPanel; deployResult = null; }}
+                  >
+                    ⚡ Deploy
+                  </button>
+                  <button
+                    class="run-toggle-btn"
+                    onclick={handleRun}
+                    disabled={running}
+                  >
+                    {#if running}
+                      <span class="spinner"></span>
+                    {:else}
+                      ▶ Run
+                    {/if}
+                  </button>
+                {/if}
+              </div>
+
+              <div class="output-body">
+                {#if result?.success}
+                  <!-- Stats Grid -->
+                  <div class="stats-grid">
+                    <div class="stat-item">
+                      <span class="stat-label">WASM SIZE</span>
+                      <span class="stat-value">{formatSize(result.size)}</span>
+                    </div>
+                    <div class="stat-item">
+                      <span class="stat-label">COMPILE TIME</span>
+                      <span class="stat-value">{formatTime(result.timeMs)}</span>
+                    </div>
+                    <div class="stat-item">
+                      <span class="stat-label">TARGET</span>
+                      <span class="stat-value">{target.toUpperCase()}</span>
+                    </div>
+                    <div class="stat-item">
+                      <span class="stat-label">BYTES</span>
+                      <span class="stat-value">{result.size.toLocaleString()}</span>
+                    </div>
+                  </div>
+
+                  <!-- Run Result -->
+                  {#if runResult !== null}
+                    <div class="run-result-panel" class:info={runResult.startsWith('ℹ')}>
+                      <div class="run-result-header">
+                        <span class="run-result-icon">{runResult.startsWith('Error') ? '✗' : '▶'}</span>
+                        <span class="run-result-title">Output</span>
+                      </div>
+                      <div class="run-result-value" class:error={runResult.startsWith('Error')} class:info-text={runResult.startsWith('ℹ')}>
+                        <pre>{runResult}</pre>
+                      </div>
+                    </div>
+                  {/if}
+
+                  <!-- WAT Disassembly -->
+                  {#if result.wat}
+                    <details class="hex-details">
+                      <summary class="hex-summary" onclick={() => { showWat = !showWat; }}>
+                        {showWat ? '▼' : '▶'} WAT Disassembly
+                      </summary>
+                      <pre class="wat-output">{result.wat}</pre>
+                    </details>
+                  {/if}
+
+                  <!-- Deploy Panel -->
+                  {#if showDeployPanel}
+                    <div class="deploy-panel">
+                      <div class="deploy-header">
+                        <span>Deploy to {target === 'p1' ? 'NEAR' : 'OutLayer'}</span>
+                      </div>
+                      {#if !walletState.connected}
+                        <div class="deploy-wallet-prompt">
+                          <p>Connect your NEAR wallet to deploy</p>
+                          <button class="deploy-connect-btn" onclick={handleConnectWallet}>
+                            Connect Wallet
+                          </button>
+                        </div>
+                      {:else}
+                        <div class="deploy-form">
+                          {#if target === 'p1'}
+                            <div class="deploy-field">
+                              <label class="deploy-label">Contract Name</label>
+                              <div class="deploy-input-group">
+                                <input
+                                  type="text"
+                                  class="deploy-input"
+                                  bind:value={contractName}
+                                  placeholder="my-contract"
+                                />
+                                <span class="deploy-suffix">.{walletState.accountId}</span>
+                              </div>
+                            </div>
+                          {:else}
+                            <div class="deploy-field">
+                              <label class="deploy-label">OutLayer Contract</label>
+                              <span class="deploy-readonly">
+                                {network === 'testnet' ? 'outlayer.testnet' : 'outlayer.kampouse.near'}
+                              </span>
+                            </div>
+                          {/if}
+                          <button
+                            class="deploy-btn"
+                            onclick={handleDeploy}
+                            disabled={deploying}
+                          >
+                            {#if deploying}
+                              <span class="spinner"></span>
+                              Deploying...
+                            {:else}
+                              🚀 Deploy to {target === 'p1' ? 'NEAR' : 'OutLayer'}
+                            {/if}
+                          </button>
+                        </div>
+                      {/if}
+
+                      <!-- Deploy Result -->
+                      {#if deployResult}
+                        <div class="deploy-result" class:success={deployResult.success} class:error={!deployResult.success}>
+                          {#if deployResult.success}
+                            <div class="deploy-result-icon">✅</div>
+                            <div class="deploy-result-text">Contract deployed!</div>
+                            {#if deployResult.explorerUrl}
+                              <a
+                                class="deploy-tx-link"
+                                href={deployResult.explorerUrl}
+                                target="_blank"
+                                rel="noopener"
+                              >
+                                View on Explorer →
+                              </a>
+                            {/if}
+                          {:else}
+                            <div class="deploy-result-icon">❌</div>
+                            <div class="deploy-result-text">{deployResult.error}</div>
+                          {/if}
+                        </div>
+                      {/if}
+                    </div>
+                  {/if}
+                {:else if result}
+                  <div class="error-message">{result.error}</div>
+                {/if}
+              </div>
+            </div>
+          </section>
+        {/if}
+      </div>
+    </div>
   </main>
 
   <footer class="footer">
@@ -889,6 +901,14 @@
 </div>
 
 <style>
+  /* Resizer drag functionality */
+  .resizer {
+    user-select: none;
+  }
+  .resizer:active {
+    background: var(--color-accent);
+  }
+  
   /* Scoped styles for additions */
   .repl-toggle {
     margin-left: auto;
@@ -913,5 +933,15 @@
     border: 1px solid var(--color-border);
     font-family: var(--font-mono);
     font-size: 10px;
+  }
+  .output-pane {
+    overflow-y: auto;
+  }
+  .output-section {
+    height: 100%;
+    overflow-y: auto;
+  }
+  .editor-pane {
+    overflow-y: auto;
   }
 </style>
