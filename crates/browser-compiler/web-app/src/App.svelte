@@ -815,12 +815,12 @@
 
         <div class="learn-section">
           <h3>String Functions</h3>
-          <pre class="learn-code">(concat "hello" " " "world")  ; → "hello world"
-(str-len "hello")             ; → 5
-(str-at "hello" 1)            ; → "e"
+          <pre class="learn-code">(str-concat "hello" " " "world")  ; → "hello world"
+(str-length "hello")             ; → 5
+(string-ref "hello" 1)            ; → "e"
 (str-upcase "hello")          ; → "HELLO"
 (str-downcase "HELLO")        ; → "hello"
-(str-substr "hello" 1 4)       ; → "ell"</pre>
+(substring "hello" 1 4)       ; → "ell"</pre>
         </div>
 
         <div class="learn-section">
@@ -876,7 +876,7 @@
           <pre class="learn-code">;; Example: HTTP request from WASI
 (defun fetch-price ()
   (let ((response (http-get "https://api.example.com/price")))
-    (parse-json response)))</pre>
+    (json-parse response)  ; Parse JSON response))</pre>
         </div>
 
         <div class="learn-section">
@@ -904,7 +904,7 @@
             </div>
             <div class="learn-fn-group">
               <strong>Strings</strong>
-              <code>concat str-len str-at str-upcase str-downcase str-substr</code>
+              <code>str-concat str-length substring str-upcase str-downcase string-ref</code>
             </div>
             <div class="learn-fn-group">
               <strong>Higher-Order</strong>
@@ -916,7 +916,7 @@
             </div>
             <div class="learn-fn-group">
               <strong>WASI Only</strong>
-              <code>http-get http-post parse-json</code>
+              <code>http-get http-post json-parse from-json</code>
             </div>
           </div>
         </div>
