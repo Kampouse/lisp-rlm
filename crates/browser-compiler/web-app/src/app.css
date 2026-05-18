@@ -1326,3 +1326,249 @@ body {
   font-family: var(--font-mono);
   font-size: 10px;
 }
+
+/* ============================================
+   Mobile Responsive Fixes
+   ============================================ */
+
+@media (max-width: 767px) {
+  /* Stack vertically on mobile */
+  .main-content {
+    flex-direction: column;
+    height: auto;
+    min-height: calc(100vh - 60px);
+  }
+
+  .split-container {
+    flex-direction: column;
+    height: auto;
+    min-height: calc(100vh - 60px);
+  }
+
+  /* Editor takes upper portion */
+  .editor-pane {
+    flex: none;
+    min-height: 280px;
+    height: 45vh;
+    max-height: 50vh;
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  /* Hide resizer on mobile */
+  .resizer {
+    display: none;
+  }
+
+  /* Output below editor */
+  .output-pane {
+    width: 100%;
+    min-width: unset;
+    max-width: unset;
+    flex: none;
+    height: auto;
+    min-height: 50vh;
+    border-left: none;
+    border-top: 1px solid var(--color-border);
+  }
+
+  /* Editor section mobile adjustments */
+  .editor-section {
+    padding: var(--space-sm);
+    height: 100%;
+  }
+
+  .editor-wrapper {
+    min-height: 150px;
+    flex: 1;
+  }
+
+  /* Examples bar: scrollable row at top of editor */
+  .examples-bar {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: var(--space-xs);
+    margin-bottom: var(--space-sm);
+    gap: var(--space-xs);
+    /* Ensure scrollbar is hidden but scrollable */
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .examples-bar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .example-btn {
+    flex-shrink: 0;
+    padding: 10px 14px;
+    font-size: 12px;
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  /* Shortcut hint hidden on mobile */
+  .shortcut-hint {
+    display: none;
+  }
+
+  /* Header adjustments */
+  .header {
+    padding: var(--space-xs) var(--space-sm);
+    gap: var(--space-sm);
+    height: 56px;
+  }
+
+  .pill-container {
+    flex: 1;
+    max-width: 200px;
+  }
+
+  .pill-tab {
+    padding: 6px 10px;
+    font-size: 11px;
+    min-height: 36px;
+  }
+
+  .header-compile-btn {
+    padding: 0 12px;
+    font-size: 12px;
+    min-height: 36px;
+  }
+
+  .header-toggle {
+    display: none;
+  }
+
+  .header-icon-btn {
+    width: 32px;
+    height: 32px;
+  }
+
+  .wallet-btn {
+    font-size: 11px;
+    padding: 4px 10px;
+  }
+
+  .network-badge {
+    display: none;
+  }
+
+  /* Output panel mobile adjustments */
+  .output-section {
+    padding: var(--space-sm);
+    height: auto;
+  }
+
+  .output-panel {
+    border-radius: var(--radius-md);
+  }
+
+  .output-header {
+    flex-wrap: wrap;
+    gap: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+  }
+
+  .stats-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-sm);
+  }
+
+  .stat-item {
+    padding: var(--space-xs) 0;
+  }
+
+  /* Run result panel mobile */
+  .run-result-panel {
+    margin: var(--space-sm) 0;
+  }
+
+  .run-result-value {
+    max-height: 200px;
+    font-size: 12px;
+  }
+
+  /* Deploy panel mobile */
+  .deploy-panel {
+    margin: var(--space-sm) 0;
+  }
+
+  /* WAT output mobile */
+  .wat-output {
+    max-height: 200px;
+    font-size: 11px;
+  }
+
+  /* REPL panel mobile */
+  .repl-panel {
+    min-height: 200px;
+  }
+
+  .repl-output {
+    font-size: 12px;
+    max-height: 180px;
+  }
+
+  /* Ensure Monaco editor takes touch input properly */
+  .editor-container {
+    min-height: 180px;
+    touch-action: auto;
+  }
+
+  /* Editor needs explicit height for Monaco */
+  .editor-wrapper {
+    height: calc(100% - 60px); /* Account for examples bar + shortcut hint */
+  }
+}
+
+/* Extra small screens */
+@media (max-width: 480px) {
+  .header-title {
+    display: none;
+  }
+
+  .pill-tab .pill-label {
+    display: none;
+  }
+
+  .pill-tab {
+    padding: 8px 12px;
+  }
+
+  .wallet-btn:not(.connected) {
+    font-size: 10px;
+    padding: 4px 8px;
+  }
+
+  .example-btn {
+    padding: 10px 12px;
+    font-size: 11px;
+  }
+
+  .example-btn .example-icon {
+    font-size: 14px;
+  }
+
+  .editor-pane {
+    min-height: 250px;
+    height: 40vh;
+  }
+
+  .output-pane {
+    min-height: 55vh;
+  }
+}
+
+/* Fix Monaco touch on iOS */
+@supports (-webkit-touch-callout: none) {
+  .editor-container {
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .editor-container .monaco-editor {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+}
