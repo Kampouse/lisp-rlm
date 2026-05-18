@@ -3,16 +3,23 @@
   import * as monaco from 'monaco-editor';
   import { initCompiler, compile, toHexDump, type CompileTarget, type CompileResult } from './lib/compiler.ts';
   import { examples } from './lib/examples.ts';
+  import { connectWallet, disconnectWallet, deployP1, deployP2, getWalletState, toExplorerUrl, type WalletState, type DeployResult, type Network } from './lib/wallet.ts';
 
   // State
   let target: CompileTarget = $state('p1');
   let source: string = $state(examples[0].source);
   let wasmReady: boolean = $state(false);
   let compiling: boolean = $state(false);
+  let deploying: boolean = $state(false);
   let result: CompileResult | null = $state(null);
+  let deployResult: DeployResult | null = $state(null);
+  let walletState: WalletState = $state({ connected: false, accountId: null, network: 'testnet' });
   let activeExample: number = $state(0);
   let editorInstance: monaco.editor.IStandaloneCodeEditor | null = $state(null);
   let editorContainer: HTMLDivElement | null = $state(null);
+  let contractName: string = $state('my-contract');
+  let network: Network = $state('testnet');
+  let showDeployPanel: boolean = $state(false);
 
   // Derived
   let hexDump: string = $derived.by(() => {
@@ -22,10 +29,16 @@
     return '';
   });
 
+  let shortAccountId: string = $derived.by(() => {
+    if (!walletState.accountId) return '';
+    const id = walletState.accountId;
+    if (id.length > 20) return id.slice(0, 6) + '…' + id.slice(-8);
+    return id;
+  });
+
   function setupMonaco() {
     if (!editorContainer) return;
 
-    // Define Lisp-like language
     monaco.languages.register({ id: 'lisp-rlm' });
 
     monaco.languages.setMonarchTokensProvider('lisp-rlm', {
@@ -43,23 +56,12 @@
       operators: ['=', 'not=', '+', '-', '*', '/', '<', '>', '<=', '>='],
       tokenizer: {
         root: [
-          // Comments
           { regex: ';.*$', action: { token: 'comment' } },
-
-          // Strings
           { regex: '"', action: { token: 'string', next: '@string' } },
-
-          // Numbers
           { regex: '0x[0-9a-fA-F]+', action: { token: 'number' } },
           { regex: '-?[0-9]+\\.?[0-9]*', action: { token: 'number' } },
-
-          // Keywords with colon prefix
           { regex: ':[a-zA-Z_\\-][a-zA-Z0-9_\\-]*', action: { token: 'tag' } },
-
-          // Parentheses
           { regex: '[()\\[\\]]', action: { token: 'delimiter.parenthesis' } },
-
-          // Identifiers and keywords
           {
             regex: '[a-zA-Z_\\-!\\?][a-zA-Z0-9_\\-!\\?]*',
             action: {
@@ -70,8 +72,6 @@
               },
             },
           },
-
-          // Whitespace
           { regex: '\\s+', action: { token: 'white' } },
         ],
         string: [
@@ -82,7 +82,6 @@
       },
     });
 
-    // Dark theme for Lisp
     monaco.editor.defineTheme('lisp-dark', {
       base: 'vs-dark',
       inherit: true,
@@ -111,7 +110,6 @@
       },
     });
 
-    // Create editor
     editorInstance = monaco.editor.create(editorContainer, {
       value: source,
       language: 'lisp-rlm',
@@ -130,20 +128,13 @@
       automaticLayout: true,
       tabSize: 2,
       wordWrap: 'on',
-      scrollbar: {
-        verticalScrollbarSize: 6,
-        horizontalScrollbarSize: 6,
-      },
+      scrollbar: { verticalScrollbarSize: 6, horizontalScrollbarSize: 6 },
       overviewRulerBorder: false,
       hideCursorInOverviewRuler: true,
       renderWhitespace: 'none',
-      guides: {
-        bracketPairs: true,
-        indentation: true,
-      },
+      guides: { bracketPairs: true, indentation: true },
     });
 
-    // Track changes
     editorInstance.onDidChangeModelContent(() => {
       source = editorInstance?.getValue() ?? '';
     });
@@ -153,24 +144,56 @@
     activeExample = index;
     source = examples[index].source;
     target = examples[index].target;
-    if (editorInstance) {
-      editorInstance.setValue(source);
-    }
+    if (editorInstance) editorInstance.setValue(source);
     result = null;
+    deployResult = null;
+    showDeployPanel = false;
   }
 
   async function handleCompile() {
     if (!wasmReady || compiling) return;
     compiling = true;
     result = null;
-
-    // Let UI update before compile
+    deployResult = null;
+    showDeployPanel = false;
     await new Promise(r => setTimeout(r, 50));
-
     try {
       result = compile(source, target);
     } finally {
       compiling = false;
+    }
+  }
+
+  async function handleConnectWallet() {
+    walletState = await connectWallet(network);
+  }
+
+  async function handleDisconnectWallet() {
+    await disconnectWallet();
+    walletState = getWalletState();
+  }
+
+  async function handleDeploy() {
+    if (!result?.success || !result.wasmBytes || deploying) return;
+    deploying = true;
+    deployResult = null;
+
+    try {
+      if (target === 'p1') {
+        deployResult = await deployP1(result.wasmBytes, contractName, network);
+      } else {
+        const outlayerId = network === 'testnet' ? 'outlayer.testnet' : 'outlayer.kampouse.near';
+        deployResult = await deployP2(result.wasmBytes, outlayerId, network);
+      }
+    } catch (err: unknown) {
+      deployResult = {
+        success: false,
+        txHash: null,
+        explorerUrl: null,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    } finally {
+      deploying = false;
     }
   }
 
@@ -197,12 +220,12 @@
         console.error('Failed to initialize WASM:', err);
       }
     };
-
     loadWasm();
 
-    return () => {
-      editorInstance?.dispose();
-    };
+    // Check for existing wallet connection
+    walletState = getWalletState();
+
+    return () => { editorInstance?.dispose(); };
   });
 </script>
 
@@ -216,7 +239,7 @@
     </div>
   {/if}
 
-  <!-- Fixed Header with Pill Tabs -->
+  <!-- Fixed Header -->
   <header class="header">
     <div class="header-brand">
       <div class="header-logo">λ</div>
@@ -229,7 +252,7 @@
         class:active={target === 'p1'}
         role="tab"
         aria-selected={target === 'p1'}
-        onclick={() => { target = 'p1'; result = null; }}
+        onclick={() => { target = 'p1'; result = null; deployResult = null; showDeployPanel = false; }}
       >
         P1 <span class="pill-label">NEAR</span>
       </button>
@@ -238,11 +261,32 @@
         class:active={target === 'p2'}
         role="tab"
         aria-selected={target === 'p2'}
-        onclick={() => { target = 'p2'; result = null; }}
+        onclick={() => { target = 'p2'; result = null; deployResult = null; showDeployPanel = false; }}
       >
         P2 <span class="pill-label">WASI</span>
       </button>
     </div>
+
+    <!-- Network toggle -->
+    <button
+      class="network-badge"
+      onclick={() => { network = network === 'testnet' ? 'mainnet' : 'testnet'; }}
+      title="Switch network"
+    >
+      {network === 'testnet' ? '🧪' : '🔴'} {network}
+    </button>
+
+    <!-- Wallet button -->
+    {#if walletState.connected}
+      <button class="wallet-btn connected" onclick={handleDisconnectWallet} title={walletState.accountId ?? ''}>
+        <span class="wallet-dot"></span>
+        {shortAccountId}
+      </button>
+    {:else}
+      <button class="wallet-btn" onclick={handleConnectWallet}>
+        Connect Wallet
+      </button>
+    {/if}
 
     <button
       class="header-compile-btn"
@@ -271,7 +315,6 @@
         <div class="editor-container" bind:this={editorContainer}></div>
       </div>
 
-      <!-- Examples Bar -->
       <div class="examples-bar">
         {#each examples as example, i}
           <button
@@ -297,6 +340,14 @@
               {result.success ? 'Success' : 'Error'}
             </span>
           {/if}
+          {#if result?.success}
+            <button
+              class="deploy-toggle-btn"
+              onclick={() => { showDeployPanel = !showDeployPanel; deployResult = null; }}
+            >
+              ⚡ Deploy
+            </button>
+          {/if}
         </div>
 
         {#if result}
@@ -320,7 +371,87 @@
                   <span class="stat-value">{result.size.toLocaleString()}</span>
                 </div>
               </div>
-              <div class="hex-dump">{hexDump}</div>
+
+              <!-- Deploy Panel -->
+              {#if showDeployPanel}
+                <div class="deploy-panel">
+                  <div class="deploy-header">
+                    <span>Deploy to {target === 'p1' ? 'NEAR' : 'OutLayer'}</span>
+                  </div>
+                  {#if !walletState.connected}
+                    <div class="deploy-wallet-prompt">
+                      <p>Connect your NEAR wallet to deploy</p>
+                      <button class="deploy-connect-btn" onclick={handleConnectWallet}>
+                        Connect Wallet
+                      </button>
+                    </div>
+                  {:else}
+                    <div class="deploy-form">
+                      {#if target === 'p1'}
+                        <div class="deploy-field">
+                          <label class="deploy-label">Contract Name</label>
+                          <div class="deploy-input-group">
+                            <input
+                              type="text"
+                              class="deploy-input"
+                              bind:value={contractName}
+                              placeholder="my-contract"
+                            />
+                            <span class="deploy-suffix">.{walletState.accountId}</span>
+                          </div>
+                        </div>
+                      {:else}
+                        <div class="deploy-field">
+                          <label class="deploy-label">OutLayer Contract</label>
+                          <span class="deploy-readonly">
+                            {network === 'testnet' ? 'outlayer.testnet' : 'outlayer.kampouse.near'}
+                          </span>
+                        </div>
+                      {/if}
+                      <button
+                        class="deploy-btn"
+                        onclick={handleDeploy}
+                        disabled={deploying}
+                      >
+                        {#if deploying}
+                          <span class="spinner"></span>
+                          Deploying...
+                        {:else}
+                          🚀 Deploy to {target === 'p1' ? 'NEAR' : 'OutLayer'}
+                        {/if}
+                      </button>
+                    </div>
+                  {/if}
+
+                  <!-- Deploy Result -->
+                  {#if deployResult}
+                    <div class="deploy-result" class:success={deployResult.success} class:error={!deployResult.success}>
+                      {#if deployResult.success}
+                        <div class="deploy-result-icon">✅</div>
+                        <div class="deploy-result-text">Contract deployed!</div>
+                        {#if deployResult.explorerUrl}
+                          <a
+                            class="deploy-tx-link"
+                            href={deployResult.explorerUrl}
+                            target="_blank"
+                            rel="noopener"
+                          >
+                            View on Explorer →
+                          </a>
+                        {/if}
+                      {:else}
+                        <div class="deploy-result-icon">❌</div>
+                        <div class="deploy-result-text">{deployResult.error}</div>
+                      {/if}
+                    </div>
+                  {/if}
+                </div>
+              {/if}
+
+              <details class="hex-details">
+                <summary class="hex-summary">WASM Hex Dump</summary>
+                <div class="hex-dump">{hexDump}</div>
+              </details>
             {:else}
               <div class="error-message">{result.error}</div>
             {/if}
@@ -337,12 +468,11 @@
     </section>
   </main>
 
-  <!-- Footer -->
   <footer class="footer">
     Lisp RLM — Write Lisp, Deploy Smart Contracts
   </footer>
 </div>
 
 <style>
-  /* Component-scoped styles are minimal; most are in app.css */
+  /* Scoped styles for deploy panel */
 </style>
