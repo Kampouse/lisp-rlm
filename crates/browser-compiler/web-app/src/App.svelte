@@ -5,6 +5,7 @@
   import { runWasiWithWorker } from './lib/runWasiWithWorker.ts';
   import { examples } from './lib/examples.ts';
   import { connectWallet, disconnectWallet, deployP1, deployP2, getWalletState, type WalletState, type DeployResult, type Network } from './lib/wallet.ts';
+  import { Play, Box, Cloud, Share2, Link, FlaskConical, Wallet, Zap, Rocket, CircleDot, Loader2 } from '@lucide/svelte';
 
   // ============================================
   // State
@@ -573,7 +574,7 @@
         aria-selected={target === 'pure'}
         onclick={() => { target = 'pure'; result = null; deployResult = null; showDeployPanel = false; runResult = null; clearMonacoMarkers(); saveState(); }}
       >
-        ▶ <span class="pill-label">Run</span>
+        <Play size={14} /> <span class="pill-label">Run</span>
       </button>
       <button
         class="pill-tab"
@@ -582,7 +583,7 @@
         aria-selected={target === 'p1'}
         onclick={() => { target = 'p1'; result = null; deployResult = null; showDeployPanel = false; runResult = null; clearMonacoMarkers(); saveState(); }}
       >
-        P1 <span class="pill-label">NEAR</span>
+        <Box size={14} /> <span class="pill-label">NEAR</span>
       </button>
       <button
         class="pill-tab"
@@ -591,7 +592,7 @@
         aria-selected={target === 'p2'}
         onclick={() => { target = 'p2'; result = null; deployResult = null; showDeployPanel = false; runResult = null; clearMonacoMarkers(); saveState(); }}
       >
-        P2 <span class="pill-label">WASI</span>
+        <Cloud size={14} /> <span class="pill-label">WASI</span>
       </button>
     </div>
 
@@ -602,7 +603,7 @@
       onclick={() => { autoCompile = !autoCompile; saveState(); }}
       title="Auto-compile on type (debounced 300ms)"
     >
-      <span class="dot"></span>
+      <Zap size={14} />
       Auto
     </button>
 
@@ -611,7 +612,7 @@
       onclick={copyShareUrl}
       title="Copy shareable URL"
     >
-      🔗
+      <Link size={16} />
     </button>
 
     <!-- Network toggle -->
@@ -620,18 +621,20 @@
       onclick={() => { network = network === 'testnet' ? 'mainnet' : 'testnet'; }}
       title="Switch network"
     >
-      {network === 'testnet' ? '🧪' : '🔴'} {network}
+      <FlaskConical size={12} />
+      {network}
     </button>
 
     <!-- Wallet button -->
     {#if walletState.connected}
       <button class="wallet-btn connected" onclick={handleDisconnectWallet} title={walletState.accountId ?? ''}>
-        <span class="wallet-dot"></span>
+        <CircleDot size={12} />
         {shortAccountId}
       </button>
     {:else}
       <button class="wallet-btn" onclick={handleConnectWallet}>
-        Connect Wallet
+        <Wallet size={14} />
+        Connect
       </button>
     {/if}
 
@@ -642,13 +645,10 @@
       onclick={() => handleCompile(false)}
     >
       {#if compiling}
-        <span class="spinner"></span>
+        <Loader2 size={16} class="spinner-icon" />
         Compiling...
       {:else}
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-          <path d="M8 1L14 4.5V11.5L8 15L2 11.5V4.5L8 1Z" stroke="currentColor" stroke-width="1.5" fill="none"/>
-          <path d="M6 8L7.5 9.5L10.5 6.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
+        <Share2 size={16} />
         Compile
       {/if}
     </button>
@@ -684,7 +684,7 @@
               onclick={() => { replMode = !replMode; saveState(); }}
               title="Toggle REPL mode"
             >
-              <span class="example-icon">⚡</span>
+              <Zap size={14} />
               REPL
             </button>
           </div>
@@ -748,7 +748,8 @@
                     class="deploy-toggle-btn"
                     onclick={() => { showDeployPanel = !showDeployPanel; deployResult = null; }}
                   >
-                    ⚡ Deploy
+                    <Rocket size={14} />
+                    Deploy
                   </button>
                   <button
                     class="run-toggle-btn"
@@ -756,9 +757,10 @@
                     disabled={running}
                   >
                     {#if running}
-                      <span class="spinner"></span>
+                      <Loader2 size={14} class="spinner-icon" />
                     {:else}
-                      ▶ Run
+                      <Play size={14} />
+                      Run
                     {/if}
                   </button>
                 {/if}

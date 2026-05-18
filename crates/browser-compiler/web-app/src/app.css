@@ -1327,31 +1327,59 @@ body {
   font-size: 10px;
 }
 
+/* Icon alignment in buttons */
+.pill-tab :global(svg),
+.header-toggle :global(svg),
+.header-compile-btn :global(svg),
+.example-btn :global(svg),
+.deploy-toggle-btn :global(svg),
+.run-toggle-btn :global(svg),
+.wallet-btn :global(svg),
+.network-badge :global(svg),
+.header-icon-btn :global(svg) {
+  flex-shrink: 0;
+}
+
+.spinner-icon {
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 /* ============================================
    Mobile Responsive Fixes
    ============================================ */
 
 @media (max-width: 767px) {
-  /* Stack vertically on mobile */
+  /* Stack vertically on mobile - use dvh for stable mobile height */
+  .app-container {
+    height: 100dvh;
+    overflow: hidden;
+  }
+
   .main-content {
     flex-direction: column;
-    height: auto;
-    min-height: calc(100vh - 60px);
+    height: calc(100dvh - 56px);
+    min-height: unset;
+    overflow: hidden;
   }
 
   .split-container {
     flex-direction: column;
-    height: auto;
-    min-height: calc(100vh - 60px);
+    height: 100%;
+    min-height: unset;
+    overflow: hidden;
   }
 
-  /* Editor takes upper portion */
+  /* Editor takes most of the screen on mobile */
   .editor-pane {
-    flex: none;
-    min-height: 280px;
-    height: 45vh;
-    max-height: 50vh;
+    flex: 1 1 55%;
+    min-height: 200px;
+    max-height: 55vh;
     border-bottom: 1px solid var(--color-border);
+    overflow: hidden;
   }
 
   /* Hide resizer on mobile */
@@ -1359,39 +1387,40 @@ body {
     display: none;
   }
 
-  /* Output below editor */
+  /* Output panel - full width, scrollable */
   .output-pane {
-    width: 100%;
-    min-width: unset;
-    max-width: unset;
-    flex: none;
+    width: 100% !important;
+    min-width: 100%;
+    max-width: 100%;
+    flex: 1 1 45%;
     height: auto;
-    min-height: 50vh;
+    min-height: 150px;
+    max-height: 45vh;
     border-left: none;
     border-top: 1px solid var(--color-border);
+    overflow-y: auto;
+    overflow-x: hidden;
   }
 
-  /* Editor section mobile adjustments */
+  /* Editor section - maximize editor space */
   .editor-section {
-    padding: var(--space-sm);
+    padding: var(--space-xs);
     height: 100%;
+    display: flex;
+    flex-direction: column;
   }
 
-  .editor-wrapper {
-    min-height: 150px;
-    flex: 1;
-  }
-
-  /* Examples bar: scrollable row at top of editor */
+  /* Examples bar - compact horizontal scroll at TOP inside editor */
   .examples-bar {
     flex-wrap: nowrap;
     overflow-x: auto;
     overflow-y: hidden;
     -webkit-overflow-scrolling: touch;
-    padding-bottom: var(--space-xs);
-    margin-bottom: var(--space-sm);
-    gap: var(--space-xs);
-    /* Ensure scrollbar is hidden but scrollable */
+    padding: var(--space-xs) 0;
+    margin-bottom: var(--space-xs);
+    gap: 6px;
+    flex-shrink: 0;
+    /* Hide scrollbar but keep scrollable */
     scrollbar-width: none;
     -ms-overflow-style: none;
   }
@@ -1399,12 +1428,34 @@ body {
     display: none;
   }
 
+  /* Example buttons - compact but tappable */
   .example-btn {
     flex-shrink: 0;
-    padding: 10px 14px;
+    padding: 8px 12px;
     font-size: 12px;
-    min-height: 44px;
-    min-width: 44px;
+    min-height: 40px;
+    border-radius: var(--radius-sm);
+  }
+
+  .example-btn .example-icon {
+    font-size: 14px;
+  }
+
+  /* Editor wrapper fills remaining space */
+  .editor-wrapper {
+    flex: 1;
+    min-height: 150px;
+    border-radius: var(--radius-md);
+    overflow: hidden;
+  }
+
+  /* Monaco container - fixed height for mobile */
+  .editor-container {
+    height: 100% !important;
+    min-height: 150px;
+    touch-action: pan-x pan-y;
+    -webkit-touch-callout: none;
+    overflow: hidden;
   }
 
   /* Shortcut hint hidden on mobile */
@@ -1412,22 +1463,181 @@ body {
     display: none;
   }
 
-  /* Header adjustments */
+  /* Header - compact */
   .header {
-    padding: var(--space-xs) var(--space-sm);
-    gap: var(--space-sm);
+    padding: 6px 10px;
+    gap: 8px;
     height: 56px;
+  }
+
+  .header-brand {
+    gap: 6px;
+  }
+
+  .header-logo {
+    width: 24px;
+    height: 24px;
+    font-size: 12px;
+  }
+
+  .header-title {
+    display: none;
   }
 
   .pill-container {
     flex: 1;
-    max-width: 200px;
+    max-width: 180px;
+    min-width: 0;
   }
 
   .pill-tab {
+    padding: 8px 12px;
+    font-size: 12px;
+    min-height: 36px;
+    gap: 4px;
+  }
+
+  .pill-tab .pill-label {
+    display: none; /* Hide secondary label */
+  }
+
+  .header-compile-btn {
+    padding: 0 14px;
+    font-size: 13px;
+    min-height: 40px;
+    border-radius: var(--radius-pill);
+  }
+
+  .header-toggle,
+  .header-icon-btn,
+  .network-badge {
+    display: none;
+  }
+
+  .wallet-btn {
+    font-size: 11px;
+    padding: 6px 10px;
+    min-height: 36px;
+  }
+
+  /* Output panel mobile */
+  .output-section {
+    padding: var(--space-sm);
+    height: 100%;
+    width: 100%;
+    overflow-y: auto;
+  }
+
+  .output-panel {
+    border-radius: var(--radius-md);
+    width: 100%;
+  }
+
+  .output-body {
+    width: 100%;
+    overflow-x: hidden;
+  }
+
+  .output-header {
+    flex-wrap: wrap;
+    gap: var(--space-xs);
+    padding: var(--space-sm);
+  }
+
+  .output-title {
+    font-size: 12px;
+  }
+
+  /* Stats in 2x2 grid */
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--space-xs);
+    margin-top: var(--space-sm);
+  }
+
+  .stat-item {
+    padding: 6px 0;
+  }
+
+  .stat-label {
+    font-size: 9px;
+  }
+
+  .stat-value {
+    font-size: 13px;
+  }
+
+  /* Run/Deploy buttons - full width on mobile */
+  .run-toggle-btn,
+  .deploy-toggle-btn {
+    flex: 1;
+    justify-content: center;
+    min-height: 40px;
+    font-size: 13px;
+  }
+
+  /* Run result mobile */
+  .run-result-panel {
+    margin: var(--space-sm) 0;
+  }
+
+  .run-result-value {
+    max-height: 150px;
+    font-size: 12px;
+    padding: 6px 0;
+  }
+
+  /* Deploy panel mobile */
+  .deploy-panel {
+    margin: var(--space-sm) 0;
+    padding: var(--space-sm);
+  }
+
+  .deploy-btn {
+    width: 100%;
+    min-height: 44px;
+  }
+
+  /* WAT output mobile */
+  .wat-output {
+    max-height: 150px;
+    font-size: 11px;
+    padding: var(--space-sm);
+  }
+
+  /* REPL panel mobile */
+  .repl-panel {
+    height: 100%;
+  }
+
+  .repl-output {
+    font-size: 12px;
+    max-height: 150px;
+    padding: var(--space-sm);
+  }
+
+  .repl-input {
+    font-size: 14px; /* Prevent zoom on iOS */
+    padding: 10px 0;
+  }
+
+  /* Footer hidden on mobile */
+  .footer {
+    display: none;
+  }
+}
+
+/* Extra small screens */
+@media (max-width: 480px) {
+  .pill-tab {
     padding: 6px 10px;
     font-size: 11px;
-    min-height: 36px;
+    min-height: 34px;
+  }
+
+  .pill-container {
+    max-width: 140px;
   }
 
   .header-compile-btn {
@@ -1436,139 +1646,87 @@ body {
     min-height: 36px;
   }
 
-  .header-toggle {
-    display: none;
-  }
-
-  .header-icon-btn {
-    width: 32px;
-    height: 32px;
-  }
-
-  .wallet-btn {
-    font-size: 11px;
-    padding: 4px 10px;
-  }
-
-  .network-badge {
-    display: none;
-  }
-
-  /* Output panel mobile adjustments */
-  .output-section {
-    padding: var(--space-sm);
-    height: auto;
-  }
-
-  .output-panel {
-    border-radius: var(--radius-md);
-  }
-
-  .output-header {
-    flex-wrap: wrap;
-    gap: var(--space-sm);
-    padding: var(--space-sm) var(--space-md);
-  }
-
-  .stats-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: var(--space-sm);
-  }
-
-  .stat-item {
-    padding: var(--space-xs) 0;
-  }
-
-  /* Run result panel mobile */
-  .run-result-panel {
-    margin: var(--space-sm) 0;
-  }
-
-  .run-result-value {
-    max-height: 200px;
-    font-size: 12px;
-  }
-
-  /* Deploy panel mobile */
-  .deploy-panel {
-    margin: var(--space-sm) 0;
-  }
-
-  /* WAT output mobile */
-  .wat-output {
-    max-height: 200px;
-    font-size: 11px;
-  }
-
-  /* REPL panel mobile */
-  .repl-panel {
-    min-height: 200px;
-  }
-
-  .repl-output {
-    font-size: 12px;
-    max-height: 180px;
-  }
-
-  /* Ensure Monaco editor takes touch input properly */
-  .editor-container {
-    min-height: 180px;
-    touch-action: auto;
-  }
-
-  /* Editor needs explicit height for Monaco */
-  .editor-wrapper {
-    height: calc(100% - 60px); /* Account for examples bar + shortcut hint */
-  }
-}
-
-/* Extra small screens */
-@media (max-width: 480px) {
-  .header-title {
-    display: none;
-  }
-
-  .pill-tab .pill-label {
-    display: none;
-  }
-
-  .pill-tab {
-    padding: 8px 12px;
-  }
-
   .wallet-btn:not(.connected) {
     font-size: 10px;
-    padding: 4px 8px;
+    padding: 5px 8px;
   }
 
   .example-btn {
-    padding: 10px 12px;
+    padding: 8px 10px;
     font-size: 11px;
-  }
-
-  .example-btn .example-icon {
-    font-size: 14px;
+    min-height: 38px;
   }
 
   .editor-pane {
-    min-height: 250px;
-    height: 40vh;
+    height: 50vh;
   }
 
   .output-pane {
-    min-height: 55vh;
+    min-height: 100px;
+    max-height: 50vh;
   }
 }
 
-/* Fix Monaco touch on iOS */
-@supports (-webkit-touch-callout: none) {
-  .editor-container {
-    -webkit-overflow-scrolling: touch;
+/* Landscape mobile - give more height to editor */
+@media (max-width: 900px) and (orientation: landscape) {
+  .editor-pane {
+    height: 65vh;
   }
 
-  .editor-container .monaco-editor {
+  .output-pane {
+    max-height: 35vh;
+  }
+}
+
+/* iOS Monaco fixes */
+@supports (-webkit-touch-callout: none) {
+  .editor-container,
+  .editor-container .monaco-editor,
+  .editor-container .monaco-editor .inputarea {
+    -webkit-overflow-scrolling: touch;
     -webkit-user-select: text;
     user-select: text;
+    touch-action: manipulation;
+  }
+
+  /* Larger line height for touch */
+  .monaco-editor .view-line {
+    line-height: 22px !important;
+  }
+
+  /* Larger cursor for touch */
+  .monaco-editor .cursor {
+    width: 2px !important;
+  }
+
+  /* Better tap target for line numbers */
+  .monaco-editor .margin {
+    width: 48px !important;
+  }
+}
+
+/* Improve touch scrolling */
+@media (hover: none) and (pointer: coarse) {
+  .examples-bar {
+    -webkit-overflow-scrolling: touch;
+    scroll-snap-type: x proximity;
+  }
+
+  .example-btn {
+    scroll-snap-align: start;
+    /* Ensure button feels tactile */
+    transition: transform 0.1s ease, background 0.15s ease;
+  }
+
+  .example-btn:active {
+    transform: scale(0.96);
+  }
+
+  .pill-tab:active {
+    transform: scale(0.97);
+  }
+
+  .header-compile-btn:active {
+    transform: scale(0.98);
   }
 }
