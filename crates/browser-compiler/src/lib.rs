@@ -31,6 +31,14 @@ pub fn compile_p2(source: &str) -> Result<Vec<u8>, JsValue> {
         .map_err(|e| JsValue::from_str(&format!("Compile error: {}", e)))
 }
 
+/// Compile Lisp source to P2 CORE WASM (before component wrapping).
+/// This can be instantiated directly in browser with WASI polyfills.
+#[wasm_bindgen]
+pub fn compile_p2_core(source: &str) -> Result<Vec<u8>, JsValue> {
+    lisp_rlm_wasm::compile_outlayer_p2_core_browser(source)
+        .map_err(|e| JsValue::from_str(&format!("Compile error: {}", e)))
+}
+
 /// Compile Lisp source to a pure WASM binary (no host functions).
 /// This can be instantiated and run directly in the browser.
 /// Uses fuzz mode — stores tagged result at memory offset 64.

@@ -273,6 +273,52 @@ pub fn compile_outlayer_p2_browser(source: &str) -> Result<Vec<u8>, String> {
     compile_outlayer_p2_from_exprs(&exprs)
 }
 
+/// Browser-safe P2 compile — returns CORE WASM (before component wrapping).
+/// This can be instantiated directly in the browser with WASI polyfills.
+pub fn compile_outlayer_p2_core_browser(source: &str) -> Result<Vec<u8>, String> {
+    let exprs = crate::parser::parse_all(source)?;
+    let mut em = WasmEmitter::new();
+    em.wasi_mode = true;
+    em.p2_mode = true;
+    em.no_proc_exit = true;
+    for e in exprs {
+        if let crate::types::LispVal::List(items) = e {
+            if items.is_empty() { continue; }
+            if items.len() >= 3 {
+                if let (crate::types::LispVal::Sym(s), crate::types::LispVal::List(sig)) = (&items[0], &items[1]) {
+                    if s == "define" && !sig.is_empty() {
+                        if let crate::types::LispVal::Sym(name) = &sig[0] {
+                            let params: Vec<String> = sig[1..].iter().map(|p| match p {
+                                crate::types::LispVal::Sym(s) => Ok(s.clone()),
+                                _ => Err("param must be symbol".into()),
+                            }).collect::<Result<_, String>>()?;
+                            let body = if items.len() > 3 {
+                                let mut b = vec![crate::types::LispVal::Sym("begin".into())];
+                                b.extend(items[2..].iter().cloned());
+                                crate::types::LispVal::List(b)
+                            } else {
+                                items[2].clone()
+                            };
+                            em.emit_define(name, &params, &body)?;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Return CORE WASM (before component wrapping) — browser can run this with WASI polyfills
+    if em.need_wasi_http {
+        // HTTP example: return simple WASI core with http_get stub
+        // (real http_get would be polyfilled to fetch() in browser)
+        finish_outlayer(&mut em)
+    } else if em.need_outlayer {
+        finish_outlayer(&mut em)
+    } else {
+        finish_outlayer_no_ol(&mut em)
+    }
+}
+
 /// Compile pre-parsed expressions to P2 WASM — no filesystem access.
 pub fn compile_outlayer_p2_from_exprs(exprs: &[crate::types::LispVal]) -> Result<Vec<u8>, String> {
     let mut em = WasmEmitter::new();

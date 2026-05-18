@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import * as monaco from 'monaco-editor';
-  import { initCompiler, compile, runPure, runWasi, toHexDump, type CompileTarget, type CompileResult } from './lib/compiler.ts';
+  import { initCompiler, compile, runPure, runWasi, compileP2Core, toHexDump, type CompileTarget, type CompileResult } from './lib/compiler.ts';
   import { examples } from './lib/examples.ts';
   import { connectWallet, disconnectWallet, deployP1, deployP2, getWalletState, type WalletState, type DeployResult, type Network } from './lib/wallet.ts';
 
@@ -317,7 +317,7 @@
   }
 
   async function handleRun() {
-    if (!result?.success || !result.wasmBytes || running) return;
+    if (!result?.success || running) return;
     if (target === 'p1') {
       runResult = 'ℹ NEAR contracts run on-chain — use ⚡ Deploy to execute';
       return;
@@ -326,14 +326,12 @@
     runResult = null;
     try {
       if (target === 'p2') {
-        // P2 outputs WASM Components — need jco transpile (adds ~500KB JS runtime)
-        if (result.wat?.includes('(component')) {
-          runResult = 'ℹ P2 outputs WASM Components.\n\nBrowser execution requires @bytecodealliance/jco transpilation (~500KB JS runtime).\n\nFor now: use ⚡ Deploy to run on OutLayer, or run `jco transpile` locally.';
-        } else {
-          runResult = await runWasi(result.wasmBytes);
-        }
+        // P2 Component → re-compile as core WASM for browser execution
+        runResult = 'Compiling core WASM...';
+        const coreBytes = compileP2Core(source);
+        runResult = await runWasi(coreBytes);
       } else {
-        runResult = await runPure(result.wasmBytes);
+        runResult = await runPure(result.wasmBytes!);
       }
     } catch (err: unknown) {
       runResult = `Error: ${err instanceof Error ? err.message : String(err)}`;

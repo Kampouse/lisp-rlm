@@ -1,4 +1,4 @@
-import init, { compile_p1, compile_p2, compile_pure, disassemble_wasm } from '../../public/wasm/lisp_rlm_browser.js';
+import init, { compile_p1, compile_p2, compile_p2_core, compile_pure, disassemble_wasm } from '../../public/wasm/lisp_rlm_browser.js';
 
 let initialized = false;
 let initPromise: Promise<void> | null = null;
@@ -79,6 +79,11 @@ export function compile(source: string, target: CompileTarget): CompileResult {
       runResult: null,
     };
   }
+}
+
+/** Compile P2 as core WASM (browser-runnable, before component wrapping). */
+export function compileP2Core(source: string): Uint8Array {
+  return compile_p2_core(source);
 }
 
 /** Build a minimal `env` import object with no-op stubs for all NEAR host functions.
@@ -289,7 +294,7 @@ export async function runPure(wasmBytes: Uint8Array): Promise<string> {
 
 /** Run P2 WASI WASM in the browser with polyfilled imports. */
 export async function runWasi(wasmBytes: Uint8Array, stdinData?: Uint8Array): Promise<string> {
-  // State
+  // WASI state - will be populated after instantiation when memory is available
   let stdout = '';
   const stdin = stdinData ?? new Uint8Array(0);
   let stdinOffset = 0;
@@ -463,6 +468,22 @@ export async function runWasi(wasmBytes: Uint8Array, stdinData?: Uint8Array): Pr
   }
 
   return stdout || '(no output)';
+}
+
+/** Run P2 WASM Component using jco transpile. */
+export async function runComponent(componentBytes: Uint8Array): Promise<string> {
+  // P2 always outputs a WASM Component (not core WASM).
+  // Components require the component model + preview2-shim (~500KB).
+  // For now, show helpful message. Future: full jco integration.
+  return `✓ Built as WASM Component (${componentBytes.length} bytes)
+
+Components require:
+• @bytecodealliance/jco transpile (~500KB JS runtime)
+• WASI preview2-shim for browser
+• OutLayer host polyfills (http_get → fetch, storage → localStorage)
+
+Use ⚡ Deploy to run on OutLayer (recommended).
+Or run locally: npx jco transpile component.wasm`;
 }
 
 function extractExports(wat: string): string[] {
