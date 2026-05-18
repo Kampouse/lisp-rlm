@@ -84,9 +84,8 @@ export function compile(source: string, target: CompileTarget): CompileResult {
 /** Build a minimal `env` import object with no-op stubs for all NEAR host functions.
  *  compile_fuzz WASM may still import some env functions even in pure mode. */
 function buildEnvStubs(): Record<string, Function> {
-  // Common host function signatures — all return 0n for i64 returns, void otherwise
   const stub = () => {};
-  const stubI64 = () => 0n;
+  const stubI64 = () => BigInt(0);
   return {
     read_register: stub, register_len: stubI64, write_register: stub,
     current_account_id: stub, signer_account_id: stub, signer_account_pk: stub,
@@ -106,44 +105,168 @@ function buildEnvStubs(): Record<string, Function> {
   };
 }
 
-/** Run pure WASM in the browser (only works for compile_pure target).
- *  compile_fuzz stores the tagged result at memory offset 64 (TEMP_MEM).
- *  Tagged integers: n*2+1 (odd). Booleans: 0/2. Nil: 0. */
+/** WASI Preview 1 polyfill for browser. */
+interface WasiState {
+  stdin: Uint8Array;
+  stdinOffset: number;
+  stdout: string;
+  memory: WebAssembly.Memory;
+}
+
+function createWasiImports(state: WasiState): WebAssembly.Imports {
+  const memView = () => new DataView(state.memory.buffer);
+
+  return {
+    wasi_snapshot_preview1: {
+      fd_read: (fd: number, iovsPtr: number, iovsLen: number, nreadPtr: number): number => {
+        if (fd !== 0) return 8;
+        let total = 0;
+        for (let i = 0; i < iovsLen && state.stdinOffset < state.stdin.length; i++) {
+          const view = memView();
+          const iovBufPtr = view.getUint32(iovsPtr + i * 8, true);
+          const iovBufLen = view.getUint32(iovsPtr + i * 4 + 4, true);
+          const toCopy = Math.min(iovBufLen, state.stdin.length - state.stdinOffset);
+          new Uint8Array(state.memory.buffer).set(state.stdin.slice(state.stdinOffset, state.stdinOffset + toCopy), iovBufPtr);
+          state.stdinOffset += toCopy;
+          total += toCopy;
+        }
+        return 0;
+      },
+      fd_write: (fd: number, iovsPtr: number, iovsLen: number, nwrittenPtr: number): number => {
+        if (fd !== 1 && fd !== 2) return 8;
+        for (let i = 0; i < iovsLen; i++) {
+          const view = memView();
+          const iovBufPtr = view.getUint32(iovsPtr + i * 8, true);
+          const iovBufLen = view.getUint32(iovsPtr + i * 4 + 4, true);
+          const chunk = new Uint8Array(state.memory.buffer).slice(iovBufPtr, iovBufPtr + iovBufLen);
+          state.stdout += new TextDecoder().decode(chunk);
+        }
+        return 0;
+      },
+      proc_exit: (_code: number): void => {
+        throw new Error(`exit(${_code})`);
+      },
+      random_get: (bufPtr: number, bufLen: number): number => {
+        const bytes = new Uint8Array(state.memory.buffer);
+        crypto.getRandomValues(bytes.slice(bufPtr, bufPtr + bufLen));
+        return 0;
+      },
+      environ_sizes_get: (countPtr: number, bufLenPtr: number): number => {
+        memView().setUint32(countPtr, 0, true);
+        memView().setUint32(bufLenPtr, 0, true);
+        return 0;
+      },
+      environ_get: (): number => 0,
+      fd_seek: (_fd: number, _offset: bigint, _whence: number, _newoffsetPtr: number): number => 0,
+    },
+    outlayer: {
+      http_get: async (urlPtr: number, urlLen: number, respBufPtr: number, respBufLen: number, respLenPtr: number): Promise<number> => {
+        const bytes = new Uint8Array(state.memory.buffer);
+        const url = new TextDecoder().decode(bytes.slice(urlPtr, urlPtr + urlLen));
+        try {
+          const resp = await fetch(url);
+          const text = await resp.text();
+          const textBytes = new TextEncoder().encode(text);
+          const toCopy = Math.min(textBytes.length, respBufLen);
+          bytes.set(textBytes.slice(0, toCopy), respBufPtr);
+          new DataView(state.memory.buffer).setUint32(respLenPtr, toCopy, true);
+          return 0;
+        } catch (e) {
+          const errMsg = e instanceof Error ? e.message : String(e);
+          const errBytes = new TextEncoder().encode(`error: ${errMsg}`);
+          const toCopy = Math.min(errBytes.length, respBufLen);
+          bytes.set(errBytes.slice(0, toCopy), respBufPtr);
+          new DataView(state.memory.buffer).setUint32(respLenPtr, toCopy, true);
+          return 1;
+        }
+      },
+      // Storage stubs
+      storage_set: (k: number, kl: number, v: number, vl: number): number => {
+        const mem = new Uint8Array(state.memory.buffer);
+        const key = new TextDecoder().decode(mem.slice(k, k + kl));
+        const val = new TextDecoder().decode(mem.slice(v, v + vl));
+        localStorage.setItem(`lisp-rlm:${key}`, val);
+        return 0;
+      },
+      storage_get: (k: number, kl: number, buf: number, bl: number, lp: number): number => {
+        const mem = new Uint8Array(state.memory.buffer);
+        const key = new TextDecoder().decode(mem.slice(k, k + kl));
+        const val = localStorage.getItem(`lisp-rlm:${key}`) ?? '';
+        const vb = new TextEncoder().encode(val);
+        mem.set(vb.slice(0, bl), buf);
+        new DataView(state.memory.buffer).setUint32(lp, vb.length, true);
+        return 0;
+      },
+      storage_has: (k: number, kl: number): number => {
+        const key = new TextDecoder().decode(new Uint8Array(state.memory.buffer).slice(k, k + kl));
+        return localStorage.getItem(`lisp-rlm:${key}`) !== null ? 1 : 0;
+      },
+      storage_delete: (k: number, kl: number): number => {
+        const key = new TextDecoder().decode(new Uint8Array(state.memory.buffer).slice(k, k + kl));
+        localStorage.removeItem(`lisp-rlm:${key}`);
+        return 0;
+      },
+      storage_increment: () => 0,
+      storage_decrement: () => 0,
+      storage_set_if_absent: () => 0,
+      storage_set_if_equals: () => 0,
+      storage_list_keys: () => 0,
+      storage_clear_all: () => { localStorage.clear(); return 0; },
+      storage_set_worker: () => 0,
+      storage_get_worker: () => 0,
+      storage_set_worker_public: () => 0,
+      storage_get_worker_from_project: () => 0,
+      view: () => 0,
+      call: () => 0,
+      transfer: () => 0,
+      env_signer: (buf: number, len: number, lp: number): number => {
+        const s = 'browser-user';
+        const sb = new TextEncoder().encode(s);
+        new Uint8Array(state.memory.buffer).set(sb.slice(0, len), buf);
+        new DataView(state.memory.buffer).setUint32(lp, Math.min(sb.length, len), true);
+        return 0;
+      },
+      env_predecessor: (buf: number, len: number, lp: number): number => {
+        const s = 'browser-predecessor';
+        const sb = new TextEncoder().encode(s);
+        new Uint8Array(state.memory.buffer).set(sb.slice(0, len), buf);
+        new DataView(state.memory.buffer).setUint32(lp, Math.min(sb.length, len), true);
+        return 0;
+      },
+    },
+    env: buildEnvStubs(),
+  };
+}
+
+/** Run pure WASM in the browser */
 export async function runPure(wasmBytes: Uint8Array): Promise<string> {
   const importObject = { env: buildEnvStubs() };
   const { instance } = await WebAssembly.instantiate(wasmBytes.buffer as ArrayBuffer, importObject) as any;
-  const exports = instance.exports as Record<string, WebAssembly.ExportValue>;
+  const exports = instance.exports as Record<string, unknown>;
 
-  // Try calling the "run" export (compile_fuzz exports last function as "run")
   if (typeof exports.run === 'function') {
     try {
       (exports.run as Function)();
-
-      // Read tagged result from memory offset 64 (TEMP_MEM = 64 bytes = 8 i64 slots)
-      // Tag encoding: (value << 3) | tag_type  where TAG_BITS = 3
-      // TAG_NUM=0, TAG_BOOL=1, TAG_FNREF=2, TAG_CLOSURE=3, TAG_NIL=4, TAG_STR=5
-      const memory = exports.memory as WebAssembly.Memory;
+      const memory = exports.memory as WebAssembly.Memory | undefined;
       if (memory) {
         const buf = new DataView(memory.buffer);
-        const tagged = buf.getBigInt64(64, true); // little-endian i64 at offset 64
-        const tagType = tagged & 0x7n;   // low 3 bits
-        const payload = tagged >> 3n;     // upper bits (arithmetic shift)
+        const tagged = buf.getBigInt64(64, true);
+        const tagType = tagged & BigInt(7);
+        const payload = tagged >> BigInt(3);
 
         switch (tagType) {
-          case 0n: return payload.toString();        // TAG_NUM — integer value
-          case 1n: return payload === 0n ? 'false' : 'true'; // TAG_BOOL
-          case 2n: return `<fn#${payload}>`;          // TAG_FNREF
-          case 3n: return `<closure@${payload}>`;     // TAG_CLOSURE
-          case 4n: return 'nil';                      // TAG_NIL
-          case 5n: {                                  // TAG_STR
-            const lo = payload & 0xFFFFFFFFn;
-            const hi = (payload >> 32n) & 0xFFFFFFFFn;
-            // lo = heap offset, hi = length — read bytes from memory
-            const bytes = new Uint8Array(memory.buffer);
-            const strBytes = bytes.slice(Number(lo), Number(lo) + Number(hi));
-            return `"${new TextDecoder().decode(strBytes)}"`;
+          case BigInt(0): return payload.toString();
+          case BigInt(1): return payload === BigInt(0) ? 'false' : 'true';
+          case BigInt(2): return `<fn#${payload}>`;
+          case BigInt(3): return `<closure@${payload}>`;
+          case BigInt(4): return 'nil';
+          case BigInt(5): {
+            const lo = Number(payload & BigInt(0xFFFFFFFF));
+            const hi = Number((payload >> BigInt(32)) & BigInt(0xFFFFFFFF));
+            const bytes = new Uint8Array(memory.buffer).slice(lo, lo + hi);
+            return `"${new TextDecoder().decode(bytes)}"`;
           }
-          default: return `tagged: ${tagged} (type=${tagType}, payload=${payload})`;
+          default: return `tagged: ${tagged}`;
         }
       }
       return 'run() → no memory export';
@@ -153,36 +276,203 @@ export async function runPure(wasmBytes: Uint8Array): Promise<string> {
     }
   }
 
-  // Try the "_run" export (NEAR default)
   if (typeof exports._run === 'function') {
     return '(NEAR contract — use Deploy to run on-chain)';
   }
 
-  // List available exports
   const fns = Object.entries(exports)
     .filter(([, v]) => typeof v === 'function')
     .map(([name]) => name);
 
-  if (fns.length > 0) {
-    return `Available exports: ${fns.join(', ')}`;
+  return fns.length > 0 ? `Available exports: ${fns.join(', ')}` : '(no runnable exports)';
+}
+
+/** Run P2 WASI WASM in the browser with polyfilled imports. */
+export async function runWasi(wasmBytes: Uint8Array, stdinData?: Uint8Array): Promise<string> {
+  // State
+  let stdout = '';
+  const stdin = stdinData ?? new Uint8Array(0);
+  let stdinOffset = 0;
+  
+  // Will be set after instantiation
+  let getMemory: () => WebAssembly.Memory | undefined = () => undefined;
+
+  const wasi = {
+    fd_read: (fd: number, iovsPtr: number, iovsLen: number, nreadPtr: number): number => {
+      if (fd !== 0) return 8;
+      const mem = getMemory();
+      if (!mem) return 8;
+      const view = new DataView(mem.buffer);
+      const bytes = new Uint8Array(mem.buffer);
+      let total = 0;
+      for (let i = 0; i < iovsLen && stdinOffset < stdin.length; i++) {
+        const iovBufPtr = view.getUint32(iovsPtr + i * 8, true);
+        const iovBufLen = view.getUint32(iovsPtr + i * 4 + 4, true);
+        const toCopy = Math.min(iovBufLen, stdin.length - stdinOffset);
+        bytes.set(stdin.slice(stdinOffset, stdinOffset + toCopy), iovBufPtr);
+        stdinOffset += toCopy;
+        total += toCopy;
+      }
+      view.setUint32(nreadPtr, total, true);
+      return 0;
+    },
+    fd_write: (fd: number, iovsPtr: number, iovsLen: number, nwrittenPtr: number): number => {
+      if (fd !== 1 && fd !== 2) return 8;
+      const mem = getMemory();
+      if (!mem) return 8;
+      const view = new DataView(mem.buffer);
+      const bytes = new Uint8Array(mem.buffer);
+      for (let i = 0; i < iovsLen; i++) {
+        const iovBufPtr = view.getUint32(iovsPtr + i * 8, true);
+        const iovBufLen = view.getUint32(iovsPtr + i * 4 + 4, true);
+        const chunk = bytes.slice(iovBufPtr, iovBufPtr + iovBufLen);
+        stdout += new TextDecoder().decode(chunk);
+      }
+      view.setUint32(nwrittenPtr, 0, true);
+      return 0;
+    },
+    proc_exit: (code: number): void => {
+      throw new Error(`WASI exit(${code})`);
+    },
+    random_get: (bufPtr: number, bufLen: number): number => {
+      const mem = getMemory();
+      if (!mem) return 1;
+      crypto.getRandomValues(new Uint8Array(mem.buffer).slice(bufPtr, bufPtr + bufLen));
+      return 0;
+    },
+    environ_sizes_get: (): number => 0,
+    environ_get: (): number => 0,
+    fd_seek: (): number => 0,
+  };
+
+  const outlayer = {
+    http_get: async (urlPtr: number, urlLen: number, respBufPtr: number, respBufLen: number, respLenPtr: number): Promise<number> => {
+      const mem = getMemory();
+      if (!mem) return 1;
+      const bytes = new Uint8Array(mem.buffer);
+      const url = new TextDecoder().decode(bytes.slice(urlPtr, urlPtr + urlLen));
+      try {
+        const resp = await fetch(url);
+        const text = await resp.text();
+        const textBytes = new TextEncoder().encode(text);
+        const toCopy = Math.min(textBytes.length, respBufLen);
+        bytes.set(textBytes.slice(0, toCopy), respBufPtr);
+        new DataView(mem.buffer).setUint32(respLenPtr, toCopy, true);
+        return 0;
+      } catch (e) {
+        const errBytes = new TextEncoder().encode(`error: ${e instanceof Error ? e.message : String(e)}`);
+        const toCopy = Math.min(errBytes.length, respBufLen);
+        bytes.set(errBytes.slice(0, toCopy), respBufPtr);
+        new DataView(mem.buffer).setUint32(respLenPtr, toCopy, true);
+        return 1;
+      }
+    },
+    storage_set: (k: number, kl: number, v: number, vl: number): number => {
+      const mem = getMemory();
+      if (!mem) return 1;
+      const bytes = new Uint8Array(mem.buffer);
+      localStorage.setItem(
+        `lisp-rlm:${new TextDecoder().decode(bytes.slice(k, k + kl))}`,
+        new TextDecoder().decode(bytes.slice(v, v + vl))
+      );
+      return 0;
+    },
+    storage_get: (k: number, kl: number, buf: number, bl: number, lp: number): number => {
+      const mem = getMemory();
+      if (!mem) return 1;
+      const bytes = new Uint8Array(mem.buffer);
+      const key = new TextDecoder().decode(bytes.slice(k, k + kl));
+      const val = localStorage.getItem(`lisp-rlm:${key}`) ?? '';
+      const vb = new TextEncoder().encode(val);
+      bytes.set(vb.slice(0, bl), buf);
+      new DataView(mem.buffer).setUint32(lp, vb.length, true);
+      return 0;
+    },
+    storage_has: (k: number, kl: number): number => {
+      const mem = getMemory();
+      if (!mem) return 0;
+      const key = new TextDecoder().decode(new Uint8Array(mem.buffer).slice(k, k + kl));
+      return localStorage.getItem(`lisp-rlm:${key}`) !== null ? 1 : 0;
+    },
+    storage_delete: (k: number, kl: number): number => {
+      const mem = getMemory();
+      if (!mem) return 1;
+      const key = new TextDecoder().decode(new Uint8Array(mem.buffer).slice(k, k + kl));
+      localStorage.removeItem(`lisp-rlm:${key}`);
+      return 0;
+    },
+    storage_increment: () => 0,
+    storage_decrement: () => 0,
+    storage_set_if_absent: () => 0,
+    storage_set_if_equals: () => 0,
+    storage_list_keys: () => 0,
+    storage_clear_all: () => { localStorage.clear(); return 0; },
+    storage_set_worker: () => 0,
+    storage_get_worker: () => 0,
+    storage_set_worker_public: () => 0,
+    storage_get_worker_from_project: () => 0,
+    view: () => 0,
+    call: () => 0,
+    transfer: () => 0,
+    env_signer: (buf: number, len: number, lp: number): number => {
+      const mem = getMemory();
+      if (!mem) return 1;
+      const s = 'browser-user';
+      const sb = new TextEncoder().encode(s);
+      new Uint8Array(mem.buffer).set(sb.slice(0, len), buf);
+      new DataView(mem.buffer).setUint32(lp, Math.min(sb.length, len), true);
+      return 0;
+    },
+    env_predecessor: (buf: number, len: number, lp: number): number => {
+      const mem = getMemory();
+      if (!mem) return 1;
+      const s = 'browser-predecessor';
+      const sb = new TextEncoder().encode(s);
+      new Uint8Array(mem.buffer).set(sb.slice(0, len), buf);
+      new DataView(mem.buffer).setUint32(lp, Math.min(sb.length, len), true);
+      return 0;
+    },
+  };
+
+  // Build import object
+  const importObj: WebAssembly.Imports = {
+    wasi_snapshot_preview1: wasi as unknown as Record<string, WebAssembly.ImportValue>,
+    outlayer: outlayer as unknown as Record<string, WebAssembly.ImportValue>,
+    env: buildEnvStubs() as unknown as Record<string, WebAssembly.ImportValue>,
+  };
+
+  // Instantiate
+  const { instance } = await WebAssembly.instantiate(wasmBytes.buffer as ArrayBuffer, importObj);
+  const exports = instance.exports as Record<string, WebAssembly.ExportValue>;
+  
+  // Set memory getter
+  getMemory = () => exports.memory as WebAssembly.Memory | undefined;
+
+  // Call _start or run
+  const startFn = exports._start ?? exports.run;
+  if (typeof startFn === 'function') {
+    try {
+      (startFn as Function)();
+    } catch (e) {
+      if (e instanceof Error && e.message.includes('exit')) {
+        // Normal exit via proc_exit
+      } else {
+        throw e;
+      }
+    }
   }
 
-  return '(no runnable exports)';
+  return stdout || '(no output)';
 }
 
 function extractExports(wat: string): string[] {
   const exports: string[] = [];
-  for (const match of wat.matchAll(/\(export\s+"([^"]+)"\s+\(func/g)) {
-    exports.push(match[1]);
+  const re = /\(export\s+"([^"]+)"\s+\(func/g;
+  let m;
+  while ((m = re.exec(wat)) !== null) {
+    exports.push(m[1]);
   }
   return exports;
-}
-
-function formatValue(v: unknown): string {
-  if (typeof v === 'bigint') return v.toString();
-  if (typeof v === 'number') return v.toString();
-  if (typeof v === 'undefined') return 'void';
-  return String(v);
 }
 
 export function toHexDump(bytes: Uint8Array, maxBytes: number = 256): string {
@@ -198,8 +488,7 @@ export function toHexDump(bytes: Uint8Array, maxBytes: number = 256): string {
       .map((b) => (b >= 0x20 && b <= 0x7e ? String.fromCharCode(b) : '.'))
       .join('');
     const addr = offset.toString(16).padStart(8, '0');
-    const paddedHex = hex.padEnd(47, ' ');
-    lines.push(`${addr}  ${paddedHex}  |${ascii}|`);
+    lines.push(`${addr}  ${hex.padEnd(47, ' ')}  |${ascii}|`);
   }
 
   if (bytes.length > maxBytes) {
