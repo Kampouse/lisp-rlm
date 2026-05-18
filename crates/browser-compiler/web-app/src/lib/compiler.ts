@@ -165,25 +165,24 @@ function createWasiImports(state: WasiState): WebAssembly.Imports {
       fd_seek: (_fd: number, _offset: bigint, _whence: number, _newoffsetPtr: number): number => 0,
     },
     outlayer: {
-      http_get: async (urlPtr: number, urlLen: number, respBufPtr: number, respBufLen: number, respLenPtr: number): Promise<number> => {
+      // Mock HTTP for browser testing — real HTTP happens on OutLayer
+      http_get: (urlPtr: number, urlLen: number, respBufPtr: number, respBufLen: number, respLenPtr: number): number => {
         const bytes = new Uint8Array(state.memory.buffer);
         const url = new TextDecoder().decode(bytes.slice(urlPtr, urlPtr + urlLen));
-        try {
-          const resp = await fetch(url);
-          const text = await resp.text();
-          const textBytes = new TextEncoder().encode(text);
-          const toCopy = Math.min(textBytes.length, respBufLen);
-          bytes.set(textBytes.slice(0, toCopy), respBufPtr);
-          new DataView(state.memory.buffer).setUint32(respLenPtr, toCopy, true);
-          return 0;
-        } catch (e) {
-          const errMsg = e instanceof Error ? e.message : String(e);
-          const errBytes = new TextEncoder().encode(`error: ${errMsg}`);
-          const toCopy = Math.min(errBytes.length, respBufLen);
-          bytes.set(errBytes.slice(0, toCopy), respBufPtr);
-          new DataView(state.memory.buffer).setUint32(respLenPtr, toCopy, true);
-          return 1;
-        }
+        // Return mock JSON for browser testing
+        const mockResponse = JSON.stringify({
+          url,
+          mocked: true,
+          message: "Browser test mode — real HTTP on OutLayer",
+          args: {},
+          headers: { "User-Agent": "lisp-rlm-browser" },
+          origin: "127.0.0.1"
+        });
+        const respBytes = new TextEncoder().encode(mockResponse);
+        const toCopy = Math.min(respBytes.length, respBufLen);
+        bytes.set(respBytes.slice(0, toCopy), respBufPtr);
+        new DataView(state.memory.buffer).setUint32(respLenPtr, toCopy, true);
+        return 0; // success
       },
       // Storage stubs
       storage_set: (k: number, kl: number, v: number, vl: number): number => {

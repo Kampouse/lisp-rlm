@@ -50,10 +50,19 @@ export const examples: Example[] = [
     target: 'p2',
     source: `(define (handler req)
   (let ((url "https://httpbin.org/get"))
-    (let ((response (http-get url)))
-      response)))
+    (http-get url)))
 
 (define (main)
   (handler "request"))`,
+  },
+  {
+    name: 'P2 Echo',
+    icon: '🔊',
+    target: 'p2',
+    source: `(define (greet name)
+  (* 42 2))
+
+(define (main)
+  (greet "world"))`,
   },
 ];
