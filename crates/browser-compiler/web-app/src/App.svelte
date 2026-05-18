@@ -624,6 +624,15 @@
             Connect Wallet
           </button>
         {/if}
+        <div class="drawer-divider"></div>
+        <button
+          class="drawer-item"
+          class:active={showLearn}
+          onclick={() => { showLearn = !showLearn; showExamplesMenu = false; }}
+        >
+          <BookOpen size={16} />
+          Learn
+        </button>
       </div>
     </div>
   {/if}
@@ -671,16 +680,6 @@
         onclick={() => { target = 'p2'; result = null; deployResult = null; showDeployPanel = false; runResult = null; clearMonacoMarkers(); saveState(); }}
       >
         <Cloud size={14} /> <span class="pill-label">WASI</span>
-      </button>
-      <button
-        class="pill-tab"
-        class:active={showLearn}
-        role="tab"
-        aria-selected={showLearn}
-        onclick={() => { showLearn = !showLearn; }}
-        title="Learn about Lisp and this platform"
-      >
-        <BookOpen size={14} /> <span class="pill-label">Learn</span>
       </button>
     </div>
 
@@ -766,7 +765,8 @@
           <pre class="learn-code">(+ 1 2)       ; → 3
 (* 3 4)       ; → 12
 (- 10 3)      ; → 7
-(/ 20 4)      ; → 5</pre>
+(/ 20 4)      ; → 5
+(mod 17 5)    ; → 2 (modulo)</pre>
           <p>Nest expressions for complex calculations:</p>
           <pre class="learn-code">(+ (* 2 3) (- 10 5))  ; → 11</pre>
         </div>
@@ -780,7 +780,14 @@
           <pre class="learn-code">(defun square (n)
   (* n n))
 
-(square 5)    ; → 25</pre>
+(square 5)    ; → 25
+
+(defun factorial (n)
+  (if (&lt;= n 1)
+      1
+      (* n (factorial (- n 1)))))
+
+(factorial 5)  ; → 120</pre>
         </div>
 
         <div class="learn-section">
@@ -788,25 +795,88 @@
           <pre class="learn-code">(if (> x 0)
     "positive"
     "non-positive")</pre>
+          <p>Multi-branch with <code>cond</code>:</p>
+          <pre class="learn-code">(cond
+  ((&lt; n 0) "negative")
+  ((= n 0) "zero")
+  (else "positive"))</pre>
           <p>Compare with: <code>=</code> <code>!=</code> <code>&lt;</code> <code>&gt;</code> <code>&lt;=</code> <code>&gt;=</code></p>
         </div>
 
         <div class="learn-section">
-          <h3>Platform Modes</h3>
+          <h3>Lists & Pairs</h3>
+          <pre class="learn-code">(list 1 2 3)        ; → (1 2 3)
+(car (list 1 2 3))  ; → 1 (first element)
+(cdr (list 1 2 3))  ; → (2 3) (rest)
+(cons 0 (list 1 2)) ; → (0 1 2)
+(length (list 1 2 3)) ; → 3
+(null? '())         ; → true (empty list check)</pre>
+        </div>
+
+        <div class="learn-section">
+          <h3>String Functions</h3>
+          <pre class="learn-code">(concat "hello" " " "world")  ; → "hello world"
+(str-len "hello")             ; → 5
+(str-at "hello" 1)            ; → "e"
+(str-upcase "hello")          ; → "HELLO"
+(str-downcase "HELLO")        ; → "hello"
+(str-substr "hello" 1 4)       ; → "ell"</pre>
+        </div>
+
+        <div class="learn-section">
+          <h3>Higher-Order Functions</h3>
+          <pre class="learn-code">(map (lambda (x) (* x x)) (list 1 2 3 4))
+; → (1 4 9 16)
+
+(filter (lambda (x) (> x 2)) (list 1 2 3 4))
+; → (3 4)
+
+(fold-left + 0 (list 1 2 3 4))
+; → 10</pre>
+        </div>
+
+        <div class="learn-section">
+          <h3>Platform: Run Mode</h3>
           <div class="learn-modes">
             <div class="learn-mode">
-              <strong>Run</strong>
-              <span>Pure Lisp execution in browser</span>
-            </div>
-            <div class="learn-mode">
-              <strong>NEAR</strong>
-              <span>Deploy as smart contract on NEAR blockchain</span>
-            </div>
-            <div class="learn-mode">
-              <strong>WASI</strong>
-              <span>Run as off-chain WASM with HTTP capabilities</span>
+              <span>Execute Lisp directly in your browser with instant feedback. Pure client-side computation — no blockchain, no network. Great for learning and prototyping.</span>
             </div>
           </div>
+        </div>
+
+        <div class="learn-section">
+          <h3>Platform: NEAR Mode</h3>
+          <div class="learn-modes">
+            <div class="learn-mode">
+              <span>Compile to WASM and deploy as an on-chain smart contract. Your code becomes a NEAR contract that can store state, receive transactions, and interact with other contracts. Connect your wallet to deploy.</span>
+            </div>
+          </div>
+          <pre class="learn-code">;; Example: Simple counter contract
+(defvar *counter* 0)
+
+(defun increment ()
+  (set! *counter* (+ *counter* 1))
+  *counter*)
+
+(defun decrement ()
+  (set! *counter* (- *counter* 1))
+  *counter*)
+
+(defun get-counter ()
+  *counter*)</pre>
+        </div>
+
+        <div class="learn-section">
+          <h3>Platform: WASI Mode</h3>
+          <div class="learn-modes">
+            <div class="learn-mode">
+              <span>Compile to WASM and run off-chain via OutLayer. Access HTTP capabilities for API calls, storage, and computation without gas fees. Ideal for heavy processing, oracles, and data pipelines.</span>
+            </div>
+          </div>
+          <pre class="learn-code">;; Example: HTTP request from WASI
+(defun fetch-price ()
+  (let ((response (http-get "https://api.example.com/price")))
+    (parse-json response)))</pre>
         </div>
 
         <div class="learn-section">
@@ -814,7 +884,7 @@
           <div class="learn-functions">
             <div class="learn-fn-group">
               <strong>Arithmetic</strong>
-              <code>+ - * / mod</code>
+              <code>+ - * / mod abs min max</code>
             </div>
             <div class="learn-fn-group">
               <strong>Comparison</strong>
@@ -826,13 +896,34 @@
             </div>
             <div class="learn-fn-group">
               <strong>Control</strong>
-              <code>if cond let defun</code>
+              <code>if cond let defun lambda set!</code>
             </div>
             <div class="learn-fn-group">
               <strong>Lists</strong>
-              <code>car cdr cons list length</code>
+              <code>car cdr cons list length null? append reverse</code>
+            </div>
+            <div class="learn-fn-group">
+              <strong>Strings</strong>
+              <code>concat str-len str-at str-upcase str-downcase str-substr</code>
+            </div>
+            <div class="learn-fn-group">
+              <strong>Higher-Order</strong>
+              <code>map filter fold-left fold-right apply</code>
+            </div>
+            <div class="learn-fn-group">
+              <strong>Predicates</strong>
+              <code>null? list? number? string? symbol?</code>
+            </div>
+            <div class="learn-fn-group">
+              <strong>WASI Only</strong>
+              <code>http-get http-post parse-json</code>
             </div>
           </div>
+        </div>
+
+        <div class="learn-section">
+          <h3>Examples</h3>
+          <p>Click the hamburger menu (☰) to explore built-in examples: Fibonacci, factorial, list operations, and more.</p>
         </div>
       </div>
     </div>
