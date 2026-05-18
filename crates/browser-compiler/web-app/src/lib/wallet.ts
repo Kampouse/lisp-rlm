@@ -75,7 +75,7 @@ export function getWalletState(): WalletState {
   return {
     connected: currentAccountId !== null,
     accountId: currentAccountId,
-    network: 'testnet',
+    network: 'mainnet',
   };
 }
 

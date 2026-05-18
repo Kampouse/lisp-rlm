@@ -4,38 +4,38 @@
    ============================================ */
 
 :root {
-  /* Color Tokens */
+  /* Color Tokens - NEAR Theme */
   --color-bg: #0a0a0f;
   --color-bg-elevated: #12121a;
   --color-bg-surface: #1a1a25;
   --color-bg-glass: rgba(26, 26, 37, 0.75);
-  --color-bg-hover: rgba(255, 140, 0, 0.06);
+  --color-bg-hover: rgba(0, 192, 139, 0.08);
 
   --color-border: rgba(255, 255, 255, 0.06);
-  --color-border-accent: rgba(255, 140, 0, 0.3);
+  --color-border-accent: rgba(0, 192, 139, 0.3);
 
   --color-text-primary: #e8e8ed;
   --color-text-secondary: #8888a0;
   --color-text-muted: #55556a;
-  --color-text-accent: #ff8c00;
+  --color-text-accent: #00c08b;
   --color-text-success: #34d399;
   --color-text-error: #f87171;
 
-  --color-accent: #ff8c00;
-  --color-accent-hover: #ffa033;
-  --color-accent-glow: rgba(255, 140, 0, 0.25);
-  --color-accent-subtle: rgba(255, 140, 0, 0.08);
+  --color-accent: #00c08b;
+  --color-accent-hover: #00d49a;
+  --color-accent-glow: rgba(0, 192, 139, 0.25);
+  --color-accent-subtle: rgba(0, 192, 139, 0.08);
 
   /* Shadows */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
   --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.5);
-  --shadow-glow: 0 0 20px rgba(255, 140, 0, 0.15), 0 0 60px rgba(255, 140, 0, 0.05);
+  --shadow-glow: 0 0 20px rgba(0, 192, 139, 0.15), 0 0 60px rgba(0, 192, 139, 0.05);
 
   /* Gradients */
   --gradient-header: linear-gradient(180deg, rgba(18, 18, 26, 0.98) 0%, rgba(18, 18, 26, 0.92) 100%);
-  --gradient-accent: linear-gradient(135deg, #ff8c00 0%, #ff6a00 100%);
-  --gradient-accent-hover: linear-gradient(135deg, #ffa033 0%, #ff8c00 100%);
+  --gradient-accent: linear-gradient(135deg, #00c08b 0%, #00a876 100%);
+  --gradient-accent-hover: linear-gradient(135deg, #00d49a 0%, #00c08b 100%);
   --gradient-glass: linear-gradient(135deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.01) 100%);
 
   /* Spacing */
@@ -331,9 +331,9 @@ body {
 
 .split-container {
   display: flex;
-  flex: 1;
+  flex: 1 1 0%;
   width: 100%;
-  height: 100%;
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -355,17 +355,6 @@ body {
 
 .resizer:hover {
   background: var(--color-accent);
-}
-
-.output-pane {
-  width: 420px;
-  min-width: 280px;
-  max-width: 70vw;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  background: var(--color-bg-surface);
-  border-left: 1px solid var(--color-border);
 }
 
 /* ============================================
@@ -495,10 +484,7 @@ body {
 }
 
 .output-panel {
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--color-border);
-  background: var(--color-bg-elevated);
-  box-shadow: var(--shadow-md);
+  background: var(--color-bg-surface);
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -511,7 +497,6 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: var(--space-md) var(--space-lg);
-  border-bottom: 1px solid var(--color-border);
 }
 
 .output-title {
@@ -1061,18 +1046,13 @@ body {
 
 .run-result-panel {
   margin-bottom: var(--space-md);
-  padding: var(--space-md);
-  border-radius: var(--radius-md);
-  border: 1px solid rgba(52, 211, 153, 0.25);
-  background: rgba(52, 211, 153, 0.04);
-  animation: slideUp 0.3s ease;
 }
 
 .run-result-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 8px;
+  margin-bottom: 4px;
 }
 
 .run-result-icon {
@@ -1091,13 +1071,9 @@ body {
 .run-result-value {
   font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace;
   font-size: 13px;
-  font-weight: 500;
-  color: var(--color-text-success);
-  padding: 8px 0;
+  color: var(--color-text-primary);
   word-break: break-word;
   overflow-wrap: break-word;
-  max-height: 300px;
-  overflow-y: auto;
 }
 
 .run-result-value pre {
@@ -1157,18 +1133,10 @@ body {
 /* ============================================
    Run result variants
    ============================================ */
-.run-result-panel.info {
-  border-color: rgba(59, 130, 246, 0.25);
-  background: rgba(59, 130, 246, 0.04);
-}
 .run-result-value.info-text {
-  font-size: 14px;
-  font-weight: 500;
   color: #60a5fa;
 }
 .run-result-value.error {
-  font-size: 14px;
-  font-weight: 500;
   color: #f87171;
 }
 
@@ -1380,6 +1348,15 @@ body {
     max-height: 55vh;
     border-bottom: 1px solid var(--color-border);
     overflow: hidden;
+    order: 1;
+  }
+
+  /* When output is collapsed, editor fills the whole screen */
+  .editor-pane.full-height {
+    flex: 1 1 100%;
+    max-height: 100vh;
+    min-height: 0;
+    border-bottom: none;
   }
 
   /* Hide resizer on mobile */
@@ -1387,7 +1364,7 @@ body {
     display: none;
   }
 
-  /* Output panel - full width, scrollable */
+  /* Output panel - full width, scrollable - AT BOTTOM on mobile */
   .output-pane {
     width: 100% !important;
     min-width: 100%;
@@ -1400,6 +1377,7 @@ body {
     border-top: 1px solid var(--color-border);
     overflow-y: auto;
     overflow-x: hidden;
+    order: 2;
   }
 
   /* Editor section - maximize editor space */

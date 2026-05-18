@@ -5,7 +5,7 @@
   import { runWasiWithWorker } from './lib/runWasiWithWorker.ts';
   import { examples } from './lib/examples.ts';
   import { connectWallet, disconnectWallet, deployP1, deployP2, getWalletState, type WalletState, type DeployResult, type Network } from './lib/wallet.ts';
-  import { Play, Box, Cloud, Share2, Link, FlaskConical, Wallet, Zap, Rocket, CircleDot, Loader2 } from '@lucide/svelte';
+  import { Play, Box, Cloud, Share2, Link, FlaskConical, Wallet, Zap, Rocket, CircleDot, Loader2, ChevronDown, ChevronUp, Menu, X } from '@lucide/svelte';
 
   // ============================================
   // State
@@ -17,12 +17,12 @@
   let deploying: boolean = $state(false);
   let result: CompileResult | null = $state(null);
   let deployResult: DeployResult | null = $state(null);
-  let walletState: WalletState = $state({ connected: false, accountId: null, network: 'testnet' });
+  let walletState: WalletState = $state({ connected: false, accountId: null, network: 'mainnet' });
   let activeExample: number = $state(0);
   let editorInstance: monaco.editor.IStandaloneCodeEditor | null = $state(null);
   let editorContainer: HTMLDivElement | null = $state(null);
   let contractName: string = $state('my-contract');
-  let network: Network = $state('testnet');
+  let network: Network = $state('mainnet');
   let showDeployPanel: boolean = $state(false);
   let runResult: string | null = $state(null);
   let running: boolean = $state(false);
@@ -37,9 +37,13 @@
   let replHistory: { expr: string; result: string }[] = $state([]);
   let replInput: string = $state('');
 
+  // Mobile examples menu
+  let showExamplesMenu: boolean = $state(false);
+
   // Resizable panes
   let outputPaneWidth: number = $state(40); // percentage
   let isResizing: boolean = $state(false);
+  let outputCollapsed: boolean = $state(false);
 
   function startResize(e: MouseEvent) {
     isResizing = true;
@@ -559,8 +563,79 @@
     </div>
   {/if}
 
+  <!-- Mobile Examples Drawer -->
+  {#if showExamplesMenu}
+    <div class="drawer-overlay" onclick={() => { showExamplesMenu = false; }}></div>
+    <div class="drawer">
+      <div class="drawer-header">
+        <span>Examples</span>
+        <button class="drawer-close" onclick={() => { showExamplesMenu = false; }}>
+          <X size={18} />
+        </button>
+      </div>
+      <div class="drawer-content">
+        {#each examples as example, i}
+          <button
+            class="drawer-item"
+            class:active={activeExample === i}
+            onclick={() => { selectExample(i); showExamplesMenu = false; }}
+          >
+            <span class="example-icon">{example.icon}</span>
+            {example.name}
+          </button>
+        {/each}
+        <div class="drawer-divider"></div>
+        <button
+          class="drawer-item"
+          class:active={replMode}
+          onclick={() => { replMode = !replMode; saveState(); showExamplesMenu = false; }}
+        >
+          <Zap size={16} />
+          REPL Mode
+        </button>
+        {#if result?.success}
+          <div class="drawer-divider"></div>
+          <button
+            class="drawer-item"
+            onclick={() => { showDeployPanel = !showDeployPanel; deployResult = null; showExamplesMenu = false; }}
+          >
+            <Rocket size={16} />
+            Deploy to {target === 'p1' ? 'NEAR' : 'OutLayer'}
+          </button>
+        {/if}
+        <div class="drawer-divider"></div>
+        {#if walletState.connected}
+          <button
+            class="drawer-item"
+            onclick={() => { handleDisconnectWallet(); showExamplesMenu = false; }}
+          >
+            <CircleDot size={16} />
+            Disconnect ({shortAccountId || walletState.accountId?.slice(0, 8)}...)
+          </button>
+        {:else}
+          <button
+            class="drawer-item"
+            onclick={() => { handleConnectWallet(); showExamplesMenu = false; }}
+          >
+            <Wallet size={16} />
+            Connect Wallet
+          </button>
+        {/if}
+      </div>
+    </div>
+  {/if}
+
   <!-- Fixed Header -->
   <header class="header">
+    <!-- Mobile menu button -->
+    <button class="mobile-menu-btn" onclick={() => { showExamplesMenu = !showExamplesMenu; }}>
+      {#if showExamplesMenu}
+        <X size={20} />
+      {:else}
+        <Menu size={20} />
+      {/if}
+    </button>
+
     <div class="header-brand">
       <div class="header-logo">λ</div>
       <span class="header-title">Lisp → WASM</span>
@@ -652,55 +727,76 @@
         Compile
       {/if}
     </button>
+
+    <button
+      class="header-run-btn"
+      onclick={handleRun}
+      disabled={!result?.success || running}
+    >
+      {#if running}
+        <Loader2 size={16} class="spinner-icon" />
+        Running...
+      {:else}
+        <Play size={16} />
+        Run
+      {/if}
+    </button>
   </header>
 
   <!-- Main Content - Split Layout -->
   <main class="main-content">
     <div class="split-container">
       <!-- Editor Pane -->
-      <div class="editor-pane" style="flex: 1 1 60%;">
+      <div class="editor-pane" class:full-height={outputCollapsed} style="flex: 1 1 {outputCollapsed ? '100' : '60'}%;">
         <section class="editor-section">
           <div class="editor-wrapper">
             <div class="editor-container" bind:this={editorContainer}></div>
           </div>
 
           <!-- Examples + REPL toggle -->
-          <div class="examples-bar">
-            {#each examples as example, i}
+          {#if !outputCollapsed}
+            <div class="examples-bar">
+              {#each examples as example, i}
+                <button
+                  class="example-btn"
+                  class:active={activeExample === i}
+                  onclick={() => selectExample(i)}
+                >
+                  <span class="example-icon">{example.icon}</span>
+                  {example.name}
+                </button>
+              {/each}
+
+              <!-- Feature 9: REPL mode toggle -->
               <button
-                class="example-btn"
-                class:active={activeExample === i}
-                onclick={() => selectExample(i)}
+                class="example-btn repl-toggle"
+                class:active={replMode}
+                onclick={() => { replMode = !replMode; saveState(); }}
+                title="Toggle REPL mode"
               >
-                <span class="example-icon">{example.icon}</span>
-                {example.name}
+                <Zap size={14} />
+                REPL
               </button>
-            {/each}
-
-            <!-- Feature 9: REPL mode toggle -->
-            <button
-              class="example-btn repl-toggle"
-              class:active={replMode}
-              onclick={() => { replMode = !replMode; saveState(); }}
-              title="Toggle REPL mode"
-            >
-              <Zap size={14} />
-              REPL
-            </button>
-          </div>
-
-          <!-- Shortcut hint -->
-          <div class="shortcut-hint">
-            <kbd>⌘</kbd><kbd>Enter</kbd> to compile
-          </div>
+            </div>
+          {/if}
         </section>
       </div>
 
-      <!-- Resizer -->
-      <div class="resizer" onmousedown={startResize}></div>
+      <!-- Output Pane Toggle (when collapsed) - desktop only -->
+      {#if outputCollapsed}
+        <button
+          class="output-fab"
+          onclick={() => { outputCollapsed = false; }}
+          title="Show output"
+        >
+          <ChevronUp size={18} />
+        </button>
+      {:else}
+        <!-- Resizer -->
+        <div class="resizer" onmousedown={startResize}></div>
 
-      <!-- Output Pane -->
-      <div class="output-pane" style="width: {outputPaneWidth}%;">
+        <!-- Output Pane -->
+        <div class="output-pane" style="width: {outputPaneWidth}%;">
         {#if replMode}
           <section class="output-section repl-mode">
             <div class="repl-panel">
@@ -736,58 +832,22 @@
           <section class="output-section">
             <div class="output-panel" class:animate-slide-up={result}>
               <div class="output-header">
+                <button
+                  class="collapse-toggle"
+                  onclick={() => { outputCollapsed = !outputCollapsed; }}
+                  title={outputCollapsed ? 'Expand output' : 'Collapse output'}
+                >
+                  {#if outputCollapsed}
+                    <ChevronDown size={16} />
+                  {:else}
+                    <ChevronUp size={16} />
+                  {/if}
+                </button>
                 <span class="output-title">Output</span>
-                {#if result}
-                  <span class="status-badge" class:success={result.success} class:error={!result.success}>
-                    <span class="status-dot"></span>
-                    {result.success ? 'Success' : 'Error'}
-                  </span>
-                {/if}
-                {#if result?.success}
-                  <button
-                    class="deploy-toggle-btn"
-                    onclick={() => { showDeployPanel = !showDeployPanel; deployResult = null; }}
-                  >
-                    <Rocket size={14} />
-                    Deploy
-                  </button>
-                  <button
-                    class="run-toggle-btn"
-                    onclick={handleRun}
-                    disabled={running}
-                  >
-                    {#if running}
-                      <Loader2 size={14} class="spinner-icon" />
-                    {:else}
-                      <Play size={14} />
-                      Run
-                    {/if}
-                  </button>
-                {/if}
               </div>
 
               <div class="output-body">
                 {#if result?.success}
-                  <!-- Stats Grid -->
-                  <div class="stats-grid">
-                    <div class="stat-item">
-                      <span class="stat-label">WASM SIZE</span>
-                      <span class="stat-value">{formatSize(result.size)}</span>
-                    </div>
-                    <div class="stat-item">
-                      <span class="stat-label">COMPILE TIME</span>
-                      <span class="stat-value">{formatTime(result.timeMs)}</span>
-                    </div>
-                    <div class="stat-item">
-                      <span class="stat-label">TARGET</span>
-                      <span class="stat-value">{target.toUpperCase()}</span>
-                    </div>
-                    <div class="stat-item">
-                      <span class="stat-label">BYTES</span>
-                      <span class="stat-value">{result.size.toLocaleString()}</span>
-                    </div>
-                  </div>
-
                   <!-- Run Result -->
                   {#if runResult !== null}
                     <div class="run-result-panel" class:info={runResult.startsWith('ℹ')}>
@@ -804,8 +864,8 @@
                   <!-- WAT Disassembly -->
                   {#if result.wat}
                     <details class="hex-details">
-                      <summary class="hex-summary" onclick={() => { showWat = !showWat; }}>
-                        {showWat ? '▼' : '▶'} WAT Disassembly
+                      <summary class="hex-summary">
+                        WAT Disassembly
                       </summary>
                       <pre class="wat-output">{result.wat}</pre>
                     </details>
@@ -886,6 +946,26 @@
                       {/if}
                     </div>
                   {/if}
+
+                  <!-- Stats Grid - at bottom -->
+                  <div class="stats-grid">
+                    <div class="stat-item">
+                      <span class="stat-label">WASM SIZE</span>
+                      <span class="stat-value">{formatSize(result.size)}</span>
+                    </div>
+                    <div class="stat-item">
+                      <span class="stat-label">COMPILE TIME</span>
+                      <span class="stat-value">{formatTime(result.timeMs)}</span>
+                    </div>
+                    <div class="stat-item">
+                      <span class="stat-label">TARGET</span>
+                      <span class="stat-value">{target.toUpperCase()}</span>
+                    </div>
+                    <div class="stat-item">
+                      <span class="stat-label">BYTES</span>
+                      <span class="stat-value">{result.size.toLocaleString()}</span>
+                    </div>
+                  </div>
                 {:else if result}
                   <div class="error-message">{result.error}</div>
                 {/if}
@@ -894,6 +974,22 @@
           </section>
         {/if}
       </div>
+      {/if}
+    </div>
+
+    <!-- Mobile bottom toggle bar - always visible on mobile -->
+    <div class="mobile-toggle-bar">
+      <button
+        class="mobile-toggle-btn"
+        onclick={() => { outputCollapsed = !outputCollapsed; }}
+      >
+        <span class="toggle-label">Output</span>
+        {#if outputCollapsed}
+          <ChevronUp size={18} />
+        {:else}
+          <ChevronDown size={18} />
+        {/if}
+      </button>
     </div>
   </main>
 
@@ -920,24 +1016,210 @@
     background: var(--color-accent-subtle);
     color: var(--color-accent);
   }
-  .shortcut-hint {
+  .examples-scroll {
+    overflow-y: auto;
+  }
+  .output-pane.collapsed .output-body {
+    display: none;
+  }
+  .header-run-btn {
     display: flex;
     align-items: center;
-    gap: 4px;
-    margin-top: var(--space-sm);
+    gap: 6px;
+    padding: 8px 16px;
+    background: var(--color-accent);
+    color: white;
+    border: none;
+    border-radius: var(--radius-md);
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.1s;
+  }
+  .header-run-btn:hover:not(:disabled) {
+    background: var(--color-accent-hover);
+  }
+  .header-run-btn:active:not(:disabled) {
+    transform: scale(0.98);
+  }
+  .header-run-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+  .header-run-btn .spinner-icon {
+    animation: spin 1s linear infinite;
+  }
+  .output-pane.collapsed {
+    min-height: auto;
+  }
+  .collapse-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px;
+    background: transparent;
+    border: none;
+    cursor: pointer;
     color: var(--color-text-muted);
-    font-size: 11px;
+    transition: color 0.15s;
   }
-  .shortcut-hint kbd {
-    padding: 2px 6px;
-    border-radius: 4px;
+  .collapse-toggle:hover {
+    color: var(--color-text);
+  }
+  .collapse-toggle :global(svg) {
+    flex-shrink: 0;
+  }
+  .output-fab {
+    position: fixed;
+    bottom: 16px;
+    right: 16px;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: var(--color-accent);
+    color: white;
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    transition: transform 0.15s, box-shadow 0.15s;
+    z-index: 100;
+  }
+  .output-fab:hover {
+    transform: scale(1.1);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  }
+  .mobile-toggle-bar {
+    display: none;
+  }
+  .mobile-toggle-btn {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    padding: 12px 16px;
+    background: var(--color-bg-elevated);
+    border: none;
+    border-top: 1px solid var(--color-border);
+    color: var(--color-text-muted);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    transition: background 0.15s, color 0.15s;
+  }
+  .mobile-toggle-btn:hover {
     background: var(--color-bg-surface);
-    border: 1px solid var(--color-border);
-    font-family: var(--font-mono);
-    font-size: 10px;
+    color: var(--color-text);
   }
-  .output-pane {
+  .mobile-toggle-btn .toggle-label {
+    color: var(--color-text-secondary);
+  }
+  .spacer {
+    flex: 0 1 0%;
+    min-height: 0;
+  }
+  .mobile-menu-btn {
+    display: none;
+    padding: 8px;
+    background: transparent;
+    border: none;
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+    transition: background 0.15s, color 0.15s;
+  }
+  .mobile-menu-btn:hover {
+    background: var(--color-bg-surface);
+    color: var(--color-text);
+  }
+  .drawer-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 200;
+  }
+  .drawer {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 280px;
+    max-width: 80vw;
+    background: var(--color-bg-elevated);
+    border-right: 1px solid var(--color-border);
+    z-index: 201;
+    display: flex;
+    flex-direction: column;
+    animation: slideIn 0.2s ease;
+  }
+  @keyframes slideIn {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(0); }
+  }
+  .drawer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-md) var(--space-lg);
+    border-bottom: 1px solid var(--color-border);
+    font-weight: 600;
+    font-size: 16px;
+  }
+  .drawer-close {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 6px;
+    background: transparent;
+    border: none;
+    color: var(--color-text-muted);
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+    transition: background 0.15s, color 0.15s;
+  }
+  .drawer-close:hover {
+    background: var(--color-bg-surface);
+    color: var(--color-text);
+  }
+  .drawer-content {
+    padding: var(--space-sm);
     overflow-y: auto;
+    flex: 1;
+  }
+  .drawer-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 12px var(--space-md);
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-md);
+    color: var(--color-text-secondary);
+    font-size: 14px;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .drawer-item:hover {
+    background: var(--color-bg-surface);
+    color: var(--color-text);
+  }
+  .drawer-item.active {
+    background: var(--color-accent-subtle);
+    color: var(--color-accent);
+  }
+  .drawer-divider {
+    height: 1px;
+    background: var(--color-border);
+    margin: var(--space-sm) var(--space-md);
   }
   .output-section {
     height: 100%;
@@ -945,5 +1227,59 @@
   }
   .editor-pane {
     overflow-y: auto;
+  }
+  .editor-pane.full-height {
+    height: 100%;
+  }
+  .editor-pane.full-height .editor-section {
+    height: 100%;
+  }
+  .editor-pane.full-height .editor-wrapper {
+    height: 100%;
+  }
+
+  /* Mobile styles */
+  @media (max-width: 767px) {
+    .mobile-menu-btn {
+      display: flex;
+    }
+    .examples-bar {
+      display: none !important;
+    }
+    .header-title {
+      display: none;
+    }
+    .pill-label {
+      display: none;
+    }
+    .header-toggle {
+      display: none;
+    }
+    .header-icon-btn {
+      display: none;
+    }
+    .network-badge {
+      font-size: 11px;
+      padding: 4px 6px;
+    }
+    .wallet-btn {
+      display: none;
+    }
+    .pill-tab {
+      padding: 6px 10px;
+    }
+    .header {
+      gap: 8px;
+      padding: 6px 8px;
+    }
+    .mobile-toggle-btn {
+      display: none;
+    }
+    .mobile-toggle-bar {
+      display: block;
+      padding: 8px;
+      background: var(--color-bg);
+      border-top: 1px solid var(--color-border);
+    }
   }
 </style>
