@@ -85,7 +85,7 @@ pub fn build_outlayer_adapter() -> Vec<u8> {
     }
     module.section(&codes);
 
-    // Embed WIT metadata as a custom section
+    // Embed WIT metadata as a custom section (browser-safe: uses include_str!)
     let wit_bytes = build_wit_metadata();
     module.section(&CustomSection {
         name: std::borrow::Cow::Borrowed("component-type:wit-bindgen:0.1.0:outlayer:api@0.1.0:outlayer-world:encoded world"),
@@ -95,14 +95,13 @@ pub fn build_outlayer_adapter() -> Vec<u8> {
     module.finish()
 }
 
+/// Build WIT metadata using embedded WIT (browser-safe, no filesystem access).
 fn build_wit_metadata() -> Vec<u8> {
-    let wit_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("wit/outlayer/api/outlayer.wit");
-    let wit_contents = std::fs::read_to_string(&wit_path)
-        .expect("failed to read outlayer.wit");
+    // Use include_str! for browser compatibility (no filesystem access needed)
+    const OUTLAYER_WIT: &str = include_str!("../wit/outlayer/api/outlayer.wit");
 
     let mut resolve = wit_parser::Resolve::new();
-    let ast = wit_parser::UnresolvedPackageGroup::parse(&wit_path, &wit_contents)
+    let ast = wit_parser::UnresolvedPackageGroup::parse("wit/outlayer/api/outlayer.wit", OUTLAYER_WIT)
         .expect("failed to parse WIT");
     let pkg_id = resolve.push_group(ast).expect("failed to push WIT package");
     let world_id = resolve.packages[pkg_id]

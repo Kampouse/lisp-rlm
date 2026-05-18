@@ -56,13 +56,14 @@ export const examples: Example[] = [
   (get-weather))`,
   },
   {
-    name: 'P2 Echo',
-    icon: '🔊',
+    name: 'P2 Storage',
+    icon: '💾',
     target: 'p2',
-    source: `(define (greet name)
-  (* 42 2))
-
+    source: `;; OutLayer P2 storage demo
+;; Uses localStorage in browser, real OutLayer storage on NEAR
 (define (main)
-  (greet "world"))`,
+  (begin
+    (storage-set "count" "42")
+    (storage-get "count")))`,
   },
 ];

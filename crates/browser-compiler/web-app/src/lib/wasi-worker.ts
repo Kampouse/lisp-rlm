@@ -5,6 +5,9 @@ let wasmInstance: WebAssembly.Instance | null = null;
 let wasmMemory: WebAssembly.Memory | null = null;
 let capturedOutput = '';
 
+// In-memory storage (localStorage not available in Worker)
+const memoryStorage: Map<string, string> = new Map();
+
 // Shared buffer for Atomics communication (first 4 bytes: signal, next 4: length, rest: data)
 let sharedBuffer: Int32Array | null = null;
 
@@ -163,7 +166,7 @@ const outlayerPolyfills = {
 
   storage_get: (keyPtr: number, keyLen: number, valBufPtr: number, valBufLen: number, valLenPtr: number): number => {
     const key = readString(wasmMemory!, keyPtr, keyLen);
-    const value = localStorage.getItem(key) || '';
+    const value = memoryStorage.get(key) || '';
     const written = writeString(wasmMemory!, valBufPtr, value);
     new DataView(wasmMemory!.buffer).setUint32(valLenPtr, written, true);
     return 0;
@@ -172,18 +175,18 @@ const outlayerPolyfills = {
   storage_set: (keyPtr: number, keyLen: number, valPtr: number, valLen: number): number => {
     const key = readString(wasmMemory!, keyPtr, keyLen);
     const value = readString(wasmMemory!, valPtr, valLen);
-    localStorage.setItem(key, value);
+    memoryStorage.set(key, value);
     return 0;
   },
 
   storage_has: (keyPtr: number, keyLen: number): number => {
     const key = readString(wasmMemory!, keyPtr, keyLen);
-    return localStorage.getItem(key) !== null ? 1 : 0;
+    return memoryStorage.has(key) ? 1 : 0;
   },
 
   storage_delete: (keyPtr: number, keyLen: number): number => {
     const key = readString(wasmMemory!, keyPtr, keyLen);
-    localStorage.removeItem(key);
+    memoryStorage.delete(key);
     return 0;
   },
 
@@ -191,9 +194,9 @@ const outlayerPolyfills = {
     const key = readString(wasmMemory!, keyPtr, keyLen);
     const amountStr = readString(wasmMemory!, amountPtr, amountLen);
     const amount = BigInt(amountStr);
-    const current = BigInt(localStorage.getItem(key) || '0');
+    const current = BigInt(memoryStorage.get(key) || '0');
     const newValue = current + amount;
-    localStorage.setItem(key, newValue.toString());
+    memoryStorage.set(key, newValue.toString());
     const written = writeString(wasmMemory!, resultBufPtr, newValue.toString());
     new DataView(wasmMemory!.buffer).setUint32(resultLenPtr, written, true);
     return 0;
@@ -203,9 +206,9 @@ const outlayerPolyfills = {
     const key = readString(wasmMemory!, keyPtr, keyLen);
     const amountStr = readString(wasmMemory!, amountPtr, amountLen);
     const amount = BigInt(amountStr);
-    const current = BigInt(localStorage.getItem(key) || '0');
+    const current = BigInt(memoryStorage.get(key) || '0');
     const newValue = current - amount;
-    localStorage.setItem(key, newValue.toString());
+    memoryStorage.set(key, newValue.toString());
     const written = writeString(wasmMemory!, resultBufPtr, newValue.toString());
     new DataView(wasmMemory!.buffer).setUint32(resultLenPtr, written, true);
     return 0;
@@ -213,9 +216,9 @@ const outlayerPolyfills = {
 
   storage_set_if_absent: (keyPtr: number, keyLen: number, valPtr: number, valLen: number): number => {
     const key = readString(wasmMemory!, keyPtr, keyLen);
-    if (localStorage.getItem(key) === null) {
+    if (memoryStorage.get(key) === null) {
       const value = readString(wasmMemory!, valPtr, valLen);
-      localStorage.setItem(key, value);
+      memoryStorage.set(key, value);
       return 1; // Set
     }
     return 0; // Not set
@@ -224,10 +227,10 @@ const outlayerPolyfills = {
   storage_set_if_equals: (keyPtr: number, keyLen: number, expectedPtr: number, expectedLen: number, newValPtr: number, newValLen: number): number => {
     const key = readString(wasmMemory!, keyPtr, keyLen);
     const expected = readString(wasmMemory!, expectedPtr, expectedLen);
-    const current = localStorage.getItem(key) || '';
+    const current = memoryStorage.get(key) || '';
     if (current === expected) {
       const newVal = readString(wasmMemory!, newValPtr, newValLen);
-      localStorage.setItem(key, newVal);
+      memoryStorage.set(key, newVal);
       return 1; // Set
     }
     return 0; // Not set
@@ -236,8 +239,8 @@ const outlayerPolyfills = {
   storage_list_keys: (prefixPtr: number, prefixLen: number, keysBufPtr: number, keysBufLen: number, keysLenPtr: number): number => {
     const prefix = readString(wasmMemory!, prefixPtr, prefixLen);
     const keys: string[] = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
+    for (let i = 0; i < memoryStorage.size; i++) {
+      const key = Array.from(memoryStorage.keys())[i];
       if (key && key.startsWith(prefix)) {
         keys.push(key);
       }
@@ -249,7 +252,7 @@ const outlayerPolyfills = {
   },
 
   storage_clear_all: (): number => {
-    localStorage.clear();
+    memoryStorage.clear();
     return 0;
   },
 
