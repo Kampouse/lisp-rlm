@@ -432,16 +432,23 @@ pub fn emit_http_get(func: &mut Function, url_ptr_local: u32, url_len_local: u32
 }
 
 pub fn build_http_wit_metadata() -> Result<(wit_parser::Resolve, wit_parser::WorldId), String> {
-    let mut resolve = wit_parser::Resolve::new();
-    let wit_dir = find_wit_dir()?;
-    let (pkg_id, _) = resolve.push_dir(&wit_dir).map_err(|e| format!("push_dir failed: {}", e))?;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut resolve = wit_parser::Resolve::new();
+        let wit_dir = find_wit_dir()?;
+        let (pkg_id, _) = resolve.push_dir(&wit_dir).map_err(|e| format!("push_dir failed: {}", e))?;
 
-    let pkg = &resolve.packages[pkg_id];
-    let world = pkg.worlds.iter()
-        .find_map(|(name, id)| if name == "simple-http" { Some(*id) } else { None })
-        .ok_or("world 'simple-http' not found")?;
+        let pkg = &resolve.packages[pkg_id];
+        let world = pkg.worlds.iter()
+            .find_map(|(name, id)| if name == "simple-http" { Some(*id) } else { None })
+            .ok_or("world 'simple-http' not found")?;
 
-    Ok((resolve, world))
+        Ok((resolve, world))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        crate::wit_embed::build_http_wit_metadata_embedded()
+    }
 }
 
 fn find_wit_dir() -> Result<std::path::PathBuf, String> {
