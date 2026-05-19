@@ -16,11 +16,13 @@ export interface DeployResult {
 }
 
 let connector: NearConnector | null = null;
+let connectorNetwork: Network | null = null;
 let currentAccountId: string | null = null;
 
 export function getConnector(network: Network = 'testnet'): NearConnector {
-  if (!connector) {
+  if (!connector || connectorNetwork !== network) {
     connector = new NearConnector({ network });
+    connectorNetwork = network;
     connector.on('wallet:signIn', (t: any) => {
       currentAccountId = t.accounts?.[0]?.accountId ?? null;
     });
