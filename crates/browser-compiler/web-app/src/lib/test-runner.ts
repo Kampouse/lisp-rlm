@@ -23,17 +23,17 @@ export interface TestRunResult {
  */
 
 const ASSERT_HELPERS = `
-;; Assertion helpers - cause runtime error on failure
+;; Assertion helpers - cause WASM trap on failure
 (define (assert-equal expected actual)
   (if (= expected actual)
       expected
-      (/ 1 0)))  ; Division by zero triggers runtime error
+      (abort)))
 
 (define (assert-true expr)
-  (if expr true (/ 1 0)))
+  (if expr true (abort)))
 
 (define (assert-false expr)
-  (if (not expr) false (/ 1 0)))
+  (if (not expr) false (abort)))
 `;
 
 /**
@@ -125,8 +125,7 @@ export function buildTestCode(setupCode: string, testBody: string): string {
   return `${ASSERT_HELPERS}
 ${setupCode}
 
-(begin
-  ${testBody}
-  "PASS")
+(define (run)
+  ${testBody})
 `;
 }

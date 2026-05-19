@@ -1625,6 +1625,10 @@ impl WasmEmitter {
                 // panic() — idx 26, traps unconditionally
                 Ok(vec![Self::host_call(26), Instruction::I64Const(0)])
             }
+            "abort" => {
+                // WASM unreachable — always traps, no env import needed
+                Ok(vec![Instruction::Unreachable])
+            }
             // (near/log_num expr) — converts i64 to decimal string and logs via env.log_utf8
             "near/log_num" => {
                 self.need_host(28);
@@ -9116,20 +9120,15 @@ impl WasmEmitter {
                         fb.instruction(&Instruction::I64Const(TEMP_MEM));
                         fb.instruction(&Instruction::Call(host_idx[&25])); // value_return
                         fb.instruction(&Instruction::Else);
-                        // TAG_STR or TAG_NUM/TAG_BOOL: untag, store payload at TEMP_MEM, value_return(8, TEMP_MEM)
+                        // TAG_STR/TAG_NUM/TAG_BOOL: store tagged value at TEMP_MEM and call value_return
+                        // The JS runtime decodes the tag from the captured bytes.
                         fb.instruction(&Instruction::I64Const(TEMP_MEM));
                         fb.instruction(&Instruction::I32WrapI64);
-                        fb.instruction(&Instruction::LocalGet(0));
-                        if !self.fuzz_mode {
-                            fb.instruction(&Instruction::I64Const(TAG_BITS));
-                            fb.instruction(&Instruction::I64ShrS);
-                        }
+                        fb.instruction(&Instruction::LocalGet(0)); // full tagged value
                         fb.instruction(&Instruction::I64Store(ma));
-                        if !self.fuzz_mode {
-                            fb.instruction(&Instruction::I64Const(8));
-                            fb.instruction(&Instruction::I64Const(TEMP_MEM));
-                            fb.instruction(&Instruction::Call(host_idx[&25]));
-                        }
+                        fb.instruction(&Instruction::I64Const(8));
+                        fb.instruction(&Instruction::I64Const(TEMP_MEM));
+                        fb.instruction(&Instruction::Call(host_idx[&25])); // value_return
                         fb.instruction(&Instruction::End); // if TAG_ARRAY
                         fb.instruction(&Instruction::End); // if TAG_NIL
                         fb.instruction(&Instruction::End); // if
@@ -9480,7 +9479,13 @@ fn parse_and_compile(source: &str, near: bool) -> Result<WasmEmitter, String> {
 }
 
 pub fn compile_pure(source: &str) -> Result<Vec<u8>, String> {
-    Ok(parse_and_compile(source, false)?.finish("run"))
+    let mut em = parse_and_compile(source, false)?;
+    // Add a "run" export for the last defined function (or the implicit top-level begin)
+    // so that the export wrapper (which calls value_return) is included.
+    if let Some(f) = em.funcs.last() {
+        em.add_export(&f.name.clone(), "run", false);
+    }
+    Ok(em.finish("run"))
 }
 
 /// Compile a Lisp program for fuzz testing.

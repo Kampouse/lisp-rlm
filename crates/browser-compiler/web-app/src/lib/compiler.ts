@@ -286,25 +286,47 @@ export async function runPure(wasmBytes: Uint8Array, preWrite?: { offset: number
           if (val === BigInt('0x7FFEFEFFFEFFFEFE')) {
             return 'nil';
           }
-          // Check if this is a tagged value (TAG_ARRAY = 6 in low 3 bits)
+          // Decode tagged value — same format as TEMP_MEM fallback
           const tagType = val & BigInt(7);
-          if (tagType === BigInt(6) && memory) {
-            // TAG_ARRAY: decode the runtime array from heap
-            const payload = val >> BigInt(3);
-            const base = Number(payload);
-            const buf = new DataView(memory.buffer);
-            const count = Number(buf.getBigInt64(base, true));
-            const elems: string[] = [];
-            for (let i = 0; i < count; i++) {
-              const elem = buf.getBigInt64(base + 8 + i * 8, true);
-              const et = elem & BigInt(7);
-              const ep = elem >> BigInt(3);
-              elems.push(et === BigInt(0) ? ep.toString() : et === BigInt(4) ? 'nil' : `tag${et}:${ep}`);
+          const payload = val >> BigInt(3);
+          switch (tagType) {
+            case BigInt(0): return payload.toString(); // TAG_NUM
+            case BigInt(1): return payload === BigInt(0) ? 'false' : 'true'; // TAG_BOOL
+            case BigInt(2): return `<fn#${payload}>`; // TAG_STR (used for fn refs)
+            case BigInt(3): return `<closure@${payload}>`; // TAG_CLOSURE
+            case BigInt(4): return 'nil'; // TAG_NIL (should hit sentinel above, but handle anyway)
+            case BigInt(5): { // TAG_STR
+              const lo = Number(payload & BigInt(0xFFFFFFFF));
+              const hi = Number((payload >> BigInt(32)) & BigInt(0xFFFFFFFF));
+              try {
+                // String data stored in WASM memory at the pointer
+                if (memory) {
+                  const strBytes = new Uint8Array(memory.buffer, lo, hi);
+                  return new TextDecoder().decode(strBytes);
+                }
+              } catch { /* fall through */ }
+              return `<str@${lo}:${hi}>`;
             }
-            return `[${elems.join(', ')}]`;
+            case BigInt(6): { // TAG_ARRAY
+              if (memory) {
+                const base = Number(payload);
+                const buf = new DataView(memory.buffer);
+                const count = Number(buf.getBigInt64(base, true));
+                const elems: string[] = [];
+                for (let i = 0; i < count; i++) {
+                  const elem = buf.getBigInt64(base + 8 + i * 8, true);
+                  const et = elem & BigInt(7);
+                  const ep = elem >> BigInt(3);
+                  elems.push(et === BigInt(0) ? ep.toString() : et === BigInt(4) ? 'nil' : `tag${et}:${ep}`);
+                }
+                return `[${elems.join(', ')}]`;
+              }
+              return `<array@${payload}>`;
+            }
+            default: return `<tag${tagType}:${payload}>`;
           }
         }
-        // Hex dump of the captured bytes
+        // Non-8-byte captured data — hex dump (Borsh serialized)
         return Array.from(captured).map(b => b.toString(16).padStart(2, '0')).join(' ');
       }
 
