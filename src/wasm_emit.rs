@@ -1410,23 +1410,37 @@ impl WasmEmitter {
             "near/load" => {
                 let key = self.expr(&a[0])?;
                 let mut v = Vec::new();
-                // storage_read(key_len, key_ptr, register_id=0) — idx 18
-                // Untag key first
+                // storage_read(key_len, key_ptr, register_id=1) — idx 18
+                // Note: storage_read return value is unreliable in view calls (returns 0
+                // even when key doesn't exist). Use register_len to check if value was written.
                 v.extend(key.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
                 v.extend(key);
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(1)); // register 1
+                v.push(Self::host_call(18));
+                v.push(Instruction::Drop); // discard unreliable return value
+                // register_len(1) — idx 1. Returns u64 length, or -1 if register not written.
+                v.push(Instruction::I64Const(1));
+                v.push(Self::host_call(1));
+                // Check if register_len returned -1 (key not found)
+                v.push(Instruction::I64Const(-1i64 as u64 as i64));
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                // Key not found: return 0 (tagged as Num)
                 v.push(Instruction::I64Const(0));
-                v.push(Self::host_call(18)); v.push(Instruction::Drop);
-                // read_register(0, STORAGE_BUF) — idx 0
-                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(STORAGE_BUF));
+                v.extend(self.emit_tag_num());
+                v.push(Instruction::Else);
+                // Key found: read_register(1, STORAGE_BUF) — idx 0
+                v.push(Instruction::I64Const(1)); v.push(Instruction::I64Const(STORAGE_BUF));
                 v.push(Self::host_call(0));
                 v.push(Instruction::I32Const(STORAGE_BUF as i32));
                 v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
                 // Tag loaded value as Num
                 v.extend(self.emit_tag_num());
+                v.push(Instruction::End);
                 Ok(v)
             }
             "near/remove" => {
@@ -1494,10 +1508,13 @@ impl WasmEmitter {
                 if a.len() == 1 {
                     let msg = self.expr(&a[0])?;
                     let mut v = Vec::new();
+                    // Untag string to get encoded (ptr | (len << 32))
                     v.extend(msg.clone());
-                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                    v.extend(self.emit_untag());
+                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // len
                     v.extend(msg);
-                    v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                    v.extend(self.emit_untag());
+                    v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // ptr
                     v.push(Self::host_call(28));
                     v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
                 } else {
