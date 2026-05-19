@@ -1084,7 +1084,38 @@ impl WasmEmitter {
                 } else if let Some(pos) = self.funcs.iter().position(|func| &func.name == n) {
                     Ok(self.emit_tagged_const(pos as i64, TAG_FNREF))
                 } else {
-                    Err(format!("undef: {}", n))
+                    // Check if it's a bare 0-arg host function call (e.g. near/block_index used as value)
+                    let name = n.as_str();
+                    let host_idx = match name {
+                        "near/block_index" => Some(8),
+                        "near/block_timestamp" => Some(9),
+                        "near/epoch_height" => Some(10),
+                        "near/storage_usage" => Some(11),
+                        "near/prepaid_gas" => Some(15),
+                        "near/used_gas" => Some(16),
+                        "near/account_balance" => Some(12),
+                        "near/attached_deposit" => Some(14),
+                        _ => None,
+                    };
+                    if let Some(idx) = host_idx {
+                        // u128 functions: use read_u128_low, simple 0-arg: use host_call + tag
+                        match idx {
+                            12 | 14 => {
+                                self.need_host(idx);
+                                self.need_host(0); // read_register
+                                self.need_host(1); // register_len
+                                self.read_u128_low(idx)
+                            }
+                            _ => {
+                                self.need_host(idx);
+                                let mut v = vec![Self::host_call(idx)];
+                                v.extend(self.emit_tag_num());
+                                Ok(v)
+                            }
+                        }
+                    } else {
+                        Err(format!("undef: {}", n))
+                    }
                 }
             }
             LispVal::Str(s) => {
@@ -8048,7 +8079,14 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(pos));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalGet(tmp));
-                v.extend(self.emit_untag());
+                // Use unsigned right shift for U64 to avoid sign-extension on large values
+                // (tagged values > 2^61 set bit 63, making shr_s produce wrong results)
+                if matches!(btype, BorshType::U64) {
+                    v.push(Instruction::I64Const(TAG_BITS));
+                    v.push(Instruction::I64ShrU);
+                } else {
+                    v.extend(self.emit_untag());
+                }
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
                 // pos += 8
                 v.push(Instruction::LocalGet(pos));
