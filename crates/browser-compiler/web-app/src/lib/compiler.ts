@@ -86,27 +86,41 @@ export function compileP2Core(source: string): Uint8Array {
   return compile_p2_core(source);
 }
 
-/** Build a minimal `env` import object with no-op stubs for all NEAR host functions.
- *  compile_fuzz WASM may still import some env functions even in pure mode. */
-function buildEnvStubs(): Record<string, Function> {
+/** Build a minimal `env` import object with stubs for all NEAR host functions.
+ *  Pure/fuzz WASM may still import some env functions even without a full NEAR runtime.
+ *  `value_return` captures the return value bytes so the caller can read the result.
+ *  After instantiation, call `setMemory(memory)` on the returned object to enable capture. */
+function buildEnvStubs(): { env: Record<string, Function>; setMemory: (mem: WebAssembly.Memory) => void; capturedReturn: () => Uint8Array | null } {
   const stub = () => {};
   const stubI64 = () => BigInt(0);
+  let capturedMemory: WebAssembly.Memory | null = null;
+  let capturedBytes: Uint8Array | null = null;
+  const vrStub = (len: bigint, ptr: bigint) => {
+    if (capturedBytes === null && capturedMemory) {
+      capturedBytes = new Uint8Array(capturedMemory.buffer).slice(Number(ptr), Number(ptr + len));
+    }
+  };
   return {
-    read_register: stub, register_len: stubI64, write_register: stub,
-    current_account_id: stub, signer_account_id: stub, signer_account_pk: stub,
-    predecessor_account_id: stub, input: stub,
-    block_index: stubI64, block_timestamp: stubI64, epoch_height: stubI64,
-    storage_usage: stubI64,
-    account_balance: stub, account_locked_balance: stub, attached_deposit: stub,
-    prepaid_gas: stubI64, used_gas: stubI64,
-    storage_write: stubI64, storage_read: stubI64, storage_remove: stubI64,
-    storage_has_key: stubI64,
-    sha256: stub, keccak256: stub, random_seed: stub, ed25519_verify: stubI64,
-    value_return: stub, panic: stub, panic_utf8: stub, log_utf8: stub, log_utf16: stub,
-    promise_create: stubI64, promise_then: stubI64, promise_and: stubI64,
-    promise_results_count: stubI64, promise_result: stub, promise_return: stub,
-    storage_iter_prefix: stubI64, storage_iter_range: stubI64, storage_iter_next: stubI64,
-    promise_batch_create: stubI64, promise_batch_then: stubI64,
+    env: {
+      read_register: stub, register_len: stubI64, write_register: stub,
+      current_account_id: stub, signer_account_id: stub, signer_account_pk: stub,
+      predecessor_account_id: stub, input: stub,
+      block_index: stubI64, block_timestamp: stubI64, epoch_height: stubI64,
+      storage_usage: stubI64,
+      account_balance: stub, account_locked_balance: stub, attached_deposit: stub,
+      prepaid_gas: stubI64, used_gas: stubI64,
+      storage_write: stubI64, storage_read: stubI64, storage_remove: stubI64,
+      storage_has_key: stubI64,
+      sha256: stub, keccak256: stub, random_seed: stub, ed25519_verify: stubI64,
+      value_return: vrStub,
+      panic: stub, panic_utf8: stub, log_utf8: stub, log_utf16: stub,
+      promise_create: stubI64, promise_then: stubI64, promise_and: stubI64,
+      promise_results_count: stubI64, promise_result: stub, promise_return: stub,
+      storage_iter_prefix: stubI64, storage_iter_range: stubI64, storage_iter_next: stubI64,
+      promise_batch_create: stubI64, promise_batch_then: stubI64,
+    },
+    setMemory: (mem: WebAssembly.Memory) => { capturedMemory = mem; },
+    capturedReturn: () => capturedBytes,
   };
 }
 
@@ -238,20 +252,63 @@ function createWasiImports(state: WasiState): WebAssembly.Imports {
         return 0;
       },
     },
-    env: buildEnvStubs(),
+    env: buildEnvStubs().env,
   };
 }
 
 /** Run pure WASM in the browser */
-export async function runPure(wasmBytes: Uint8Array): Promise<string> {
-  const importObject = { env: buildEnvStubs() };
+export async function runPure(wasmBytes: Uint8Array, preWrite?: { offset: number; bytes: Uint8Array }): Promise<string> {
+  const stubs = buildEnvStubs();
+  const importObject = { env: stubs.env };
   const { instance } = await WebAssembly.instantiate(wasmBytes.buffer as ArrayBuffer, importObject) as any;
   const exports = instance.exports as Record<string, unknown>;
+
+  // Set memory on stubs so value_return can capture return data
+  const memory = exports.memory as WebAssembly.Memory | undefined;
+  if (memory) stubs.setMemory(memory);
+
+  // Pre-write bytes into memory before running (for deserialize tests)
+  if (preWrite && memory) {
+    new Uint8Array(memory.buffer).set(preWrite.bytes, preWrite.offset);
+  }
 
   if (typeof exports.run === 'function') {
     try {
       (exports.run as Function)();
-      const memory = exports.memory as WebAssembly.Memory | undefined;
+
+      // Check if value_return was called (Borsh output or explicit value_return)
+      const captured = stubs.capturedReturn();
+      if (captured) {
+        // Check for nil sentinel (i64 LE 0x7FFEFEFFFEFFFEFE)
+        if (captured.length === 8) {
+          const v = new DataView(captured.buffer, captured.byteOffset, captured.byteLength);
+          const val = v.getBigInt64(0, true);
+          if (val === BigInt('0x7FFEFEFFFEFFFEFE')) {
+            return 'nil';
+          }
+          // Check if this is a tagged value (TAG_ARRAY = 6 in low 3 bits)
+          const tagType = val & BigInt(7);
+          if (tagType === BigInt(6) && memory) {
+            // TAG_ARRAY: decode the runtime array from heap
+            const payload = val >> BigInt(3);
+            const base = Number(payload);
+            const buf = new DataView(memory.buffer);
+            const count = Number(buf.getBigInt64(base, true));
+            const elems: string[] = [];
+            for (let i = 0; i < count; i++) {
+              const elem = buf.getBigInt64(base + 8 + i * 8, true);
+              const et = elem & BigInt(7);
+              const ep = elem >> BigInt(3);
+              elems.push(et === BigInt(0) ? ep.toString() : et === BigInt(4) ? 'nil' : `tag${et}:${ep}`);
+            }
+            return `[${elems.join(', ')}]`;
+          }
+        }
+        // Hex dump of the captured bytes
+        return Array.from(captured).map(b => b.toString(16).padStart(2, '0')).join(' ');
+      }
+
+      // Fall back to tagged value at TEMP_MEM (offset 64)
       if (memory) {
         const buf = new DataView(memory.buffer);
         const tagged = buf.getBigInt64(64, true);
@@ -269,6 +326,19 @@ export async function runPure(wasmBytes: Uint8Array): Promise<string> {
             const hi = Number((payload >> BigInt(32)) & BigInt(0xFFFFFFFF));
             const bytes = new Uint8Array(memory.buffer).slice(lo, lo + hi);
             return `"${new TextDecoder().decode(bytes)}"`;
+          }
+          case BigInt(6): {
+            // TAG_ARRAY: payload is heap pointer, count at heap[payload], elements at heap[payload+1..]
+            const base = Number(payload);
+            const count = Number(buf.getBigInt64(base, true));
+            const elems: string[] = [];
+            for (let i = 0; i < count; i++) {
+              const elem = buf.getBigInt64(base + 8 + i * 8, true);
+              const et = elem & BigInt(7);
+              const ep = elem >> BigInt(3);
+              elems.push(et === BigInt(0) ? ep.toString() : et === BigInt(4) ? 'nil' : `tag${et}:${ep}`);
+            }
+            return `[${elems.join(', ')}]`;
           }
           default: return `tagged: ${tagged}`;
         }
@@ -1531,7 +1601,7 @@ async function runWasiSync(wasmBytes: Uint8Array, stdinData?: Uint8Array): Promi
   const importObj: WebAssembly.Imports = {
     wasi_snapshot_preview1: wasi as unknown as Record<string, WebAssembly.ImportValue>,
     outlayer: outlayer as unknown as Record<string, WebAssembly.ImportValue>,
-    env: buildEnvStubs() as unknown as Record<string, WebAssembly.ImportValue>,
+    env: buildEnvStubs().env as unknown as Record<string, WebAssembly.ImportValue>,
   };
 
   // Instantiate
@@ -1700,4 +1770,10 @@ async function runWasiWithWorker(wasmBytes: Uint8Array, stdinData?: Uint8Array):
     // Run WASM
     worker.postMessage({ type: 'run', data: { wasmBytes, stdinData } });
   });
+}
+
+// Expose test helper to window for deserialize testing
+if (typeof window !== 'undefined') {
+  (window as any).__runPureWithPreWrite = runPure;
+  (window as any).__compilePure = compile;
 }

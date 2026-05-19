@@ -40,6 +40,7 @@ pub mod wasi_emit;
 pub mod p2_native;
 pub mod near_validate;
 pub mod gas_estimate;
+pub mod tagged_value;
 pub mod verifier;
 
 pub use bytecode::{exec_compiled_loop, run_compiled_lambda, try_compile_lambda, try_compile_loop};

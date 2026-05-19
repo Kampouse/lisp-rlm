@@ -41,11 +41,10 @@ pub fn compile_p2_core(source: &str) -> Result<Vec<u8>, JsValue> {
 
 /// Compile Lisp source to a pure WASM binary (no host functions).
 /// This can be instantiated and run directly in the browser.
-/// Uses fuzz mode — stores tagged result at memory offset 64.
 /// Returns the raw WASM bytes as a Uint8Array.
 #[wasm_bindgen]
 pub fn compile_pure(source: &str) -> Result<Vec<u8>, JsValue> {
-    lisp_rlm_wasm::compile_fuzz(source)
+    lisp_rlm_wasm::compile_pure(source)
         .map_err(|e| JsValue::from_str(&format!("Compile error: {}", e)))
 }
 

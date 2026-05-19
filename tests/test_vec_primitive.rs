@@ -236,3 +236,63 @@ fn test_matches_vec() {
 fn test_valid_type_vec() {
     assert_eq!(eval_str("(valid-type? :vec)"), r#"":vec""#);
 }
+
+#[test]
+fn vec_borsh_serialize_i64() {
+    let src = r#"
+(borsh-schema (VecWrapper (items (Vec i64))))
+(define (test-vec) (borsh-serialize "VecWrapper" (array 1 2 3)))
+(export "run" test-vec)
+"#;
+    let wasm = lisp_rlm_wasm::wasm_emit::compile_pure(src).expect("compile failed");
+    eprintln!("WASM size: {} bytes", wasm.len());
+    
+    // Also dump WAT for debugging
+    match lisp_rlm_wasm::wasm_emit::compile_pure_to_wat(src) {
+        Ok(wat) => eprintln!("WAT:\n{}", wat),
+        Err(e) => eprintln!("WAT error: {}", e),
+    }
+    
+    // Also write the raw binary to inspect
+    std::fs::write("/tmp/vec_test.wasm", &wasm).unwrap();
+    
+    // Validate WASM by feeding to wasmtime or wasmparser
+    use wasmparser::Validator;
+    let mut validator = Validator::new();
+    match validator.validate_all(&wasm) {
+        Ok(_) => eprintln!("WASM validated OK"),
+        Err(e) => {
+            eprintln!("WASM validation FAILED: {}", e);
+            panic!("WASM validation failed: {}", e);
+        }
+    }
+}
+
+#[test]
+fn vec_borsh_deserialize_i64_validate() {
+    let src = r#"
+(borsh-schema (VecWrapper (items (Vec i64))))
+(define (de-vec)
+  (let ((buf 36864))
+    (borsh-deserialize "VecWrapper" buf)))
+(export "run" de-vec)
+"#;
+    let wasm = lisp_rlm_wasm::wasm_emit::compile_pure(src).expect("compile failed");
+    eprintln!("WASM size: {} bytes", wasm.len());
+    std::fs::write("/tmp/vec_deser_test.wasm", &wasm).unwrap();
+
+    match lisp_rlm_wasm::wasm_emit::compile_pure_to_wat(src) {
+        Ok(wat) => { /* Too verbose, write to file */ std::fs::write("/tmp/vec_deser_test.wat", &wat).unwrap(); },
+        Err(e) => eprintln!("WAT error: {}", e),
+    }
+
+    use wasmparser::Validator;
+    let mut validator = Validator::new();
+    match validator.validate_all(&wasm) {
+        Ok(_) => eprintln!("WASM validated OK"),
+        Err(e) => {
+            eprintln!("WASM validation FAILED: {}", e);
+            panic!("WASM validation failed: {}", e);
+        }
+    }
+}
