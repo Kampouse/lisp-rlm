@@ -415,6 +415,46 @@ impl WasmEmitter {
         off
     }
 
+    /// Process `\xNN` hex escape sequences in a byte slice, returning raw bytes.
+    /// Used for binary data in string literals (e.g., ed25519 signatures).
+    /// Other escapes (`\n`, `\t`, `\\`, `\"`) are also handled.
+    fn process_hex_escapes(input: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(input.len());
+        let mut i = 0;
+        while i < input.len() {
+            if input[i] == b'\\' && i + 1 < input.len() {
+                let c = input[i + 1];
+                match c {
+                    b'x' if i + 3 < input.len() => {
+                        let hi = input[i + 2];
+                        let lo = input[i + 3];
+                        let hex_val = |b: u8| -> Option<u8> {
+                            if b.is_ascii_digit() { Some(b - b'0') }
+                            else if (b'A'..=b'F').contains(&b) { Some(b - b'A' + 10) }
+                            else if (b'a'..=b'f').contains(&b) { Some(b - b'a' + 10) }
+                            else { None }
+                        };
+                        if let (Some(h), Some(l)) = (hex_val(hi), hex_val(lo)) {
+                            out.push(h << 4 | l);
+                            i += 4;
+                            continue;
+                        }
+                    }
+                    b'n' => { out.push(b'\n'); i += 2; continue; }
+                    b't' => { out.push(b'\t'); i += 2; continue; }
+                    b'r' => { out.push(b'\r'); i += 2; continue; }
+                    b'0' => { out.push(0); i += 2; continue; }
+                    b'\\' => { out.push(b'\\'); i += 2; continue; }
+                    b'"' => { out.push(b'"'); i += 2; continue; }
+                    _ => {}
+                }
+            }
+            out.push(input[i]);
+            i += 1;
+        }
+        out
+    }
+
     /// Emit WASM instructions for runtime heap allocation.
     /// Reads runtime heap ptr from RUNTIME_HEAP_PTR, bumps by `n_bytes`, writes back.
     /// Leaves the *old* ptr (start of allocated block) on the stack as i64.
@@ -1119,8 +1159,11 @@ impl WasmEmitter {
                 }
             }
             LispVal::Str(s) => {
-                let off = self.alloc_data(s.as_bytes()) as u64;
-                let encoded = (off | ((s.len() as u64) << 32)) as i64;
+                // Process \xNN hex escapes to raw bytes (e.g., ed25519 signatures).
+                // The tokenizer preserves \x as literal chars, so we decode them here.
+                let raw = Self::process_hex_escapes(s.as_bytes());
+                let off = self.alloc_data(&raw) as u64;
+                let encoded = (off | ((raw.len() as u64) << 32)) as i64;
                 let mut v = vec![Instruction::I64Const(encoded)];
                 v.extend(self.emit_tag_str());
                 Ok(v)
@@ -2609,28 +2652,28 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/ed25519_verify" => {
-                // (near/ed25519_verify message public_key signature) → bool
+                // (near/ed25519_verify signature message public_key) → bool
                 // All three args are byte strings (tagged Str)
-                // ed25519_verify(msg_len, msg_ptr, sig_len, sig_ptr, pk_len, pk_ptr) → u64 — idx 24
-                let msg = self.expr(&a[0])?;
-                let sig = self.expr(&a[1])?;
+                // NEAR host: ed25519_verify(sig_len, sig_ptr, msg_len, msg_ptr, pk_len, pk_ptr) → u64 — idx 24
+                let sig = self.expr(&a[0])?;
+                let msg = self.expr(&a[1])?;
                 let pk = self.expr(&a[2])?;
                 let mut v = Vec::new();
-                // msg
-                v.extend(msg.clone());
-                v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // msg_len
-                v.extend(msg);
-                v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // msg_ptr
-                // sig
+                // sig (param0, param1)
                 v.extend(sig.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // sig_len
                 v.extend(sig);
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // sig_ptr
-                // pk
+                // msg (param2, param3)
+                v.extend(msg.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // msg_len
+                v.extend(msg);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // msg_ptr
+                // pk (param4, param5)
                 v.extend(pk.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // pk_len
