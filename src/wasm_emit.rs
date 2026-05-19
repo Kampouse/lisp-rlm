@@ -1642,11 +1642,12 @@ impl WasmEmitter {
                 let msg = self.expr(&a[0])?;
                 let mut v = Vec::new();
                 v.extend(msg.clone());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // len
                 v.extend(msg);
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
-                // panic_utf8(len, ptr) — idx 27
-                v.push(Self::host_call(27));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // ptr
+                v.push(Self::host_call(27)); // panic_utf8(len, ptr)
                 v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
             "near/abort" => {
