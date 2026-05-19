@@ -1134,13 +1134,16 @@ impl WasmEmitter {
                         "near/prepaid_gas" => Some(15),
                         "near/used_gas" => Some(16),
                         "near/account_balance" => Some(12),
+                        "near/account_balance_high" => Some(12),
+                        "near/account_locked_balance" => Some(13),
+                        "near/account_locked_balance_high" => Some(13),
                         "near/attached_deposit" => Some(14),
                         _ => None,
                     };
                     if let Some(idx) = host_idx {
                         // u128 functions: use read_u128_low, simple 0-arg: use host_call + tag
                         match idx {
-                            12 | 14 => {
+                            12 | 13 | 14 => {
                                 self.need_host(idx);
                                 self.need_host(0); // read_register
                                 self.need_host(1); // register_len
