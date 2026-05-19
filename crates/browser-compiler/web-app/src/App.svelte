@@ -785,13 +785,12 @@
       class:compiling={compiling}
       disabled={!wasmReady || compiling}
       onclick={() => handleCompile(false)}
+      title="Compile"
     >
       {#if compiling}
         <Loader2 size={16} class="spinner-icon" />
-        Compiling...
       {:else}
         <Share2 size={16} />
-        Compile
       {/if}
     </button>
 
@@ -799,13 +798,12 @@
       class="header-run-btn"
       onclick={handleRun}
       disabled={!result?.success || running}
+      title="Run"
     >
       {#if running}
         <Loader2 size={16} class="spinner-icon" />
-        Running...
       {:else}
         <Play size={16} />
-        Run
       {/if}
     </button>
 
@@ -813,13 +811,12 @@
       class="header-test-btn"
       onclick={handleRunTests}
       disabled={!wasmReady || testing}
+      title="Run tests"
     >
       {#if testing}
         <Loader2 size={16} class="spinner-icon" />
-        Testing...
       {:else}
         <CheckCircle size={16} />
-        Test
       {/if}
     </button>
   </header>
