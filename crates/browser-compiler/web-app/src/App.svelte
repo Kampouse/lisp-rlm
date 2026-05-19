@@ -907,12 +907,19 @@
         </div>
 
         <div class="learn-section">
-          <h3>⚡ Run — Browser Execution</h3>
+          <h3>⚡ Run — Pure Browser Execution</h3>
           <div class="learn-modes">
             <div class="learn-mode">
               <p><strong>Why it exists:</strong> Instant feedback without blockchain overhead. Zero gas, zero waiting, zero wallet.</p>
               <p><strong>Best for:</strong> Learning Lisp, prototyping algorithms, testing logic before deploying on-chain.</p>
-              <p><strong>How it works:</strong> Compiles to WASM and executes in a Web Worker. Pure computation — no network, no persistence.</p>
+              <p><strong>How it works:</strong> Compiles to WASM and executes in a Web Worker. Pure computation — function calls only, deterministic results.</p>
+              <p><strong>Limitations:</strong> No side effects. You <strong>cannot</strong> use:</p>
+              <ul>
+                <li><code>storage-set</code> / <code>storage-get</code> — no persistent state</li>
+                <li><code>http-get</code> / <code>http-post</code> — no network calls</li>
+                <li><code>block-height</code> / <code>signer-account-id</code> — no blockchain context</li>
+              </ul>
+              <p>Pure mode is for <em>computing results</em> only. State and I/O require NEAR or WASI mode.</p>
             </div>
           </div>
         </div>
