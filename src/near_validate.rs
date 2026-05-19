@@ -6,7 +6,6 @@
 #[derive(Debug)]
 pub enum NearValidationError {
     InvalidWasm(String),
-    InternalMemory,
     MemoryPagesOutOfRange(u64),
     TooManyFunctions(u64),
     FunctionBodyTooLarge { size: u64, max: u64 },
@@ -18,7 +17,6 @@ impl std::fmt::Display for NearValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidWasm(e) => write!(f, "invalid WASM: {}", e),
-            Self::InternalMemory => write!(f, "NEAR contracts must not declare internal memory"),
             Self::MemoryPagesOutOfRange(pages) => write!(f, "memory pages {} out of range (1-2048)", pages),
             Self::TooManyFunctions(n) => write!(f, "too many functions: {} (max 10000)", n),
             Self::FunctionBodyTooLarge { size, max } => write!(f, "function body {} bytes (max {})", size, max),
@@ -35,25 +33,12 @@ pub fn validate_near_wasm(wasm: &[u8]) -> Result<(), NearValidationError> {
     let wat = wasmprinter::print_bytes(wasm)
         .map_err(|e| NearValidationError::InvalidWasm(e.to_string()))?;
 
-    // Check for internal memory declaration (not imported)
-    // NEAR requires memory to be imported from "env"
-    if wat.contains("(memory ") && !wat.contains("(import \"env\" \"memory\"") {
-        // Check if it's actually an internal memory (not inside an import)
-        for line in wat.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("(memory ") && !trimmed.starts_with("(import") {
-                return Err(NearValidationError::InternalMemory);
-            }
-        }
-    }
-
     // Check imports are only from "env"
-    // Parse WAT for (import "xxx" ... where xxx != "env"
     for line in wat.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("(import \"") {
-            if let Some(end) = trimmed.find("\"") {
-                if let Some(start) = trimmed[9..].find("\"") {
+            if let Some(end) = trimmed.find('"') {
+                if let Some(start) = trimmed[9..].find('"') {
                     let module = &trimmed[9..9+start];
                     if module != "env" {
                         return Err(NearValidationError::InvalidImport(
@@ -79,10 +64,11 @@ mod tests {
     }
 
     #[test]
-    fn test_internal_memory_rejected() {
+    fn test_internal_memory_accepted() {
+        // NEAR mainnet accepts internally-declared memory (with memory export).
+        // The old validator rejected this as a false positive.
         let wasm = wat::parse_str("(module (memory 1 1))").unwrap();
-        let err = validate_near_wasm(&wasm).unwrap_err();
-        assert!(matches!(err, NearValidationError::InternalMemory));
+        assert!(validate_near_wasm(&wasm).is_ok());
     }
 
     #[test]
