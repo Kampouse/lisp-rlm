@@ -485,9 +485,15 @@
           const res = compile(testCode, 'pure');
           if (res.success && res.wasmBytes) {
             const output = await runPure(res.wasmBytes);
-            // If we get here without error, test passed
-            results.tests.push({ name: test.name, passed: true, output });
-            results.passed++;
+            // WASM traps are caught by runPure and returned as "error: ..." strings.
+            // Treat those as test failures.
+            if (output.startsWith('error:')) {
+              results.tests.push({ name: test.name, passed: false, error: output });
+              results.failed++;
+            } else {
+              results.tests.push({ name: test.name, passed: true, output });
+              results.passed++;
+            }
           } else {
             results.tests.push({ name: test.name, passed: false, error: res.error ?? 'Compilation failed' });
             results.failed++;

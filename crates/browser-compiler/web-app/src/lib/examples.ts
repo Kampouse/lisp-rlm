@@ -87,15 +87,15 @@ export const examples: Example[] = [
 (define (add a b) (+ a b))
 
 (test "addition works"
-  (assert-equal (add 2 3) 5))
+  (assert-equal 5 (add 2 3)))
 
 (test "handles zero"
-  (assert-equal (add 0 0) 0)
-  (assert-equal (add 5 0) 5))
+  (assert-equal 0 (add 0 0))
+  (assert-equal 5 (add 5 0)))
 
 (test "negative numbers"
-  (assert-equal (add -1 1) 0)
-  (assert-equal (add -5 -3) -8))
+  (assert-equal 0 (add -1 1))
+  (assert-equal -8 (add -5 -3)))
 `,
   },
 ];
