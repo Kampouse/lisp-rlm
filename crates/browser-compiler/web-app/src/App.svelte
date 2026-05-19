@@ -966,6 +966,33 @@
         </div>
 
         <div class="learn-section">
+          <h3>✓ Testing</h3>
+          <p>Write tests to verify your code works as expected. Use the Test button (✓) in the header to run tests.</p>
+          <pre class="learn-code">;; Define a function
+(defun add (a b)
+  (+ a b))
+
+;; Write tests with (test "name" body...)
+(test "addition works"
+  (assert-equal 5 (add 2 3)))
+
+(test "handles zero"
+  (assert-equal 0 (add 0 0))
+  (assert-equal 5 (add 5 0)))
+
+(test "negative numbers"
+  (assert-equal -2 (add -5 3))
+  (assert-equal -8 (add -5 -3)))</pre>
+          <p><strong>Assertion functions:</strong></p>
+          <ul>
+            <li><code>(assert-equal expected actual)</code> — fails if values don't match</li>
+            <li><code>(assert-true expr)</code> — fails if expression is false</li>
+            <li><code>(assert-false expr)</code> — fails if expression is true</li>
+          </ul>
+          <p>Tests run in the selected mode (Run/NEAR/WASI). Use Run mode for fastest feedback during development.</p>
+        </div>
+
+        <div class="learn-section">
           <h3>Available Functions</h3>
           <div class="learn-functions">
             <div class="learn-fn-group">
