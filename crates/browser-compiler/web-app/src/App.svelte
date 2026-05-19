@@ -60,6 +60,13 @@
   let showNearContext: boolean = $state(false);
   let nearCtx: NearContext = $state(getNearContext());
 
+  // NEAR run results (new fields)
+  let nearInputJson: string = $state('');
+  let nearLogs: string[] = $state([]);
+  let nearPanic: string | null = $state(null);
+  let nearStorageDiff: Array<{ key: string; oldVal: string | null; newVal: string | null }> = $state([]);
+  let nearReceipts: Array<{ index: number; accountId: string; methodName: string; argsSize: number; result?: Uint8Array; type: string }> = $state([]);
+
   // Resizable panes
   let outputPaneWidth: number = $state(40); // percentage
   let isResizing: boolean = $state(false);
@@ -381,6 +388,10 @@
     runResult = null;
     nearReturnDisplay = null;
     nearGasUsed = '';
+    nearLogs = [];
+    nearPanic = null;
+    nearStorageDiff = [];
+    nearReceipts = [];
     try {
       if (target === 'p1') {
         // Apply context from UI to the mock runtime
@@ -389,11 +400,23 @@
           : 'https://rpc.mainnet.near.org';
         setNearContext({ ...nearCtx, rpcUrl });
 
+        // Build input bytes from JSON textarea
+        let nearInput: Uint8Array | undefined;
+        if (nearInputJson.trim()) {
+          nearInput = new TextEncoder().encode(nearInputJson);
+        }
+
         // NEAR contract — run with mocked runtime
         const method = selectedMethod || undefined;
         runResult = method ? `Calling ${method}()...` : 'Running all methods...';
-        const nearResult = await runNear(result.wasmBytes!, { method });
+        const nearResult = await runNear(result.wasmBytes!, { method, input: nearInput });
         nearMethods = nearResult.methods;
+
+        // Capture new fields
+        nearLogs = nearResult.logs ?? [];
+        nearPanic = nearResult.panic ?? null;
+        nearStorageDiff = nearResult.storageDiff ?? [];
+        nearReceipts = nearResult.receipts ?? [];
 
         // Format output
         const lines = [nearResult.stdout];
@@ -1294,6 +1317,17 @@
                         </button>
                       </div>
 
+                      <!-- Input arguments (JSON) -->
+                      <div class="near-input-area">
+                        <textarea
+                          class="near-input-textarea"
+                          bind:value={nearInputJson}
+                          placeholder={'{"account_id": "bob.near"}'}
+                          rows="2"
+                          spellcheck="false"
+                        ></textarea>
+                      </div>
+
                       <!-- Return value + gas -->
                       {#if nearReturnDisplay !== null || nearGasUsed}
                         <div class="near-result-bar">
@@ -1303,6 +1337,58 @@
                           {#if nearGasUsed}
                             <span class="near-result-gas">⛽ {nearGasUsed}</span>
                           {/if}
+                        </div>
+                      {/if}
+
+                      <!-- Panic -->
+                      {#if nearPanic}
+                        <div class="near-panic">
+                          <span class="near-panic-icon">⚠</span>
+                          <span class="near-panic-msg">{nearPanic}</span>
+                        </div>
+                      {/if}
+
+                      <!-- Logs -->
+                      {#if nearLogs.length > 0}
+                        <div class="near-logs-section">
+                          <div class="near-logs-title">Logs</div>
+                          {#each nearLogs as log, i}
+                            <div class="near-log-entry">
+                              <span class="near-log-prefix">[{i}]</span> {log}
+                            </div>
+                          {/each}
+                        </div>
+                      {/if}
+
+                      <!-- Storage Diff -->
+                      {#if nearStorageDiff.length > 0}
+                        <div class="near-diff-section">
+                          <div class="near-diff-title">Storage Changes</div>
+                          {#each nearStorageDiff as diff}
+                            <div class="near-diff-entry">
+                              <span class="near-diff-key">{diff.key}</span>
+                              <span class="near-diff-arrow">→</span>
+                              <span class="near-diff-old">{diff.oldVal ?? '∅'}</span>
+                              <span class="near-diff-slash">/</span>
+                              <span class="near-diff-new">{diff.newVal ?? '∅'}</span>
+                            </div>
+                          {/each}
+                        </div>
+                      {/if}
+
+                      <!-- Receipts (Promise DAG) -->
+                      {#if nearReceipts.length > 0}
+                        <div class="near-receipts-section">
+                          <div class="near-receipts-title">Cross-Contract Calls</div>
+                          {#each nearReceipts as receipt}
+                            <div class="near-receipt-entry">
+                              <span class="near-receipt-method">{receipt.accountId}.{receipt.methodName}()</span>
+                              <span class="near-receipt-meta">args: {receipt.argsSize}B · {receipt.type}</span>
+                              {#if receipt.result}
+                                <span class="near-receipt-result">{new TextDecoder().decode(receipt.result)}</span>
+                              {/if}
+                            </div>
+                          {/each}
                         </div>
                       {/if}
                     </div>
@@ -2161,5 +2247,159 @@
   .near-result-gas {
     color: var(--color-text-muted);
     font-size: 11px;
+  }
+
+  /* Input textarea for method args */
+  .near-input-area {
+    padding: 0 14px 8px;
+  }
+  .near-input-textarea {
+    width: 100%;
+    padding: 8px 10px;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    color: var(--color-text);
+    outline: none;
+    resize: vertical;
+    line-height: 1.5;
+    transition: border-color 0.15s;
+    min-height: 44px;
+  }
+  .near-input-textarea:focus {
+    border-color: var(--color-accent);
+  }
+  .near-input-textarea::placeholder {
+    color: var(--color-text-muted);
+    opacity: 0.5;
+  }
+
+  /* Panic */
+  .near-panic {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 8px 14px;
+    background: rgba(255, 80, 80, 0.08);
+    border-top: 1px solid rgba(255, 80, 80, 0.2);
+  }
+  .near-panic-icon {
+    color: #ff5050;
+    font-size: 14px;
+    flex-shrink: 0;
+    padding-top: 1px;
+  }
+  .near-panic-msg {
+    color: #ff6b6b;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    word-break: break-all;
+    line-height: 1.5;
+  }
+
+  /* Logs */
+  .near-logs-section {
+    padding: 6px 14px 8px;
+    border-top: 1px solid var(--color-border);
+  }
+  .near-logs-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+  }
+  .near-log-entry {
+    font-size: 12px;
+    font-family: var(--font-mono);
+    color: var(--color-text-secondary);
+    line-height: 1.6;
+    word-break: break-all;
+  }
+  .near-log-prefix {
+    color: var(--color-text-muted);
+    font-size: 11px;
+    margin-right: 4px;
+  }
+
+  /* Storage Diff */
+  .near-diff-section {
+    padding: 6px 14px 8px;
+    border-top: 1px solid var(--color-border);
+  }
+  .near-diff-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+  }
+  .near-diff-entry {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    line-height: 1.6;
+    word-break: break-all;
+  }
+  .near-diff-key {
+    color: var(--color-accent);
+    min-width: 40px;
+  }
+  .near-diff-arrow {
+    color: var(--color-text-muted);
+  }
+  .near-diff-old {
+    color: var(--color-text-muted);
+    text-decoration: line-through;
+    opacity: 0.7;
+  }
+  .near-diff-slash {
+    color: var(--color-text-muted);
+    opacity: 0.4;
+  }
+  .near-diff-new {
+    color: var(--color-text);
+  }
+
+  /* Receipts (Promise DAG) */
+  .near-receipts-section {
+    padding: 6px 14px 8px;
+    border-top: 1px solid var(--color-border);
+  }
+  .near-receipts-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+  }
+  .near-receipt-entry {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 4px 0;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    line-height: 1.5;
+  }
+  .near-receipt-method {
+    color: var(--color-accent);
+    font-weight: 500;
+  }
+  .near-receipt-meta {
+    color: var(--color-text-muted);
+    font-size: 11px;
+  }
+  .near-receipt-result {
+    color: var(--color-text-secondary);
+    font-size: 11px;
+    word-break: break-all;
   }
 </style>

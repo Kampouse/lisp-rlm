@@ -341,7 +341,26 @@ const nearStorage = new Map<string, Uint8Array>();
 const nearRegisters = new Map<number, Uint8Array>();
 let nearReturnValue: Uint8Array | null = null;
 let nearStdout = '';
+let nearLogs: string[] = [];
+let nearPanicMsg: string | null = null;
 let nearMemory: WebAssembly.Memory | null = null;
+let nearInputBuffer: Uint8Array = new Uint8Array(0);
+
+// Storage diff tracking
+let nearStorageBefore: Map<string, Uint8Array> = new Map();
+let nearStorageDiff: Array<{ key: string; oldVal: string | null; newVal: string | null }> = [];
+
+// Receipt / promise DAG tracking
+interface PromiseNode {
+  index: number;
+  accountId: string;
+  methodName: string;
+  argsSize: number;
+  result?: Uint8Array;
+  type: 'create' | 'then' | 'and';
+  callbackIdx?: number;
+}
+let nearPromiseNodes: PromiseNode[] = [];
 
 function nearMemView() { return new DataView(nearMemory!.buffer); }
 function nearMemBytes() { return new Uint8Array(nearMemory!.buffer); }
@@ -480,8 +499,8 @@ function buildNearEnv(): Record<string, Function> {
     },
     prepaid_gas: (): bigint => nearContext.prepaidGas,
     used_gas: (): bigint => BigInt(1_000_000_000_000),
-    input: (resultPtr: bigint) => {
-      nearMemView().setUint32(Number(resultPtr), 0, true);
+    input: (registerId: bigint) => {
+      nearRegisters.set(Number(registerId), nearInputBuffer.slice());
     },
 
     // ===== Crypto (stubs) =====
@@ -512,6 +531,15 @@ function buildNearEnv(): Record<string, Function> {
       nearStdout += `  ⤏ ${accountId}/${methodName}(${argsLen > 0n ? `${argsLen}B args` : 'no args'})\n`;
 
       const pidx = nearPromiseCounter++;
+
+      // Track receipt node
+      nearPromiseNodes.push({
+        index: pidx,
+        accountId,
+        methodName,
+        argsSize: Number(argsLen),
+        type: 'create',
+      });
 
       if (nearPass === 0) {
         // First pass: queue the RPC call
@@ -579,10 +607,14 @@ function buildNearEnv(): Record<string, Function> {
       nearReturnValue = bytes;
     },
     // #26: panic
-    panic: () => { throw new Error('NEAR panic'); },
+    panic: () => {
+      nearPanicMsg = 'panic';
+      throw new Error('NEAR panic');
+    },
     // #27: panic_utf8(len, ptr)
     panic_utf8: (len: bigint, ptr: bigint) => {
       const msg = new TextDecoder().decode(nearMemBytes().slice(Number(ptr), Number(ptr + len)));
+      nearPanicMsg = msg;
       throw new Error(`NEAR panic: ${msg}`);
     },
     // #28: log_utf8(len, ptr)
@@ -604,6 +636,7 @@ function buildNearEnv(): Record<string, Function> {
         default: msg = `tagged(${tagType}:${payload})`;
       }
       nearStdout += msg + '\n';
+      nearLogs.push(msg);
     },
     // #29: log_utf16(len, ptr)
     log_utf16: () => {},
@@ -663,38 +696,25 @@ export async function runNear(
   nearRegisters.clear();
   nearReturnValue = null;
   nearStdout = '';
+  nearLogs = [];
+  nearPanicMsg = null;
   nearPromiseResults.clear();
   nearPendingPromises.length = 0;
   nearPromiseCounter = 0;
+  nearPromiseNodes = [];
   nearPass = 0;
+  nearStorageDiff = [];
   loadNearStorage();
 
-  // Set up input buffer — the `input` host fn will return this data
-  const inputBytes = options?.input ?? new Uint8Array(0);
-  let inputConsumed = false;
+  // Set up input buffer — the `input` host fn will return this data via register
+  nearInputBuffer = options?.input ?? new Uint8Array(0);
 
   // Gas tracking — static WASM opcode analysis (NEAR pricing)
   let gasUsed = 0;
   let gasBreakdown: { opcodes: number; opcodeGas: number; hostGas: number } | null = null;
   const gasLimit = options?.gasLimit ?? BigInt(300_000_000_000_000); // 300 Tgas
 
-  // Build host environment with input override
   const env = buildNearEnv();
-
-  // Override `input` to return user-provided input instead of empty
-  env.input = (resultPtr: bigint) => {
-    const ptr = Number(resultPtr);
-    if (!inputConsumed && inputBytes.length > 0) {
-      // Write input bytes to a scratch region in memory (high address, past data segments)
-      const scratchPtr = 8192 + 4096; // past STORAGE_BUF
-      nearMemBytes().set(inputBytes, scratchPtr);
-      // Write length at resultPtr and data ptr at resultPtr+4
-      nearMemView().setUint32(ptr, inputBytes.length, true);
-      nearMemView().setUint32(ptr + 4, scratchPtr, true);
-    } else {
-      nearMemView().setUint32(ptr, 0, true);
-    }
-  };
 
   const imports: WebAssembly.Imports = {
     env: {
@@ -715,6 +735,44 @@ export async function runNear(
 
   // Direct function calls (gas computed statically from WASM binary)
   const callFn = (fn: Function) => { fn(); };
+
+  // Storage diff helpers
+  const snapshotStorage = () => {
+    const snap = new Map<string, Uint8Array>();
+    nearStorage.forEach((v, k) => snap.set(k, v.slice()));
+    return snap;
+  };
+
+  const decodeVal = (v: Uint8Array): string => {
+    if (v.length === 8) {
+      const n = new DataView(v.buffer, v.byteOffset, 8).getBigInt64(0, true);
+      return n.toString();
+    }
+    try { return new TextDecoder().decode(v); } catch { return Array.from(v).map(b => b.toString(16).padStart(2, '0')).join(''); }
+  };
+
+  const computeDiff = (before: Map<string, Uint8Array>) => {
+    const diff: Array<{ key: string; oldVal: string | null; newVal: string | null }> = [];
+    const allKeys = new Set<string>();
+    before.forEach((_, k) => allKeys.add(k));
+    nearStorage.forEach((_, k) => allKeys.add(k));
+    allKeys.forEach(k => {
+      const had = before.has(k);
+      const has = nearStorage.has(k);
+      if (had && has) {
+        const oldV = before.get(k)!;
+        const newV = nearStorage.get(k)!;
+        if (oldV.length !== newV.length || oldV.some((b, i) => b !== newV[i])) {
+          diff.push({ key: k, oldVal: decodeVal(oldV), newVal: decodeVal(newV) });
+        }
+      } else if (!had && has) {
+        diff.push({ key: k, oldVal: null, newVal: decodeVal(nearStorage.get(k)!) });
+      } else if (had && !has) {
+        diff.push({ key: k, oldVal: decodeVal(before.get(k)!), newVal: null });
+      }
+    });
+    return diff;
+  };
 
   // Helper: run a method (or all methods) — shared between passes
   const runMethods = () => {
@@ -738,6 +796,8 @@ export async function runNear(
       }
     }
   };
+
+  const storageBefore = snapshotStorage();
 
   try {
     // === Pass 1: Queue promise calls ===
@@ -813,6 +873,9 @@ export async function runNear(
     }
   }
 
+  // Compute storage diff
+  nearStorageDiff = computeDiff(storageBefore);
+
   // Static gas estimation from WASM binary
   const targetMethod = options?.method ?? (methods.length === 1 ? methods[0] : undefined);
   if (targetMethod) {
@@ -823,9 +886,21 @@ export async function runNear(
     }
   }
 
-  return { stdout: nearStdout, returnValue: nearReturnValue, methods, gasUsed, gasBreakdown } as {
+  // Attach results to promise nodes
+  nearPromiseNodes.forEach(n => {
+    const result = nearPromiseResults.get(n.index);
+    if (result) n.result = result;
+  });
+
+  return {
+    stdout: nearStdout, returnValue: nearReturnValue, methods, gasUsed, gasBreakdown,
+    logs: nearLogs, panic: nearPanicMsg, storageDiff: nearStorageDiff, receipts: nearPromiseNodes,
+  } as {
     stdout: string; returnValue: Uint8Array | null; methods: string[]; gasUsed: number;
     gasBreakdown: { opcodes: number; opcodeGas: number; hostGas: number } | null;
+    logs: string[]; panic: string | null;
+    storageDiff: Array<{ key: string; oldVal: string | null; newVal: string | null }>;
+    receipts: typeof nearPromiseNodes;
   };
 }
 
