@@ -488,7 +488,8 @@
             // WASM traps are caught by runPure and returned as "error: ..." strings.
             // Treat those as test failures.
             if (output.startsWith('error:')) {
-              results.tests.push({ name: test.name, passed: false, error: output });
+              const msg = output === 'error: unreachable' ? 'assertion failed' : output;
+              results.tests.push({ name: test.name, passed: false, error: msg });
               results.failed++;
             } else {
               results.tests.push({ name: test.name, passed: true, output });
