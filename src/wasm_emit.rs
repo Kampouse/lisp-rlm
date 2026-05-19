@@ -1530,9 +1530,11 @@ impl WasmEmitter {
                     let mut v = Vec::new();
                     // First: log the string
                     v.extend(msg.clone());
-                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                    v.extend(self.emit_untag());
+                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // len
                     v.extend(msg);
-                    v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                    v.extend(self.emit_untag());
+                    v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // ptr
                     v.push(Self::host_call(28));
                     // Second: log the number (same technique as near/log_num)
                     v.extend(num_expr);
@@ -1756,17 +1758,22 @@ impl WasmEmitter {
                 let val_expr = self.expr(&a[1])?;
                 let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
                 let mut v = Vec::new();
+                // Store untagged value at STORAGE_BUF
                 v.push(Instruction::I32Const(STORAGE_BUF as i32));
                 v.extend(val_expr);
+                v.extend(self.emit_untag());
                 v.push(Instruction::I64Store(ma));
+                // Untag key: extract len and ptr
                 v.extend(key_expr.clone());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // key_len
                 v.extend(key_expr);
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // key_ptr
                 v.push(Instruction::I64Const(8));
                 v.push(Instruction::I64Const(STORAGE_BUF));
                 v.push(Instruction::I64Const(0));
-                v.push(Self::host_call(17));
+                v.push(Self::host_call(17)); // storage_write
                 v.push(Instruction::Drop);
                 v.push(Instruction::I64Const(0));
                 Ok(v)
@@ -1775,21 +1782,30 @@ impl WasmEmitter {
                 let key_expr = self.expr(&a[0])?;
                 let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
                 let mut v = Vec::new();
+                // Untag key: extract len and ptr
                 v.extend(key_expr.clone());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // key_len
                 v.extend(key_expr);
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // key_ptr
+                v.push(Instruction::I64Const(0)); // register 0
+                v.push(Self::host_call(18)); // storage_read
+                v.push(Instruction::Drop); // discard unreliable return value
+                // Use register_len to check if value was written
                 v.push(Instruction::I64Const(0));
-                v.push(Self::host_call(18));
+                v.push(Self::host_call(1)); // register_len
+                v.push(Instruction::I64Const(-1i64 as u64 as i64));
+                v.push(Instruction::I64Eq);
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::If(wasm_encoder::BlockType::Result(ValType::I64)));
                     v.push(Instruction::I64Const(0));
-                    v.push(Instruction::I64Const(STORAGE_BUF));
-                    v.push(Self::host_call(0));
-                    v.push(Instruction::I32Const(STORAGE_BUF as i32));
-                    v.push(Instruction::I64Load(ma));
                 v.push(Instruction::Else);
                     v.push(Instruction::I64Const(0));
+                    v.push(Instruction::I64Const(STORAGE_BUF));
+                    v.push(Self::host_call(0)); // read_register
+                    v.push(Instruction::I32Const(STORAGE_BUF as i32));
+                    v.push(Instruction::I64Load(ma));
                 v.push(Instruction::End);
                 Ok(v)
             }
@@ -1797,21 +1813,25 @@ impl WasmEmitter {
                 let key_expr = self.expr(&a[0])?;
                 let mut v = Vec::new();
                 v.extend(key_expr.clone());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // key_len
                 v.extend(key_expr);
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
-                v.push(Self::host_call(20));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // key_ptr
+                v.push(Self::host_call(20)); // storage_has_key
                 Ok(v)
             }
             "near/storage_remove" => {
                 let key_expr = self.expr(&a[0])?;
                 let mut v = Vec::new();
                 v.extend(key_expr.clone());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // key_len
                 v.extend(key_expr);
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // key_ptr
                 v.push(Instruction::I64Const(0));
-                v.push(Self::host_call(19));
+                v.push(Self::host_call(19)); // storage_remove
                 Ok(v)
             }
             // (hof/map (lambda (x) body) start end [offset])
