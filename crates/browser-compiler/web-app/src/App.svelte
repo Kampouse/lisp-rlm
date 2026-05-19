@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import * as monaco from 'monaco-editor';
-  import { initCompiler, compile, runPure, compileP2Core, toHexDump, type CompileTarget, type CompileResult } from './lib/compiler.ts';
+  import { initCompiler, compile, runPure, runNear, compileP2Core, toHexDump, type CompileTarget, type CompileResult } from './lib/compiler.ts';
   import { runWasiWithWorker } from './lib/runWasiWithWorker.ts';
   import { examples } from './lib/examples.ts';
   import { connectWallet, disconnectWallet, deployP1, deployP2, getWalletState, type WalletState, type DeployResult, type Network } from './lib/wallet.ts';
@@ -357,14 +357,15 @@
 
   async function handleRun() {
     if (!result?.success || running) return;
-    if (target === 'p1') {
-      runResult = 'ℹ NEAR contracts run on-chain — use ⚡ Deploy to execute';
-      return;
-    }
     running = true;
     runResult = null;
     try {
-      if (target === 'p2') {
+      if (target === 'p1') {
+        // NEAR contract — run with mocked runtime
+        runResult = 'Running with NEAR mock runtime...';
+        const nearResult = await runNear(result.wasmBytes!);
+        runResult = nearResult.stdout || `✓ Execution complete${nearResult.returnValue !== null ? `\nReturn value: ${nearResult.returnValue}` : ''}`;
+      } else if (target === 'p2') {
         // P2 Component → re-compile as core WASM for browser execution
         runResult = 'Compiling core WASM...';
         const coreBytes = compileP2Core(source);

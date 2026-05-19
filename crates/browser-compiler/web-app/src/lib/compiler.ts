@@ -291,6 +291,231 @@ export async function runPure(wasmBytes: Uint8Array): Promise<string> {
   return fns.length > 0 ? `Available exports: ${fns.join(', ')}` : '(no runnable exports)';
 }
 
+// NEAR mock storage (persisted to localStorage)
+const nearStorage = new Map<string, bigint>();
+const nearRegisters = new Map<number, Uint8Array>();
+let nearReturnValue: bigint | null = null;
+let nearStdout = '';
+let nearMemory: WebAssembly.Memory | null = null;
+let nearNextRegister = 1;
+
+function nearMemView() { return new DataView(nearMemory!.buffer); }
+function nearMemBytes() { return new Uint8Array(nearMemory!.buffer); }
+
+function buildNearEnv(): Record<string, Function> {
+  return {
+    // ===== Registers =====
+    read_register: (reg: bigint, ptr: bigint) => {
+      const data = nearRegisters.get(Number(reg));
+      if (data) nearMemBytes().set(data, Number(ptr));
+    },
+    register_len: (reg: bigint): bigint => {
+      const data = nearRegisters.get(Number(reg));
+      return data ? BigInt(data.length) : 0n;
+    },
+    write_register: (reg: bigint, len: bigint, ptr: bigint) => {
+      nearRegisters.set(Number(reg), nearMemBytes().slice(Number(ptr), Number(ptr + len)));
+    },
+
+    // ===== Storage (NEAR SDK uses registers 0/1 for key/value) =====
+    storage_write: (keyLen: bigint, valLen: bigint, resultPtr: bigint): bigint => {
+      const key = new TextDecoder().decode(nearRegisters.get(0) ?? new Uint8Array(0));
+      const value = new TextDecoder().decode(nearRegisters.get(1) ?? new Uint8Array(0));
+      const existed = nearStorage.has(key) ? 1n : 0n;
+      nearStorage.set(key, BigInt(value));
+      saveNearStorage();
+      nearMemView().setBigUint64(Number(resultPtr), existed, true);
+      return existed;
+    },
+    storage_read: (keyLen: bigint, resultPtr: bigint): bigint => {
+      const key = new TextDecoder().decode(nearRegisters.get(0) ?? new Uint8Array(0));
+      const value = nearStorage.get(key);
+      if (value === undefined) {
+        nearMemView().setBigUint64(Number(resultPtr), 0n, true);
+        return 0n;
+      }
+      const valBytes = new TextEncoder().encode(value.toString());
+      nearRegisters.set(1, valBytes);
+      nearMemView().setBigUint64(Number(resultPtr), BigInt(valBytes.length), true);
+      return 1n;
+    },
+    storage_remove: (keyLen: bigint, resultPtr: bigint): bigint => {
+      const key = new TextDecoder().decode(nearRegisters.get(0) ?? new Uint8Array(0));
+      const existed = nearStorage.has(key) ? 1n : 0n;
+      nearStorage.delete(key);
+      saveNearStorage();
+      nearMemView().setBigUint64(Number(resultPtr), existed, true);
+      return existed;
+    },
+    storage_has_key: (keyLen: bigint): bigint => {
+      const key = new TextDecoder().decode(nearRegisters.get(0) ?? new Uint8Array(0));
+      return nearStorage.has(key) ? 1n : 0n;
+    },
+
+    // ===== Context =====
+    current_account_id: (resultPtr: bigint) => {
+      writeNearString(Number(resultPtr), 'browser-contract.testnet');
+    },
+    signer_account_id: (resultPtr: bigint) => {
+      writeNearString(Number(resultPtr), 'browser-user.testnet');
+    },
+    predecessor_account_id: (resultPtr: bigint) => {
+      writeNearString(Number(resultPtr), 'browser-caller.testnet');
+    },
+    block_index: (): bigint => BigInt(12345678),
+    block_timestamp: (): bigint => BigInt(Date.now() * 1_000_000),
+    epoch_height: (): bigint => BigInt(42),
+    account_balance: (resultPtr: bigint) => {
+      writeNearU128(Number(resultPtr), BigInt('1000000000000000000000000'));
+    },
+    attached_deposit: (resultPtr: bigint) => {
+      writeNearU128(Number(resultPtr), BigInt(0));
+    },
+    prepaid_gas: (): bigint => BigInt(300_000_000_000_000),
+    used_gas: (): bigint => BigInt(1_000_000_000_000),
+    input: (resultPtr: bigint) => {
+      nearMemView().setUint32(Number(resultPtr), 0, true);
+    },
+
+    // ===== Output =====
+    value_return: (len: bigint, ptr: bigint) => {
+      const data = nearRegisters.get(0);
+      if (data) {
+        const val = new TextDecoder().decode(data);
+        nearReturnValue = BigInt(val);
+      }
+    },
+    log_utf8: (len: bigint, ptr: bigint) => {
+      const msg = new TextDecoder().decode(nearMemBytes().slice(Number(ptr), Number(ptr + len)));
+      nearStdout += msg + '\n';
+    },
+
+    // ===== Panic/Abort =====
+    panic: () => { throw new Error('NEAR panic'); },
+    panic_utf8: (len: bigint, ptr: bigint) => {
+      const msg = new TextDecoder().decode(nearMemBytes().slice(Number(ptr), Number(ptr + len)));
+      throw new Error(`NEAR panic: ${msg}`);
+    },
+    abort: (msgPtr: bigint, msgLen: bigint, filePtr: bigint, fileLen: bigint, line: bigint, col: bigint) => {
+      throw new Error(`Abort at ${line}:${col}`);
+    },
+
+    // ===== Crypto (stubs) =====
+    sha256: (dataPtr: bigint, dataLen: bigint, resultPtr: bigint) => {
+      nearMemBytes().set(new Uint8Array(32), Number(resultPtr));
+    },
+    random_seed: (resultPtr: bigint) => {
+      const seed = new Uint8Array(32);
+      crypto.getRandomValues(seed);
+      nearMemBytes().set(seed, Number(resultPtr));
+    },
+    keccak256: (dataPtr: bigint, dataLen: bigint, resultPtr: bigint) => {
+      nearMemBytes().set(new Uint8Array(32), Number(resultPtr));
+    },
+    ed25519_verify: (): bigint => 1n,
+
+    // ===== Promise (stubs) =====
+    promise_create: (): bigint => BigInt(0),
+    promise_then: (): bigint => BigInt(0),
+    promise_and: (): bigint => BigInt(0),
+    promise_results_count: (): bigint => BigInt(0),
+    promise_result: () => {},
+    promise_return: () => {},
+    promise_batch_create: (): bigint => BigInt(0),
+    promise_batch_then: (): bigint => BigInt(0),
+    promise_batch_action_create_account: () => {},
+    promise_batch_action_deploy_contract: () => {},
+    promise_batch_action_function_call: () => {},
+    promise_batch_action_transfer: () => {},
+    promise_batch_action_stake: () => {},
+    promise_batch_action_add_key_with_full_access: () => {},
+    promise_batch_action_add_key_with_function_call: () => {},
+    promise_batch_action_delete_key: () => {},
+    promise_batch_action_delete_account: () => {},
+
+    // ===== Misc =====
+    storage_usage: (): bigint => BigInt(nearStorage.size * 64),
+    signer_account_pk: (resultPtr: bigint) => {
+      writeNearString(Number(resultPtr), 'ed25519:mock-public-key');
+    },
+    account_locked_balance: (resultPtr: bigint) => {
+      writeNearU128(Number(resultPtr), BigInt(0));
+    },
+    storage_iter_prefix: (): bigint => BigInt(0),
+    storage_iter_range: (): bigint => BigInt(0),
+    storage_iter_next: () => {},
+  };
+}
+
+function writeNearString(ptr: number, str: string) {
+  const bytes = new TextEncoder().encode(str);
+  nearMemBytes().set(bytes, ptr);
+  nearMemView().setUint32(ptr - 4, bytes.length, true); // Length prefix
+}
+
+function writeNearU128(ptr: number, value: bigint) {
+  nearMemView().setBigUint64(ptr, value & ((1n << 64n) - 1n), true); // lo
+  nearMemView().setBigUint64(ptr + 8, value >> 64n, true); // hi
+}
+
+function saveNearStorage() {
+  try {
+    const data: Record<string, string> = {};
+    nearStorage.forEach((v, k) => { data[k] = v.toString(); });
+    localStorage.setItem('near_mock_storage', JSON.stringify(data));
+  } catch {}
+}
+
+function loadNearStorage() {
+  try {
+    const saved = localStorage.getItem('near_mock_storage');
+    if (saved) {
+      const data = JSON.parse(saved);
+      for (const [k, v] of Object.entries(data)) {
+        nearStorage.set(k, BigInt(v as string));
+      }
+    }
+  } catch {}
+}
+
+/** Run NEAR (P1) contract in browser with mocked runtime */
+export async function runNear(wasmBytes: Uint8Array): Promise<{ stdout: string; returnValue: bigint | null }> {
+  nearStorage.clear();
+  nearRegisters.clear();
+  nearReturnValue = null;
+  nearStdout = '';
+  nearNextRegister = 1;
+  loadNearStorage();
+
+  const memory = new WebAssembly.Memory({ initial: 256, maximum: 4096 });
+  nearMemory = memory;
+
+  const imports: WebAssembly.Imports = {
+    env: {
+      memory,
+      ...buildNearEnv(),
+    },
+  };
+
+  const { instance } = await WebAssembly.instantiate(wasmBytes.buffer as ArrayBuffer, imports) as any;
+  const exports = instance.exports as Record<string, unknown>;
+
+  try {
+    // Try to run the contract
+    const startFn = exports._start ?? exports.run ?? exports._run;
+    if (typeof startFn === 'function') {
+      (startFn as Function)();
+    }
+  } catch (err: unknown) {
+    // Don't treat early return as error
+    if (!(err instanceof Error && err.message === 'NEAR_RETURN')) {
+      throw err;
+    }
+  }
+
+  return { stdout: nearStdout, returnValue: nearReturnValue };
+}
+
 /** Run P2 WASI WASM in the browser with polyfilled imports. */
 export async function runWasi(wasmBytes: Uint8Array, stdinData?: Uint8Array): Promise<string> {
   // Check if SharedArrayBuffer is available (requires COOP/COEP headers)

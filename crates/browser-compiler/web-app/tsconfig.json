@@ -20,5 +20,5 @@
     "noFallthroughCasesInSwitch": true
   },
   "include": ["src"],
-  "exclude": ["src/lib/wasm-worker.ts", "src/lib/http-worker.ts"]
+  "exclude": ["src/lib/wasm-worker.ts", "src/lib/http-worker.ts", "src/lib/near-worker.ts"]
 }
