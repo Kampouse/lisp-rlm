@@ -902,30 +902,35 @@
         </div>
 
         <div class="learn-section">
-          <h3>Platform: Run Mode</h3>
+          <h3>Execution Modes</h3>
+          <p>Lisp compiles to WASM and runs in three distinct environments — each with a specific purpose:</p>
+        </div>
+
+        <div class="learn-section">
+          <h3>⚡ Run — Browser Execution</h3>
           <div class="learn-modes">
             <div class="learn-mode">
-              <span>Execute Lisp directly in your browser with instant feedback. Pure client-side computation — no blockchain, no network. Great for learning and prototyping.</span>
+              <p><strong>Why it exists:</strong> Instant feedback without blockchain overhead. Zero gas, zero waiting, zero wallet.</p>
+              <p><strong>Best for:</strong> Learning Lisp, prototyping algorithms, testing logic before deploying on-chain.</p>
+              <p><strong>How it works:</strong> Compiles to WASM and executes in a Web Worker. Pure computation — no network, no persistence.</p>
             </div>
           </div>
         </div>
 
         <div class="learn-section">
-          <h3>Platform: NEAR Mode</h3>
+          <h3>📦 NEAR — On-Chain Smart Contracts</h3>
           <div class="learn-modes">
             <div class="learn-mode">
-              <span>Compile to WASM and deploy as an on-chain smart contract. Your code becomes a NEAR contract that can store state, receive transactions, and interact with other contracts. Connect your wallet to deploy.</span>
+              <p><strong>Why it exists:</strong> Deploy code that owns state and money. Trustless, permanent, composable.</p>
+              <p><strong>Best for:</strong> DeFi protocols, NFT contracts, DAOs, payment logic — anything needing economic security.</p>
+              <p><strong>How it works:</strong> Compiles to WASM and deploys to NEAR. Your code becomes an on-chain account with persistent storage. Gas fees apply.</p>
             </div>
           </div>
-          <pre class="learn-code">;; Example: Simple counter contract
+          <pre class="learn-code">;; Example: Counter contract with state
 (defvar *counter* 0)
 
 (defun increment ()
   (set! *counter* (+ *counter* 1))
-  *counter*)
-
-(defun decrement ()
-  (set! *counter* (- *counter* 1))
   *counter*)
 
 (defun get-counter ()
@@ -933,22 +938,24 @@
         </div>
 
         <div class="learn-section">
-          <h3>Platform: WASI Mode</h3>
+          <h3>☁️ WASI — Off-Chain Compute</h3>
           <div class="learn-modes">
             <div class="learn-mode">
-              <span>Compile to WASM and run off-chain via OutLayer. Access HTTP capabilities for API calls, storage, and computation without gas fees. Ideal for heavy processing, oracles, and data pipelines.</span>
+              <p><strong>Why it exists:</strong> Heavy computation is expensive on-chain. WASI runs off-chain with HTTP and storage — no gas limits.</p>
+              <p><strong>Best for:</strong> API oracles, data processing, AI inference, complex math, large-scale computations.</p>
+              <p><strong>How it works:</strong> Compiles to WASM with WASI extensions, runs via OutLayer. Can call HTTP APIs and use persistent storage. Results are verifiable on-chain.</p>
             </div>
           </div>
-          <pre class="learn-code">;; Example: HTTP request from WASI
+          <pre class="learn-code">;; Example: Fetch external API
 (defun fetch-price ()
-  (let ((response (http-get "https://api.example.com/price")))
-    (json-parse response)))  ; Parse JSON response
+  (let ((response (http-get "https://api.coinbase.com/v2/prices/BTC-USD/spot")))
+    (json-parse response)))
 
-;; Example: P2 Storage (browser localStorage in browser, OutLayer on NEAR)
+;; Example: P2 Storage
 (defun main ()
   (begin
-    (storage-set "count" "42")
-    (storage-get "count")))  ; → "42"</pre>
+    (storage-set "key" "value")
+    (storage-get "key")))  ; → "value"</pre>
         </div>
 
         <div class="learn-section">
