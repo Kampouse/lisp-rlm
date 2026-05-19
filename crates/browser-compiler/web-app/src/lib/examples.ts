@@ -66,4 +66,25 @@ export const examples: Example[] = [
     (storage-set "count" "42")
     (storage-get "count")))`,
   },
+  {
+    name: 'Tests',
+    icon: '✓',
+    target: 'pure',
+    source: `;; Test system demo
+;; Tests use assert-equal, assert-true, assert-false
+
+(define (add a b) (+ a b))
+
+(test "addition works"
+  (assert-equal (add 2 3) 5))
+
+(test "handles zero"
+  (assert-equal (add 0 0) 0)
+  (assert-equal (add 5 0) 5))
+
+(test "negative numbers"
+  (assert-equal (add -1 1) 0)
+  (assert-equal (add -5 -3) -8))
+`,
+  },
 ];

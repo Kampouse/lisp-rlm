@@ -5,7 +5,8 @@
   import { runWasiWithWorker } from './lib/runWasiWithWorker.ts';
   import { examples } from './lib/examples.ts';
   import { connectWallet, disconnectWallet, deployP1, deployP2, getWalletState, type WalletState, type DeployResult, type Network } from './lib/wallet.ts';
-  import { Play, Box, Cloud, Share2, Link, FlaskConical, Wallet, Zap, Rocket, CircleDot, Loader2, ChevronDown, ChevronUp, Menu, X, BookOpen } from '@lucide/svelte';
+  import { parseTests, buildTestCode, type TestRunResult } from './lib/test-runner.ts';
+  import { Play, Box, Cloud, Share2, Link, FlaskConical, Wallet, Zap, Rocket, CircleDot, Loader2, ChevronDown, ChevronUp, Menu, X, BookOpen, CheckCircle, XCircle } from '@lucide/svelte';
 
   // ============================================
   // State
@@ -42,6 +43,10 @@
 
   // Learn panel
   let showLearn: boolean = $state(false);
+
+  // Test runner
+  let testResults: TestRunResult | null = $state(null);
+  let testing: boolean = $state(false);
 
   // Resizable panes
   let outputPaneWidth: number = $state(40); // percentage
@@ -376,6 +381,55 @@
   }
 
   // ============================================
+  // Test Runner
+  // ============================================
+  async function handleRunTests() {
+    if (!wasmReady || testing) return;
+    
+    const { setupCode, tests } = parseTests(source);
+    
+    if (tests.length === 0) {
+      testResults = { tests: [], passed: 0, failed: 0, total: 0 };
+      return;
+    }
+    
+    testing = true;
+    testResults = null;
+    const results: TestRunResult = { tests: [], passed: 0, failed: 0, total: tests.length };
+    
+    try {
+      for (const test of tests) {
+        const testCode = buildTestCode(setupCode, test.body);
+        
+        try {
+          // Compile and run
+          const res = compile(testCode, 'pure');
+          if (res.success && res.wasmBytes) {
+            const output = await runPure(res.wasmBytes);
+            // If we get here without error, test passed
+            results.tests.push({ name: test.name, passed: true, output });
+            results.passed++;
+          } else {
+            results.tests.push({ name: test.name, passed: false, error: res.error ?? 'Compilation failed' });
+            results.failed++;
+          }
+        } catch (err: unknown) {
+          results.tests.push({ 
+            name: test.name, 
+            passed: false, 
+            error: err instanceof Error ? err.message : String(err) 
+          });
+          results.failed++;
+        }
+      }
+    } finally {
+      testing = false;
+    }
+    
+    testResults = results;
+  }
+
+  // ============================================
   // Example selection
   // ============================================
   function selectExample(index: number) {
@@ -387,6 +441,7 @@
     deployResult = null;
     showDeployPanel = false;
     runResult = null;
+    testResults = null;
     clearMonacoMarkers();
     saveState();
     updateUrlHash();
@@ -753,6 +808,20 @@
         Run
       {/if}
     </button>
+
+    <button
+      class="header-test-btn"
+      onclick={handleRunTests}
+      disabled={!wasmReady || testing}
+    >
+      {#if testing}
+        <Loader2 size={16} class="spinner-icon" />
+        Testing...
+      {:else}
+        <CheckCircle size={16} />
+        Test
+      {/if}
+    </button>
   </header>
 
   <!-- Learn Panel -->
@@ -1058,6 +1127,32 @@
                     </div>
                   {/if}
 
+                  <!-- Test Results -->
+                  {#if testResults !== null}
+                    <div class="test-results-panel">
+                      <div class="test-results-header">
+                        <span class="test-results-icon">{testResults.failed === 0 ? '✓' : '✗'}</span>
+                        <span class="test-results-title">
+                          {testResults.passed}/{testResults.total} tests passed
+                        </span>
+                        {#if testResults.failed > 0}
+                          <span class="test-count-failed">{testResults.failed} failed</span>
+                        {/if}
+                      </div>
+                      <div class="test-results-list">
+                        {#each testResults.tests as test}
+                          <div class="test-item" class:passed={test.passed} class:failed={!test.passed}>
+                            <span class="test-status-icon">{test.passed ? '✓' : '✗'}</span>
+                            <span class="test-name">{test.name}</span>
+                            {#if !test.passed && test.error}
+                              <span class="test-error">{test.error}</span>
+                            {/if}
+                          </div>
+                        {/each}
+                      </div>
+                    </div>
+                  {/if}
+
                   <!-- WAT Disassembly -->
                   {#if result.wat}
                     <details class="hex-details">
@@ -1337,6 +1432,31 @@
   .header-run-btn .spinner-icon {
     animation: spin 1s linear infinite;
   }
+  .header-test-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
+    background: transparent;
+    color: var(--color-accent);
+    border: 1px solid var(--color-accent);
+    border-radius: var(--radius-md);
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .header-test-btn:hover:not(:disabled) {
+    background: var(--color-accent);
+    color: white;
+  }
+  .header-test-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .header-test-btn .spinner-icon {
+    animation: spin 1s linear infinite;
+  }
   .output-pane.collapsed {
     min-height: auto;
   }
@@ -1569,5 +1689,76 @@
       background: var(--color-bg);
       border-top: 1px solid var(--color-border);
     }
+  }
+
+  /* Test Results */
+  .test-results-panel {
+    margin: var(--space-md) 0;
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    background: var(--color-bg-surface);
+    border: 1px solid var(--color-border);
+  }
+  .test-results-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    background: var(--color-bg);
+    border-bottom: 1px solid var(--color-border);
+  }
+  .test-results-icon {
+    font-size: 16px;
+    font-weight: 600;
+  }
+  .test-results-title {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--color-text);
+  }
+  .test-count-failed {
+    font-size: 12px;
+    color: #ff6b6b;
+    margin-left: auto;
+  }
+  .test-results-list {
+    padding: 4px 0;
+  }
+  .test-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 8px 14px;
+    font-size: 13px;
+    border-bottom: 1px solid var(--color-border);
+  }
+  .test-item:last-child {
+    border-bottom: none;
+  }
+  .test-item.passed {
+    color: var(--color-text-secondary);
+  }
+  .test-item.failed {
+    background: rgba(255, 107, 107, 0.1);
+  }
+  .test-status-icon {
+    font-size: 14px;
+    flex-shrink: 0;
+  }
+  .test-item.passed .test-status-icon {
+    color: var(--color-accent);
+  }
+  .test-item.failed .test-status-icon {
+    color: #ff6b6b;
+  }
+  .test-name {
+    color: var(--color-text);
+    font-weight: 500;
+  }
+  .test-error {
+    color: #ff6b6b;
+    font-size: 12px;
+    margin-left: auto;
+    opacity: 0.9;
   }
 </style>
