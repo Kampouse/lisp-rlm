@@ -724,18 +724,19 @@ impl WasmEmitter {
             "near/block_index" => self.need_host(8),
             "near/block_timestamp" => self.need_host(9),
             "near/epoch_height" => self.need_host(10),
-            "near/attached_deposit" => { self.need_host(14); self.need_host(0); }
-            "near/attached_deposit_high" => { self.need_host(14); self.need_host(0); }
+            "near/attached_deposit" => self.need_host(14),
             "near/prepaid_gas" => self.need_host(15),
             "near/used_gas" => self.need_host(16),
-            "near/account_balance" => { self.need_host(12); self.need_host(0); self.need_host(1); }
             "near/sha256" => { self.need_host(21); self.need_host(0); self.need_host(1); }
             "near/keccak256" => { self.need_host(22); self.need_host(0); self.need_host(1); }
             "near/ed25519_verify" => self.need_host(24),
             "near/signer_account_pk" => { self.need_host(5); self.need_host(0); self.need_host(1); }
             "near/storage_usage" => self.need_host(11),
-            "near/account_locked_balance" => { self.need_host(13); self.need_host(0); }
-            "near/account_locked_balance_high" => { self.need_host(13); self.need_host(0); }
+            "near/account_balance" => self.need_host(12),
+            "near/account_balance_high" => self.need_host(12),
+            "near/account_locked_balance" => self.need_host(13),
+            "near/account_locked_balance_high" => self.need_host(13),
+            "near/attached_deposit_high" => self.need_host(14),
             "near/log_utf16" => self.need_host(29),
             "near/random_seed" => { self.need_host(23); self.need_host(0); self.need_host(1); }
             "near/promise_create" => self.need_host(30),
@@ -810,7 +811,7 @@ impl WasmEmitter {
             "near/promise_yield_resume" => self.need_host(83),
             // Validator
             "near/validator_stake" => self.need_host(84),
-            "near/validator_total_stake" => { self.need_host(85); self.need_host(0); }
+            "near/validator_total_stake" => self.need_host(85),
             // OutLayer RPC — uses "outlayer" module imports
             "outlayer/view" | "outlayer/raw" | "outlayer/status" |
             "outlayer/storage-set" | "outlayer/storage-get" | "outlayer/storage-has" | "outlayer/storage-delete" |
@@ -1593,6 +1594,9 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // ptr
                 v.push(Self::host_call(25)); // value_return
+                // Set return flag so export wrapper skips its value_return
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::GlobalSet(1));
                 v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
             "near/log" => {
@@ -7282,17 +7286,16 @@ impl WasmEmitter {
         Ok(v)
     }
 
-    // Helper: call host(register_id=0) writing u128 to register, read to mem, return low 64 bits
+    // Helper: call host(ptr) writing u128 directly to memory, return low 64 bits as tagged Num
+    // These functions (account_balance, attached_deposit, account_locked_balance, validator_total_stake)
+    // take a memory pointer and write 16 bytes (u128 little-endian) to that address.
     fn read_u128_low(&mut self, host_idx: usize) -> Result<Vec<Instruction<'static>>, String> {
         let mut v = Vec::new();
-        v.push(Instruction::I64Const(0)); // register_id=0
+        // Pass TEMP_MEM as the pointer where host will write u128
+        v.push(Instruction::I64Const(TEMP_MEM as i64));
         v.push(Self::host_call(host_idx));
-        // read_register(0, 0) — copy 16 bytes to mem[0..16]
-        v.push(Instruction::I64Const(0));
-        v.push(Instruction::I64Const(0));
-        v.push(Self::host_call(0));
-        // Load low 8 bytes (bytes 0..7) as i64 — tag as Num
-        v.push(Instruction::I32Const(0));
+        // Load low 8 bytes (bytes 0..7) from TEMP_MEM — tag as Num
+        v.push(Instruction::I32Const(TEMP_MEM as i32));
         v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
         v.extend(self.emit_tag_num());
         Ok(v)
@@ -7301,15 +7304,12 @@ impl WasmEmitter {
     // Helper: same but return high 64 bits of u128
     fn read_u128_high(&mut self, host_idx: usize) -> Result<Vec<Instruction<'static>>, String> {
         let mut v = Vec::new();
-        v.push(Instruction::I64Const(0)); // register_id=0
+        // Pass TEMP_MEM as the pointer where host will write u128
+        v.push(Instruction::I64Const(TEMP_MEM as i64));
         v.push(Self::host_call(host_idx));
-        // read_register(0, 0) — copy 16 bytes to mem[0..16]
-        v.push(Instruction::I64Const(0));
-        v.push(Instruction::I64Const(0));
-        v.push(Self::host_call(0));
-        // Load high 8 bytes (bytes 8..15) as i64 — tag as Num
-        v.push(Instruction::I32Const(8));
-        v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+        // Load high 8 bytes (bytes 8..15) from TEMP_MEM — tag as Num
+        v.push(Instruction::I32Const(TEMP_MEM as i32));
+        v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 }));
         v.extend(self.emit_tag_num());
         Ok(v)
     }
