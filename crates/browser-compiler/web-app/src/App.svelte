@@ -6,7 +6,7 @@
   import { examples } from './lib/examples.ts';
   import { connectWallet, disconnectWallet, deployP1, deployP2, getWalletState, type WalletState, type DeployResult, type Network } from './lib/wallet.ts';
   import { parseTests, buildTestCode, type TestRunResult } from './lib/test-runner.ts';
-  import { Play, Box, Cloud, Share2, Link, FlaskConical, Wallet, Zap, Rocket, CircleDot, Loader2, ChevronDown, ChevronUp, Menu, X, BookOpen, CheckCircle, XCircle } from '@lucide/svelte';
+  import { Play, Box, Cloud, Share2, Link, FlaskConical, Wallet, Zap, Rocket, CircleDot, Loader2, ChevronDown, ChevronUp, Menu, X, BookOpen, CheckCircle, XCircle, Hammer } from '@lucide/svelte';
 
   // ============================================
   // State
@@ -790,7 +790,7 @@
       {#if compiling}
         <Loader2 size={16} class="spinner-icon" />
       {:else}
-        <Share2 size={16} />
+        <Hammer size={16} />
       {/if}
     </button>
 
