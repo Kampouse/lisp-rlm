@@ -81,6 +81,9 @@ pub(crate) const HOST_FUNCS: &[(&str, &[ValType], &[ValType])] = &[
     ("promise_batch_action_add_key_with_function_call", &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[]), // 47
     ("promise_batch_action_delete_key", &[ValType::I64, ValType::I64, ValType::I64], &[]),          // 48
     ("promise_batch_action_delete_account", &[ValType::I64, ValType::I64, ValType::I64], &[]),      // 49
+    // Global contracts
+    ("deploy_contract",             &[ValType::I64, ValType::I64], &[]),            // 50
+    ("current_code_hash",           &[ValType::I64], &[]),                          // 51
 ];
 
 const HOST_BASE: u32 = 0xFF00_0000;
@@ -727,6 +730,9 @@ impl WasmEmitter {
             "near/iter_prefix" => { self.need_host(36); self.need_host(2); self.need_host(0); self.need_host(1); }
             "near/iter_range" => { self.need_host(37); self.need_host(2); self.need_host(0); self.need_host(1); }
             "near/iter_next" => { self.need_host(38); self.need_host(0); self.need_host(1); }
+            // Global contracts
+            "near/deploy_contract" => self.need_host(50),
+            "near/current_code_hash" => { self.need_host(51); self.need_host(0); }
             // OutLayer RPC — uses "outlayer" module imports
             "outlayer/view" | "outlayer/raw" | "outlayer/status" |
             "outlayer/storage-set" | "outlayer/storage-get" | "outlayer/storage-has" | "outlayer/storage-delete" |
@@ -2806,6 +2812,28 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0));
                 Ok(v)
             }
+
+            // ── Global contracts ──
+
+            // (near/deploy_contract code_ptr code_len) — deploys code to current account
+            "near/deploy_contract" => {
+                let code_ptr = self.expr(&a[0])?;
+                let code_len = self.expr(&a[1])?;
+                let mut v = Vec::new();
+                // Untag: extract ptr and len from tagged string
+                v.extend(code_len.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // code_len
+                v.extend(code_ptr);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // code_ptr
+                v.push(Self::host_call(50)); // deploy_contract(len, ptr)
+                v.push(Instruction::I64Const(0));
+                Ok(v)
+            }
+
+            // (near/current_code_hash) — returns 32-byte hash as tagged Str
+            "near/current_code_hash" => self.read_to_register(51, a),
 
             // ── Iterator support ──
 
