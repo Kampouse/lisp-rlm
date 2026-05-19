@@ -1,12 +1,12 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import * as monaco from 'monaco-editor';
-  import { initCompiler, compile, runPure, runNear, compileP2Core, toHexDump, type CompileTarget, type CompileResult } from './lib/compiler.ts';
+  import { initCompiler, compile, runPure, runNear, compileP2Core, toHexDump, getNearStorage, clearNearStorage, getNearContext, setNearContext, resetNearContext, decodeReturnValue, formatGas, type CompileTarget, type CompileResult, type NearContext } from './lib/compiler.ts';
   import { runWasiWithWorker } from './lib/runWasiWithWorker.ts';
   import { examples } from './lib/examples.ts';
   import { connectWallet, disconnectWallet, deployP1, deployP2, getWalletState, type WalletState, type DeployResult, type Network } from './lib/wallet.ts';
   import { parseTests, buildTestCode, type TestRunResult } from './lib/test-runner.ts';
-  import { Play, Box, Cloud, Zap, Link, FlaskConical, Wallet, Rocket, CircleDot, Loader2, ChevronDown, ChevronUp, Menu, X, BookOpen, CheckCircle, XCircle, Hammer } from '@lucide/svelte';
+  import { Play, Box, Cloud, Zap, Link, FlaskConical, Wallet, Rocket, CircleDot, Loader2, ChevronDown, ChevronUp, Menu, X, BookOpen, CheckCircle, XCircle, Hammer, Database, Trash2 } from '@lucide/svelte';
 
   // ============================================
   // State
@@ -47,6 +47,18 @@
   // Test runner
   let testResults: TestRunResult | null = $state(null);
   let testing: boolean = $state(false);
+
+  // NEAR storage inspector
+  let nearStorageView: Record<string, string> | null = $state(null);
+  let showNearStorage: boolean = $state(false);
+
+  // NEAR method runner
+  let nearMethods: string[] = $state([]);
+  let selectedMethod: string = $state('');
+  let nearGasUsed: string = $state('');
+  let nearReturnDisplay: string | null = $state(null);
+  let showNearContext: boolean = $state(false);
+  let nearCtx: NearContext = $state(getNearContext());
 
   // Resizable panes
   let outputPaneWidth: number = $state(40); // percentage
@@ -323,6 +335,14 @@
     try {
       result = compile(source, target);
       
+      // Populate NEAR methods list from compiled exports
+      if (result.success && target === 'p1' && result.exports) {
+        nearMethods = result.exports.filter(e => e !== '_run');
+        if (nearMethods.length > 0 && !nearMethods.includes(selectedMethod)) {
+          selectedMethod = '';
+        }
+      }
+      
       // Feature 4: Show errors inline in Monaco
       if (!result.success && result.error) {
         const markers = parseErrorToMarkers(result.error);
@@ -359,12 +379,47 @@
     if (!result?.success || running) return;
     running = true;
     runResult = null;
+    nearReturnDisplay = null;
+    nearGasUsed = '';
     try {
       if (target === 'p1') {
+        // Apply context from UI to the mock runtime
+        const rpcUrl = network === 'testnet'
+          ? 'https://rpc.testnet.near.org'
+          : 'https://rpc.mainnet.near.org';
+        setNearContext({ ...nearCtx, rpcUrl });
+
         // NEAR contract — run with mocked runtime
-        runResult = 'Running with NEAR mock runtime...';
-        const nearResult = await runNear(result.wasmBytes!);
-        runResult = nearResult.stdout || `✓ Execution complete${nearResult.returnValue !== null ? `\nReturn value: ${nearResult.returnValue}` : ''}`;
+        const method = selectedMethod || undefined;
+        runResult = method ? `Calling ${method}()...` : 'Running all methods...';
+        const nearResult = await runNear(result.wasmBytes!, { method });
+        nearMethods = nearResult.methods;
+
+        // Format output
+        const lines = [nearResult.stdout];
+
+        // Show return value
+        const retDecoded = decodeReturnValue(nearResult.returnValue);
+        if (retDecoded !== null) {
+          nearReturnDisplay = retDecoded;
+          lines.push(`Return: ${retDecoded}`);
+        }
+
+        // Show gas (static WASM estimation with NEAR pricing)
+        nearGasUsed = formatGas(nearResult.gasUsed);
+        const bd = nearResult.gasBreakdown;
+        if (bd) {
+          lines.push(`Gas: ${nearGasUsed} (${bd.opcodes} opcodes, ${formatGas(bd.opcodeGas)} compute, ${formatGas(bd.hostGas)} host)`);
+        } else {
+          lines.push(`Gas: ${nearGasUsed}`);
+        }
+
+        runResult = lines.join('\n');
+
+        // Auto-refresh storage view if open
+        if (showNearStorage) {
+          nearStorageView = getNearStorage();
+        }
       } else if (target === 'p2') {
         // P2 Component → re-compile as core WASM for browser execution
         runResult = 'Compiling core WASM...';
@@ -1192,6 +1247,98 @@
                     </div>
                   {/if}
 
+                  <!-- NEAR Method Runner -->
+                  {#if target === 'p1' && result?.success}
+                    <div class="near-method-panel">
+                      <div class="near-method-header">
+                        <span class="near-method-title">Call Method</span>
+                        <button class="near-context-toggle" onclick={() => { showNearContext = !showNearContext; }} title="Configure context">
+                          <Hammer size={14} />
+                        </button>
+                      </div>
+
+                      <!-- Context config -->
+                      {#if showNearContext}
+                        <div class="near-context-form">
+                          <div class="near-ctx-row">
+                            <label>Signer</label>
+                            <input type="text" bind:value={nearCtx.signerAccount} placeholder="user.testnet" onchange={() => setNearContext(nearCtx)} />
+                          </div>
+                          <div class="near-ctx-row">
+                            <label>Deposit</label>
+                            <input type="text" value={nearCtx.attachedDeposit.toString()} oninput={(e) => { try { nearCtx.attachedDeposit = BigInt((e.target as HTMLInputElement).value); setNearContext(nearCtx); } catch {} }} placeholder="0" />
+                            <span class="near-ctx-unit">yoctoⓃ</span>
+                          </div>
+                          <div class="near-ctx-row">
+                            <label>Balance</label>
+                            <input type="text" value={nearCtx.accountBalance.toString()} oninput={(e) => { try { nearCtx.accountBalance = BigInt((e.target as HTMLInputElement).value); setNearContext(nearCtx); } catch {} }} placeholder="1000000..." />
+                            <span class="near-ctx-unit">yoctoⓃ</span>
+                          </div>
+                          <div class="near-ctx-row">
+                            <label>Block</label>
+                            <input type="text" value={nearCtx.blockIndex.toString()} oninput={(e) => { try { nearCtx.blockIndex = BigInt((e.target as HTMLInputElement).value); setNearContext(nearCtx); } catch {} }} placeholder="12345678" />
+                          </div>
+                        </div>
+                      {/if}
+
+                      <!-- Method selector -->
+                      <div class="near-method-actions">
+                        <select class="near-method-select" bind:value={selectedMethod}>
+                          <option value="">— all methods —</option>
+                          {#each nearMethods as m}
+                            <option value={m}>{m}()</option>
+                          {/each}
+                        </select>
+                        <button class="near-method-run" onclick={handleRun} disabled={running}>
+                          {running ? '...' : 'Run'}
+                        </button>
+                      </div>
+
+                      <!-- Return value + gas -->
+                      {#if nearReturnDisplay !== null || nearGasUsed}
+                        <div class="near-result-bar">
+                          {#if nearReturnDisplay !== null}
+                            <span class="near-result-ret">→ {nearReturnDisplay}</span>
+                          {/if}
+                          {#if nearGasUsed}
+                            <span class="near-result-gas">⛽ {nearGasUsed}</span>
+                          {/if}
+                        </div>
+                      {/if}
+                    </div>
+                  {/if}
+
+                  <!-- NEAR Storage Inspector -->
+                  {#if target === 'p1' && result?.success}
+                    <div class="near-storage-panel">
+                      <div class="near-storage-header">
+                        <span class="near-storage-title">Contract State</span>
+                        <div class="near-storage-actions">
+                          <button class="near-storage-btn" onclick={() => { nearStorageView = getNearStorage(); showNearStorage = true; }} title="View storage">
+                            <Database size={14} />
+                          </button>
+                          <button class="near-storage-btn near-storage-btn-danger" onclick={() => { clearNearStorage(); nearStorageView = {}; showNearStorage = false; }} title="Clear storage">
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </div>
+                      {#if showNearStorage && nearStorageView !== null}
+                        <div class="near-storage-content">
+                          {#if Object.keys(nearStorageView).length === 0}
+                            <div class="near-storage-empty">Empty — no keys stored yet</div>
+                          {:else}
+                            {#each Object.entries(nearStorageView) as [key, value]}
+                              <div class="near-storage-entry">
+                                <span class="near-storage-key">{key}</span>
+                                <span class="near-storage-value">{value}</span>
+                              </div>
+                            {/each}
+                          {/if}
+                        </div>
+                      {/if}
+                    </div>
+                  {/if}
+
                   <!-- WAT Disassembly -->
                   {#if result.wat}
                     <details class="hex-details">
@@ -1570,7 +1717,7 @@
     min-height: 0;
   }
   .mobile-menu-btn {
-    display: none;
+    display: flex;
     padding: 8px;
     background: transparent;
     border: none;
@@ -1687,12 +1834,6 @@
 
   /* Mobile styles */
   @media (max-width: 767px) {
-    .mobile-menu-btn {
-      display: flex;
-    }
-    .examples-bar {
-      display: none !important;
-    }
     .header-title {
       display: none;
     }
@@ -1799,5 +1940,226 @@
     font-size: 12px;
     margin-left: auto;
     opacity: 0.9;
+  }
+
+  /* NEAR Storage Inspector */
+  .near-storage-panel {
+    margin: var(--space-md) 0;
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    background: var(--color-bg-surface);
+    border: 1px solid var(--color-border);
+  }
+  .near-storage-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 14px;
+    background: var(--color-bg);
+    border-bottom: 1px solid var(--color-border);
+  }
+  .near-storage-title {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--color-text-secondary);
+  }
+  .near-storage-actions {
+    display: flex;
+    gap: 6px;
+  }
+  .near-storage-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-surface);
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .near-storage-btn:hover {
+    background: var(--color-bg);
+    color: var(--color-text);
+    border-color: var(--color-accent);
+  }
+  .near-storage-btn-danger:hover {
+    background: rgba(255, 107, 107, 0.1);
+    color: #ff6b6b;
+    border-color: #ff6b6b;
+  }
+  .near-storage-content {
+    padding: 8px 0;
+  }
+  .near-storage-empty {
+    padding: 12px 14px;
+    font-size: 12px;
+    color: var(--color-text-muted);
+    font-style: italic;
+  }
+  .near-storage-entry {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    padding: 6px 14px;
+    border-bottom: 1px solid var(--color-border);
+    font-size: 13px;
+  }
+  .near-storage-entry:last-child {
+    border-bottom: none;
+  }
+  .near-storage-key {
+    color: var(--color-accent);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    min-width: 80px;
+    word-break: break-all;
+  }
+  .near-storage-value {
+    color: var(--color-text);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    word-break: break-all;
+  }
+
+  /* NEAR Method Runner */
+  .near-method-panel {
+    margin: var(--space-md) 0;
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    background: var(--color-bg-surface);
+    border: 1px solid var(--color-border);
+  }
+  .near-method-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 14px;
+    background: var(--color-bg);
+    border-bottom: 1px solid var(--color-border);
+  }
+  .near-method-title {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--color-text-secondary);
+  }
+  .near-context-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-surface);
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .near-context-toggle:hover {
+    background: var(--color-bg);
+    color: var(--color-text);
+    border-color: var(--color-accent);
+  }
+  .near-context-form {
+    padding: 10px 14px;
+    background: var(--color-bg);
+    border-bottom: 1px solid var(--color-border);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .near-ctx-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .near-ctx-row label {
+    font-size: 12px;
+    color: var(--color-text-muted);
+    min-width: 56px;
+  }
+  .near-ctx-row input {
+    flex: 1;
+    padding: 4px 8px;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    background: var(--color-bg-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    color: var(--color-text);
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .near-ctx-row input:focus {
+    border-color: var(--color-accent);
+  }
+  .near-ctx-unit {
+    font-size: 11px;
+    color: var(--color-text-muted);
+  }
+  .near-method-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px;
+  }
+  .near-method-select {
+    flex: 1;
+    padding: 6px 10px;
+    font-size: 13px;
+    font-family: var(--font-mono);
+    background: var(--color-bg-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    color: var(--color-text);
+    cursor: pointer;
+    outline: none;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    padding-right: 28px;
+  }
+  .near-method-select:focus {
+    border-color: var(--color-accent);
+  }
+  .near-method-run {
+    padding: 6px 16px;
+    font-size: 13px;
+    font-weight: 500;
+    background: var(--color-accent);
+    color: #000;
+    border: none;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: opacity 0.15s;
+  }
+  .near-method-run:hover {
+    opacity: 0.85;
+  }
+  .near-method-run:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .near-result-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 6px 14px;
+    border-top: 1px solid var(--color-border);
+    font-size: 12px;
+    font-family: var(--font-mono);
+  }
+  .near-result-ret {
+    color: var(--color-accent);
+  }
+  .near-result-gas {
+    color: var(--color-text-muted);
+    font-size: 11px;
   }
 </style>

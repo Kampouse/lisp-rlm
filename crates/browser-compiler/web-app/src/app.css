@@ -425,9 +425,7 @@ body {
    ============================================ */
 
 .examples-bar {
-  display: flex;
-  gap: var(--space-sm);
-  flex-wrap: wrap;
+  display: none;
 }
 
 .example-btn {

@@ -1325,16 +1325,20 @@ impl WasmEmitter {
                 let key = self.expr(&a[0])?;
                 let val = self.expr(&a[1])?;
                 let mut v = Vec::new();
-                // Store untagged val at mem[0]
-                v.push(Instruction::I32Const(0)); v.extend(val);
+                // Store untagged val at mem[STORAGE_BUF]
+                v.push(Instruction::I32Const(STORAGE_BUF as i32)); v.extend(val);
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                // storage_write(key_len, key_ptr, val_len=8, val_ptr=0, register_id=0) — idx 17
+                // storage_write(key_len, key_ptr, val_len=8, val_ptr=STORAGE_BUF, register_id=0) — idx 17
+                // Untag key first: tagged >> TAG_BITS gives raw (len << 32 | ptr)
                 v.extend(key.clone());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // raw >> 32 = key_len
                 v.extend(key);
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::I64Const(8)); v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(0));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // raw & 0xFFFF_FFFF = key_ptr
+                v.push(Instruction::I64Const(8)); v.push(Instruction::I64Const(STORAGE_BUF));
+                v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(17)); v.push(Instruction::Drop);
                 v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
@@ -1342,16 +1346,19 @@ impl WasmEmitter {
                 let key = self.expr(&a[0])?;
                 let mut v = Vec::new();
                 // storage_read(key_len, key_ptr, register_id=0) — idx 18
+                // Untag key first
                 v.extend(key.clone());
+                v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
                 v.extend(key);
+                v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(18)); v.push(Instruction::Drop);
-                // read_register(0, 0) — idx 0
-                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(0));
+                // read_register(0, STORAGE_BUF) — idx 0
+                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(STORAGE_BUF));
                 v.push(Self::host_call(0));
-                v.push(Instruction::I32Const(0));
+                v.push(Instruction::I32Const(STORAGE_BUF as i32));
                 v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
                 // Tag loaded value as Num
                 v.extend(self.emit_tag_num());
@@ -1361,9 +1368,12 @@ impl WasmEmitter {
                 let key = self.expr(&a[0])?;
                 let mut v = Vec::new();
                 // storage_remove(key_len, key_ptr, register_id=0) — idx 19
+                // Untag key first
                 v.extend(key.clone());
+                v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
                 v.extend(key);
+                v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(19));
@@ -1373,9 +1383,12 @@ impl WasmEmitter {
                 let key = self.expr(&a[0])?;
                 let mut v = Vec::new();
                 // storage_has_key(key_len, key_ptr) — idx 20
+                // Untag key first
                 v.extend(key.clone());
+                v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
                 v.extend(key);
+                v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
                 v.push(Self::host_call(20));
                 // Host returns 0/1 as u64 — tag as Bool
@@ -2057,15 +2070,21 @@ impl WasmEmitter {
                 let amount = self.expr(&a[3])?;
                 let gas = self.expr(&a[4])?;
                 let mut v = Vec::new();
-                // account_id: len >> 32, ptr & 0xFFFF_FFFF
-                v.extend(account.clone()); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(account); v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
-                // method_name: len >> 32, ptr
-                v.extend(method.clone()); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(method); v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
-                // arguments: len >> 32, ptr
-                v.extend(args.clone()); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(args); v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                // account_id: untag → len >> 32, ptr & 0xFFFF_FFFF
+                v.extend(account.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(account); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                // method_name: untag → len >> 32, ptr
+                v.extend(method.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(method); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                // arguments: untag → len >> 32, ptr
+                v.extend(args.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(args); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
                 // amount: untag, store at mem[0], pass ptr=0
                 v.push(Instruction::I32Const(0)); v.extend(amount);
                 v.extend(self.emit_untag());
@@ -2088,13 +2107,19 @@ impl WasmEmitter {
                 let amount = self.expr(&a[4])?;
                 let gas = self.expr(&a[5])?;
                 let mut v = Vec::new();
-                v.extend(pidx);
-                v.extend(account.clone()); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(account); v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
-                v.extend(method.clone()); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(method); v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
-                v.extend(args.clone()); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(args); v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(pidx); v.extend(self.emit_untag()); // untag promise idx
+                v.extend(account.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(account); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(method.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(method); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(args.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(args); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I32Const(0)); v.extend(amount);
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
                 v.push(Instruction::I64Const(0));
@@ -8218,6 +8243,15 @@ pub fn compile_near_from_exprs(exprs: &[LispVal]) -> Result<Vec<u8>, String> {
                                 items[2].clone()
                             };
                             em.emit_define(name, &params, &body)?;
+                        }
+                    }
+                }
+                // Handle (export "name" fn_name is_view)
+                if let LispVal::Sym(s) = &items[0] {
+                    if s == "export" {
+                        if let (LispVal::Str(en), LispVal::Sym(fn_)) = (&items[1], &items[2]) {
+                            let view = items.len() > 3 && matches!(&items[3], LispVal::Bool(true));
+                            em.add_export(fn_, en, view);
                         }
                     }
                 }

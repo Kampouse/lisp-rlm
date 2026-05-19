@@ -45,6 +45,17 @@ export const examples: Example[] = [
 (export "get" get true)`,
   },
   {
+    name: 'CC View',
+    icon: '🔗',
+    target: 'p1',
+    source: `(memory 1)
+;; Cross-contract view call — queries wrap.near wNEAR balance via RPC
+(define (query)
+  (let ((p (near/promise_create "wrap.near" "ft_balance_of" "{\\\"account_id\\\":\\\"jemartel.near\\\"}" 0 0)))
+    (near/promise_result 0)))
+(export "query" query true)`,
+  },
+  {
     name: 'HTTP Fetch',
     icon: '🌐',
     target: 'p2',
