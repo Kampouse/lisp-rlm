@@ -6,7 +6,7 @@
   import { examples } from './lib/examples.ts';
   import { connectWallet, disconnectWallet, deployP1, deployP2, getWalletState, type WalletState, type DeployResult, type Network } from './lib/wallet.ts';
   import { parseTests, buildTestCode, type TestRunResult } from './lib/test-runner.ts';
-  import { Play, Box, Cloud, Share2, Link, FlaskConical, Wallet, Zap, Rocket, CircleDot, Loader2, ChevronDown, ChevronUp, Menu, X, BookOpen, CheckCircle, XCircle, Hammer } from '@lucide/svelte';
+  import { Play, Box, Cloud, Zap, Link, FlaskConical, Wallet, Rocket, CircleDot, Loader2, ChevronDown, ChevronUp, Menu, X, BookOpen, CheckCircle, XCircle, Hammer } from '@lucide/svelte';
 
   // ============================================
   // State
@@ -716,7 +716,7 @@
         aria-selected={target === 'pure'}
         onclick={() => { target = 'pure'; result = null; deployResult = null; showDeployPanel = false; runResult = null; clearMonacoMarkers(); saveState(); }}
       >
-        <Play size={14} /> <span class="pill-label">Run</span>
+        <Zap size={14} /> <span class="pill-label">Run</span>
       </button>
       <button
         class="pill-tab"
