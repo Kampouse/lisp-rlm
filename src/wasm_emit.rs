@@ -84,6 +84,45 @@ pub(crate) const HOST_FUNCS: &[(&str, &[ValType], &[ValType])] = &[
     // Global contracts
     ("deploy_contract",             &[ValType::I64, ValType::I64], &[]),            // 50
     ("current_code_hash",           &[ValType::I64], &[]),                          // 51
+    // Extra crypto
+    ("keccak512",                   &[ValType::I64, ValType::I64, ValType::I64], &[]),                // 52
+    ("ripemd160",                   &[ValType::I64, ValType::I64, ValType::I64], &[]),                // 53
+    ("ecrecover",                   &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]), // 54
+    ("p256_verify",                 &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]), // 55
+    // Alt BN128
+    ("alt_bn128_g1_multiexp",       &[ValType::I64, ValType::I64, ValType::I64], &[]),                // 56
+    ("alt_bn128_g1_sum",            &[ValType::I64, ValType::I64, ValType::I64], &[]),                // 57
+    ("alt_bn128_pairing_check",     &[ValType::I64, ValType::I64], &[ValType::I64]),                   // 58
+    // BLS12-381
+    ("bls12381_p1_sum",             &[ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]),    // 59
+    ("bls12381_p2_sum",             &[ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]),    // 60
+    ("bls12381_g1_multiexp",        &[ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]),    // 61
+    ("bls12381_g2_multiexp",        &[ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]),    // 62
+    ("bls12381_map_fp_to_g1",       &[ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]),    // 63
+    ("bls12381_map_fp2_to_g2",      &[ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]),    // 64
+    ("bls12381_pairing_check",      &[ValType::I64, ValType::I64], &[ValType::I64]),                   // 65
+    ("bls12381_p1_decompress",      &[ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]),    // 66
+    ("bls12381_p2_decompress",      &[ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]),    // 67
+    // Extra promises
+    ("promise_set_refund_to",                    &[ValType::I64, ValType::I64, ValType::I64], &[]),               // 68
+    ("promise_batch_action_state_init",          &[ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]), // 69
+    ("promise_batch_action_state_init_by_account_id", &[ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]), // 70
+    ("set_state_init_data_entry",                &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[]), // 71
+    ("current_contract_code",                    &[ValType::I64], &[ValType::I64]),                                // 72
+    ("refund_to_account_id",                     &[ValType::I64], &[]),                                          // 73
+    ("promise_batch_action_function_call_weight", &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[]), // 74
+    ("promise_batch_action_deploy_global_contract", &[ValType::I64, ValType::I64, ValType::I64], &[]),         // 75
+    ("promise_batch_action_deploy_global_contract_by_account_id", &[ValType::I64, ValType::I64, ValType::I64], &[]), // 76
+    ("promise_batch_action_use_global_contract", &[ValType::I64, ValType::I64, ValType::I64], &[]),             // 77
+    ("promise_batch_action_use_global_contract_by_account_id", &[ValType::I64, ValType::I64, ValType::I64], &[]), // 78
+    ("promise_batch_action_transfer_to_gas_key", &[ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[]), // 79
+    ("promise_batch_action_add_gas_key_with_full_access", &[ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[]), // 80
+    ("promise_batch_action_add_gas_key_with_function_call", &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[]), // 81
+    ("promise_yield_create",  &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]), // 82
+    ("promise_yield_resume", &[ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]), // 83
+    // Validator
+    ("validator_stake",       &[ValType::I64, ValType::I64, ValType::I64], &[]),  // 84
+    ("validator_total_stake", &[ValType::I64], &[]),                              // 85
 ];
 
 const HOST_BASE: u32 = 0xFF00_0000;
@@ -733,6 +772,45 @@ impl WasmEmitter {
             // Global contracts
             "near/deploy_contract" => self.need_host(50),
             "near/current_code_hash" => { self.need_host(51); self.need_host(0); }
+            // Extra crypto
+            "near/keccak512" => { self.need_host(52); self.need_host(0); self.need_host(1); }
+            "near/ripemd160" => { self.need_host(53); self.need_host(0); self.need_host(1); }
+            "near/ecrecover" => self.need_host(54),
+            "near/p256_verify" => self.need_host(55),
+            // Alt BN128
+            "near/alt_bn128_g1_multiexp" => { self.need_host(56); self.need_host(0); }
+            "near/alt_bn128_g1_sum" => { self.need_host(57); self.need_host(0); }
+            "near/alt_bn128_pairing_check" => self.need_host(58),
+            // BLS12-381
+            "near/bls12381_p1_sum" => { self.need_host(59); self.need_host(0); }
+            "near/bls12381_p2_sum" => { self.need_host(60); self.need_host(0); }
+            "near/bls12381_g1_multiexp" => { self.need_host(61); self.need_host(0); }
+            "near/bls12381_g2_multiexp" => { self.need_host(62); self.need_host(0); }
+            "near/bls12381_map_fp_to_g1" => { self.need_host(63); self.need_host(0); }
+            "near/bls12381_map_fp2_to_g2" => { self.need_host(64); self.need_host(0); }
+            "near/bls12381_pairing_check" => self.need_host(65),
+            "near/bls12381_p1_decompress" => { self.need_host(66); self.need_host(0); }
+            "near/bls12381_p2_decompress" => { self.need_host(67); self.need_host(0); }
+            // Extra promises
+            "near/promise_set_refund_to" => self.need_host(68),
+            "near/promise_batch_action_state_init" => self.need_host(69),
+            "near/promise_batch_action_state_init_by_account_id" => self.need_host(70),
+            "near/set_state_init_data_entry" => self.need_host(71),
+            "near/current_contract_code" => { self.need_host(72); self.need_host(0); }
+            "near/refund_to_account_id" => { self.need_host(73); self.need_host(0); }
+            "near/promise_batch_action_function_call_weight" => self.need_host(74),
+            "near/promise_batch_action_deploy_global_contract" => self.need_host(75),
+            "near/promise_batch_action_deploy_global_contract_by_account_id" => self.need_host(76),
+            "near/promise_batch_action_use_global_contract" => self.need_host(77),
+            "near/promise_batch_action_use_global_contract_by_account_id" => self.need_host(78),
+            "near/promise_batch_action_transfer_to_gas_key" => self.need_host(79),
+            "near/promise_batch_action_add_gas_key_with_full_access" => self.need_host(80),
+            "near/promise_batch_action_add_gas_key_with_function_call" => self.need_host(81),
+            "near/promise_yield_create" => self.need_host(82),
+            "near/promise_yield_resume" => self.need_host(83),
+            // Validator
+            "near/validator_stake" => self.need_host(84),
+            "near/validator_total_stake" => { self.need_host(85); self.need_host(0); }
             // OutLayer RPC — uses "outlayer" module imports
             "outlayer/view" | "outlayer/raw" | "outlayer/status" |
             "outlayer/storage-set" | "outlayer/storage-get" | "outlayer/storage-has" | "outlayer/storage-delete" |
@@ -2548,6 +2626,318 @@ impl WasmEmitter {
             }
             "near/random_seed" => self.read_to_register(23, a),
 
+            // keccak512(data_str) — 64-byte digest as tagged Str
+            "near/keccak512" => {
+                let data = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                v.extend(data.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // data_len
+                v.extend(data);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // data_ptr
+                v.push(Instruction::I64Const(0)); // register_id=0
+                v.push(Self::host_call(52));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Self::host_call(0)); // read_register
+                v.push(Instruction::I64Const(0)); v.push(Self::host_call(1)); // register_len
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TEMP_MEM)); v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
+                Ok(v)
+            }
+
+            // ripemd160(data_str) — 20-byte digest as tagged Str
+            "near/ripemd160" => {
+                let data = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                v.extend(data.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // data_len
+                v.extend(data);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // data_ptr
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(53));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Self::host_call(0));
+                v.push(Instruction::I64Const(0)); v.push(Self::host_call(1));
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TEMP_MEM)); v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
+                Ok(v)
+            }
+
+            // (near/ecrecover hash sig v malleability_flag) → Num (1=success, 0=failure)
+            // On success, result is in register 0 — use near/ecrecover_result to read it
+            "near/ecrecover" => {
+                let hash = self.expr(&a[0])?;
+                let sig = self.expr(&a[1])?;
+                let v_val = self.expr(&a[2])?;
+                let malleability = self.expr(&a[3])?;
+                let mut vv = Vec::new();
+                vv.extend(hash.clone()); vv.extend(self.emit_untag());
+                vv.push(Instruction::I64Const(32)); vv.push(Instruction::I64ShrU);
+                vv.extend(hash); vv.extend(self.emit_untag());
+                vv.push(Instruction::I32WrapI64); vv.push(Instruction::I64ExtendI32U);
+                vv.extend(sig.clone()); vv.extend(self.emit_untag());
+                vv.push(Instruction::I64Const(32)); vv.push(Instruction::I64ShrU);
+                vv.extend(sig); vv.extend(self.emit_untag());
+                vv.push(Instruction::I32WrapI64); vv.push(Instruction::I64ExtendI32U);
+                vv.extend(v_val);
+                vv.extend(malleability);
+                vv.push(Instruction::I64Const(0)); // register_id
+                vv.push(Self::host_call(54));
+                vv.extend(self.emit_tag_num());
+                Ok(vv)
+            }
+
+            // (near/p256_verify msg sig pk) → Num (1=valid, 0=invalid)
+            "near/p256_verify" => {
+                let msg = self.expr(&a[0])?;
+                let sig = self.expr(&a[1])?;
+                let pk = self.expr(&a[2])?;
+                let mut v = Vec::new();
+                v.extend(msg.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(msg); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(sig.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(sig); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(pk.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(pk); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Self::host_call(55));
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
+
+            // ── Alt BN128 ──
+
+            // (near/alt_bn128_g1_multiexp data_str) → tagged Str (result in register)
+            "near/alt_bn128_g1_multiexp" => {
+                let data = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                v.extend(data.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(data); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0)); // register_id
+                v.push(Self::host_call(56));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Self::host_call(0));
+                v.push(Instruction::I64Const(0)); v.push(Self::host_call(1));
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TEMP_MEM)); v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
+                Ok(v)
+            }
+
+            // (near/alt_bn128_g1_sum data_str) → tagged Str
+            "near/alt_bn128_g1_sum" => {
+                let data = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                v.extend(data.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(data); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(57));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Self::host_call(0));
+                v.push(Instruction::I64Const(0)); v.push(Self::host_call(1));
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TEMP_MEM)); v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
+                Ok(v)
+            }
+
+            // (near/alt_bn128_pairing_check data_str) → Num (1=valid, 0=invalid)
+            "near/alt_bn128_pairing_check" => {
+                let data = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                v.extend(data.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(data); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Self::host_call(58));
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
+
+            // ── BLS12-381 ──
+
+            // BLS12-381 helper: call host(idx) with (data_len, data_ptr, register_id=0), read_register, return tagged Str
+            // Used by functions that write result to register
+            // (near/bls12381_p1_sum data_str) → tagged Str
+            "near/bls12381_p1_sum" => {
+                let data = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                v.extend(data.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(data); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(59));
+                v.push(Instruction::Drop); // drop status u64
+                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Self::host_call(0));
+                v.push(Instruction::I64Const(0)); v.push(Self::host_call(1));
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TEMP_MEM)); v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
+                Ok(v)
+            }
+
+            "near/bls12381_p2_sum" => {
+                let data = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                v.extend(data.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(data); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(60));
+                v.push(Instruction::Drop); // drop status u64
+                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Self::host_call(0));
+                v.push(Instruction::I64Const(0)); v.push(Self::host_call(1));
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TEMP_MEM)); v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
+                Ok(v)
+            }
+
+            "near/bls12381_g1_multiexp" => {
+                let data = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                v.extend(data.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(data); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(61));
+                v.push(Instruction::Drop); // drop status u64
+                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Self::host_call(0));
+                v.push(Instruction::I64Const(0)); v.push(Self::host_call(1));
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TEMP_MEM)); v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
+                Ok(v)
+            }
+
+            "near/bls12381_g2_multiexp" => {
+                let data = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                v.extend(data.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(data); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(62));
+                v.push(Instruction::Drop); // drop status u64
+                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Self::host_call(0));
+                v.push(Instruction::I64Const(0)); v.push(Self::host_call(1));
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TEMP_MEM)); v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
+                Ok(v)
+            }
+
+            "near/bls12381_map_fp_to_g1" => {
+                let data = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                v.extend(data.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(data); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(63));
+                v.push(Instruction::Drop); // drop status u64
+                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Self::host_call(0));
+                v.push(Instruction::I64Const(0)); v.push(Self::host_call(1));
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TEMP_MEM)); v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
+                Ok(v)
+            }
+
+            "near/bls12381_map_fp2_to_g2" => {
+                let data = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                v.extend(data.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(data); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(64));
+                v.push(Instruction::Drop); // drop status u64
+                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Self::host_call(0));
+                v.push(Instruction::I64Const(0)); v.push(Self::host_call(1));
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TEMP_MEM)); v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
+                Ok(v)
+            }
+
+            // (near/bls12381_pairing_check data_str) → Num (1=valid, 0=invalid)
+            "near/bls12381_pairing_check" => {
+                let data = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                v.extend(data.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(data); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Self::host_call(65));
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
+
+            "near/bls12381_p1_decompress" => {
+                let data = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                v.extend(data.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(data); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(66));
+                v.push(Instruction::Drop); // drop status u64
+                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Self::host_call(0));
+                v.push(Instruction::I64Const(0)); v.push(Self::host_call(1));
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TEMP_MEM)); v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
+                Ok(v)
+            }
+
+            "near/bls12381_p2_decompress" => {
+                let data = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                v.extend(data.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(data); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(67));
+                v.push(Instruction::Drop); // drop status u64
+                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Self::host_call(0));
+                v.push(Instruction::I64Const(0)); v.push(Self::host_call(1));
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TEMP_MEM)); v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
+                Ok(v)
+            }
+
             // ── Promises / Cross-contract calls ──
 
             // (near/promise_create account_id method args amount gas) → promise_index: i64
@@ -2834,6 +3224,282 @@ impl WasmEmitter {
 
             // (near/current_code_hash) — returns 32-byte hash as tagged Str
             "near/current_code_hash" => self.read_to_register(51, a),
+
+            // (near/promise_set_refund_to promise_idx account_id_str)
+            "near/promise_set_refund_to" => {
+                let idx = self.expr(&a[0])?;
+                let acct = self.expr(&a[1])?;
+                let mut v = Vec::new();
+                v.extend(idx);
+                v.extend(acct.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // len
+                v.extend(acct); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // ptr
+                v.push(Self::host_call(68));
+                v.push(Instruction::I64Const(0)); Ok(v)
+            }
+
+            // (near/promise_batch_action_state_init promise_idx code_str amount_u128_ptr)
+            "near/promise_batch_action_state_init" => {
+                let idx = self.expr(&a[0])?;
+                let code = self.expr(&a[1])?;
+                let amt = self.expr(&a[2])?;
+                let mut v = Vec::new();
+                v.extend(idx);
+                v.extend(code.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(code); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(amt);
+                v.push(Self::host_call(69));
+                v.extend(self.emit_tag_num()); Ok(v)
+            }
+
+            // (near/promise_batch_action_state_init_by_account_id promise_idx account_id_str amount_u128_ptr)
+            "near/promise_batch_action_state_init_by_account_id" => {
+                let idx = self.expr(&a[0])?;
+                let acct = self.expr(&a[1])?;
+                let amt = self.expr(&a[2])?;
+                let mut v = Vec::new();
+                v.extend(idx);
+                v.extend(acct.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(acct); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(amt);
+                v.push(Self::host_call(70));
+                v.extend(self.emit_tag_num()); Ok(v)
+            }
+
+            // (near/set_state_init_data_entry promise_idx action_index key_str value_str)
+            "near/set_state_init_data_entry" => {
+                let pidx = self.expr(&a[0])?;
+                let aidx = self.expr(&a[1])?;
+                let key = self.expr(&a[2])?;
+                let val = self.expr(&a[3])?;
+                let mut v = Vec::new();
+                v.extend(pidx); v.extend(aidx);
+                v.extend(key.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(key); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(val.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(val); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Self::host_call(71));
+                v.push(Instruction::I64Const(0)); Ok(v)
+            }
+
+            // (near/current_contract_code) — returns WASM bytecode as tagged Str
+            // current_contract_code returns u64 status AND writes to register
+            "near/current_contract_code" => {
+                let mut v = Vec::new();
+                v.push(Instruction::I64Const(0)); // register_id=0
+                v.push(Self::host_call(72));
+                v.push(Instruction::Drop); // drop status u64
+                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Self::host_call(0)); // read_register
+                v.push(Instruction::I64Const(0)); v.push(Self::host_call(1)); // register_len
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TEMP_MEM)); v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
+                Ok(v)
+            }
+
+            // (near/refund_to_account_id) — returns account ID as tagged Str
+            "near/refund_to_account_id" => self.read_to_register(73, a),
+
+            // (near/promise_batch_action_function_call_weight promise_idx method_str args_str amount gas gas_weight)
+            "near/promise_batch_action_function_call_weight" => {
+                let idx = self.expr(&a[0])?;
+                let method = self.expr(&a[1])?;
+                let args = self.expr(&a[2])?;
+                let amount = self.expr(&a[3])?;
+                let gas = self.expr(&a[4])?;
+                let weight = self.expr(&a[5])?;
+                let mut v = Vec::new();
+                v.extend(idx);
+                v.extend(method.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(method); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(args.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(args); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(amount); v.extend(gas); v.extend(weight);
+                v.push(Self::host_call(74));
+                v.push(Instruction::I64Const(0)); Ok(v)
+            }
+
+            // (near/promise_batch_action_deploy_global_contract promise_idx code_str)
+            "near/promise_batch_action_deploy_global_contract" => {
+                let idx = self.expr(&a[0])?;
+                let code = self.expr(&a[1])?;
+                let mut v = Vec::new();
+                v.extend(idx);
+                v.extend(code.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(code); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Self::host_call(75));
+                v.push(Instruction::I64Const(0)); Ok(v)
+            }
+
+            "near/promise_batch_action_deploy_global_contract_by_account_id" => {
+                let idx = self.expr(&a[0])?;
+                let code = self.expr(&a[1])?;
+                let mut v = Vec::new();
+                v.extend(idx);
+                v.extend(code.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(code); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Self::host_call(76));
+                v.push(Instruction::I64Const(0)); Ok(v)
+            }
+
+            // (near/promise_batch_action_use_global_contract promise_idx code_hash_str)
+            "near/promise_batch_action_use_global_contract" => {
+                let idx = self.expr(&a[0])?;
+                let hash = self.expr(&a[1])?;
+                let mut v = Vec::new();
+                v.extend(idx);
+                v.extend(hash.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(hash); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Self::host_call(77));
+                v.push(Instruction::I64Const(0)); Ok(v)
+            }
+
+            "near/promise_batch_action_use_global_contract_by_account_id" => {
+                let idx = self.expr(&a[0])?;
+                let acct = self.expr(&a[1])?;
+                let mut v = Vec::new();
+                v.extend(idx);
+                v.extend(acct.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(acct); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Self::host_call(78));
+                v.push(Instruction::I64Const(0)); Ok(v)
+            }
+
+            // (near/promise_batch_action_transfer_to_gas_key promise_idx pk_str amount_ptr)
+            "near/promise_batch_action_transfer_to_gas_key" => {
+                let idx = self.expr(&a[0])?;
+                let pk = self.expr(&a[1])?;
+                let amt = self.expr(&a[2])?;
+                let mut v = Vec::new();
+                v.extend(idx);
+                v.extend(pk.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(pk); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(amt);
+                v.push(Self::host_call(79));
+                v.push(Instruction::I64Const(0)); Ok(v)
+            }
+
+            // (near/promise_batch_action_add_gas_key_with_full_access promise_idx pk_str num_nonces)
+            "near/promise_batch_action_add_gas_key_with_full_access" => {
+                let idx = self.expr(&a[0])?;
+                let pk = self.expr(&a[1])?;
+                let nonces = self.expr(&a[2])?;
+                let mut v = Vec::new();
+                v.extend(idx);
+                v.extend(pk.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(pk); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(nonces);
+                v.push(Self::host_call(80));
+                v.push(Instruction::I64Const(0)); Ok(v)
+            }
+
+            // (near/promise_batch_action_add_gas_key_with_function_call promise_idx pk_str num_nonces allowance_ptr receiver_id_str method_names_str)
+            "near/promise_batch_action_add_gas_key_with_function_call" => {
+                let idx = self.expr(&a[0])?;
+                let pk = self.expr(&a[1])?;
+                let nonces = self.expr(&a[2])?;
+                let allow = self.expr(&a[3])?;
+                let recv = self.expr(&a[4])?;
+                let methods = self.expr(&a[5])?;
+                let mut v = Vec::new();
+                v.extend(idx);
+                v.extend(pk.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(pk); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(nonces); v.extend(allow);
+                v.extend(recv.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(recv); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(methods.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(methods); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Self::host_call(81));
+                v.push(Instruction::I64Const(0)); Ok(v)
+            }
+
+            // (near/promise_yield_create method_str args_str gas gas_weight) → Num (promise index)
+            "near/promise_yield_create" => {
+                let method = self.expr(&a[0])?;
+                let args = self.expr(&a[1])?;
+                let gas = self.expr(&a[2])?;
+                let weight = self.expr(&a[3])?;
+                let mut v = Vec::new();
+                v.extend(method.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(method); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(args.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(args); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(gas); v.extend(weight);
+                v.push(Instruction::I64Const(0)); // register_id
+                v.push(Self::host_call(82));
+                v.extend(self.emit_tag_num()); Ok(v)
+            }
+
+            // (near/promise_yield_resume data_id_str payload_str) → Num (0=success)
+            "near/promise_yield_resume" => {
+                let data_id = self.expr(&a[0])?;
+                let payload = self.expr(&a[1])?;
+                let mut v = Vec::new();
+                v.extend(data_id.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(data_id); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(payload.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(payload); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Self::host_call(83));
+                v.extend(self.emit_tag_num()); Ok(v)
+            }
+
+            // (near/validator_stake account_id_str stake_ptr) — writes stake to stake_ptr
+            "near/validator_stake" => {
+                let acct = self.expr(&a[0])?;
+                let stake = self.expr(&a[1])?;
+                let mut v = Vec::new();
+                v.extend(acct.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(acct); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(stake);
+                v.push(Self::host_call(84));
+                v.push(Instruction::I64Const(0)); Ok(v)
+            }
+
+            // (near/validator_total_stake) → Num (low 128 bits)
+            "near/validator_total_stake" => self.read_u128_low(85),
 
             // ── Iterator support ──
 
