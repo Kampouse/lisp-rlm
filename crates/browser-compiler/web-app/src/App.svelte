@@ -58,6 +58,98 @@
   let outlineItems: OutlineItem[] = $derived(parseOutline(source));
 
   // ============================================
+  // API Reference (per target)
+  // ============================================
+  let showApiRef: boolean = $state(false);
+  let apiExpanded: Record<string, boolean> = $state({});
+
+  interface ApiGroup { title: string; items: string[]; }
+
+  const CORE_MATH: string[] = ['+', '-', '*', '/', '%', 'mod', 'abs', 'min', 'max', 'inc', 'dec'];
+  const CORE_CMP: string[] = ['=', '!=', '<', '>', '<=', '>=', 'zero?', 'pos?', 'neg?', 'even?', 'odd?'];
+  const CORE_LOGIC: string[] = ['and', 'or', 'not', 'if', 'cond', 'case', 'when', 'unless', 'match'];
+  const CORE_LIST: string[] = ['list', 'car', 'cdr', 'cons', 'append', 'nth', 'length', 'reverse', 'sort', 'range', 'map', 'filter', 'reduce', 'find', 'member', 'take', 'drop', 'zip'];
+  const CORE_STR: string[] = ['str-concat', 'str-length', 'str-substring', 'str-split', 'str-index-of', 'str-contains', 'str-replace', 'to-string', 'str->num', 'num->str'];
+  const CORE_PRED: string[] = ['nil?', 'list?', 'number?', 'string?', 'bool?', 'symbol?', 'procedure?', 'type-of', 'equal?'];
+  const CORE_FORM: string[] = ['define', 'defn', 'def', 'let', 'fn', 'lambda', 'loop', 'recur', 'set!', 'quote', 'do', 'begin'];
+  const CORE_DICT: string[] = ['dict', 'dict/get', 'dict/set', 'dict/has?', 'dict/keys', 'dict/vals', 'dict/remove', 'dict-merge'];
+  const CORE_JSON: string[] = ['json-parse', 'to-json', 'from-json', 'json-get', 'json/get'];
+  const CORE_VEC: string[] = ['vec', 'vec?', 'vec-nth', 'vec-len', 'vec-conj', 'vec-slice'];
+  const CORE_BORSH: string[] = ['borsh-serialize', 'borsh-deserialize', 'array'];
+  const CORE_FP: string[] = ['fp/mul', 'fp/div', 'fp/to_int', 'fp/from_int', 'fp/sqrt'];
+  const CORE_U128: string[] = ['u128/new', 'u128/store', 'u128/load', 'u128/add', 'u128/sub', 'u128/mul', 'u128/lt', 'u128/eq'];
+  const CORE_PRINT: string[] = ['print', 'println', 'display', 'newline', 'debug', 'error'];
+  const CORE_TEST: string[] = ['test', 'assert-equal', 'assert-true', 'assert-false', 'assert-returns'];
+
+  const NEAR_STORAGE: string[] = ['near/store', 'near/load', 'near/remove', 'near/has_key', 'near/iter_prefix', 'near/iter_next'];
+  const NEAR_CTX: string[] = ['near/current_account_id', 'near/signer_account_id', 'near/predecessor_account_id', 'near/input', 'near/block_index', 'near/block_timestamp', 'near/epoch_height'];
+  const NEAR_CRYPTO: string[] = ['near/sha256', 'near/keccak256', 'near/ed25519_verify', 'near/ecrecover', 'near/p256_verify', 'near/random_seed'];
+  const NEAR_BALANCE: string[] = ['near/account_balance', 'near/attached_deposit', 'near/prepaid_gas', 'near/used_gas', 'near/storage_usage'];
+  const NEAR_PROMISE: string[] = ['near/promise_create', 'near/promise_then', 'near/promise_and', 'near/promise_return', 'near/promise_results_count', 'near/promise_result'];
+  const NEAR_JSON: string[] = ['near/json_get_int', 'near/json_get_str', 'near/json_return_int', 'near/json_return_str'];
+  const NEAR_BATCH: string[] = ['near/promise_batch_create', 'near/promise_batch_then', 'near/promise_batch_action_create_account', 'near/promise_batch_action_deploy_contract', 'near/promise_batch_action_function_call', 'near/promise_batch_action_transfer', 'near/promise_batch_action_stake', 'near/promise_batch_action_add_key_with_full_access', 'near/promise_batch_action_delete_key', 'near/promise_batch_action_delete_account'];
+  const NEAR_MISC: string[] = ['near/log', 'near/panic', 'near/return', 'near/abort', 'near/validator_stake', 'near/validator_total_stake'];
+
+  const WASI_STORAGE: string[] = ['storage-set', 'storage-get', 'storage-has', 'storage-delete', 'storage-increment', 'storage-decrement', 'storage-list-keys'];
+  const WASI_ENV: string[] = ['env/signer', 'env/predecessor'];
+  const WASI_HTTP: string[] = ['http-get', 'http-post', 'http-get-json'];
+  const WASI_OUTLAYER: string[] = ['outlayer/view', 'outlayer/raw', 'outlayer/status', 'outlayer/context', 'outlayer/storage-set', 'outlayer/storage-get', 'outlayer/storage-has', 'outlayer/storage-delete', 'outlayer/call', 'outlayer/transfer', 'outlayer/http_get'];
+
+  function getApiForTarget(t: CompileTarget): ApiGroup[] {
+    const core: ApiGroup[] = [
+      { title: 'Forms', items: CORE_FORM },
+      { title: 'Math', items: CORE_MATH },
+      { title: 'Compare', items: CORE_CMP },
+      { title: 'Logic', items: CORE_LOGIC },
+      { title: 'List', items: CORE_LIST },
+      { title: 'String', items: CORE_STR },
+      { title: 'Dict', items: CORE_DICT },
+      { title: 'JSON', items: CORE_JSON },
+      { title: 'Vec', items: CORE_VEC },
+      { title: 'Predicate', items: CORE_PRED },
+      { title: 'Borsh', items: CORE_BORSH },
+      { title: 'FixedPoint', items: CORE_FP },
+      { title: 'u128', items: CORE_U128 },
+      { title: 'Print', items: CORE_PRINT },
+      { title: 'Test', items: CORE_TEST },
+    ];
+
+    if (t === 'p1') {
+      core.push(
+        { title: 'NEAR Storage', items: NEAR_STORAGE },
+        { title: 'NEAR Context', items: NEAR_CTX },
+        { title: 'NEAR Crypto', items: NEAR_CRYPTO },
+        { title: 'NEAR Balance', items: NEAR_BALANCE },
+        { title: 'NEAR JSON', items: NEAR_JSON },
+        { title: 'NEAR Promise', items: NEAR_PROMISE },
+        { title: 'NEAR Batch', items: NEAR_BATCH },
+        { title: 'NEAR Misc', items: NEAR_MISC },
+      );
+    } else if (t === 'p2') {
+      core.push(
+        { title: 'Storage', items: WASI_STORAGE },
+        { title: 'Env', items: WASI_ENV },
+        { title: 'HTTP', items: WASI_HTTP },
+        { title: 'OutLayer', items: WASI_OUTLAYER },
+      );
+    }
+    return core;
+  }
+
+  let apiForTarget: ApiGroup[] = $derived(getApiForTarget(target));
+
+  function insertSnippet(fn: string) {
+    if (!editorInstance) return;
+    const pos = editorInstance.getPosition();
+    editorInstance.executeEdits('api-ref', [{
+      range: new monaco.Range(pos.lineNumber, pos.column, pos.lineNumber, pos.column),
+      text: `(${fn} )`,
+    }]);
+    editorInstance.setPosition({ lineNumber: pos.lineNumber, column: pos.column + fn.length + 2 });
+    editorInstance.focus();
+  }
+
+  // ============================================
   // State
   // ============================================
   let target: CompileTarget = $state('pure');
@@ -1542,6 +1634,32 @@
                 <div class="outline-empty">No symbols found</div>
               {/each}
             </div>
+
+            <div class="outline-divider"></div>
+
+            <button class="outline-section-header" onclick={() => showApiRef = !showApiRef}>
+              <span class="outline-title">API · {target.toUpperCase()}</span>
+              <span class="api-toggle">{showApiRef ? '▾' : '▸'}</span>
+            </button>
+            {#if showApiRef}
+              <div class="api-ref-body">
+                {#each apiForTarget as group}
+                  <div class="api-group">
+                    <div class="api-group-title" onclick={() => apiExpanded[group.title] = !apiExpanded[group.title]}>
+                      <span>{apiExpanded[group.title] ? '▾' : '▸'} {group.title}</span>
+                      <span class="api-count">{group.items.length}</span>
+                    </div>
+                    {#if apiExpanded[group.title]}
+                      <div class="api-items">
+                        {#each group.items as fn}
+                          <span class="api-fn" onclick={() => insertSnippet(fn)}>{fn}</span>
+                        {/each}
+                      </div>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+            {/if}
           </aside>
         {:else}
           <button class="outline-collapsed-btn" onclick={() => { showOutline = true; }} title="Show sidebar">
@@ -2131,6 +2249,62 @@
     color: var(--color-text-muted);
     font-style: italic;
   }
+
+  /* API Reference */
+  .api-toggle {
+    color: var(--color-text-muted);
+    font-size: 10px;
+  }
+  .api-ref-body {
+    padding: 4px 0;
+    overflow-y: auto;
+    flex: 1;
+  }
+  .api-group {
+    margin-bottom: 2px;
+  }
+  .api-group-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    user-select: none;
+  }
+  .api-group-title:hover {
+    background: rgba(255, 255, 255, 0.04);
+  }
+  .api-count {
+    font-size: 9px;
+    color: var(--color-text-muted);
+    font-weight: 400;
+    background: rgba(255, 255, 255, 0.06);
+    padding: 1px 5px;
+    border-radius: 8px;
+  }
+  .api-items {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+    padding: 4px 10px 6px;
+  }
+  .api-fn {
+    font-size: 10px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: rgba(0, 192, 139, 0.08);
+    color: #00c08b;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .api-fn:hover {
+    background: rgba(0, 192, 139, 0.18);
+  }
+
   .outline-header-actions {
     display: flex;
     align-items: center;
