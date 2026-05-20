@@ -65,72 +65,312 @@
 
   interface ApiGroup { title: string; items: string[]; }
 
-  const CORE_MATH: string[] = ['+', '-', '*', '/', '%', 'mod', 'abs', 'min', 'max', 'inc', 'dec'];
-  const CORE_CMP: string[] = ['=', '!=', '<', '>', '<=', '>=', 'zero?', 'pos?', 'neg?', 'even?', 'odd?'];
-  const CORE_LOGIC: string[] = ['and', 'or', 'not', 'if', 'cond', 'case', 'when', 'unless', 'match'];
-  const CORE_LIST: string[] = ['list', 'car', 'cdr', 'cons', 'append', 'nth', 'length', 'reverse', 'sort', 'range', 'map', 'filter', 'reduce', 'find', 'member', 'take', 'drop', 'zip'];
-  const CORE_STR: string[] = ['str-concat', 'str-length', 'str-substring', 'str-split', 'str-index-of', 'str-contains', 'str-replace', 'to-string', 'str->num', 'num->str'];
-  const CORE_PRED: string[] = ['nil?', 'list?', 'number?', 'string?', 'bool?', 'symbol?', 'procedure?', 'type-of', 'equal?'];
-  const CORE_FORM: string[] = ['define', 'defn', 'def', 'let', 'fn', 'lambda', 'loop', 'recur', 'set!', 'quote', 'do', 'begin'];
-  const CORE_DICT: string[] = ['dict', 'dict/get', 'dict/set', 'dict/has?', 'dict/keys', 'dict/vals', 'dict/remove', 'dict-merge'];
-  const CORE_JSON: string[] = ['json-parse', 'to-json', 'from-json', 'json-get', 'json/get'];
-  const CORE_VEC: string[] = ['vec', 'vec?', 'vec-nth', 'vec-len', 'vec-conj', 'vec-slice'];
-  const CORE_BORSH: string[] = ['borsh-serialize', 'borsh-deserialize', 'array'];
-  const CORE_FP: string[] = ['fp/mul', 'fp/div', 'fp/to_int', 'fp/from_int', 'fp/sqrt'];
-  const CORE_U128: string[] = ['u128/new', 'u128/store', 'u128/load', 'u128/add', 'u128/sub', 'u128/mul', 'u128/lt', 'u128/eq'];
-  const CORE_PRINT: string[] = ['print', 'println', 'display', 'newline', 'debug', 'error'];
-  const CORE_TEST: string[] = ['test', 'assert-equal', 'assert-true', 'assert-false', 'assert-returns'];
+  const SNIPPETS: Record<string, string> = {
+    // Forms
+    'define': '(define (name x y)\n  body)',
+    'defn': '(defn name [x y]\n  body)',
+    'def': '(def x 42)',
+    'let': '(let [x 1 y 2]\n  (+ x y))',
+    'fn': '(fn [x] (* x x))',
+    'lambda': '(lambda (x) (* x x))',
+    'loop': '(loop [i 0 acc 0]\n  (if (>= i 10) acc\n    (recur (+ i 1) (+ acc i))))',
+    'recur': '(recur args...)',
+    'set!': '(set! x new-value)',
+    'quote': '(quote (a b c))',
+    'do': '(do\n  expr1\n  expr2)',
+    'begin': '(begin\n  expr1\n  expr2)',
+    // Math
+    '+': '(+ 1 2 3)',
+    '-': '(- 10 3)',
+    '*': '(* 2 3 4)',
+    '/': '(/ 10 2)',
+    '%': '(% 10 3)',
+    'mod': '(mod 10 3)',
+    'abs': '(abs -5)',
+    'min': '(min 3 1 2)',
+    'max': '(max 3 1 2)',
+    'inc': '(inc x)',
+    'dec': '(dec x)',
+    // Compare
+    '=': '(= a b)',
+    '!=': '(!= a b)',
+    '<': '(< a b)',
+    '>': '(> a b)',
+    '<=': '(<= a b)',
+    '>=': '(>= a b)',
+    'zero?': '(zero? n)',
+    'pos?': '(pos? n)',
+    'neg?': '(neg? n)',
+    'even?': '(even? n)',
+    'odd?': '(odd? n)',
+    // Logic
+    'and': '(and x y)',
+    'or': '(or x y)',
+    'not': '(not x)',
+    'if': '(if condition\n  then-expr\n  else-expr)',
+    'cond': '(cond\n  (test1 val1)\n  (test2 val2)\n  (else default))',
+    'case': '(case expr\n  (val1 result1)\n  (val2 result2)\n  (else default))',
+    'when': '(when condition\n  body)',
+    'unless': '(unless condition\n  body)',
+    'match': '(match expr\n  (pattern1 result1)\n  (pattern2 result2))',
+    // List
+    'list': '(list 1 2 3)',
+    'car': '(car lst)',
+    'cdr': '(cdr lst)',
+    'cons': '(cons 1 (list 2 3))',
+    'append': '(append (list 1 2) (list 3 4))',
+    'nth': '(nth lst 0)',
+    'length': '(length lst)',
+    'reverse': '(reverse lst)',
+    'sort': '(sort lst <)',
+    'range': '(range 0 10)',
+    'map': '(map (fn [x] (* x 2)) lst)',
+    'filter': '(filter (fn [x] (> x 5)) lst)',
+    'reduce': '(reduce + 0 lst)',
+    'find': '(find (fn [x] (> x 5)) lst)',
+    'member': '(member 3 lst)',
+    'take': '(take 3 lst)',
+    'drop': '(drop 2 lst)',
+    'zip': '(zip (list 1 2) (list 3 4))',
+    // String
+    'str-concat': '(str-concat "hello" " " "world")',
+    'str-length': '(str-length "hello")',
+    'str-substring': '(str-substring "hello" 1 3)',
+    'str-split': '(str-split "a,b,c" ",")',
+    'str-index-of': '(str-index-of "hello" "ll")',
+    'str-contains': '(str-contains "hello" "ell")',
+    'str-replace': '(str-replace "hello" "l" "r")',
+    'to-string': '(to-string 42)',
+    'str->num': '(str->num "42")',
+    'num->str': '(num->str 42)',
+    // Dict
+    'dict': '(dict "key1" val1 "key2" val2)',
+    'dict/get': '(dict/get d "key")',
+    'dict/set': '(dict/set d "key" value)',
+    'dict/has?': '(dict/has? d "key")',
+    'dict/keys': '(dict/keys d)',
+    'dict/vals': '(dict/vals d)',
+    'dict/remove': '(dict/remove d "key")',
+    'dict-merge': '(dict-merge d1 d2)',
+    // JSON
+    'json-parse': '(json-parse "{\\"a\\":1}")',
+    'to-json': '(to-json val)',
+    'from-json': '(from-json str)',
+    'json-get': '(json-get obj "key")',
+    'json/get': '(json/get obj "path")',
+    // Vec
+    'vec': '(vec 1 2 3)',
+    'vec?': '(vec? x)',
+    'vec-nth': '(vec-nth v 0)',
+    'vec-len': '(vec-len v)',
+    'vec-conj': '(vec-conj v 4)',
+    'vec-slice': '(vec-slice v 1 3)',
+    // Predicate
+    'nil?': '(nil? x)',
+    'list?': '(list? x)',
+    'number?': '(number? x)',
+    'string?': '(string? x)',
+    'bool?': '(bool? x)',
+    'symbol?': '(symbol? x)',
+    'procedure?': '(procedure? x)',
+    'type-of': '(type-of x)',
+    'equal?': '(equal? a b)',
+    // Borsh
+    'borsh-serialize': '(borsh-serialize val)',
+    'borsh-deserialize': '(borsh-deserialize bytes)',
+    'array': '(array 1 2 3)',
+    // FixedPoint
+    'fp/mul': '(fp/mul a b)',
+    'fp/div': '(fp/div a b)',
+    'fp/to_int': '(fp/to_int fp)',
+    'fp/from_int': '(fp/from_int n)',
+    'fp/sqrt': '(fp/sqrt fp)',
+    // u128
+    'u128/new': '(u128/new "1000000000000000000")',
+    'u128/store': '(u128/store key val)',
+    'u128/load': '(u128/load key)',
+    'u128/add': '(u128/add a b)',
+    'u128/sub': '(u128/sub a b)',
+    'u128/mul': '(u128/mul a b)',
+    'u128/lt': '(u128/lt a b)',
+    'u128/eq': '(u128/eq a b)',
+    // Print
+    'print': '(print "value")',
+    'println': '(println "value")',
+    'display': '(display val)',
+    'newline': '(newline)',
+    'debug': '(debug "msg" val)',
+    'error': '(error "msg")',
+    // Test
+    'test': '(test "name"\n  (assert-equal actual expected))',
+    'assert-equal': '(assert-equal actual expected)',
+    'assert-true': '(assert-true expr)',
+    'assert-false': '(assert-false expr)',
+    'assert-returns': '(assert-returns fn args expected)',
+    // NEAR Storage
+    'near/store': '(near/store "key" "value")',
+    'near/load': '(near/load "key")',
+    'near/remove': '(near/remove "key")',
+    'near/has_key': '(near/has_key "key")',
+    'near/iter_prefix': '(near/iter_prefix "prefix")',
+    'near/iter_next': '(near/iter_next iter)',
+    // NEAR Context
+    'near/current_account_id': '(near/current_account_id)',
+    'near/signer_account_id': '(near/signer_account_id)',
+    'near/predecessor_account_id': '(near/predecessor_account_id)',
+    'near/input': '(near/input)',
+    'near/block_index': '(near/block_index)',
+    'near/block_timestamp': '(near/block_timestamp)',
+    'near/epoch_height': '(near/epoch_height)',
+    // NEAR Crypto
+    'near/sha256': '(near/sha256 data)',
+    'near/keccak256': '(near/keccak256 data)',
+    'near/ed25519_verify': '(near/ed25519_verify msg sig pk)',
+    'near/ecrecover': '(near/ecrecover msg sig)',
+    'near/p256_verify': '(near/p256_verify msg sig pk)',
+    'near/random_seed': '(near/random_seed)',
+    // NEAR Balance
+    'near/account_balance': '(near/account_balance)',
+    'near/attached_deposit': '(near/attached_deposit)',
+    'near/prepaid_gas': '(near/prepaid_gas)',
+    'near/used_gas': '(near/used_gas)',
+    'near/storage_usage': '(near/storage_usage)',
+    // NEAR Promise
+    'near/promise_create': '(near/promise_create "account" "method" args gas deposit)',
+    'near/promise_then': '(near/promise_then promise "account" "method" args gas deposit)',
+    'near/promise_and': '(near/promise_and promise1 promise2)',
+    'near/promise_return': '(near/promise_return promise)',
+    'near/promise_results_count': '(near/promise_results_count)',
+    'near/promise_result': '(near/promise_result idx)',
+    // NEAR JSON
+    'near/json_get_int': '(near/json_get_int key)',
+    'near/json_get_str': '(near/json_get_str key)',
+    'near/json_return_int': '(near/json_return_int value)',
+    'near/json_return_str': '(near/json_return_str value)',
+    // NEAR Batch
+    'near/promise_batch_create': '(near/promise_batch_create "account")',
+    'near/promise_batch_then': '(near/promise_batch_then promise "account")',
+    'near/promise_batch_action_create_account': '(near/promise_batch_action_create_account promise)',
+    'near/promise_batch_action_deploy_contract': '(near/promise_batch_action_deploy_contract promise wasm)',
+    'near/promise_batch_action_function_call': '(near/promise_batch_action_function_call promise "method" args gas deposit)',
+    'near/promise_batch_action_transfer': '(near/promise_batch_action_transfer promise amount)',
+    'near/promise_batch_action_stake': '(near/promise_batch_action_stake promise amount pk)',
+    'near/promise_batch_action_add_key_with_full_access': '(near/promise_batch_action_add_key_with_full_access promise pk nonce)',
+    'near/promise_batch_action_delete_key': '(near/promise_batch_action_delete_key promise pk)',
+    'near/promise_batch_action_delete_account': '(near/promise_batch_action_delete_account promise "beneficiary")',
+    // NEAR Misc
+    'near/log': '(near/log "message")',
+    'near/panic': '(near/panic "message")',
+    'near/return': '(near/return value)',
+    'near/abort': '(near/abort "msg" "module")',
+    'near/validator_stake': '(near/validator_stake "account")',
+    'near/validator_total_stake': '(near/validator_total_stake)',
+    // WASI Storage
+    'storage-set': '(storage-set "key" "value")',
+    'storage-get': '(storage-get "key")',
+    'storage-has': '(storage-has "key")',
+    'storage-delete': '(storage-delete "key")',
+    'storage-increment': '(storage-increment "key")',
+    'storage-decrement': '(storage-decrement "key")',
+    'storage-list-keys': '(storage-list-keys)',
+    // WASI Env
+    'env/signer': '(env/signer)',
+    'env/predecessor': '(env/predecessor)',
+    // WASI HTTP
+    'http-get': '(http-get "https://example.com")',
+    'http-post': '(http-post "https://example.com" body)',
+    'http-get-json': '(http-get-json "https://api.example.com/data")',
+    // OutLayer
+    'outlayer/view': '(outlayer/view "account" "method" args)',
+    'outlayer/raw': '(outlayer/raw "account" "method" args)',
+    'outlayer/status': '(outlayer/status)',
+    'outlayer/context': '(outlayer/context)',
+    'outlayer/storage-set': '(outlayer/storage-set "key" "value")',
+    'outlayer/storage-get': '(outlayer/storage-get "key")',
+    'outlayer/storage-has': '(outlayer/storage-has "key")',
+    'outlayer/storage-delete': '(outlayer/storage-delete "key")',
+    'outlayer/call': '(outlayer/call "account" "method" args)',
+    'outlayer/transfer': '(outlayer/transfer "account" amount)',
+    'outlayer/http_get': '(outlayer/http_get "url")',
+  };
 
-  const NEAR_STORAGE: string[] = ['near/store', 'near/load', 'near/remove', 'near/has_key', 'near/iter_prefix', 'near/iter_next'];
-  const NEAR_CTX: string[] = ['near/current_account_id', 'near/signer_account_id', 'near/predecessor_account_id', 'near/input', 'near/block_index', 'near/block_timestamp', 'near/epoch_height'];
-  const NEAR_CRYPTO: string[] = ['near/sha256', 'near/keccak256', 'near/ed25519_verify', 'near/ecrecover', 'near/p256_verify', 'near/random_seed'];
-  const NEAR_BALANCE: string[] = ['near/account_balance', 'near/attached_deposit', 'near/prepaid_gas', 'near/used_gas', 'near/storage_usage'];
-  const NEAR_PROMISE: string[] = ['near/promise_create', 'near/promise_then', 'near/promise_and', 'near/promise_return', 'near/promise_results_count', 'near/promise_result'];
-  const NEAR_JSON: string[] = ['near/json_get_int', 'near/json_get_str', 'near/json_return_int', 'near/json_return_str'];
-  const NEAR_BATCH: string[] = ['near/promise_batch_create', 'near/promise_batch_then', 'near/promise_batch_action_create_account', 'near/promise_batch_action_deploy_contract', 'near/promise_batch_action_function_call', 'near/promise_batch_action_transfer', 'near/promise_batch_action_stake', 'near/promise_batch_action_add_key_with_full_access', 'near/promise_batch_action_delete_key', 'near/promise_batch_action_delete_account'];
-  const NEAR_MISC: string[] = ['near/log', 'near/panic', 'near/return', 'near/abort', 'near/validator_stake', 'near/validator_total_stake'];
+  const ALL_FNS = Object.keys(SNIPPETS);
 
-  const WASI_STORAGE: string[] = ['storage-set', 'storage-get', 'storage-has', 'storage-delete', 'storage-increment', 'storage-decrement', 'storage-list-keys'];
-  const WASI_ENV: string[] = ['env/signer', 'env/predecessor'];
-  const WASI_HTTP: string[] = ['http-get', 'http-post', 'http-get-json'];
-  const WASI_OUTLAYER: string[] = ['outlayer/view', 'outlayer/raw', 'outlayer/status', 'outlayer/context', 'outlayer/storage-set', 'outlayer/storage-get', 'outlayer/storage-has', 'outlayer/storage-delete', 'outlayer/call', 'outlayer/transfer', 'outlayer/http_get'];
+  function getGroup(title: string, filter: (fn: string) => boolean): string[] {
+    return ALL_FNS.filter(filter);
+  }
 
   function getApiForTarget(t: CompileTarget): ApiGroup[] {
+    const nearFns = new Set([
+      'near/store','near/load','near/remove','near/has_key','near/iter_prefix','near/iter_next',
+      'near/current_account_id','near/signer_account_id','near/predecessor_account_id','near/input','near/block_index','near/block_timestamp','near/epoch_height',
+      'near/sha256','near/keccak256','near/ed25519_verify','near/ecrecover','near/p256_verify','near/random_seed',
+      'near/account_balance','near/attached_deposit','near/prepaid_gas','near/used_gas','near/storage_usage',
+      'near/promise_create','near/promise_then','near/promise_and','near/promise_return','near/promise_results_count','near/promise_result',
+      'near/json_get_int','near/json_get_str','near/json_return_int','near/json_return_str',
+      'near/promise_batch_create','near/promise_batch_then','near/promise_batch_action_create_account','near/promise_batch_action_deploy_contract','near/promise_batch_action_function_call','near/promise_batch_action_transfer','near/promise_batch_action_stake','near/promise_batch_action_add_key_with_full_access','near/promise_batch_action_delete_key','near/promise_batch_action_delete_account',
+      'near/log','near/panic','near/return','near/abort','near/validator_stake','near/validator_total_stake',
+    ]);
+    const wasiFns = new Set([
+      'storage-set','storage-get','storage-has','storage-delete','storage-increment','storage-decrement','storage-list-keys',
+      'env/signer','env/predecessor',
+      'http-get','http-post','http-get-json',
+      'outlayer/view','outlayer/raw','outlayer/status','outlayer/context','outlayer/storage-set','outlayer/storage-get','outlayer/storage-has','outlayer/storage-delete','outlayer/call','outlayer/transfer','outlayer/http_get',
+    ]);
+
+    const formFns = new Set(['define','defn','def','let','fn','lambda','loop','recur','set!','quote','do','begin']);
+    const mathFns = new Set(['+','-','*','/','%','mod','abs','min','max','inc','dec']);
+    const cmpFns = new Set(['=','!=','<','>','<=','>=','zero?','pos?','neg?','even?','odd?']);
+    const logicFns = new Set(['and','or','not','if','cond','case','when','unless','match']);
+    const listFns = new Set(['list','car','cdr','cons','append','nth','length','reverse','sort','range','map','filter','reduce','find','member','take','drop','zip']);
+    const strFns = new Set(['str-concat','str-length','str-substring','str-split','str-index-of','str-contains','str-replace','to-string','str->num','num->str']);
+    const dictFns = new Set(['dict','dict/get','dict/set','dict/has?','dict/keys','dict/vals','dict/remove','dict-merge']);
+    const jsonFns = new Set(['json-parse','to-json','from-json','json-get','json/get']);
+    const vecFns = new Set(['vec','vec?','vec-nth','vec-len','vec-conj','vec-slice']);
+    const predFns = new Set(['nil?','list?','number?','string?','bool?','symbol?','procedure?','type-of','equal?']);
+    const borshFns = new Set(['borsh-serialize','borsh-deserialize','array']);
+    const fpFns = new Set(['fp/mul','fp/div','fp/to_int','fp/from_int','fp/sqrt']);
+    const u128Fns = new Set(['u128/new','u128/store','u128/load','u128/add','u128/sub','u128/mul','u128/lt','u128/eq']);
+    const printFns = new Set(['print','println','display','newline','debug','error']);
+    const testFns = new Set(['test','assert-equal','assert-true','assert-false','assert-returns']);
+
     const core: ApiGroup[] = [
-      { title: 'Forms', items: CORE_FORM },
-      { title: 'Math', items: CORE_MATH },
-      { title: 'Compare', items: CORE_CMP },
-      { title: 'Logic', items: CORE_LOGIC },
-      { title: 'List', items: CORE_LIST },
-      { title: 'String', items: CORE_STR },
-      { title: 'Dict', items: CORE_DICT },
-      { title: 'JSON', items: CORE_JSON },
-      { title: 'Vec', items: CORE_VEC },
-      { title: 'Predicate', items: CORE_PRED },
-      { title: 'Borsh', items: CORE_BORSH },
-      { title: 'FixedPoint', items: CORE_FP },
-      { title: 'u128', items: CORE_U128 },
-      { title: 'Print', items: CORE_PRINT },
-      { title: 'Test', items: CORE_TEST },
+      { title: 'Forms', items: ALL_FNS.filter(f => formFns.has(f)) },
+      { title: 'Math', items: ALL_FNS.filter(f => mathFns.has(f)) },
+      { title: 'Compare', items: ALL_FNS.filter(f => cmpFns.has(f)) },
+      { title: 'Logic', items: ALL_FNS.filter(f => logicFns.has(f)) },
+      { title: 'List', items: ALL_FNS.filter(f => listFns.has(f)) },
+      { title: 'String', items: ALL_FNS.filter(f => strFns.has(f)) },
+      { title: 'Dict', items: ALL_FNS.filter(f => dictFns.has(f)) },
+      { title: 'JSON', items: ALL_FNS.filter(f => jsonFns.has(f)) },
+      { title: 'Vec', items: ALL_FNS.filter(f => vecFns.has(f)) },
+      { title: 'Predicate', items: ALL_FNS.filter(f => predFns.has(f)) },
+      { title: 'Borsh', items: ALL_FNS.filter(f => borshFns.has(f)) },
+      { title: 'FixedPoint', items: ALL_FNS.filter(f => fpFns.has(f)) },
+      { title: 'u128', items: ALL_FNS.filter(f => u128Fns.has(f)) },
+      { title: 'Print', items: ALL_FNS.filter(f => printFns.has(f)) },
+      { title: 'Test', items: ALL_FNS.filter(f => testFns.has(f)) },
     ];
 
     if (t === 'p1') {
+      const nearItems = ALL_FNS.filter(f => nearFns.has(f));
       core.push(
-        { title: 'NEAR Storage', items: NEAR_STORAGE },
-        { title: 'NEAR Context', items: NEAR_CTX },
-        { title: 'NEAR Crypto', items: NEAR_CRYPTO },
-        { title: 'NEAR Balance', items: NEAR_BALANCE },
-        { title: 'NEAR JSON', items: NEAR_JSON },
-        { title: 'NEAR Promise', items: NEAR_PROMISE },
-        { title: 'NEAR Batch', items: NEAR_BATCH },
-        { title: 'NEAR Misc', items: NEAR_MISC },
+        { title: 'NEAR Storage', items: nearItems.filter(f => f.startsWith('near/store') || f.startsWith('near/load') || f.startsWith('near/remove') || f.startsWith('near/has_') || f.startsWith('near/iter')) },
+        { title: 'NEAR Context', items: nearItems.filter(f => f.startsWith('near/current') || f.startsWith('near/signer') || f.startsWith('near/pred') || f.startsWith('near/input') || f.startsWith('near/block') || f.startsWith('near/epoch')) },
+        { title: 'NEAR Crypto', items: nearItems.filter(f => f.startsWith('near/sha') || f.startsWith('near/keccak') || f.startsWith('near/ed') || f.startsWith('near/ec') || f.startsWith('near/p256') || f.startsWith('near/random')) },
+        { title: 'NEAR Balance', items: nearItems.filter(f => f.startsWith('near/account') || f.startsWith('near/attached') || f.startsWith('near/prepaid') || f.startsWith('near/used') || f.startsWith('near/storage_usage')) },
+        { title: 'NEAR JSON', items: nearItems.filter(f => f.startsWith('near/json')) },
+        { title: 'NEAR Promise', items: nearItems.filter(f => f.startsWith('near/promise_c') || f.startsWith('near/promise_t') || f.startsWith('near/promise_a') || f.startsWith('near/promise_r') || f.startsWith('near/promise_results')) },
+        { title: 'NEAR Batch', items: nearItems.filter(f => f.startsWith('near/promise_batch')) },
+        { title: 'NEAR Misc', items: nearItems.filter(f => f.startsWith('near/log') || f.startsWith('near/panic') || f.startsWith('near/return') || f.startsWith('near/abort') || f.startsWith('near/validator')) },
       );
     } else if (t === 'p2') {
+      const wasiItems = ALL_FNS.filter(f => wasiFns.has(f));
       core.push(
-        { title: 'Storage', items: WASI_STORAGE },
-        { title: 'Env', items: WASI_ENV },
-        { title: 'HTTP', items: WASI_HTTP },
-        { title: 'OutLayer', items: WASI_OUTLAYER },
+        { title: 'Storage', items: wasiItems.filter(f => f.startsWith('storage')) },
+        { title: 'Env', items: wasiItems.filter(f => f.startsWith('env')) },
+        { title: 'HTTP', items: wasiItems.filter(f => f.startsWith('http')) },
+        { title: 'OutLayer', items: wasiItems.filter(f => f.startsWith('outlayer')) },
       );
     }
     return core;
@@ -140,12 +380,15 @@
 
   function insertSnippet(fn: string) {
     if (!editorInstance) return;
+    const snippet = SNIPPETS[fn] || `(${fn} )`;
     const pos = editorInstance.getPosition();
     editorInstance.executeEdits('api-ref', [{
       range: new monaco.Range(pos.lineNumber, pos.column, pos.lineNumber, pos.column),
-      text: `(${fn} )`,
+      text: snippet,
     }]);
-    editorInstance.setPosition({ lineNumber: pos.lineNumber, column: pos.column + fn.length + 2 });
+    // Place cursor after first open paren + fn name
+    const firstLine = snippet.split('\n')[0];
+    editorInstance.setPosition({ lineNumber: pos.lineNumber, column: pos.column + firstLine.length + 1 });
     editorInstance.focus();
   }
 
