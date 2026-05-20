@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use sha2::Digest;
 
 // ── PROJECT CONFIG ──
 
@@ -65,9 +66,12 @@ fn main() {
             run_init(name);
         }
         "build" => run_build(args.get(2).map(|s| s.as_str())),
-        "deploy" => run_deploy(args.get(2).map(|s| s.as_str())),
+        "deploy" => run_deploy(&args[2..]),
+        "call" => run_call(&args[2..]),
+        "create" => run_create(&args[2..]),
         "test" => run_project_test(args.get(2).map(|s| s.as_str())),
         "--repl" | "-r" => run_repl(),
+        "help" | "--help" | "-h" => print_usage(),
         "bench" => {
             let file = args.get(2).map(|s| s.as_str()).unwrap_or_else(|| {
                 eprintln!("Usage: near-compile bench <file.lisp>");
@@ -97,6 +101,17 @@ fn print_usage() {
     eprintln!("  near-compile build --target=outlayer   Build for OutLayer WASI");
     eprintln!("  near-compile build --target=outlayer-p2 Build for WASI P2 Component");
     eprintln!("  near-compile deploy [dir]             Build and deploy to NEAR");
+    eprintln!("    --account <id>     Override account from near.json");
+    eprintln!("    --network <net>   Override network (testnet|mainnet)");
+    eprintln!("    --key-path <path> Override key file path");
+    eprintln!("    --seed-phrase      Read seed phrase from stdin");
+    eprintln!("  near-compile call <contract> <method> [args.json] [dir]");
+    eprintln!("    --account, --network, --key-path, --seed-phrase");
+    eprintln!("    --deposit <amount>  Attach NEAR deposit (e.g. 0.1)");
+    eprintln!("    --gas <gas>         Gas limit (default 300000000000000)");
+    eprintln!("  near-compile create <account-id> [funder-account-id]");
+    eprintln!("    --network, --key-path, --seed-phrase");
+    eprintln!("    --fund              Auto-fund from testnet faucet");
     eprintln!("  near-compile test [dir]               Build and run tests");
     eprintln!("  near-compile --repl                   Interactive REPL");
     eprintln!("  near-compile bench <file.lisp|file.wasm>  Benchmark with fuel metering");
@@ -244,10 +259,440 @@ fn do_build_target(project_dir: &str, target: &str) -> Result<(String, Vec<u8>),
     Ok((config.output.clone(), wasm_bytes))
 }
 
+
+// ── NEAR CLI INFRASTRUCTURE ──
+
+/// Parsed CLI overrides for NEAR commands.
+struct NearCliOverrides {
+    account: Option<String>,
+    network: Option<String>,
+    key_path: Option<String>,
+    seed_phrase: bool,
+    gas: Option<u64>,
+    deposit: Option<String>,
+    fund: bool,
+}
+
+/// Resolved NEAR connection details.
+struct NearContext {
+    account: String,
+    network: String,
+    rpc_url: String,
+    signing_key: ed25519_dalek::SigningKey,
+    pk_b58: String,
+}
+
+fn parse_overrides(args: &[String]) -> (NearCliOverrides, Vec<String>) {
+    let mut overrides = NearCliOverrides {
+        account: None,
+        network: None,
+        key_path: None,
+        seed_phrase: false,
+        gas: None,
+        deposit: None,
+        fund: false,
+    };
+    let mut positional = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--account" => {
+                overrides.account = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--network" => {
+                overrides.network = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--key-path" => {
+                overrides.key_path = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--seed-phrase" => {
+                overrides.seed_phrase = true;
+                i += 1;
+            }
+            "--gas" => {
+                overrides.gas = args.get(i + 1).and_then(|g| g.parse().ok());
+                i += 2;
+            }
+            "--deposit" => {
+                overrides.deposit = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--fund" => {
+                overrides.fund = true;
+                i += 1;
+            }
+            _ => {
+                positional.push(args[i].clone());
+                i += 1;
+            }
+        }
+    }
+    (overrides, positional)
+}
+
+/// Resolve NEAR context from near.json + CLI overrides.
+fn resolve_near_ctx(
+    project_dir: &str,
+    overrides: &NearCliOverrides,
+) -> Result<NearContext, String> {
+    // Load project config (optional — some commands don't need it)
+    let config = load_project_config(project_dir).ok();
+
+    let account = overrides
+        .account
+        .clone()
+        .or_else(|| config.as_ref().map(|c| c.account.clone()))
+        .unwrap_or_default();
+
+    let network = overrides
+        .network
+        .clone()
+        .or_else(|| config.as_ref().map(|c| c.network.clone()))
+        .unwrap_or_else(|| "testnet".into());
+
+    if account.is_empty() {
+        return Err("No account specified. Use --account or set account in near.json".into());
+    }
+
+    let rpc_url = match network.as_str() {
+        "mainnet" => "https://rpc.mainnet.near.org",
+        _ => "https://rpc.testnet.near.org",
+    };
+
+    // Load signing key
+    let signing_key = if overrides.seed_phrase {
+        let seed_phrase = read_seed_phrase_from_stdin()?;
+        derive_key_from_seed_phrase(&seed_phrase)?
+    } else {
+        let key_path = overrides
+            .key_path
+            .clone()
+            .or_else(|| config.as_ref().map(|c| c.key_path.clone()))
+            .unwrap_or_default();
+
+        let resolved_path = if key_path.is_empty() {
+            let home = std::env::var("HOME").unwrap_or_default();
+            format!("{}/.near-credentials/{}/{}.json", home, network, account)
+        } else {
+            shellexpand::tilde(&key_path).to_string()
+        };
+
+        load_signing_key(&resolved_path)?
+    };
+
+    let pk_b58 = bs58::encode(signing_key.verifying_key().to_bytes()).into_string();
+
+    Ok(NearContext {
+        account,
+        network,
+        rpc_url: rpc_url.to_string(),
+        signing_key,
+        pk_b58,
+    })
+}
+
+/// Read seed phrase from stdin (interactive prompt).
+fn read_seed_phrase_from_stdin() -> Result<String, String> {
+    eprint!("Enter seed phrase: ");
+    let _ = std::io::stderr().flush();
+    let mut phrase = String::new();
+    std::io::stdin()
+        .read_line(&mut phrase)
+        .map_err(|e| format!("read stdin: {}", e))?;
+    Ok(phrase.trim().to_string())
+}
+
+/// Derive ed25519 signing key from BIP-39 mnemonic using SLIP-0010.
+/// Path: m/44'/397'/0' (NEAR standard derivation).
+fn derive_key_from_seed_phrase(phrase: &str) -> Result<ed25519_dalek::SigningKey, String> {
+    use hmac::{Hmac, Mac};
+    type HmacSha512 = Hmac<sha2::Sha512>;
+
+    // BIP-39: mnemonic → 512-bit seed
+    let seed = bip39_to_seed(phrase)?;
+
+    // SLIP-0010 master key from seed
+    let mut mac =
+        HmacSha512::new_from_slice(b"ed25519 seed").map_err(|e| format!("hmac init: {}", e))?;
+    mac.update(&seed);
+    let result = mac.finalize().into_bytes();
+    let mut master_key = [0u8; 32];
+    let mut master_chain = [0u8; 32];
+    master_key.copy_from_slice(&result[..32]);
+    master_chain.copy_from_slice(&result[32..]);
+
+    // Derive path m/44'/397'/0'
+    let path: &[u32] = &[44 + 0x80000000, 397 + 0x80000000, 0 + 0x80000000];
+    let (key, _chain) = derive_slip10_path(master_key, master_chain, path);
+
+    Ok(ed25519_dalek::SigningKey::from_bytes(&key))
+}
+
+/// BIP-39 mnemonic to 64-byte seed (no passphrase).
+fn bip39_to_seed(phrase: &str) -> Result<[u8; 64], String> {
+    use hmac::{Hmac, Mac};
+    type HmacSha512 = Hmac<sha2::Sha512>;
+
+    // Normalize: collapse whitespace, trim, lowercase
+    let normalized = phrase
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+
+    let mut mac =
+        HmacSha512::new_from_slice(b"mnemonic").map_err(|e| format!("hmac init: {}", e))?;
+    mac.update(normalized.as_bytes());
+    let result = mac.finalize().into_bytes();
+
+    let mut seed = [0u8; 64];
+    seed.copy_from_slice(&result[..64]);
+    Ok(seed)
+}
+
+/// SLIP-0010 child key derivation for ed25519 (hardened only).
+fn derive_slip10_path(
+    mut key: [u8; 32],
+    mut chain_code: [u8; 32],
+    path: &[u32],
+) -> ([u8; 32], [u8; 32]) {
+    use hmac::{Hmac, Mac};
+    type HmacSha512 = Hmac<sha2::Sha512>;
+
+    for &index in path {
+        let mut mac = HmacSha512::new_from_slice(&chain_code).unwrap();
+        mac.update(&[0x00]);
+        mac.update(&key);
+        mac.update(&index.to_be_bytes());
+        let result = mac.finalize().into_bytes();
+        key.copy_from_slice(&result[..32]);
+        chain_code.copy_from_slice(&result[32..]);
+    }
+    (key, chain_code)
+}
+
+/// Load ed25519 signing key from NEAR credential JSON file.
+fn load_signing_key(path: &str) -> Result<ed25519_dalek::SigningKey, String> {
+    let content = fs::read_to_string(path).map_err(|e| format!("read: {}", e))?;
+    let json: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("parse: {}", e))?;
+
+    let sk_str = json["secret_key"]
+        .as_str()
+        .or_else(|| json["private_key"].as_str())
+        .ok_or("missing secret_key/private_key field")?;
+
+    let sk_b58 = sk_str.strip_prefix("ed25519:").unwrap_or(sk_str);
+    let sk_bytes = bs58::decode(sk_b58)
+        .into_vec()
+        .map_err(|e| format!("decode base58 secret key: {}", e))?;
+
+    let signing_key = if sk_bytes.len() == 64 {
+        let mut seed = [0u8; 32];
+        seed.copy_from_slice(&sk_bytes[..32]);
+        ed25519_dalek::SigningKey::from_bytes(&seed)
+    } else if sk_bytes.len() == 32 {
+        let mut seed = [0u8; 32];
+        seed.copy_from_slice(&sk_bytes);
+        ed25519_dalek::SigningKey::from_bytes(&seed)
+    } else {
+        return Err(format!(
+            "unexpected secret key length: {} bytes (expected 32 or 64)",
+            sk_bytes.len()
+        ));
+    };
+
+    // Verify against stored public key if present
+    if let Some(stored_pk) = json["public_key"].as_str() {
+        let derived_pk = bs58::encode(signing_key.verifying_key().to_bytes()).into_string();
+        let stored_b58 = stored_pk.strip_prefix("ed25519:").unwrap_or(stored_pk);
+        if stored_b58 != derived_pk {
+            return Err(format!(
+                "public key mismatch: file has {}, key derives to {}",
+                stored_b58, derived_pk
+            ));
+        }
+    }
+
+    Ok(signing_key)
+}
+
+fn borsh_write_string(buf: &mut Vec<u8>, s: &str) {
+    buf.extend_from_slice(&(s.len() as u32).to_le_bytes());
+    buf.extend_from_slice(s.as_bytes());
+}
+
+async fn rpc_call(
+    client: &reqwest::Client,
+    rpc_url: &str,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": method,
+        "params": params
+    });
+
+    let resp = client
+        .post(rpc_url)
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("RPC request: {}", e))?;
+
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("RPC response read: {}", e))?;
+
+    let val: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("RPC parse JSON: {}", e))?;
+
+    if let Some(err) = val.get("error") {
+        let msg = err["message"].as_str().unwrap_or("unknown");
+        let cause = err["cause"]["name"].as_str().unwrap_or("");
+        let info = err["cause"]["info"].as_str().unwrap_or("");
+        let data = err["data"].as_str().unwrap_or("");
+        if !info.is_empty() {
+            return Err(format!("{}: {}", cause, info));
+        }
+        if !data.is_empty() {
+            return Err(format!("{}: {}", msg, data));
+        }
+        return Err(format!(
+            "RPC error: {} — {}",
+            msg,
+            &text[..text.len().min(300)]
+        ));
+    }
+
+    Ok(val)
+}
+
+/// Build and sign a NEAR transaction body (before signature).
+/// Returns (unsigned_tx_bytes, nonce, client).
+async fn prepare_tx(
+    ctx: &NearContext,
+    receiver_id: &str,
+) -> Result<(Vec<u8>, reqwest::Client), String> {
+    let client = reqwest::Client::new();
+    let pk_display = format!("ed25519:{}", ctx.pk_b58);
+
+    // Fetch access key nonce
+    let access_key: serde_json::Value = rpc_call(
+        &client,
+        &ctx.rpc_url,
+        "query",
+        serde_json::json!({
+            "request_type": "view_access_key",
+            "finality": "final",
+            "account_id": ctx.account,
+            "public_key": &pk_display
+        }),
+    )
+    .await?;
+
+    let nonce: u64 = access_key["result"]["nonce"]
+        .as_u64()
+        .unwrap_or(0)
+        .checked_add(1)
+        .ok_or("nonce overflow")?;
+
+    // Fetch latest block hash
+    let block: serde_json::Value =
+        rpc_call(&client, &ctx.rpc_url, "block", serde_json::json!({"finality": "final"}))
+            .await?;
+
+    let block_hash_b58 = block["result"]["header"]["hash"]
+        .as_str()
+        .ok_or("missing block hash")?;
+    let block_hash = bs58::decode(block_hash_b58)
+        .into_vec()
+        .map_err(|e| format!("decode block hash: {}", e))?;
+    if block_hash.len() != 32 {
+        return Err(format!("block hash is {} bytes, expected 32", block_hash.len()));
+    }
+
+    // Build borsh-encoded transaction (actions added by caller)
+    let mut tx = Vec::new();
+    borsh_write_string(&mut tx, &ctx.account);
+    tx.push(0x00); // ED25519 tag
+    tx.extend_from_slice(&ctx.signing_key.verifying_key().to_bytes());
+    tx.extend_from_slice(&nonce.to_le_bytes());
+    borsh_write_string(&mut tx, receiver_id);
+    tx.extend_from_slice(&block_hash);
+
+    // Store nonce for caller
+    Ok((tx, client))
+}
+
+/// Sign a borsh-encoded transaction body and broadcast it.
+async fn sign_and_broadcast(
+    tx_body: Vec<u8>,
+    ctx: &NearContext,
+    client: &reqwest::Client,
+) -> Result<String, String> {
+    // Sign: SHA-256 hash of the transaction body
+    use ed25519_dalek::Signer;
+    let mut tx = tx_body;
+    let tx_hash = sha2::Sha256::digest(&tx);
+    let signature: ed25519_dalek::Signature = ctx.signing_key.sign(&tx_hash);
+
+    // Signature enum: tag 0x00 (ED25519) + 64 raw bytes
+    tx.push(0x00);
+    tx.extend_from_slice(&signature.to_bytes());
+
+    // Broadcast
+    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &tx);
+    let result = rpc_call(
+        client,
+        &ctx.rpc_url,
+        "broadcast_tx_commit",
+        serde_json::json!([b64]),
+    )
+    .await?;
+
+    let tx_hash = result["result"]["transaction"]["hash"]
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string();
+
+    // Check for execution failure
+    if let Some(failure) = result["result"]["status"].get("Failure") {
+        return Err(format!(
+            "execution failed: {}",
+            serde_json::to_string_pretty(failure).unwrap_or_default()
+        ));
+    }
+
+    Ok(tx_hash)
+}
+
+fn explorer_url(network: &str, tx_hash: &str) -> String {
+    let base = match network {
+        "mainnet" => "https://explorer.near.org",
+        _ => "https://explorer.testnet.near.org",
+    };
+    format!("{}/transactions/{}", base, tx_hash)
+}
+
 // ── DEPLOY ──
 
-fn run_deploy(dir: Option<&str>) {
-    let project_dir = dir.unwrap_or(".");
+fn run_deploy(args: &[String]) {
+    let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
+    rt.block_on(async { run_deploy_async(args).await });
+}
+
+async fn run_deploy_async(args: &[String]) {
+    let (overrides, positional) = parse_overrides(args);
+    let project_dir = positional.first().map(|s| s.as_str()).unwrap_or(".");
+
     let (config, _wasm) = match do_build(project_dir) {
         Ok(r) => r,
         Err(e) => {
@@ -256,63 +701,318 @@ fn run_deploy(dir: Option<&str>) {
         }
     };
 
-    if config.account.is_empty() {
-        eprintln!("❌ No account configured in near.json");
-        std::process::exit(1);
-    }
-
     let wasm_path = Path::new(project_dir).join(&config.output);
-    let network = &config.network;
-    let account = &config.account;
+    let wasm = fs::read(&wasm_path).unwrap_or_else(|e| {
+        eprintln!("❌ Read {}: {}", wasm_path.display(), e);
+        std::process::exit(1);
+    });
 
-    // Resolve key path
-    let key_path = if config.key_path.is_empty() {
-        let home = std::env::var("HOME").unwrap_or_default();
-        format!("{}/.near-credentials/{}/{}.json", home, network, account)
-    } else {
-        shellexpand::tilde(&config.key_path).to_string()
+    let ctx = match resolve_near_ctx(project_dir, &overrides) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("❌ {}", e);
+            std::process::exit(1);
+        }
     };
 
-    println!("🚀 Deploying to {} ({})...", account, network);
+    println!("🚀 Deploying {} bytes to {} ({})...", wasm.len(), ctx.account, ctx.network);
 
-    let output = std::process::Command::new("near")
-        .args([
-            "contract",
-            "deploy",
-            account,
-            "use-file",
-            &wasm_path.to_string_lossy(),
-            "without-init-call",
-            "network-config",
-            network,
-            "sign-with-access-key-file",
-            &key_path,
-            "send",
-        ])
-        .output()
-        .expect("near CLI not found");
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let combined = format!("{}{}", stdout, stderr);
-
-    if combined.contains("successfully") || combined.contains("Contract code") {
-        for line in combined.lines() {
-            if let Some(id) = line.split("Transaction ID:").nth(1) {
-                let explorer = if network == "mainnet" {
-                    "https://explorer.near.org"
-                } else {
-                    "https://explorer.testnet.near.org"
-                };
-                println!("✅ {}/transactions/{}", explorer, id.trim());
-                return;
-            }
+    let (mut tx_body, client) = match prepare_tx(&ctx, &ctx.account).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("❌ {}", e);
+            std::process::exit(1);
         }
-        println!("✅ Deployed successfully");
+    };
+
+    // DeployContract action (variant 1)
+    tx_body.extend_from_slice(&1u32.to_le_bytes()); // action count
+    tx_body.push(0x01); // DeployContract
+    tx_body.extend_from_slice(&(wasm.len() as u32).to_le_bytes());
+    tx_body.extend_from_slice(&wasm);
+
+    match sign_and_broadcast(tx_body, &ctx, &client).await {
+        Ok(tx_hash) => println!("✅ {}", explorer_url(&ctx.network, &tx_hash)),
+        Err(e) => {
+            eprintln!("❌ {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+// ── CALL ──
+
+fn run_call(args: &[String]) {
+    let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
+    rt.block_on(async { run_call_async(args).await });
+}
+
+async fn run_call_async(args: &[String]) {
+    let (overrides, mut positional) = parse_overrides(args);
+
+    let contract = positional.first().cloned().unwrap_or_else(|| {
+        eprintln!("Usage: near-compile call <contract> <method> [args.json] [dir]");
+        std::process::exit(1);
+    });
+    positional.remove(0);
+
+    let method = positional.first().cloned().unwrap_or_else(|| {
+        eprintln!("Usage: near-compile call <contract> <method> [args.json] [dir]");
+        std::process::exit(1);
+    });
+    positional.remove(0);
+
+    // Optional args — inline JSON string or .json file
+    let (args_json, project_dir) = if !positional.is_empty() {
+        let candidate = &positional[0];
+        if candidate.ends_with(".json") && Path::new(candidate).exists() {
+            // It's a .json file path
+            let content = fs::read_to_string(candidate).unwrap_or_else(|e| {
+                eprintln!("❌ Read {}: {}", candidate, e);
+                std::process::exit(1);
+            });
+            let val: serde_json::Value = serde_json::from_str(&content).unwrap_or_else(|e| {
+                eprintln!("❌ Parse {}: {}", candidate, e);
+                std::process::exit(1);
+            });
+            let bytes = serde_json::to_vec(&val).unwrap();
+            (bytes, positional.get(1).map(|s| s.as_str()).unwrap_or("."))
+        } else if candidate.starts_with('{') || candidate.starts_with('[') {
+            // Inline JSON
+            let val: serde_json::Value = serde_json::from_str(candidate).unwrap_or_else(|e| {
+                eprintln!("❌ Parse args JSON: {}", e);
+                std::process::exit(1);
+            });
+            let bytes = serde_json::to_vec(&val).unwrap();
+            (bytes, positional.get(1).map(|s| s.as_str()).unwrap_or("."))
+        } else {
+            (Vec::new(), positional.first().map(|s| s.as_str()).unwrap_or("."))
+        }
     } else {
-        eprintln!("❌ Deploy failed: {}", combined.trim());
+        (Vec::new(), ".")
+    };
+
+    let gas: u64 = overrides.gas.unwrap_or(300_000_000_000_000);
+    let deposit: u128 = parse_deposit(&overrides.deposit);
+
+    let ctx = match resolve_near_ctx(project_dir, &overrides) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("❌ {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    println!(
+        "📞 Calling {}.{}({} bytes) on {} ({})...",
+        contract,
+        method,
+        args_json.len(),
+        ctx.account,
+        ctx.network,
+    );
+
+    let (mut tx_body, client) = match prepare_tx(&ctx, &contract).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("❌ {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    // FunctionCall action (variant 2)
+    tx_body.extend_from_slice(&1u32.to_le_bytes()); // action count
+    tx_body.push(0x02); // FunctionCall
+    borsh_write_string(&mut tx_body, &method);
+    tx_body.extend_from_slice(&(args_json.len() as u32).to_le_bytes());
+    tx_body.extend_from_slice(&args_json);
+    tx_body.extend_from_slice(&gas.to_le_bytes());
+    tx_body.extend_from_slice(&deposit.to_le_bytes());
+
+    match sign_and_broadcast(tx_body, &ctx, &client).await {
+        Ok(tx_hash) => {
+            println!("✅ {}", explorer_url(&ctx.network, &tx_hash));
+        }
+        Err(e) => {
+            eprintln!("❌ {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Parse deposit string (e.g. "0.1" NEAR) to yoctoNEAR u128.
+fn parse_deposit(deposit: &Option<String>) -> u128 {
+    match deposit {
+        Some(d) => {
+            let parts: Vec<&str> = d.split('.').collect();
+            let whole = parts.first().and_then(|s| s.parse::<u128>().ok()).unwrap_or(0);
+            let frac = if parts.len() > 1 {
+                let f = parts[1];
+                let f_padded = format!("{:0<24}", &f[..f.len().min(24)]);
+                f_padded.parse::<u128>().unwrap_or(0)
+            } else {
+                0
+            };
+            whole * 1_000_000_000_000_000_000_000_000 + frac
+        }
+        None => 0,
+    }
+}
+
+// ── CREATE ──
+
+fn run_create(args: &[String]) {
+    let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
+    rt.block_on(async { run_create_async(args).await });
+}
+
+async fn run_create_async(args: &[String]) {
+    let (overrides, mut positional) = parse_overrides(args);
+
+    let new_account = positional.first().cloned().unwrap_or_else(|| {
+        eprintln!("Usage: near-compile create <new-account-id> [funder-account-id]");
+        eprintln!("   or: near-compile create <subaccount>.near --fund");
+        std::process::exit(1);
+    });
+    positional.remove(0);
+
+    let fund = overrides.fund || overrides.seed_phrase;
+
+    let network = overrides
+        .network
+        .clone()
+        .unwrap_or_else(|| "testnet".into());
+
+    if network != "testnet" {
+        eprintln!("❌ Account creation only supported on testnet");
         std::process::exit(1);
     }
+
+    let funder = if positional.is_empty() {
+        overrides.account.clone().unwrap_or_default()
+    } else {
+        positional.remove(0)
+    };
+    let funder_overrides = NearCliOverrides {
+        account: if funder.is_empty() { None } else { Some(funder) },
+        network: Some(network.clone()),
+        key_path: overrides.key_path.clone(),
+        seed_phrase: overrides.seed_phrase,
+        gas: None,
+        deposit: None,
+        fund: false,
+    };
+
+    // Resolve funder context (uses "." as project dir — no near.json needed)
+    let ctx = match resolve_near_ctx(".", &funder_overrides) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("❌ Funder: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    // For CreateAccount, the signer must own the parent account.
+    // Auto-fix: if the name doesn't end with .{funder}, prefix it.
+    let funder_suffix = format!(".{}", ctx.account);
+    let new_account_id = if new_account.ends_with(&funder_suffix) {
+        new_account.clone()
+    } else {
+        format!("{}.{}", new_account, ctx.account)
+    };
+
+    println!("👤 Creating account {} (funded by {})...", new_account_id, ctx.account);
+
+    // Generate a new keypair for the new account
+    let mut rng = rand::rngs::OsRng;
+    let new_key = ed25519_dalek::SigningKey::generate(&mut rng);
+    let new_pk_bytes = new_key.verifying_key().to_bytes();
+    let new_pk_b58 = bs58::encode(&new_pk_bytes).into_string();
+
+    // Add full access key to new account via AddKey action
+    let (mut tx_body, client) = match prepare_tx(&ctx, &new_account_id).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("❌ {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    // CreateAccount action (variant 0) + AddKey action (variant 5)
+    tx_body.extend_from_slice(&2u32.to_le_bytes()); // action count
+    tx_body.push(0x00); // CreateAccount
+    tx_body.push(0x05); // AddKey
+    // PublicKey: ED25519 tag + 32 bytes
+    tx_body.push(0x00);
+    tx_body.extend_from_slice(&new_pk_bytes);
+    // AccessKey: nonce(u64) + permission(FullAccess = variant 1)
+    tx_body.extend_from_slice(&0u64.to_le_bytes()); // nonce = 0
+    tx_body.push(0x01); // AccessKeyPermission::FullAccess
+
+    match sign_and_broadcast(tx_body, &ctx, &client).await {
+        Ok(tx_hash) => {
+            println!("✅ Account created: {}", explorer_url(&ctx.network, &tx_hash));
+
+            // Save credentials for the new account
+            let home = std::env::var("HOME").unwrap_or_default();
+            let cred_dir = format!("{}/.near-credentials/testnet", home);
+            let _ = fs::create_dir_all(&cred_dir);
+            let cred_path = format!("{}/{}.json", cred_dir, new_account_id);
+
+            // Write credential file with the new expanded key
+            let mut expanded = new_key.to_bytes().to_vec();
+            expanded.extend_from_slice(&new_pk_bytes);
+            let sk_b58 = bs58::encode(&expanded).into_string();
+
+            let cred_json = serde_json::json!({
+                "account_id": new_account_id,
+                "public_key": format!("ed25519:{}", new_pk_b58),
+                "secret_key": format!("ed25519:{}", sk_b58)
+            });
+            fs::write(&cred_path, serde_json::to_string_pretty(&cred_json).unwrap())
+                .unwrap_or_else(|e| eprintln!("⚠️  Save credentials: {}", e));
+
+            println!("🔑 Credentials saved to {}", cred_path);
+            println!("   Account: {}", new_account_id);
+
+            // Fund from testnet faucet if requested
+            if fund {
+                println!("💧 Funding from testnet faucet...");
+                match fund_from_faucet(&new_account_id, &new_pk_b58).await {
+                    Ok(_) => println!("✅ Account funded!"),
+                    Err(e) => eprintln!("⚠️  Faucet: {} (account still created)", e),
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("❌ {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Fund account from NEAR testnet faucet helper.
+async fn fund_from_faucet(account_id: &str, pk_b58: &str) -> Result<(), String> {
+    let client = reqwest::Client::new();
+
+    // NEAR testnet faucet endpoint
+    let resp = client
+        .post("https://helper.testnet.near.org/account")
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "newAccountId": account_id,
+            "newAccountPublicKey": format!("ed25519:{}", pk_b58)
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("faucet request: {}", e))?;
+
+    if !resp.status().is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("faucet returned {}: {}", text.len(), &text[..text.len().min(200)]));
+    }
+
+    Ok(())
 }
 
 // ── PROJECT TEST ──
