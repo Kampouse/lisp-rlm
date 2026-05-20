@@ -26,10 +26,10 @@
       const defunMatch = line.match(/^\(\s*defun\s+([^\s(]+)/);
       if (defunMatch) { items.push({ kind: 'function', name: defunMatch[1], line: i + 1 }); continue; }
       // (define (name ...) ...)
-      const defineMatch = line.match(/^\(\s*define\s+\(\s*([^\s(]+)/);
+      const defineMatch = line.match(/^\(\s*define\s+\(\s*([^\s)]+)/);
       if (defineMatch) { items.push({ kind: 'define', name: defineMatch[1], line: i + 1 }); continue; }
       // (defvar name ...)
-      const defvarMatch = line.match(/^\(\s*defvar\s+([^\s(]+)/);
+      const defvarMatch = line.match(/^\(\s*defvar\s+([^\s)]+)/);
       if (defvarMatch) { items.push({ kind: 'variable', name: defvarMatch[1], line: i + 1 }); continue; }
       // (test "name" ...)
       const testMatch = line.match(/^\(\s*test\s+["']([^"']+)["']/);
