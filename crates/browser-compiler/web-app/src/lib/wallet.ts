@@ -13,11 +13,9 @@ export interface DeployResult {
   txHash: string | null;
   explorerUrl: string | null;
   error: string | null;
-  /** IPFS CID for P2 deployments */
-  ipfsCid?: string | null;
-  /** IPFS gateway URL for P2 deployments */
-  ipfsUrl?: string | null;
-  /** SHA256 hash of the WASM binary */
+  /** FastFS URL for P2 deployments */
+  fastfsUrl?: string | null;
+  /** SHA-256 hash of the WASM binary */
   wasmHash?: string | null;
 }
 
@@ -42,7 +40,6 @@ export function getConnector(network: Network = 'testnet'): NearConnector {
 export async function connectWallet(network: Network = 'testnet'): Promise<WalletState> {
   const conn = getConnector(network);
 
-  // Try auto-connect first
   try {
     const wallet = await conn.wallet();
     const accounts = await wallet.getAccounts();
@@ -54,7 +51,6 @@ export async function connectWallet(network: Network = 'testnet'): Promise<Walle
     // Not signed in yet
   }
 
-  // Show wallet selector popup
   try {
     const wallet = await conn.connect();
     const accounts = await wallet.getAccounts();
@@ -95,40 +91,6 @@ async function sha256(bytes: Uint8Array): Promise<string> {
   return Array.from(new Uint8Array(hashBuffer))
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
-}
-
-// ============================================
-// IPFS upload via Pinata
-// ============================================
-const PINATA_JWT = import.meta.env.VITE_PINATA_JWT ?? '';
-const PINATA_GATEWAY = 'https://gateway.pinata.cloud/ipfs';
-
-async function uploadToIPFS(wasmBytes: Uint8Array): Promise<{ cid: string; url: string }> {
-  if (!PINATA_JWT) {
-    throw new Error('IPFS upload not configured. Set VITE_PINATA_JWT in .env');
-  }
-
-  const formData = new FormData();
-  formData.append('file', new Blob([wasmBytes.buffer as ArrayBuffer], { type: 'application/wasm' }), 'contract.wasm');
-  formData.append(
-    'pinataMetadata',
-    JSON.stringify({ name: `lisp-rlm-${Date.now()}.wasm` }),
-  );
-
-  const res = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${PINATA_JWT}` },
-    body: formData,
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Pinata upload failed (${res.status}): ${text}`);
-  }
-
-  const data = await res.json();
-  const cid: string = data.IpfsHash;
-  return { cid, url: `${PINATA_GATEWAY}/${cid}` };
 }
 
 // ============================================
@@ -174,7 +136,7 @@ export async function deployP1(
 }
 
 // ============================================
-// P2: Deploy to OutLayer via request_execution
+// P2: Deploy to OutLayer via FastFS + request_execution
 // ============================================
 export async function deployP2(
   wasmBytes: Uint8Array,
@@ -191,43 +153,75 @@ export async function deployP2(
     // 1. Compute SHA-256 hash of the WASM binary
     const hash = await sha256(wasmBytes);
 
-    // 2. Upload to IPFS via Pinata
-    const { cid, url: ipfsUrl } = await uploadToIPFS(wasmBytes);
-
-    // 3. Call request_execution on OutLayer with WasmUrl source
+    // 2. Upload to FastFS via OutLayer contract (__fastdata_fastfs)
     const wallet = await conn.wallet();
-    const result = await wallet.signAndSendTransaction({
+
+    // Encode args as JSON { data: base64, mime_type, filename }
+    const base64Data = btoa(
+      Array.from(new Uint8Array(wasmBytes.buffer as ArrayBuffer))
+        .map((b) => String.fromCharCode(b))
+        .join(''),
+    );
+    const uploadArgs = JSON.stringify({
+      data: base64Data,
+      mime_type: 'application/wasm',
+      filename: `${hash}.wasm`,
+    });
+
+    const uploadResult = await wallet.signAndSendTransaction({
+      receiverId: outlayerContractId,
+      actions: [
+        {
+          type: 'FunctionCall' as const,
+          params: {
+            methodName: '__fastdata_fastfs',
+            args: uploadArgs,
+            gas: '300000000000000', // 300 Tgas
+            deposit: '0',
+          },
+        },
+      ],
+    });
+
+    const uploadTxHash = uploadResult?.transaction?.hash ?? null;
+
+    // 3. Build FastFS URL
+    const fastfsUrl = `https://main.fastfs.io/${currentAccountId}/${outlayerContractId}/${hash}.wasm`;
+
+    // 4. Call request_execution with WasmUrl source
+    const execArgs = JSON.stringify({
+      source: {
+        WasmUrl: {
+          url: fastfsUrl,
+          hash,
+          build_target: 'wasm32-wasip2',
+        },
+      },
+      response_format: 'Text',
+    });
+
+    const execResult = await wallet.signAndSendTransaction({
       receiverId: outlayerContractId,
       actions: [
         {
           type: 'FunctionCall' as const,
           params: {
             methodName: 'request_execution',
-            args: {
-              source: {
-                WasmUrl: {
-                  url: ipfsUrl,
-                  hash,
-                  build_target: 'wasm32-wasip1',
-                },
-              },
-              response_format: 'Text',
-            },
-            gas: '300000000000000', // 300 Tgas
-            deposit: '100000000000000000000000', // 0.1 NEAR for compute
+            args: execArgs,
+            gas: '300000000000000',
+            deposit: '100000000000000000000000', // 0.1 NEAR
           },
         },
       ],
     });
 
-    const txHash = result?.transaction?.hash ?? null;
+    const txHash = execResult?.transaction?.hash ?? uploadTxHash;
     return {
       success: true,
       txHash,
       explorerUrl: toExplorerUrl(txHash, network),
       error: null,
-      ipfsCid: cid,
-      ipfsUrl,
+      fastfsUrl,
       wasmHash: hash,
     };
   } catch (err: unknown) {

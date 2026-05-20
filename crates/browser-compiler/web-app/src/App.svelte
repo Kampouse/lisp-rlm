@@ -1499,11 +1499,11 @@
                           {#if deployResult.success}
                             <div class="deploy-result-icon">✅</div>
                             <div class="deploy-result-text">{target === 'p2' ? 'Execution submitted!' : 'Contract deployed!'}</div>
-                            {#if target === 'p2' && deployResult.ipfsUrl}
+                            {#if target === 'p2' && deployResult.fastfsUrl}
                               <div class="deploy-detail">
-                                <span class="deploy-detail-label">IPFS</span>
-                                <a href={deployResult.ipfsUrl} target="_blank" rel="noopener" class="deploy-tx-link">
-                                  {deployResult.ipfsCid?.slice(0, 12)}… →
+                                <span class="deploy-detail-label">FastFS</span>
+                                <a href={deployResult.fastfsUrl} target="_blank" rel="noopener" class="deploy-tx-link">
+                                  {deployResult.wasmHash?.slice(0, 12)}… →
                                 </a>
                               </div>
                             {/if}
