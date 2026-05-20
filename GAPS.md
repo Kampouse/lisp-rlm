@@ -2,7 +2,7 @@
 
 ## Status: Works on NEAR testnet ✅
 
-Last verified: 2026-05-01 on kampy.testnet (tree-shaken 670-byte contract with modules)
+Last verified: 2026-05-20 on kampy.testnet (92 host functions, cross-contract calls, native deploy CLI)
 
 ---
 

@@ -9,22 +9,33 @@ A Lisp dialect that compiles to tiny NEAR smart contracts. Write Lisp, get sub-1
 ```bash
 git clone https://github.com/Kampouse/lisp-rlm.git
 cd lisp-rlm
-cargo build
+cargo build --release
 ```
 
 One binary: `near-compile`
 
 ```bash
-# Compile to WASM
-cargo run --bin near-compile -- contract.lisp contract.wasm
-# ✅ contract.wasm (767 bytes) — validated
+# Scaffold a project
+near-compile init my-contract
+cd my-contract
 
-# Interactive REPL (local, instant)
-cargo run --bin near-compile -- --repl
-# ⚡ NEAR Lisp REPL (WASM + wasmtime, mock NEAR runtime)
+# Build WASM
+near-compile build
 
-# Run inline tests
-cargo run --bin near-compile -- test contract.lisp
+# Deploy to NEAR
+near-compile deploy
+
+# Call a contract method
+near-compile call kampy.testnet get_count '{}'
+
+# Create a subaccount
+near-compile create myapp --account kampy.testnet
+
+# Run tests
+near-compile test
+
+# Interactive REPL
+near-compile --repl
 ```
 
 ## Your First Contract
@@ -115,6 +126,35 @@ Write code, test locally, deploy, and interact with the live contract — all fr
 | `:call! fn` | Mutable call on testnet (costs gas) |
 | `:near` | Deploy last compiled WASM |
 
+## CLI Reference
+
+```
+near-compile init <name>              Scaffold a new project
+near-compile build [dir]              Build project from near.json
+near-compile build --target=outlayer   Build for OutLayer WASI
+near-compile build --target=outlayer-p2 Build for WASI P2 Component
+
+near-compile deploy [dir]             Build and deploy to NEAR
+  --account <id>      Override account from near.json
+  --network <net>     Override network (testnet|mainnet)
+  --key-path <path>   Override key file path
+  --seed-phrase        Read seed phrase from stdin (SLIP-0010)
+
+near-compile call <contract> <method> [args.json|'{}'] [dir]
+  --account, --network, --key-path, --seed-phrase
+  --deposit <amount>   Attach NEAR deposit (e.g. "0.1")
+  --gas <gas>          Gas limit (default 300 TGas)
+
+near-compile create <account-id> [funder-account-id]
+  --account, --network, --key-path, --seed-phrase
+  --fund               Auto-fund from testnet faucet
+  Saves credentials to ~/.near-credentials/
+
+near-compile test [dir]               Build and run tests
+near-compile --repl                   Interactive REPL
+near-compile bench <file>             Benchmark with fuel metering
+```
+
 ## Language Reference
 
 ### Types
@@ -152,6 +192,15 @@ Lambdas are inlined at compile time — no runtime closures, no function pointer
 
 Storage persists between contract calls on-chain. In the REPL, storage persists within the session.
 
+### Cross-Contract Calls
+```lisp
+(near/call "contract.near" "method" args_ptr args_len amount_ptr amount_len gas)
+(near/promise_then promise_id "contract.near" "callback" args_ptr args_len amount_ptr amount_len gas)
+(near/promise_return promise_id)
+```
+
+Full promise API: `promise_create`, `promise_then`, `promise_and`, `promise_return`, `promise_result`, `promise_yield_create`, `promise_yield_resume`, plus batch actions (`promise_batch_create`, `promise_batch_then`, `promise_batch_action_*`).
+
 ### Logging
 ```lisp
 (near/log "hello")                ; Log string
@@ -178,6 +227,28 @@ Storage persists between contract calls on-chain. In the REPL, storage persists 
 
 Q64.64 precision for fixed-point arithmetic.
 
+### NEAR Host Functions
+
+92 host functions available, 20/20 verified on testnet:
+
+**Core:** `input`, `return`, `return_str`, `log`, `log_num`, `abort`, `panic`
+
+**Storage:** `storage_set`, `storage_get`, `storage_has`, `storage_remove`, `storage_usage`
+
+**Account:** `current_account_id`, `signer_account_id`, `signer_account_pk`, `predecessor_account_id`
+
+**Balances:** `account_balance`, `account_balance_high`, `account_locked_balance`, `account_locked_balance_high`, `attached_deposit`, `attached_deposit_high`
+
+**Crypto:** `keccak256`, `sha256`, `ripemd160`, `ecrecover`, `ed25519_verify`, `random_seed`
+
+**Promises:** `promise_create`, `promise_then`, `promise_and`, `promise_return`, `promise_result`, `promise_results_count`, `promise_batch_create`, `promise_batch_then`, `promise_batch_action_function_call`, `promise_batch_action_transfer`, `promise_batch_action_stake`, `promise_batch_action_add_key_with_full_access`, `promise_batch_action_delete_key`, `promise_batch_action_create_account`, `promise_batch_action_deploy_contract`, `promise_batch_action_delete_account`, `promise_yield_create`, `promise_yield_resume`, `promise_set_refund_to`
+
+**Iteration:** `iter_prefix`, `iter_range`, `iter_next`
+
+**JSON I/O:** `json_get_int`, `json_get_str`, `json_return_int`, `json_return_str`
+
+**Blockchain:** `block_index`, `block_timestamp`, `epoch_height`, `prepaid_gas`, `used_gas`, `validator_stake`, `validator_total_stake`
+
 ## Inline Tests
 
 Write tests directly in your source:
@@ -195,13 +266,40 @@ Write tests directly in your source:
 ```
 
 ```bash
-$ cargo run --bin near-compile -- test file.lisp
+$ near-compile test file.lisp
 ✅ double basic: 10
 ✅ double zero: 0
 ✅ square: 49
 ✅ sum 1..5: 15
 4 passed, 0 failed
 ```
+
+## Web Playground
+
+Browser-based Lisp-to-WASM compiler with a NEAR mock runtime — test contracts in the browser without installing anything.
+
+Live at: [lisp-rlm.pages.dev](https://lisp-rlm.pages.dev)
+
+Features:
+- Code editor with syntax highlighting
+- Compile → WASM in-browser
+- Mock NEAR runtime for testing storage, logging, and crypto
+- Test runner with pass/fail reporting
+
+## Project Configuration
+
+`near.json` in the project root:
+
+```json
+{
+  "account": "kampy.testnet",
+  "network": "testnet",
+  "key_path": "~/.near-credentials/testnet/kampy.testnet.json",
+  "output": "target/contract.wasm"
+}
+```
+
+All fields optional — override with CLI flags.
 
 ## WASM Validation
 
@@ -223,25 +321,16 @@ Error: function 'foo' is not defined. Did you mean 'for'?
 Error: '__hof_it' is an internal variable used by hof/map — not accessible from user code
 ```
 
-## Project Configuration
-
-Create a `.near-config.json` (optional):
-```json
-{
-  "account": "kampy.testnet",
-  "network": "testnet",
-  "key_path": "~/.near-credentials/testnet/kampy.testnet.json"
-}
-```
-
 ## Architecture
 
 ```
 input.lisp
+    ↓ resolve_modules() — text-level #include
     ↓ parse
 LispVal AST
     ↓ typecheck (catches type errors)
     ↓ WasmEmitter::compile_near()
+    ↓ tree_shake() — remove unused functions
 wasm-encoder Module
     ↓ wasmparser validation
 output.wasm (binary, no WAT strings)
@@ -257,27 +346,6 @@ The WASM emitter produces binary directly via `wasm-encoder` — no string-based
 - 10M while-loop iterations
 - **767 bytes** for a counter contract with 3 methods
 - Lambda bodies inlined at compile time — zero runtime overhead
-
-## Current Limitations
-
-See [GAPS.md](GAPS.md) for the full feature tracker.
-
-**Not yet supported:**
-- Cross-contract calls (promises, callbacks)
-- u128 / BigInt (only i64)
-- Dynamic lists at runtime (only memory-backed arrays)
-- Borsh serialization / JSON I/O
-- Pattern matching
-
-**What works:**
-- ✅ Arithmetic, logic, control flow
-- ✅ Storage (read/write/remove/has)
-- ✅ Higher-order functions (map/filter/reduce, inlined)
-- ✅ Logging (string + number, single-line)
-- ✅ FP64 fixed-point math
-- ✅ REPL with mock NEAR runtime + live testnet calls
-- ✅ Inline tests
-- ✅ WASM validation + type checking
 
 ## License
 
