@@ -161,17 +161,149 @@
   // Feature 8: localStorage persistence
   // ============================================
   const STORAGE_KEY = 'lisp-rlm-state';
+  const FILES_KEY = 'lisp-rlm-files';
+
+  // ============================================
+  // Virtual File System
+  // ============================================
+  interface VFile {
+    id: string;
+    name: string;
+    source: string;
+    target: CompileTarget;
+    updatedAt: number;
+  }
+
+  let files: VFile[] = $state([]);
+  let activeFileId: string = $state('');
+  let renamingFileId: string | null = $state(null);
+  let renameInput: string = $state('');
+  let fileContextMenu: { fileId: string; x: number; y: number } | null = $state(null);
+
+  function generateId(): string {
+    return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  }
+
+  function loadFiles(): VFile[] {
+    try {
+      const stored = localStorage.getItem(FILES_KEY);
+      if (stored) return JSON.parse(stored);
+    } catch {}
+    return [];
+  }
+
+  function saveFiles() {
+    try {
+      localStorage.setItem(FILES_KEY, JSON.stringify(files));
+    } catch {}
+  }
+
+  function saveCurrentFile() {
+    if (!activeFileId) return;
+    const idx = files.findIndex(f => f.id === activeFileId);
+    if (idx >= 0) {
+      files[idx].source = source;
+      files[idx].target = target;
+      files[idx].updatedAt = Date.now();
+      files = files; // trigger reactivity
+      saveFiles();
+    }
+  }
+
+  function createFile(name?: string) {
+    const fname = name || 'untitled.lisp';
+    const file: VFile = { id: generateId(), name: fname, source: '', target: 'pure', updatedAt: Date.now() };
+    files = [file, ...files];
+    switchToFile(file.id);
+    saveFiles();
+  }
+
+  function deleteFile(id: string) {
+    const idx = files.findIndex(f => f.id === id);
+    if (idx < 0) return;
+    files = files.filter(f => f.id !== id);
+    if (id === activeFileId) {
+      if (files.length > 0) {
+        switchToFile(files[0].id);
+      } else {
+        createFile('main.lisp');
+      }
+    }
+    saveFiles();
+    fileContextMenu = null;
+  }
+
+  function duplicateFile(id: string) {
+    const src = files.find(f => f.id === id);
+    if (!src) return;
+    const file: VFile = { id: generateId(), name: src.name.replace('.lisp', '-copy.lisp'), source: src.source, target: src.target, updatedAt: Date.now() };
+    files = [file, ...files];
+    switchToFile(file.id);
+    saveFiles();
+    fileContextMenu = null;
+  }
+
+  function startRename(id: string) {
+    const f = files.find(f => f.id === id);
+    if (!f) return;
+    renamingFileId = id;
+    renameInput = f.name.replace('.lisp', '');
+    fileContextMenu = null;
+  }
+
+  function commitRename() {
+    if (!renamingFileId) return;
+    const f = files.find(f => f.id === renamingFileId);
+    if (f) {
+      f.name = renameInput.endsWith('.lisp') ? renameInput : renameInput + '.lisp';
+      files = files;
+      saveFiles();
+    }
+    renamingFileId = null;
+    renameInput = '';
+  }
+
+  function switchToFile(id: string) {
+    // Save current file first
+    saveCurrentFile();
+    const f = files.find(f => f.id === id);
+    if (!f) return;
+    activeFileId = id;
+    source = f.source;
+    target = f.target;
+    if (editorInstance) editorInstance.setValue(source);
+    result = null;
+    runResult = null;
+    testResults = null;
+    deployResult = null;
+    showDeployPanel = false;
+    clearMonacoMarkers();
+    saveState();
+  }
+
+  function handleFileContextMenu(e: MouseEvent, fileId: string) {
+    e.preventDefault();
+    fileContextMenu = { fileId, x: e.clientX, y: e.clientY };
+  }
+
+  function closeContextMenu() {
+    fileContextMenu = null;
+  }
+
+  function activeFileName(): string {
+    return files.find(f => f.id === activeFileId)?.name || 'untitled.lisp';
+  }
 
   function saveState() {
     try {
-      const state = { source, target, activeExample, autoCompile, replMode };
+      const state = { source, target, activeExample, autoCompile, replMode, activeFileId };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     } catch (e) {
       console.warn('Failed to save state:', e);
     }
   }
 
-  function loadState(): { source: string; target: CompileTarget; activeExample: number; autoCompile: boolean; replMode: boolean } | null {
+  function loadState(): { source: string; target: CompileTarget; activeExample: number; autoCompile: boolean; replMode: boolean; activeFileId?: string } | null {
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
@@ -182,6 +314,7 @@
           activeExample: parsed.activeExample ?? 0,
           autoCompile: parsed.autoCompile ?? true,
           replMode: parsed.replMode ?? false,
+          activeFileId: parsed.activeFileId,
         };
       }
     } catch (e) {
@@ -362,6 +495,7 @@
       updateUrlHash();
       // Feature 8: Save to localStorage
       saveState();
+      saveCurrentFile();
     });
   }
 
@@ -697,13 +831,27 @@
     // Feature 7: Load from URL hash
     const urlState = loadFromUrl();
     
+    // Load virtual file system
+    files = loadFiles();
+    
     // Feature 8: Load from localStorage
     const storedState = loadState();
     
-    // Priority: URL > localStorage > default
+    // Priority: URL > files > localStorage > default
     if (urlState.source) {
       source = urlState.source;
       if (urlState.target) target = urlState.target;
+      if (editorInstance) editorInstance.setValue(source);
+      // Save URL code into current file or create one
+      if (files.length === 0) createFile('shared.lisp');
+      if (activeFileId) saveCurrentFile();
+    } else if (files.length > 0) {
+      // Restore active file from stored state
+      const savedFileId = storedState?.activeFileId;
+      const targetFile = (savedFileId && files.find(f => f.id === savedFileId)) || files[0];
+      activeFileId = targetFile.id;
+      source = targetFile.source;
+      target = targetFile.target;
       if (editorInstance) editorInstance.setValue(source);
     } else if (storedState) {
       source = storedState.source;
@@ -712,9 +860,19 @@
       autoCompile = storedState.autoCompile;
       replMode = storedState.replMode;
       if (editorInstance) editorInstance.setValue(source);
+      // Migrate existing code into a file
+      const file: VFile = { id: generateId(), name: 'main.lisp', source, target, updatedAt: Date.now() };
+      files = [file];
+      activeFileId = file.id;
+      saveFiles();
     } else {
       source = examples[0].source;
       target = examples[0].target;
+      // Create default file
+      const file: VFile = { id: generateId(), name: 'main.lisp', source, target, updatedAt: Date.now() };
+      files = [file];
+      activeFileId = file.id;
+      saveFiles();
     }
 
     // Feature 5: Global keyboard shortcut
@@ -1202,14 +1360,51 @@
   <!-- Main Content - Split Layout — always mounted -->
     <main class="main-content" class:workbench-hidden={showLearn}>
       <div class="split-container">
-        <!-- Outline Sidebar -->
+        <!-- Sidebar (Files + Outline) -->
         {#if showOutline}
           <aside class="outline-panel">
             <div class="outline-header">
+              <span class="outline-title">FILES</span>
+              <div class="outline-header-actions">
+                <button class="outline-action-btn" onclick={() => createFile()} title="New file">
+                  +
+                </button>
+                <button class="outline-toggle" onclick={() => { showOutline = false; }} title="Hide sidebar">
+                  <ChevronRight size={14} />
+                </button>
+              </div>
+            </div>
+            <div class="outline-files">
+              {#each files as file}
+                {#if renamingFileId === file.id}
+                  <div class="file-item renaming">
+                    <input
+                      class="file-rename-input"
+                      type="text"
+                      bind:value={renameInput}
+                      onkeydown={(e) => { if (e.key === 'Enter') commitRename(); if (e.key === 'Escape') { renamingFileId = null; } }}
+                      onblur={commitRename}
+                    />
+                  </div>
+                {:else}
+                  <button
+                    class="file-item"
+                    class:active={file.id === activeFileId}
+                    onclick={() => switchToFile(file.id)}
+                    oncontextmenu={(e) => handleFileContextMenu(e, file.id)}
+                    title={file.name}
+                  >
+                    <span class="file-icon">λ</span>
+                    <span class="file-name">{file.name}</span>
+                  </button>
+                {/if}
+              {/each}
+            </div>
+
+            <div class="outline-divider"></div>
+
+            <div class="outline-section-header">
               <span class="outline-title">OUTLINE</span>
-              <button class="outline-toggle" onclick={() => { showOutline = false; }} title="Hide outline">
-                <ChevronRight size={14} />
-              </button>
             </div>
             <div class="outline-body">
               {#each outlineItems as item}
@@ -1228,9 +1423,26 @@
             </div>
           </aside>
         {:else}
-          <button class="outline-collapsed-btn" onclick={() => { showOutline = true; }} title="Show outline">
+          <button class="outline-collapsed-btn" onclick={() => { showOutline = true; }} title="Show sidebar">
             <FileCode size={14} />
           </button>
+        {/if}
+
+        <!-- File Context Menu -->
+        {#if fileContextMenu}
+          <div class="ctx-overlay" onclick={closeContextMenu}></div>
+          <div class="ctx-menu" style="left: {fileContextMenu.x}px; top: {fileContextMenu.y}px;">
+            <button class="ctx-item" onclick={() => startRename(fileContextMenu!.fileId)}>
+              Rename
+            </button>
+            <button class="ctx-item" onclick={() => duplicateFile(fileContextMenu!.fileId)}>
+              Duplicate
+            </button>
+            <div class="ctx-divider"></div>
+            <button class="ctx-item ctx-danger" onclick={() => deleteFile(fileContextMenu!.fileId)}>
+              Delete
+            </button>
+          </div>
         {/if}
 
         <!-- Editor Pane -->
@@ -1777,6 +1989,143 @@
     font-size: 11px;
     color: var(--color-text-muted);
     font-style: italic;
+  }
+  .outline-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+  .outline-action-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    background: transparent;
+    border: none;
+    color: var(--color-text-muted);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+    padding: 0;
+    line-height: 1;
+  }
+  .outline-action-btn:hover {
+    color: var(--color-text);
+    background: var(--color-bg-surface);
+  }
+  .outline-section-header {
+    display: flex;
+    align-items: center;
+    padding: 6px 10px 4px;
+    flex-shrink: 0;
+  }
+  .outline-divider {
+    height: 1px;
+    background: var(--color-border);
+    margin: 2px 8px;
+    flex-shrink: 0;
+  }
+  .outline-files {
+    max-height: 200px;
+    overflow-y: auto;
+    padding: 2px 0;
+    flex-shrink: 0;
+  }
+  .file-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 5px 10px;
+    background: transparent;
+    border: none;
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.1s;
+  }
+  .file-item:hover {
+    background: var(--color-bg-surface);
+    color: var(--color-text-primary);
+  }
+  .file-item.active {
+    background: var(--color-bg-surface);
+    color: var(--color-text-primary);
+  }
+  .file-icon {
+    color: var(--color-accent);
+    font-size: 12px;
+    font-weight: 600;
+    width: 14px;
+    text-align: center;
+    flex-shrink: 0;
+  }
+  .file-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .file-item.renaming {
+    padding: 3px 6px;
+  }
+  .file-rename-input {
+    width: 100%;
+    padding: 2px 4px;
+    font-size: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    background: var(--color-bg);
+    border: 1px solid var(--color-accent);
+    border-radius: 3px;
+    color: var(--color-text-primary);
+    outline: none;
+  }
+  /* Context Menu */
+  .ctx-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 200;
+  }
+  .ctx-menu {
+    position: fixed;
+    z-index: 201;
+    background: var(--color-bg-elevated);
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    padding: 4px 0;
+    min-width: 130px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  }
+  .ctx-item {
+    display: block;
+    width: 100%;
+    padding: 6px 12px;
+    background: transparent;
+    border: none;
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .ctx-item:hover {
+    background: var(--color-bg-surface);
+    color: var(--color-text-primary);
+  }
+  .ctx-danger {
+    color: #f87171;
+  }
+  .ctx-danger:hover {
+    background: rgba(248, 113, 113, 0.1);
+    color: #fca5a5;
+  }
+  .ctx-divider {
+    height: 1px;
+    background: var(--color-border);
+    margin: 4px 0;
   }
   .outline-collapsed-btn {
     display: flex;
