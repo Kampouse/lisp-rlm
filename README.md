@@ -2,6 +2,8 @@
 
 A Lisp dialect that compiles to tiny NEAR smart contracts. Write Lisp, get sub-1KB WASM that runs on NEAR testnet/mainnet.
 
+**→ Try it in your browser: [lisp-rlm.pages.dev](https://lisp-rlm.pages.dev)**
+
 **903 bytes vs near-sdk's 35KB** for equivalent contracts.
 
 ## Quick Start
