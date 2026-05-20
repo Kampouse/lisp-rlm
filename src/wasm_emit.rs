@@ -217,6 +217,9 @@ pub struct WasmEmitter {
     pub(crate) captured_map: HashMap<String, usize>,
     // Borsh schema registry: name → type layout (compile-time only)
     pub(crate) borsh_schemas: HashMap<String, BorshType>,
+    // Named function definitions (for compile-time inlining in map/filter/reduce)
+    // name → (param_names, body_ast)
+    pub(crate) func_defs: HashMap<String, (Vec<String>, LispVal)>,
 }
 
 impl WasmEmitter {
@@ -226,6 +229,7 @@ impl WasmEmitter {
             while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 1, exports: Vec::new(),
             data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(),
             gas_local: None, heap_ptr: HEAP_START as u32, lambda_counter: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false,            borsh_schemas: HashMap::new(),
+            func_defs: HashMap::new(),
         }
     }
 
@@ -875,6 +879,59 @@ impl WasmEmitter {
 
     // ── Public API ──
 
+    /// Resolve a 1-param lambda arg: inline (fn [x] body) or named function symbol.
+    /// Returns (param_name, body_ast).
+    fn resolve_lambda_1(&self, arg: &LispVal, ctx: &str) -> Result<(String, LispVal), String> {
+        match arg {
+            // Inline lambda: (fn [x] body) or (fn x body)
+            LispVal::List(items) if items.len() >= 3 && matches!(&items[0], LispVal::Sym(s) if s == "fn" || s == "lambda") => {
+                let pname = match &items[1] {
+                    LispVal::Sym(s) => s.clone(),
+                    LispVal::List(ps) if !ps.is_empty() => match &ps[0] { LispVal::Sym(s) => s.clone(), _ => "x".into() },
+                    _ => "x".into(),
+                };
+                Ok((pname, items[2].clone()))
+            },
+            // Named function symbol — look up in func_defs
+            LispVal::Sym(name) => {
+                let (params, body) = self.func_defs.get(name)
+                    .ok_or_else(|| format!("{}: unknown function '{}'", ctx, name))?;
+                if params.len() != 1 {
+                    return Err(format!("{}: '{}' takes {} params, need exactly 1", ctx, name, params.len()));
+                }
+                Ok((params[0].clone(), body.clone()))
+            },
+            _ => Err(format!("{}: first arg must be (fn [x] body) or named function", ctx)),
+        }
+    }
+
+    /// Resolve a 2-param lambda arg: inline (fn [a b] body) or named function symbol.
+    /// Returns (param1_name, param2_name, body_ast).
+    fn resolve_lambda_2(&self, arg: &LispVal, ctx: &str) -> Result<(String, String, LispVal), String> {
+        match arg {
+            LispVal::List(items) if items.len() >= 3 && matches!(&items[0], LispVal::Sym(s) if s == "fn" || s == "lambda") => {
+                let (an, en) = match &items[1] {
+                    LispVal::List(ps) if ps.len() >= 2 => {
+                        let an = match &ps[0] { LispVal::Sym(s) => s.clone(), _ => "a".into() };
+                        let en = match &ps[1] { LispVal::Sym(s) => s.clone(), _ => "b".into() };
+                        (an, en)
+                    },
+                    _ => ("a".into(), "b".into()),
+                };
+                Ok((an, en, items[2].clone()))
+            },
+            LispVal::Sym(name) => {
+                let (params, body) = self.func_defs.get(name)
+                    .ok_or_else(|| format!("{}: unknown function '{}'", ctx, name))?;
+                if params.len() != 2 {
+                    return Err(format!("{}: '{}' takes {} params, need exactly 2", ctx, name, params.len()));
+                }
+                Ok((params[0].clone(), params[1].clone(), body.clone()))
+            },
+            _ => Err(format!("{}: first arg must be (fn [a b] body) or named function", ctx)),
+        }
+    }
+
     /// Set fuzz mode: export wrappers store tagged values (no untag, no value_return).
     pub fn set_fuzz_mode(&mut self, enabled: bool) -> &mut Self {
         self.fuzz_mode = enabled;
@@ -882,6 +939,8 @@ impl WasmEmitter {
     }
 
     pub fn emit_define(&mut self, name: &str, params: &[String], body: &LispVal) -> Result<(), String> {
+        // Store AST for compile-time inlining
+        self.func_defs.insert(name.to_string(), (params.to_vec(), body.clone()));
         self.locals.clear(); self.next_local = 0;
         for p in params { self.local_idx(p); }
         self.current_func = Some(name.to_string());
@@ -7715,23 +7774,11 @@ impl WasmEmitter {
                 Ok(v)
             }
 
-            // (map (fn [x] body) lst) → new array with fn applied to each element
-            // Only supports inline lambda, not named function (no first-class functions)
+            // (map fn-or-name lst) → new array with fn applied to each element
+            // Supports inline (fn [x] body) or named function symbol
             "map" => {
-                if a.len() != 2 { return Err("map: need (map (fn [x] body) lst)".into()); }
-                let lambda = &a[0];
-                // Extract lambda params and body
-                let (param_name, body) = match lambda {
-                    LispVal::List(items) if items.len() >= 3 && matches!(&items[0], LispVal::Sym(s) if s == "fn" || s == "lambda") => {
-                        let pname = match &items[1] {
-                            LispVal::Sym(s) => s.clone(),
-                            LispVal::List(ps) if !ps.is_empty() => match &ps[0] { LispVal::Sym(s) => s.clone(), _ => "x".into() },
-                            _ => "x".into(),
-                        };
-                        (pname, items[2].clone())
-                    },
-                    _ => return Err("map: first arg must be inline (fn [x] body) lambda".into()),
-                };
+                if a.len() != 2 { return Err("map: need (map fn lst)".into()); }
+                let (param_name, body) = self.resolve_lambda_1(&a[0], "map")?;
                 let arr_tmp = self.local_idx("__map_arr");
                 let n_tmp = self.local_idx("__map_n");
                 let i_tmp = self.local_idx("__map_i");
@@ -7810,21 +7857,10 @@ impl WasmEmitter {
                 Ok(v)
             }
 
-            // (filter (fn [x] body) lst) → new array with elements where body is truthy
+            // (filter fn-or-name lst) → new array with elements where fn is truthy
             "filter" => {
-                if a.len() != 2 { return Err("filter: need (filter (fn [x] body) lst)".into()); }
-                let lambda = &a[0];
-                let (param_name, body) = match lambda {
-                    LispVal::List(items) if items.len() >= 3 && matches!(&items[0], LispVal::Sym(s) if s == "fn" || s == "lambda") => {
-                        let pname = match &items[1] {
-                            LispVal::Sym(s) => s.clone(),
-                            LispVal::List(ps) if !ps.is_empty() => match &ps[0] { LispVal::Sym(s) => s.clone(), _ => "x".into() },
-                            _ => "x".into(),
-                        };
-                        (pname, items[2].clone())
-                    },
-                    _ => return Err("filter: first arg must be inline (fn [x] body) lambda".into()),
-                };
+                if a.len() != 2 { return Err("filter: need (filter fn lst)".into()); }
+                let (param_name, body) = self.resolve_lambda_1(&a[0], "filter")?;
                 let arr_tmp = self.local_idx("__fil_arr");
                 let n_tmp = self.local_idx("__fil_n");
                 let i_tmp = self.local_idx("__fil_i");
@@ -8267,24 +8303,10 @@ impl WasmEmitter {
                 Ok(v)
             }
 
-            // (reduce (fn [acc x] body) init lst) → single value
+            // (reduce fn-or-name init lst) → single value
             "reduce" => {
-                if a.len() != 3 { return Err("reduce: need (reduce (fn [acc x] body) init lst)".into()); }
-                let lambda = &a[0];
-                let (acc_name, elem_name, body) = match lambda {
-                    LispVal::List(items) if items.len() >= 3 && matches!(&items[0], LispVal::Sym(s) if s == "fn" || s == "lambda") => {
-                        let (an, en) = match &items[1] {
-                            LispVal::List(ps) if ps.len() >= 2 => {
-                                let an = match &ps[0] { LispVal::Sym(s) => s.clone(), _ => "acc".into() };
-                                let en = match &ps[1] { LispVal::Sym(s) => s.clone(), _ => "x".into() };
-                                (an, en)
-                            },
-                            _ => ("acc".into(), "x".into()),
-                        };
-                        (an, en, items[2].clone())
-                    },
-                    _ => return Err("reduce: first arg must be inline (fn [acc x] body) lambda".into()),
-                };
+                if a.len() != 3 { return Err("reduce: need (reduce fn init lst)".into()); }
+                let (acc_name, elem_name, body) = self.resolve_lambda_2(&a[0], "reduce")?;
                 let arr_tmp = self.local_idx("__red_arr");
                 let n_tmp = self.local_idx("__red_n");
                 let i_tmp = self.local_idx("__red_i");
