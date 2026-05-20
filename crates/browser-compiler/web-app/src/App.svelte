@@ -371,16 +371,12 @@
   function showMonacoMarkers(errors: monaco.editor.IMarkerData[]) {
     const model = editorInstance?.getModel();
     if (model) {
-      monaco.editor.setModelMarkers(model, 'lisp-rlm', errors);
+      // No setModelMarkers — Error Lens handles display (line bg + inline text)
       showErrorLens(errors);
     }
   }
 
   function clearMonacoMarkers() {
-    const model = editorInstance?.getModel();
-    if (model) {
-      monaco.editor.setModelMarkers(model, 'lisp-rlm', []);
-    }
     clearErrorLens();
   }
 
