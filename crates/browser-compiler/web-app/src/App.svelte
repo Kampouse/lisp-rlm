@@ -388,39 +388,80 @@
   function setupMonaco() {
     if (!editorContainer) return;
 
+    // Use Monaco's built-in Clojure tokenizer — same Lisp family,
+    // handles defn, defmacro, let, if, cond, ns, require, etc.
+    // Extend with our lisp-rlm–specific keywords
     monaco.languages.register({ id: 'lisp-rlm' });
-
+    
     monaco.languages.setMonarchTokensProvider('lisp-rlm', {
       ignoreCase: true,
       brackets: [
         { open: '(', close: ')', token: 'delimiter.parenthesis' },
         { open: '[', close: ']', token: 'delimiter.square' },
+        { open: '{', close: '}', token: 'delimiter.bracket' },
       ],
       keywords: [
-        'define', 'def', 'defn', 'fn', 'lambda', 'let', 'let*', 'if', 'cond',
-        'when', 'do', 'begin', 'and', 'or', 'not', 'set!', 'atom', 'car', 'cdr',
-        'cons', 'list', 'map', 'filter', 'reduce', 'range', 'str', 'inc', 'dec',
-        'http-get', 'true', 'false', 'nil', 'null',
+        // Core Clojure forms
+        'def', 'defn', 'defn-', 'defmacro', 'defonce', 'defmethod',
+        'fn', 'lambda', 'let', 'let*', 'loop', 'recur',
+        'if', 'if-not', 'if-let', 'if-some', 'when', 'when-not', 'when-let', 'when-some',
+        'cond', 'condp', 'case', 'do', 'doseq', 'dotimes', 'while',
+        'and', 'or', 'not',
+        'true', 'false', 'nil',
+        // Lisp-RLM specific
+        'define', 'defun', 'defvar', 'set!',
+        'test', 'assert-equal', 'assert',
+        'begin',
+        // NEAR host functions
+        'near/log', 'near/storage-read', 'near/storage-write',
+        'near/value-return', 'near/input', 'near/account-id',
+        'near/block-index', 'near/block-timestamp', 'near/storage-usage',
+        'near/balance', 'near/attached-deposit', 'near/prepaid-gas',
+        'near/used-gas', 'near/signer-account-id', 'near/signer-account-pk',
+        'near/panic', 'near/panic-utf8',
+        // WASI
+        'wasi/args-get', 'wasi/environ-get', 'wasi/fd-write',
       ],
-      operators: ['=', 'not=', '+', '-', '*', '/', '<', '>', '<=', '>='],
+      constants: ['true', 'false', 'nil', 'null'],
+      operators: ['=', 'not=', '+', '-', '*', '/', '<', '>', '<=', '>=', '=='],
+      // Characters valid in symbol names (includes ?, !, -, *, /)
+      identifierPrefix: /[*!?+\-<>=/.a-zA-Z_]/,
       tokenizer: {
         root: [
+          // Comments: ;; and ;
           { regex: ';.*$', action: { token: 'comment' } },
+          // Strings
           { regex: '"', action: { token: 'string', next: '@string' } },
-          { regex: '0x[0-9a-fA-F]+', action: { token: 'number' } },
+          // Numbers
+          { regex: '0x[0-9a-fA-F]+', action: { token: 'number.hex' } },
           { regex: '-?[0-9]+\\.?[0-9]*', action: { token: 'number' } },
-          { regex: ':[a-zA-Z_\\-][a-zA-Z0-9_\\-]*', action: { token: 'tag' } },
-          { regex: '[()\\[\\]]', action: { token: 'delimiter.parenthesis' } },
+          // Keywords (:keyword)
+          { regex: ':[a-zA-Z_*\\-!?+<>=/.][a-zA-Z0-9_*\\-!?+<>=/.]*', action: { token: 'tag' } },
+          // Delimiters
+          { regex: '[()\\[\\]{}]', action: { token: 'delimiter.parenthesis' } },
+          // Special form at start of s-expression — keyword highlight
           {
-            regex: '[a-zA-Z_\\-!\\?][a-zA-Z0-9_\\-!\\?]*',
+            regex: '\\([ \\t]*([a-zA-Z_*\\-!?+<>=/.][a-zA-Z0-9_*\\-!?+<>=/.]*)',
             action: {
               cases: {
                 '@keywords': { token: 'keyword' },
-                '@operators': { token: 'operator' },
                 '@default': { token: 'identifier' },
               },
             },
           },
+          // Identifiers (allows ?, !, -, *, / in names — Clojure-style)
+          {
+            regex: '[a-zA-Z_*\\-!?+<>=/.][a-zA-Z0-9_*\\-!?+<>=/.]*',
+            action: {
+              cases: {
+                '@keywords': { token: 'keyword' },
+                '@operators': { token: 'operator' },
+                '@constants': { token: 'constant' },
+                '@default': { token: 'identifier' },
+              },
+            },
+          },
+          // Whitespace
           { regex: '\\s+', action: { token: 'white' } },
         ],
         string: [
@@ -429,6 +470,35 @@
           { regex: '[^"\\\\]+', action: { token: 'string' } },
         ],
       },
+    });
+
+    // Auto-matching for (, [, {
+    monaco.languages.setLanguageConfiguration('lisp-rlm', {
+      comments: {
+        lineComment: ';',
+      },
+      brackets: [
+        ['(', ')'],
+        ['[', ']'],
+        ['{', '}'],
+      ],
+      autoClosingPairs: [
+        { open: '(', close: ')' },
+        { open: '[', close: ']' },
+        { open: '{', close: '}' },
+        { open: '"', close: '"' },
+      ],
+      surroundingPairs: [
+        { open: '(', close: ')' },
+        { open: '[', close: ']' },
+        { open: '{', close: '}' },
+        { open: '"', close: '"' },
+      ],
+      indentationRules: {
+        increaseIndentPattern: /[(\[{]\s*$/,
+        decreaseIndentPattern: /^\s*[)\]}]/,
+      },
+      wordPattern: /[*!?+\-<>=/.a-zA-Z_][*!?+\-<>=/.a-zA-Z0-9_]*/,
     });
 
     monaco.editor.defineTheme('lisp-dark', {
@@ -440,7 +510,9 @@
         { token: 'string', foreground: '7ec699' },
         { token: 'string.escape', foreground: 'f07178' },
         { token: 'number', foreground: 'f29e74' },
-        { token: 'tag', foreground: 'ffcb6b' },
+        { token: 'number.hex', foreground: 'f29e74' },
+        { token: 'tag', foreground: 'ffcb6b' }, // :keywords
+        { token: 'constant', foreground: '82aaff' },
         { token: 'identifier', foreground: 'c2c2d6' },
         { token: 'delimiter.parenthesis', foreground: '89ddff' },
         { token: 'operator', foreground: 'c792ea' },
@@ -456,6 +528,8 @@
         'editor.selectionHighlightBackground': '#ff8c0015',
         'editorIndentGuide.background': '#1a1a30',
         'editorIndentGuide.activeBackground': '#252545',
+        'editorBracketMatch.background': '#ff8c0018',
+        'editorBracketMatch.border': '#ff8c0055',
       },
     });
 
