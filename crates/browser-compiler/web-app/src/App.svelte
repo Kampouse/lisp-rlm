@@ -810,7 +810,7 @@
         class:active={target === 'pure'}
         role="tab"
         aria-selected={target === 'pure'}
-        onclick={() => { target = 'pure'; result = null; deployResult = null; showDeployPanel = false; runResult = null; clearMonacoMarkers(); saveState(); }}
+        onclick={() => { target = 'pure'; saveState(); if (autoCompile) scheduleCompile(); }}
       >
         <Zap size={14} /> <span class="pill-label">Run</span>
       </button>
@@ -819,7 +819,7 @@
         class:active={target === 'p1'}
         role="tab"
         aria-selected={target === 'p1'}
-        onclick={() => { target = 'p1'; result = null; deployResult = null; showDeployPanel = false; runResult = null; clearMonacoMarkers(); saveState(); }}
+        onclick={() => { target = 'p1'; saveState(); if (autoCompile) scheduleCompile(); }}
       >
         <Box size={14} /> <span class="pill-label">NEAR</span>
       </button>
@@ -828,7 +828,7 @@
         class:active={target === 'p2'}
         role="tab"
         aria-selected={target === 'p2'}
-        onclick={() => { target = 'p2'; result = null; deployResult = null; showDeployPanel = false; runResult = null; clearMonacoMarkers(); saveState(); }}
+        onclick={() => { target = 'p2'; saveState(); if (autoCompile) scheduleCompile(); }}
       >
         <Cloud size={14} /> <span class="pill-label">WASI</span>
       </button>
@@ -917,9 +917,16 @@
     </button>
   </header>
 
-  <!-- Learn Panel -->
+  <!-- Learn Panel (overlay — workbench stays mounted underneath) -->
   {#if showLearn}
-    <div class="learn-panel">
+    <div class="learn-overlay">
+      <div class="learn-overlay-header">
+        <span class="learn-overlay-title">Learn</span>
+        <button class="learn-overlay-close" onclick={() => { showLearn = false; }}>
+          <X size={18} />
+        </button>
+      </div>
+      <div class="learn-panel">
       <div class="learn-content">
         <div class="learn-section">
           <h3>Lisp Basics</h3>
@@ -1140,11 +1147,11 @@
         </div>
       </div>
     </div>
+    </div>
   {/if}
 
-  <!-- Main Content - Split Layout -->
-  {#if !showLearn}
-    <main class="main-content">
+  <!-- Main Content - Split Layout — always mounted -->
+    <main class="main-content" class:workbench-hidden={showLearn}>
       <div class="split-container">
         <!-- Editor Pane -->
         <div class="editor-pane" class:full-height={outputCollapsed} style="flex: 1 1 {outputCollapsed ? '100' : '60'}%;">
@@ -1587,7 +1594,6 @@
       </button>
     </div>
   </main>
-  {/if}
 
   <footer class="footer">
     Lisp RLM — Write Lisp, Deploy Smart Contracts
@@ -1603,10 +1609,61 @@
     background: var(--color-accent);
   }
   
+  /* Learn Overlay */
+  .learn-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 150;
+    background: var(--color-bg);
+    display: flex;
+    flex-direction: column;
+    animation: fadeIn 0.15s ease;
+  }
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  .learn-overlay-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--color-border);
+    flex-shrink: 0;
+  }
+  .learn-overlay-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--color-text-primary);
+  }
+  .learn-overlay-close {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px;
+    background: transparent;
+    border: none;
+    color: var(--color-text-muted);
+    cursor: pointer;
+    border-radius: var(--radius-md);
+    transition: background 0.15s, color 0.15s;
+  }
+  .learn-overlay-close:hover {
+    background: var(--color-bg-surface);
+    color: var(--color-text);
+  }
+  
+  /* Hide workbench when learn is open (but keep mounted) */
+  .workbench-hidden {
+    display: none !important;
+  }
+
   /* Learn Panel */
   .learn-panel {
     background: var(--color-bg-surface);
-    border-bottom: 1px solid var(--color-border);
     flex: 1;
     overflow-y: auto;
   }
