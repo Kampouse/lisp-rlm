@@ -225,7 +225,7 @@ impl WasmEmitter {
             locals: HashMap::new(), next_local: 0, current_func: None, current_param_count: 0,
             while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 1, exports: Vec::new(),
             data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(),
-            gas_local: None, heap_ptr: HEAP_START as u32, lambda_counter: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false, borsh_schemas: HashMap::new(),
+            gas_local: None, heap_ptr: HEAP_START as u32, lambda_counter: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false,            borsh_schemas: HashMap::new(),
         }
     }
 
@@ -1007,6 +1007,51 @@ impl WasmEmitter {
         Ok(v)
     }
 
+    /// Replace (recur val...) inside loop body with (__loop_N val...) — direct self-call for TCO
+    fn replace_recur(&mut self, expr: &mut LispVal, loop_name: &str, _var_names: &[String]) {
+        match expr {
+            LispVal::List(items) => {
+                if let Some(LispVal::Sym(head)) = items.first() {
+                    if head == "recur" {
+                        // (recur val1 val2 ...) → (__loop_N val1 val2 ...)
+                        let mut call_items = vec![LispVal::Sym(loop_name.into())];
+                        for val in items[1..].iter() {
+                            call_items.push(val.clone());
+                        }
+                        *expr = LispVal::List(call_items);
+                        return;
+                    }
+                }
+                // Recurse into children
+                for item in items.iter_mut() {
+                    self.replace_recur(item, loop_name, _var_names);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// After replace_recur, patch (__loop_N val...) calls to also pass free vars through
+    fn patch_recur_with_free_vars(&self, expr: &mut LispVal, loop_name: &str, free_vars: &[String]) {
+        match expr {
+            LispVal::List(items) => {
+                if let Some(LispVal::Sym(head)) = items.first() {
+                    if head == loop_name {
+                        // This is a (__loop_N val...) call — append free var symbols
+                        for fv in free_vars {
+                            items.push(LispVal::Sym(fv.clone()));
+                        }
+                        return;
+                    }
+                }
+                for item in items.iter_mut() {
+                    self.patch_recur_with_free_vars(item, loop_name, free_vars);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn tc(&mut self, e: &LispVal) -> Result<Vec<Instruction<'static>>, String> {
         let LispVal::List(items) = e else { return self.expr(e) };
         if items.is_empty() { return self.expr(e) }
@@ -1020,6 +1065,10 @@ impl WasmEmitter {
                 Ok(v)
             }
             "let" => self.tc_let(a),
+            "loop" => {
+                // loop desugars to let + define + call — handled by expr path
+                self.expr(e)
+            }
             _ if Some(op.as_str()) == self.current_func.as_deref() && a.len() == self.current_param_count => {
                 let mut v = Vec::new();
                 for (i, x) in a.iter().enumerate() { v.extend(self.expr(x)?); v.push(Instruction::LocalSet(i as u32)); }
@@ -1316,6 +1365,85 @@ impl WasmEmitter {
                     if i < a.len() - 2 { v.push(Instruction::Drop); }
                 }
                 Ok(v)
+            }
+            "loop" => {
+                // Compile loop/recur using direct emit_define + call:
+                // 1. Replace (recur val...) → (__loop_N val...) in body
+                // 2. Detect free vars from enclosing scope, add as extra params
+                // 3. Emit define __loop_N as a real function (gets TCO)
+                // 4. Emit the call with initial values + free var values
+                let loop_n = format!("__loop_{}", self.lambda_counter);
+                self.lambda_counter += 1;
+                // Collect var names and inits
+                let mut var_inits: Vec<(String, LispVal)> = Vec::new();
+                if let LispVal::List(bs) = &a[0] {
+                    for b in bs { if let LispVal::List(p) = b { if p.len()==2 { if let LispVal::Sym(n) = &p[0] {
+                        var_inits.push((n.clone(), p[1].clone()));
+                    }}}}
+                }
+                let var_names: Vec<String> = var_inits.iter().map(|(n, _)| n.clone()).collect();
+                // Replace (recur val...) in body with (__loop_N val...) — direct self-call for TCO
+                let mut body_exprs: Vec<LispVal> = a[1..].to_vec();
+                for expr in &mut body_exprs {
+                    self.replace_recur(expr, &loop_n, &var_names);
+                }
+                let loop_body = if body_exprs.len() == 1 {
+                    body_exprs.into_iter().next().unwrap()
+                } else {
+                    LispVal::List(vec![LispVal::Sym("begin".into())].into_iter().chain(body_exprs).collect())
+                };
+                // Find free vars in loop body that aren't loop params — these come from enclosing scope
+                let loop_var_set: HashSet<String> = var_names.iter().cloned().collect();
+                let free_vars: Vec<String> = self.free_vars(&loop_body, &loop_var_set)
+                    .into_iter()
+                    .filter(|v| v != &loop_n)
+                    .collect();
+                // Full param list: loop vars + free vars
+                let mut all_params = var_names.clone();
+                all_params.extend(free_vars.iter().cloned());
+                // Update recur calls to also pass free vars through
+                // (recur was already replaced with (__loop_N loop_var_vals...))
+                // Now we need to add free var references after the loop var args
+                let mut loop_body = loop_body;
+                self.patch_recur_with_free_vars(&mut loop_body, &loop_n, &free_vars);
+                // Emit __loop_N as a proper function (with TCO)
+                // Save emitter state (emit_define clears locals, changes current_func, etc.)
+                let saved_locals = self.locals.clone();
+                let saved_next_local = self.next_local;
+                let saved_func = self.current_func.clone();
+                let saved_param_count = self.current_param_count;
+                let saved_gas_local = self.gas_local;
+                let saved_while_id = self.while_id.get();
+
+                self.emit_define(&loop_n, &all_params, &loop_body)?;
+
+                // Restore emitter state
+                self.locals = saved_locals;
+                self.next_local = saved_next_local;
+                self.current_func = saved_func;
+                self.current_param_count = saved_param_count;
+                self.gas_local = saved_gas_local;
+                self.while_id.set(saved_while_id);
+                // Now emit the call: push init values + free var values, then call
+                let func_idx = self.funcs.iter().position(|f| f.name == loop_n)
+                    .ok_or_else(|| format!("loop: internal error: {} not found after define", loop_n))?;
+                let mut v = Vec::new();
+                for (_, init) in &var_inits {
+                    v.extend(self.expr(init)?);
+                }
+                // Pass free vars (their current values from enclosing scope)
+                for fv in &free_vars {
+                    let idx = self.locals.get(fv)
+                        .ok_or_else(|| format!("loop: free var '{}' not in locals", fv))?;
+                    v.push(Instruction::LocalGet(*idx));
+                }
+                v.push(Instruction::Call(func_idx as u32));
+                Ok(v)
+            }
+            "recur" => {
+                // recur should have been replaced by replace_recur in loop desugar
+                // If we get here, recur is used outside a loop
+                Err("recur outside of loop".into())
             }
             "while" => {
                 let id = self.while_id.get(); self.while_id.set(id+1);

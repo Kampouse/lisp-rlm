@@ -299,4 +299,16 @@ mod tests {
         "#).unwrap();
         assert_eq!(r, "45");
     }
+
+    #[test]
+    fn test_loop_inside_defn() {
+        let r = run(r#"
+            (defn count-to [n]
+              (loop [i 0 acc 0]
+                (if (>= i n) acc
+                  (recur (+ i 1) (+ acc i)))))
+            (count-to 10)
+        "#).unwrap();
+        assert_eq!(r, "45");
+    }
 }

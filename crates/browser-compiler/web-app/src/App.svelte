@@ -74,7 +74,7 @@
     'fn': '(fn [x] (* x x))',
     'lambda': '(lambda (x) (* x x))',
     'loop': '(loop [i 0 acc 0]\n  (if (>= i 10) acc\n    (recur (+ i 1) (+ acc i))))',
-    'recur': '(recur args...)',
+    'recur': '(recur (+ i 1) (+ acc i))',
     'set!': '(set! x new-value)',
     'quote': '(quote (a b c))',
     'do': '(do\n  expr1\n  expr2)',
