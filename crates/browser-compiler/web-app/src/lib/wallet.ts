@@ -13,6 +13,12 @@ export interface DeployResult {
   txHash: string | null;
   explorerUrl: string | null;
   error: string | null;
+  /** IPFS CID for P2 deployments */
+  ipfsCid?: string | null;
+  /** IPFS gateway URL for P2 deployments */
+  ipfsUrl?: string | null;
+  /** SHA256 hash of the WASM binary */
+  wasmHash?: string | null;
 }
 
 let connector: NearConnector | null = null;
@@ -81,10 +87,53 @@ export function getWalletState(): WalletState {
   };
 }
 
-/**
- * P1: Deploy compiled WASM as a NEAR smart contract.
- * Creates a sub-account and deploys the WASM code to it.
- */
+// ============================================
+// SHA-256 hash (Web Crypto API)
+// ============================================
+async function sha256(bytes: Uint8Array): Promise<string> {
+  const hashBuffer = await crypto.subtle.digest('SHA-256', bytes.buffer as ArrayBuffer);
+  return Array.from(new Uint8Array(hashBuffer))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+// ============================================
+// IPFS upload via Pinata
+// ============================================
+const PINATA_JWT = import.meta.env.VITE_PINATA_JWT ?? '';
+const PINATA_GATEWAY = 'https://gateway.pinata.cloud/ipfs';
+
+async function uploadToIPFS(wasmBytes: Uint8Array): Promise<{ cid: string; url: string }> {
+  if (!PINATA_JWT) {
+    throw new Error('IPFS upload not configured. Set VITE_PINATA_JWT in .env');
+  }
+
+  const formData = new FormData();
+  formData.append('file', new Blob([wasmBytes.buffer as ArrayBuffer], { type: 'application/wasm' }), 'contract.wasm');
+  formData.append(
+    'pinataMetadata',
+    JSON.stringify({ name: `lisp-rlm-${Date.now()}.wasm` }),
+  );
+
+  const res = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${PINATA_JWT}` },
+    body: formData,
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Pinata upload failed (${res.status}): ${text}`);
+  }
+
+  const data = await res.json();
+  const cid: string = data.IpfsHash;
+  return { cid, url: `${PINATA_GATEWAY}/${cid}` };
+}
+
+// ============================================
+// P1: Deploy as NEAR smart contract
+// ============================================
 export async function deployP1(
   wasmBytes: Uint8Array,
   contractName: string,
@@ -124,9 +173,9 @@ export async function deployP1(
   }
 }
 
-/**
- * P2: Submit compiled WASM to OutLayer contract for off-chain execution.
- */
+// ============================================
+// P2: Deploy to OutLayer via request_execution
+// ============================================
 export async function deployP2(
   wasmBytes: Uint8Array,
   outlayerContractId: string,
@@ -139,6 +188,13 @@ export async function deployP2(
   const conn = getConnector(network);
 
   try {
+    // 1. Compute SHA-256 hash of the WASM binary
+    const hash = await sha256(wasmBytes);
+
+    // 2. Upload to IPFS via Pinata
+    const { cid, url: ipfsUrl } = await uploadToIPFS(wasmBytes);
+
+    // 3. Call request_execution on OutLayer with WasmUrl source
     const wallet = await conn.wallet();
     const result = await wallet.signAndSendTransaction({
       receiverId: outlayerContractId,
@@ -146,10 +202,19 @@ export async function deployP2(
         {
           type: 'FunctionCall' as const,
           params: {
-            methodName: 'submit_binary',
-            args: { code: btoa(String.fromCharCode(...new Uint8Array(wasmBytes))) },
-            gas: '300000000000000',
-            deposit: '0',
+            methodName: 'request_execution',
+            args: {
+              source: {
+                WasmUrl: {
+                  url: ipfsUrl,
+                  hash,
+                  build_target: 'wasm32-wasip1',
+                },
+              },
+              response_format: 'Text',
+            },
+            gas: '300000000000000', // 300 Tgas
+            deposit: '100000000000000000000000', // 0.1 NEAR for compute
           },
         },
       ],
@@ -161,6 +226,9 @@ export async function deployP2(
       txHash,
       explorerUrl: toExplorerUrl(txHash, network),
       error: null,
+      ipfsCid: cid,
+      ipfsUrl,
+      wasmHash: hash,
     };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);

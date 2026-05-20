@@ -1498,7 +1498,21 @@
                         <div class="deploy-result" class:success={deployResult.success} class:error={!deployResult.success}>
                           {#if deployResult.success}
                             <div class="deploy-result-icon">✅</div>
-                            <div class="deploy-result-text">Contract deployed!</div>
+                            <div class="deploy-result-text">{target === 'p2' ? 'Execution submitted!' : 'Contract deployed!'}</div>
+                            {#if target === 'p2' && deployResult.ipfsUrl}
+                              <div class="deploy-detail">
+                                <span class="deploy-detail-label">IPFS</span>
+                                <a href={deployResult.ipfsUrl} target="_blank" rel="noopener" class="deploy-tx-link">
+                                  {deployResult.ipfsCid?.slice(0, 12)}… →
+                                </a>
+                              </div>
+                            {/if}
+                            {#if target === 'p2' && deployResult.wasmHash}
+                              <div class="deploy-detail">
+                                <span class="deploy-detail-label">SHA-256</span>
+                                <code class="deploy-hash">{deployResult.wasmHash.slice(0, 16)}…</code>
+                              </div>
+                            {/if}
                             {#if deployResult.explorerUrl}
                               <a
                                 class="deploy-tx-link"

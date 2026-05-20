@@ -991,6 +991,33 @@ body {
   background: rgba(255, 140, 0, 0.15);
 }
 
+/* Deploy detail rows (IPFS CID, SHA-256 hash) */
+.deploy-detail {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.deploy-detail-label {
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+}
+
+.deploy-hash {
+  font-family: var(--font-mono, 'SF Mono', 'Fira Code', monospace);
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-tertiary, rgba(255, 255, 255, 0.05));
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
 /* Hex dump details/summary */
 .hex-details {
   margin-top: var(--space-sm);
