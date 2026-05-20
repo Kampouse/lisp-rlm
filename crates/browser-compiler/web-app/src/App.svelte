@@ -6,7 +6,56 @@
   import { examples } from './lib/examples.ts';
   import { connectWallet, disconnectWallet, deployP1, deployP2, getWalletState, type WalletState, type DeployResult, type Network } from './lib/wallet.ts';
   import { parseTests, buildTestCode, type TestRunResult } from './lib/test-runner.ts';
-  import { Play, Box, Cloud, Zap, Link, FlaskConical, Wallet, Rocket, CircleDot, Loader2, ChevronDown, ChevronUp, Menu, X, BookOpen, CheckCircle, XCircle, Hammer, Database, Trash2 } from '@lucide/svelte';
+  import { Play, Box, Cloud, Zap, Link, FlaskConical, Wallet, Rocket, CircleDot, Loader2, ChevronDown, ChevronUp, Menu, X, BookOpen, CheckCircle, XCircle, Hammer, Database, Trash2, FolderOpen, FileCode, ChevronRight } from '@lucide/svelte';
+
+  // ============================================
+  // Code Outline
+  // ============================================
+  interface OutlineItem {
+    kind: 'function' | 'variable' | 'test' | 'define';
+    name: string;
+    line: number;
+  }
+
+  function parseOutline(src: string): OutlineItem[] {
+    const items: OutlineItem[] = [];
+    const lines = src.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      // (defun name ...)
+      const defunMatch = line.match(/^\(\s*defun\s+([^\s(]+)/);
+      if (defunMatch) { items.push({ kind: 'function', name: defunMatch[1], line: i + 1 }); continue; }
+      // (define (name ...) ...)
+      const defineMatch = line.match(/^\(\s*define\s+\(\s*([^\s(]+)/);
+      if (defineMatch) { items.push({ kind: 'define', name: defineMatch[1], line: i + 1 }); continue; }
+      // (defvar name ...)
+      const defvarMatch = line.match(/^\(\s*defvar\s+([^\s(]+)/);
+      if (defvarMatch) { items.push({ kind: 'variable', name: defvarMatch[1], line: i + 1 }); continue; }
+      // (test "name" ...)
+      const testMatch = line.match(/^\(\s*test\s+["']([^"']+)["']/);
+      if (testMatch) { items.push({ kind: 'test', name: testMatch[1], line: i + 1 }); continue; }
+    }
+    return items;
+  }
+
+  function outlineIcon(kind: OutlineItem['kind']): string {
+    switch (kind) {
+      case 'function': return 'ƒ';
+      case 'define': return 'ƒ';
+      case 'variable': return '×';
+      case 'test': return '✓';
+    }
+  }
+
+  function jumpToLine(line: number) {
+    if (!editorInstance) return;
+    editorInstance.revealLineInCenter(line);
+    editorInstance.setPosition({ lineNumber: line, column: 1 });
+    editorInstance.focus();
+  }
+
+  let showOutline: boolean = $state(true);
+  let outlineItems: OutlineItem[] = $derived(parseOutline(source));
 
   // ============================================
   // State
@@ -1153,6 +1202,37 @@
   <!-- Main Content - Split Layout — always mounted -->
     <main class="main-content" class:workbench-hidden={showLearn}>
       <div class="split-container">
+        <!-- Outline Sidebar -->
+        {#if showOutline}
+          <aside class="outline-panel">
+            <div class="outline-header">
+              <span class="outline-title">OUTLINE</span>
+              <button class="outline-toggle" onclick={() => { showOutline = false; }} title="Hide outline">
+                <ChevronRight size={14} />
+              </button>
+            </div>
+            <div class="outline-body">
+              {#each outlineItems as item}
+                <button
+                  class="outline-item outline-{item.kind}"
+                  onclick={() => jumpToLine(item.line)}
+                  title="Line {item.line}"
+                >
+                  <span class="outline-icon">{outlineIcon(item.kind)}</span>
+                  <span class="outline-name">{item.name}</span>
+                  <span class="outline-line">{item.line}</span>
+                </button>
+              {:else}
+                <div class="outline-empty">No symbols found</div>
+              {/each}
+            </div>
+          </aside>
+        {:else}
+          <button class="outline-collapsed-btn" onclick={() => { showOutline = true; }} title="Show outline">
+            <FileCode size={14} />
+          </button>
+        {/if}
+
         <!-- Editor Pane -->
         <div class="editor-pane" class:full-height={outputCollapsed} style="flex: 1 1 {outputCollapsed ? '100' : '60'}%;">
           <section class="editor-section">
@@ -1601,6 +1681,130 @@
 </div>
 
 <style>
+  /* Code Outline */
+  .outline-panel {
+    width: 180px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid var(--color-border);
+    background: var(--color-bg-elevated);
+    overflow: hidden;
+  }
+  .outline-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--color-border);
+    flex-shrink: 0;
+  }
+  .outline-title {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    color: var(--color-text-muted);
+  }
+  .outline-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px;
+    background: transparent;
+    border: none;
+    color: var(--color-text-muted);
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+  }
+  .outline-toggle:hover {
+    color: var(--color-text);
+    background: var(--color-bg-surface);
+  }
+  .outline-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px 0;
+  }
+  .outline-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 5px 10px;
+    background: transparent;
+    border: none;
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.1s;
+  }
+  .outline-item:hover {
+    background: var(--color-bg-surface);
+    color: var(--color-text-primary);
+  }
+  .outline-icon {
+    width: 16px;
+    text-align: center;
+    flex-shrink: 0;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .outline-function .outline-icon,
+  .outline-define .outline-icon {
+    color: #c792ea;
+  }
+  .outline-variable .outline-icon {
+    color: #f29e74;
+  }
+  .outline-test .outline-icon {
+    color: var(--color-accent);
+  }
+  .outline-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .outline-line {
+    color: var(--color-text-muted);
+    font-size: 10px;
+    flex-shrink: 0;
+  }
+  .outline-empty {
+    padding: 12px 10px;
+    font-size: 11px;
+    color: var(--color-text-muted);
+    font-style: italic;
+  }
+  .outline-collapsed-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    flex-shrink: 0;
+    background: var(--color-bg-elevated);
+    border: none;
+    border-right: 1px solid var(--color-border);
+    color: var(--color-text-muted);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .outline-collapsed-btn:hover {
+    background: var(--color-bg-surface);
+    color: var(--color-text);
+  }
+
+  @media (max-width: 767px) {
+    .outline-panel {
+      display: none;
+    }
+    .outline-collapsed-btn {
+      display: none;
+    }
+  }
+
   /* Resizer drag functionality */
   .resizer {
     user-select: none;
