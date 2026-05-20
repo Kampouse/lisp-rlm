@@ -10552,6 +10552,8 @@ impl WasmEmitter {
 
 fn parse_and_compile(source: &str, near: bool) -> Result<WasmEmitter, String> {
     let exprs = crate::parser::parse_all(source)?;
+    let mut exprs = exprs;
+    crate::clojure::desugar(&mut exprs);
     let mut em = WasmEmitter::new();
     for e in &exprs {
         if let LispVal::List(items) = e {

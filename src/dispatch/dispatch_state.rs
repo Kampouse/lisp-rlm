@@ -207,6 +207,8 @@ pub fn handle(
             let path = as_str(&args[0])?;
             let code = std::fs::read_to_string(&path).map_err(|e| format!("load-file: {}", e))?;
             let exprs = crate::parser::parse_all(&code)?;
+            let mut exprs = exprs;
+            crate::clojure::desugar(&mut exprs);
             let mut result = LispVal::Nil;
             for expr in &exprs {
                 result = crate::dispatch::lisp_eval(expr, env, state)?;

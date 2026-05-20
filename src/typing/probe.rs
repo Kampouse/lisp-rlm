@@ -170,7 +170,8 @@ fn call_with_args(
     env.push("__probe_fn".to_string(), func.clone());
 
     let mut state = EvalState::new();
-    let exprs = parse_all(&call_expr).map_err(|e| e.to_string())?;
+    let mut exprs = parse_all(&call_expr).map_err(|e| e.to_string())?;
+    crate::clojure::desugar(&mut exprs);
     run_program(&exprs, &mut env, &mut state)
 }
 

@@ -385,7 +385,8 @@ fn process_require(
     // Try to load stdlib module
     let code = get_stdlib_code(&module_name);
     if let Some(module_code) = code {
-        let sub_forms = crate::parser::parse_all(&module_code)?;
+        let mut sub_forms = crate::parser::parse_all(&module_code)?;
+        crate::clojure::desugar(&mut sub_forms);
         if let Some(ref pfx) = prefix {
             // Prefix all define names
             let prefixed: Vec<LispVal> = sub_forms

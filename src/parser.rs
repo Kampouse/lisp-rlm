@@ -77,7 +77,7 @@ fn tokenize(input: &str) -> Vec<(String, usize)> {
             i += 2;
             if i < len {
                 let mut char_name = String::new();
-                while i < len && !chars[i].is_whitespace() && chars[i] != '(' && chars[i] != ')' {
+                while i < len && !chars[i].is_whitespace() && chars[i] != '(' && chars[i] != ')' && chars[i] != '[' && chars[i] != ']' {
                     char_name.push(chars[i]);
                     i += 1;
                     if char_name.len() == 1 && (i >= len || !chars[i].is_ascii_alphabetic()) {
@@ -107,7 +107,7 @@ fn tokenize(input: &str) -> Vec<(String, usize)> {
             }
             tokens.push(("#unquote".to_string(), i));
             i += 1;
-        } else if ch == '(' || ch == ')' {
+        } else if ch == '(' || ch == ')' || ch == '[' || ch == ']' {
             if !cur.is_empty() {
                 tokens.push((cur.clone(), cur_start));
                 cur.clear();
@@ -172,7 +172,19 @@ fn parse(tokens: &[(String, usize)], pos: &mut usize, source: &str) -> Result<Li
             *pos += 1;
             Ok(LispVal::List(list))
         }
+        "[" => {
+            let mut vec = Vec::new();
+            while *pos < tokens.len() && tokens[*pos].0 != "]" {
+                vec.push(parse(tokens, pos, source)?);
+            }
+            if *pos >= tokens.len() {
+                return Err(format!("missing closing `]`{}", loc()));
+            }
+            *pos += 1;
+            Ok(LispVal::Vec(vec))
+        }
         ")" => Err(format!("unexpected `)`{}", loc())),
+        "]" => Err(format!("unexpected `]`{}", loc())),
         "#quote" => {
             // 'form => (quote form)
             let inner = parse(tokens, pos, source)?;

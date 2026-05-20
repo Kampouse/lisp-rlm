@@ -42,6 +42,7 @@ pub mod near_validate;
 pub mod gas_estimate;
 pub mod tagged_value;
 pub mod verifier;
+pub mod clojure;
 
 pub use bytecode::{exec_compiled_loop, run_compiled_lambda, try_compile_lambda, try_compile_loop};
 pub use wasm_emit::{compile_near_from_exprs, compile_near_to_wat_from_exprs, compile_pure, compile_fuzz};
@@ -78,7 +79,8 @@ pub extern "C" fn eval_lisp(input_ptr: *const u8, input_len: usize, out_len: *mu
 
     let result_str = match parse_all(source) {
         Err(e) => format!("PARSE_ERROR: {}", e),
-        Ok(exprs) => {
+        Ok(mut exprs) => {
+            crate::clojure::desugar(&mut exprs);
             let mut env = Env::new();
             let mut state = EvalState::new();
             match run_program(&exprs, &mut env, &mut state) {

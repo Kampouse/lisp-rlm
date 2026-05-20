@@ -147,6 +147,8 @@ fn outlayer_imports() -> Vec<WasiFunc> {
 pub fn compile_wasi_p1(source: &str) -> Result<Vec<u8>, String> {
     let resolved = crate::wasm_emit::resolve_modules(source, std::path::Path::new("."))?;
     let exprs = crate::parser::parse_all(&resolved)?;
+    let mut exprs = exprs;
+    crate::clojure::desugar(&mut exprs);
     let mut em = WasmEmitter::new();
     em.wasi_mode = true;
     em.no_proc_exit = true; // wit-component adapter handles exit cleanly
@@ -185,6 +187,8 @@ pub fn compile_wasi_p1(source: &str) -> Result<Vec<u8>, String> {
 pub fn compile_outlayer(source: &str) -> Result<Vec<u8>, String> {
     let resolved = crate::wasm_emit::resolve_modules(source, std::path::Path::new("."))?;
     let exprs = crate::parser::parse_all(&resolved)?;
+    let mut exprs = exprs;
+    crate::clojure::desugar(&mut exprs);
     let mut em = WasmEmitter::new();
     em.wasi_mode = true;
     for e in &exprs {
@@ -270,6 +274,8 @@ fn build_outlayer_adapter() -> Vec<u8> {
 /// Use this from wasm-bindgen/browser builds.
 pub fn compile_outlayer_p2_browser(source: &str) -> Result<Vec<u8>, String> {
     let exprs = crate::parser::parse_all(source)?;
+    let mut exprs = exprs;
+    crate::clojure::desugar(&mut exprs);
     compile_outlayer_p2_from_exprs(&exprs)
 }
 
@@ -277,6 +283,8 @@ pub fn compile_outlayer_p2_browser(source: &str) -> Result<Vec<u8>, String> {
 /// This can be instantiated directly in the browser with WASI polyfills.
 pub fn compile_outlayer_p2_core_browser(source: &str) -> Result<Vec<u8>, String> {
     let exprs = crate::parser::parse_all(source)?;
+    let mut exprs = exprs;
+    crate::clojure::desugar(&mut exprs);
     let mut em = WasmEmitter::new();
     em.wasi_mode = true;
     em.p2_mode = true;
@@ -368,6 +376,8 @@ pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
     // 1. Compile the core P1 module first
     let resolved = crate::wasm_emit::resolve_modules(source, std::path::Path::new("."))?;
     let exprs = crate::parser::parse_all(&resolved)?;
+    let mut exprs = exprs;
+    crate::clojure::desugar(&mut exprs);
     let mut em = WasmEmitter::new();
     em.wasi_mode = true;
     em.p2_mode = true;

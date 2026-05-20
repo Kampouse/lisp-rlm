@@ -1067,13 +1067,14 @@ fn run_project_test(dir: Option<&str>) {
             println!("📋 {}:", test_file.display());
 
             // Parse tests from file
-            let exprs = match lisp_rlm_wasm::parser::parse_all(&test_src) {
+            let mut exprs = match lisp_rlm_wasm::parser::parse_all(&test_src) {
                 Ok(e) => e,
                 Err(e) => {
                     eprintln!("  ❌ Parse error: {}", e);
                     continue;
                 }
             };
+            lisp_rlm_wasm::clojure::desugar(&mut exprs);
 
             let tests = extract_tests(&exprs);
             if tests.is_empty() {
@@ -1124,13 +1125,14 @@ fn run_tests(base_src: &str, tests: &[TestCase]) -> (usize, usize) {
 }
 
 fn run_test_from_source_target(src: &str, target: &str) {
-    let exprs = match lisp_rlm_wasm::parser::parse_all(src) {
+    let mut exprs = match lisp_rlm_wasm::parser::parse_all(src) {
         Ok(e) => e,
         Err(e) => {
             eprintln!("❌ Parse error: {}", e);
             std::process::exit(1);
         }
     };
+    lisp_rlm_wasm::clojure::desugar(&mut exprs);
 
     let mut non_test_forms = Vec::new();
     for e in &exprs {
