@@ -333,10 +333,11 @@
   async function handleCompile(auto: boolean = false) {
     if (!wasmReady || compiling) return;
     compiling = true;
-    result = null;
+    // Don't clear result — prevents output panel from collapsing during recompile
     deployResult = null;
     showDeployPanel = false;
     runResult = null;
+    testResults = null;
     clearMonacoMarkers();
     await new Promise(r => setTimeout(r, 50));
     try {
@@ -361,6 +362,11 @@
       // Feature 1: Auto-run on compile for pure target (always, not just on debounce)
       if (result.success && result.wasmBytes && target === 'pure') {
         await handleRun();
+      }
+
+      // Auto-run tests on successful compile when source has tests
+      if (result.success && auto && hasTests(source)) {
+        handleRunTests();
       }
     } finally {
       compiling = false;
@@ -462,6 +468,10 @@
   // ============================================
   // Test Runner
   // ============================================
+  function hasTests(src: string): boolean {
+    return /\(test\s+["']/.test(src);
+  }
+
   async function handleRunTests() {
     if (!wasmReady || testing) return;
     

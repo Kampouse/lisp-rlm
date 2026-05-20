@@ -544,6 +544,8 @@ body {
   padding: var(--space-md) var(--space-lg);
   flex: 1;
   overflow-y: auto;
+  min-height: 120px;
+  position: relative;
 }
 
 .hex-dump {
