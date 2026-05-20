@@ -1576,6 +1576,32 @@
         <!-- Sidebar (Files + Outline) -->
         {#if showOutline}
           <aside class="outline-panel">
+            <button class="outline-section-header" onclick={() => showApiRef = !showApiRef}>
+              <span class="outline-title">API · {target.toUpperCase()}</span>
+              <span class="api-toggle">{showApiRef ? '▾' : '▸'}</span>
+            </button>
+            {#if showApiRef}
+              <div class="api-ref-body">
+                {#each apiForTarget as group}
+                  <div class="api-group">
+                    <div class="api-group-title" onclick={() => apiExpanded[group.title] = !apiExpanded[group.title]}>
+                      <span>{apiExpanded[group.title] ? '▾' : '▸'} {group.title}</span>
+                      <span class="api-count">{group.items.length}</span>
+                    </div>
+                    {#if apiExpanded[group.title]}
+                      <div class="api-items">
+                        {#each group.items as fn}
+                          <span class="api-fn" onclick={() => insertSnippet(fn)}>{fn}</span>
+                        {/each}
+                      </div>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+            {/if}
+
+            <div class="outline-divider"></div>
+
             <div class="outline-header">
               <span class="outline-title">FILES</span>
               <div class="outline-header-actions">
@@ -1634,32 +1660,6 @@
                 <div class="outline-empty">No symbols found</div>
               {/each}
             </div>
-
-            <div class="outline-divider"></div>
-
-            <button class="outline-section-header" onclick={() => showApiRef = !showApiRef}>
-              <span class="outline-title">API · {target.toUpperCase()}</span>
-              <span class="api-toggle">{showApiRef ? '▾' : '▸'}</span>
-            </button>
-            {#if showApiRef}
-              <div class="api-ref-body">
-                {#each apiForTarget as group}
-                  <div class="api-group">
-                    <div class="api-group-title" onclick={() => apiExpanded[group.title] = !apiExpanded[group.title]}>
-                      <span>{apiExpanded[group.title] ? '▾' : '▸'} {group.title}</span>
-                      <span class="api-count">{group.items.length}</span>
-                    </div>
-                    {#if apiExpanded[group.title]}
-                      <div class="api-items">
-                        {#each group.items as fn}
-                          <span class="api-fn" onclick={() => insertSnippet(fn)}>{fn}</span>
-                        {/each}
-                      </div>
-                    {/if}
-                  </div>
-                {/each}
-              </div>
-            {/if}
           </aside>
         {:else}
           <button class="outline-collapsed-btn" onclick={() => { showOutline = true; }} title="Show sidebar">
@@ -2296,13 +2296,13 @@
     font-family: 'SF Mono', 'Fira Code', monospace;
     padding: 2px 6px;
     border-radius: 3px;
-    background: rgba(0, 192, 139, 0.08);
-    color: #00c08b;
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--color-text-secondary);
     cursor: pointer;
     white-space: nowrap;
   }
   .api-fn:hover {
-    background: rgba(0, 192, 139, 0.18);
+    background: rgba(255, 255, 255, 0.12);
   }
 
   .outline-header-actions {
