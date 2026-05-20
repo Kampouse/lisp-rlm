@@ -372,6 +372,7 @@
     const model = editorInstance?.getModel();
     if (model) {
       monaco.editor.setModelMarkers(model, 'lisp-rlm', errors);
+      showErrorLens(errors);
     }
   }
 
@@ -380,6 +381,56 @@
     if (model) {
       monaco.editor.setModelMarkers(model, 'lisp-rlm', []);
     }
+    clearErrorLens();
+  }
+
+  // Error Lens — inline error messages at end of line (like VS Code Error Lens extension)
+  let errorLensDecorations: string[] = [];
+  let errorLensOverlay: HTMLDivElement | null = null;
+
+  function showErrorLens(markers: monaco.editor.IMarkerData[]) {
+    if (!editorInstance) return;
+    clearErrorLens();
+
+    // Whole-line background highlight + squiggly underline already from markers
+    const newDecorations: monaco.editor.IModelDeltaDecoration[] = markers.map(m => ({
+      range: new monaco.Range(m.startLineNumber, 1, m.startLineNumber, 1),
+      options: {
+        isWholeLine: true,
+        className: m.severity === monaco.MarkerSeverity.Error ? 'error-lens-line-error' : 'error-lens-line-warning',
+        overviewRuler: {
+          color: m.severity === monaco.MarkerSeverity.Error ? '#ff4444' : '#ffaa00',
+          position: monaco.editor.OverviewRulerLane.Full
+        },
+        // Inline text after the line content (line-decoration, not whole-line)
+        afterContentClassName: m.severity === monaco.MarkerSeverity.Error ? 'error-lens-after-error' : 'error-lens-after-warning',
+      }
+    }));
+    errorLensDecorations = editorInstance.deltaDecorations(errorLensDecorations, newDecorations);
+
+    // Inject CSS with the error messages as ::after content
+    const existing = document.getElementById('error-lens-styles');
+    if (existing) existing.remove();
+    const style = document.createElement('style');
+    style.id = 'error-lens-styles';
+    let css = '';
+    for (let i = 0; i < markers.length; i++) {
+      const m = markers[i];
+      const isError = m.severity === monaco.MarkerSeverity.Error;
+      const msg = m.message.length > 80 ? m.message.slice(0, 77) + '...' : m.message;
+      const escapedMsg = msg.replace(/'/g, "\\'").replace(/"/g, '\\"');
+      css += `.error-lens-${isError ? 'after-error' : 'after-warning'}::after { content: '  ${isError ? '✕' : '⚠'} ${escapedMsg}'; color: ${isError ? '#ff6b6b' : '#ffaa44'}; font-style: italic; font-size: 12px; opacity: 0.9; }\n`;
+    }
+    style.textContent = css;
+    document.head.appendChild(style);
+  }
+
+  function clearErrorLens() {
+    if (editorInstance) {
+      errorLensDecorations = editorInstance.deltaDecorations(errorLensDecorations, []);
+    }
+    const style = document.getElementById('error-lens-styles');
+    if (style) style.remove();
   }
 
   // ============================================
@@ -1967,6 +2018,26 @@
 </div>
 
 <style>
+  /* Error Lens — inline error/warning messages (using :global for Monaco DOM) */
+  :global(.error-lens-line-error) {
+    background: rgba(255, 40, 40, 0.12) !important;
+  }
+  :global(.error-lens-line-warning) {
+    background: rgba(255, 170, 0, 0.10) !important;
+  }
+  :global(.error-lens-inline-error) {
+    color: #ff6b6b;
+    font-style: italic;
+    font-size: 12px;
+    opacity: 0.9;
+  }
+  :global(.error-lens-inline-warning) {
+    color: #ffaa44;
+    font-style: italic;
+    font-size: 12px;
+    opacity: 0.9;
+  }
+
   /* Code Outline */
   .outline-panel {
     width: 180px;
