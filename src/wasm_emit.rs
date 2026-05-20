@@ -63,7 +63,7 @@ pub(crate) const HOST_FUNCS: &[(&str, &[ValType], &[ValType])] = &[
     ("promise_then",                &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]), // 31
     ("promise_and",                 &[ValType::I64, ValType::I64], &[ValType::I64]), // 32
     ("promise_results_count",       &[], &[ValType::I64]),                          // 33
-    ("promise_result",              &[ValType::I64, ValType::I64], &[]),            // 34
+    ("promise_result",              &[ValType::I64, ValType::I64], &[ValType::I64]),   // 34
     ("promise_return",              &[ValType::I64], &[]),                          // 35
     // Iterator
     ("storage_iter_prefix",         &[ValType::I64, ValType::I64], &[ValType::I64]), // 36
@@ -129,6 +129,7 @@ const HOST_BASE: u32 = 0xFF00_0000;
 const USER_BASE: u32 = 0xFF01_0000;
 pub const WASI_FD_WRITE: u32 = 90; // sentinel for WASI fd_write in outlayer mode
 const TEMP_MEM: i64 = 64;
+const AMOUNT_MEM: i64 = 256; // u128 deposit buffer (16 bytes at 256..272)
 const INPUT_BUF: i64 = 16384;  // 16KB for input JSON args
 const RETURN_BUF: i64 = 32768;
 const STORAGE_BUF: i64 = 8192;  // 8 bytes for storage read/write buffer
@@ -784,6 +785,8 @@ impl WasmEmitter {
             "near/promise_and" => self.need_host(32),
             "near/promise_results_count" => self.need_host(33),
             "near/promise_return" => self.need_host(35),
+            "near/call" => { self.need_host(30); self.need_host(35); }
+            "near/promise_result" => { self.need_host(34); self.need_host(0); self.need_host(1); }
             "near/promise_batch_create" => self.need_host(39),
             "near/promise_batch_then" => self.need_host(40),
             "near/promise_batch_action_create_account" => self.need_host(41),
@@ -2706,6 +2709,220 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
             "near/random_seed" => self.read_to_register(23, a),
+
+            // ── Cross-contract call primitives ──
+
+            // (near/promise_create account_id method args gas deposit) → i64 promise_idx
+            // NEAR host: promise_create(account_id_len, account_id_ptr, method_len, method_ptr, args_len, args_ptr, amount_ptr, gas) → u64 — idx 30
+            // NOTE: amount is u128 passed as POINTER to memory (16 bytes LE), NOT raw i64
+            // We write deposit (as low 64 bits of u128) to TEMP_MEM and pass TEMP_MEM as amount_ptr
+            "near/promise_create" => {
+                if a.len() != 5 { return Err("near/promise_create: need 5 args (account_id, method, args, gas, deposit)".into()); }
+                let acct = self.expr(&a[0])?;
+                let meth = self.expr(&a[1])?;
+                let args_val = self.expr(&a[2])?;
+                let gas = self.expr(&a[3])?;
+                let dep = self.expr(&a[4])?;
+                let mut v = Vec::new();
+                // Write deposit u128 to TEMP_MEM (16 bytes: low 64 bits at offset 0, high 64 bits at offset 8)
+                // First zero out the full 16 bytes
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 }));
+                // Write deposit low 64 bits to TEMP_MEM (addr first, then val)
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I32WrapI64);
+                v.extend(dep); v.extend(self.emit_untag());
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                // account_id (len, ptr)
+                v.extend(acct.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(acct); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                // method (len, ptr)
+                v.extend(meth.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(meth); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                // args (len, ptr)
+                v.extend(args_val.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(args_val); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                // amount_ptr (TEMP_MEM where u128 deposit was written)
+                v.push(Instruction::I64Const(TEMP_MEM));
+                // gas (tagged Num → untagged i64)
+                v.extend(gas); v.extend(self.emit_untag());
+                v.push(Self::host_call(30)); // promise_create → returns u64
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
+
+            // (near/promise_then promise_idx account_id method args gas deposit) → i64 promise_idx
+            // NEAR host: promise_then(promise_idx, account_id_len, account_id_ptr, method_len, method_ptr, args_len, args_ptr, amount_ptr, gas) → u64 — idx 31
+            // NOTE: amount is u128 passed as POINTER to memory (16 bytes LE), NOT raw i64
+            "near/promise_then" => {
+                if a.len() != 6 { return Err("near/promise_then: need 6 args (promise_idx, account_id, method, args, gas, deposit)".into()); }
+                let pidx = self.expr(&a[0])?;
+                let acct = self.expr(&a[1])?;
+                let meth = self.expr(&a[2])?;
+                let args_val = self.expr(&a[3])?;
+                let gas = self.expr(&a[4])?;
+                let dep = self.expr(&a[5])?;
+                let mut v = Vec::new();
+                // Write deposit u128 to TEMP_MEM
+                // Stack: [addr_i32, val_i64] for i64.store
+                // First zero out high 64 bits
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 }));
+                // Zero out low 64 bits
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                // Write deposit low 64 bits to TEMP_MEM (addr first, then val)
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I32WrapI64);
+                v.extend(dep); v.extend(self.emit_untag());
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                // promise_idx (untagged Num)
+                v.extend(pidx); v.extend(self.emit_untag());
+                // account_id (len, ptr)
+                v.extend(acct.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(acct); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                // method (len, ptr)
+                v.extend(meth.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(meth); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                // args (len, ptr)
+                v.extend(args_val.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(args_val); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                // amount_ptr (TEMP_MEM)
+                v.push(Instruction::I64Const(TEMP_MEM));
+                // gas
+                v.extend(gas); v.extend(self.emit_untag());
+                v.push(Self::host_call(31)); // promise_then → returns u64
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
+
+            // (near/promise_and promise_idx_a promise_idx_b) → i64 promise_idx
+            "near/promise_and" => {
+                if a.len() != 2 { return Err("near/promise_and: need 2 args".into()); }
+                let pa = self.expr(&a[0])?;
+                let pb = self.expr(&a[1])?;
+                let mut v = Vec::new();
+                v.extend(pa); v.extend(self.emit_untag());
+                v.extend(pb); v.extend(self.emit_untag());
+                v.push(Self::host_call(32));
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
+
+            // (near/promise_return promise_idx) → nil
+            "near/promise_return" => {
+                if a.len() != 1 { return Err("near/promise_return: need 1 arg".into()); }
+                let pidx = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                v.extend(pidx); v.extend(self.emit_untag());
+                v.push(Self::host_call(35)); // promise_return
+                v.push(Instruction::I64Const(TAG_NIL));
+                Ok(v)
+            }
+
+            // (near/promise_result) → tagged Str — read result of cross-contract call in callback
+            // Calls promise_result(0, 0) → write to register 0
+            // Calls register_len(0) → length
+            // Calls read_register(0, TEMP_MEM) → copy to memory
+            "near/promise_result" => {
+                self.need_host(34); self.need_host(0); self.need_host(1);
+                let mut v = Vec::new();
+                // promise_result(0, 0) — result_idx=0, register_id=0 → u64 (PromiseResult enum: 0=NotReady, 1=Successful, 2=Failed)
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(34)); // promise_result — returns u64, drop it
+                v.push(Instruction::Drop);
+                // read_register(0, TEMP_MEM)
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Self::host_call(0)); // read_register
+                // register_len(0)
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(1)); // register_len
+                // Pack as tagged Str: (len << 32) | TEMP_MEM
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
+                Ok(v)
+            }
+
+            // (near/call target method args gas deposit) → nil — high-level cross-contract call
+            // Creates promise, resolves current function's return with the promise result.
+            // The caller receives the raw return value of the target contract's method.
+            // NOTE: amount is u128 passed as POINTER to memory (16 bytes LE)
+            "near/call" => {
+                if a.len() != 5 { return Err("near/call: need 5 args (target, method, args, gas, deposit)".into()); }
+                let acct = self.expr(&a[0])?;
+                let meth = self.expr(&a[1])?;
+                let args_val = self.expr(&a[2])?;
+                let gas = self.expr(&a[3])?;
+                let dep = self.expr(&a[4])?;
+                let mut v = Vec::new();
+                // Write deposit u128 to TEMP_MEM (zero high 64, write low 64)
+                // Stack: [addr_i32, val_i64] for i64.store
+                // First zero out high 64 bits
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 }));
+                // Zero out low 64 bits
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                // Write deposit (low 64 bits) to TEMP_MEM (addr first, then val)
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I32WrapI64);
+                v.extend(dep); v.extend(self.emit_untag());
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                // account_id (len, ptr)
+                v.extend(acct.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(acct); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                // method (len, ptr)
+                v.extend(meth.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(meth); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                // args (len, ptr)
+                v.extend(args_val.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(args_val); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                // amount_ptr (TEMP_MEM)
+                v.push(Instruction::I64Const(TEMP_MEM));
+                // gas (untagged Num)
+                v.extend(gas); v.extend(self.emit_untag());
+                v.push(Self::host_call(30)); // promise_create → promise_idx on stack
+                v.push(Self::host_call(35)); // promise_return(promise_idx) — forward result to caller
+                v.push(Instruction::I64Const(TAG_NIL));
+                Ok(v)
+            }
 
             // keccak512(data_str) — 64-byte digest as tagged Str
             "near/keccak512" => {
