@@ -1,3 +1,10 @@
 target/
 *.wasm
 *.mjs
+*.dot
+*.png
+near.json
+# Root-level throwaway lisp scripts
+/*.lisp
+/fuzz_*.py
+/gen_*.py
