@@ -7675,6 +7675,256 @@ impl WasmEmitter {
                 Ok(v)
             }
 
+            // ── Standard library aliases ──
+            // (list ...) → same as (array ...)
+            "list" => {
+                let count = a.len() as u32;
+                let slots_needed = 1 + count;
+                let ptr = self.heap_ptr;
+                self.heap_ptr += slots_needed * 8;
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let mut v = Vec::new();
+                v.push(Instruction::I64Const(ptr as i64));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(count as i64));
+                v.push(Instruction::I64Store(ma));
+                for (i, elem) in a.iter().enumerate() {
+                    v.push(Instruction::I64Const((ptr + ((i as u32 + 1) * 8)) as i64));
+                    v.push(Instruction::I32WrapI64);
+                    v.extend(self.expr(elem)?);
+                    v.push(Instruction::I64Store(ma));
+                }
+                v.push(Instruction::I64Const(((ptr as i64) << TAG_BITS) | TAG_ARRAY));
+                Ok(v)
+            }
+
+            // (car lst) → first element
+            "car" | "first" => {
+                if a.len() != 1 { return Err("car: expected 1 arg".into()); }
+                let arr_tmp = self.local_idx("__car_arr");
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let mut v = self.expr(&a[0])?;
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(arr_tmp));
+                // ptr + 8 (skip count word) → first element
+                v.push(Instruction::LocalGet(arr_tmp));
+                v.push(Instruction::I64Const(8));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(ma));
+                Ok(v)
+            }
+
+            // (map (fn [x] body) lst) → new array with fn applied to each element
+            // Only supports inline lambda, not named function (no first-class functions)
+            "map" => {
+                if a.len() != 2 { return Err("map: need (map (fn [x] body) lst)".into()); }
+                let lambda = &a[0];
+                // Extract lambda params and body
+                let (param_name, body) = match lambda {
+                    LispVal::List(items) if items.len() >= 3 && matches!(&items[0], LispVal::Sym(s) if s == "fn" || s == "lambda") => {
+                        let pname = match &items[1] {
+                            LispVal::Sym(s) => s.clone(),
+                            LispVal::List(ps) if !ps.is_empty() => match &ps[0] { LispVal::Sym(s) => s.clone(), _ => "x".into() },
+                            _ => "x".into(),
+                        };
+                        (pname, items[2].clone())
+                    },
+                    _ => return Err("map: first arg must be inline (fn [x] body) lambda".into()),
+                };
+                let arr_tmp = self.local_idx("__map_arr");
+                let n_tmp = self.local_idx("__map_n");
+                let i_tmp = self.local_idx("__map_i");
+                let new_ptr = self.local_idx("__map_new");
+                let res_tmp = self.local_idx("__map_res");
+                let p_idx = self.local_idx(&param_name);
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let mut v = Vec::new();
+                // Evaluate lst, untag, save
+                v.extend(self.expr(&a[1])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(arr_tmp));
+                // Load count from arr[0]
+                v.push(Instruction::LocalGet(arr_tmp));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(ma));
+                v.push(Instruction::LocalSet(n_tmp));
+                // Alloc new array at heap
+                let new_heap = self.heap_ptr;
+                let slots = 1 + 64; // count + max 64 elements
+                self.heap_ptr += slots * 8;
+                v.push(Instruction::I64Const(new_heap as i64));
+                v.push(Instruction::LocalSet(new_ptr));
+                // Store count at new[0]
+                v.push(Instruction::LocalGet(new_ptr));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(n_tmp));
+                v.push(Instruction::I64Store(ma));
+                // i = 0
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalSet(i_tmp));
+                // Loop
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                // if i >= n, break
+                v.push(Instruction::LocalGet(i_tmp));
+                v.push(Instruction::LocalGet(n_tmp));
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::BrIf(1));
+                // Load element: arr[(i+1)*8]
+                v.push(Instruction::LocalGet(arr_tmp));
+                v.push(Instruction::I64Const(8));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalGet(i_tmp));
+                v.push(Instruction::I64Const(8));
+                v.push(Instruction::I64Mul);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(ma));
+                // Bind to param
+                v.push(Instruction::LocalSet(p_idx));
+                // Evaluate body
+                v.extend(self.expr(&body)?);
+                v.push(Instruction::LocalSet(res_tmp));
+                // Store result at new[(i+1)*8]
+                v.push(Instruction::LocalGet(new_ptr));
+                v.push(Instruction::I64Const(8));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalGet(i_tmp));
+                v.push(Instruction::I64Const(8));
+                v.push(Instruction::I64Mul);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(res_tmp));
+                v.push(Instruction::I64Store(ma));
+                // i++
+                v.push(Instruction::LocalGet(i_tmp));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(i_tmp));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); // loop
+                v.push(Instruction::End); // block
+                // Return tagged new array
+                v.push(Instruction::I64Const(((new_heap as i64) << TAG_BITS) | TAG_ARRAY));
+                Ok(v)
+            }
+
+            // (filter (fn [x] body) lst) → new array with elements where body is truthy
+            "filter" => {
+                if a.len() != 2 { return Err("filter: need (filter (fn [x] body) lst)".into()); }
+                let lambda = &a[0];
+                let (param_name, body) = match lambda {
+                    LispVal::List(items) if items.len() >= 3 && matches!(&items[0], LispVal::Sym(s) if s == "fn" || s == "lambda") => {
+                        let pname = match &items[1] {
+                            LispVal::Sym(s) => s.clone(),
+                            LispVal::List(ps) if !ps.is_empty() => match &ps[0] { LispVal::Sym(s) => s.clone(), _ => "x".into() },
+                            _ => "x".into(),
+                        };
+                        (pname, items[2].clone())
+                    },
+                    _ => return Err("filter: first arg must be inline (fn [x] body) lambda".into()),
+                };
+                let arr_tmp = self.local_idx("__fil_arr");
+                let n_tmp = self.local_idx("__fil_n");
+                let i_tmp = self.local_idx("__fil_i");
+                let write_i = self.local_idx("__fil_w");
+                let elem_tmp = self.local_idx("__fil_e");
+                let pred_tmp = self.local_idx("__fil_p");
+                let new_ptr = self.local_idx("__fil_new");
+                let p_idx = self.local_idx(&param_name);
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let mut v = Vec::new();
+                // Evaluate lst
+                v.extend(self.expr(&a[1])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(arr_tmp));
+                // Load count
+                v.push(Instruction::LocalGet(arr_tmp));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(ma));
+                v.push(Instruction::LocalSet(n_tmp));
+                // Alloc new array
+                let new_heap = self.heap_ptr;
+                self.heap_ptr += (1 + 64) * 8;
+                v.push(Instruction::I64Const(new_heap as i64));
+                v.push(Instruction::LocalSet(new_ptr));
+                // Store initial count 0
+                v.push(Instruction::LocalGet(new_ptr));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Store(ma));
+                // i=0, write_i=0
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalSet(i_tmp));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalSet(write_i));
+                // Loop
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(i_tmp));
+                v.push(Instruction::LocalGet(n_tmp));
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::BrIf(1));
+                // Load element
+                v.push(Instruction::LocalGet(arr_tmp));
+                v.push(Instruction::I64Const(8));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalGet(i_tmp));
+                v.push(Instruction::I64Const(8));
+                v.push(Instruction::I64Mul);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(ma));
+                v.push(Instruction::LocalSet(elem_tmp));
+                // Bind param, eval predicate
+                v.push(Instruction::LocalGet(elem_tmp));
+                v.push(Instruction::LocalSet(p_idx));
+                v.extend(self.expr(&body)?);
+                // Check truthy: untag, then compare raw value != 0
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Ne);
+                v.push(Instruction::If(BlockType::Empty));
+                // Store element at new[(write_i+1)*8]
+                v.push(Instruction::LocalGet(new_ptr));
+                v.push(Instruction::I64Const(8));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalGet(write_i));
+                v.push(Instruction::I64Const(8));
+                v.push(Instruction::I64Mul);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(elem_tmp));
+                v.push(Instruction::I64Store(ma));
+                // Increment count at new[0]
+                v.push(Instruction::LocalGet(new_ptr));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(new_ptr));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(ma));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Store(ma));
+                // write_i++
+                v.push(Instruction::LocalGet(write_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(write_i));
+                v.push(Instruction::End); // if
+                // i++
+                v.push(Instruction::LocalGet(i_tmp));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(i_tmp));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); // loop
+                v.push(Instruction::End); // block
+                // Return tagged new array
+                v.push(Instruction::I64Const(((new_heap as i64) << TAG_BITS) | TAG_ARRAY));
+                Ok(v)
+            }
+
             // User function call
             _ => {
                 let pos = self.funcs.iter().position(|f| f.name == op).ok_or_else(|| format!("in {}: unknown function '{}'", self.current_func.as_deref().unwrap_or("top"), op))?;
@@ -10241,7 +10491,9 @@ impl WasmEmitter {
         let mut funcs = FunctionSection::new();
         for f in &self.funcs { funcs.function(f.param_count as u32 + 1); }
         if self.exports.is_empty() {
-            funcs.function(0); // default wrapper: () -> ()
+            if !self.funcs.is_empty() {
+                funcs.function(0); // default wrapper: () -> ()
+            }
         } else {
             for (fn_name, _, _) in &self.exports {
                 let func = self.funcs.iter().find(|f| f.name.as_str() == fn_name.as_str());
@@ -10683,45 +10935,68 @@ fn parse_and_compile(source: &str, near: bool) -> Result<WasmEmitter, String> {
     let mut exprs = exprs;
     crate::clojure::desugar(&mut exprs);
     let mut em = WasmEmitter::new();
+    // Collect bare expressions (not define/export/borsh-schema/memory) for implicit toplevel
+    let mut bare_exprs: Vec<LispVal> = Vec::new();
     for e in &exprs {
         if let LispVal::List(items) = e {
             if items.is_empty() { continue; }
-            // Handle borsh-schema regardless of near mode
             if let LispVal::Sym(s) = &items[0] {
-                if s == "borsh-schema" {
-                    process_borsh_schema(&mut em, items)?;
-                }
-            }
-            if items.len() >= 3 {
-                if let (LispVal::Sym(s), LispVal::List(sig)) = (&items[0], &items[1]) {
-                    if s == "define" && !sig.is_empty() {
-                        if let LispVal::Sym(name) = &sig[0] {
-                            let params: Vec<String> = sig[1..].iter().map(|p| match p {
-                                LispVal::Sym(s) => Ok(s.clone()), _ => Err("param must be symbol".into()),
-                            }).collect::<Result<_, String>>()?;
-                            // Implicit begin: wrap multiple body expressions
-                            let body = if items.len() > 3 {
-                                LispVal::List(std::iter::once(LispVal::Sym("begin".into()))
-                                    .chain(items[2..].iter().cloned()).collect())
-                            } else {
-                                items[2].clone()
-                            };
-                            em.emit_define(name, &params, &body)?;
+                match s.as_str() {
+                    "define" | "export" | "borsh-schema" => {
+                        // Handle borsh-schema regardless of near mode
+                        if s == "borsh-schema" {
+                            process_borsh_schema(&mut em, items)?;
                         }
+                        if items.len() >= 3 {
+                            if let (LispVal::Sym(s2), LispVal::List(sig)) = (&items[0], &items[1]) {
+                                if s2 == "define" && !sig.is_empty() {
+                                    if let LispVal::Sym(name) = &sig[0] {
+                                        let params: Vec<String> = sig[1..].iter().map(|p| match p {
+                                            LispVal::Sym(ps) => Ok(ps.clone()), _ => Err("param must be symbol".into()),
+                                        }).collect::<Result<_, String>>()?;
+                                        let body = if items.len() > 3 {
+                                            LispVal::List(std::iter::once(LispVal::Sym("begin".into()))
+                                                .chain(items[2..].iter().cloned()).collect())
+                                        } else {
+                                            items[2].clone()
+                                        };
+                                        em.emit_define(name, &params, &body)?;
+                                    }
+                                }
+                            }
+                            if let LispVal::Sym(s2) = &items[0] {
+                                if s2 == "export" { if let (LispVal::Str(en), LispVal::Sym(fn_)) = (&items[1], &items[2]) {
+                                    let view = items.len()>3 && matches!(&items[3], LispVal::Bool(true));
+                                    em.add_export(fn_, en, view);
+                                }}
+                            }
+                        }
+                        if let (LispVal::Sym(s2), Some(LispVal::Num(n))) = (&items[0], items.get(1)) {
+                            if s2 == "memory" { em.set_memory(*n as u32); }
+                        }
+                        continue;
                     }
-                }
-                // Handle export in both pure and near modes
-                if let LispVal::Sym(s) = &items[0] {
-                    if s == "export" { if let (LispVal::Str(en), LispVal::Sym(fn_)) = (&items[1], &items[2]) {
-                        let view = items.len()>3 && matches!(&items[3], LispVal::Bool(true));
-                        em.add_export(fn_, en, view);
-                    }}
+                    "memory" => {
+                        if let Some(LispVal::Num(n)) = items.get(1) { em.set_memory(*n as u32); }
+                        continue;
+                    }
+                    _ => {}
                 }
             }
-            if let (LispVal::Sym(s), Some(LispVal::Num(n))) = (&items[0], items.get(1)) {
-                if s == "memory" { em.set_memory(*n as u32); }
-            }
+            bare_exprs.push(e.clone());
+        } else {
+            bare_exprs.push(e.clone());
         }
+    }
+    // If there are bare expressions, wrap them in an implicit toplevel function
+    if !bare_exprs.is_empty() {
+        let body = if bare_exprs.len() == 1 {
+            bare_exprs.into_iter().next().unwrap()
+        } else {
+            LispVal::List(std::iter::once(LispVal::Sym("begin".into()))
+                .chain(bare_exprs.into_iter()).collect())
+        };
+        em.emit_define("__toplevel", &[], &body)?;
     }
     Ok(em)
 }

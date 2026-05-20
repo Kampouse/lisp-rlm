@@ -1797,5 +1797,5 @@ async function runWasiWithWorker(wasmBytes: Uint8Array, stdinData?: Uint8Array):
 // Expose test helper to window for deserialize testing
 if (typeof window !== 'undefined') {
   (window as any).__runPureWithPreWrite = runPure;
-  (window as any).__compilePure = compile;
+  (window as any).__compilePure = (source: string) => compile(source, 'pure');
 }
