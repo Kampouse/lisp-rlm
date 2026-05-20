@@ -39,6 +39,9 @@ fn desugar_expr(expr: &mut LispVal) {
                     "let" | "let*" => {
                         desugar_let(items);
                     }
+                    "loop" => {
+                        desugar_let(items);
+                    }
                     "fn" | "lambda" => {
                         desugar_fn_params(items);
                     }
@@ -285,5 +288,15 @@ mod tests {
               (+ x y))
         "#).unwrap();
         assert_eq!(r, "13");
+    }
+
+    #[test]
+    fn test_loop_recur() {
+        let r = run(r#"
+            (loop [i 0 acc 0]
+              (if (>= i 10) acc
+                (recur (+ i 1) (+ acc i))))
+        "#).unwrap();
+        assert_eq!(r, "45");
     }
 }
