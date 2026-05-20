@@ -799,7 +799,7 @@
       {/if}
     </button>
 
-    <div class="header-brand">
+    <div class="header-brand" onclick={() => { showLearn = false; }} role="button" tabindex="0">
       <div class="header-logo">λ</div>
       <span class="header-title">Lisp → WASM</span>
     </div>
