@@ -895,6 +895,8 @@ impl WasmEmitter {
             // Extra crypto
             "near/keccak512" => { self.need_host(52); self.need_host(0); self.need_host(1); }
             "near/ripemd160" => { self.need_host(53); self.need_host(0); self.need_host(1); }
+            // Deposit check: writes attached_deposit to TEMP_MEM, compares u128 against compile-time (lo, hi)
+            "near/deposit-gte" => { if !self.wasi_mode { self.need_host(14); } }
             "near/ecrecover" => self.need_host(54),
             "near/p256_verify" => self.need_host(55),
             // Alt BN128
@@ -2987,6 +2989,54 @@ impl WasmEmitter {
             "near/used_gas" => { let mut v = vec![Self::host_call(16)]; v.extend(self.emit_tag_num()); Ok(v) },
             "near/attached_deposit" => self.read_u128_low(14),
             "near/attached_deposit_high" => self.read_u128_high(14),
+            // (near/deposit-gte lo hi) → tagged bool
+            // Calls attached_deposit (writes 16 bytes to TEMP_MEM), compares against compile-time u128(lo|hi<<64)
+            "near/deposit-gte" => {
+                let lo_val = match &a[0] {
+                    LispVal::Num(n) => *n as u64,
+                    _ => return Err("near/deposit-gte: lo must be a number literal".into()),
+                };
+                let hi_val = if a.len() > 1 {
+                    match &a[1] {
+                        LispVal::Num(n) => *n as u64,
+                        _ => return Err("near/deposit-gte: hi must be a number literal".into()),
+                    }
+                } else { 0u64 };
+                let mut v = Vec::new();
+                // Call attached_deposit host (writes 16 bytes to TEMP_MEM)
+                v.push(Instruction::I64Const(TEMP_MEM as i64));
+                v.push(Self::host_call(14));
+                // Compare: deposit >= threshold
+                // deposit_lo = I64Load(TEMP_MEM+0), deposit_hi = I64Load(TEMP_MEM+8)
+                // threshold_lo = lo_val, threshold_hi = hi_val
+                // if dep_hi < threshold_hi → false
+                // if dep_hi > threshold_hi → true
+                // else dep_lo >= threshold_lo
+                v.push(Instruction::I32Const(TEMP_MEM as i32));
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 })); // dep_hi
+                v.push(Instruction::I64Const(hi_val as i64)); // threshold_hi
+                v.push(Instruction::I64LtU);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                    v.push(Instruction::I64Const(0)); // dep < threshold → false
+                v.push(Instruction::Else);
+                    v.push(Instruction::I32Const(TEMP_MEM as i32));
+                    v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 })); // dep_hi
+                    v.push(Instruction::I64Const(hi_val as i64));
+                    v.push(Instruction::I64GtU);
+                    v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                        v.push(Instruction::I64Const(1)); // dep > threshold → true
+                    v.push(Instruction::Else);
+                        // Highs equal, compare low
+                        v.push(Instruction::I32Const(TEMP_MEM as i32));
+                        v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 })); // dep_lo
+                        v.push(Instruction::I64Const(lo_val as i64));
+                        v.push(Instruction::I64GeU);
+                        v.push(Instruction::I64ExtendI32U);
+                    v.push(Instruction::End);
+                v.push(Instruction::End);
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
             "near/account_balance" => self.read_u128_low(12),
             "near/sha256" => {
                 let data = self.expr(&a[0])?;
@@ -3932,6 +3982,7 @@ impl WasmEmitter {
             }
 
             // (near/batch-transfer promise_id amount_ptr amount_len) → nil
+            // amount_ptr and amount_len are tagged nums, untagged before host call
             "near/batch-transfer" => {
                 if a.len() != 3 { return Err("near/batch-transfer: expected 3 args".into()); }
                 self.need_host(44);
@@ -3939,7 +3990,9 @@ impl WasmEmitter {
                 let amount_ptr = self.expr(&a[1])?;
                 let amount_len = self.expr(&a[2])?;
                 let mut v = Vec::new();
-                v.extend(idx); v.extend(amount_ptr); v.extend(amount_len);
+                v.extend(idx); v.extend(self.emit_untag());
+                v.extend(amount_ptr); v.extend(self.emit_untag());
+                v.extend(amount_len); v.extend(self.emit_untag());
                 v.push(Self::host_call(44));
                 v.push(Instruction::I64Const(0));
                 Ok(v)
@@ -3971,8 +4024,8 @@ impl WasmEmitter {
                 v.extend(args);
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // args_ptr
-                // amount_ptr + gas
-                v.extend(amount_ptr);
+                // amount_ptr (raw, untag) + gas (tagged, untag)
+                v.extend(amount_ptr); v.extend(self.emit_untag());
                 v.extend(gas); v.extend(self.emit_untag());
                 v.push(Self::host_call(43));
                 v.push(Instruction::I64Const(0));
