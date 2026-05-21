@@ -1041,12 +1041,9 @@ impl WasmEmitter {
 
         let tc = self.has_tc(body);
 
-        // Build prologue: init gas + depth increment/check + frame save
+        // Build prologue: depth increment/check + frame save
         let mut prologue = Vec::new();
         if !self.p2_mode {
-            // gas = GAS_LIMIT
-            prologue.push(Instruction::I64Const(GAS_LIMIT));
-            prologue.push(Instruction::LocalSet(gas_local));
             // depth++
             prologue.push(Instruction::GlobalGet(DEPTH_GLOBAL));
             prologue.push(Instruction::I64Const(1));
@@ -1093,7 +1090,8 @@ impl WasmEmitter {
         instrs.append(&mut epilogue);
 
         // Inject gas checks before every Br(0) back-edge and host_call (skip in P2 mode)
-        let instrs = if self.p2_mode { instrs } else { Self::inject_gas_checks(instrs, gas_local) };
+        // NEAR protocol meters gas natively — skip injected gas checks
+        let instrs = Self::peephole(instrs);
 
         let total = self.next_local as usize;
         self.current_func = None;
@@ -1130,6 +1128,54 @@ impl WasmEmitter {
                 }
                 _ => out.push(i.clone()),
             }
+        }
+        out
+    }
+
+    /// Peephole optimizer: eliminate redundant instruction patterns
+    /// - LocalSet(n) + LocalGet(n) → drop the LocalGet (value already on stack)
+    /// - LocalGet(n) + LocalGet(n) → LocalGet(n) + Dup (not available in WASM MVP, so: LocalGet + LocalTee trick)
+    /// - I64Const(0) + I64Or → noop (x | 0 = x)
+    /// - I64Const(0) + I64Add → noop (x + 0 = x)
+    fn peephole(instrs: Vec<Instruction<'static>>) -> Vec<Instruction<'static>> {
+        let mut out = Vec::with_capacity(instrs.len());
+        let mut i = 0;
+        while i < instrs.len() {
+            // Pattern: LocalSet(n) followed by LocalGet(n) → remove LocalGet
+            if i + 1 < instrs.len() {
+                match (&instrs[i], &instrs[i + 1]) {
+                    (Instruction::LocalSet(n), Instruction::LocalGet(m)) if n == m => {
+                        // Replace LocalSet+LocalGet with LocalTee (stores without popping)
+                        out.push(Instruction::LocalTee(*n));
+                        i += 2;
+                        continue;
+                    }
+                    // Pattern: x, I64Const(0), I64Add → x (additive identity)
+                    (Instruction::I64Const(0), Instruction::I64Add) => {
+                        i += 2;
+                        continue;
+                    }
+                    // Pattern: x, I64Const(0), I64Or → x (or with zero)
+                    (Instruction::I64Const(0), Instruction::I64Or) => {
+                        i += 2;
+                        continue;
+                    }
+                    // Pattern: I64Const(0), I64Shl → noop (x << 0 = x)
+                    (Instruction::I64Const(0), Instruction::I64Shl) => {
+                        i += 2;
+                        continue;
+                    }
+                    // Pattern: I64Const(0), I64ShrU → noop (x >> 0 = x)
+                    (Instruction::I64Const(0), Instruction::I64ShrU) => {
+                        i += 2;
+                        continue;
+                    }
+                    // Pattern: I64Const(1), I64Sub → can't remove (x - 1 ≠ x), skip
+                    _ => {}
+                }
+            }
+            out.push(instrs[i].clone());
+            i += 1;
         }
         out
     }
@@ -10752,11 +10798,25 @@ impl WasmEmitter {
 
     fn fold_binop(&mut self, a: &[LispVal], op: Instruction<'static>, identity: i64) -> Result<Vec<Instruction<'static>>, String> {
         if a.is_empty() { return Ok(self.emit_tagged_const(identity, TAG_NUM)) }
+        // Constant folding: if all args are integer literals, compute at compile time
+        let all_const = a.iter().all(|x| matches!(x, LispVal::Num(_)));
+        if all_const {
+            let nums: Vec<i64> = a.iter().map(|x| if let LispVal::Num(n) = x { *n } else { 0 }).collect();
+            let folded = match &op {
+                Instruction::I64Add => Some(nums.iter().skip(1).fold(nums[0], |acc, &x| acc.wrapping_add(x))),
+                Instruction::I64Sub => Some(nums.iter().skip(1).fold(nums[0], |acc, &x| acc.wrapping_sub(x))),
+                Instruction::I64Mul => Some(nums.iter().skip(1).fold(nums[0], |acc, &x| acc.wrapping_mul(x))),
+                _ => None,
+            };
+            if let Some(result) = folded {
+                return Ok(self.emit_tagged_const(result, TAG_NUM));
+            }
+        }
         let mut v = self.expr(&a[0])?;
-        v.extend(self.emit_num_coerce());
+        v.extend(self.emit_untag());
         for x in &a[1..] {
             v.extend(self.expr(x)?);
-            v.extend(self.emit_num_coerce());
+            v.extend(self.emit_untag());
             v.push(op.clone());
         }
         v.extend(self.emit_tag_num());
@@ -10767,10 +10827,10 @@ impl WasmEmitter {
     fn fold_binop_safe(&mut self, a: &[LispVal], _op: Instruction<'static>, identity: i64, is_div: bool) -> Result<Vec<Instruction<'static>>, String> {
         if a.is_empty() { return Ok(self.emit_tagged_const(identity, TAG_NUM)) }
         let mut v = self.expr(&a[0])?;
-        v.extend(self.emit_num_coerce());
+        v.extend(self.emit_untag());
         for x in &a[1..] {
             v.extend(self.expr(x)?);
-            v.extend(self.emit_num_coerce());
+            v.extend(self.emit_untag());
             if is_div {
                 v.extend(self.emit_safe_div());
             } else {
