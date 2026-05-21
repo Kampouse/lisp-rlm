@@ -6387,12 +6387,17 @@ impl WasmEmitter {
                 let i_i = self.local_idx("__sci");
                 let ma = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
                 let mut v = Vec::new();
-                // Save packed strings
-                v.extend(s1); v.push(Instruction::LocalSet(s1_i));
-                v.extend(s2); v.push(Instruction::LocalSet(s2_i));
-                // Extract lengths: len = packed >> 32
+                // Save tagged strings, then untag to get raw packed (len<<32|ptr)
+                v.extend(s1); v.extend(self.emit_untag()); v.push(Instruction::LocalSet(s1_i));
+                v.extend(s2); v.extend(self.emit_untag()); v.push(Instruction::LocalSet(s2_i));
+                // Extract lengths from raw packed: len = raw >> 32
                 v.push(Instruction::LocalGet(s1_i)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); v.push(Instruction::LocalSet(l1_i));
                 v.push(Instruction::LocalGet(s2_i)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); v.push(Instruction::LocalSet(l2_i));
+                // Extract pointers: ptr = raw & 0xFFFFFFFF
+                let ptr1_i = self.local_idx("__scp1");
+                let ptr2_i = self.local_idx("__scp2");
+                v.push(Instruction::LocalGet(s1_i)); v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(ptr1_i));
+                v.push(Instruction::LocalGet(s2_i)); v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(ptr2_i));
                 // Allocate destination buffer
                 let alloc_base = self.next_data_offset.max(2048);
                 v.push(Instruction::I64Const(alloc_base as i64)); v.push(Instruction::LocalSet(dst_i));
@@ -6402,9 +6407,9 @@ impl WasmEmitter {
                 v.push(Instruction::Loop(BlockType::Empty));
                 v.push(Instruction::LocalGet(i_i)); v.push(Instruction::LocalGet(l1_i)); v.push(Instruction::I64GeU);
                 v.push(Instruction::BrIf(1)); // break if i >= l1
-                // dst[i] = s1_ptr[i]
+                // dst[i] = ptr1[i]
                 v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::LocalGet(s1_i)); v.push(Instruction::I32WrapI64); v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I32WrapI64); v.push(Instruction::I32Add);
+                v.push(Instruction::LocalGet(ptr1_i)); v.push(Instruction::I32WrapI64); v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I32WrapI64); v.push(Instruction::I32Add);
                 v.push(Instruction::I32Load8U(ma));
                 v.push(Instruction::I32Store8(ma));
                 v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(i_i));
@@ -6418,9 +6423,9 @@ impl WasmEmitter {
                 v.push(Instruction::Loop(BlockType::Empty));
                 v.push(Instruction::LocalGet(i_i)); v.push(Instruction::LocalGet(l2_i)); v.push(Instruction::I64GeU);
                 v.push(Instruction::BrIf(1)); // break if i >= l2
-                // dst[l1+i] = s2_ptr[i]
+                // dst[l1+i] = ptr2[i]
                 v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::LocalGet(l1_i)); v.push(Instruction::I64Add); v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::LocalGet(s2_i)); v.push(Instruction::I32WrapI64); v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I32WrapI64); v.push(Instruction::I32Add);
+                v.push(Instruction::LocalGet(ptr2_i)); v.push(Instruction::I32WrapI64); v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I32WrapI64); v.push(Instruction::I32Add);
                 v.push(Instruction::I32Load8U(ma));
                 v.push(Instruction::I32Store8(ma));
                 v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(i_i));
@@ -6657,6 +6662,19 @@ impl WasmEmitter {
                 // Extract len: raw >> 32
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
+
+            // (str-ptr s) → raw i64 pointer (untagged number)
+            // Extracts the low 32 bits of the untagged string descriptor
+            "str-ptr" => {
+                if a.len() != 1 { return Err("str-ptr: expected 1 arg".into()); }
+                let mut v = self.expr(&a[0])?;
+                v.extend(self.emit_untag());
+                // Low 32 bits = ptr: wrap to i32 then extend back to i64
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
                 v.extend(self.emit_tag_num());
                 Ok(v)
             }
