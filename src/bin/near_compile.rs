@@ -1418,7 +1418,15 @@ fn run_compile(args: &[String]) {
 
     // Validate only for NEAR target (component model has different format)
     if target == "near" {
-        if let Err(_e) = wasmparser::Validator::new().validate_all(&wasm_bytes) {
+        if let Err(e) = wasmparser::Validator::new().validate_all(&wasm_bytes) {
+            let func_name_map = extract_func_names(&src).unwrap_or_default();
+            let err_str = e.to_string();
+            let offset = extract_offset(&err_str);
+            let func_name = offset.and_then(|off| find_function_at_offset(&wasm_bytes, off, &func_name_map));
+            match func_name {
+                Some(name) => eprintln!("❌ WASM error in `{}`: {}", name, err_str),
+                None => eprintln!("❌ WASM validation: {}", err_str),
+            }
             let out = positional
                 .get(1)
                 .map(|s| s.to_string())

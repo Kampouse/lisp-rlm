@@ -1972,8 +1972,8 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(1)); // register 1
-                v.push(Self::host_call(18));
-                v.push(Instruction::Drop); // discard unreliable return value
+                v.push(Self::host_call(18)); v.push(Instruction::Drop);
+
                 // register_len(1) — idx 1. Returns u64 length, or -1 if register not written.
                 v.push(Instruction::I64Const(1));
                 v.push(Self::host_call(1));
@@ -2330,8 +2330,8 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(8));
                 v.push(Instruction::I64Const(STORAGE_BUF));
                 v.push(Instruction::I64Const(0));
-                v.push(Self::host_call(17)); // storage_write
-                v.push(Instruction::Drop);
+                v.push(Self::host_call(17)); v.push(Instruction::Drop); // storage_write
+
                 v.push(Instruction::I64Const(0));
                 Ok(v)
             }
@@ -2347,14 +2347,13 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // key_ptr
                 v.push(Instruction::I64Const(0)); // register 0
-                v.push(Self::host_call(18)); // storage_read
-                v.push(Instruction::Drop); // discard unreliable return value
+                v.push(Self::host_call(18)); v.push(Instruction::Drop); // storage_read — discard return
+ // discard unreliable return value
                 // Use register_len to check if value was written
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(1)); // register_len
                 v.push(Instruction::I64Const(-1i64 as u64 as i64));
                 v.push(Instruction::I64Eq);
-                v.push(Instruction::I32WrapI64);
                 v.push(Instruction::If(wasm_encoder::BlockType::Result(ValType::I64)));
                     v.push(Instruction::I64Const(0));
                 v.push(Instruction::Else);
@@ -3830,6 +3829,7 @@ impl WasmEmitter {
             }
 
             // (near/promise_batch_action_function_call promise_idx method_ptr method_len args_ptr args_len amount_ptr gas)
+            // NEAR API: (promise_index, method_name_len, method_name_ptr, arguments_len, arguments_ptr, amount_ptr, gas)
             "near/promise_batch_action_function_call" => {
                 let idx = self.expr(&a[0])?;
                 let method_ptr = self.expr(&a[1])?;
@@ -4000,6 +4000,7 @@ impl WasmEmitter {
 
             // (near/batch-call promise_id method_str args_str amount_ptr gas) → nil
             // amount_ptr is raw pointer to 16-byte u128 LE, gas is tagged num
+            // NEAR API: (promise_index, method_name_len, method_name_ptr, arguments_len, arguments_ptr, amount_ptr, gas)
             "near/batch-call" => {
                 if a.len() != 5 { return Err("near/batch-call: expected 5 args".into()); }
                 self.need_host(43);
@@ -4009,23 +4010,27 @@ impl WasmEmitter {
                 let amount_ptr = self.expr(&a[3])?;
                 let gas = self.expr(&a[4])?;
                 let mut v = Vec::new();
+                // promise_index (untag)
                 v.extend(idx.clone()); v.extend(self.emit_untag());
-                // method ptr/len
+                // method_name_len
                 v.extend(method.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // method_len
+                // method_name_ptr
                 v.extend(method);
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // method_ptr
-                // args ptr/len
+                // arguments_len
                 v.extend(args.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // args_len
+                // arguments_ptr
                 v.extend(args);
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // args_ptr
-                // amount_ptr (raw, untag) + gas (tagged, untag)
+                // amount_ptr (raw, untag)
                 v.extend(amount_ptr); v.extend(self.emit_untag());
+                // gas (untag)
                 v.extend(gas); v.extend(self.emit_untag());
                 v.push(Self::host_call(43));
                 v.push(Instruction::I64Const(0));
@@ -6471,9 +6476,9 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(i_i)); v.push(Instruction::LocalGet(l1_i)); v.push(Instruction::I64GeS);
                 v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
                 // if s1_ptr[i] != s2_ptr[i]: res=0, break
-                v.push(Instruction::LocalGet(s1_i)); v.push(Instruction::I32WrapI64); v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(s1_i)); v.push(Instruction::I32WrapI64); v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I32WrapI64); v.push(Instruction::I32Add);
                 v.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
-                v.push(Instruction::LocalGet(s2_i)); v.push(Instruction::I32WrapI64); v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(s2_i)); v.push(Instruction::I32WrapI64); v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I32WrapI64); v.push(Instruction::I32Add);
                 v.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
                 v.push(Instruction::I32Ne);
                 v.push(Instruction::If(BlockType::Empty));
@@ -6679,6 +6684,40 @@ impl WasmEmitter {
                 Ok(v)
             }
 
+            // (str-slice s start end) → substring from start to end (exclusive)
+            // start/end are tagged nums (byte offsets). Zero-copy: just adjusts ptr+len.
+            "str-slice" => {
+                if a.len() != 3 { return Err("str-slice: expected 3 args (string, start, end)".into()); }
+                let raw_i = self.local_idx("__ss_raw");
+                let mut v = Vec::new();
+                // Get raw string descriptor: untag → (len << 32) | ptr
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(raw_i));
+                // New ptr = (raw & 0xFFFFFFFF) + start
+                v.push(Instruction::LocalGet(raw_i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U); // original ptr as u64
+                v.extend(self.expr(&a[1])?);
+                v.extend(self.emit_untag()); // start (untagged)
+                v.push(Instruction::I64Add); // new_ptr = orig_ptr + start
+                // New len = end - start
+                v.extend(self.expr(&a[2])?);
+                v.extend(self.emit_untag()); // end
+                v.extend(self.expr(&a[1])?);
+                v.extend(self.emit_untag()); // start
+                v.push(Instruction::I64Sub); // new_len = end - start
+                // Pack: (new_len << 32) | new_ptr
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl); // new_len << 32
+                v.push(Instruction::I64Or); // (new_len << 32) | new_ptr
+                // Tag as Str
+                v.extend(self.emit_tag_num()); // shift left 3
+                v.push(Instruction::I64Const(5)); // TAG_STR
+                v.push(Instruction::I64Or);
+                Ok(v)
+            }
+
             // (str-contains-byte s byte_val) → bool
             // Checks if string s contains byte with value byte_val (0-255)
             "str-contains-byte" => {
@@ -6740,6 +6779,262 @@ impl WasmEmitter {
                 // Return found as tagged bool
                 v.push(Instruction::LocalGet(found_i));
                 v.extend(self.emit_tag_bool());
+                Ok(v)
+            }
+
+            // (strlcpy dst_ptr src_ptr len) → copies len bytes from src_ptr to dst_ptr
+            // Uses 8-byte word copies via I64Load/I64Store (byte-by-byte I32Load8U is broken on NEAR)
+            // dst_ptr/src_ptr are tagged nums (raw i64 pointers)
+            "strlcpy" => {
+                if a.len() != 3 { return Err("strlcpy: expected 3 args (dst_ptr src_ptr len)".into()); }
+                let src_i = self.local_idx("__slc_src");
+                let dst_i = self.local_idx("__slc_dst");
+                let len_i = self.local_idx("__slc_len");
+                let qwords_i = self.local_idx("__slc_qw");
+                let remain_i = self.local_idx("__slc_rem");
+                let mut v = Vec::new();
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                // Evaluate args, untag, store
+                v.extend(self.expr(&a[0])?); v.extend(self.emit_untag()); v.push(Instruction::LocalSet(dst_i));
+                v.extend(self.expr(&a[1])?); v.extend(self.emit_untag()); v.push(Instruction::LocalSet(src_i));
+                v.extend(self.expr(&a[2])?); v.extend(self.emit_untag()); v.push(Instruction::LocalSet(len_i));
+                // qwords = len / 8
+                v.push(Instruction::LocalGet(len_i));
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(qwords_i));
+                // remain = len & 7
+                v.push(Instruction::LocalGet(len_i));
+                v.push(Instruction::I64Const(7)); v.push(Instruction::I64And);
+                v.push(Instruction::LocalSet(remain_i));
+                // Word copy loop: while qwords > 0
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(qwords_i));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Eq);
+                v.push(Instruction::BrIf(1));
+                // dst[i64.load src]
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(src_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(ma));
+                v.push(Instruction::I64Store(ma));
+                v.push(Instruction::LocalGet(src_i)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(src_i));
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(dst_i));
+                v.push(Instruction::LocalGet(qwords_i)); v.push(Instruction::I64Const(-1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(qwords_i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); // loop
+                v.push(Instruction::End); // block
+                // Remainder tail: while remain > 0, copy 1 byte via I64Load8U + I64Store8
+                // (Note: I64Load8U is different from I32Load8U — worth testing)
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(remain_i));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Eq);
+                v.push(Instruction::BrIf(1));
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(src_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                v.push(Instruction::I64Store8(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                v.push(Instruction::LocalGet(src_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(src_i));
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(dst_i));
+                v.push(Instruction::LocalGet(remain_i)); v.push(Instruction::I64Const(-1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(remain_i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); // loop
+                v.push(Instruction::End); // block
+                // Return total length (like strlcpy returns strlen(src))
+                v.push(Instruction::LocalGet(len_i));
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
+
+            // (strlcat dst_ptr src_ptr dst_offset len) → appends len bytes from src_ptr to dst_ptr+dst_offset
+            // Wrapper around strlcpy that offsets dst by the existing content length
+            "strlcat" => {
+                if a.len() != 4 { return Err("strlcat: expected 4 args (dst_ptr src_ptr dst_offset len)".into()); }
+                // Just emit: (strlcpy (i64.add dst_ptr dst_offset) src_ptr len)
+                // We inline it to avoid a recursive call
+                let src_i = self.local_idx("__slt_src");
+                let dst_i = self.local_idx("__slt_dst");
+                let off_i = self.local_idx("__slt_off");
+                let len_i = self.local_idx("__slt_len");
+                let qwords_i = self.local_idx("__slt_qw");
+                let remain_i = self.local_idx("__slt_rem");
+                let mut v = Vec::new();
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                v.extend(self.expr(&a[0])?); v.extend(self.emit_untag()); v.push(Instruction::LocalSet(dst_i));
+                v.extend(self.expr(&a[1])?); v.extend(self.emit_untag()); v.push(Instruction::LocalSet(src_i));
+                v.extend(self.expr(&a[2])?); v.extend(self.emit_untag()); v.push(Instruction::LocalSet(off_i));
+                v.extend(self.expr(&a[3])?); v.extend(self.emit_untag()); v.push(Instruction::LocalSet(len_i));
+                // dst += offset
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::LocalGet(off_i)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(dst_i));
+                // qwords = len / 8
+                v.push(Instruction::LocalGet(len_i));
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(qwords_i));
+                v.push(Instruction::LocalGet(len_i));
+                v.push(Instruction::I64Const(7)); v.push(Instruction::I64And);
+                v.push(Instruction::LocalSet(remain_i));
+                // Word copy loop
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(qwords_i));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Eq);
+                v.push(Instruction::BrIf(1));
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(src_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(ma));
+                v.push(Instruction::I64Store(ma));
+                v.push(Instruction::LocalGet(src_i)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(src_i));
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(dst_i));
+                v.push(Instruction::LocalGet(qwords_i)); v.push(Instruction::I64Const(-1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(qwords_i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); // loop
+                v.push(Instruction::End); // block
+                // Remainder tail
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(remain_i));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Eq);
+                v.push(Instruction::BrIf(1));
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(src_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                v.push(Instruction::I64Store8(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                v.push(Instruction::LocalGet(src_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(src_i));
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(dst_i));
+                v.push(Instruction::LocalGet(remain_i)); v.push(Instruction::I64Const(-1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(remain_i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); // loop
+                v.push(Instruction::End); // block
+                // Return total length
+                v.push(Instruction::LocalGet(len_i));
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
+
+            // (str-cat a b) → concatenated byte string
+            // Allocates new memory at DATA_PTR, uses strlcpy/strlcat internally via word copies
+            "str-cat" => {
+                if a.len() != 2 { return Err("str-cat: expected 2 args".into()); }
+                let a_raw_i = self.local_idx("__sc_a");
+                let b_raw_i = self.local_idx("__sc_b");
+                let a_len_i = self.local_idx("__sc_a_len");
+                let a_ptr_i = self.local_idx("__sc_a_ptr");
+                let b_len_i = self.local_idx("__sc_b_len");
+                let b_ptr_i = self.local_idx("__sc_b_ptr");
+                let dst_i = self.local_idx("__sc_dst");
+                let dst_save_i = self.local_idx("__sc_dst_save");
+                let total_len_i = self.local_idx("__sc_total");
+                let qwords_i = self.local_idx("__sc_qw");
+                let remain_i = self.local_idx("__sc_rem");
+                let mut v = Vec::new();
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                // Evaluate a, extract raw descriptor
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(a_raw_i));
+                v.push(Instruction::LocalGet(a_raw_i));
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(a_len_i));
+                v.push(Instruction::LocalGet(a_raw_i));
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(a_ptr_i));
+                // Evaluate b, extract raw descriptor
+                v.extend(self.expr(&a[1])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(b_raw_i));
+                v.push(Instruction::LocalGet(b_raw_i));
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(b_len_i));
+                v.push(Instruction::LocalGet(b_raw_i));
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(b_ptr_i));
+                // total_len = a_len + b_len
+                v.push(Instruction::LocalGet(a_len_i));
+                v.push(Instruction::LocalGet(b_len_i));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(total_len_i));
+                // Allocate dst at DATA_PTR
+                v.push(Instruction::GlobalGet(0));
+                v.push(Instruction::LocalSet(dst_i));
+                v.push(Instruction::LocalGet(dst_i));
+                v.push(Instruction::LocalSet(dst_save_i));
+                // Round up DATA_PTR advance to 8-byte boundary for safe word copies
+                v.push(Instruction::GlobalGet(0));
+                v.push(Instruction::LocalGet(total_len_i));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Const(7)); v.push(Instruction::I64Add);
+                v.push(Instruction::I64Const(-8i64 as u64 as i64)); v.push(Instruction::I64And); // align up to 8
+                v.push(Instruction::GlobalSet(0));
+                // ── Copy A: word-copy loop (I64Load/I64Store) ──
+                // qwords = a_len / 8, remain = a_len & 7
+                v.push(Instruction::LocalGet(a_len_i)); v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU); v.push(Instruction::LocalSet(qwords_i));
+                v.push(Instruction::LocalGet(a_len_i)); v.push(Instruction::I64Const(7)); v.push(Instruction::I64And); v.push(Instruction::LocalSet(remain_i));
+                // Word loop
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(qwords_i)); v.push(Instruction::I64Const(0)); v.push(Instruction::I64Eq); v.push(Instruction::BrIf(1));
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(a_ptr_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(ma));
+                v.push(Instruction::I64Store(ma));
+                v.push(Instruction::LocalGet(a_ptr_i)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(a_ptr_i));
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(dst_i));
+                v.push(Instruction::LocalGet(qwords_i)); v.push(Instruction::I64Const(-1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(qwords_i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); // loop
+                v.push(Instruction::End); // block
+                // Remainder bytes via I64Load8U/I64Store8
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(remain_i)); v.push(Instruction::I64Const(0)); v.push(Instruction::I64Eq); v.push(Instruction::BrIf(1));
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(a_ptr_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                v.push(Instruction::I64Store8(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                v.push(Instruction::LocalGet(a_ptr_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(a_ptr_i));
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(dst_i));
+                v.push(Instruction::LocalGet(remain_i)); v.push(Instruction::I64Const(-1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(remain_i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); // loop
+                v.push(Instruction::End); // block
+                // ── Copy B: same word-copy loop, dst is now at a_len offset (strlcat) ──
+                v.push(Instruction::LocalGet(b_len_i)); v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU); v.push(Instruction::LocalSet(qwords_i));
+                v.push(Instruction::LocalGet(b_len_i)); v.push(Instruction::I64Const(7)); v.push(Instruction::I64And); v.push(Instruction::LocalSet(remain_i));
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(qwords_i)); v.push(Instruction::I64Const(0)); v.push(Instruction::I64Eq); v.push(Instruction::BrIf(1));
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(b_ptr_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(ma));
+                v.push(Instruction::I64Store(ma));
+                v.push(Instruction::LocalGet(b_ptr_i)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(b_ptr_i));
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(dst_i));
+                v.push(Instruction::LocalGet(qwords_i)); v.push(Instruction::I64Const(-1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(qwords_i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); // loop
+                v.push(Instruction::End); // block
+                // Remainder bytes for B
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(remain_i)); v.push(Instruction::I64Const(0)); v.push(Instruction::I64Eq); v.push(Instruction::BrIf(1));
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(b_ptr_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                v.push(Instruction::I64Store8(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                v.push(Instruction::LocalGet(b_ptr_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(b_ptr_i));
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(dst_i));
+                v.push(Instruction::LocalGet(remain_i)); v.push(Instruction::I64Const(-1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(remain_i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); // loop
+                v.push(Instruction::End); // block
+                // Build result: ((total_len << 32) | dst_save) << 3 | TAG_STR
+                v.push(Instruction::LocalGet(total_len_i));
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalGet(dst_save_i));
+                v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_num());
+                v.push(Instruction::I64Const(5)); // TAG_STR
+                v.push(Instruction::I64Or);
                 Ok(v)
             }
 
@@ -7457,20 +7752,20 @@ impl WasmEmitter {
                 // Load dst[out_len - 1 - i]
                 v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalGet(out_len_i)); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Const(1));
-                v.push(Instruction::I64Add);
-                v.push(Instruction::I64Sub);
-                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(1));
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Sub);
                 v.push(Instruction::I32Add);
                 v.push(Instruction::I32Load8U(ma));
                 v.push(Instruction::I32Store8(ma));
                 // dst[out_len - 1 - i] = tmp
                 v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalGet(out_len_i)); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Const(1));
-                v.push(Instruction::I64Add);
-                v.push(Instruction::I64Sub);
-                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(1));
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Sub);
                 v.push(Instruction::I32Add);
                 v.push(Instruction::LocalGet(tmp_i)); v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I32Store8(ma));
@@ -7504,18 +7799,16 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(leading_i)); v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I32Add);
                 v.push(Instruction::LocalGet(out_len_i)); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::LocalGet(j_i)); v.push(Instruction::I64Const(1));
-                v.push(Instruction::I64Add);
-                v.push(Instruction::I64Sub);
-                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(j_i)); v.push(Instruction::I32WrapI64); v.push(Instruction::I32Const(1));
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Sub);
                 v.push(Instruction::I32Add);
                 // Load address: dst + out_len - 1 - j
                 v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalGet(out_len_i)); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::LocalGet(j_i)); v.push(Instruction::I64Const(1));
-                v.push(Instruction::I64Add);
-                v.push(Instruction::I64Sub);
-                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(j_i)); v.push(Instruction::I32WrapI64); v.push(Instruction::I32Const(1));
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Sub);
                 v.push(Instruction::I32Add);
                 v.push(Instruction::I32Load8U(ma));
                 v.push(Instruction::I32Store8(ma));
@@ -7565,37 +7858,23 @@ impl WasmEmitter {
                 let key = self.expr(&a[0])?;
                 let val = self.expr(&a[1])?;
                 let mut v = Vec::new();
-                // Extract val ptr and len into registers first
+                // Extract val ptr and len
                 let val_raw_i = self.local_idx("__sb_vr");
                 v.extend(val);
                 v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(val_raw_i));
-                // Write val bytes to STORAGE_BUF via memory.copy
-                // val_len = val_raw >> 32
-                // val_ptr = val_raw & 0xFFFFFFFF
-                // copy val_ptr..val_ptr+val_len to STORAGE_BUF..STORAGE_BUF+val_len
-                let val_len_i = self.local_idx("__sb_vlen");
-                let val_ptr_i = self.local_idx("__sb_vptr");
-                v.push(Instruction::LocalGet(val_raw_i));
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.push(Instruction::LocalSet(val_len_i));
-                v.push(Instruction::LocalGet(val_raw_i));
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::LocalSet(val_ptr_i));
-                // memory.copy dst=STORAGE_BUF, src=val_ptr, len=val_len
-                v.push(Instruction::I32Const(STORAGE_BUF as i32)); // dst
-                v.push(Instruction::LocalGet(val_ptr_i)); v.push(Instruction::I32WrapI64); // src
-                v.push(Instruction::LocalGet(val_len_i)); v.push(Instruction::I32WrapI64); // len
-                v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
-                // storage_write(key_len, key_ptr, val_len, STORAGE_BUF, register_id=0)
+                // storage_write(key_len, key_ptr, val_len, val_ptr, register_id=0)
+                // Pass val_ptr directly to storage_write (no copy needed)
                 v.extend(key.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // key_len
                 v.extend(key);
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // key_ptr
-                v.push(Instruction::LocalGet(val_len_i)); // val_len
-                v.push(Instruction::I64Const(STORAGE_BUF)); // val_ptr
+                v.push(Instruction::LocalGet(val_raw_i));
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // val_len
+                v.push(Instruction::LocalGet(val_raw_i));
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // val_ptr
                 v.push(Instruction::I64Const(0)); // register_id
                 v.push(Self::host_call(17)); v.push(Instruction::Drop);
                 v.push(Instruction::I64Const(TAG_NIL));
@@ -7620,8 +7899,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(1));
-                v.push(Self::host_call(18));
-                v.push(Instruction::Drop);
+                v.push(Self::host_call(18)); v.push(Instruction::Drop);
                 // register_len(1) → save to local
                 v.push(Instruction::I64Const(1));
                 v.push(Self::host_call(1));
@@ -8013,11 +8291,26 @@ impl WasmEmitter {
                 // Load response length
                 v.push(Instruction::I32Const(163840)); v.push(Instruction::I32Load(ma4));
                 v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(len_l));
-                // Copy response to heap using memory.copy (single instruction vs byte-by-byte loop)
-                v.push(Instruction::I64Const(self.heap_ptr as i64)); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Const(98304));
-                v.push(Instruction::LocalGet(len_l)); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+                // Copy response to heap using byte-by-byte copy (NEAR doesn't support memory.copy)
+                let copy_dst_i = self.local_idx("__resp_cdst");
+                let copy_src_i = self.local_idx("__resp_csrc");
+                let copy_len_i = self.local_idx("__resp_clen");
+                v.push(Instruction::I64Const(self.heap_ptr as i64)); v.push(Instruction::LocalSet(copy_dst_i)); // dst
+                v.push(Instruction::I64Const(98304)); v.push(Instruction::LocalSet(copy_src_i)); // src
+                v.push(Instruction::LocalGet(len_l)); v.push(Instruction::LocalSet(copy_len_i)); // len
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(copy_len_i)); v.push(Instruction::I64Const(0)); v.push(Instruction::I64Eq); v.push(Instruction::BrIf(1));
+                v.push(Instruction::LocalGet(copy_src_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                v.push(Instruction::LocalGet(copy_dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Store8(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                v.push(Instruction::LocalGet(copy_src_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(copy_src_i));
+                v.push(Instruction::LocalGet(copy_dst_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(copy_dst_i));
+                v.push(Instruction::LocalGet(copy_len_i)); v.push(Instruction::I64Const(-1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(copy_len_i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); // loop
+                v.push(Instruction::End); // block
                 // Advance heap
                 let new_heap = self.heap_ptr as i64 + 65536; self.heap_ptr = new_heap as u32;
                 // Tagged string: ((dst | (len << 32)) << 3) | TAG_STR
@@ -12874,7 +13167,7 @@ impl WasmEmitter {
         v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
         v.push(Instruction::I64Const(pat_off as i64)); v.push(Instruction::LocalGet(jj)); v.push(Instruction::I64Add);
         v.push(Instruction::I32WrapI64); v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
-        v.push(Instruction::I64Eq); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I64Eq);
         v.push(Instruction::If(BlockType::Empty));
         v.push(Instruction::Else);
         v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(mi));
@@ -12884,8 +13177,8 @@ impl WasmEmitter {
         v.push(Instruction::Br(1)); v.push(Instruction::End); v.push(Instruction::End);
 
         v.push(Instruction::LocalGet(mi)); v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Eq); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(3)); v.push(Instruction::End);
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
         v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
         v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
         v.push(Instruction::Br(1)); v.push(Instruction::End); v.push(Instruction::End);
@@ -12905,12 +13198,12 @@ impl WasmEmitter {
         v.push(Instruction::LocalSet(first));
         // break if not ws
         v.push(Instruction::Block(BlockType::Empty));
-        v.push(Instruction::LocalGet(first)); v.push(Instruction::I64Const(0x20)); v.push(Instruction::I64Eq); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::LocalGet(first)); v.push(Instruction::I64Const(0x0A)); v.push(Instruction::I64Eq); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::LocalGet(first)); v.push(Instruction::I64Const(0x20)); v.push(Instruction::I64Eq);
+        v.push(Instruction::LocalGet(first)); v.push(Instruction::I64Const(0x0A)); v.push(Instruction::I64Eq);
         v.push(Instruction::I32Or);
-        v.push(Instruction::LocalGet(first)); v.push(Instruction::I64Const(0x0D)); v.push(Instruction::I64Eq); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::LocalGet(first)); v.push(Instruction::I64Const(0x0D)); v.push(Instruction::I64Eq);
         v.push(Instruction::I32Or);
-        v.push(Instruction::LocalGet(first)); v.push(Instruction::I64Const(0x09)); v.push(Instruction::I64Eq); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::LocalGet(first)); v.push(Instruction::I64Const(0x09)); v.push(Instruction::I64Eq);
         v.push(Instruction::I32Or);
         v.push(Instruction::BrIf(0));
         v.push(Instruction::Br(2)); v.push(Instruction::End);
@@ -12925,25 +13218,25 @@ impl WasmEmitter {
         v.push(Instruction::LocalSet(first));
 
         // NULL: 'n' -> -1
-        v.push(Instruction::LocalGet(first)); v.push(Instruction::I64Const(0x6E)); v.push(Instruction::I64Eq); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::LocalGet(first)); v.push(Instruction::I64Const(0x6E)); v.push(Instruction::I64Eq);
         v.push(Instruction::If(BlockType::Empty));
         v.push(Instruction::I64Const(-1)); v.push(Instruction::Return);
         v.push(Instruction::End);
 
         // BOOL false: 'f' -> -2
-        v.push(Instruction::LocalGet(first)); v.push(Instruction::I64Const(0x66)); v.push(Instruction::I64Eq); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::LocalGet(first)); v.push(Instruction::I64Const(0x66)); v.push(Instruction::I64Eq);
         v.push(Instruction::If(BlockType::Empty));
         v.push(Instruction::I64Const(-2)); v.push(Instruction::Return);
         v.push(Instruction::End);
 
         // BOOL true: 't' -> -3
-        v.push(Instruction::LocalGet(first)); v.push(Instruction::I64Const(0x74)); v.push(Instruction::I64Eq); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::LocalGet(first)); v.push(Instruction::I64Const(0x74)); v.push(Instruction::I64Eq);
         v.push(Instruction::If(BlockType::Empty));
         v.push(Instruction::I64Const(-3)); v.push(Instruction::Return);
         v.push(Instruction::End);
 
         // STRING: '"' -> packed (len << 32) | ptr
-        v.push(Instruction::LocalGet(first)); v.push(Instruction::I64Const(0x22)); v.push(Instruction::I64Eq); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::LocalGet(first)); v.push(Instruction::I64Const(0x22)); v.push(Instruction::I64Eq);
         v.push(Instruction::If(BlockType::Empty));
         v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
         v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
@@ -12956,7 +13249,7 @@ impl WasmEmitter {
         v.push(Instruction::I64Const(ib)); v.push(Instruction::LocalGet(pos));
         v.push(Instruction::LocalGet(slen)); v.push(Instruction::I64Add); v.push(Instruction::I64Add);
         v.push(Instruction::I32WrapI64); v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
-        v.push(Instruction::I64Const(0x22)); v.push(Instruction::I64Eq); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I64Const(0x22)); v.push(Instruction::I64Eq);
         v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
         v.push(Instruction::LocalGet(slen)); v.push(Instruction::I64Const(1));
         v.push(Instruction::I64Add); v.push(Instruction::LocalSet(slen));
@@ -12969,7 +13262,7 @@ impl WasmEmitter {
 
         // NUMBER: parse int (digit or minus)
         v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(ng));
-        v.push(Instruction::LocalGet(first)); v.push(Instruction::I64Const(0x2D)); v.push(Instruction::I64Eq); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::LocalGet(first)); v.push(Instruction::I64Const(0x2D)); v.push(Instruction::I64Eq);
         v.push(Instruction::If(BlockType::Empty));
         v.push(Instruction::I64Const(1)); v.push(Instruction::LocalSet(ng));
         v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
@@ -12986,10 +13279,10 @@ impl WasmEmitter {
         v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
         v.push(Instruction::LocalSet(dg));
         v.push(Instruction::LocalGet(dg)); v.push(Instruction::I64Const(0x30));
-        v.push(Instruction::I64LtS); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I64LtS);
         v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
         v.push(Instruction::LocalGet(dg)); v.push(Instruction::I64Const(0x39));
-        v.push(Instruction::I64GtS); v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I64GtS);
         v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
         v.push(Instruction::LocalGet(res)); v.push(Instruction::I64Const(10)); v.push(Instruction::I64Mul);
         v.push(Instruction::LocalGet(dg)); v.push(Instruction::I64Const(0x30)); v.push(Instruction::I64Sub);
