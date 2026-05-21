@@ -1504,6 +1504,14 @@ fn run_test_fn(wasm: &[u8], fn_name: &str) -> Result<i64, String> {
             Ok(())
         },
     );
+    let noop1r = Func::new(
+        &mut store,
+        FuncType::new(&engine, [ValType::I64], [ValType::I64]),
+        |_, _, r| {
+            r[0] = Val::I64(0);
+            Ok(())
+        },
+    );
     let panic_fn = Func::new(&mut store, FuncType::new(&engine, [], []), |_, _, _| {
         Err(wasmtime::Error::msg("NEAR panic"))
     });
@@ -1630,7 +1638,7 @@ fn run_test_fn(wasm: &[u8], fn_name: &str) -> Result<i64, String> {
         .define(&store, "env", "read_register", noop2.clone())
         .map_err(|e| format!("link: {}", e))?;
     linker
-        .define(&store, "env", "register_len", noop0r.clone())
+        .define(&store, "env", "register_len", noop1r.clone())
         .map_err(|e| format!("link: {}", e))?;
     linker
         .define(&store, "env", "panic_utf8", panic_fn.clone())
