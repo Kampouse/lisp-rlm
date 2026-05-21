@@ -862,6 +862,7 @@ impl WasmEmitter {
             "near/sha256" => { self.need_host(21); self.need_host(0); self.need_host(1); }
             "near/keccak256" => { self.need_host(22); self.need_host(0); self.need_host(1); }
             "near/ed25519_verify" => self.need_host(24),
+            "near/p256_verify" => self.need_host(55),
             "near/signer_account_pk" => { self.need_host(5); self.need_host(0); self.need_host(1); }
             "near/storage_usage" => self.need_host(11),
             "near/account_balance" => self.need_host(12),
@@ -3184,6 +3185,39 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // pk_ptr
                 v.push(Self::host_call(24)); // ed25519_verify — returns u64 directly (1=valid, 0=invalid)
                 // Tag result as Num
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
+            "near/p256_verify" => {
+                // (near/p256_verify signature message public_key) → bool
+                // Same signature layout as ed25519_verify but for SECP256r1 (P-256)
+                // NEAR host: p256_verify(sig_len, sig_ptr, msg_len, msg_ptr, pk_len, pk_ptr) → u64 — idx 55
+                let sig = self.expr(&a[0])?;
+                let msg = self.expr(&a[1])?;
+                let pk = self.expr(&a[2])?;
+                let mut v = Vec::new();
+                // sig (param0, param1)
+                v.extend(sig.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // sig_len
+                v.extend(sig);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // sig_ptr
+                // msg (param2, param3)
+                v.extend(msg.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // msg_len
+                v.extend(msg);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // msg_ptr
+                // pk (param4, param5)
+                v.extend(pk.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // pk_len
+                v.extend(pk);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // pk_ptr
+                v.push(Self::host_call(55)); // p256_verify — returns u64 (1=valid, 0=invalid)
                 v.extend(self.emit_tag_num());
                 Ok(v)
             }
