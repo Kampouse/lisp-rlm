@@ -6686,33 +6686,59 @@ impl WasmEmitter {
 
             // (str-slice s start end) → substring from start to end (exclusive)
             // start/end are tagged nums (byte offsets). Zero-copy: just adjusts ptr+len.
+            // Bounds check: start ≤ end ≤ original string length
             "str-slice" => {
                 if a.len() != 3 { return Err("str-slice: expected 3 args (string, start, end)".into()); }
                 let raw_i = self.local_idx("__ss_raw");
+                let start_i = self.local_idx("__ss_start");
+                let end_i = self.local_idx("__ss_end");
+                let orig_len_i = self.local_idx("__ss_olen");
                 let mut v = Vec::new();
                 // Get raw string descriptor: untag → (len << 32) | ptr
                 v.extend(self.expr(&a[0])?);
                 v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(raw_i));
+                // Extract original len
+                v.push(Instruction::LocalGet(raw_i));
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(orig_len_i));
+                // Evaluate and store start/end
+                v.extend(self.expr(&a[1])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(start_i));
+                v.extend(self.expr(&a[2])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(end_i));
+                // Bounds check: end > orig_len → trap
+                v.push(Instruction::LocalGet(end_i));
+                v.push(Instruction::LocalGet(orig_len_i));
+                v.push(Instruction::I64GtU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
+                // Bounds check: start > end → trap
+                v.push(Instruction::LocalGet(start_i));
+                v.push(Instruction::LocalGet(end_i));
+                v.push(Instruction::I64GtU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
                 // New ptr = (raw & 0xFFFFFFFF) + start
                 v.push(Instruction::LocalGet(raw_i));
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64ExtendI32U); // original ptr as u64
-                v.extend(self.expr(&a[1])?);
-                v.extend(self.emit_untag()); // start (untagged)
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalGet(start_i));
                 v.push(Instruction::I64Add); // new_ptr = orig_ptr + start
                 // New len = end - start
-                v.extend(self.expr(&a[2])?);
-                v.extend(self.emit_untag()); // end
-                v.extend(self.expr(&a[1])?);
-                v.extend(self.emit_untag()); // start
+                v.push(Instruction::LocalGet(end_i));
+                v.push(Instruction::LocalGet(start_i));
                 v.push(Instruction::I64Sub); // new_len = end - start
                 // Pack: (new_len << 32) | new_ptr
                 v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64Shl); // new_len << 32
-                v.push(Instruction::I64Or); // (new_len << 32) | new_ptr
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Or);
                 // Tag as Str
-                v.extend(self.emit_tag_num()); // shift left 3
+                v.extend(self.emit_tag_num());
                 v.push(Instruction::I64Const(5)); // TAG_STR
                 v.push(Instruction::I64Or);
                 Ok(v)
@@ -6798,6 +6824,17 @@ impl WasmEmitter {
                 v.extend(self.expr(&a[0])?); v.extend(self.emit_untag()); v.push(Instruction::LocalSet(dst_i));
                 v.extend(self.expr(&a[1])?); v.extend(self.emit_untag()); v.push(Instruction::LocalSet(src_i));
                 v.extend(self.expr(&a[2])?); v.extend(self.emit_untag()); v.push(Instruction::LocalSet(len_i));
+                // Bounds check: src_ptr + len ≤ mem_limit
+                let mem_limit = (self.memory_pages as i64) * 65536;
+                v.push(Instruction::LocalGet(src_i));
+                v.push(Instruction::LocalGet(len_i)); v.push(Instruction::I64Add);
+                v.push(Instruction::I64Const(mem_limit)); v.push(Instruction::I64GtU);
+                v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Unreachable); v.push(Instruction::End);
+                // Bounds check: dst_ptr + len ≤ mem_limit
+                v.push(Instruction::LocalGet(dst_i));
+                v.push(Instruction::LocalGet(len_i)); v.push(Instruction::I64Add);
+                v.push(Instruction::I64Const(mem_limit)); v.push(Instruction::I64GtU);
+                v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Unreachable); v.push(Instruction::End);
                 // qwords = len / 8
                 v.push(Instruction::LocalGet(len_i));
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
@@ -6864,6 +6901,18 @@ impl WasmEmitter {
                 v.extend(self.expr(&a[1])?); v.extend(self.emit_untag()); v.push(Instruction::LocalSet(src_i));
                 v.extend(self.expr(&a[2])?); v.extend(self.emit_untag()); v.push(Instruction::LocalSet(off_i));
                 v.extend(self.expr(&a[3])?); v.extend(self.emit_untag()); v.push(Instruction::LocalSet(len_i));
+                // Bounds check: src_ptr + len ≤ mem_limit
+                let mem_limit = (self.memory_pages as i64) * 65536;
+                v.push(Instruction::LocalGet(src_i));
+                v.push(Instruction::LocalGet(len_i)); v.push(Instruction::I64Add);
+                v.push(Instruction::I64Const(mem_limit)); v.push(Instruction::I64GtU);
+                v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Unreachable); v.push(Instruction::End);
+                // Bounds check: dst_ptr + offset + len ≤ mem_limit
+                v.push(Instruction::LocalGet(dst_i));
+                v.push(Instruction::LocalGet(off_i)); v.push(Instruction::I64Add);
+                v.push(Instruction::LocalGet(len_i)); v.push(Instruction::I64Add);
+                v.push(Instruction::I64Const(mem_limit)); v.push(Instruction::I64GtU);
+                v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Unreachable); v.push(Instruction::End);
                 // dst += offset
                 v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::LocalGet(off_i)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(dst_i));
                 // qwords = len / 8
@@ -6958,6 +7007,12 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(dst_i));
                 v.push(Instruction::LocalGet(dst_i));
                 v.push(Instruction::LocalSet(dst_save_i));
+                // Bounds check: DATA_PTR + total_len ≤ mem_limit
+                let mem_limit = (self.memory_pages as i64) * 65536;
+                v.push(Instruction::LocalGet(dst_i));
+                v.push(Instruction::LocalGet(total_len_i)); v.push(Instruction::I64Add);
+                v.push(Instruction::I64Const(mem_limit)); v.push(Instruction::I64GtU);
+                v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Unreachable); v.push(Instruction::End);
                 // Round up DATA_PTR advance to 8-byte boundary for safe word copies
                 v.push(Instruction::GlobalGet(0));
                 v.push(Instruction::LocalGet(total_len_i));
@@ -7863,6 +7918,15 @@ impl WasmEmitter {
                 v.extend(val);
                 v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(val_raw_i));
+                // Bounds check: val_ptr + val_len ≤ mem_limit
+                let mem_limit = (self.memory_pages as i64) * 65536;
+                v.push(Instruction::LocalGet(val_raw_i));
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // val_ptr
+                v.push(Instruction::LocalGet(val_raw_i));
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // val_len
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Const(mem_limit)); v.push(Instruction::I64GtU);
+                v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Unreachable); v.push(Instruction::End);
                 // storage_write(key_len, key_ptr, val_len, val_ptr, register_id=0)
                 // Pass val_ptr directly to storage_write (no copy needed)
                 v.extend(key.clone());
