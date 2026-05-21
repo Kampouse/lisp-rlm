@@ -49,12 +49,12 @@ async function registerPasskeyWallet(conn: NearConnector) {
       description: 'NEAR passkey wallet — FaceID / fingerprint',
       website: 'https://near-passkey-wallet.pages.dev',
       version: '1.0.0',
-      executor: 'https://d62c9ed5.near-passkey-wallet.pages.dev/executor.js',
+      executor: 'https://de533f90.near-passkey-wallet.pages.dev/executor.js',
       type: 'sandbox',
       permissions: {
         storage: true,
         external: [],
-        allowsOpen: ['https://near-passkey-wallet.pages.dev'],
+        allowsOpen: ['https://de533f90.near-passkey-wallet.pages.dev', 'https://near-passkey-wallet.pages.dev'],
       },
       features: {
         signMessage: false,

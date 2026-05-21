@@ -143,16 +143,27 @@ fn desugar_def(items: &mut Vec<LispVal>) {
 }
 
 /// (let [x 1 y 2] body...) → (let ((x 1) (y 2)) body...)
+/// Also accepts already-paired form: (let ((x 1) (y 2)) body...)
 fn desugar_let(items: &mut Vec<LispVal>) {
     // items[0] = "let", items[1] = [bindings...], items[2..] = body
     if items.len() < 3 { return; }
 
-    // Desugar bindings vector
-    let bindings = vec_to_pairs(&items[1]);
-    items[1] = bindings;
+    // Check if bindings are already in paired form ((x 1) (y 2))
+    // Each element should be a 2-element list — if so, skip conversion
+    let already_paired = match &items[1] {
+        LispVal::List(bs) | LispVal::Vec(bs) => {
+            bs.iter().all(|b| matches!(b, LispVal::List(p) if p.len() == 2))
+        }
+        _ => false,
+    };
+
+    if !already_paired {
+        let bindings = vec_to_pairs(&items[1]);
+        items[1] = bindings;
+    }
 
     // Recurse into body
-    for item in items.iter_mut() {
+    for item in items.iter_mut().skip(2) {
         desugar_expr(item);
     }
 }
