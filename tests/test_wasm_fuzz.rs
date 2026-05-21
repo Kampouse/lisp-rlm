@@ -691,7 +691,12 @@ mod prop {
         inner.prop_map(|e| format!("(define (run) {})", e))
     }
 
+    /// How many random cases to generate per property test.
+    /// Override at runtime with PROPTEST_CASES=NNN (e.g. for quick local runs).
+    const FUZZ_CASES: u32 = 10_000;
+
     proptest! {
+        #![proptest_config(ProptestConfig::with_cases(FUZZ_CASES))]
         /// Differential fuzz: random leaf expressions.
         #[test]
         fn prop_leaf(expr in program(leaf_expr())) {
