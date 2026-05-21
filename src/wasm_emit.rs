@@ -193,6 +193,7 @@ pub(crate) fn parse_url(url: &str) -> (String, String) {
 pub struct WasmEmitter {
     pub(crate) locals: HashMap<String, u32>,
     pub(crate) next_local: u32,
+    pub(crate) free_locals: Vec<u32>, // recyclable local slots
     pub(crate) current_func: Option<String>,
     pub(crate) current_param_count: usize,
     pub(crate) while_id: Cell<usize>,
@@ -227,7 +228,7 @@ pub struct WasmEmitter {
 impl WasmEmitter {
     pub fn new() -> Self {
         Self {
-            locals: HashMap::new(), next_local: 0, current_func: None, current_param_count: 0,
+            locals: HashMap::new(), next_local: 0, free_locals: Vec::new(), current_func: None, current_param_count: 0,
             while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 1, exports: Vec::new(),
             data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(),
             gas_local: None, heap_ptr: HEAP_START as u32, lambda_counter: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false,            borsh_schemas: HashMap::new(),
@@ -237,10 +238,19 @@ impl WasmEmitter {
 
     fn local_idx(&mut self, name: &str) -> u32 {
         if let Some(&i) = self.locals.get(name) { return i; }
-        let i = self.next_local;
+        // Reuse freed slot if available (for __ temporaries)
+        let i = self.free_locals.pop().unwrap_or(self.next_local);
+        // If we reused a slot and it's >= next_local, something's wrong; but pop gives valid slots
+        if i == self.next_local { self.next_local += 1; }
         self.locals.insert(name.to_string(), i);
-        self.next_local += 1;
         i
+    }
+
+    /// Free a local slot for reuse (call after the local's last use)
+    fn free_local(&mut self, name: &str) {
+        if let Some(idx) = self.locals.remove(name) {
+            self.free_locals.push(idx);
+        }
     }
 
     // ── Tagged value helpers ──
@@ -1017,7 +1027,7 @@ impl WasmEmitter {
     pub fn emit_define(&mut self, name: &str, params: &[String], body: &LispVal) -> Result<(), String> {
         // Store AST for compile-time inlining
         self.func_defs.insert(name.to_string(), (params.to_vec(), body.clone()));
-        self.locals.clear(); self.next_local = 0;
+        self.locals.clear(); self.next_local = 0; self.free_locals.clear();
         for p in params { self.local_idx(p); }
         self.current_func = Some(name.to_string());
         self.current_param_count = params.len();
@@ -1142,6 +1152,22 @@ impl WasmEmitter {
         let mut i = 0;
         while i < instrs.len() {
             // Pattern: LocalSet(n) followed by LocalGet(n) → remove LocalGet
+            // Check 4-instruction patterns first (untag+retag elimination)
+            if i + 3 < instrs.len() {
+                match (&instrs[i], &instrs[i + 1], &instrs[i + 2], &instrs[i + 3]) {
+                    // untag(3) then tag(3): I64Const(3), I64ShrS, I64Const(3), I64Shl → noop
+                    (Instruction::I64Const(3), Instruction::I64ShrS, Instruction::I64Const(3), Instruction::I64Shl) => {
+                        i += 4;
+                        continue;
+                    }
+                    // tag(3) then untag(3): I64Const(3), I64Shl, I64Const(3), I64ShrS → noop
+                    (Instruction::I64Const(3), Instruction::I64Shl, Instruction::I64Const(3), Instruction::I64ShrS) => {
+                        i += 4;
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
             if i + 1 < instrs.len() {
                 match (&instrs[i], &instrs[i + 1]) {
                     (Instruction::LocalSet(n), Instruction::LocalGet(m)) if n == m => {
@@ -1458,7 +1484,7 @@ impl WasmEmitter {
             "-" if a.len()==1 => {
                 let mut v = vec![Instruction::I64Const(0)];
                 v.extend(self.expr(&a[0])?);
-                v.extend(self.emit_num_coerce());
+                v.extend(self.emit_untag());
                 v.push(Instruction::I64Sub);
                 v.extend(self.emit_tag_num());
                 Ok(v)
@@ -1467,9 +1493,9 @@ impl WasmEmitter {
             "/" => self.fold_binop_safe(a, Instruction::I64DivS, i64::MIN as _, true),
             "mod" => {
                 let mut v = self.expr(&a[0])?;
-                v.extend(self.emit_num_coerce());
+                v.extend(self.emit_untag());
                 v.extend(self.expr(&a[1])?);
-                v.extend(self.emit_num_coerce());
+                v.extend(self.emit_untag());
                 v.extend(self.emit_safe_rem());
                 v.extend(self.emit_tag_num());
                 Ok(v)
@@ -1478,7 +1504,7 @@ impl WasmEmitter {
                 let temp = self.local_idx("__abs_tmp");
                 let mut v = Vec::new();
                 v.extend(self.expr(&a[0])?);
-                v.extend(self.emit_num_coerce());
+                v.extend(self.emit_untag());
                 v.push(Instruction::LocalTee(temp));
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::I64LtS);
@@ -1497,11 +1523,11 @@ impl WasmEmitter {
                 let temp_a = self.local_idx("__max_a");
                 let temp_b = self.local_idx("__max_b");
                 let mut v = self.expr(&a[0])?;
-                v.extend(self.emit_num_coerce());
+                v.extend(self.emit_untag());
                 for arg in &a[1..] {
                     v.push(Instruction::LocalSet(temp_a));
                     v.extend(self.expr(arg)?);
-                    v.extend(self.emit_num_coerce());
+                    v.extend(self.emit_untag());
                     v.push(Instruction::LocalSet(temp_b));
                     // a >= b ? a : b
                     v.push(Instruction::LocalGet(temp_a));
@@ -1521,11 +1547,11 @@ impl WasmEmitter {
                 let temp_a = self.local_idx("__min_a");
                 let temp_b = self.local_idx("__min_b");
                 let mut v = self.expr(&a[0])?;
-                v.extend(self.emit_num_coerce());
+                v.extend(self.emit_untag());
                 for arg in &a[1..] {
                     v.push(Instruction::LocalSet(temp_a));
                     v.extend(self.expr(arg)?);
-                    v.extend(self.emit_num_coerce());
+                    v.extend(self.emit_untag());
                     v.push(Instruction::LocalSet(temp_b));
                     // a <= b ? a : b
                     v.push(Instruction::LocalGet(temp_a));
@@ -2823,7 +2849,7 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(arr_tmp));
                 // Compile and save index (untag if tagged number)
                 v.extend(self.expr(&a[1])?);
-                v.extend(self.emit_num_coerce()); // untag the index to raw i64
+                v.extend(self.emit_untag()); // untag the index to raw i64
                 v.push(Instruction::LocalSet(idx_tmp));
                 // Bounds check: idx < count
                 v.push(Instruction::LocalGet(arr_tmp));
@@ -2868,7 +2894,7 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(arr_tmp));
                 // Compile and save index
                 v.extend(self.expr(&a[1])?);
-                v.extend(self.emit_num_coerce());
+                v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(idx_tmp));
                 // Compile and save value
                 v.extend(self.expr(&a[2])?);
@@ -10796,12 +10822,48 @@ impl WasmEmitter {
         Ok(v)
     }
 
+    /// Try to evaluate a pure expression at compile time.
+    /// Returns Some(Num(n)) if fully constant, None otherwise.
+    fn const_eval(&self, e: &LispVal) -> Option<LispVal> {
+        match e {
+            LispVal::Num(_) => Some(e.clone()),
+            LispVal::List(items) if items.len() >= 3 => {
+                let LispVal::Sym(op) = &items[0] else { return None };
+                let args: Vec<LispVal> = items[1..].iter().filter_map(|x| self.const_eval(x)).collect();
+                if args.len() != items.len() - 1 { return None; } // not all constant
+                let nums: Option<Vec<i64>> = args.iter().map(|x| if let LispVal::Num(n) = x { Some(*n) } else { None }).collect();
+                let nums = match nums { Some(n) => n, None => return None };
+                let result = match op.as_str() {
+                    "+" => nums.iter().skip(1).fold(nums[0], |a, &b| a.wrapping_add(b)),
+                    "-" if nums.len() == 1 => -nums[0],
+                    "-" => nums.iter().skip(1).fold(nums[0], |a, &b| a.wrapping_sub(b)),
+                    "*" => nums.iter().skip(1).fold(nums[0], |a, &b| a.wrapping_mul(b)),
+                    "/" if nums.len() == 2 && nums[1] != 0 => nums[0] / nums[1],
+                    "mod" if nums.len() == 2 && nums[1] != 0 => nums[0] % nums[1],
+                    "<" if nums.len() == 2 => if nums[0] < nums[1] { 1 } else { 0 },
+                    ">" if nums.len() == 2 => if nums[0] > nums[1] { 1 } else { 0 },
+                    "<=" if nums.len() == 2 => if nums[0] <= nums[1] { 1 } else { 0 },
+                    ">=" if nums.len() == 2 => if nums[0] >= nums[1] { 1 } else { 0 },
+                    "=" if nums.len() == 2 => if nums[0] == nums[1] { 1 } else { 0 },
+                    "abs" if nums.len() == 1 => nums[0].abs(),
+                    "max" => *nums.iter().max().unwrap(),
+                    "min" => *nums.iter().min().unwrap(),
+                    _ => return None,
+                };
+                Some(LispVal::Num(result))
+            }
+            _ => None,
+        }
+    }
+
     fn fold_binop(&mut self, a: &[LispVal], op: Instruction<'static>, identity: i64) -> Result<Vec<Instruction<'static>>, String> {
-        if a.is_empty() { return Ok(self.emit_tagged_const(identity, TAG_NUM)) }
-        // Constant folding: if all args are integer literals, compute at compile time
-        let all_const = a.iter().all(|x| matches!(x, LispVal::Num(_)));
+        if a.is_empty() { return Ok(self.emit_tagged_const(identity, TAG_NUM)); }
+        // Deep constant folding: try to const_eval each arg first
+        let folded_args: Vec<LispVal> = a.iter().map(|x| self.const_eval(x).unwrap_or_else(|| x.clone())).collect();
+        // If all args folded to constants, compute at compile time
+        let all_const = folded_args.iter().all(|x| matches!(x, LispVal::Num(_)));
         if all_const {
-            let nums: Vec<i64> = a.iter().map(|x| if let LispVal::Num(n) = x { *n } else { 0 }).collect();
+            let nums: Vec<i64> = folded_args.iter().map(|x| if let LispVal::Num(n) = x { *n } else { 0 }).collect();
             let folded = match &op {
                 Instruction::I64Add => Some(nums.iter().skip(1).fold(nums[0], |acc, &x| acc.wrapping_add(x))),
                 Instruction::I64Sub => Some(nums.iter().skip(1).fold(nums[0], |acc, &x| acc.wrapping_sub(x))),
@@ -10812,9 +10874,9 @@ impl WasmEmitter {
                 return Ok(self.emit_tagged_const(result, TAG_NUM));
             }
         }
-        let mut v = self.expr(&a[0])?;
+        let mut v = self.expr(&folded_args[0])?;
         v.extend(self.emit_untag());
-        for x in &a[1..] {
+        for x in &folded_args[1..] {
             v.extend(self.expr(x)?);
             v.extend(self.emit_untag());
             v.push(op.clone());
@@ -10843,9 +10905,9 @@ impl WasmEmitter {
 
     fn cmp(&mut self, a: &[LispVal], op: Instruction<'static>) -> Result<Vec<Instruction<'static>>, String> {
         let mut v = self.expr(&a[0])?;
-        v.extend(self.emit_num_coerce());
+        v.extend(self.emit_untag());
         v.extend(self.expr(&a[1])?);
-        v.extend(self.emit_num_coerce());
+        v.extend(self.emit_untag());
         v.push(op); v.push(Instruction::I64ExtendI32U);
         v.extend(self.emit_tag_bool());
         Ok(v)
