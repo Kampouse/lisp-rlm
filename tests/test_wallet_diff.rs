@@ -292,7 +292,7 @@ mod tests {
         // Should have per-method exports (1:1 with Rust SDK)
         let module = Module::new(&engine, &wasm).unwrap();
         let export_names: Vec<&str> = module.exports().map(|e| e.name()).collect();
-        for method in &["init", "get_code_hash", "get_wallet_code_size",
+        for method in &["init", "migrate", "get_code_hash", "get_wallet_code_size",
                         "set_wallet_code", "create_wallet"] {
             assert!(export_names.contains(method), "should export {}", method);
         }
@@ -322,7 +322,7 @@ mod tests {
         
         // Check it has per-method exports (1:1 with Rust SDK)
         let export_names: Vec<&str> = module.exports().map(|e| e.name()).collect();
-        for method in &["init", "get_code_hash", "get_wallet_code_size",
+        for method in &["init", "migrate", "get_code_hash", "get_wallet_code_size",
                         "set_wallet_code", "create_wallet"] {
             assert!(export_names.contains(method), "should export {}", method);
         }
