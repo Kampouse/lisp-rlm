@@ -162,6 +162,17 @@ fn desugar_let(items: &mut Vec<LispVal>) {
         items[1] = bindings;
     }
 
+    // Recurse into binding values (the second element of each pair)
+    if let LispVal::List(pairs) = &mut items[1] {
+        for pair in pairs.iter_mut() {
+            if let LispVal::List(p) = pair {
+                if p.len() == 2 {
+                    desugar_expr(&mut p[1]);
+                }
+            }
+        }
+    }
+
     // Recurse into body
     for item in items.iter_mut().skip(2) {
         desugar_expr(item);
