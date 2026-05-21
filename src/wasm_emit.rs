@@ -10736,24 +10736,55 @@ impl WasmEmitter {
 
     // Helper: call host(register_id=0), read_register(0, TEMP_MEM), register_len(0), return packed (ptr|len<<32)
     fn read_to_register(&mut self, host_idx: usize, _a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
-        let mut v = Vec::new();
-        v.push(Instruction::I64Const(0)); // register_id=0
-        v.push(Self::host_call(host_idx));
-        // read_register(0, TEMP_MEM)
-        v.push(Instruction::I64Const(0));
-        v.push(Instruction::I64Const(TEMP_MEM));
-        v.push(Self::host_call(0));
-        // register_len(0)
-        v.push(Instruction::I64Const(0));
-        v.push(Self::host_call(1));
-        // Pack: (len << 32) | TEMP_MEM — tag as Str
-        v.push(Instruction::I64Const(32));
-        v.push(Instruction::I64Shl);
-        v.push(Instruction::I64Const(TEMP_MEM));
-        v.push(Instruction::I64Or);
-        // Tag as Str
-        v.extend(self.emit_tag_str());
-        Ok(v)
+        if !self.wasi_mode && !self.p2_mode {
+            // NEAR mode: allocate from FP_GLOBAL (avoids overwriting data segment for large inputs)
+            self.needs_frame = true;
+            let buf_i = self.local_idx("__rr_buf");
+            let len_i = self.local_idx("__rr_len");
+            let mut v = Vec::new();
+            // Call host function to write to register 0
+            v.push(Instruction::I64Const(0)); // register_id=0
+            v.push(Self::host_call(host_idx));
+            // register_len(0) → save
+            v.push(Instruction::I64Const(0));
+            v.push(Self::host_call(1));
+            v.push(Instruction::LocalSet(len_i));
+            // Allocate buf from FP_GLOBAL
+            v.push(Instruction::GlobalGet(FP_GLOBAL)); v.push(Instruction::LocalSet(buf_i));
+            // read_register(0, buf)
+            v.push(Instruction::I64Const(0));
+            v.push(Instruction::LocalGet(buf_i));
+            v.push(Self::host_call(0));
+            // Bump FP by actual length rounded up to 8
+            v.push(Instruction::GlobalGet(FP_GLOBAL));
+            v.push(Instruction::LocalGet(len_i));
+            v.push(Instruction::I64Const(7)); v.push(Instruction::I64Add);
+            v.push(Instruction::I64Const(-8i64 as u64 as i64)); v.push(Instruction::I64And);
+            v.push(Instruction::I64Add);
+            v.push(Instruction::GlobalSet(FP_GLOBAL));
+            // Pack: (len << 32) | buf — tag as Str
+            v.push(Instruction::LocalGet(len_i));
+            v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+            v.push(Instruction::LocalGet(buf_i)); v.push(Instruction::I64Or);
+            v.extend(self.emit_tag_str());
+            Ok(v)
+        } else {
+            // WASI/P2: use TEMP_MEM (inputs are small, no data segment conflict)
+            let mut v = Vec::new();
+            v.push(Instruction::I64Const(0)); // register_id=0
+            v.push(Self::host_call(host_idx));
+            v.push(Instruction::I64Const(0));
+            v.push(Instruction::I64Const(TEMP_MEM));
+            v.push(Self::host_call(0));
+            v.push(Instruction::I64Const(0));
+            v.push(Self::host_call(1));
+            v.push(Instruction::I64Const(32));
+            v.push(Instruction::I64Shl);
+            v.push(Instruction::I64Const(TEMP_MEM));
+            v.push(Instruction::I64Or);
+            v.extend(self.emit_tag_str());
+            Ok(v)
+        }
     }
 
     // Helper: call host(ptr) writing u128 directly to memory, return low 64 bits as tagged Num
