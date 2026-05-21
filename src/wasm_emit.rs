@@ -1942,12 +1942,10 @@ impl WasmEmitter {
                 let key = self.expr(&a[0])?;
                 let val = self.expr(&a[1])?;
                 let mut v = Vec::new();
-                // Store untagged val at mem[STORAGE_BUF]
+                // Store tagged val at mem[STORAGE_BUF] — preserves type through storage round-trip
                 v.push(Instruction::I32Const(STORAGE_BUF as i32)); v.extend(val);
-                v.extend(self.emit_untag());
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
                 // storage_write(key_len, key_ptr, val_len=8, val_ptr=STORAGE_BUF, register_id=0) — idx 17
-                // Untag key first: tagged >> TAG_BITS gives raw (len << 32 | ptr)
                 v.extend(key.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // raw >> 32 = key_len
@@ -1988,10 +1986,9 @@ impl WasmEmitter {
                 // Key found: read_register(1, STORAGE_BUF) — idx 0
                 v.push(Instruction::I64Const(1)); v.push(Instruction::I64Const(STORAGE_BUF));
                 v.push(Self::host_call(0));
+                // Load the tagged value directly — tag preserved from store
                 v.push(Instruction::I32Const(STORAGE_BUF as i32));
                 v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                // Tag loaded value as Num
-                v.extend(self.emit_tag_num());
                 v.push(Instruction::End);
                 Ok(v)
             }
