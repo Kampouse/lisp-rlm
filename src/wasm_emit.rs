@@ -166,10 +166,8 @@ const TAGGED_FALSE: i64 = TAG_BOOL;       // 1
 const TAGGED_NIL:   i64 = TAG_NIL;        // 4
 // ~300 Tgas on NEAR ≈ ~10B simple ops. Cap at 1B to be safe (stops runaway, still uses full NEAR runtime).
 const GAS_LIMIT: i64 = 1_000_000_000;
-const DEPTH_LIMIT: i64 = 512;
-const DEPTH_GLOBAL: u32 = 0; // mutable i64 global for call depth
-const RETURN_FLAG: u32 = 1; // mutable i64 global set by near/return
-const FP_GLOBAL: u32 = 2;   // mutable i64 global: frame pointer (bump allocator)
+const RETURN_FLAG: u32 = 0; // mutable i64 global for return flag
+const FP_GLOBAL: u32 = 1;  // mutable i64 global for frame pointer (NEAR mode)
 
 pub(crate) struct FuncDef {
     pub name: String,
@@ -204,6 +202,7 @@ pub struct WasmEmitter {
     pub(crate) next_data_offset: u32,
     pub(crate) host_needed: HashSet<usize>,
     pub(crate) gas_local: Option<u32>, // index of the gas counter local (i64)
+    pub(crate) needs_frame: bool, // function body allocates from FP_GLOBAL
     pub(crate) heap_ptr: u32, // bump allocator for closures
     pub(crate) lambda_counter: u32, // unique lambda id
     pub(crate) fuzz_mode: bool, // if true, export wrappers store tagged values (no untag, no value_return)
@@ -231,7 +230,7 @@ impl WasmEmitter {
             locals: HashMap::new(), next_local: 0, free_locals: Vec::new(), current_func: None, current_param_count: 0,
             while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 1, exports: Vec::new(),
             data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(),
-            gas_local: None, heap_ptr: HEAP_START as u32, lambda_counter: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false,            borsh_schemas: HashMap::new(),
+            gas_local: None, needs_frame: false, heap_ptr: HEAP_START as u32, lambda_counter: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false,            borsh_schemas: HashMap::new(),
             func_defs: HashMap::new(),
         }
     }
@@ -497,6 +496,10 @@ impl WasmEmitter {
     }
 
     fn alloc_data(&mut self, bytes: &[u8]) -> u32 {
+        // Dedup: reuse existing data segment with same bytes
+        if let Some((off, _)) = self.data_segments.iter().find(|(_, existing)| existing == bytes) {
+            return *off;
+        }
         let off = self.next_data_offset;
         self.data_segments.push((off, bytes.to_vec()));
         self.next_data_offset += bytes.len() as u32;
@@ -959,6 +962,10 @@ impl WasmEmitter {
             "http-get" => {
                 if self.p2_mode { self.need_wasi_http = true; } else { self.need_outlayer = true; }
             }
+            // FP-allocating builtins (need frame save/restore in NEAR mode)
+            "str-cat" | "str-slice" | "near/load-bytes" | "u32-to-bytes" | "near/store-bytes" => {
+                if !self.wasi_mode && !self.p2_mode { self.needs_frame = true; }
+            }
             _ => {}
         }
     }
@@ -1027,17 +1034,15 @@ impl WasmEmitter {
     pub fn emit_define(&mut self, name: &str, params: &[String], body: &LispVal) -> Result<(), String> {
         // Store AST for compile-time inlining
         self.func_defs.insert(name.to_string(), (params.to_vec(), body.clone()));
-        self.locals.clear(); self.next_local = 0; self.free_locals.clear();
+        self.locals.clear(); self.next_local = 0; self.free_locals.clear(); self.needs_frame = false;
         for p in params { self.local_idx(p); }
         self.current_func = Some(name.to_string());
         self.current_param_count = params.len();
         self.while_id.set(0);
         self.scan_host(body);
 
-        // Allocate gas local and return-value local
-        let gas_local = self.local_idx("__gas");
+        // Allocate return-value local
         let ret_local = self.local_idx("__ret");
-        self.gas_local = Some(gas_local);
 
         // Check if already pre-registered (forward reference)
         let existing_idx = self.funcs.iter().position(|f| f.name == name);
@@ -1051,46 +1056,26 @@ impl WasmEmitter {
 
         let tc = self.has_tc(body);
 
-        // Build prologue: depth increment/check + frame save
+        // Build prologue: frame save (NEAR mode + function uses FP-allocating builtins)
         let mut prologue = Vec::new();
-        if !self.p2_mode {
-            // depth++
-            prologue.push(Instruction::GlobalGet(DEPTH_GLOBAL));
-            prologue.push(Instruction::I64Const(1));
-            prologue.push(Instruction::I64Add);
-            prologue.push(Instruction::GlobalSet(DEPTH_GLOBAL));
-            // if depth > DEPTH_LIMIT: trap
-            prologue.push(Instruction::GlobalGet(DEPTH_GLOBAL));
-            prologue.push(Instruction::I64Const(DEPTH_LIMIT));
-            prologue.push(Instruction::I64GtS);
-            prologue.push(Instruction::If(BlockType::Empty));
-            prologue.push(Instruction::Unreachable);
-            prologue.push(Instruction::End);
-        }
-        // Frame save: push FP onto local so callee can restore on return (NEAR mode only)
-        let fp_save = self.local_idx("__fp_save");
-        if !self.p2_mode && !self.wasi_mode {
+        let fp_save = if !self.p2_mode && !self.wasi_mode && self.needs_frame {
+            let fp_save = self.local_idx("__fp_save");
             prologue.push(Instruction::GlobalGet(FP_GLOBAL));
             prologue.push(Instruction::LocalSet(fp_save));
-        }
+            Some(fp_save)
+        } else {
+            None
+        };
 
         // Build body
         let mut body_instrs = if tc { self.tc_body(body)? } else { self.expr(body)? };
 
-        // Epilogue: save return, restore FP, depth--, restore return
+        // Epilogue: save return, restore FP if needed, restore return
         let mut epilogue = Vec::new();
         epilogue.push(Instruction::LocalSet(ret_local));
-        // Frame restore (NEAR mode only)
-        if !self.p2_mode && !self.wasi_mode {
+        if let Some(fp_save) = fp_save {
             epilogue.push(Instruction::LocalGet(fp_save));
             epilogue.push(Instruction::GlobalSet(FP_GLOBAL));
-        }
-        if !self.p2_mode {
-            // depth--
-            epilogue.push(Instruction::GlobalGet(DEPTH_GLOBAL));
-            epilogue.push(Instruction::I64Const(1));
-            epilogue.push(Instruction::I64Sub);
-            epilogue.push(Instruction::GlobalSet(DEPTH_GLOBAL));
         }
         epilogue.push(Instruction::LocalGet(ret_local));
 
@@ -2121,7 +2106,7 @@ impl WasmEmitter {
                 v.push(Self::host_call(25));
                 // Set return flag so export wrapper skips its value_return
                 v.push(Instruction::I64Const(1));
-                v.push(Instruction::GlobalSet(1));
+                v.push(Instruction::GlobalSet(RETURN_FLAG));
                 v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
             // (near/return_str packed_string) — returns variable-length string bytes
@@ -2140,7 +2125,7 @@ impl WasmEmitter {
                 v.push(Self::host_call(25)); // value_return
                 // Set return flag so export wrapper skips its value_return
                 v.push(Instruction::I64Const(1));
-                v.push(Instruction::GlobalSet(1));
+                v.push(Instruction::GlobalSet(RETURN_FLAG));
                 v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
             "near/log" => {
@@ -2643,7 +2628,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
                 v.push(Instruction::I64Const(8)); v.push(Instruction::I64Const(TEMP_MEM));
                 v.push(Self::host_call(25));
-                v.push(Instruction::I64Const(1)); v.push(Instruction::GlobalSet(1));
+                v.push(Instruction::I64Const(1)); v.push(Instruction::GlobalSet(RETURN_FLAG));
                 v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
             
@@ -2766,7 +2751,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
                 v.push(Instruction::I64Const(8)); v.push(Instruction::I64Const(TEMP_MEM));
                 v.push(Self::host_call(25));
-                v.push(Instruction::I64Const(1)); v.push(Instruction::GlobalSet(1));
+                v.push(Instruction::I64Const(1)); v.push(Instruction::GlobalSet(RETURN_FLAG));
                 v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
             "borsh-serialize" => {
@@ -6585,10 +6570,6 @@ impl WasmEmitter {
                 let val_expr = self.expr(&a[0])?;
                 let val_i = self.local_idx("__u32b_val");
                 let buf_i = self.local_idx("__u32b_buf");
-                // Allocate a compile-time fixed buffer (8 bytes, aligned)
-                let alloc_base = self.next_data_offset.max(3072);
-                self.next_data_offset = (alloc_base + 8) & !7;
-                let buf_addr: i64 = alloc_base as i64;
                 let ma = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
                 let ma1 = wasm_encoder::MemArg { offset: 1, align: 0, memory_index: 0 };
                 let ma2 = wasm_encoder::MemArg { offset: 2, align: 0, memory_index: 0 };
@@ -6598,9 +6579,16 @@ impl WasmEmitter {
                 v.extend(val_expr);
                 v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(val_i));
-                // buf = buf_addr
-                v.push(Instruction::I64Const(buf_addr));
-                v.push(Instruction::LocalSet(buf_i));
+                if !self.p2_mode && !self.wasi_mode {
+                    // NEAR: allocate from FP_GLOBAL
+                    v.push(Instruction::GlobalGet(FP_GLOBAL)); v.push(Instruction::LocalSet(buf_i));
+                    v.push(Instruction::GlobalGet(FP_GLOBAL)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Add); v.push(Instruction::GlobalSet(FP_GLOBAL));
+                } else {
+                    // P2/WASI: compile-time allocation
+                    let alloc_base = self.next_data_offset.max(3072);
+                    self.next_data_offset = (alloc_base + 8) & !7;
+                    v.push(Instruction::I64Const(alloc_base as i64)); v.push(Instruction::LocalSet(buf_i));
+                }
                 // byte 0: store (val & 0xFF) at buf+0
                 v.push(Instruction::LocalGet(buf_i)); v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalGet(val_i)); v.push(Instruction::I64Const(0xFF)); v.push(Instruction::I64And); v.push(Instruction::I32WrapI64);
@@ -8196,9 +8184,8 @@ impl WasmEmitter {
                 if a.len() != 1 { return Err("near/load-bytes: expected 1 arg".into()); }
                 self.need_host(18); self.need_host(0); self.need_host(1);
                 let key = self.expr(&a[0])?;
-                let alloc_base = self.next_data_offset.max(3072);
-                self.next_data_offset = (alloc_base + 8192) & !7;
                 let len_i = self.local_idx("__lb_len");
+                let buf_i = self.local_idx("__lb_buf");
                 let mut v = Vec::new();
                 // storage_read(key_len, key_ptr, register_id=1)
                 v.extend(key.clone());
@@ -8221,15 +8208,38 @@ impl WasmEmitter {
                 // Not found: return nil
                 v.push(Instruction::I64Const(TAG_NIL));
                 v.push(Instruction::Else);
-                // Found: read_register(1, alloc_base)
-                v.push(Instruction::I64Const(1));
-                v.push(Instruction::I64Const(alloc_base as i64));
-                v.push(Self::host_call(0));
-                // Return tagged string: (len << 32) | alloc_base
-                v.push(Instruction::LocalGet(len_i));
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(alloc_base as i64));
-                v.push(Instruction::I64Or);
+                if !self.p2_mode && !self.wasi_mode {
+                    // NEAR: allocate from FP_GLOBAL (bump by max storage value size)
+                    v.push(Instruction::GlobalGet(FP_GLOBAL)); v.push(Instruction::LocalSet(buf_i));
+                    // read_register(1, buf)
+                    v.push(Instruction::I64Const(1));
+                    v.push(Instruction::LocalGet(buf_i));
+                    v.push(Self::host_call(0));
+                    // Bump FP by actual length (rounded up to 8) so next allocs don't overlap
+                    // FP += (len + 7) & ~7
+                    v.push(Instruction::GlobalGet(FP_GLOBAL));
+                    v.push(Instruction::LocalGet(len_i));
+                    v.push(Instruction::I64Const(7)); v.push(Instruction::I64Add);
+                    v.push(Instruction::I64Const(-8)); v.push(Instruction::I64And);
+                    v.push(Instruction::I64Add);
+                    v.push(Instruction::GlobalSet(FP_GLOBAL));
+                    // Return tagged string: (len << 32) | buf
+                    v.push(Instruction::LocalGet(len_i));
+                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                    v.push(Instruction::LocalGet(buf_i));
+                    v.push(Instruction::I64Or);
+                } else {
+                    // P2/WASI: compile-time allocation
+                    let alloc_base = self.next_data_offset.max(3072);
+                    self.next_data_offset = (alloc_base + 8192) & !7;
+                    v.push(Instruction::I64Const(1));
+                    v.push(Instruction::I64Const(alloc_base as i64));
+                    v.push(Self::host_call(0));
+                    v.push(Instruction::LocalGet(len_i));
+                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                    v.push(Instruction::I64Const(alloc_base as i64));
+                    v.push(Instruction::I64Or);
+                }
                 v.extend(self.emit_tag_str());
                 v.push(Instruction::End);
                 Ok(v)
@@ -11398,7 +11408,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(BORSH_BUF));
                 v.push(Self::host_call(25));
                 v.push(Instruction::I64Const(1));
-                v.push(Instruction::GlobalSet(1));
+                v.push(Instruction::GlobalSet(RETURN_FLAG));
                 v.push(Instruction::I64Const(TAG_NIL));
                 return Ok(v);
             }
@@ -11424,7 +11434,7 @@ impl WasmEmitter {
         v.push(Self::host_call(25));
         // Set return flag so export wrapper skips its value_return
         v.push(Instruction::I64Const(1));
-        v.push(Instruction::GlobalSet(1));
+        v.push(Instruction::GlobalSet(RETURN_FLAG));
         v.push(Instruction::I64Const(TAG_NIL));
         Ok(v)
     }
@@ -12991,7 +13001,7 @@ impl WasmEmitter {
         v.push(Instruction::LocalGet(tl)); v.push(Instruction::I64Const(ib));
         v.push(Self::host_call(25));
 
-        v.push(Instruction::I64Const(1)); v.push(Instruction::GlobalSet(1));
+        v.push(Instruction::I64Const(1)); v.push(Instruction::GlobalSet(RETURN_FLAG));
         v.push(Instruction::I64Const(0));
         Ok(v)
     }
@@ -13073,7 +13083,7 @@ impl WasmEmitter {
         v.push(Instruction::I64Add); v.push(Instruction::I64Const(ib));
         v.push(Self::host_call(25));
 
-        v.push(Instruction::I64Const(1)); v.push(Instruction::GlobalSet(1));
+        v.push(Instruction::I64Const(1)); v.push(Instruction::GlobalSet(RETURN_FLAG));
         v.push(Instruction::I64Const(0));
         Ok(v)
     }
@@ -13239,17 +13249,12 @@ impl WasmEmitter {
 
         // Global section: mutable i64 globals
         let mut globals = GlobalSection::new();
-        // Global 0: call depth tracking
+        // Global 0: return flag (set by near/return to skip export wrapper's value_return)
         globals.global(
             GlobalType { val_type: ValType::I64, mutable: true, shared: false },
             &ConstExpr::i64_const(0),
         );
-        // Global 1: return flag (set by near/return to skip export wrapper's value_return)
-        globals.global(
-            GlobalType { val_type: ValType::I64, mutable: true, shared: false },
-            &ConstExpr::i64_const(0),
-        );
-        // Global 2: frame pointer (bump allocator for string ops) — NEAR mode only
+        // Global 1: frame pointer (bump allocator for string ops) — NEAR mode only
         if !self.wasi_mode && !self.p2_mode {
             globals.global(
                 GlobalType { val_type: ValType::I64, mutable: true, shared: false },
@@ -13309,7 +13314,7 @@ impl WasmEmitter {
                     if param_count == 0 {
                         // Reset return flag before call
                         fb.instruction(&Instruction::I64Const(0));
-                        fb.instruction(&Instruction::GlobalSet(1));
+                        fb.instruction(&Instruction::GlobalSet(RETURN_FLAG));
                         fb.instruction(&Instruction::Call(idx));
                         fb.instruction(&Instruction::LocalSet(0));
                         if self.fuzz_mode {
@@ -13320,7 +13325,7 @@ impl WasmEmitter {
                             fb.instruction(&Instruction::I64Store(ma));
                         } else {
                             // NEAR mode: check return flag, handle TAG_NIL/TAG_ARRAY specially, call value_return
-                            fb.instruction(&Instruction::GlobalGet(1));
+                            fb.instruction(&Instruction::GlobalGet(RETURN_FLAG));
                             fb.instruction(&Instruction::I64Const(0));
                             fb.instruction(&Instruction::I64Ne);
                             fb.instruction(&Instruction::If(BlockType::Empty));
@@ -13374,7 +13379,7 @@ impl WasmEmitter {
                     } else {
                         // Reset return flag before call
                         fb.instruction(&Instruction::I64Const(0));
-                        fb.instruction(&Instruction::GlobalSet(1));
+                        fb.instruction(&Instruction::GlobalSet(RETURN_FLAG));
                         // input(0)
                         fb.instruction(&Instruction::I64Const(0));
                         fb.instruction(&Instruction::Call(host_idx[&7]));
@@ -13400,7 +13405,7 @@ impl WasmEmitter {
                         // Stack: [i64 result]. Save to local 0, push addr, load local, store
                         fb.instruction(&Instruction::LocalSet(0)); // save result to local 0
                         // Check return flag: if global[1] != 0, skip untag+store+value_return
-                        fb.instruction(&Instruction::GlobalGet(1));
+                        fb.instruction(&Instruction::GlobalGet(RETURN_FLAG));
                         fb.instruction(&Instruction::I64Const(0));
                         fb.instruction(&Instruction::I64Ne);
                         fb.instruction(&Instruction::If(BlockType::Empty));
