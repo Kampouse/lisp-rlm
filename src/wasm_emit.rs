@@ -3878,6 +3878,131 @@ impl WasmEmitter {
                 Ok(v)
             }
 
+            // ── High-level promise wrappers (accept tagged strings) ──
+
+            // (near/batch account_str) → promise_id
+            // Creates a promise batch from a tagged string account ID
+            "near/batch" => {
+                if a.len() != 1 { return Err("near/batch: expected 1 arg".into()); }
+                self.need_host(39);
+                let account = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                // account untagged: (len << 32) | ptr
+                v.extend(account.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // len
+                v.extend(account);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // ptr
+                v.push(Self::host_call(39));
+                Ok(v)
+            }
+
+            // (near/batch-create-account promise_id) → nil
+            "near/batch-create-account" => {
+                if a.len() != 1 { return Err("near/batch-create-account: expected 1 arg".into()); }
+                self.need_host(41);
+                let idx = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                v.extend(idx); v.extend(self.emit_untag());
+                v.push(Self::host_call(41));
+                v.push(Instruction::I64Const(0));
+                Ok(v)
+            }
+
+            // (near/batch-deploy promise_id code_str) → nil
+            // Deploy tagged string as contract code
+            "near/batch-deploy" => {
+                if a.len() != 2 { return Err("near/batch-deploy: expected 2 args".into()); }
+                self.need_host(42);
+                let idx = self.expr(&a[0])?;
+                let code = self.expr(&a[1])?;
+                let mut v = Vec::new();
+                v.extend(idx.clone()); v.extend(self.emit_untag());
+                // code untagged: (len << 32) | ptr
+                v.extend(code.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // code_len
+                v.extend(code);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // code_ptr
+                v.push(Self::host_call(42));
+                v.push(Instruction::I64Const(0));
+                Ok(v)
+            }
+
+            // (near/batch-transfer promise_id amount_ptr amount_len) → nil
+            "near/batch-transfer" => {
+                if a.len() != 3 { return Err("near/batch-transfer: expected 3 args".into()); }
+                self.need_host(44);
+                let idx = self.expr(&a[0])?;
+                let amount_ptr = self.expr(&a[1])?;
+                let amount_len = self.expr(&a[2])?;
+                let mut v = Vec::new();
+                v.extend(idx); v.extend(amount_ptr); v.extend(amount_len);
+                v.push(Self::host_call(44));
+                v.push(Instruction::I64Const(0));
+                Ok(v)
+            }
+
+            // (near/batch-call promise_id method_str args_str amount_ptr gas) → nil
+            // amount_ptr is raw pointer to 16-byte u128 LE, gas is tagged num
+            "near/batch-call" => {
+                if a.len() != 5 { return Err("near/batch-call: expected 5 args".into()); }
+                self.need_host(43);
+                let idx = self.expr(&a[0])?;
+                let method = self.expr(&a[1])?;
+                let args = self.expr(&a[2])?;
+                let amount_ptr = self.expr(&a[3])?;
+                let gas = self.expr(&a[4])?;
+                let mut v = Vec::new();
+                v.extend(idx.clone()); v.extend(self.emit_untag());
+                // method ptr/len
+                v.extend(method.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // method_len
+                v.extend(method);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // method_ptr
+                // args ptr/len
+                v.extend(args.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // args_len
+                v.extend(args);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // args_ptr
+                // amount_ptr + gas
+                v.extend(amount_ptr);
+                v.extend(gas); v.extend(self.emit_untag());
+                v.push(Self::host_call(43));
+                v.push(Instruction::I64Const(0));
+                Ok(v)
+            }
+
+            // (near/batch-add-key promise_id pk_str nonce) → nil
+            // Adds full access key with pk as tagged string and nonce as tagged num
+            "near/batch-add-key" => {
+                if a.len() != 3 { return Err("near/batch-add-key: expected 3 args".into()); }
+                self.need_host(46);
+                let idx = self.expr(&a[0])?;
+                let pk = self.expr(&a[1])?;
+                let nonce = self.expr(&a[2])?;
+                let mut v = Vec::new();
+                v.extend(idx.clone()); v.extend(self.emit_untag());
+                // pk ptr/len
+                v.extend(pk.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // pk_len
+                v.extend(pk);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // pk_ptr
+                // nonce
+                v.extend(nonce); v.extend(self.emit_untag());
+                v.push(Self::host_call(46));
+                v.push(Instruction::I64Const(0));
+                Ok(v)
+            }
+
             // ── Global contracts ──
 
             // (near/deploy_contract code_ptr code_len) — deploys code to current account
@@ -6384,6 +6509,508 @@ impl WasmEmitter {
                 v.push(Instruction::I64Sub);
                 v.push(Instruction::Else);
                 v.push(Instruction::LocalGet(acc_i));
+                v.push(Instruction::End);
+                Ok(v)
+            }
+
+            // ── String operations ──
+
+            // (str-len s) → length of string in bytes (tagged num)
+            "str-len" => {
+                if a.len() != 1 { return Err("str-len: expected 1 arg".into()); }
+                let mut v = self.expr(&a[0])?;
+                // Untag string → raw = (len << 32) | ptr
+                v.extend(self.emit_untag());
+                // Extract len: raw >> 32
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
+
+            // (str-contains-byte s byte_val) → bool
+            // Checks if string s contains byte with value byte_val (0-255)
+            "str-contains-byte" => {
+                if a.len() != 2 { return Err("str-contains-byte: expected 2 args".into()); }
+                let str_i = self.local_idx("__scb_str");
+                let byte_i = self.local_idx("__scb_byte");
+                let len_i = self.local_idx("__scb_len");
+                let ptr_i = self.local_idx("__scb_ptr");
+                let idx_i = self.local_idx("__scb_idx");
+                let found_i = self.local_idx("__scb_found");
+                let alloc_base = self.next_data_offset.max(3072);
+                self.next_data_offset = (alloc_base + 16) & !7;
+                let mut v = Vec::new();
+                // Eval string, untag, store raw
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(str_i));
+                // Eval byte value, untag, store
+                v.extend(self.expr(&a[1])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(byte_i));
+                // Extract len and ptr
+                v.push(Instruction::LocalGet(str_i));
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(len_i));
+                v.push(Instruction::LocalGet(str_i));
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(ptr_i));
+                // found = 0, idx = 0
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(found_i));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(idx_i));
+                // Loop: while idx < len && !found
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                // if idx >= len, break
+                v.push(Instruction::LocalGet(idx_i));
+                v.push(Instruction::LocalGet(len_i));
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::BrIf(1)); // break
+                // load byte at ptr + idx
+                v.push(Instruction::LocalGet(ptr_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(idx_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                v.push(Instruction::I64ExtendI32U);
+                // compare with target byte
+                v.push(Instruction::LocalGet(byte_i));
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::I64Const(1)); v.push(Instruction::LocalSet(found_i));
+                v.push(Instruction::Br(1)); // break outer block (found)
+                v.push(Instruction::End);
+                // idx++
+                v.push(Instruction::LocalGet(idx_i)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(idx_i));
+                v.push(Instruction::Br(0)); // continue loop
+                v.push(Instruction::End); // end loop
+                v.push(Instruction::End); // end block
+                // Return found as tagged bool
+                v.push(Instruction::LocalGet(found_i));
+                v.extend(self.emit_tag_bool());
+                Ok(v)
+            }
+
+            // (str-repeat s n) → s repeated n times
+            "str-repeat" => {
+                if a.len() != 2 { return Err("str-repeat: expected 2 args".into()); }
+                let src_i = self.local_idx("__sr_src");
+                let count_i = self.local_idx("__sr_count");
+                let src_len_i = self.local_idx("__sr_src_len");
+                let src_ptr_i = self.local_idx("__sr_src_ptr");
+                let dst_i = self.local_idx("__sr_dst");
+                let rep_i = self.local_idx("__sr_rep");
+                let off_i = self.local_idx("__sr_off");
+                let j_i = self.local_idx("__sr_j");
+                let alloc_base = self.next_data_offset.max(3072);
+                // We'll allocate at alloc_base; advance next_data_offset later
+                let mut v = Vec::new();
+                // Eval string arg
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(src_i));
+                // Eval count arg
+                v.extend(self.expr(&a[1])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(count_i));
+                // Extract src len and ptr
+                v.push(Instruction::LocalGet(src_i));
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(src_len_i));
+                v.push(Instruction::LocalGet(src_i));
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(src_ptr_i));
+                // Total size = src_len * count
+                v.push(Instruction::LocalGet(src_len_i));
+                v.push(Instruction::LocalGet(count_i));
+                v.push(Instruction::I64Mul);
+                // Allocate that many bytes
+                v.push(Instruction::LocalSet(off_i));
+                let total_size_local = off_i;
+                v.push(Instruction::I64Const(alloc_base as i64));
+                v.push(Instruction::LocalSet(dst_i));
+                // Advance next_data_offset
+                let new_offset = format!("{} + total_size rounded up", alloc_base);
+                // We'll fix next_data_offset after we know total_size... but it's runtime.
+                // For now, allocate a generous fixed buffer and advance by a worst-case amount.
+                // Actually, since count is often a literal, we can handle that. For runtime count,
+                // use a generous upper bound.
+                // Use a 4096-byte buffer at alloc_base.
+                self.next_data_offset = (alloc_base + 4096) & !7;
+                // rep = 0
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(rep_i));
+                // outer loop: for rep in 0..count
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(rep_i));
+                v.push(Instruction::LocalGet(count_i));
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::BrIf(1)); // break
+                // j = 0
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(j_i));
+                // inner loop: copy src byte by byte
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(j_i));
+                v.push(Instruction::LocalGet(src_len_i));
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::BrIf(1)); // break inner
+                // dst[rep*src_len + j] = src[j]
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(rep_i));
+                v.push(Instruction::LocalGet(src_len_i));
+                v.push(Instruction::I64Mul);
+                v.push(Instruction::LocalGet(j_i));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                // Load src[j]
+                v.push(Instruction::LocalGet(src_ptr_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(j_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                v.push(Instruction::I32Store8(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                // j++
+                v.push(Instruction::LocalGet(j_i)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(j_i));
+                v.push(Instruction::Br(0)); // continue inner
+                v.push(Instruction::End); // end inner loop
+                v.push(Instruction::End); // end inner block
+                // rep++
+                v.push(Instruction::LocalGet(rep_i)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(rep_i));
+                v.push(Instruction::Br(0)); // continue outer
+                v.push(Instruction::End); // end outer loop
+                v.push(Instruction::End); // end outer block
+                // Return tagged string: (total_size << 32) | alloc_base, tagged as Str
+                v.push(Instruction::LocalGet(total_size_local));
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(alloc_base as i64));
+                v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
+                Ok(v)
+            }
+
+            // (hex-encode bytes_str) → hex string (lowercase, 2 chars per byte)
+            "hex-encode" => {
+                if a.len() != 1 { return Err("hex-encode: expected 1 arg".into()); }
+                let src_i = self.local_idx("__he_src");
+                let src_len_i = self.local_idx("__he_src_len");
+                let src_ptr_i = self.local_idx("__he_src_ptr");
+                let dst_i = self.local_idx("__he_dst");
+                let i_i = self.local_idx("__he_i");
+                let b_i = self.local_idx("__he_b");
+                let hi_i = self.local_idx("__he_hi");
+                let lo_i = self.local_idx("__he_lo");
+                let alloc_base = self.next_data_offset.max(3072);
+                self.next_data_offset = (alloc_base + 4096) & !7;
+                let hex_table_off = self.alloc_data(b"0123456789abcdef");
+                let ma = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(src_i));
+                // Extract len and ptr
+                v.push(Instruction::LocalGet(src_i));
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(src_len_i));
+                v.push(Instruction::LocalGet(src_i));
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(src_ptr_i));
+                // dst = alloc_base
+                v.push(Instruction::I64Const(alloc_base as i64));
+                v.push(Instruction::LocalSet(dst_i));
+                // i = 0
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(i_i));
+                // Loop
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(i_i));
+                v.push(Instruction::LocalGet(src_len_i));
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::BrIf(1));
+                // Load byte: src_ptr (i32) + i (i32) → i32.load8_u → i64.extend_i32_u
+                v.push(Instruction::LocalGet(src_ptr_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(b_i));
+                // hi = b >> 4 (i64 ops)
+                v.push(Instruction::LocalGet(b_i)); v.push(Instruction::I64Const(4));
+                v.push(Instruction::I64ShrU); v.push(Instruction::LocalSet(hi_i));
+                // lo = b & 0xF (i64 ops)
+                v.push(Instruction::LocalGet(b_i)); v.push(Instruction::I64Const(15));
+                v.push(Instruction::I64And); v.push(Instruction::LocalSet(lo_i));
+                // dst[2*i] = hex_table[hi]  — all i32 via wrap/extend
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(1)); v.push(Instruction::I32Shl); // 2*i
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Const(hex_table_off as i32));
+                v.push(Instruction::LocalGet(hi_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma));
+                v.push(Instruction::I32Store8(ma));
+                // dst[2*i+1] = hex_table[lo]
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(1)); v.push(Instruction::I32Shl);
+                v.push(Instruction::I32Const(1)); v.push(Instruction::I32Add);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Const(hex_table_off as i32));
+                v.push(Instruction::LocalGet(lo_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma));
+                v.push(Instruction::I32Store8(ma));
+                // i++
+                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(i_i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); // loop
+                v.push(Instruction::End); // block
+                // Return: (src_len*2 << 32) | alloc_base, tagged Str
+                v.push(Instruction::LocalGet(src_len_i));
+                v.push(Instruction::I64Const(1)); v.push(Instruction::I64Shl); // * 2
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(alloc_base as i64));
+                v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
+                Ok(v)
+            }
+
+            // (base64-decode str) → decoded byte string
+            "base64-decode" => {
+                if a.len() != 1 { return Err("base64-decode: expected 1 arg".into()); }
+                let src_i = self.local_idx("__b64d_src");
+                let src_len_i = self.local_idx("__b64d_src_len");
+                let src_ptr_i = self.local_idx("__b64d_src_ptr");
+                let dst_i = self.local_idx("__b64d_dst");
+                let i_i = self.local_idx("__b64d_i");
+                let out_len_i = self.local_idx("__b64d_out_len");
+                let a_i = self.local_idx("__b64d_a");
+                let b_i = self.local_idx("__b64d_b");
+                let c_i = self.local_idx("__b64d_c");
+                let d_i = self.local_idx("__b64d_d");
+                let val_i = self.local_idx("__b64d_val");
+                let alloc_base = self.next_data_offset.max(3072);
+                self.next_data_offset = (alloc_base + 8192) & !7;
+                // Base64 decode table: 256 bytes, 0-63 for valid, 255 for invalid
+                let mut decode_table = vec![255u8; 256];
+                for (i, ch) in b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".iter().enumerate() {
+                    decode_table[*ch as usize] = i as u8;
+                }
+                let table_off = self.alloc_data(&decode_table);
+                let ma = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(src_i));
+                v.push(Instruction::LocalGet(src_i));
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(src_len_i));
+                v.push(Instruction::LocalGet(src_i));
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(src_ptr_i));
+                v.push(Instruction::I64Const(alloc_base as i64));
+                v.push(Instruction::LocalSet(dst_i));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(out_len_i));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(i_i));
+                // Main loop: process 4 chars at a time
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                // if i + 3 >= src_len, break
+                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalGet(src_len_i));
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::BrIf(1));
+                // a = table[src[i]]: load src[i] as i32, add table_off, load8_u, extend to i64
+                v.push(Instruction::I32Const(table_off as i32));
+                v.push(Instruction::LocalGet(src_ptr_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma)); // loads src[i] (the char)
+                v.push(Instruction::I32Add); // table_off + char_value
+                v.push(Instruction::I32Load8U(ma)); // loads table[char] (decoded 0-63)
+                v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(a_i));
+                // b = table[src[i+1]]
+                v.push(Instruction::I32Const(table_off as i32));
+                v.push(Instruction::LocalGet(src_ptr_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(1)); v.push(Instruction::I32Add);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma));
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma));
+                v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(b_i));
+                // c = table[src[i+2]]
+                v.push(Instruction::I32Const(table_off as i32));
+                v.push(Instruction::LocalGet(src_ptr_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(2)); v.push(Instruction::I32Add);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma));
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma));
+                v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(c_i));
+                // d = table[src[i+3]]
+                v.push(Instruction::I32Const(table_off as i32));
+                v.push(Instruction::LocalGet(src_ptr_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(3)); v.push(Instruction::I32Add);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma));
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma));
+                v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(d_i));
+                // byte1 = (a << 2) | (b >> 4) — all i64
+                v.push(Instruction::LocalGet(a_i)); v.push(Instruction::I64Const(2));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalGet(b_i)); v.push(Instruction::I64Const(4));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Or); v.push(Instruction::LocalSet(val_i));
+                // dst[out_len] = byte1
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(out_len_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::LocalGet(val_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Store8(ma));
+                v.push(Instruction::LocalGet(out_len_i)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(out_len_i));
+                // byte2 = ((b & 0xF) << 4) | (c >> 2)
+                v.push(Instruction::LocalGet(b_i)); v.push(Instruction::I64Const(15));
+                v.push(Instruction::I64And); v.push(Instruction::I64Const(4));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalGet(c_i)); v.push(Instruction::I64Const(2));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Or); v.push(Instruction::LocalSet(val_i));
+                // dst[out_len] = byte2
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(out_len_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::LocalGet(val_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Store8(ma));
+                v.push(Instruction::LocalGet(out_len_i)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(out_len_i));
+                // byte3 = ((c & 0x3) << 6) | d
+                v.push(Instruction::LocalGet(c_i)); v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64And); v.push(Instruction::I64Const(6));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalGet(d_i));
+                v.push(Instruction::I64Or); v.push(Instruction::LocalSet(val_i));
+                // dst[out_len] = byte3
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(out_len_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::LocalGet(val_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Store8(ma));
+                v.push(Instruction::LocalGet(out_len_i)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(out_len_i));
+                // i += 4
+                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Const(4));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(i_i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); // loop
+                v.push(Instruction::End); // block
+                // Return (out_len << 32) | alloc_base tagged Str
+                v.push(Instruction::LocalGet(out_len_i));
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(alloc_base as i64));
+                v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
+                Ok(v)
+            }
+
+            // (near/store-bytes key value) → nil
+            // Stores tagged string value under string key using NEAR storage_write.
+            // value must be a tagged string — stores the actual byte content.
+            "near/store-bytes" => {
+                if a.len() != 2 { return Err("near/store-bytes: expected 2 args".into()); }
+                self.need_host(17);
+                let key = self.expr(&a[0])?;
+                let val = self.expr(&a[1])?;
+                let mut v = Vec::new();
+                // Extract val ptr and len into registers first
+                let val_raw_i = self.local_idx("__sb_vr");
+                v.extend(val);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(val_raw_i));
+                // Write val bytes to STORAGE_BUF via memory.copy
+                // val_len = val_raw >> 32
+                // val_ptr = val_raw & 0xFFFFFFFF
+                // copy val_ptr..val_ptr+val_len to STORAGE_BUF..STORAGE_BUF+val_len
+                let val_len_i = self.local_idx("__sb_vlen");
+                let val_ptr_i = self.local_idx("__sb_vptr");
+                v.push(Instruction::LocalGet(val_raw_i));
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(val_len_i));
+                v.push(Instruction::LocalGet(val_raw_i));
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(val_ptr_i));
+                // memory.copy dst=STORAGE_BUF, src=val_ptr, len=val_len
+                v.push(Instruction::I32Const(STORAGE_BUF as i32)); // dst
+                v.push(Instruction::LocalGet(val_ptr_i)); v.push(Instruction::I32WrapI64); // src
+                v.push(Instruction::LocalGet(val_len_i)); v.push(Instruction::I32WrapI64); // len
+                v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+                // storage_write(key_len, key_ptr, val_len, STORAGE_BUF, register_id=0)
+                v.extend(key.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // key_len
+                v.extend(key);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // key_ptr
+                v.push(Instruction::LocalGet(val_len_i)); // val_len
+                v.push(Instruction::I64Const(STORAGE_BUF)); // val_ptr
+                v.push(Instruction::I64Const(0)); // register_id
+                v.push(Self::host_call(17)); v.push(Instruction::Drop);
+                v.push(Instruction::I64Const(TAG_NIL));
+                Ok(v)
+            }
+
+            // (near/load-bytes key) → tagged string or nil
+            // Loads variable-length bytes from NEAR storage, returns as tagged string.
+            "near/load-bytes" => {
+                if a.len() != 1 { return Err("near/load-bytes: expected 1 arg".into()); }
+                self.need_host(18); self.need_host(0); self.need_host(1);
+                let key = self.expr(&a[0])?;
+                let alloc_base = self.next_data_offset.max(3072);
+                self.next_data_offset = (alloc_base + 8192) & !7;
+                let len_i = self.local_idx("__lb_len");
+                let mut v = Vec::new();
+                // storage_read(key_len, key_ptr, register_id=1)
+                v.extend(key.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(key);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(1));
+                v.push(Self::host_call(18));
+                v.push(Instruction::Drop);
+                // register_len(1) → save to local
+                v.push(Instruction::I64Const(1));
+                v.push(Self::host_call(1));
+                v.push(Instruction::LocalSet(len_i));
+                // Check if -1 (not found)
+                v.push(Instruction::LocalGet(len_i));
+                v.push(Instruction::I64Const(-1i64 as u64 as i64));
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                // Not found: return nil
+                v.push(Instruction::I64Const(TAG_NIL));
+                v.push(Instruction::Else);
+                // Found: read_register(1, alloc_base)
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Const(alloc_base as i64));
+                v.push(Self::host_call(0));
+                // Return tagged string: (len << 32) | alloc_base
+                v.push(Instruction::LocalGet(len_i));
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(alloc_base as i64));
+                v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
                 v.push(Instruction::End);
                 Ok(v)
             }
