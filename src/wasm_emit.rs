@@ -12514,7 +12514,17 @@ pub fn compile_fuzz(source: &str) -> Result<Vec<u8>, String> {
 
 pub fn compile_near(source: &str) -> Result<Vec<u8>, String> {
     let resolved = resolve_modules(source, std::path::Path::new("."))?;
-    Ok(parse_and_compile(&resolved, true)?.finish("_run"))
+    let mut em = parse_and_compile(&resolved, true)?;
+    // If no explicit exports, auto-export the "run" function as "_run"
+    // so tree-shaking keeps it and all functions it calls.
+    if em.exports.is_empty() {
+        if let Some(f) = em.funcs.iter().find(|f| f.name == "run") {
+            em.add_export(&f.name.clone(), "_run", false);
+        } else if let Some(f) = em.funcs.last() {
+            em.add_export(&f.name.clone(), "_run", false);
+        }
+    }
+    Ok(em.finish("_run"))
 }
 
 // ── Borsh schema parsing helpers ──
