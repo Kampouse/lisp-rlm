@@ -829,5 +829,181 @@ mod prop {
                 panic!("fn-call mismatch: {}\nsource: {}", e, expr);
             }
         }
+
+        // ── Extended generators ──
+
+        /// Differential fuzz: cond expression (3 clauses).
+        #[test]
+        fn prop_cond(
+            a in safe_int(), b in safe_int(), c in safe_int(), d in safe_int()
+        ) {
+            let expr = format!(
+                "(define (run) (cond ((= {} {}) {}) ((= {} {}) {}) (1 {})))",
+                a, a, b, a, b, c, d
+            );
+            if let Err(e) = fuzz_one(&expr) {
+                panic!("cond mismatch: {}\nsource: {}", e, expr);
+            }
+        }
+
+        /// Differential fuzz: progn expression.
+        #[test]
+        fn prop_progn(
+            a in safe_int(), b in safe_int(), c in safe_int()
+        ) {
+            let expr = format!("(define (run) (progn {} {} {}))", a, b, c);
+            if let Err(e) = fuzz_one(&expr) {
+                panic!("progn mismatch: {}\nsource: {}", e, expr);
+            }
+        }
+
+        /// Differential fuzz: nested closure (make-adder pattern).
+        #[test]
+        fn prop_nested_closure(n in safe_int(), m in safe_int()) {
+            let expr = format!(
+                "(define (make-adder n) (lambda (x) (+ x n)))\n(define (run) ((make-adder {}) {}))",
+                n, m
+            );
+            if let Err(e) = fuzz_one(&expr) {
+                panic!("nested-closure mismatch: {}\nsource: {}", e, expr);
+            }
+        }
+
+        /// Differential fuzz: closure with set! (make-counter pattern).
+        #[test]
+        fn prop_closure_set(n in safe_int()) {
+            let n = n % 50; // keep small to avoid overflow
+            let expr = format!(
+                "(define (make-counter init) (let ((n init)) (lambda () (set! n (+ n 1)) n)))\n(define (run) ((make-counter {})))",
+                n
+            );
+            if let Err(e) = fuzz_one(&expr) {
+                panic!("closure-set mismatch: {}\nsource: {}", e, expr);
+            }
+        }
+
+        /// Differential fuzz: higher-order function (apply-twice pattern).
+        #[test]
+        fn prop_higher_order(n in safe_int()) {
+            let expr = format!(
+                "(define (apply-twice f x) (f (f x)))\n(define (inc x) (+ x 1))\n(define (run) (apply-twice inc {}))",
+                n
+            );
+            if let Err(e) = fuzz_one(&expr) {
+                panic!("higher-order mismatch: {}\nsource: {}", e, expr);
+            }
+        }
+
+        /// Differential fuzz: max/min builtins.
+        #[test]
+        fn prop_max_min(a in safe_int(), b in safe_int()) {
+            let expr = format!("(define (run) (+ (max {} {}) (min {} {})))", a, b, a, b);
+            if let Err(e) = fuzz_one(&expr) {
+                panic!("max-min mismatch: {}\nsource: {}", e, expr);
+            }
+        }
+
+        /// Differential fuzz: map with named function.
+        #[test]
+        fn prop_map(n in safe_int(), _m in safe_int()) {
+            let expr = format!(
+                "(define (dbl x) (* x 2))\n(define (run) (car (map dbl (list (+ {} 1)))))",
+                n
+            );
+            if let Err(e) = fuzz_one(&expr) {
+                panic!("map mismatch: {}\nsource: {}", e, expr);
+            }
+        }
+
+        /// Differential fuzz: filter with named function.
+        #[test]
+        fn prop_filter(a in safe_int(), b in safe_int()) {
+            // Ensure at least one positive element so car doesn't fail on empty list
+            let b = if a <= 0 && b <= 0 { 1 } else { b };
+            let expr = format!(
+                "(define (is-pos x) (> x 0))\n(define (run) (car (filter is-pos (list {} {}))))",
+                a, b
+            );
+            if let Err(e) = fuzz_one(&expr) {
+                panic!("filter mismatch: {}\nsource: {}", e, expr);
+            }
+        }
+
+        /// Differential fuzz: reduce with named function.
+        #[test]
+        fn prop_reduce(a in safe_int(), b in safe_int()) {
+            let expr = format!(
+                "(define (my-add x acc) (+ x acc))\n(define (run) (reduce my-add 0 (list {} {})))",
+                a, b
+            );
+            if let Err(e) = fuzz_one(&expr) {
+                panic!("reduce mismatch: {}\nsource: {}", e, expr);
+            }
+        }
+
+        /// Differential fuzz: mutual recursion (even/odd).
+        #[test]
+        fn prop_mutual_recursion(n in 0i64..10i64) {
+            let expr = format!(
+                "(define (my-even n) (if (= n 0) 1 (my-odd (- n 1))))\n\
+                 (define (my-odd n) (if (= n 0) 0 (my-even (- n 1))))\n\
+                 (define (run) (my-even {}))",
+                n
+            );
+            if let Err(e) = fuzz_one(&expr) {
+                panic!("mutual-rec mismatch: {}\nsource: {}", e, expr);
+            }
+        }
+
+        /// Differential fuzz: deeply nested arithmetic (stress test).
+        #[test]
+        fn prop_deep_arith(depth in 2usize..=5, n in safe_int()) {
+            let mut s = format!("{}", n);
+            for _ in 0..depth {
+                s = format!("(+ {} 1)", s);
+            }
+            let expr = format!("(define (run) {})", s);
+            if let Err(e) = fuzz_one(&expr) {
+                panic!("deep-arith mismatch: {}\nsource: {}", e, expr);
+            }
+        }
+
+        /// Differential fuzz: nested closures (double wrapping).
+        #[test]
+        fn prop_double_closure(a in safe_int(), b in safe_int(), _c in safe_int()) {
+            let expr = format!(
+                "(define (make-adder n) (lambda (x) (+ x n)))\n\
+                 (define (make-apply f) (lambda (x) (f x)))\n\
+                 (define (run) ((make-apply (make-adder {})) {}))",
+                a, b
+            );
+            if let Err(e) = fuzz_one(&expr) {
+                panic!("double-closure mismatch: {}\nsource: {}", e, expr);
+            }
+        }
+
+        /// Differential fuzz: shadowing in nested let.
+        #[test]
+        fn prop_shadow_let(a in safe_int(), b in safe_int()) {
+            let expr = format!(
+                "(define (run) (let ((x {})) (let ((x {})) x)))",
+                a, b
+            );
+            if let Err(e) = fuzz_one(&expr) {
+                panic!("shadow-let mismatch: {}\nsource: {}", e, expr);
+            }
+        }
+
+        /// Differential fuzz: value define (fn value in variable).
+        #[test]
+        fn prop_value_define(n in safe_int()) {
+            let expr = format!(
+                "(define f (lambda (x) (+ x {})))\n(define (run) (f {}))",
+                n, n
+            );
+            if let Err(e) = fuzz_one(&expr) {
+                panic!("value-define mismatch: {}\nsource: {}", e, expr);
+            }
+        }
     }
 }

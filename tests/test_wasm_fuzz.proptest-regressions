@@ -13,3 +13,4 @@ cc 2c9b892feab00a5e56bcf345d5604f077b1c589a873e9a45faa8f6e771194558 # shrinks to
 cc 776e5ffa69e01f6580aea9a8d6d304b3144d0c850c5b71fb8b29b51e5a131e13 # shrinks to expr = "(define (run) (mod -1 -2))"
 cc bd44916eca0fa36394ed075c2c0d5c1d114f1d0b0a9e35487069bb9fea036b35 # shrinks to expr = "(define (run) (not nil 0))"
 cc 24d68216db998a234c5abde580e2a5a81111855278220285fdca0ff01a397d5c # shrinks to expr = "(define (run) (!= true false))"
+cc 703bfd2f1fc316fb7bcca635eedb40fd925443f3439d10e54ec0f787de4d9695 # shrinks to expr = "(define (run) (begin 0 nil))"

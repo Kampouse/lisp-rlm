@@ -11395,57 +11395,65 @@ impl WasmEmitter {
                         fb.instruction(&Instruction::GlobalSet(1));
                         fb.instruction(&Instruction::Call(idx));
                         fb.instruction(&Instruction::LocalSet(0));
-                        // Check return flag: if global[1] != 0, skip untag+store+value_return
-                        fb.instruction(&Instruction::GlobalGet(1));
-                        fb.instruction(&Instruction::I64Const(0));
-                        fb.instruction(&Instruction::I64Ne);
-                        fb.instruction(&Instruction::If(BlockType::Empty));
-                        // Return flag set — function already called value_return directly, nothing to do
-                        fb.instruction(&Instruction::Else);
-                        // Normal path: check for TAG_NIL first
-                        fb.instruction(&Instruction::LocalGet(0));
-                        fb.instruction(&Instruction::I64Const(7)); // tag mask
-                        fb.instruction(&Instruction::I64And);
-                        fb.instruction(&Instruction::I64Const(TAG_NIL));
-                        fb.instruction(&Instruction::I64Eq);
-                        fb.instruction(&Instruction::If(BlockType::Empty));
-                        // TAG_NIL: write special nil marker at TEMP_MEM (0xFEFF sentinels — cannot be valid untagged i64)
-                        fb.instruction(&Instruction::I64Const(TEMP_MEM));
-                        fb.instruction(&Instruction::I32WrapI64);
-                        fb.instruction(&Instruction::I64Const(0x7FFE_FEFF_FEFF_FEFE_i64)); // nil sentinel
-                        fb.instruction(&Instruction::I64Store(ma));
-                        fb.instruction(&Instruction::I64Const(8));
-                        fb.instruction(&Instruction::I64Const(TEMP_MEM));
-                        fb.instruction(&Instruction::Call(host_idx[&25])); // value_return
-                        fb.instruction(&Instruction::Else);
-                        // Non-nil: check for TAG_ARRAY — store tagged value for TS decoding
-                        fb.instruction(&Instruction::LocalGet(0));
-                        fb.instruction(&Instruction::I64Const(7)); // tag mask
-                        fb.instruction(&Instruction::I64And);
-                        fb.instruction(&Instruction::I64Const(TAG_ARRAY));
-                        fb.instruction(&Instruction::I64Eq);
-                        fb.instruction(&Instruction::If(BlockType::Empty));
-                        // TAG_ARRAY: store full tagged value at TEMP_MEM so TS can decode the array
-                        fb.instruction(&Instruction::I64Const(TEMP_MEM));
-                        fb.instruction(&Instruction::I32WrapI64);
-                        fb.instruction(&Instruction::LocalGet(0)); // full tagged array value
-                        fb.instruction(&Instruction::I64Store(ma));
-                        fb.instruction(&Instruction::I64Const(8));
-                        fb.instruction(&Instruction::I64Const(TEMP_MEM));
-                        fb.instruction(&Instruction::Call(host_idx[&25])); // value_return
-                        fb.instruction(&Instruction::Else);
-                        // TAG_STR/TAG_NUM/TAG_BOOL: store tagged value at TEMP_MEM and call value_return
-                        // The JS runtime decodes the tag from the captured bytes.
-                        fb.instruction(&Instruction::I64Const(TEMP_MEM));
-                        fb.instruction(&Instruction::I32WrapI64);
-                        fb.instruction(&Instruction::LocalGet(0)); // full tagged value
-                        fb.instruction(&Instruction::I64Store(ma));
-                        fb.instruction(&Instruction::I64Const(8));
-                        fb.instruction(&Instruction::I64Const(TEMP_MEM));
-                        fb.instruction(&Instruction::Call(host_idx[&25])); // value_return
-                        fb.instruction(&Instruction::End); // if TAG_ARRAY
-                        fb.instruction(&Instruction::End); // if TAG_NIL
-                        fb.instruction(&Instruction::End); // if
+                        if self.fuzz_mode {
+                            // Fuzz mode: store raw tagged i64 at TEMP_MEM, no value_return
+                            fb.instruction(&Instruction::I64Const(TEMP_MEM));
+                            fb.instruction(&Instruction::I32WrapI64);
+                            fb.instruction(&Instruction::LocalGet(0));
+                            fb.instruction(&Instruction::I64Store(ma));
+                        } else {
+                            // NEAR mode: check return flag, handle TAG_NIL/TAG_ARRAY specially, call value_return
+                            fb.instruction(&Instruction::GlobalGet(1));
+                            fb.instruction(&Instruction::I64Const(0));
+                            fb.instruction(&Instruction::I64Ne);
+                            fb.instruction(&Instruction::If(BlockType::Empty));
+                            // Return flag set — function already called value_return directly, nothing to do
+                            fb.instruction(&Instruction::Else);
+                            // Normal path: check for TAG_NIL first
+                            fb.instruction(&Instruction::LocalGet(0));
+                            fb.instruction(&Instruction::I64Const(7)); // tag mask
+                            fb.instruction(&Instruction::I64And);
+                            fb.instruction(&Instruction::I64Const(TAG_NIL));
+                            fb.instruction(&Instruction::I64Eq);
+                            fb.instruction(&Instruction::If(BlockType::Empty));
+                            // TAG_NIL: write special nil marker at TEMP_MEM (0xFEFF sentinels — cannot be valid untagged i64)
+                            fb.instruction(&Instruction::I64Const(TEMP_MEM));
+                            fb.instruction(&Instruction::I32WrapI64);
+                            fb.instruction(&Instruction::I64Const(0x7FFE_FEFF_FEFF_FEFE_i64)); // nil sentinel
+                            fb.instruction(&Instruction::I64Store(ma));
+                            fb.instruction(&Instruction::I64Const(8));
+                            fb.instruction(&Instruction::I64Const(TEMP_MEM));
+                            fb.instruction(&Instruction::Call(host_idx[&25])); // value_return
+                            fb.instruction(&Instruction::Else);
+                            // Non-nil: check for TAG_ARRAY — store tagged value for TS decoding
+                            fb.instruction(&Instruction::LocalGet(0));
+                            fb.instruction(&Instruction::I64Const(7)); // tag mask
+                            fb.instruction(&Instruction::I64And);
+                            fb.instruction(&Instruction::I64Const(TAG_ARRAY));
+                            fb.instruction(&Instruction::I64Eq);
+                            fb.instruction(&Instruction::If(BlockType::Empty));
+                            // TAG_ARRAY: store full tagged value at TEMP_MEM so TS can decode the array
+                            fb.instruction(&Instruction::I64Const(TEMP_MEM));
+                            fb.instruction(&Instruction::I32WrapI64);
+                            fb.instruction(&Instruction::LocalGet(0)); // full tagged array value
+                            fb.instruction(&Instruction::I64Store(ma));
+                            fb.instruction(&Instruction::I64Const(8));
+                            fb.instruction(&Instruction::I64Const(TEMP_MEM));
+                            fb.instruction(&Instruction::Call(host_idx[&25])); // value_return
+                            fb.instruction(&Instruction::Else);
+                            // TAG_STR/TAG_NUM/TAG_BOOL: store tagged value at TEMP_MEM and call value_return
+                            // The JS runtime decodes the tag from the captured bytes.
+                            fb.instruction(&Instruction::I64Const(TEMP_MEM));
+                            fb.instruction(&Instruction::I32WrapI64);
+                            fb.instruction(&Instruction::LocalGet(0)); // full tagged value
+                            fb.instruction(&Instruction::I64Store(ma));
+                            fb.instruction(&Instruction::I64Const(8));
+                            fb.instruction(&Instruction::I64Const(TEMP_MEM));
+                            fb.instruction(&Instruction::Call(host_idx[&25])); // value_return
+                            fb.instruction(&Instruction::End); // if TAG_ARRAY
+                            fb.instruction(&Instruction::End); // if TAG_NIL
+                            fb.instruction(&Instruction::End); // if
+                        }
                     } else {
                         // Reset return flag before call
                         fb.instruction(&Instruction::I64Const(0));
@@ -11869,7 +11877,11 @@ pub fn compile_pure(source: &str) -> Result<Vec<u8>, String> {
 /// Does NOT call value_return (this is a test, not a NEAR contract).
 pub fn compile_fuzz(source: &str) -> Result<Vec<u8>, String> {
     let mut em = parse_and_compile(source, false)?;
-    if let Some(f) = em.funcs.last() {
+    // Export the function named "run" (the test entry point), not funcs.last()
+    // which may be a lambda added after the run function.
+    if let Some(f) = em.funcs.iter().find(|f| f.name == "run") {
+        em.add_export(&f.name.clone(), "run", false);
+    } else if let Some(f) = em.funcs.last() {
         em.add_export(&f.name.clone(), "run", false);
     }
     em.set_fuzz_mode(true);
