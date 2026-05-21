@@ -6976,6 +6976,488 @@ impl WasmEmitter {
                 Ok(v)
             }
 
+            // (base64url-decode str) → decoded byte string (URL-safe, no padding)
+            "base64url-decode" => {
+                if a.len() != 1 { return Err("base64url-decode: expected 1 arg".into()); }
+                let src_i = self.local_idx("__b64ud_src");
+                let src_len_i = self.local_idx("__b64ud_src_len");
+                let src_ptr_i = self.local_idx("__b64ud_src_ptr");
+                let dst_i = self.local_idx("__b64ud_dst");
+                let i_i = self.local_idx("__b64ud_i");
+                let out_len_i = self.local_idx("__b64ud_out_len");
+                let a_i = self.local_idx("__b64ud_a");
+                let b_i = self.local_idx("__b64ud_b");
+                let c_i = self.local_idx("__b64ud_c");
+                let d_i = self.local_idx("__b64ud_d");
+                let val_i = self.local_idx("__b64ud_val");
+                let remain_i = self.local_idx("__b64ud_remain");
+                let alloc_base = self.next_data_offset.max(3072);
+                self.next_data_offset = (alloc_base + 8192) & !7;
+                // Base64url decode table: 256 bytes, 0-63 for valid, 255 for invalid
+                let mut decode_table = vec![255u8; 256];
+                for (i, ch) in b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_".iter().enumerate() {
+                    decode_table[*ch as usize] = i as u8;
+                }
+                let table_off = self.alloc_data(&decode_table);
+                let ma = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(src_i));
+                v.push(Instruction::LocalGet(src_i));
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(src_len_i));
+                v.push(Instruction::LocalGet(src_i));
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(src_ptr_i));
+                v.push(Instruction::I64Const(alloc_base as i64));
+                v.push(Instruction::LocalSet(dst_i));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(out_len_i));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(i_i));
+                // Main loop: process groups of 2-4 chars (no padding)
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                // if i >= src_len, break
+                v.push(Instruction::LocalGet(i_i));
+                v.push(Instruction::LocalGet(src_len_i));
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::BrIf(1));
+                // remain = src_len - i
+                v.push(Instruction::LocalGet(src_len_i));
+                v.push(Instruction::LocalGet(i_i));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::LocalSet(remain_i));
+                // Load a = table[src[i]]
+                v.push(Instruction::I32Const(table_off as i32));
+                v.push(Instruction::LocalGet(src_ptr_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma));
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma));
+                v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(a_i));
+                // Load b = table[src[i+1]] (we know remain >= 2 because we checked i < src_len, but need at least 2 chars)
+                // Actually: since i < src_len, we need to check remain >= 2 — but base64url groups are at least 2.
+                // If remain == 1, treat as single char (shouldn't happen in valid base64url, but handle gracefully: skip)
+                v.push(Instruction::LocalGet(remain_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64LeU);
+                v.push(Instruction::BrIf(1)); // break if <= 1 char left (invalid, but safe)
+                v.push(Instruction::I32Const(table_off as i32));
+                v.push(Instruction::LocalGet(src_ptr_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(1)); v.push(Instruction::I32Add);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma));
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma));
+                v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(b_i));
+                // byte0 = (a << 2) | (b >> 4)
+                v.push(Instruction::LocalGet(a_i)); v.push(Instruction::I64Const(2));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalGet(b_i)); v.push(Instruction::I64Const(4));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Or); v.push(Instruction::LocalSet(val_i));
+                // dst[out_len] = byte0
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(out_len_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::LocalGet(val_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Store8(ma));
+                v.push(Instruction::LocalGet(out_len_i)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(out_len_i));
+                // If remain >= 3: load c and emit byte1
+                v.push(Instruction::LocalGet(remain_i));
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64LtU);
+                // If remain < 3, skip to end-of-group
+                v.push(Instruction::If(BlockType::Empty));
+                // remain < 3 → just update i and continue
+                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Const(2));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(i_i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::Else);
+                // remain >= 3: load c
+                v.push(Instruction::I32Const(table_off as i32));
+                v.push(Instruction::LocalGet(src_ptr_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(2)); v.push(Instruction::I32Add);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma));
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma));
+                v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(c_i));
+                // byte1 = ((b & 0xF) << 4) | (c >> 2)
+                v.push(Instruction::LocalGet(b_i)); v.push(Instruction::I64Const(15));
+                v.push(Instruction::I64And); v.push(Instruction::I64Const(4));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalGet(c_i)); v.push(Instruction::I64Const(2));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Or); v.push(Instruction::LocalSet(val_i));
+                // dst[out_len] = byte1
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(out_len_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::LocalGet(val_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Store8(ma));
+                v.push(Instruction::LocalGet(out_len_i)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(out_len_i));
+                // If remain >= 4: load d and emit byte2
+                v.push(Instruction::LocalGet(remain_i));
+                v.push(Instruction::I64Const(4));
+                v.push(Instruction::I64LtU);
+                v.push(Instruction::If(BlockType::Empty));
+                // remain < 4 → update i += 3 and continue
+                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(i_i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::Else);
+                // remain >= 4: load d
+                v.push(Instruction::I32Const(table_off as i32));
+                v.push(Instruction::LocalGet(src_ptr_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(3)); v.push(Instruction::I32Add);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma));
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma));
+                v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(d_i));
+                // byte2 = ((c & 0x3) << 6) | d
+                v.push(Instruction::LocalGet(c_i)); v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64And); v.push(Instruction::I64Const(6));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalGet(d_i));
+                v.push(Instruction::I64Or); v.push(Instruction::LocalSet(val_i));
+                // dst[out_len] = byte2
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(out_len_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::LocalGet(val_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Store8(ma));
+                v.push(Instruction::LocalGet(out_len_i)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(out_len_i));
+                // i += 4
+                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Const(4));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(i_i));
+                v.push(Instruction::End); // end if remain >= 4 else
+                v.push(Instruction::End); // end if remain >= 3 else
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); // loop
+                v.push(Instruction::End); // block
+                // Return (out_len << 32) | alloc_base tagged Str
+                v.push(Instruction::LocalGet(out_len_i));
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(alloc_base as i64));
+                v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
+                Ok(v)
+            }
+
+            // (base58-decode str) → decoded byte string (Bitcoin-style)
+            "base58-decode" => {
+                if a.len() != 1 { return Err("base58-decode: expected 1 arg".into()); }
+                let src_i = self.local_idx("__b58d_src");
+                let src_len_i = self.local_idx("__b58d_src_len");
+                let src_ptr_i = self.local_idx("__b58d_src_ptr");
+                let dst_i = self.local_idx("__b58d_dst");
+                let i_i = self.local_idx("__b58d_i");
+                let j_i = self.local_idx("__b58d_j");
+                let out_len_i = self.local_idx("__b58d_out_len");
+                let carry_i = self.local_idx("__b58d_carry");
+                let decoded_i = self.local_idx("__b58d_decoded");
+                let tmp_i = self.local_idx("__b58d_tmp");
+                let leading_i = self.local_idx("__b58d_leading");
+                let alloc_base = self.next_data_offset.max(3072);
+                self.next_data_offset = (alloc_base + 8192) & !7;
+                // Base58 decode table: 256 bytes, 0-57 for valid, 255 for invalid
+                let mut decode_table = vec![255u8; 256];
+                for (i, ch) in b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz".iter().enumerate() {
+                    decode_table[*ch as usize] = i as u8;
+                }
+                let table_off = self.alloc_data(&decode_table);
+                let ma = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(src_i));
+                v.push(Instruction::LocalGet(src_i));
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(src_len_i));
+                v.push(Instruction::LocalGet(src_i));
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(src_ptr_i));
+                // dst = alloc_base + src_len (worst case: output can be up to src_len bytes)
+                // Actually we need dst to be separate from the src data. Use alloc_base as the dst buffer.
+                // Zero out the dst buffer first (we'll use up to src_len + a few bytes)
+                // Actually, just use alloc_base directly. We'll keep output in little-endian there.
+                v.push(Instruction::I64Const(alloc_base as i64));
+                v.push(Instruction::LocalSet(dst_i));
+                // Zero out the buffer area we'll use (src_len + 32 bytes to be safe)
+                // For simplicity, zero 256 bytes — enough headroom
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalSet(j_i));
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(j_i));
+                v.push(Instruction::I64Const(256));
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::BrIf(1));
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(j_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Const(0));
+                v.push(Instruction::I32Store8(ma));
+                v.push(Instruction::LocalGet(j_i)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(j_i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); // loop
+                v.push(Instruction::End); // block
+                // out_len = 0
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(out_len_i));
+                // i = 0
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(i_i));
+                // Main loop: for each input char
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                // if i >= src_len, break
+                v.push(Instruction::LocalGet(i_i));
+                v.push(Instruction::LocalGet(src_len_i));
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::BrIf(1));
+                // decoded = table[src[i]]
+                v.push(Instruction::I32Const(table_off as i32));
+                v.push(Instruction::LocalGet(src_ptr_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma));
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma));
+                v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(decoded_i));
+                // carry = decoded
+                v.push(Instruction::LocalGet(decoded_i));
+                v.push(Instruction::LocalSet(carry_i));
+                // Inner loop: j = 0..out_len-1
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(j_i));
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                // if j >= out_len, break
+                v.push(Instruction::LocalGet(j_i));
+                v.push(Instruction::LocalGet(out_len_i));
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::BrIf(1));
+                // tmp = dst[j] (as i64)
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(j_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma));
+                v.push(Instruction::I64ExtendI32U);
+                // carry += tmp * 58
+                v.push(Instruction::I64Const(58));
+                v.push(Instruction::I64Mul);
+                v.push(Instruction::LocalGet(carry_i));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(carry_i));
+                // dst[j] = carry & 0xFF
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(j_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::LocalGet(carry_i)); v.push(Instruction::I64Const(255));
+                v.push(Instruction::I64And); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Store8(ma));
+                // carry >>= 8
+                v.push(Instruction::LocalGet(carry_i));
+                v.push(Instruction::I64Const(8));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(carry_i));
+                // j++
+                v.push(Instruction::LocalGet(j_i)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(j_i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); // inner loop
+                v.push(Instruction::End); // inner block
+                // While carry > 0: dst[out_len] = carry & 0xFF; out_len++; carry >>= 8
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(carry_i));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::BrIf(1)); // break if carry == 0
+                // dst[out_len] = carry & 0xFF
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(out_len_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::LocalGet(carry_i)); v.push(Instruction::I64Const(255));
+                v.push(Instruction::I64And); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Store8(ma));
+                // out_len++
+                v.push(Instruction::LocalGet(out_len_i)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(out_len_i));
+                // carry >>= 8
+                v.push(Instruction::LocalGet(carry_i));
+                v.push(Instruction::I64Const(8));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(carry_i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); // carry loop
+                v.push(Instruction::End); // carry block
+                // i++
+                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(i_i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); // outer loop
+                v.push(Instruction::End); // outer block
+                // Post-processing: count leading '1' chars (0x31) in input
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(leading_i));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(i_i));
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                // if i >= src_len, break
+                v.push(Instruction::LocalGet(i_i));
+                v.push(Instruction::LocalGet(src_len_i));
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::BrIf(1));
+                // if src[i] != 0x31, break
+                v.push(Instruction::LocalGet(src_ptr_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma));
+                v.push(Instruction::I32Const(0x31));
+                v.push(Instruction::I32Ne);
+                v.push(Instruction::BrIf(1));
+                // leading++
+                v.push(Instruction::LocalGet(leading_i)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(leading_i));
+                // i++
+                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(i_i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); // loop
+                v.push(Instruction::End); // block
+                // Now we need to:
+                // 1. Reverse the output buffer (little-endian → big-endian)
+                //    Reverse bytes at [dst .. dst+out_len-1]
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(i_i));
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                // if i >= out_len/2, break
+                v.push(Instruction::LocalGet(i_i));
+                v.push(Instruction::LocalGet(out_len_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64ShrU); // out_len / 2
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::BrIf(1));
+                // tmp = dst[i]
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma));
+                v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(tmp_i));
+                // dst[i] = dst[out_len - 1 - i]
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                // Load dst[out_len - 1 - i]
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(out_len_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma));
+                v.push(Instruction::I32Store8(ma));
+                // dst[out_len - 1 - i] = tmp
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(out_len_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::LocalGet(tmp_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Store8(ma));
+                // i++
+                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(i_i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); // reverse loop
+                v.push(Instruction::End); // reverse block
+                // 2. Prepend leading zeros: shift the reversed data right by 'leading' bytes
+                //    Use a secondary buffer at alloc_base + 512 for the final result
+                //    Actually, we can do it in-place by shifting from the end
+                //    Final layout: [leading zero bytes] [reversed data]
+                //    We need to move data from offset 0 to offset 'leading'
+                //    Since we already reversed (big-endian), move bytes from end to start
+                //    Use backward copy to avoid overwriting
+                //    New out_len = leading + old_out_len
+                //    dst[out_len-1 - k] = dst[old_out_len-1 - k] for k = 0..old_out_len-1
+                //    First, shift data right by 'leading' bytes
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(j_i));
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                // if j >= out_len, break
+                v.push(Instruction::LocalGet(j_i));
+                v.push(Instruction::LocalGet(out_len_i));
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::BrIf(1));
+                // dst[leading + out_len - 1 - j] = dst[out_len - 1 - j]
+                // Store address: dst + leading + out_len - 1 - j
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(leading_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::LocalGet(out_len_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(j_i)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                // Load address: dst + out_len - 1 - j
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(out_len_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(j_i)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma));
+                v.push(Instruction::I32Store8(ma));
+                // j++
+                v.push(Instruction::LocalGet(j_i)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(j_i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); // copy loop
+                v.push(Instruction::End); // copy block
+                // Fill leading zeros: dst[0..leading-1] = 0
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(j_i));
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(j_i));
+                v.push(Instruction::LocalGet(leading_i));
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::BrIf(1));
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(j_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Const(0));
+                v.push(Instruction::I32Store8(ma));
+                v.push(Instruction::LocalGet(j_i)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(j_i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); // zero loop
+                v.push(Instruction::End); // zero block
+                // out_len += leading
+                v.push(Instruction::LocalGet(out_len_i));
+                v.push(Instruction::LocalGet(leading_i));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(out_len_i));
+                // Return (out_len << 32) | alloc_base tagged Str
+                v.push(Instruction::LocalGet(out_len_i));
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(alloc_base as i64));
+                v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
+                Ok(v)
+            }
+
             // (near/store-bytes key value) → nil
             // Stores tagged string value under string key using NEAR storage_write.
             // value must be a tagged string — stores the actual byte content.
