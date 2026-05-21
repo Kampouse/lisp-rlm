@@ -8676,10 +8676,71 @@ impl WasmEmitter {
             // User function call
             _ => {
                 let pos = self.funcs.iter().position(|f| f.name == op).ok_or_else(|| format!("in {}: unknown function '{}'", self.current_func.as_deref().unwrap_or("top"), op))?;
-                let mut v = Vec::new();
-                for x in a { v.extend(self.expr(x)?); }
-                v.push(Instruction::Call(USER_BASE | pos as u32));
-                Ok(v)
+                let func = &self.funcs[pos];
+                // If function takes 0 params but args are provided, it's a value define
+                // that returns a closure. Call it to get the closure, then dynamic-dispatch.
+                if func.param_count == 0 && !a.is_empty() {
+                    let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                    let temp_callee = self.next_local; self.next_local += 1;
+                    let temp_closure_ptr = self.next_local; self.next_local += 1;
+                    let lambda_id_local = self.next_local; self.next_local += 1;
+                    let arg_locals: Vec<u32> = a.iter().map(|_| { let l = self.next_local; self.next_local += 1; l }).collect();
+                    // 1. Call the 0-arg function to get the closure
+                    let mut v = Vec::new();
+                    v.push(Instruction::Call(USER_BASE | pos as u32));
+                    v.push(Instruction::LocalSet(temp_callee));
+                    // 2. Evaluate args
+                    for (i, arg) in a.iter().enumerate() {
+                        v.extend(self.expr(arg)?);
+                        v.push(Instruction::LocalSet(arg_locals[i]));
+                    }
+                    // 3. Dispatch based on lambda_info
+                    let n_lambdas = self.lambda_info.len();
+                    if n_lambdas == 0 {
+                        return Err(format!("dynamic call to '{}' but no lambdas defined", op));
+                    }
+                    v.push(Instruction::LocalGet(temp_callee));
+                    v.push(Instruction::I64Const(3));
+                    v.push(Instruction::I64And);
+                    v.push(Instruction::I64Const(2));
+                    v.push(Instruction::I64Eq);
+                    v.push(Instruction::If(BlockType::Empty));
+                    v.push(Instruction::LocalGet(temp_callee));
+                    v.push(Instruction::I64Const(TAG_BITS as i64));
+                    v.push(Instruction::I64ShrU);
+                    v.push(Instruction::LocalSet(lambda_id_local));
+                    v.push(Instruction::I64Const(0));
+                    v.push(Instruction::LocalSet(temp_closure_ptr));
+                    v.push(Instruction::Else);
+                    v.push(Instruction::LocalGet(temp_callee));
+                    v.push(Instruction::I64Const(TAG_BITS as i64));
+                    v.push(Instruction::I64ShrU);
+                    v.push(Instruction::LocalSet(temp_closure_ptr));
+                    v.push(Instruction::LocalGet(temp_closure_ptr));
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::I64Load(ma));
+                    v.push(Instruction::LocalSet(lambda_id_local));
+                    v.push(Instruction::End);
+                    for (lid, &(func_idx, _cap_count)) in self.lambda_info.iter().enumerate() {
+                        v.push(Instruction::LocalGet(lambda_id_local));
+                        v.push(Instruction::I64Const(lid as i64));
+                        v.push(Instruction::I64Eq);
+                        v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                        v.push(Instruction::LocalGet(temp_closure_ptr));
+                        for &al in &arg_locals { v.push(Instruction::LocalGet(al)); }
+                        v.push(Instruction::Call(USER_BASE | func_idx as u32));
+                        v.push(Instruction::Return);
+                        v.push(Instruction::Else);
+                    }
+                    v.push(Instruction::I64Const(-1));
+                    for _ in 0..n_lambdas { v.push(Instruction::End); }
+                    Ok(v)
+                } else {
+                    let mut v = Vec::new();
+                    for x in a { v.extend(self.expr(x)?); }
+                    v.push(Instruction::Call(USER_BASE | pos as u32));
+                    Ok(v)
+                }
             }
         }
     }
