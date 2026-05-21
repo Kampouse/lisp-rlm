@@ -289,10 +289,13 @@ mod tests {
         let engine = Engine::default();
         Module::new(&engine, &wasm).expect("full factory WASM should be valid");
 
-        // Should have _run export
+        // Should have per-method exports (1:1 with Rust SDK)
         let module = Module::new(&engine, &wasm).unwrap();
-        let has_run = module.exports().any(|e| e.name() == "_run");
-        assert!(has_run, "should export _run");
+        let export_names: Vec<&str> = module.exports().map(|e| e.name()).collect();
+        for method in &["init", "get_code_hash", "get_wallet_code_size",
+                        "set_wallet_code", "create_wallet"] {
+            assert!(export_names.contains(method), "should export {}", method);
+        }
     }
 
     /// Full factory: validates WASM structure and imports
@@ -317,9 +320,12 @@ mod tests {
         assert!(imports.contains(&"predecessor_account_id"), "should import predecessor_account_id");
         assert!(imports.contains(&"sha256"), "should import sha256");
         
-        // Check it exports _run
-        let has_run = module.exports().any(|e| e.name() == "_run");
-        assert!(has_run, "should export _run");
+        // Check it has per-method exports (1:1 with Rust SDK)
+        let export_names: Vec<&str> = module.exports().map(|e| e.name()).collect();
+        for method in &["init", "get_code_hash", "get_wallet_code_size",
+                        "set_wallet_code", "create_wallet"] {
+            assert!(export_names.contains(method), "should export {}", method);
+        }
     }
 
     /// Verify all new builtins compile individually
