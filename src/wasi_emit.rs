@@ -1319,7 +1319,7 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
         fb.instruction(&Instruction::I32WrapI64);
         fb.instruction(&Instruction::LocalGet(1));
         fb.instruction(&Instruction::I64Const(3));
-        fb.instruction(&Instruction::I64ShrS);
+        fb.instruction(&Instruction::I64ShrU);
         fb.instruction(&Instruction::I64Store(ma));
 
         // Check tag for fd_write output
@@ -1362,7 +1362,7 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
         // ── Non-string result: convert to decimal string, write to stdout ──
         // Untag the value
         fb.instruction(&Instruction::LocalGet(1));
-        fb.instruction(&Instruction::I64Const(3)); fb.instruction(&Instruction::I64ShrS);
+        fb.instruction(&Instruction::I64Const(3)); fb.instruction(&Instruction::I64ShrU);
         // Convert to decimal string at STDOUT_BUF
         // Simple divmod loop: extract digits backward at STDOUT_BUF+31, then adjust ptr
         let sb: i64 = STDOUT_BUF;

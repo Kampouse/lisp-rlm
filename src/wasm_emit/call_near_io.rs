@@ -230,10 +230,10 @@ impl WasmEmitter {
                     let is_neg = self.local_idx("__print_neg");
                     let wptr = self.local_idx("__print_wp");
                     let sb: i64 = 65536; // STDOUT_BUF
-                    // Untag: >> 3 (arithmetic shift to preserve sign)
+                    // Untag: >> 3 (logical shift for correct unsigned values)
                     v.push(Instruction::LocalGet(tagged));
                     v.push(Instruction::I64Const(3));
-                    v.push(Instruction::I64ShrS);
+                    v.push(Instruction::I64ShrU);
                     v.push(Instruction::LocalSet(untagged));
                     v.push(Instruction::I64Const(0));
                     v.push(Instruction::LocalSet(digit_count));

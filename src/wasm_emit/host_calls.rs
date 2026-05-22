@@ -95,7 +95,11 @@ impl WasmEmitter {
         let alloc_base = self.next_data_offset.max(3072);
         self.next_data_offset = (alloc_base + 64) & !7;
         let mut v = Vec::new();
-        v.extend(n); v.push(Instruction::LocalSet(n_i));
+        v.extend(n);
+        // Untag the number before converting: val >> TAG_BITS
+        v.push(Instruction::I64Const(TAG_BITS));
+        v.push(Instruction::I64ShrU);
+        v.push(Instruction::LocalSet(n_i));
         v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(neg_i));
         v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(len_i));
         v.push(Instruction::I64Const(alloc_base as i64)); v.push(Instruction::LocalSet(dst_i));
@@ -150,6 +154,7 @@ impl WasmEmitter {
         v.push(Instruction::End); // if/else n==0
         // Prepend '-' if negative
         v.push(Instruction::LocalGet(neg_i));
+        v.push(Instruction::I32WrapI64);
         v.push(Instruction::If(BlockType::Empty));
         // Shift digits right by 1, write '-' at dst[0]
         v.push(Instruction::LocalGet(len_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Sub); v.push(Instruction::LocalSet(i_i));
@@ -170,9 +175,10 @@ impl WasmEmitter {
         v.push(Instruction::I32Store8(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
         v.push(Instruction::LocalGet(len_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(len_i));
         v.push(Instruction::End);
-        // Return packed: (len << 32) | dst
+        // Return packed: (len << 32) | dst, tagged as string
         v.push(Instruction::LocalGet(len_i)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
         v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I64Or);
+        v.extend(self.emit_tag_str());
         Ok(v)
     }
 

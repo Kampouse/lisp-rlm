@@ -378,6 +378,18 @@ impl TcEnv {
         );
 
         // Conversions
+        // assert : bool → 'a → nil  (condition + optional message)
+        let any_a = TcType::Var(0);
+        env.insert(
+            "assert".to_string(),
+            Scheme {
+                vars: vec![0],
+                ty: TcType::Arrow(
+                    vec![TcType::Con(TcCon::Bool), any_a],
+                    Box::new(TcType::Con(TcCon::Nil)),
+                ),
+            },
+        );
         env.insert_mono(
             "to-float".to_string(),
             TcType::Arrow(
@@ -479,6 +491,16 @@ impl TcEnv {
         env.insert_mono("dict/has?".into(), TcType::Arrow(vec![dict_ty.clone(), str_ty.clone()], Box::new(TcType::Con(TcCon::Bool))));
         env.insert_mono("dict/keys".into(), TcType::Arrow(vec![dict_ty.clone()], Box::new(TcType::Con(TcCon::List(Box::new(str_ty.clone()))))));
         env.insert_mono("dict/vals".into(), TcType::Arrow(vec![dict_ty.clone()], Box::new(TcType::Con(TcCon::List(Box::new(any_ty.clone()))))));
+
+        // str : variadic string builder (accepts 1+ args)
+        let any_b = TcType::Var(1);
+        env.insert(
+            "str".to_string(),
+            Scheme {
+                vars: vec![1],
+                ty: TcType::Arrow(vec![any_b.clone(), any_b], Box::new(TcType::Con(TcCon::Str))),
+            },
+        );
 
         env.near_wildcard = true;
         env

@@ -4,17 +4,21 @@ impl WasmEmitter {
     pub(crate) fn call_near_storage(&mut self, op: &str, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
         match op {
             "near/store" => {
-                let key = self.expr(&a[0])?;
+                let key_expr = self.expr(&a[0])?;
                 let val = self.expr(&a[1])?;
+                let key_local = self.local_idx("__store_key");
                 let mut v = Vec::new();
+                // Evaluate key once and save to local (key expression may have side effects)
+                v.extend(key_expr);
+                v.push(Instruction::LocalSet(key_local));
                 // Store tagged val at mem[STORAGE_BUF] — preserves type through storage round-trip
                 v.push(Instruction::I32Const(STORAGE_BUF as i32)); v.extend(val);
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
                 // storage_write(key_len, key_ptr, val_len=8, val_ptr=STORAGE_BUF, register_id=0) — idx 17
-                v.extend(key.clone());
+                v.push(Instruction::LocalGet(key_local));
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // raw >> 32 = key_len
-                v.extend(key);
+                v.push(Instruction::LocalGet(key_local));
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // raw & 0xFFFF_FFFF = key_ptr
                 v.push(Instruction::I64Const(8)); v.push(Instruction::I64Const(STORAGE_BUF));
@@ -23,15 +27,19 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
             "near/load" => {
-                let key = self.expr(&a[0])?;
+                let key_expr = self.expr(&a[0])?;
+                let key_local = self.local_idx("__load_key");
                 let mut v = Vec::new();
+                // Evaluate key once and save to local (key expression may have side effects)
+                v.extend(key_expr);
+                v.push(Instruction::LocalSet(key_local));
                 // storage_read(key_len, key_ptr, register_id=1) — idx 18
                 // Note: storage_read return value is unreliable in view calls (returns 0
                 // even when key doesn't exist). Use register_len to check if value was written.
-                v.extend(key.clone());
+                v.push(Instruction::LocalGet(key_local));
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(key);
+                v.push(Instruction::LocalGet(key_local));
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(1)); // register 1

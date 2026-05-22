@@ -2,1010 +2,405 @@
 //!
 //! Uses `solang-parser` to parse Solidity source into its AST,
 //! then walks the tree and emits our `LispVal` IR that feeds
-//! into the existing type checker → WASM emit → NEAR pipeline.
-//!
-//! Mapping:
-//!   contract       → (memory 4) + (define ...) + (export ...)
-//!   function       → (define (name params...) body)
-//!   mapping(K=>V)  → near/storage_read/write with key encoding
-//!   msg.sender     → (near/signer_account_id)
-//!   msg.value      → (near/attached_deposit)
-//!   require(cond)  → (assert cond "require failed")
-//!   emit Event(..) → (near/log ...)
-//!   address        → string (NEAR uses string accounts)
-//!   uint256        → i64
-//!   bool/string    → direct
+//! into the existing type checker and WASM emitter.
+
+use std::collections::HashSet;
 
 use crate::types::LispVal;
 use solang_parser::pt;
-use std::collections::HashSet;
 
-// ── Public API ──────────────────────────────────────────────────────────────
-
-/// Parse Solidity source and translate to a Vec<LispVal> (our IR).
 pub fn translate_solidity(src: &str) -> Result<Vec<LispVal>, String> {
-    let (unit, _comments) =
-        solang_parser::parse(src, 0).map_err(|errs| {
-            errs.iter()
-                .map(|d| d.message.clone())
-                .collect::<Vec<_>>()
-                .join("\n")
-        })?;
-
+    let (unit, _comments) = solang_parser::parse(src, 0).map_err(|errs| {
+        errs.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("\n")
+    })?;
     let mut output = Vec::new();
     for part in &unit.0 {
-        match part {
-            pt::SourceUnitPart::ContractDefinition(c) => {
-                output.extend(translate_contract(c)?);
-            }
-            pt::SourceUnitPart::PragmaDirective(_) => { /* skip */ }
-            pt::SourceUnitPart::ImportDirective(_) => { /* skip for now */ }
-            _ => {}
+        if let pt::SourceUnitPart::ContractDefinition(c) = part {
+            output.extend(translate_contract(c)?);
         }
-    }
-
-    if output.is_empty() {
-        return Err("no contract definitions found".into());
     }
     Ok(output)
 }
 
-/// Parse Solidity source and return the Lisp IR as a string (for debugging).
 pub fn translate_solidity_to_lisp(src: &str) -> Result<String, String> {
     let vals = translate_solidity(src)?;
-    Ok(vals
-        .iter()
-        .map(|v| v.to_string())
-        .collect::<Vec<_>>()
-        .join("\n"))
+    Ok(vals.iter().map(|v| format!("{}\n", v)).collect())
 }
 
-// ── Contract ────────────────────────────────────────────────────────────────
+fn lisp_list(items: Vec<LispVal>) -> LispVal { LispVal::List(items) }
+
+struct Ctx<'a> {
+    storage: &'a HashSet<String>,
+    mappings: &'a HashSet<String>,
+}
+impl<'a> Ctx<'a> {
+    fn is_storage(&self, n: &str) -> bool { self.storage.contains(n) }
+    fn is_mapping(&self, n: &str) -> bool { self.mappings.contains(n) }
+}
 
 fn translate_contract(c: &pt::ContractDefinition) -> Result<Vec<LispVal>, String> {
-    let _name = c.name
-        .as_ref()
-        .ok_or_else(|| "contract has no name".to_string())?
-        .name
-        .clone();
-
-    let mut storage_vars: HashSet<String> = HashSet::new();
+    let _name = c.name.as_ref().ok_or("contract has no name")?.name.clone();
+    let mut storage: HashSet<String> = HashSet::new();
+    let mut mappings: HashSet<String> = HashSet::new();
     let mut functions: Vec<&pt::FunctionDefinition> = Vec::new();
-    let mut events: Vec<&pt::EventDefinition> = Vec::new();
-    let mut structs: Vec<&pt::StructDefinition> = Vec::new();
-    let mut enums: Vec<&pt::EnumDefinition> = Vec::new();
 
-    // First pass: collect storage var names
     for part in &c.parts {
         if let pt::ContractPart::VariableDefinition(v) = part {
             if let Some(ident) = &v.name {
-                storage_vars.insert(ident.name.clone());
+                storage.insert(ident.name.clone());
+                // Detect mapping types: Type(_, Type::Mapping { ... })
+                if let pt::Expression::Type(_, pt::Type::Mapping { .. }) = &v.ty {
+                    mappings.insert(ident.name.clone());
+                }
             }
         }
     }
-
-    // Second pass: collect everything else
     for part in &c.parts {
-        match part {
-            pt::ContractPart::FunctionDefinition(f) => functions.push(f),
-            pt::ContractPart::EventDefinition(e) => events.push(e),
-            pt::ContractPart::StructDefinition(s) => structs.push(s),
-            pt::ContractPart::EnumDefinition(e) => enums.push(e),
-            _ => {}
+        if let pt::ContractPart::FunctionDefinition(f) = part {
+            functions.push(f);
         }
     }
 
-    let mut output = Vec::new();
-
-    // NEAR needs (memory N) directive
-    output.push(LispVal::List(vec![
-        LispVal::Sym("memory".into()),
-        LispVal::Num(4),
-    ]));
-
-    // Emit storage getters/setters for each state variable
+    let mut output = vec![LispVal::List(vec![LispVal::Sym("memory".into()), LispVal::Num(4)])];
     for part in &c.parts {
         if let pt::ContractPart::VariableDefinition(v) = part {
             output.extend(translate_storage_var(v)?);
         }
     }
-
-    // Emit functions
+    let ctx = Ctx { storage: &storage, mappings: &mappings };
     for func in &functions {
-        output.extend(translate_function(func, &storage_vars)?);
+        output.extend(translate_function(func, &ctx)?);
     }
-
     Ok(output)
 }
-
-// ── Storage Variables ───────────────────────────────────────────────────────
 
 fn translate_storage_var(sv: &pt::VariableDefinition) -> Result<Vec<LispVal>, String> {
-    let var_name = sv.name
-        .as_ref()
-        .ok_or_else(|| "state variable has no name".to_string())?
-        .name
-        .clone();
-
-    let ty = &sv.ty;
-    let mut output = Vec::new();
-
-    // Check if it's a mapping
-    if let pt::Expression::Type(_, pt::Type::Mapping { key, value, .. }) = ty {
-        return translate_mapping(&var_name, key, value);
+    let vn = sv.name.as_ref().ok_or("state var has no name")?.name.clone();
+    if let pt::Expression::Type(_, pt::Type::Mapping { .. }) = &sv.ty {
+        return translate_mapping(&vn, &None, &None);
     }
-
-    // getter: (define (get_VARNAME) (near/load "VARNAME"))
-    let getter_name = format!("get_{}", var_name);
-    output.push(lisp_list(vec![
-        LispVal::Sym("define".into()),
-        LispVal::List(vec![LispVal::Sym(getter_name.clone())]),
-        lisp_list(vec![
-            LispVal::Sym("near/load".into()),
-            LispVal::Str(var_name.clone()),
-        ]),
-    ]));
-
-    // setter: (define (set_VARNAME val) (near/store "VARNAME" val))
-    let setter_name = format!("set_{}", var_name);
-    output.push(lisp_list(vec![
-        LispVal::Sym("define".into()),
-        LispVal::List(vec![
-            LispVal::Sym(setter_name.clone()),
-            LispVal::Sym("val".into()),
-        ]),
-        lisp_list(vec![
-            LispVal::Sym("near/store".into()),
-            LispVal::Str(var_name.clone()),
-            LispVal::Sym("val".into()),
-        ]),
-    ]));
-
-    Ok(output)
+    let gn = format!("get_{}", vn);
+    let sn = format!("set_{}", vn);
+    Ok(vec![
+        lisp_list(vec![LispVal::Sym("define".into()), LispVal::List(vec![LispVal::Sym(gn)]),
+            lisp_list(vec![LispVal::Sym("near/load".into()), LispVal::Str(vn.clone())])]),
+        lisp_list(vec![LispVal::Sym("define".into()), LispVal::List(vec![LispVal::Sym(sn), LispVal::Sym("val".into())]),
+            lisp_list(vec![LispVal::Sym("near/store".into()), LispVal::Str(vn), LispVal::Sym("val".into())])]),
+    ])
 }
 
-fn translate_mapping(
-    name: &str,
-    _key: &pt::Expression,
-    _value: &pt::Expression,
-) -> Result<Vec<LispVal>, String> {
-    let mut output = Vec::new();
-
-    // getter: (define (get_MAPNAME key) (near/load (str-concat "MAPNAME:" (to-string key))))
-    let getter_name = format!("get_{}", name);
-    output.push(lisp_list(vec![
-        LispVal::Sym("define".into()),
-        LispVal::List(vec![
-            LispVal::Sym(getter_name.clone()),
-            LispVal::Sym("key".into()),
-        ]),
+fn translate_mapping(name: &str, _key: &Option<Box<pt::Expression>>, _val: &Option<Box<pt::Expression>>) -> Result<Vec<LispVal>, String> {
+    let gn = format!("get_{}", name);
+    let sn = format!("set_{}", name);
+    let prefix = format!("{}:", name);
+    Ok(vec![
         lisp_list(vec![
-            LispVal::Sym("near/load".into()),
+            LispVal::Sym("define".into()),
+            LispVal::List(vec![LispVal::Sym(gn), LispVal::Sym("key".into())]),
             lisp_list(vec![
-                LispVal::Sym("str-concat".into()),
-                LispVal::Str(format!("{}:", name)),
+                LispVal::Sym("near/load".into()),
                 lisp_list(vec![
-                    LispVal::Sym("to-string".into()),
-                    LispVal::Sym("key".into()),
+                    LispVal::Sym("str".into()),
+                    LispVal::Str(prefix.clone()),
+                    lisp_list(vec![LispVal::Sym("to-string".into()), LispVal::Sym("key".into())]),
                 ]),
             ]),
         ]),
-    ]));
-
-    // setter: (define (set_MAPNAME key val) (near/store (str-concat ...) val))
-    let setter_name = format!("set_{}", name);
-    output.push(lisp_list(vec![
-        LispVal::Sym("define".into()),
-        LispVal::List(vec![
-            LispVal::Sym(setter_name.clone()),
-            LispVal::Sym("key".into()),
-            LispVal::Sym("val".into()),
-        ]),
         lisp_list(vec![
-            LispVal::Sym("near/store".into()),
+            LispVal::Sym("define".into()),
+            LispVal::List(vec![LispVal::Sym(sn), LispVal::Sym("key".into()), LispVal::Sym("val".into())]),
             lisp_list(vec![
-                LispVal::Sym("str-concat".into()),
-                LispVal::Str(format!("{}:", name)),
+                LispVal::Sym("near/store".into()),
                 lisp_list(vec![
-                    LispVal::Sym("to-string".into()),
-                    LispVal::Sym("key".into()),
+                    LispVal::Sym("str".into()),
+                    LispVal::Str(prefix),
+                    lisp_list(vec![LispVal::Sym("to-string".into()), LispVal::Sym("key".into())]),
                 ]),
+                LispVal::Sym("val".into()),
             ]),
-            LispVal::Sym("val".into()),
         ]),
-    ]));
-
-    Ok(output)
+    ])
 }
 
-// ── Functions ───────────────────────────────────────────────────────────────
-
-fn translate_function(
-    func: &pt::FunctionDefinition,
-    storage_vars: &HashSet<String>,
-) -> Result<Vec<LispVal>, String> {
-    let func_name = func.name
-        .as_ref()
-        .ok_or_else(|| "function has no name".to_string())?
-        .name
-        .clone();
-
-    let is_public = func.attributes.iter().any(|a| {
-        matches!(
-            a,
-            pt::FunctionAttribute::Visibility(pt::Visibility::Public(_))
-        ) || matches!(
-            a,
-            pt::FunctionAttribute::Visibility(pt::Visibility::External(_))
-        )
-    });
-
-    let mut output = Vec::new();
-
-    // Build param list
-    let mut params = vec![LispVal::Sym(func_name.clone())];
-    for (_loc, param) in &func.params {
-        if let Some(p) = param {
-            if let Some(name) = &p.name {
-                params.push(LispVal::Sym(name.name.clone()));
-            }
-        }
-    }
-
-    // Translate body
-    let body = if let Some(stmt) = &func.body {
-        translate_statement(stmt, storage_vars)?
-    } else {
-        LispVal::List(vec![LispVal::Sym("nil".into())])
+fn translate_function(func: &pt::FunctionDefinition, ctx: &Ctx) -> Result<Vec<LispVal>, String> {
+    let fn_name = match &func.name {
+        None => "init".to_string(),
+        Some(n) => n.name.clone(),
     };
-
-    output.push(lisp_list(vec![
-        LispVal::Sym("define".into()),
-        LispVal::List(params),
-        body,
-    ]));
-
-    // Export public functions
-    if is_public {
-        output.push(lisp_list(vec![
+    let is_pub = func.attributes.iter().any(|a| matches!(a,
+        pt::FunctionAttribute::Visibility(pt::Visibility::Public(_))
+        | pt::FunctionAttribute::Visibility(pt::Visibility::External(_))
+    ));
+    let mut params = vec![LispVal::Sym(fn_name.clone())];
+    for (_, p) in &func.params {
+        if let Some(p) = p { if let Some(n) = &p.name { params.push(LispVal::Sym(n.name.clone())); } }
+    }
+    let body = match &func.body {
+        Some(s) => translate_statement(s, ctx)?,
+        None => LispVal::List(vec![LispVal::Sym("nil".into())]),
+    };
+    let mut out = vec![lisp_list(vec![LispVal::Sym("define".into()), LispVal::List(params), body])];
+    if is_pub {
+        let is_view = func.attributes.iter().any(|a| matches!(a,
+            pt::FunctionAttribute::Mutability(pt::Mutability::View(_))
+        ));
+        out.push(lisp_list(vec![
             LispVal::Sym("export".into()),
-            LispVal::Sym(func_name),
+            LispVal::Str(fn_name.clone()),
+            LispVal::Sym(fn_name.clone()),
+            LispVal::Bool(is_view),
         ]));
     }
-
-    Ok(output)
+    Ok(out)
 }
 
-// ── Statements ──────────────────────────────────────────────────────────────
-
-fn translate_statement(
-    stmt: &pt::Statement,
-    storage_vars: &HashSet<String>,
-) -> Result<LispVal, String> {
-    match stmt {
+fn translate_statement(s: &pt::Statement, ctx: &Ctx) -> Result<LispVal, String> {
+    match s {
         pt::Statement::Block { statements, .. } => {
-            if statements.is_empty() {
-                return Ok(LispVal::List(vec![LispVal::Sym("nil".into())]));
-            }
-            if statements.len() == 1 {
-                return translate_statement(&statements[0], storage_vars);
-            }
-            let mut parts = vec![LispVal::Sym("begin".into())];
-            for s in statements {
-                parts.push(translate_statement(s, storage_vars)?);
-            }
-            Ok(lisp_list(parts))
+            if statements.is_empty() { return Ok(LispVal::List(vec![LispVal::Sym("nil".into())])); }
+            if statements.len() == 1 { return translate_statement(&statements[0], ctx); }
+            let mut items = vec![LispVal::Sym("begin".into())];
+            for s in statements { items.push(translate_statement(s, ctx)?); }
+            Ok(lisp_list(items))
         }
-
-        pt::Statement::Expression(_, expr) => translate_expr(expr, storage_vars),
-
-        pt::Statement::VariableDefinition(_, var, init) => {
-            let name = var
-                .name
-                .as_ref()
-                .ok_or_else(|| "local var has no name".to_string())?
-                .name
-                .clone();
-            let val = match init {
-                Some(e) => translate_expr(e, storage_vars)?,
-                None => LispVal::List(vec![LispVal::Sym("nil".into())]),
-            };
-            // Imperative: just use define for local scope
-            Ok(lisp_list(vec![
-                LispVal::Sym("define".into()),
-                LispVal::List(vec![LispVal::Sym(name)]),
-                val,
-            ]))
-        }
-
         pt::Statement::If(_, cond, then_br, else_br) => {
-            let mut parts = vec![
-                LispVal::Sym("if".into()),
-                translate_expr(cond, storage_vars)?,
-                translate_statement(then_br, storage_vars)?,
-            ];
-            if let Some(else_s) = else_br {
-                parts.push(translate_statement(else_s, storage_vars)?);
-            }
-            Ok(lisp_list(parts))
+            let mut items = vec![LispVal::Sym("if".into()), translate_expr(cond, ctx)?, translate_statement(then_br, ctx)?];
+            if let Some(e) = else_br { items.push(translate_statement(e, ctx)?); }
+            Ok(lisp_list(items))
         }
-
         pt::Statement::For(_, init, cond, update, body) => {
-            let mut parts = vec![LispVal::Sym("begin".into())];
-            if let Some(i) = init {
-                parts.push(translate_statement(i, storage_vars)?);
-            }
-
-            let mut loop_body = vec![LispVal::Sym("begin".into())];
-            if let Some(b) = body {
-                loop_body.push(translate_statement(b, storage_vars)?);
-            }
-            if let Some(u) = update {
-                loop_body.push(translate_expr(u, storage_vars)?);
-            }
-
-            let cond_expr = match cond {
-                Some(c) => translate_expr(c, storage_vars)?,
-                None => LispVal::Bool(true),
-            };
-
-            parts.push(lisp_list(vec![
-                LispVal::Sym("while".into()),
-                cond_expr,
-                lisp_list(loop_body),
-            ]));
-
-            Ok(lisp_list(parts))
+            let mut items = vec![LispVal::Sym("begin".into())];
+            if let Some(i) = init { items.push(translate_statement(i, ctx)?); }
+            let cond_expr = match cond { Some(c) => translate_expr(c, ctx)?, None => LispVal::Bool(true) };
+            let body_stmt = match body { Some(b) => translate_statement(b, ctx)?, None => LispVal::List(vec![LispVal::Sym("nil".into())]) };
+            items.push(lisp_list(vec![LispVal::Sym("while".into()), cond_expr, body_stmt]));
+            if let Some(u) = update { items.push(translate_expr(u, ctx)?); }
+            Ok(lisp_list(items))
         }
-
         pt::Statement::While(_, cond, body) => Ok(lisp_list(vec![
-            LispVal::Sym("while".into()),
-            translate_expr(cond, storage_vars)?,
-            translate_statement(body, storage_vars)?,
-        ])),
-
-        pt::Statement::DoWhile(_, body, cond) => {
-            Ok(lisp_list(vec![
-                LispVal::Sym("begin".into()),
-                translate_statement(body, storage_vars)?,
-                lisp_list(vec![
-                    LispVal::Sym("while".into()),
-                    translate_expr(cond, storage_vars)?,
-                    translate_statement(body, storage_vars)?,
-                ]),
-            ]))
-        }
-
-        pt::Statement::Return(_, expr) => match expr {
-            Some(e) => translate_expr(e, storage_vars),
+            LispVal::Sym("while".into()), translate_expr(cond, ctx)?, translate_statement(body, ctx)?])),
+        pt::Statement::DoWhile(_, body, cond) => Ok(lisp_list(vec![
+            LispVal::Sym("begin".into()), translate_statement(body, ctx)?,
+            lisp_list(vec![LispVal::Sym("while".into()), translate_expr(cond, ctx)?, translate_statement(body, ctx)?])])),
+        pt::Statement::Return(_, e) => match e {
+            Some(e) => translate_expr(e, ctx),
             None => Ok(LispVal::List(vec![LispVal::Sym("nil".into())])),
         },
-
-        pt::Statement::Emit(_, event_expr) => {
-            Ok(lisp_list(vec![
-                LispVal::Sym("near/log".into()),
-                translate_expr(event_expr, storage_vars)?,
-            ]))
+        pt::Statement::Emit(_, e) => Ok(lisp_list(vec![LispVal::Sym("near/log".into()), translate_expr(e, ctx)?])),
+        pt::Statement::Revert(_, _, _args) => Ok(lisp_list(vec![LispVal::Sym("near/panic".into()), LispVal::Str("revert".into())])),
+        pt::Statement::Expression(_, e) => translate_expr(e, ctx),
+        pt::Statement::VariableDefinition(_, def, init) => {
+            let n = def.name.as_ref().ok_or("local var has no name")?.name.clone();
+            let v = match init { Some(e) => translate_expr(e, ctx)?, None => LispVal::List(vec![LispVal::Sym("nil".into())]) };
+            Ok(lisp_list(vec![LispVal::Sym("define".into()), LispVal::List(vec![LispVal::Sym(n)]), v]))
         }
-
-        pt::Statement::Revert(_, _path, args) => {
-            let msg = if args.is_empty() {
-                "revert".to_string()
-            } else {
-                args.iter()
-                    .map(|a| format!("{:?}", a))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            };
-            Ok(lisp_list(vec![
-                LispVal::Sym("near/panic".into()),
-                LispVal::Str(format!("revert: {}", msg)),
-            ]))
-        }
-
-        pt::Statement::Continue(_) => Ok(LispVal::Sym("continue".into())),
-        pt::Statement::Break(_) => Ok(LispVal::Sym("break".into())),
-        pt::Statement::Error(_) => Err("parse error in statement".into()),
-
-        _ => Err(format!("unsupported statement type: {:?}", stmt)),
+        _ => Err(format!("unsupported statement: {:?}", s)),
     }
 }
 
-// ── Expressions ─────────────────────────────────────────────────────────────
-
-fn translate_expr(
-    expr: &pt::Expression,
-    storage_vars: &HashSet<String>,
-) -> Result<LispVal, String> {
+fn translate_expr(expr: &pt::Expression, ctx: &Ctx) -> Result<LispVal, String> {
     match expr {
-        // Literals
+        // Literals handled directly
         pt::Expression::BoolLiteral(_, b) => Ok(LispVal::Bool(*b)),
-
-        pt::Expression::NumberLiteral(_, n, unit, _) => {
-            let num_str = n.replace('_', "");
-            let val: i64 = num_str
-                .parse()
-                .map_err(|_| format!("invalid number: {}", n))?;
-            let _ = unit;
-            Ok(LispVal::Num(val))
+        pt::Expression::NumberLiteral(_, n, _, _) => {
+            let s = n.to_string().replace('_', "");
+            Ok(LispVal::Num(s.parse().map_err(|_| format!("bad num: {}", n))?))
         }
-
-        pt::Expression::HexNumberLiteral(_, h, _) => {
-            let val = i64::from_str_radix(h.trim_start_matches("0x"), 16)
-                .map_err(|_| format!("invalid hex: {}", h))?;
-            Ok(LispVal::Num(val))
+        pt::Expression::HexNumberLiteral(_, s, _) => {
+            let c = s.trim_start_matches("0x").replace('_', "");
+            Ok(LispVal::Num(i64::from_str_radix(&c, 16).map_err(|_| format!("bad hex: {}", s))?))
         }
+        pt::Expression::StringLiteral(ss) => Ok(LispVal::Str(ss.iter().map(|s| s.string.clone()).collect())),
+        pt::Expression::HexLiteral(ss) => Ok(LispVal::Str(ss.iter().map(|s| s.hex.clone()).collect())),
+        pt::Expression::AddressLiteral(_, s) => Ok(LispVal::Str(s.clone())),
 
-        pt::Expression::StringLiteral(strs) => {
-            let s: String = strs.iter().map(|sl| sl.string.clone()).collect();
-            Ok(LispVal::Str(s))
-        }
-
-        // Variable reference — redirect storage vars to getters
         pt::Expression::Variable(ident) => {
-            let name = ident.name.clone();
-            if storage_vars.contains(&name) {
-                // Storage var → call getter
-                Ok(lisp_list(vec![LispVal::Sym(format!("get_{}", name))]))
-            } else {
-                // Magic Solidity identifiers
-                Ok(match name.as_str() {
-                    "this" => lisp_list(vec![LispVal::Sym("near/account_id".into())]),
-                    _ => LispVal::Sym(name),
-                })
-            }
+            let n = &ident.name;
+            if ctx.is_storage(n) && !ctx.is_mapping(n) { return Ok(lisp_list(vec![LispVal::Sym(format!("get_{}", n))])); }
+            if ctx.is_mapping(n) { return Err(format!("mapping '{}' needs subscript", n)); }
+            Ok(LispVal::Sym(n.clone()))
         }
 
         // Binary ops
-        pt::Expression::Add(_, l, r) => Ok(lisp_list(vec![
-            LispVal::Sym("+".into()),
-            translate_expr(l, storage_vars)?,
-            translate_expr(r, storage_vars)?,
-        ])),
-        pt::Expression::Subtract(_, l, r) => Ok(lisp_list(vec![
-            LispVal::Sym("-".into()),
-            translate_expr(l, storage_vars)?,
-            translate_expr(r, storage_vars)?,
-        ])),
-        pt::Expression::Multiply(_, l, r) => Ok(lisp_list(vec![
-            LispVal::Sym("*".into()),
-            translate_expr(l, storage_vars)?,
-            translate_expr(r, storage_vars)?,
-        ])),
-        pt::Expression::Divide(_, l, r) => Ok(lisp_list(vec![
-            LispVal::Sym("/".into()),
-            translate_expr(l, storage_vars)?,
-            translate_expr(r, storage_vars)?,
-        ])),
-        pt::Expression::Modulo(_, l, r) => Ok(lisp_list(vec![
-            LispVal::Sym("mod".into()),
-            translate_expr(l, storage_vars)?,
-            translate_expr(r, storage_vars)?,
-        ])),
-        pt::Expression::Power(_, l, r) => Ok(lisp_list(vec![
-            LispVal::Sym("pow".into()),
-            translate_expr(l, storage_vars)?,
-            translate_expr(r, storage_vars)?,
-        ])),
-
-        // Comparison
-        pt::Expression::Equal(_, l, r) => Ok(lisp_list(vec![
-            LispVal::Sym("=".into()),
-            translate_expr(l, storage_vars)?,
-            translate_expr(r, storage_vars)?,
-        ])),
-        pt::Expression::NotEqual(_, l, r) => Ok(lisp_list(vec![
-            LispVal::Sym("!=".into()),
-            translate_expr(l, storage_vars)?,
-            translate_expr(r, storage_vars)?,
-        ])),
-        pt::Expression::Less(_, l, r) => Ok(lisp_list(vec![
-            LispVal::Sym("<".into()),
-            translate_expr(l, storage_vars)?,
-            translate_expr(r, storage_vars)?,
-        ])),
-        pt::Expression::More(_, l, r) => Ok(lisp_list(vec![
-            LispVal::Sym(">".into()),
-            translate_expr(l, storage_vars)?,
-            translate_expr(r, storage_vars)?,
-        ])),
-        pt::Expression::LessEqual(_, l, r) => Ok(lisp_list(vec![
-            LispVal::Sym("<=".into()),
-            translate_expr(l, storage_vars)?,
-            translate_expr(r, storage_vars)?,
-        ])),
-        pt::Expression::MoreEqual(_, l, r) => Ok(lisp_list(vec![
-            LispVal::Sym(">=".into()),
-            translate_expr(l, storage_vars)?,
-            translate_expr(r, storage_vars)?,
-        ])),
-
-        // Logical
-        pt::Expression::And(_, l, r) => Ok(lisp_list(vec![
-            LispVal::Sym("and".into()),
-            translate_expr(l, storage_vars)?,
-            translate_expr(r, storage_vars)?,
-        ])),
-        pt::Expression::Or(_, l, r) => Ok(lisp_list(vec![
-            LispVal::Sym("or".into()),
-            translate_expr(l, storage_vars)?,
-            translate_expr(r, storage_vars)?,
-        ])),
-        pt::Expression::Not(_, e) => Ok(lisp_list(vec![
-            LispVal::Sym("not".into()),
-            translate_expr(e, storage_vars)?,
-        ])),
-
-        // Bitwise
-        pt::Expression::BitwiseAnd(_, l, r) => Ok(lisp_list(vec![
-            LispVal::Sym("band".into()),
-            translate_expr(l, storage_vars)?,
-            translate_expr(r, storage_vars)?,
-        ])),
-        pt::Expression::BitwiseOr(_, l, r) => Ok(lisp_list(vec![
-            LispVal::Sym("bor".into()),
-            translate_expr(l, storage_vars)?,
-            translate_expr(r, storage_vars)?,
-        ])),
-        pt::Expression::BitwiseXor(_, l, r) => Ok(lisp_list(vec![
-            LispVal::Sym("bxor".into()),
-            translate_expr(l, storage_vars)?,
-            translate_expr(r, storage_vars)?,
-        ])),
-        pt::Expression::BitwiseNot(_, e) => Ok(lisp_list(vec![
-            LispVal::Sym("bnot".into()),
-            translate_expr(e, storage_vars)?,
-        ])),
-        pt::Expression::ShiftLeft(_, l, r) => Ok(lisp_list(vec![
-            LispVal::Sym("shl".into()),
-            translate_expr(l, storage_vars)?,
-            translate_expr(r, storage_vars)?,
-        ])),
-        pt::Expression::ShiftRight(_, l, r) => Ok(lisp_list(vec![
-            LispVal::Sym("shr".into()),
-            translate_expr(l, storage_vars)?,
-            translate_expr(r, storage_vars)?,
-        ])),
-
-        // Unary
-        pt::Expression::Negate(_, e) => Ok(lisp_list(vec![
-            LispVal::Sym("-".into()),
-            translate_expr(e, storage_vars)?,
-        ])),
-        pt::Expression::PreIncrement(_, e) => {
-            // x++ → set_x (+ (get_x) 1)
-            translate_increment(e, storage_vars, 1)
+        pt::Expression::Add(_, l, r) | pt::Expression::Subtract(_, l, r)
+        | pt::Expression::Multiply(_, l, r) | pt::Expression::Divide(_, l, r)
+        | pt::Expression::Modulo(_, l, r) | pt::Expression::Power(_, l, r) => {
+            let op = match expr {
+                pt::Expression::Add(..) => "+", pt::Expression::Subtract(..) => "-",
+                pt::Expression::Multiply(..) => "*", pt::Expression::Divide(..) => "/",
+                pt::Expression::Modulo(..) => "mod", pt::Expression::Power(..) => "pow", _ => unreachable!(),
+            };
+            Ok(lisp_list(vec![LispVal::Sym(op.into()), translate_expr(l, ctx)?, translate_expr(r, ctx)?]))
         }
-        pt::Expression::PreDecrement(_, e) => {
-            translate_increment(e, storage_vars, -1)
+        pt::Expression::Equal(_, l, r) | pt::Expression::NotEqual(_, l, r)
+        | pt::Expression::Less(_, l, r) | pt::Expression::LessEqual(_, l, r)
+        | pt::Expression::More(_, l, r) | pt::Expression::MoreEqual(_, l, r) => {
+            let op = match expr {
+                pt::Expression::Equal(..) => "=", pt::Expression::NotEqual(..) => "!=",
+                pt::Expression::Less(..) => "<", pt::Expression::LessEqual(..) => "<=",
+                pt::Expression::More(..) => ">", pt::Expression::MoreEqual(..) => ">=", _ => unreachable!(),
+            };
+            Ok(lisp_list(vec![LispVal::Sym(op.into()), translate_expr(l, ctx)?, translate_expr(r, ctx)?]))
+        }
+        pt::Expression::And(_, l, r) => Ok(lisp_list(vec![LispVal::Sym("and".into()), translate_expr(l, ctx)?, translate_expr(r, ctx)?])),
+        pt::Expression::Or(_, l, r) => Ok(lisp_list(vec![LispVal::Sym("or".into()), translate_expr(l, ctx)?, translate_expr(r, ctx)?])),
+        pt::Expression::Not(_, e) => Ok(lisp_list(vec![LispVal::Sym("not".into()), translate_expr(e, ctx)?])),
+        pt::Expression::BitwiseAnd(_, l, r) => Ok(lisp_list(vec![LispVal::Sym("band".into()), translate_expr(l, ctx)?, translate_expr(r, ctx)?])),
+        pt::Expression::BitwiseOr(_, l, r) => Ok(lisp_list(vec![LispVal::Sym("bor".into()), translate_expr(l, ctx)?, translate_expr(r, ctx)?])),
+        pt::Expression::BitwiseXor(_, l, r) => Ok(lisp_list(vec![LispVal::Sym("bxor".into()), translate_expr(l, ctx)?, translate_expr(r, ctx)?])),
+        pt::Expression::BitwiseNot(_, e) => Ok(lisp_list(vec![LispVal::Sym("bnot".into()), translate_expr(e, ctx)?])),
+        pt::Expression::Negate(_, e) => Ok(lisp_list(vec![LispVal::Sym("-".into()), LispVal::Num(0), translate_expr(e, ctx)?])),
+        pt::Expression::Parenthesis(_, e) => translate_expr(e, ctx),
+
+        pt::Expression::PostIncrement(_, e) | pt::Expression::PreIncrement(_, e) => translate_increment(e, ctx, 1),
+        pt::Expression::PostDecrement(_, e) | pt::Expression::PreDecrement(_, e) => translate_increment(e, ctx, -1),
+
+        pt::Expression::ConditionalOperator(_, c, t, e) => Ok(lisp_list(vec![
+            LispVal::Sym("if".into()), translate_expr(c, ctx)?, translate_expr(t, ctx)?, translate_expr(e, ctx)?])),
+
+        pt::Expression::Assign(_, t, v) => translate_assignment(t, translate_expr(v, ctx)?, ctx),
+        pt::Expression::AssignAdd(_, t, v) | pt::Expression::AssignSubtract(_, t, v)
+        | pt::Expression::AssignMultiply(_, t, v) | pt::Expression::AssignDivide(_, t, v)
+        | pt::Expression::AssignModulo(_, t, v) => {
+            let op = match expr {
+                pt::Expression::AssignAdd(..) => "+", pt::Expression::AssignSubtract(..) => "-",
+                pt::Expression::AssignMultiply(..) => "*", pt::Expression::AssignDivide(..) => "/",
+                pt::Expression::AssignModulo(..) => "mod", _ => unreachable!(),
+            };
+            let rhs = translate_expr(v, ctx)?;
+            let cur = translate_expr(t, ctx)?;
+            translate_assignment(t, lisp_list(vec![LispVal::Sym(op.into()), cur, rhs]), ctx)
         }
 
-        // Ternary: cond ? a : b → (if cond a b)
-        pt::Expression::ConditionalOperator(_, cond, then_v, else_v) => {
-            Ok(lisp_list(vec![
-                LispVal::Sym("if".into()),
-                translate_expr(cond, storage_vars)?,
-                translate_expr(then_v, storage_vars)?,
-                translate_expr(else_v, storage_vars)?,
-            ]))
-        }
-
-        // Assignment: x = val
-        // For storage vars: (set_x val)
-        // For local vars: (set! x val)
-        pt::Expression::Assign(_, target, val) => {
-            let rhs = translate_expr(val, storage_vars)?;
-            translate_assignment(target, rhs, storage_vars)
-        }
-
-        // Compound assignment: x += val → (set_x (+ (get_x) val))
-        pt::Expression::AssignAdd(_, target, val) => {
-            let rhs = lisp_list(vec![
-                LispVal::Sym("+".into()),
-                translate_storage_read_or_var(target, storage_vars)?,
-                translate_expr(val, storage_vars)?,
-            ]);
-            translate_assignment(target, rhs, storage_vars)
-        }
-        pt::Expression::AssignSubtract(_, target, val) => {
-            let rhs = lisp_list(vec![
-                LispVal::Sym("-".into()),
-                translate_storage_read_or_var(target, storage_vars)?,
-                translate_expr(val, storage_vars)?,
-            ]);
-            translate_assignment(target, rhs, storage_vars)
-        }
-        pt::Expression::AssignMultiply(_, target, val) => {
-            let rhs = lisp_list(vec![
-                LispVal::Sym("*".into()),
-                translate_storage_read_or_var(target, storage_vars)?,
-                translate_expr(val, storage_vars)?,
-            ]);
-            translate_assignment(target, rhs, storage_vars)
-        }
-        pt::Expression::AssignDivide(_, target, val) => {
-            let rhs = lisp_list(vec![
-                LispVal::Sym("/".into()),
-                translate_storage_read_or_var(target, storage_vars)?,
-                translate_expr(val, storage_vars)?,
-            ]);
-            translate_assignment(target, rhs, storage_vars)
-        }
-
-        // Array literal: [a, b, c] → (list a b c)
-        pt::Expression::ArrayLiteral(_, elems) => {
-            let mut parts = vec![LispVal::Sym("list".into())];
-            for e in elems {
-                parts.push(translate_expr(e, storage_vars)?);
-            }
-            Ok(lisp_list(parts))
-        }
-
-        // Array subscript: arr[i] → (nth arr i)
         pt::Expression::ArraySubscript(_, arr, idx) => {
-            let index = idx
-                .as_ref()
-                .ok_or_else(|| "array subscript missing index".to_string())?;
-            Ok(lisp_list(vec![
-                LispVal::Sym("nth".into()),
-                translate_expr(arr, storage_vars)?,
-                translate_expr(index, storage_vars)?,
-            ]))
+            let index = idx.as_ref().ok_or("subscript missing index")?;
+            if let pt::Expression::Variable(ident) = arr.as_ref() {
+                if ctx.is_mapping(&ident.name) {
+                    return Ok(lisp_list(vec![LispVal::Sym(format!("get_{}", ident.name)), translate_expr(index, ctx)?]));
+                }
+            }
+            Ok(lisp_list(vec![LispVal::Sym("nth".into()), translate_expr(arr, ctx)?, translate_expr(index, ctx)?]))
         }
 
-        // Member access: obj.field
         pt::Expression::MemberAccess(_, obj, field) => {
-            let field_name = field.name.clone();
+            let f = field.name.clone();
             if let pt::Expression::Variable(ident) = obj.as_ref() {
                 match ident.name.as_str() {
-                    "msg" => match field_name.as_str() {
-                        "sender" => {
-                            return Ok(lisp_list(vec![LispVal::Sym(
-                                "near/signer_account_id".into(),
-                            )]))
-                        }
-                        "value" => {
-                            return Ok(lisp_list(vec![LispVal::Sym(
-                                "near/attached_deposit".into(),
-                            )]))
-                        }
-                        "data" => {
-                            return Ok(lisp_list(vec![LispVal::Sym("near/input".into())]))
-                        }
-                        "sig" => return Err("msg.sig not supported on NEAR".into()),
+                    "msg" => match f.as_str() {
+                        "sender" => return Ok(lisp_list(vec![LispVal::Sym("near/signer_account_id".into())])),
+                        "value" => return Ok(lisp_list(vec![LispVal::Sym("near/attached_deposit".into())])),
+                        "data" => return Ok(lisp_list(vec![LispVal::Sym("near/input".into())])),
                         _ => {}
                     },
-                    "block" => match field_name.as_str() {
-                        "timestamp" => {
-                            return Ok(lisp_list(vec![LispVal::Sym(
-                                "near/block_timestamp".into(),
-                            )]))
-                        }
-                        "number" => {
-                            return Ok(lisp_list(vec![LispVal::Sym(
-                                "near/block_height".into(),
-                            )]))
-                        }
+                    "block" => match f.as_str() {
+                        "timestamp" => return Ok(lisp_list(vec![LispVal::Sym("near/block_timestamp".into())])),
+                        "number" => return Ok(lisp_list(vec![LispVal::Sym("near/block_height".into())])),
                         _ => {}
                     },
-                    "tx" => match field_name.as_str() {
-                        "origin" => {
-                            return Ok(lisp_list(vec![LispVal::Sym(
-                                "near/predecessor".into(),
-                            )]))
-                        }
+                    "tx" => match f.as_str() {
+                        "origin" => return Ok(lisp_list(vec![LispVal::Sym("near/predecessor".into())])),
                         _ => {}
                     },
                     _ => {}
                 }
             }
-            Ok(lisp_list(vec![
-                LispVal::Sym(".".into()),
-                translate_expr(obj, storage_vars)?,
-                LispVal::Str(field_name),
-            ]))
+            Ok(lisp_list(vec![translate_expr(obj, ctx)?, LispVal::Sym(f)]))
         }
 
-        // Function call
-        pt::Expression::FunctionCall(_, callee, args) => {
-            // Special builtins
-            if let pt::Expression::Variable(ident) = callee.as_ref() {
+        pt::Expression::FunctionCall(_, func, args) => {
+            if let pt::Expression::Variable(ident) = func.as_ref() {
                 match ident.name.as_str() {
                     "require" => {
-                        let cond = args
-                            .first()
-                            .ok_or_else(|| "require needs condition".to_string())?;
-                        let msg = args
-                            .get(1)
-                            .map(|e| translate_expr(e, storage_vars))
-                            .transpose()?
-                            .unwrap_or(LispVal::Str("require failed".into()));
-                        return Ok(lisp_list(vec![
-                            LispVal::Sym("assert".into()),
-                            translate_expr(cond, storage_vars)?,
-                            msg,
-                        ]));
+                        let cond = args.first().ok_or("require needs condition")?;
+                        let msg = if args.len() > 1 { translate_expr(&args[1], ctx)? } else { LispVal::Str("assertion failed".into()) };
+                        return Ok(lisp_list(vec![LispVal::Sym("assert".into()), translate_expr(cond, ctx)?, msg]));
                     }
                     "assert" => {
-                        let cond = args
-                            .first()
-                            .ok_or_else(|| "assert needs condition".to_string())?;
-                        return Ok(lisp_list(vec![
-                            LispVal::Sym("assert".into()),
-                            translate_expr(cond, storage_vars)?,
-                            LispVal::Str("assertion failed".into()),
-                        ]));
+                        let cond = args.first().ok_or("assert needs condition")?;
+                        return Ok(lisp_list(vec![LispVal::Sym("assert".into()), translate_expr(cond, ctx)?, LispVal::Str("assertion failed".into())]));
                     }
-                    "revert" => {
-                        let msg = args
-                            .first()
-                            .map(|e| translate_expr(e, storage_vars))
-                            .transpose()?
-                            .unwrap_or(LispVal::Str("revert".into()));
-                        return Ok(lisp_list(vec![LispVal::Sym("near/panic".into()), msg]));
-                    }
+                    "revert" => return Ok(lisp_list(vec![LispVal::Sym("near/panic".into()), LispVal::Str("revert".into())])),
                     "keccak256" | "sha256" => {
-                        let mut parts = vec![LispVal::Sym("near/sha256".into())];
-                        for a in args {
-                            parts.push(translate_expr(a, storage_vars)?);
-                        }
-                        return Ok(lisp_list(parts));
-                    }
-                    "ecrecover" => {
-                        return Err(
-                            "ecrecover not supported — use near/ed25519_verify or near/p256_verify"
-                                .into(),
-                        );
-                    }
-                    "abi" => {
-                        return Err("abi.* not yet supported".into());
-                    }
-                    "type" => {
-                        return Err("type() not yet supported".into());
+                        let arg = args.first().ok_or("hash needs arg")?;
+                        return Ok(lisp_list(vec![LispVal::Sym(format!("near/{}", ident.name)), translate_expr(arg, ctx)?]));
                     }
                     _ => {}
                 }
             }
+            let mut items = vec![translate_expr(func, ctx)?];
+            for a in args { items.push(translate_expr(a, ctx)?); }
+            Ok(lisp_list(items))
+        }
 
-            // General function call: f(a, b) → (f a b)
-            let mut parts = vec![translate_expr(callee, storage_vars)?];
-            for a in args {
-                parts.push(translate_expr(a, storage_vars)?);
+        pt::Expression::New(_, e) => translate_expr(e, ctx),
+
+        _ => Err(format!("unsupported expr: {:?}", expr)),
+    }
+}
+
+fn translate_increment(target: &pt::Expression, ctx: &Ctx, delta: i64) -> Result<LispVal, String> {
+    let cur = translate_expr(target, ctx)?;
+    translate_assignment(target, lisp_list(vec![LispVal::Sym("+".into()), cur, LispVal::Num(delta)]), ctx)
+}
+
+fn translate_assignment(target: &pt::Expression, rhs: LispVal, ctx: &Ctx) -> Result<LispVal, String> {
+    if let pt::Expression::ArraySubscript(_, arr, idx) = target {
+        if let pt::Expression::Variable(ident) = arr.as_ref() {
+            if ctx.is_mapping(&ident.name) {
+                let index = idx.as_ref().ok_or("subscript needs index")?;
+                return Ok(lisp_list(vec![LispVal::Sym(format!("set_{}", ident.name)), translate_expr(index, ctx)?, rhs]));
             }
-            Ok(lisp_list(parts))
         }
-
-        pt::Expression::Parenthesis(_, inner) => translate_expr(inner, storage_vars),
-        pt::Expression::Type(_, ty) => Ok(LispVal::Sym(format!("{:?}", ty).to_lowercase())),
-        pt::Expression::AddressLiteral(_, addr) => Ok(LispVal::Str(addr.clone())),
-
-        pt::Expression::Delete(_, target) => Ok(lisp_list(vec![
-            LispVal::Sym("set!".into()),
-            translate_expr(target, storage_vars)?,
-            LispVal::List(vec![LispVal::Sym("nil".into())]),
-        ])),
-
-        _ => Err(format!("unsupported expression: {:?}", expr)),
     }
-}
-
-// ── Assignment Helpers ──────────────────────────────────────────────────────
-
-/// Translate an assignment target.
-/// For storage vars: (set_NAME rhs)
-/// For local vars: (set! target rhs)
-fn translate_assignment(
-    target: &pt::Expression,
-    rhs: LispVal,
-    storage_vars: &HashSet<String>,
-) -> Result<LispVal, String> {
     if let pt::Expression::Variable(ident) = target {
-        let name = &ident.name;
-        if storage_vars.contains(name) {
-            return Ok(lisp_list(vec![
-                LispVal::Sym(format!("set_{}", name)),
-                rhs,
-            ]));
-        } else {
-            return Ok(lisp_list(vec![
-                LispVal::Sym("set!".into()),
-                LispVal::Sym(name.clone()),
-                rhs,
-            ]));
+        if ctx.is_storage(&ident.name) {
+            return Ok(lisp_list(vec![LispVal::Sym(format!("set_{}", ident.name)), rhs]));
         }
+        return Ok(lisp_list(vec![LispVal::Sym("set!".into()), LispVal::Sym(ident.name.clone()), rhs]));
     }
-    // For member access or subscript targets, use set!
-    Ok(lisp_list(vec![
-        LispVal::Sym("set!".into()),
-        translate_expr(target, storage_vars)?,
-        rhs,
-    ]))
+    Err(format!("unsupported assignment target: {:?}", target))
 }
-
-/// Read a storage var or just return the expression as-is.
-fn translate_storage_read_or_var(
-    expr: &pt::Expression,
-    storage_vars: &HashSet<String>,
-) -> Result<LispVal, String> {
-    if let pt::Expression::Variable(ident) = expr {
-        if storage_vars.contains(&ident.name) {
-            return Ok(lisp_list(vec![LispVal::Sym(format!("get_{}", ident.name))]));
-        }
-    }
-    translate_expr(expr, storage_vars)
-}
-
-/// Translate increment/decrement of a storage var or local var.
-fn translate_increment(
-    e: &pt::Expression,
-    storage_vars: &HashSet<String>,
-    delta: i64,
-) -> Result<LispVal, String> {
-    let op = if delta > 0 { "+" } else { "-" };
-    let rhs = lisp_list(vec![
-        LispVal::Sym(op.into()),
-        translate_storage_read_or_var(e, storage_vars)?,
-        LispVal::Num(delta.abs()),
-    ]);
-    translate_assignment(e, rhs, storage_vars)
-}
-
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
-fn lisp_list(items: Vec<LispVal>) -> LispVal {
-    LispVal::List(items)
-}
-
-// ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn tr(src: &str) -> String { translate_solidity(src).unwrap().iter().map(|v| format!("{}\n", v)).collect() }
 
     #[test]
-    fn test_simple_contract() {
-        let src = r#"
-            pragma solidity ^0.8.0;
-
-            contract Counter {
-                uint256 public count;
-
-                function increment() public {
-                    count = count + 1;
-                }
-
-                function getCount() public view returns (uint256) {
-                    return count;
-                }
-            }
-        "#;
-
-        let result = translate_solidity(src);
-        assert!(result.is_ok(), "parse failed: {:?}", result.err());
-        let vals = result.unwrap();
-        assert!(!vals.is_empty());
-
-        let lisp_str = vals
-            .iter()
-            .map(|v| v.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        println!("Translated:\n{}", lisp_str);
-
-        // Storage vars should use getter/setter
-        assert!(lisp_str.contains("(set_count (+ (get_count) 1))"),
-            "increment should use getter/setter, got: {}", lisp_str);
-        assert!(lisp_str.contains("(get_count)"),
-            "getCount should call getter, got: {}", lisp_str);
+    fn test_simple() {
+        let s = tr(r#"pragma solidity ^0.8.0; contract C { uint256 count; function inc() public { count = count + 1; } }"#);
+        assert!(s.contains("(set_count (+ (get_count) 1))"), "{}", s);
     }
-
     #[test]
-    fn test_storage_getter_setter() {
-        let src = r#"
-            contract Simple {
-                uint256 public balance;
-            }
-        "#;
-
-        let vals = translate_solidity(src).unwrap();
-        let lisp_str = vals
-            .iter()
-            .map(|v| v.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(lisp_str.contains("get_balance"));
-        assert!(lisp_str.contains("set_balance"));
+    fn test_arith() {
+        let s = tr(r#"pragma solidity ^0.8.0; contract M { function f(uint a, uint b) public pure returns (uint) { return a + b; } }"#);
+        assert!(s.contains("(+ a b)"), "{}", s);
     }
-
     #[test]
-    fn test_mapping() {
-        let src = r#"
-            contract Token {
-                mapping(address => uint256) public balances;
-            }
-        "#;
-
-        let vals = translate_solidity(src).unwrap();
-        let lisp_str = vals
-            .iter()
-            .map(|v| v.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(lisp_str.contains("get_balances"));
-        assert!(lisp_str.contains("set_balances"));
+    fn test_storage() {
+        let s = tr(r#"pragma solidity ^0.8.0; contract S { uint256 val; function set(uint v) public { val = v; } }"#);
+        assert!(s.contains("(near/load"), "missing load: {}", s);
+       assert!(s.contains("(near/store"), "missing store: {}", s);
     }
-
-    #[test]
-    fn test_msg_sender() {
-        let src = r#"
-            contract Auth {
-                function owner() public view returns (address) {
-                    return msg.sender;
-                }
-            }
-        "#;
-
-        let vals = translate_solidity(src).unwrap();
-        let lisp_str = vals
-            .iter()
-            .map(|v| v.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(lisp_str.contains("signer_account_id"));
-    }
-
     #[test]
     fn test_require() {
-        let src = r#"
-            contract Guard {
-                function deposit() public {
-                    require(msg.value > 0, "must send NEAR");
-                }
-            }
-        "#;
-
-        let vals = translate_solidity(src).unwrap();
-        let lisp_str = vals
-            .iter()
-            .map(|v| v.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(lisp_str.contains("assert"));
+        let s = tr(r#"pragma solidity ^0.8.0; contract G { function f(uint x) public pure { require(x > 0); } }"#);
+        assert!(s.contains("(assert"), "{}", s);
     }
-
     #[test]
-    fn test_arithmetic() {
-        let src = r#"
-            contract Math {
-                function add(uint256 a, uint256 b) public pure returns (uint256) {
-                    return a + b;
-                }
-            }
-        "#;
-
-        let vals = translate_solidity(src).unwrap();
-        let lisp_str = vals
-            .iter()
-            .map(|v| v.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(lisp_str.contains("(+ a b)"));
+    fn test_msg() {
+        let s = tr(r#"pragma solidity ^0.8.0; contract A { function f() public view returns (address) { return msg.sender; } }"#);
+        assert!(s.contains("near/signer_account_id"), "{}", s);
     }
-
     #[test]
-    fn test_memory_directive() {
-        let src = r#"
-            contract Foo {
-                uint256 public x;
-            }
-        "#;
-
-        let vals = translate_solidity(src).unwrap();
-        let lisp_str = vals
-            .iter()
-            .map(|v| v.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(lisp_str.contains("(memory 4)"), "should emit (memory 4)");
+    fn test_memory() {
+        let s = tr(r#"pragma solidity ^0.8.0; contract E {}"#);
+        assert!(s.contains("(memory 4)"), "{}", s);
+    }
+    #[test]
+    fn test_mapping() {
+        let s = tr(r#"pragma solidity ^0.8.0; contract L { mapping(address => uint) bal; function set(address a, uint v) public { bal[a] = v; } function get(address a) public view returns (uint) { return bal[a]; } }"#);
+        assert!(s.contains("(get_bal a)"), "read: {}", s);
+        assert!(s.contains("(set_bal a v)"), "write: {}", s);
     }
 }

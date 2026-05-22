@@ -194,6 +194,8 @@ fn do_build(project_dir: &str) -> Result<(ProjectConfig, Vec<u8>), String> {
     let func_names: Vec<String> = extract_func_names(&effective_source).unwrap_or_default();
 
     // Validate with function-name error mapping
+    let _dbg_path = Path::new(project_dir).join("target/_debug_raw.wasm");
+    let _ = fs::write(&_dbg_path, &wasm_bytes);
     validate_wasm(&wasm_bytes, &func_names).map_err(|e| format!("WASM validation: {}", e))?;
 
     // Write output
@@ -249,6 +251,8 @@ fn do_build_target(project_dir: &str, target: &str) -> Result<(String, Vec<u8>),
         "near" => {
             let wasm = lisp_rlm_wasm::wasm_emit::compile_near(&effective_source)?;
             let func_names: Vec<String> = extract_func_names(&effective_source).unwrap_or_default();
+            let _dbg_path = Path::new(project_dir).join("target/_debug_raw.wasm");
+            let _ = fs::write(&_dbg_path, &wasm);
             validate_wasm(&wasm, &func_names).map_err(|e| format!("WASM validation: {}", e))?;
             wasm
         }

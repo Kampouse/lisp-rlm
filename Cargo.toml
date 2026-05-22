@@ -68,3 +68,7 @@ path = "src/bin/near_mock.rs"
 [[bin]]
 name = "compile"
 path = "src/bin/compile.rs"
+
+[[bin]]
+name = "sol-compile"
+path = "src/bin/sol_compile.rs"

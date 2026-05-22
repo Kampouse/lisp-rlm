@@ -12,7 +12,7 @@ impl WasmEmitter {
     }
 
     pub(crate) fn emit_untag(&self) -> Vec<Instruction<'static>> {
-        vec![Instruction::I64Const(TAG_BITS), Instruction::I64ShrS]
+        vec![Instruction::I64Const(TAG_BITS), Instruction::I64ShrU]
     }
 
     pub(crate) fn emit_num_coerce(&mut self) -> Vec<Instruction<'static>> {
@@ -28,7 +28,7 @@ impl WasmEmitter {
             Instruction::If(BlockType::Empty),
             Instruction::LocalGet(tmp),
             Instruction::I64Const(TAG_BITS),
-            Instruction::I64ShrS,         // untag payload
+            Instruction::I64ShrU,         // untag payload
             Instruction::LocalSet(result),
             Instruction::Else,
             Instruction::I64Const(0),     // non-numeric → 0
@@ -254,8 +254,8 @@ impl WasmEmitter {
         let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
         vec![
             // Untag both → raw (ptr | len << 32)
-            Instruction::I64Const(TAG_BITS), Instruction::I64ShrS, Instruction::LocalSet(a_raw),
-            Instruction::I64Const(TAG_BITS), Instruction::I64ShrS, Instruction::LocalSet(b_raw),
+            Instruction::I64Const(TAG_BITS), Instruction::I64ShrU, Instruction::LocalSet(a_raw),
+            Instruction::I64Const(TAG_BITS), Instruction::I64ShrU, Instruction::LocalSet(b_raw),
             // Fast path: if raw_a == raw_b → true (same pointer + same length)
             Instruction::LocalGet(a_raw), Instruction::LocalGet(b_raw), Instruction::I64Eq,
             Instruction::If(BlockType::Result(ValType::I64)),
@@ -608,69 +608,148 @@ impl WasmEmitter {
     pub(crate) fn emit_str_concat(&mut self) -> Vec<Instruction<'static>> {
         let a_local = self.local_idx("__str_a");
         let b_local = self.local_idx("__str_b");
+        let a_raw = self.local_idx("__str_araw");
+        let b_raw = self.local_idx("__str_braw");
         let a_off = self.local_idx("__str_aoff");
-        let _a_len = self.local_idx("__str_alen");
+        let a_len = self.local_idx("__str_alen");
         let b_off = self.local_idx("__str_boff");
-        let _b_len = self.local_idx("__str_blen");
-        let _dst = self.local_idx("__str_dst");
-        let _ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
-        let _ma1 = wasm_encoder::MemArg { offset: 1, align: 0, memory_index: 0 };
+        let b_len = self.local_idx("__str_blen");
+        let dst = self.local_idx("__str_dst");
+        let i = self.local_idx("__str_i");
+        let total = self.local_idx("__str_total");
+        let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+
+        // Allocate buffer after data segments (128 bytes is plenty for keys)
+        let alloc_base = self.next_data_offset.max(3072);
+        self.next_data_offset = (alloc_base + 128 + 7) & !7;
+
         let mut v = vec![
-            // Save args
+            // Save tagged args: stack has [... b a] (b on top)
             Instruction::LocalSet(b_local),
             Instruction::LocalSet(a_local),
         ];
-        // Extract string A: check if it's a string (tag 5) or number (tag 0)
-        // For strings: untag to get (off | len<<32), extract offset and length
-        // For numbers: convert to string via int-to-string runtime routine
-        // Simplified: assume both are already tagged strings (compile-time str handles literals)
-        // For the runtime fallback, extract offset/length from tagged string values
+
+        // --- Extract A: untag → packed (len<<32|ptr) → extract len and ptr ---
         v.extend(vec![
-            // Extract A: a_val >> 3 gives (off | len<<32)
-            Instruction::LocalGet(a_local),
-            Instruction::I64Const(7),
-            Instruction::I64And,
-            Instruction::I64Const(TAG_STR),
-            Instruction::I64Eq,
-            Instruction::If(BlockType::Empty),
-            // A is a string: extract offset and length
             Instruction::LocalGet(a_local),
             Instruction::I64Const(TAG_BITS),
-            Instruction::I64ShrU,  // get payload: (off | len<<32)
-            Instruction::LocalSet(a_off),
-            Instruction::LocalGet(a_off),
+            Instruction::I64ShrU,            // raw packed
+            Instruction::LocalSet(a_raw),
+            // len_a = raw >> 32
+            Instruction::LocalGet(a_raw),
+            Instruction::I64Const(32),
+            Instruction::I64ShrU,
+            Instruction::LocalSet(a_len),
+            // ptr_a = raw & 0xFFFFFFFF
+            Instruction::LocalGet(a_raw),
             Instruction::I64Const(0xFFFFFFFF),
             Instruction::I64And,
-            Instruction::LocalSet(a_off),  // low 32 bits = offset
-            // ... length is in high bits, but for simplicity, allocate max
-            Instruction::Else,
-            // A is not a string - treat as empty for now
-            Instruction::I64Const(0),
             Instruction::LocalSet(a_off),
-            Instruction::End,
-            // Extract B similarly
-            Instruction::LocalGet(b_local),
-            Instruction::I64Const(7),
-            Instruction::I64And,
-            Instruction::I64Const(TAG_STR),
-            Instruction::I64Eq,
-            Instruction::If(BlockType::Empty),
+        ]);
+
+        // --- Extract B similarly ---
+        v.extend(vec![
             Instruction::LocalGet(b_local),
             Instruction::I64Const(TAG_BITS),
             Instruction::I64ShrU,
-            Instruction::LocalSet(b_off),
-            Instruction::LocalGet(b_off),
+            Instruction::LocalSet(b_raw),
+            Instruction::LocalGet(b_raw),
+            Instruction::I64Const(32),
+            Instruction::I64ShrU,
+            Instruction::LocalSet(b_len),
+            Instruction::LocalGet(b_raw),
             Instruction::I64Const(0xFFFFFFFF),
             Instruction::I64And,
             Instruction::LocalSet(b_off),
-            Instruction::Else,
-            Instruction::I64Const(0),
-            Instruction::LocalSet(b_off),
-            Instruction::End,
         ]);
-        // For now, just return the first string (runtime concat is complex)
-        // The compile-time path handles all test cases
-        v.push(Instruction::LocalGet(a_local));
+
+        // --- Copy A to dst ---
+        v.extend(vec![
+            Instruction::I64Const(alloc_base as i64),
+            Instruction::LocalSet(dst),
+            Instruction::I64Const(0),
+            Instruction::LocalSet(i),
+            // block $exit_a
+            Instruction::Block(BlockType::Empty),
+            // loop $copy_a
+            Instruction::Loop(BlockType::Empty),
+            // if i >= len_a → break
+            Instruction::LocalGet(i),
+            Instruction::LocalGet(a_len),
+            Instruction::I64GeS,
+            Instruction::If(BlockType::Empty),
+            Instruction::Br(2),
+            Instruction::End,
+            // dst[i] = a_off[i]
+            Instruction::LocalGet(dst),
+            Instruction::LocalGet(i),
+            Instruction::I64Add,
+            Instruction::I32WrapI64,
+            Instruction::LocalGet(a_off),
+            Instruction::LocalGet(i),
+            Instruction::I64Add,
+            Instruction::I32WrapI64,
+            Instruction::I32Load8U(ma8),
+            Instruction::I32Store8(ma8),
+            // i++
+            Instruction::LocalGet(i),
+            Instruction::I64Const(1),
+            Instruction::I64Add,
+            Instruction::LocalSet(i),
+            Instruction::Br(0),
+            Instruction::End, // loop
+            Instruction::End, // block
+        ]);
+
+        // --- Copy B to dst + len_a ---
+        v.extend(vec![
+            Instruction::I64Const(0),
+            Instruction::LocalSet(i),
+            Instruction::Block(BlockType::Empty),
+            Instruction::Loop(BlockType::Empty),
+            Instruction::LocalGet(i),
+            Instruction::LocalGet(b_len),
+            Instruction::I64GeS,
+            Instruction::If(BlockType::Empty),
+            Instruction::Br(2),
+            Instruction::End,
+            // dst[len_a + i] = b_off[i]
+            Instruction::LocalGet(dst),
+            Instruction::LocalGet(a_len),
+            Instruction::LocalGet(i),
+            Instruction::I64Add,
+            Instruction::I64Add,
+            Instruction::I32WrapI64,
+            Instruction::LocalGet(b_off),
+            Instruction::LocalGet(i),
+            Instruction::I64Add,
+            Instruction::I32WrapI64,
+            Instruction::I32Load8U(ma8),
+            Instruction::I32Store8(ma8),
+            Instruction::LocalGet(i),
+            Instruction::I64Const(1),
+            Instruction::I64Add,
+            Instruction::LocalSet(i),
+            Instruction::Br(0),
+            Instruction::End, // loop
+            Instruction::End, // block
+        ]);
+
+        // --- Build tagged result: tag_str((total_len << 32) | dst) ---
+        v.extend(vec![
+            // total = len_a + len_b
+            Instruction::LocalGet(a_len),
+            Instruction::LocalGet(b_len),
+            Instruction::I64Add,
+            Instruction::LocalSet(total),
+            // packed = (total << 32) | dst
+            Instruction::LocalGet(total),
+            Instruction::I64Const(32),
+            Instruction::I64Shl,
+            Instruction::LocalGet(dst),
+            Instruction::I64Or,
+        ]);
+        v.extend(self.emit_tag_str());
         v
     }
 

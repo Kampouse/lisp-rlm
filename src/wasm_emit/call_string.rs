@@ -1859,78 +1859,7 @@ impl WasmEmitter {
                 v.push(Instruction::End);
                 Ok(v)
             }
-            "int_to_str" => {
-                let n = self.expr(&a[0])?;
-                let n_i = self.local_idx("__its_n");
-                let neg_i = self.local_idx("__its_neg");
-                let tmp_i = self.local_idx("__its_tmp");
-                let len_i = self.local_idx("__its_len");
-                let dst_i = self.local_idx("__its_dst");
-                let dig_i = self.local_idx("__its_dig");
-                let i_i = self.local_idx("__its_i");
-                let alloc_base = self.next_data_offset.max(3072);
-                self.next_data_offset = (alloc_base + 64) & !7;
-                let mut v = Vec::new();
-                v.extend(n); v.push(Instruction::LocalSet(n_i));
-                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(neg_i));
-                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(len_i));
-                v.push(Instruction::I64Const(alloc_base as i64)); v.push(Instruction::LocalSet(dst_i));
-                // Handle negative: if n < 0, neg=1, n = -n
-                v.push(Instruction::LocalGet(n_i)); v.push(Instruction::I64Const(0)); v.push(Instruction::I64LtS);
-                v.push(Instruction::If(BlockType::Empty));
-                v.push(Instruction::I64Const(1)); v.push(Instruction::LocalSet(neg_i));
-                v.push(Instruction::I64Const(0));
-                v.push(Instruction::LocalGet(n_i)); v.push(Instruction::I64Sub); v.push(Instruction::LocalSet(n_i));
-                v.push(Instruction::End);
-                // Handle n == 0
-                v.push(Instruction::LocalGet(n_i)); v.push(Instruction::I64Eqz);
-                v.push(Instruction::If(BlockType::Empty));
-                // Write '0' at dst, len=1
-                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Const(48)); // '0'
-                v.push(Instruction::I32Store8(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
-                v.push(Instruction::I64Const(1)); v.push(Instruction::LocalSet(len_i));
-                v.push(Instruction::Else);
-                // Extract digits in reverse: write to dst+31 backward
-                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I64Const(31)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(tmp_i));
-                v.push(Instruction::Block(BlockType::Empty));
-                v.push(Instruction::Loop(BlockType::Empty));
-                v.push(Instruction::LocalGet(n_i)); v.push(Instruction::I64Eqz);
-                v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
-                // dig = n % 10
-                v.push(Instruction::LocalGet(n_i)); v.push(Instruction::I64Const(10)); v.push(Instruction::I64RemU); v.push(Instruction::LocalSet(dig_i));
-                // n /= 10
-                v.push(Instruction::LocalGet(n_i)); v.push(Instruction::I64Const(10)); v.push(Instruction::I64DivU); v.push(Instruction::LocalSet(n_i));
-                // mem[tmp] = '0' + dig
-                v.push(Instruction::LocalGet(tmp_i)); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::LocalGet(dig_i)); v.push(Instruction::I64Const(48)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Store8(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
-                v.push(Instruction::LocalGet(tmp_i)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Sub); v.push(Instruction::LocalSet(tmp_i));
-                v.push(Instruction::LocalGet(len_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(len_i));
-                v.push(Instruction::Br(0));
-                v.push(Instruction::End); // loop
-                v.push(Instruction::End); // block
-                // Now digits are at [tmp+8 .. dst+31], need to move to dst[0..len-1]
-                // Copy forward
-                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(i_i));
-                v.push(Instruction::Block(BlockType::Empty));
-                v.push(Instruction::Loop(BlockType::Empty));
-                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::LocalGet(len_i)); v.push(Instruction::I64GeS);
-                v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
-                // dst[i] = (tmp+8+len-1-i)  ... actually source is at dst + (31 - len + 1 + i) = dst + 32 - len + i
-                // We wrote backward from dst+31, so digits start at tmp+8 (= dst+31-len+1 = dst+32-len)
-                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64Sub); // dst+32 ... wait
-                // Actually: we started at tmp=dst+31, wrote at tmp, then tmp-=8 each step.
-                // After len digits: tmp = dst+31 - (len-1)*8 ... no wait, we sub 8 not 1!
-                // BUG: we're storing bytes but subtracting 8. Should subtract 1.
-                // Let me fix: use I32Store8 so we should subtract 1 from the pointer.
-                // Actually I used I32Store8 which stores a single byte, but tmp is i64 and I subtract 8.
-                // That's wrong — should subtract 1 for byte addressing.
-                v.push(Instruction::End); // end the broken block early
-                v.push(Instruction::End); // end if/else
-                // This is getting messy. Let me restart int_to_str with a cleaner approach.
-                // Actually, let me just rewrite the whole thing properly.
+            "to-string" | "int_to_str" => {
                 return self.int_to_str_clean(&a);
             }
             "str-len" => {

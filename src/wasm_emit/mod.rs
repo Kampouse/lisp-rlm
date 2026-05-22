@@ -50,7 +50,7 @@ pub mod call_dict;
 pub mod compile;
 
 // Re-exports: public API lives in compile.rs
-pub use compile::{compile_pure, compile_fuzz, compile_near, compile_near_from_exprs, compile_near_to_wat_from_exprs, compile_pure_to_wat, compile_near_to_wat, resolve_modules};
+pub use compile::{compile_pure, compile_fuzz, compile_near, compile_near_untyped, compile_near_from_exprs, compile_near_to_wat_from_exprs, compile_pure_to_wat, compile_near_to_wat, resolve_modules};
 
 
 // ── NEAR host functions (name, params, results) ──

@@ -233,6 +233,19 @@ impl WasmEmitter {
                 for (i,x) in a.iter().enumerate() { v.extend(self.expr(x)?); if i<a.len()-1 { v.push(Instruction::Drop); } }
                 Ok(v)
             }
+            "assert" => {
+                // (assert cond ?msg) — trap if cond is falsy
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_is_truthy()); // → i64 (truthy=1, falsy=0)
+                v.push(Instruction::I32WrapI64); // i64 → i32
+                v.push(Instruction::I32Eqz);     // if NOT truthy → i32
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
+                v.push(Instruction::I64Const(TAG_NIL));
+                Ok(v)
+            }
             "assert-equal" if a.len() == 2 => {
                 // (assert-equal expected actual) — compare two values, trap if not equal
                 let expected = self.local_idx("__assert_expected");

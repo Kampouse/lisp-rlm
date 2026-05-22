@@ -345,7 +345,7 @@ impl WasmEmitter {
                         if !self.fuzz_mode {
                             // Untag the return value before storing for host
                             fb.instruction(&Instruction::I64Const(TAG_BITS));
-                            fb.instruction(&Instruction::I64ShrS);
+                            fb.instruction(&Instruction::I64ShrU);
                         }
                         fb.instruction(&Instruction::I64Store(ma));
                         if !self.fuzz_mode {
@@ -413,12 +413,18 @@ impl WasmEmitter {
 }
 
 fn parse_and_compile(source: &str, near: bool) -> Result<WasmEmitter, String> {
+    parse_and_compile_opts(source, near, true)
+}
+
+fn parse_and_compile_opts(source: &str, near: bool, typecheck: bool) -> Result<WasmEmitter, String> {
     let exprs = crate::parser::parse_all(source)?;
     let mut exprs = exprs;
     crate::clojure::desugar(&mut exprs);
 
     // Type check pass — catches undefined vars, arity mismatches, type errors
-    crate::typing::type_check_program(&exprs, near)?;
+    if typecheck {
+        crate::typing::type_check_program(&exprs, near)?;
+    }
 
     // Storage schema validation — warns about reads without matching writes
     if near {
@@ -578,8 +584,24 @@ pub fn compile_near(source: &str) -> Result<Vec<u8>, String> {
         eprintln!("╚════════════════════════════════════════════════════╝");
     }
     
-    let wasm = em.finish("_run");
-    Ok(wasm)
+   let wasm = em.finish("_run");
+   Ok(wasm)
+}
+
+/// Compile NEAR WASM from source, skipping type checking.
+/// Useful for dynamically-typed generated code (e.g. Solidity translation).
+pub fn compile_near_untyped(source: &str) -> Result<Vec<u8>, String> {
+   let resolved = resolve_modules(source, std::path::Path::new("."))?;
+   let mut em = parse_and_compile_opts(&resolved, true, false)?;
+   if em.exports.is_empty() {
+       if let Some(f) = em.funcs.iter().find(|f| f.name == "run") {
+           em.add_export(&f.name.clone(), "_run", false);
+       } else if let Some(f) = em.funcs.last() {
+           em.add_export(&f.name.clone(), "_run", false);
+       }
+   }
+   let wasm = em.finish("_run");
+   Ok(wasm)
 }
 
 
