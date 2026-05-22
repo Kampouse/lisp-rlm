@@ -206,6 +206,33 @@ impl TcEnv {
             ),
         );
 
+        // muldiv : num → num → num → num  (a*b/c with 128-bit intermediate)
+        env.insert_mono(
+            "muldiv".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Num), TcType::Con(TcCon::Num), TcType::Con(TcCon::Num)],
+                Box::new(TcType::Con(TcCon::Num)),
+            ),
+        );
+
+        // isqrt : num → num
+        env.insert_mono(
+            "isqrt".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Num)],
+                Box::new(TcType::Con(TcCon::Num)),
+            ),
+        );
+
+        // ctz : num → num  (count trailing zeros)
+        env.insert_mono(
+            "ctz".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Num)],
+                Box::new(TcType::Con(TcCon::Num)),
+            ),
+        );
+
         // not : 'a → bool
         {
             let a = TcType::Var(0);
@@ -378,17 +405,13 @@ impl TcEnv {
         );
 
         // Conversions
-        // assert : bool → 'a → nil  (condition + optional message)
-        let any_a = TcType::Var(0);
-        env.insert(
+        // assert : bool → nil
+        env.insert_mono(
             "assert".to_string(),
-            Scheme {
-                vars: vec![0],
-                ty: TcType::Arrow(
-                    vec![TcType::Con(TcCon::Bool), any_a],
-                    Box::new(TcType::Con(TcCon::Nil)),
-                ),
-            },
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Bool)],
+                Box::new(TcType::Con(TcCon::Nil)),
+            ),
         );
         env.insert_mono(
             "to-float".to_string(),
@@ -478,10 +501,25 @@ impl TcEnv {
         // String builtins used in NEAR contracts
         env.insert_mono("str-len".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(int_ty.clone())));
         env.insert_mono("str-slice".into(), TcType::Arrow(vec![str_ty.clone(), int_ty.clone(), int_ty.clone()], Box::new(str_ty.clone())));
-        env.insert_mono("str-from-bytes".into(), TcType::Arrow(vec![TcType::Con(TcCon::List(Box::new(int_ty.clone())))], Box::new(str_ty.clone())));
-        env.insert_mono("str-to-bytes".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(TcType::Con(TcCon::List(Box::new(int_ty.clone()))))));
-        env.insert_mono("str_to_int".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(int_ty.clone())));
-        env.insert_mono("to-string".into(), TcType::Arrow(vec![int_ty.clone()], Box::new(str_ty.clone())));
+        env.insert_mono("str-cat".into(), TcType::Arrow(vec![str_ty.clone(), str_ty.clone()], Box::new(str_ty.clone())));
+        env.insert_mono("u32-to-bytes".into(), TcType::Arrow(vec![int_ty.clone()], Box::new(str_ty.clone())));
+        env.insert_mono("bytes-to-u32".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(int_ty.clone())));
+
+        // NEAR storage (emitter names)
+        env.insert_mono("near/storage_set".into(), TcType::Arrow(vec![str_ty.clone(), str_ty.clone()], Box::new(any_ty.clone())));
+        env.insert_mono("near/storage_get".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())));
+        env.insert_mono("near/storage_has".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(bool_ty.clone())));
+        env.insert_mono("near/storage_remove".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(any_ty.clone())));
+        env.insert_mono("near/return".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(any_ty.clone())));
+        env.insert_mono("near/return_str".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(any_ty.clone())));
+        env.insert_mono("near/store-bytes".into(), TcType::Arrow(vec![str_ty.clone(), str_ty.clone()], Box::new(any_ty.clone())));
+        env.insert_mono("near/load-bytes".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())));
+        env.insert_mono("near/predecessor_account_id".into(), TcType::Arrow(vec![], Box::new(str_ty.clone())));
+        env.insert_mono("near/current_account_id".into(), TcType::Arrow(vec![], Box::new(str_ty.clone())));
+        env.insert_mono("near/block_index".into(), TcType::Arrow(vec![], Box::new(int_ty.clone())));
+        env.insert_mono("near/block_timestamp".into(), TcType::Arrow(vec![], Box::new(int_ty.clone())));
+        env.insert_mono("near/ed25519_verify".into(), TcType::Arrow(vec![str_ty.clone(), str_ty.clone(), str_ty.clone()], Box::new(int_ty.clone())));
+        env.insert_mono("hex-encode".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())));
 
         // Dict builtins (string-keyed flat array)
         let dict_ty = TcType::Con(TcCon::List(Box::new(any_ty.clone()))); // dicts are tagged arrays

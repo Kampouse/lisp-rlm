@@ -20,6 +20,7 @@ use wasm_encoder::{
 
 // ─── Sub-modules ──────────────────────────────────────────────────────
 pub mod helpers;
+pub mod intrinsics;
 pub mod lambda;
 pub mod gas;
 pub mod const_fold;

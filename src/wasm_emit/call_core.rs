@@ -45,6 +45,27 @@ impl WasmEmitter {
             "wrap-add" => self.fold_binop_wrapping(a, Instruction::I64Add, 0),
             "wrap-sub" => self.fold_binop_wrapping(a, Instruction::I64Sub, 0),
             "wrap-mul" => self.fold_binop_wrapping(a, Instruction::I64Mul, 1),
+            "muldiv" if a.len() == 3 => {
+                // (muldiv a b c) → (a*b)/c with 128-bit intermediate
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?); v.extend(self.emit_untag());
+                v.extend(self.expr(&a[1])?); v.extend(self.emit_untag());
+                v.extend(self.expr(&a[2])?); v.extend(self.emit_untag());
+                v.extend(self.emit_muldiv());
+                Ok(v)
+            }
+            "isqrt" if a.len() == 1 => {
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?); v.extend(self.emit_untag());
+                v.extend(self.emit_isqrt());
+                Ok(v)
+            }
+            "ctz" if a.len() == 1 => {
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?); v.extend(self.emit_untag());
+                v.extend(self.emit_ctz());
+                Ok(v)
+            }
             "abs" => {
                 let temp = self.local_idx("__abs_tmp");
                 let mut v = Vec::new();
