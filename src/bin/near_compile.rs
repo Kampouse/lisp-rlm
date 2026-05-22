@@ -180,9 +180,18 @@ fn do_build(project_dir: &str) -> Result<(ProjectConfig, Vec<u8>), String> {
     let source =
         fs::read_to_string(&src_path).map_err(|e| format!("read {}: {}", config.src, e))?;
 
+    // If source is Solidity (.sol), translate to Lisp first
+    let effective_source = if config.src.ends_with(".sol") {
+        let lisp_vals = lisp_rlm_wasm::solidity::translate_solidity(&source)
+            .map_err(|e| format!("Solidity translation: {}", e))?;
+        lisp_vals.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("\n")
+    } else {
+        source.clone()
+    };
+
     // Compile and validate
-    let wasm_bytes = lisp_rlm_wasm::wasm_emit::compile_near(&source)?;
-    let func_names: Vec<String> = extract_func_names(&source).unwrap_or_default();
+    let wasm_bytes = lisp_rlm_wasm::wasm_emit::compile_near(&effective_source)?;
+    let func_names: Vec<String> = extract_func_names(&effective_source).unwrap_or_default();
 
     // Validate with function-name error mapping
     validate_wasm(&wasm_bytes, &func_names).map_err(|e| format!("WASM validation: {}", e))?;
@@ -227,19 +236,28 @@ fn do_build_target(project_dir: &str, target: &str) -> Result<(String, Vec<u8>),
     let source =
         fs::read_to_string(&src_path).map_err(|e| format!("read {}: {}", config.src, e))?;
 
+    // If source is Solidity (.sol), translate to Lisp first
+    let effective_source = if config.src.ends_with(".sol") {
+        let lisp_vals = lisp_rlm_wasm::solidity::translate_solidity(&source)
+            .map_err(|e| format!("Solidity translation: {}", e))?;
+        lisp_vals.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("\n")
+    } else {
+        source.clone()
+    };
+
     let wasm_bytes = match target {
         "near" => {
-            let wasm = lisp_rlm_wasm::wasm_emit::compile_near(&source)?;
-            let func_names: Vec<String> = extract_func_names(&source).unwrap_or_default();
+            let wasm = lisp_rlm_wasm::wasm_emit::compile_near(&effective_source)?;
+            let func_names: Vec<String> = extract_func_names(&effective_source).unwrap_or_default();
             validate_wasm(&wasm, &func_names).map_err(|e| format!("WASM validation: {}", e))?;
             wasm
         }
         "outlayer" | "wasi" | "wasi-p1" => {
-            let wasm = lisp_rlm_wasm::wasi_emit::compile_outlayer(&source)?;
+            let wasm = lisp_rlm_wasm::wasi_emit::compile_outlayer(&effective_source)?;
             wasm
         }
         "outlayer-p2" | "wasi-p2" | "component" => {
-            let wasm = lisp_rlm_wasm::wasi_emit::compile_outlayer_p2(&source)?;
+            let wasm = lisp_rlm_wasm::wasi_emit::compile_outlayer_p2(&effective_source)?;
             wasm
         }
         _ => {

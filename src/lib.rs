@@ -96,6 +96,7 @@ pub extern "C" fn eval_lisp(input_ptr: *const u8, input_len: usize, out_len: *mu
         WASM_RESULT_BUF.as_ptr()
     }
 }
+pub mod solidity;
 pub mod wasi_http;
 pub mod wasi_http_buffer;
 #[cfg(target_arch = "wasm32")]

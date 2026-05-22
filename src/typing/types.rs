@@ -468,6 +468,8 @@ impl TcEnv {
         env.insert_mono("str-slice".into(), TcType::Arrow(vec![str_ty.clone(), int_ty.clone(), int_ty.clone()], Box::new(str_ty.clone())));
         env.insert_mono("str-from-bytes".into(), TcType::Arrow(vec![TcType::Con(TcCon::List(Box::new(int_ty.clone())))], Box::new(str_ty.clone())));
         env.insert_mono("str-to-bytes".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(TcType::Con(TcCon::List(Box::new(int_ty.clone()))))));
+        env.insert_mono("str_to_int".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(int_ty.clone())));
+        env.insert_mono("to-string".into(), TcType::Arrow(vec![int_ty.clone()], Box::new(str_ty.clone())));
 
         // Dict builtins (string-keyed flat array)
         let dict_ty = TcType::Con(TcCon::List(Box::new(any_ty.clone()))); // dicts are tagged arrays
