@@ -524,10 +524,12 @@ impl WasmEmitter {
         let a_len = self.local_idx("__seq_alen");
         let a_ptr = self.local_idx("__seq_aptr");
         let b_ptr = self.local_idx("__seq_bptr");
+        let n_words = self.local_idx("__seq_nw");
+        let tail_len = self.local_idx("__seq_tl");
         let i = self.local_idx("__seq_i");
-        let ba = self.local_idx("__seq_ba");
-        let bb = self.local_idx("__seq_bb");
-        let ma1 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+        let wa = self.local_idx("__seq_wa");
+        let wb = self.local_idx("__seq_wb");
+        let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
         vec![
             // Untag both → raw (ptr | len << 32)
             Instruction::I64Const(TAG_BITS), Instruction::I64ShrS, Instruction::LocalSet(a_raw),
@@ -549,24 +551,62 @@ impl WasmEmitter {
                     // Extract pointers: ptr = raw & 0xFFFFFFFF
                     Instruction::LocalGet(a_raw), Instruction::I64Const(0xFFFFFFFF), Instruction::I64And, Instruction::LocalSet(a_ptr),
                     Instruction::LocalGet(b_raw), Instruction::I64Const(0xFFFFFFFF), Instruction::I64And, Instruction::LocalSet(b_ptr),
-                    // Byte comparison loop
+                    // n_words = len / 8, tail_len = len % 8
+                    Instruction::LocalGet(a_len), Instruction::I64Const(3), Instruction::I64ShrU, Instruction::LocalSet(n_words),
+                    Instruction::LocalGet(a_len), Instruction::I64Const(7), Instruction::I64And, Instruction::LocalSet(tail_len),
+                    // Word comparison loop: i = 0..n_words
                     Instruction::I64Const(0), Instruction::LocalSet(i),
                     Instruction::Block(BlockType::Result(ValType::I64)), // $break
                     Instruction::Loop(BlockType::Empty), // $loop
-                        // if i >= len → equal (return tagged true)
-                        Instruction::LocalGet(i), Instruction::LocalGet(a_len), Instruction::I64GeU,
+                        // if i >= n_words → done with full words, check tail
+                        Instruction::LocalGet(i), Instruction::LocalGet(n_words), Instruction::I64GeU,
                         Instruction::If(BlockType::Empty),
-                            Instruction::I64Const(8), // tagged true
-                            Instruction::Br(2), // break out of Block with true
+                            // Tail comparison: if tail_len == 0 → equal
+                            Instruction::LocalGet(tail_len),
+                            Instruction::I64Eqz,
+                            Instruction::If(BlockType::Result(ValType::I64)),
+                                Instruction::I64Const(8), // tagged true
+                            Instruction::Else,
+                                // Load last word from a (at ptr + n_words*8), overlapping is fine
+                                Instruction::LocalGet(a_ptr), Instruction::LocalGet(n_words), Instruction::I64Const(8), Instruction::I64Mul,
+                                Instruction::I64Add, Instruction::I32WrapI64,
+                                Instruction::I64Load(ma8.clone()), Instruction::LocalSet(wa),
+                                // Load last word from b
+                                Instruction::LocalGet(b_ptr), Instruction::LocalGet(n_words), Instruction::I64Const(8), Instruction::I64Mul,
+                                Instruction::I64Add, Instruction::I32WrapI64,
+                                Instruction::I64Load(ma8.clone()), Instruction::LocalSet(wb),
+                                // Mask: (1 << (tail_len * 8)) - 1
+                                Instruction::I64Const(1),
+                                Instruction::LocalGet(tail_len), Instruction::I64Const(8), Instruction::I64Mul,
+                                Instruction::I64Shl,
+                                Instruction::I64Const(1), Instruction::I64Sub,
+                                // Apply mask to wa and wb, compare
+                                Instruction::LocalGet(wa), Instruction::I64And,
+                                Instruction::LocalGet(wb),
+                                Instruction::I64Const(1),
+                                Instruction::LocalGet(tail_len), Instruction::I64Const(8), Instruction::I64Mul,
+                                Instruction::I64Shl,
+                                Instruction::I64Const(1), Instruction::I64Sub,
+                                Instruction::I64And,
+                                Instruction::I64Eq,
+                                Instruction::If(BlockType::Result(ValType::I64)),
+                                    Instruction::I64Const(8), // tagged true
+                                Instruction::Else,
+                                    Instruction::I64Const(1), // tagged false
+                                Instruction::End,
+                            Instruction::End,
+                            Instruction::Br(2), // break out of Block with result
                         Instruction::End,
-                        // Load byte from a: mem[a_ptr + i]
-                        Instruction::LocalGet(a_ptr), Instruction::LocalGet(i), Instruction::I64Add, Instruction::I32WrapI64,
-                        Instruction::I32Load8U(ma1.clone()), Instruction::I64ExtendI32U, Instruction::LocalSet(ba),
-                        // Load byte from b: mem[b_ptr + i]
-                        Instruction::LocalGet(b_ptr), Instruction::LocalGet(i), Instruction::I64Add, Instruction::I32WrapI64,
-                        Instruction::I32Load8U(ma1), Instruction::I64ExtendI32U, Instruction::LocalSet(bb),
-                        // if ba != bb → not equal
-                        Instruction::LocalGet(ba), Instruction::LocalGet(bb), Instruction::I64Ne,
+                        // Load word from a: mem[a_ptr + i*8]
+                        Instruction::LocalGet(a_ptr), Instruction::LocalGet(i), Instruction::I64Const(8), Instruction::I64Mul,
+                        Instruction::I64Add, Instruction::I32WrapI64,
+                        Instruction::I64Load(ma8.clone()), Instruction::LocalSet(wa),
+                        // Load word from b: mem[b_ptr + i*8]
+                        Instruction::LocalGet(b_ptr), Instruction::LocalGet(i), Instruction::I64Const(8), Instruction::I64Mul,
+                        Instruction::I64Add, Instruction::I32WrapI64,
+                        Instruction::I64Load(ma8), Instruction::LocalSet(wb),
+                        // if wa != wb → not equal
+                        Instruction::LocalGet(wa), Instruction::LocalGet(wb), Instruction::I64Ne,
                         Instruction::If(BlockType::Empty),
                             Instruction::I64Const(1), // tagged false
                             Instruction::Br(2), // break out of Block with false
