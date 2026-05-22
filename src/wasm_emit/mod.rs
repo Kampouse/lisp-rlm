@@ -28,6 +28,25 @@ pub mod host_calls;
 pub mod borsh;
 pub mod json;
 pub mod call;
+pub mod call_core;
+pub mod call_near_storage;
+pub mod call_near_io;
+pub mod call_hof;
+pub mod call_json;
+pub mod call_borsh;
+pub mod call_list;
+pub mod call_near_context;
+pub mod call_near_crypto;
+pub mod call_near_promise;
+pub mod call_near_iter;
+pub mod call_u128;
+pub mod call_fp;
+pub mod call_defi;
+pub mod call_bitwise;
+pub mod call_string;
+pub mod call_outlayer;
+pub mod call_predicate;
+pub mod call_dict;
 pub mod compile;
 
 // Re-exports: public API lives in compile.rs
