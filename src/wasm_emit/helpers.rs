@@ -53,7 +53,7 @@ impl WasmEmitter {
             // Check if b == 0
             Instruction::LocalGet(b),
             Instruction::I64Eqz,
-            Instruction::If(BlockType::Empty),
+            Instruction::If(BlockType::Result(ValType::I64)),
             // b is zero → trap (division by zero)
             Instruction::Unreachable,
             Instruction::Else,

@@ -191,8 +191,8 @@ fn translate_statement(s: &pt::Statement, ctx: &Ctx) -> Result<LispVal, String> 
         pt::Statement::Expression(_, e) => translate_expr(e, ctx),
         pt::Statement::VariableDefinition(_, def, init) => {
             let n = def.name.as_ref().ok_or("local var has no name")?.name.clone();
-            let v = match init { Some(e) => translate_expr(e, ctx)?, None => LispVal::List(vec![LispVal::Sym("nil".into())]) };
-            Ok(lisp_list(vec![LispVal::Sym("define".into()), LispVal::List(vec![LispVal::Sym(n)]), v]))
+            let v = match init { Some(e) => translate_expr(e, ctx)?, None => LispVal::Num(0) };
+            Ok(lisp_list(vec![LispVal::Sym("set!".into()), LispVal::Sym(n), v]))
         }
         _ => Err(format!("unsupported statement: {:?}", s)),
     }
