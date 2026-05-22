@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+#![allow(unreachable_patterns)]
 //! WASI emission for OutLayer runtime.
 //!
 //! Produces a WASI-compliant WASM binary that:
@@ -670,7 +672,7 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
         // Convert result to string and write
         // For simplicity: if result is a string, write it. Otherwise write nothing.
         // Tag check: result & 7 == TAG_STR (7)
-        let ma4 = MemArg { offset: 0, align: 2, memory_index: 0 };
+        let _ma4 = MemArg { offset: 0, align: 2, memory_index: 0 };
 
         fb.instruction(&Instruction::LocalGet(2));
         fb.instruction(&Instruction::I64Const(7));
@@ -855,10 +857,10 @@ fn analyze_core_imports(wasm: &[u8]) -> Vec<&str> {
                 pos += 1;
                 // Skip type-specific bytes
                 match kind {
-                    0 => { let (tl, tl2) = read_leb128_outlayer(&wasm[pos..]); pos += tl2; }
-                    1 => { pos += 3; let (tl, tl2) = read_leb128_outlayer(&wasm[pos..]); pos += tl2; }
-                    2 => { let (tl, tl2) = read_leb128_outlayer(&wasm[pos..]); pos += tl2; }
-                    3 => { pos += 1; let (tl, tl2) = read_leb128_outlayer(&wasm[pos..]); pos += tl2; }
+                    0 => { let (_tl, tl2) = read_leb128_outlayer(&wasm[pos..]); pos += tl2; }
+                    1 => { pos += 3; let (_tl, tl2) = read_leb128_outlayer(&wasm[pos..]); pos += tl2; }
+                    2 => { let (_tl, tl2) = read_leb128_outlayer(&wasm[pos..]); pos += tl2; }
+                    3 => { pos += 1; let (_tl, tl2) = read_leb128_outlayer(&wasm[pos..]); pos += tl2; }
                     _ => {}
                 }
                 if !modules.contains(&module) && !module.is_empty() {
@@ -1020,58 +1022,72 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     types.ty().function([], [ValType::I64]);
     let near_void_to_i64 = nti;
     nti += 1;
+    let _ = nti;
     // type for (i64) -> ()
     types.ty().function([ValType::I64], []);
     let near_i64_to_void = nti;
     nti += 1;
+    let _ = nti;
     // type for (i64) -> i64
     types.ty().function([ValType::I64], [ValType::I64]);
     let near_i64_to_i64 = nti;
     nti += 1;
+    let _ = nti;
     // type for (i64, i64) -> ()
     types.ty().function([ValType::I64, ValType::I64], []);
     let near_2i64_to_void = nti;
     nti += 1;
+    let _ = nti;
     // type for (i64, i64) -> i64
     types.ty().function([ValType::I64, ValType::I64], [ValType::I64]);
     let near_2i64_to_i64 = nti;
     nti += 1;
+    let _ = nti;
     // type for (i64, i64, i64) -> ()
     types.ty().function([ValType::I64, ValType::I64, ValType::I64], []);
     let near_3i64_to_void = nti;
     nti += 1;
+    let _ = nti;
     // type for (i64, i64, i64) -> i64
     types.ty().function([ValType::I64, ValType::I64, ValType::I64], [ValType::I64]);
     let near_3i64_to_i64 = nti;
     nti += 1;
+    let _ = nti;
     // type for (i64, i64, i64, i64, i64) -> i64 (storage_write)
     types.ty().function([ValType::I64; 5], [ValType::I64]);
     let near_5i64_to_i64 = nti;
     nti += 1;
+    let _ = nti;
     // type for (i64, i64, i64, i64, i64, i64, i64, i64) -> i64 (promise_create)
     types.ty().function([ValType::I64; 8], [ValType::I64]);
     let near_8i64_to_i64 = nti;
     nti += 1;
+    let _ = nti;
     // type for (i64, i64, i64, i64, i64, i64, i64, i64, i64) -> i64 (promise_then)
     types.ty().function([ValType::I64; 9], [ValType::I64]);
     let near_9i64_to_i64 = nti;
     nti += 1;
+    let _ = nti;
     // type for (i64, i64, i64, i64, i64, i64, i64) -> () (promise_batch_action_function_call)
     types.ty().function([ValType::I64; 7], []);
     let near_7i64_to_void = nti;
     nti += 1;
+    let _ = nti;
     // type for (i64, i64, i64, i64, i64, i64) -> () (ed25519_verify variant)
     types.ty().function([ValType::I64; 6], [ValType::I64]);
     let near_6i64_to_i64 = nti;
     nti += 1;
+    let _ = nti;
     // type for (i64, i64, i64, i64) -> i64 (storage_iter_range)
     types.ty().function([ValType::I64; 4], [ValType::I64]);
     let near_4i64_to_i64 = nti;
     nti += 1;
+    let _ = nti;
     // type for (i64, i64, i64, i64) -> () (promise_batch_action_stake)
     types.ty().function([ValType::I64; 4], []);
     let near_4i64_to_void = nti;
     nti += 1;
+    let _ = nti;
 
     m.section(&types);
 
@@ -1246,7 +1262,7 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
 
         let ma4 = MemArg { offset: 0, align: 2, memory_index: 0 };
         let ma = MemArg { offset: 0, align: 3, memory_index: 0 };
-        let ma1 = MemArg { offset: 0, align: 0, memory_index: 0 };
+        let _ma1 = MemArg { offset: 0, align: 0, memory_index: 0 };
 
         // ── fd_read: read stdin into STDIN_BUF ──
         // Set up iov at offset 64

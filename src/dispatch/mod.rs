@@ -6,7 +6,7 @@
 use crate::types::{Env, EvalState, LispVal};
 
 // Re-export helpers so dispatch modules can use crate::helpers::is_truthy etc.
-pub use crate::helpers::is_truthy;
+// pub use crate::helpers::is_truthy;  // unused for now
 
 pub mod crypto;
 pub mod helpers;
@@ -27,7 +27,7 @@ pub mod dispatch_strings;
 pub mod dispatch_types;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use llm_provider::*;
+// pub use llm_provider::*;  // unused for now
 
 // ---------------------------------------------------------------------------
 // JSON conversion

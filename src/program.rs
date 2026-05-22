@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Program-level evaluation: desugar top-level forms, compile, run through VM.
 //!
 //! Strategy: transform a sequence of top-level forms into a single zero-param

@@ -1,3 +1,4 @@
+#![allow(unreachable_patterns)]
 //! Runtime type system — predicates, contracts, and schemas.
 //!
 //! Three layers:

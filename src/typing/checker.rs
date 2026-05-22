@@ -12,6 +12,15 @@
 use super::types::{Scheme, TcCon, TcEnv, TcType};
 use crate::types::LispVal;
 
+/// Returns true for effectful operations that are forbidden in pure blocks.
+fn is_effectful(name: &str) -> bool {
+    name.starts_with("near/")
+        || name.starts_with("json")
+        || name == "print"
+        || name == "println"
+        || name == "set!"
+}
+
 // ---------------------------------------------------------------------------
 // Substitution & Unification
 // ---------------------------------------------------------------------------
@@ -87,6 +96,9 @@ fn unify(t1: &TcType, t2: &TcType) -> UnifyResult {
     match (t1, t2) {
         // Var with Var
         (TcType::Var(a), TcType::Var(b)) if a == b => Ok(Subst::new()),
+
+        // Any with anything — escape hatch for untypeable constructs
+        (TcType::Con(TcCon::Any), _) | (_, TcType::Con(TcCon::Any)) => Ok(Subst::new()),
 
         // Var with anything — occurs check
         (TcType::Var(a), t) | (t, TcType::Var(a)) => {
@@ -349,6 +361,7 @@ pub struct PureCheckResult {
 /// Returns Ok with all results if every form type-checks, or the first error.
 pub fn check_pure_block(forms: &[&LispVal]) -> Result<Vec<PureCheckResult>, String> {
     let mut env = TcEnv::with_pure_builtins();
+    env.pure_mode = true;  // forbid effectful calls in pure blocks
     let mut supply = VarSupply::new();
     let mut results = Vec::new();
 
@@ -665,6 +678,7 @@ fn check_function_define(sig: &[LispVal], rest: &[LispVal]) -> Result<PureCheckR
 
     // Set up typing environment
     let mut env = TcEnv::with_pure_builtins();
+    env.pure_mode = true;
     let mut supply = VarSupply::new();
 
     // Add params with fresh type vars or from annotation
@@ -801,7 +815,7 @@ fn infer(
                     // Instantiate the scheme: replace quantified vars with fresh ones
                     Ok(instantiate(scheme, supply))
                 }
-                None => Err(format!("pure: undefined variable '{}'", name)),
+                None => Err(format!("type error: undefined variable '{}' — not in scope", name)),
             }
         }
 
@@ -817,6 +831,27 @@ fn infer(
                 LispVal::Sym(s) if s == "or" => infer_or(&list[1..], env, supply, subst),
                 LispVal::Sym(s) if s == "cond" => infer_cond(&list[1..], env, supply, subst),
                 LispVal::Sym(s) if s == "quote" => Ok(TcType::Con(TcCon::Any)), // quoted data is opaque
+                LispVal::Sym(s) if s == "set!" => {
+                    // (set! var value) — mutation, infer the value but return nil
+                    if list.len() >= 3 {
+                        let _ = infer(&list[2], env, supply, subst)?;
+                    }
+                    Ok(TcType::Con(TcCon::Nil))
+                }
+                LispVal::Sym(s) if s == "assert-equal" => {
+                    // (assert-equal expected actual) — infer both, return nil
+                    if list.len() >= 3 {
+                        let _ = infer(&list[1], env, supply, subst)?;
+                        let _ = infer(&list[2], env, supply, subst)?;
+                    }
+                    Ok(TcType::Con(TcCon::Nil))
+                }
+                LispVal::Sym(s) if s == "assert-true" || s == "assert-raises" => {
+                    if list.len() >= 2 {
+                        let _ = infer(&list[1], env, supply, subst)?;
+                    }
+                    Ok(TcType::Con(TcCon::Nil))
+                }
                 LispVal::Sym(s) if s == "list" => {
                     infer_list_literal(&list[1..], env, supply, subst)
                 }
@@ -1092,13 +1127,29 @@ fn infer_cond(
     if parts.is_empty() {
         return Ok(TcType::Con(TcCon::Nil));
     }
+    // Check exhaustiveness: last clause should have "else" as condition
+    let has_else = parts.iter().last().and_then(|c| {
+        if let LispVal::List(l) = c { l.first() } else { None }
+    }).and_then(|v| if let LispVal::Sym(s) = v { Some(s.as_str()) } else { None })
+    .map(|s| s == "else" || s == "true" || s == "t")
+    .unwrap_or(false);
+    if !has_else {
+        eprintln!("⚠ warning: cond without else — may return nil when no branch matches");
+    }
     let mut result_type: Option<TcType> = None;
     for clause in parts {
         let pair = match clause {
             LispVal::List(l) if l.len() >= 2 => l,
             _ => continue,
         };
-        let _cond_type = infer(&pair[0], env, supply, subst)?;
+        // Skip type-checking the condition for else/true/t — they're always-true sentinels
+        let cond_sym = match &pair[0] {
+            LispVal::Sym(s) if s == "else" || s == "true" || s == "t" => None,
+            other => Some(other),
+        };
+        if let Some(cond) = cond_sym {
+            let _cond_type = infer(cond, env, supply, subst)?;
+        }
         let branch_type = infer(&pair[1], env, supply, subst)?;
         match result_type {
             None => result_type = Some(branch_type),
@@ -1146,6 +1197,18 @@ fn infer_application(
     let func = &list[0];
     let args = &list[1..];
 
+    // Effect check: reject effectful calls in pure mode
+    if env.pure_mode {
+        if let LispVal::Sym(name) = func {
+            if is_effectful(name) {
+                return Err(format!(
+                    "effect error: cannot call '{}' inside pure — it has side effects",
+                    name
+                ));
+            }
+        }
+    }
+
     let func_type = infer(func, env, supply, subst)?;
 
     // Create arg types
@@ -1173,6 +1236,405 @@ fn infer_application(
 
 // ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
+//---------------------------------------------------------------------------
 
 use std::collections::HashMap;
+
+// ---------------------------------------------------------------------------
+// Whole-program type check pass (used by WASM compiler)
+// ---------------------------------------------------------------------------
+
+/// Run a lightweight type-check pass over all top-level define forms.
+///
+/// This catches:
+/// - Undefined variables
+/// - Arity mismatches in function calls
+/// - Type mismatches (e.g., passing str where int expected)
+/// - Heterogeneous list literals
+///
+/// For `(pure (define ...))` forms, the existing `check_pure_define` /
+/// `check_pure_block` is used (which also validates annotations).
+/// For bare `(define ...)` forms, we run inference-only checking — no
+/// annotation required, but still catches undefined vars and arity errors.
+///
+/// `near` flag selects between the pure-only builtin env and the NEAR host
+/// builtin env (which knows about `near/input`, `near/storage_write`, etc.)
+///
+/// Returns `Ok(())` if all forms type-check, or `Err(msg)` with the first error.
+pub fn type_check_program(exprs: &[LispVal], near: bool) -> Result<(), String> {
+    let mut env = if near {
+        TcEnv::with_near_builtins()
+    } else {
+        TcEnv::with_pure_builtins()
+    };
+    let mut supply = VarSupply::new();
+
+    for expr in exprs {
+        let list = match expr {
+            LispVal::List(l) => l,
+            _ => continue, // skip non-lists (comments, atoms, etc.)
+        };
+
+        if list.is_empty() {
+            continue;
+        }
+
+        match &list[0] {
+            // (pure (define ...) ...) — use existing checker
+            LispVal::Sym(s) if s == "pure" => {
+                let define_forms: Vec<&LispVal> = list[1..]
+                    .iter()
+                    .filter(|f| {
+                        if let LispVal::List(l) = f {
+                            matches!(l.first(), Some(LispVal::Sym(s)) if s == "define")
+                        } else {
+                            false
+                        }
+                    })
+                    .collect();
+
+                if define_forms.is_empty() {
+                    // Single form: (pure (define ...))
+                    let results = crate::typing::check_pure_define(&list[1..])?;
+                    env.insert_mono(results.name, results.inferred_type);
+                } else {
+                    // Block: (pure (define ...) (define ...))
+                    let results = crate::typing::check_pure_block(&define_forms)?;
+                    for r in results {
+                        env.insert_mono(r.name, r.inferred_type);
+                    }
+                }
+            }
+
+            // (define (name params...) body) — inference-only check
+            LispVal::Sym(s) if s == "define" && list.len() >= 3 => {
+                match &list[1] {
+                    // Function define
+                    LispVal::List(sig) if !sig.is_empty() => {
+                        if let LispVal::Sym(name) = &sig[0] {
+                            let params: Vec<String> = sig[1..]
+                                .iter()
+                                .map(|v| match v {
+                                    LispVal::Sym(s) => s.clone(),
+                                    other => format!("_{}", other),
+                                })
+                                .collect();
+
+                            // Build body (handle multi-body defines)
+                            let body = if list.len() > 3 {
+                                LispVal::List(
+                                    std::iter::once(LispVal::Sym("begin".into()))
+                                        .chain(list[2..].iter().cloned())
+                                        .collect(),
+                                )
+                            } else {
+                                list[2].clone()
+                            };
+
+                            // Create fresh type vars for params
+                            let mut check_env = env.clone();
+                            let mut subst = Subst::new();
+                            let ret_var = supply.fresh();
+                            let any_ty = TcType::Con(TcCon::Any);
+                            let mut param_types: Vec<TcType> = Vec::with_capacity(params.len());
+
+                            // Detect ycomb-style self-call: if the first param name
+                            // is "me" or "self", it's a defunctionalized self-ref.
+                            // Give it `any` type to avoid infinite type errors.
+                            let self_param = params.first().map(|s| s.as_str()).unwrap_or("");
+                            let is_self_param = self_param == "me" || self_param == "self";
+
+                            for (i, _p) in params.iter().enumerate() {
+                                if i == 0 && is_self_param {
+                                    param_types.push(any_ty.clone());
+                                } else {
+                                    param_types.push(supply.fresh());
+                                }
+                            }
+
+                            // Self-reference: register the function's own type so
+                            // recursive calls type-check. For ycomb-style (has "me"/"self"
+                            // param), the extra "me" param is excluded from the callable type.
+                            if is_self_param && params.len() > 1 {
+                                // (fib me n) is callable as (fib n) — skip the me param
+                                let callable_params: Vec<TcType> =
+                                    param_types[1..].to_vec();
+                                let self_type = TcType::Arrow(
+                                    callable_params,
+                                    Box::new(ret_var.clone()),
+                                );
+                                check_env.insert_mono(name.clone(), self_type);
+                            } else if !is_self_param {
+                                // Normal direct recursion
+                                let self_type = TcType::Arrow(
+                                    param_types.clone(),
+                                    Box::new(ret_var.clone()),
+                                );
+                                check_env.insert_mono(name.clone(), self_type);
+                            } else {
+                                // Single-param ycomb: (f me) — unlikely but handle gracefully
+                                check_env.insert_mono(name.clone(), any_ty.clone());
+                            }
+
+                            for (p, t) in params.iter().zip(param_types.iter()) {
+                                check_env.insert_mono(p.clone(), t.clone());
+                            }
+
+                            // Infer body — errors propagate as compile errors
+                            let _body_type = infer(&body, &check_env, &mut supply, &mut subst)?;
+
+                            // Register inferred type for later defines
+                            let resolved_params: Vec<TcType> =
+                                param_types.iter().map(|t| subst.apply(t)).collect();
+                            let resolved_ret = subst.apply(&ret_var);
+                            env.insert_mono(
+                                name.clone(),
+                                TcType::Arrow(resolved_params, Box::new(resolved_ret)),
+                            );
+                        }
+                    }
+                    // Value define: (define name value)
+                    LispVal::Sym(name) => {
+                        let value = &list[2];
+                        let mut subst = Subst::new();
+                        let inferred = infer(value, &env, &mut supply, &mut subst)?;
+                        env.insert_mono(name.clone(), subst.apply(&inferred));
+                    }
+                    _ => {}
+                }
+            }
+
+            // Skip exports, memory declarations, borsh-schema, etc.
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+/// Scan all expressions for storage key consistency.
+/// Tracks `(near/storage_write "key" val)` to build a schema, then warns if
+/// `(near/storage_read "key")` is used where a different type was written.
+pub fn check_storage_schema(exprs: &[LispVal]) {
+    let mut schema: HashMap<String, String> = HashMap::new(); // key → location info
+
+    fn extract_str_key(val: &LispVal) -> Option<String> {
+        match val {
+            LispVal::Str(s) => Some(s.clone()),
+            _ => None,
+        }
+    }
+
+    fn walk_for_storage(exprs: &[LispVal], schema: &mut HashMap<String, String>) {
+        for expr in exprs {
+            walk_expr_storage(expr, schema);
+        }
+    }
+
+    fn walk_expr_storage(expr: &LispVal, schema: &mut HashMap<String, String>) {
+        match expr {
+            LispVal::List(list) if list.len() >= 3 => {
+                if let LispVal::Sym(op) = &list[0] {
+                    if op == "near/storage_write" {
+                        if let Some(key) = extract_str_key(&list[1]) {
+                            // Record that this key is written to
+                            schema.entry(key).or_insert_with(|| "written".into());
+                        }
+                    } else if op == "near/storage_read" {
+                        if let Some(key) = extract_str_key(&list[1]) {
+                            // Check if this key was ever written
+                            if !schema.contains_key(&key) {
+                                eprintln!(
+                                    "⚠ warning: storage_read of key \"{}\" but no matching storage_write found",
+                                    key
+                                );
+                            }
+                        }
+                    }
+                }
+                // Recurse into sub-expressions
+                for sub in list {
+                    walk_expr_storage(sub, schema);
+                }
+            }
+            LispVal::List(list) => {
+                for sub in list {
+                    walk_expr_storage(sub, schema);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    walk_for_storage(exprs, &mut schema);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Checked arithmetic tests ──
+
+    #[test]
+    fn test_checked_add_overflows() {
+        // (+ 9223372036854775807 1) should fail at compile time (const eval)
+        let src = "(define (run) (+ 9223372036854775807 1))";
+        let result = crate::wasm_emit::compile_pure(src);
+        assert!(result.is_err(), "expected overflow error, got success");
+        let err = result.unwrap_err();
+        assert!(err.contains("overflow") || err.contains("Overflow"),
+            "expected overflow message, got: {}", err);
+    }
+
+    #[test]
+    fn test_checked_sub_overflows() {
+        // (- 0 1) should be fine (returns -1), but (- -9223372036854775808 1) overflows
+        let src = "(define (run) (- -9223372036854775808 1))";
+        let result = crate::wasm_emit::compile_pure(src);
+        assert!(result.is_err(), "expected underflow error, got success");
+    }
+
+    #[test]
+    fn test_checked_mul_overflows() {
+        let src = "(define (run) (* 9223372036854775807 2))";
+        let result = crate::wasm_emit::compile_pure(src);
+        assert!(result.is_err(), "expected overflow error, got success");
+    }
+
+    #[test]
+    fn test_wrap_add_no_overflow() {
+        // wrap-add should always succeed, even on overflow
+        let src = "(define (run) (wrap-add 9223372036854775807 1))";
+        let result = crate::wasm_emit::compile_pure(src);
+        assert!(result.is_ok(), "wrap-add should not error, got: {:?}", result);
+    }
+
+    #[test]
+    fn test_normal_add_no_overflow() {
+        let src = "(define (run) (+ 1 2))";
+        let result = crate::wasm_emit::compile_pure(src);
+        assert!(result.is_ok(), "normal add should work, got: {:?}", result);
+    }
+
+    // ── Effect tracking tests ──
+
+    #[test]
+    fn test_pure_rejects_storage_write() {
+        let src = r#"(pure (define (bad) (near/storage_write "k" "v")))"#;
+        let result = type_check_program(
+            &crate::parser::parse_all(src).unwrap(), true
+        );
+        assert!(result.is_err(), "pure should reject near/storage_write");
+        let err = result.unwrap_err();
+        assert!(err.contains("effect"), "expected effect error, got: {}", err);
+    }
+
+    #[test]
+    fn test_pure_rejects_log() {
+        let src = r#"(pure (define (bad) (near/log "hello")))"#;
+        let result = type_check_program(
+            &crate::parser::parse_all(src).unwrap(), true
+        );
+        assert!(result.is_err(), "pure should reject near/log");
+    }
+
+    #[test]
+    fn test_pure_allows_arithmetic() {
+        let src = "(pure (define (good x) (+ x 1)))";
+        let result = type_check_program(
+            &crate::parser::parse_all(src).unwrap(), true
+        );
+        assert!(result.is_ok(), "pure should allow arithmetic, got: {:?}", result);
+    }
+
+    // ── Storage schema tests ──
+
+    #[test]
+    fn test_storage_schema_warns_on_orphan_read() {
+        // reading a key that was never written should produce a warning on stderr
+        let src = r#"
+            (define (run) (near/storage_read "orphan_key"))
+        "#;
+        // Can't easily capture eprintln in unit tests, but the function should not panic
+        let exprs = crate::parser::parse_all(src).unwrap();
+        check_storage_schema(&exprs);
+        // If we got here, it didn't crash
+    }
+
+    // ── Assert forms tests ──
+
+    #[test]
+    fn test_assert_equal_compiles() {
+        let src = "(define (run) (assert-equal 1 1))";
+        let result = crate::wasm_emit::compile_pure(src);
+        assert!(result.is_ok(), "assert-equal should compile, got: {:?}", result);
+    }
+
+    #[test]
+    fn test_assert_true_compiles() {
+        let src = "(define (run) (assert-true (> 5 3)))";
+        let result = crate::wasm_emit::compile_pure(src);
+        assert!(result.is_ok(), "assert-true should compile, got: {:?}", result);
+    }
+
+    #[test]
+    fn test_assert_raises_compiles() {
+        let src = "(define (run) (assert-raises (/ 1 0)))";
+        let result = crate::wasm_emit::compile_pure(src);
+        assert!(result.is_ok(), "assert-raises should compile, got: {:?}", result);
+    }
+
+    // ── Cond exhaustiveness tests ──
+
+    #[test]
+    fn test_cond_with_else_no_warning() {
+        // This should compile without issues
+        let src = r#"
+            (define (classify x)
+              (cond
+                ((< x 0) "negative")
+                ((> x 0) "positive")
+                (else "zero")))
+        "#;
+        let result = crate::wasm_emit::compile_pure(src);
+        assert!(result.is_ok(), "cond with else should compile, got: {:?}", result);
+    }
+
+    #[test]
+    fn test_cond_without_else_still_compiles() {
+        // No else — warning but not error
+        let src = r#"
+            (define (maybe x)
+              (cond
+                ((> x 0) "positive")))
+        "#;
+        let result = crate::wasm_emit::compile_pure(src);
+        assert!(result.is_ok(), "cond without else should still compile (just warn)");
+    }
+
+    // ── Type checker core tests ──
+
+    #[test]
+    fn test_undefined_variable_caught() {
+        let src = "(define (run) (+ unknown_var 1))";
+        let result = crate::wasm_emit::compile_pure(src);
+        assert!(result.is_err(), "should catch undefined variable");
+        let err = result.unwrap_err();
+        assert!(err.contains("undefined") || err.contains("Unbound"),
+            "expected undefined var error, got: {}", err);
+    }
+
+    #[test]
+    fn test_arity_mismatch_caught() {
+        let src = "(define (f x) (+ x 1)) (define (run) (f 1 2))";
+        let result = crate::wasm_emit::compile_pure(src);
+        assert!(result.is_err(), "should catch arity mismatch");
+    }
+
+    #[test]
+    fn test_near_builtin_accepted() {
+        let src = r#"(define (hello) (near/return_str "hi"))"#;
+        let result = crate::wasm_emit::compile_near(src);
+        assert!(result.is_ok(), "near builtins should be accepted, got: {:?}", result);
+    }
+}

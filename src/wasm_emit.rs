@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+#![allow(unreachable_patterns)]
 //! Binary WASM emitter via wasm-encoder. No string-based WAT.
 //!
 //! NEAR constraints baked in:
@@ -139,7 +141,7 @@ const BORSH_BUF: i64 = 36864; // 4KB scratch buffer for Borsh serialize (after R
 
 // ── Borsh schema types (compile-time only) ──
 #[derive(Clone, Debug)]
-enum BorshType {
+pub(crate) enum BorshType {
     U8, U32, U64, I64, U128, F64, Bool, String, Bytes,
     Vec(Box<BorshType>),
     Option(Box<BorshType>),
@@ -275,7 +277,7 @@ impl WasmEmitter {
     fn emit_num_coerce(&mut self) -> Vec<Instruction<'static>> {
         let tmp = self.local_idx("__coerce_tmp");
         let result = self.local_idx("__coerce_result");
-        let mut v = vec![
+        let v = vec![
             Instruction::LocalSet(tmp),   // save val
             Instruction::LocalGet(tmp),
             Instruction::I64Const(7),     // mask tag bits
@@ -301,12 +303,11 @@ impl WasmEmitter {
         self.emit_tag(TAG_NUM)
     }
 
-    /// Safe division: checks for zero divisor, returns 0 instead of trapping.
-    /// Stack: [a, b] → [a/b] or [0] if b==0
+    /// Safe division: checks for zero divisor, traps instead of returning garbage.
+    /// Stack: [a, b] → [a/b] or trap if b==0
     fn emit_safe_div(&mut self) -> Vec<Instruction<'static>> {
         let a = self.local_idx("__div_a");
         let b = self.local_idx("__div_b");
-        let result = self.local_idx("__div_result");
         vec![
             // Pop b then a into locals
             Instruction::LocalSet(b),
@@ -315,23 +316,20 @@ impl WasmEmitter {
             Instruction::LocalGet(b),
             Instruction::I64Eqz,
             Instruction::If(BlockType::Empty),
-            // b is zero → result = 0
-            Instruction::I64Const(0),
-            Instruction::LocalSet(result),
+            // b is zero → trap (division by zero)
+            Instruction::Unreachable,
             Instruction::Else,
             // b is non-zero → do the division
             Instruction::LocalGet(a),
             Instruction::LocalGet(b),
             Instruction::I64DivS,
-            Instruction::LocalSet(result),
             Instruction::End,
-            Instruction::LocalGet(result),
         ]
     }
 
-    /// Safe remainder: checks for zero divisor, returns 0 instead of trapping.
+    /// Safe remainder: checks for zero divisor, traps instead of returning garbage.
     /// Uses euclidean remainder (always non-negative) to match ClosureVM's rem_euclid.
-    /// Stack: [a, b] → [euclidean a%b] or [0] if b==0
+    /// Stack: [a, b] → [euclidean a%b] or trap if b==0
     fn emit_safe_rem(&mut self) -> Vec<Instruction<'static>> {
         let a = self.local_idx("__rem_a");
         let b = self.local_idx("__rem_b");
@@ -342,8 +340,8 @@ impl WasmEmitter {
             Instruction::LocalGet(b),
             Instruction::I64Eqz,
             Instruction::If(BlockType::Empty),
-            Instruction::I64Const(0),
-            Instruction::LocalSet(result),
+            // b is zero → trap (division by zero in mod)
+            Instruction::Unreachable,
             Instruction::Else,
             Instruction::LocalGet(a),
             Instruction::LocalGet(b),
@@ -370,6 +368,130 @@ impl WasmEmitter {
             Instruction::End,
             Instruction::End,
             Instruction::LocalGet(result),
+        ]
+    }
+
+    /// Checked i64 addition: traps on overflow.
+    /// Stack: [a, b] → [a+b] or trap
+    fn emit_checked_add(&mut self) -> Vec<Instruction<'static>> {
+        let a = self.local_idx("__ck_add_a");
+        let b = self.local_idx("__ck_add_b");
+        let r = self.local_idx("__ck_add_r");
+        // Overflow: (a ^ b) >= 0 && (r ^ a) < 0
+        vec![
+            Instruction::LocalSet(b),
+            Instruction::LocalSet(a),
+            Instruction::LocalGet(a),
+            Instruction::LocalGet(b),
+            Instruction::I64Add,
+            Instruction::LocalSet(r),
+            // Check: same-sign inputs
+            Instruction::LocalGet(a),
+            Instruction::LocalGet(b),
+            Instruction::I64Xor,
+            Instruction::I64Const(0),
+            Instruction::I64GeS, // (a^b) >= 0 → same sign
+            Instruction::If(BlockType::Empty),
+            // Same sign: check if result flipped
+            Instruction::LocalGet(r),
+            Instruction::LocalGet(a),
+            Instruction::I64Xor,
+            Instruction::I64Const(0),
+            Instruction::I64LtS, // (r^a) < 0 → overflow
+            Instruction::If(BlockType::Empty),
+            Instruction::Unreachable, // trap on overflow
+            Instruction::End,
+            Instruction::End,
+            Instruction::LocalGet(r),
+        ]
+    }
+
+    /// Checked i64 subtraction: traps on overflow.
+    /// Stack: [a, b] → [a-b] or trap
+    fn emit_checked_sub(&mut self) -> Vec<Instruction<'static>> {
+        let a = self.local_idx("__ck_sub_a");
+        let b = self.local_idx("__ck_sub_b");
+        let r = self.local_idx("__ck_sub_r");
+        // Overflow: (a ^ b) < 0 && (r ^ a) < 0
+        vec![
+            Instruction::LocalSet(b),
+            Instruction::LocalSet(a),
+            Instruction::LocalGet(a),
+            Instruction::LocalGet(b),
+            Instruction::I64Sub,
+            Instruction::LocalSet(r),
+            // Check: different-sign inputs
+            Instruction::LocalGet(a),
+            Instruction::LocalGet(b),
+            Instruction::I64Xor,
+            Instruction::I64Const(0),
+            Instruction::I64LtS, // (a^b) < 0 → different sign
+            Instruction::If(BlockType::Empty),
+            // Different sign: check if result flipped
+            Instruction::LocalGet(r),
+            Instruction::LocalGet(a),
+            Instruction::I64Xor,
+            Instruction::I64Const(0),
+            Instruction::I64LtS, // (r^a) < 0 → overflow
+            Instruction::If(BlockType::Empty),
+            Instruction::Unreachable, // trap on overflow
+            Instruction::End,
+            Instruction::End,
+            Instruction::LocalGet(r),
+        ]
+    }
+
+    /// Checked i64 multiplication: traps on overflow.
+    /// Stack: [a, b] → [a*b] or trap
+    fn emit_checked_mul(&mut self) -> Vec<Instruction<'static>> {
+        let a = self.local_idx("__ck_mul_a");
+        let b = self.local_idx("__ck_mul_b");
+        let r = self.local_idx("__ck_mul_r");
+        vec![
+            Instruction::LocalSet(b),
+            Instruction::LocalSet(a),
+            // Special case: a == 0 or b == 0 → result is 0, no overflow
+            Instruction::LocalGet(a),
+            Instruction::I64Eqz,
+            Instruction::If(BlockType::Result(ValType::I64)),
+            Instruction::I64Const(0),
+            Instruction::Else,
+            Instruction::LocalGet(b),
+            Instruction::I64Eqz,
+            Instruction::If(BlockType::Result(ValType::I64)),
+            Instruction::I64Const(0),
+            Instruction::Else,
+            Instruction::LocalGet(a),
+            Instruction::LocalGet(b),
+            Instruction::I64Mul,
+            Instruction::LocalSet(r),
+            // Check: r / b == a (with b != -1 edge case)
+            // If b == -1: overflow only if a == i64::MIN
+            Instruction::LocalGet(b),
+            Instruction::I64Const(-1),
+            Instruction::I64Eq,
+            Instruction::If(BlockType::Empty),
+            // b == -1: overflow iff a == i64::MIN
+            Instruction::LocalGet(a),
+            Instruction::I64Const(i64::MIN),
+            Instruction::I64Eq,
+            Instruction::If(BlockType::Empty),
+            Instruction::Unreachable,
+            Instruction::End,
+            Instruction::Else,
+            // General: r / b != a → overflow
+            Instruction::LocalGet(r),
+            Instruction::LocalGet(b),
+            Instruction::I64DivS,
+            Instruction::LocalGet(a),
+            Instruction::I64Ne,
+            Instruction::If(BlockType::Empty),
+            Instruction::Unreachable,
+            Instruction::End,
+            Instruction::End,
+            Instruction::LocalGet(r),
+            Instruction::End,
+            Instruction::End,
         ]
     }
 
@@ -431,12 +553,12 @@ impl WasmEmitter {
         let a_local = self.local_idx("__str_a");
         let b_local = self.local_idx("__str_b");
         let a_off = self.local_idx("__str_aoff");
-        let a_len = self.local_idx("__str_alen");
+        let _a_len = self.local_idx("__str_alen");
         let b_off = self.local_idx("__str_boff");
-        let b_len = self.local_idx("__str_blen");
-        let dst = self.local_idx("__str_dst");
-        let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
-        let ma1 = wasm_encoder::MemArg { offset: 1, align: 0, memory_index: 0 };
+        let _b_len = self.local_idx("__str_blen");
+        let _dst = self.local_idx("__str_dst");
+        let _ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+        let _ma1 = wasm_encoder::MemArg { offset: 1, align: 0, memory_index: 0 };
         let mut v = vec![
             // Save args
             Instruction::LocalSet(b_local),
@@ -556,7 +678,7 @@ impl WasmEmitter {
         let new_ptr = self.local_idx("__rha_new");
         let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
         let mem_limit = (self.memory_pages as i64) * 65536;
-        let mut v = vec![
+        let v = vec![
             // Read current runtime heap ptr
             Instruction::I64Const(RUNTIME_HEAP_PTR),
             Instruction::I32WrapI64,
@@ -1420,7 +1542,7 @@ impl WasmEmitter {
                             }
                         }
                     } else {
-                        Err(format!("undef: {}", n))
+                        Err(format!("undefined variable '{}' — not found in scope. Did you mean to define it?", n))
                     }
                 }
             }
@@ -1442,7 +1564,7 @@ impl WasmEmitter {
                     self.emit_dynamic_call(&items[0], &items[1..])
                 }
             }
-            _ => Err(format!("unsupported: {:?}", e)),
+            _ => Err(format!("compile error: unsupported expression form: {:?}", e)),
         }
     }
 
@@ -1472,7 +1594,7 @@ impl WasmEmitter {
                 let mut v = vec![Instruction::I64Const(0)];
                 v.extend(self.expr(&a[0])?);
                 v.extend(self.emit_untag());
-                v.push(Instruction::I64Sub);
+                v.extend(self.emit_checked_sub()); // 0 - x, traps on MIN
                 v.extend(self.emit_tag_num());
                 Ok(v)
             }
@@ -1487,6 +1609,10 @@ impl WasmEmitter {
                 v.extend(self.emit_tag_num());
                 Ok(v)
             }
+            // Wrapping arithmetic (never traps, always wraps — use for hashing, bit tricks)
+            "wrap-add" => self.fold_binop_wrapping(a, Instruction::I64Add, 0),
+            "wrap-sub" => self.fold_binop_wrapping(a, Instruction::I64Sub, 0),
+            "wrap-mul" => self.fold_binop_wrapping(a, Instruction::I64Mul, 1),
             "abs" => {
                 let temp = self.local_idx("__abs_tmp");
                 let mut v = Vec::new();
@@ -1676,6 +1802,51 @@ impl WasmEmitter {
             "begin" | "progn" => {
                 let mut v = Vec::new();
                 for (i,x) in a.iter().enumerate() { v.extend(self.expr(x)?); if i<a.len()-1 { v.push(Instruction::Drop); } }
+                Ok(v)
+            }
+            "assert-equal" if a.len() == 2 => {
+                // (assert-equal expected actual) — compare two values, trap if not equal
+                let expected = self.local_idx("__assert_expected");
+                let actual = self.local_idx("__assert_actual");
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?); // expected
+                v.push(Instruction::LocalSet(expected));
+                v.extend(self.expr(&a[1])?); // actual
+                v.push(Instruction::LocalSet(actual));
+                // Compare: if expected != actual, trap
+                v.push(Instruction::LocalGet(expected));
+                v.push(Instruction::LocalGet(actual));
+                v.push(Instruction::I64Ne);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Unreachable); // test failure
+                v.push(Instruction::End);
+                // Return nil (assert passed)
+                v.push(Instruction::I64Const(TAG_NIL));
+                Ok(v)
+            }
+            "assert-true" if a.len() == 1 => {
+                // (assert-true expr) — evaluate, trap if falsy
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_is_truthy());
+                v.push(Instruction::I32Eqz); // if NOT truthy
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
+                v.push(Instruction::I64Const(TAG_NIL));
+                Ok(v)
+            }
+            "assert-raises" if a.len() == 1 => {
+                // (assert-raises expr) — expect the expression to trap
+                // In WASM we can't catch traps, so we compile the body
+                // and check if it would trap (best-effort: just compile it normally;
+                // the test harness checks the WASM exit code)
+                // For now: emit the expr, drop result, return nil
+                // The test runner catches the trap externally
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?);
+                v.push(Instruction::Drop);
+                v.push(Instruction::I64Const(TAG_NIL));
                 Ok(v)
             }
             "let" => {
@@ -2662,7 +2833,7 @@ impl WasmEmitter {
                             // len is now on stack — but json_get_from_buf expects (ilen) as setup
                             // We also need the ptr. Store payload in a temp, compute both.
                             let tmp = self.local_idx("__jgs_tmp");
-                            let buf_ptr = self.local_idx("__jgs_bptr");
+                            let _buf_ptr = self.local_idx("__jgs_bptr");
                             setup.extend(buf_expr);
                             setup.push(Instruction::I64Const(3)); setup.push(Instruction::I64ShrU);
                             setup.push(Instruction::LocalSet(tmp));
@@ -2673,7 +2844,7 @@ impl WasmEmitter {
                             // Problem: json_get_from_buf takes a fixed buf address. The ptr is runtime.
                             // We need a version that takes buf from a local, not a constant.
                             // Quick fix: copy the string to a fixed buffer first, then scan it.
-                            drop(buf_val);
+                            let _ = buf_val;
                             // Copy string to INPUT_BUF (NEAR) or STDIN_BUF (WASI), then scan
                             let target_buf = if self.wasi_mode { 32768i64 } else { INPUT_BUF };
                             let src_ptr_l = self.local_idx("__jgs_sp");
@@ -5199,9 +5370,9 @@ impl WasmEmitter {
                 let hh = self.local_idx("__fm_hh");
                 let mid = self.local_idx("__fm_mid");
                 let mc = self.local_idx("__fm_mc");
-                let lo = self.local_idx("__fm_lo");
+                let _lo = self.local_idx("__fm_lo");
                 let lc = self.local_idx("__fm_lc");
-                let hi = self.local_idx("__fm_hi");
+                let _hi = self.local_idx("__fm_hi");
                 // Cross-term storage
                 let cross1_lo = self.local_idx("__fm_c1l");
                 let cross1_hi = self.local_idx("__fm_c1h");
@@ -5436,7 +5607,7 @@ impl WasmEmitter {
                 let m_mc = self.local_idx("__fm_mc");
                 let m_lo = self.local_idx("__fm_lo");
                 let m_lc = self.local_idx("__fm_lc");
-                let m_hi = self.local_idx("__fm_hi");
+                let _m_hi = self.local_idx("__fm_hi");
                 // Cross-term temps for mul
                 let c1_lo = self.local_idx("__fpd_c1l");
                 let c1_hi = self.local_idx("__fpd_c1h");
@@ -5597,7 +5768,7 @@ impl WasmEmitter {
                 let vl = self.local_idx("__fsqrt_vl");
                 let rh = self.local_idx("__fsqrt_rh");
                 let rl = self.local_idx("__fsqrt_rl");
-                let prev_rh = self.local_idx("__fsqrt_prh");
+                let _prev_rh = self.local_idx("__fsqrt_prh");
                 let qh = self.local_idx("__fsqrt_qh");
                 let ql = self.local_idx("__fsqrt_ql");
                 let sum_l = self.local_idx("__fsqrt_sl");
@@ -6149,7 +6320,7 @@ impl WasmEmitter {
                 let r_i = self.local_idx("__ttp_r");
                 let b_i = self.local_idx("__ttp_b");
                 let neg_i = self.local_idx("__ttp_neg");
-                let c_i = self.local_idx("__ttp_c");
+                let _c_i = self.local_idx("__ttp_c");
                 let mut v = Vec::new();
                 v.extend(tick); v.push(Instruction::LocalSet(t_i));
                 // Handle negative
@@ -7403,7 +7574,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(alloc_base as i64));
                 v.push(Instruction::LocalSet(dst_i));
                 // Advance next_data_offset
-                let new_offset = format!("{} + total_size rounded up", alloc_base);
+                let _new_offset = format!("{} + total_size rounded up", alloc_base);
                 // We'll fix next_data_offset after we know total_size... but it's runtime.
                 // For now, allocate a generous fixed buffer and advance by a worst-case amount.
                 // Actually, since count is often a literal, we can handle that. For runtime count,
@@ -10075,7 +10246,7 @@ impl WasmEmitter {
                 let i_tmp = self.local_idx("__fil_i");
                 let write_i = self.local_idx("__fil_w");
                 let elem_tmp = self.local_idx("__fil_e");
-                let pred_tmp = self.local_idx("__fil_p");
+                let _pred_tmp = self.local_idx("__fil_p");
                 let new_ptr = self.local_idx("__fil_new");
                 let p_idx = self.local_idx(&param_name);
                 let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
@@ -10361,6 +10532,7 @@ impl WasmEmitter {
                 if a.len() != 2 { return Err("nth: expected 2 args".into()); }
                 let arr_tmp = self.local_idx("__nth_arr");
                 let idx_tmp = self.local_idx("__nth_i");
+                let len_tmp = self.local_idx("__nth_len");
                 let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
                 let mut v = self.expr(&a[0])?;
                 v.extend(self.emit_untag());
@@ -10368,6 +10540,18 @@ impl WasmEmitter {
                 v.extend(self.expr(&a[1])?);
                 v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(idx_tmp));
+                // Load list length (ptr[0])
+                v.push(Instruction::LocalGet(arr_tmp));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(ma));
+                v.push(Instruction::LocalSet(len_tmp));
+                // Bounds check: idx < len, otherwise trap
+                v.push(Instruction::LocalGet(idx_tmp));
+                v.push(Instruction::LocalGet(len_tmp));
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Unreachable); // out of bounds
+                v.push(Instruction::End);
                 // Load ptr[(idx+1)*8]
                 v.push(Instruction::LocalGet(arr_tmp));
                 v.push(Instruction::I64Const(8));
@@ -10724,7 +10908,7 @@ impl WasmEmitter {
                     // 3. Dispatch based on lambda_info
                     let n_lambdas = self.lambda_info.len();
                     if n_lambdas == 0 {
-                        return Err(format!("dynamic call to '{}' but no lambdas defined", op));
+                        return Err(format!("compile error: dynamic call to '{}' but no functions defined yet — define the function before calling it", op));
                     }
                     v.push(Instruction::LocalGet(temp_callee));
                     v.push(Instruction::I64Const(3));
@@ -11033,10 +11217,23 @@ impl WasmEmitter {
                 let nums: Option<Vec<i64>> = args.iter().map(|x| if let LispVal::Num(n) = x { Some(*n) } else { None }).collect();
                 let nums = match nums { Some(n) => n, None => return None };
                 let result = match op.as_str() {
-                    "+" => nums.iter().skip(1).fold(nums[0], |a, &b| a.wrapping_add(b)),
-                    "-" if nums.len() == 1 => -nums[0],
-                    "-" => nums.iter().skip(1).fold(nums[0], |a, &b| a.wrapping_sub(b)),
-                    "*" => nums.iter().skip(1).fold(nums[0], |a, &b| a.wrapping_mul(b)),
+                    "+" => {
+                        let r = nums.iter().skip(1).try_fold(nums[0], |a: i64, &b: &i64| a.checked_add(b));
+                        r?  // return None on overflow (don't fold)
+                    }
+                    "-" if nums.len() == 1 => nums[0].checked_neg()?,
+                    "-" => {
+                        let r = nums.iter().skip(1).try_fold(nums[0], |a: i64, &b: &i64| a.checked_sub(b));
+                        r?
+                    }
+                    "*" => {
+                        let r = nums.iter().skip(1).try_fold(nums[0], |a: i64, &b: &i64| a.checked_mul(b));
+                        r?
+                    }
+                    "wrap-add" => nums.iter().skip(1).fold(nums[0], |a, &b| a.wrapping_add(b)),
+                    "wrap-sub" if nums.len() == 1 => nums[0].wrapping_neg(),
+                    "wrap-sub" => nums.iter().skip(1).fold(nums[0], |a, &b| a.wrapping_sub(b)),
+                    "wrap-mul" => nums.iter().skip(1).fold(nums[0], |a, &b| a.wrapping_mul(b)),
                     "/" if nums.len() == 2 && nums[1] != 0 => nums[0] / nums[1],
                     "mod" if nums.len() == 2 && nums[1] != 0 => nums[0] % nums[1],
                     "<" if nums.len() == 2 => if nums[0] < nums[1] { 1 } else { 0 },
@@ -11059,7 +11256,42 @@ impl WasmEmitter {
         if a.is_empty() { return Ok(self.emit_tagged_const(identity, TAG_NUM)); }
         // Deep constant folding: try to const_eval each arg first
         let folded_args: Vec<LispVal> = a.iter().map(|x| self.const_eval(x).unwrap_or_else(|| x.clone())).collect();
-        // If all args folded to constants, compute at compile time
+        // If all args folded to constants, compute at compile time (checked!)
+        let all_const = folded_args.iter().all(|x| matches!(x, LispVal::Num(_)));
+        if all_const {
+            let nums: Vec<i64> = folded_args.iter().map(|x| if let LispVal::Num(n) = x { *n } else { 0 }).collect();
+            let folded = match &op {
+                Instruction::I64Add => nums.iter().skip(1).try_fold(nums[0], |acc: i64, &x: &i64| acc.checked_add(x)),
+                Instruction::I64Sub => nums.iter().skip(1).try_fold(nums[0], |acc: i64, &x: &i64| acc.checked_sub(x)),
+                Instruction::I64Mul => nums.iter().skip(1).try_fold(nums[0], |acc: i64, &x: &i64| acc.checked_mul(x)),
+                _ => None,
+            };
+            match folded {
+                Some(result) => return Ok(self.emit_tagged_const(result, TAG_NUM)),
+                None => return Err("arithmetic overflow at compile time".into()),
+            }
+        }
+        let mut v = self.expr(&folded_args[0])?;
+        v.extend(self.emit_untag());
+        for x in &folded_args[1..] {
+            v.extend(self.expr(x)?);
+            v.extend(self.emit_untag());
+            match &op {
+                Instruction::I64Add => v.extend(self.emit_checked_add()),
+                Instruction::I64Sub => v.extend(self.emit_checked_sub()),
+                Instruction::I64Mul => v.extend(self.emit_checked_mul()),
+                _ => v.push(op.clone()),
+            }
+        }
+        v.extend(self.emit_tag_num());
+        Ok(v)
+    }
+
+    /// Wrapping arithmetic: old behavior, silently wraps on overflow.
+    /// For wrap-add, wrap-sub, wrap-mul — explicit opt-out of checked arithmetic.
+    fn fold_binop_wrapping(&mut self, a: &[LispVal], op: Instruction<'static>, identity: i64) -> Result<Vec<Instruction<'static>>, String> {
+        if a.is_empty() { return Ok(self.emit_tagged_const(identity, TAG_NUM)); }
+        let folded_args: Vec<LispVal> = a.iter().map(|x| self.const_eval(x).unwrap_or_else(|| x.clone())).collect();
         let all_const = folded_args.iter().all(|x| matches!(x, LispVal::Num(_)));
         if all_const {
             let nums: Vec<i64> = folded_args.iter().map(|x| if let LispVal::Num(n) = x { *n } else { 0 }).collect();
@@ -11556,7 +11788,7 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(disc_tmp));
                 v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(var_idx_local));
-                for (vi, (vname, vfields)) in variants.iter().enumerate() {
+                for (vi, (_vname, vfields)) in variants.iter().enumerate() {
                     if vi == 0 {
                         // First variant: check vi == 0
                         v.push(Instruction::LocalGet(var_idx_local));
@@ -11604,7 +11836,7 @@ impl WasmEmitter {
             other => vec![other],
         };
         if val_args.len() != field_types.len() {
-            return Err(format!("borsh-serialize: expected {} values, got {}", field_types.len(), val_args.len()));
+            return Err(format!("borsh-serialize: expected {} fields, got {} values — struct field count mismatch", field_types.len(), val_args.len()));
         }
         for (i, btype) in field_types.iter().enumerate() {
             v.extend(self.expr(&val_args[i])?);
@@ -13374,6 +13606,30 @@ impl WasmEmitter {
 
     // ── Module assembly ──
 
+    /// Estimate gas per exported method by counting WASM instructions.
+    /// NEAR charges ~1 gas per simple instruction, more for memory/host calls.
+    /// Returns a table of (export_name, instruction_count, estimated_tgas).
+    pub fn gas_estimate(&self) -> Vec<(String, usize, f64)> {
+        let host_count = self.host_needed.len();
+        let mut estimates = Vec::new();
+        for (fn_name, export_name, _is_view) in &self.exports {
+            if let Some(func) = self.funcs.iter().find(|f| f.name == *fn_name) {
+                let instr_count = func.instrs.len();
+                // Rough gas model: count host calls by checking Call instructions
+                // that reference imported functions (indices < host_count)
+                let host_calls = func.instrs.iter().filter(|i| {
+                    matches!(i, Instruction::Call(idx) if (*idx as usize) < host_count)
+                }).count();
+                let regular = instr_count.saturating_sub(host_calls);
+                // NEAR charges ~1 gas for simple ops, ~10 for host calls
+                let estimated_gas = (regular + host_calls * 10) as f64;
+                // 1 Tgas = 10^12 gas — but this is a rough estimate, so show in gas units
+                estimates.push((export_name.clone(), instr_count, estimated_gas));
+            }
+        }
+        estimates
+    }
+
     pub fn finish(&mut self, default_export: &str) -> Vec<u8> {
         // Tree-shake before emitting
         self.tree_shake();
@@ -13869,6 +14125,15 @@ fn parse_and_compile(source: &str, near: bool) -> Result<WasmEmitter, String> {
     let exprs = crate::parser::parse_all(source)?;
     let mut exprs = exprs;
     crate::clojure::desugar(&mut exprs);
+
+    // Type check pass — catches undefined vars, arity mismatches, type errors
+    crate::typing::type_check_program(&exprs, near)?;
+
+    // Storage schema validation — warns about reads without matching writes
+    if near {
+        crate::typing::check_storage_schema(&exprs);
+    }
+
     let mut em = WasmEmitter::new();
 
     // Pre-scan: register all function names for forward references (mutual recursion)
@@ -14011,6 +14276,18 @@ pub fn compile_near(source: &str) -> Result<Vec<u8>, String> {
             em.add_export(&f.name.clone(), "_run", false);
         }
     }
+    // Emit gas estimates before finish consumes the emitter
+    let estimates = em.gas_estimate();
+    if !estimates.is_empty() {
+        eprintln!("╔════════════════════════════════════════════════════╗");
+        eprintln!("║  Gas Estimation (per export)                       ║");
+        eprintln!("╠════════════════════════════════════════════════════╣");
+        for (name, instrs, gas) in &estimates {
+            eprintln!("║  {:<24} {:>4} instrs  ~{:.0} gas", name, instrs, gas);
+        }
+        eprintln!("╚════════════════════════════════════════════════════╝");
+    }
+    
     let wasm = em.finish("_run");
     Ok(wasm)
 }
@@ -14191,6 +14468,12 @@ fn process_borsh_schema(em: &mut WasmEmitter, items: &[LispVal]) -> Result<(), S
 
 /// Compile pre-parsed LispVal expressions to NEAR WASM
 pub fn compile_near_from_exprs(exprs: &[LispVal]) -> Result<Vec<u8>, String> {
+    // Type check pass
+    crate::typing::type_check_program(exprs, true)?;
+
+    // Storage schema validation
+    crate::typing::check_storage_schema(exprs);
+
     let mut em = WasmEmitter::new();
     for e in exprs {
         if let LispVal::List(items) = e {

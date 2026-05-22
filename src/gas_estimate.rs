@@ -1,3 +1,4 @@
+#![allow(unreachable_patterns)]
 //! NEAR gas estimation using finite-wasm — same analysis as nearcore's prepare step.
 
 use finite_wasm::{Analysis, Fee, max_stack, prefix_sum_vec::PrefixSumVec};

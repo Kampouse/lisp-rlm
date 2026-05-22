@@ -1,3 +1,5 @@
+#![allow(unreachable_patterns)]
+#![allow(dead_code)]
 use crate::helpers::is_truthy;
 use crate::types::{Env, EvalState, LispVal};
 
@@ -600,7 +602,7 @@ impl LoopCompiler {
                 .push(remap_op(op, base, &captured_remap, code_start));
         }
 
-        if let Some(ref name) = callee.name {
+        if let Some(ref _name) = callee.name {
             self.code.push(Op::TracePop);
         }
 
@@ -833,7 +835,7 @@ impl LoopCompiler {
                             let mut body_forms: Vec<LispVal> = Vec::new();
 
                             // Insert param type checks: (contract-check-param "x" x :int)
-                            for (idx, (name, ty)) in param_names.iter().zip(param_types.iter()).enumerate() {
+                            for (_idx, (name, ty)) in param_names.iter().zip(param_types.iter()).enumerate() {
                                 body_forms.push(LispVal::List(vec![
                                     LispVal::Sym("contract-check-param".into()),
                                     LispVal::Str(name.clone()),
@@ -1938,7 +1940,7 @@ impl LoopCompiler {
                             }
                             let body = &list[2..];
                             let mut ok = true;
-                            for (bi, expr) in body.iter().enumerate() {
+                            for (_bi, expr) in body.iter().enumerate() {
                                 if !inner.compile_expr(expr, outer_env) {
                                     ok = false;
                                     break;
@@ -2221,7 +2223,7 @@ impl LoopCompiler {
                             true
                         }
                     }
-                } else if let LispVal::List(ref callee) = list[0] {
+                } else if let LispVal::List(ref _callee) = list[0] {
                     // Computed function call: ((expr) args...)
                     // CallDynamic expects: [..., arg1, ..., argN, func]
                     // So compile args first, then callee.

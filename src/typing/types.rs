@@ -4,6 +4,74 @@
 //! No effects, no mutation — just pure data transformations.
 
 use std::collections::HashMap;
+
+/// Returns true for compiler builtin names that the type checker should
+/// accept without an explicit type signature. These are host functions
+/// and special ops that the WASM emitter knows how to compile.
+fn is_builtin_wildcard(name: &str) -> bool {
+    if name.starts_with("near/") {
+        // Validate against known NEAR host functions — typos should be caught
+        return is_known_near_func(&name[5..]);
+    }
+    name.starts_with("json")
+        || name.starts_with("u128/")
+        || name.starts_with("borsh-")
+        || name.starts_with("wasm/")
+        || matches!(
+            name,
+            "print"
+                | "println"
+                | "array"
+                | "defconst"
+                | "export"
+                | "memory"
+                | "module"
+                | "borsh-schema"
+                | "extend-runtime"
+        )
+}
+
+/// Known NEAR host function names (the part after "near/").
+/// Derived from the HOST_FUNCS table in wasm_emit.rs.
+const KNOWN_NEAR_FUNCS: &[&str] = &[
+    "store", "load", "remove", "has_key",
+    "storage_read", "storage_write", "storage_has_key", "storage_remove",
+    "return", "return_str", "return_value", "value_return",
+    "log",
+    "input",
+    "panic",
+    "current_account_id", "account_id",
+    "signer_account_id", "signer_public_key",
+    "signer_account_pk",
+    "predecessor_account_id", "predecessor",
+    "attached_deposit",
+    "block_index", "block_height", "block_timestamp",
+    "ed25519_verify", "p256_verify",
+    "sha256", "keccak256", "keccak512",
+    "random_seed",
+    "prepaid_gas", "used_gas",
+    "promise_create", "promise_then", "promise_and", "promise_result",
+    "promise_batch_create", "promise_batch_then",
+    "promise_batch_action_create_account",
+    "promise_batch_action_deploy_contract",
+    "promise_batch_action_function_call",
+    "promise_batch_action_transfer",
+    "promise_batch_action_stake",
+    "promise_batch_action_add_key_with_full_access",
+    "promise_batch_action_add_key_with_function_call",
+    "promise_batch_action_delete_key",
+    "promise_batch_action_delete_account",
+    "log_utf8", "log_utf16",
+    "abort",
+    "global_contract_set", "global_contract_status",
+    // JSON convenience builtins
+    "json_get_int", "json_get_str", "json_return_int", "json_return_str",
+];
+
+fn is_known_near_func(name: &str) -> bool {
+    KNOWN_NEAR_FUNCS.contains(&name)
+}
+
 /// A type variable ID. Allocated fresh by the type checker.
 pub type TVarId = u32;
 
@@ -49,12 +117,25 @@ pub struct Scheme {
 #[derive(Clone, Debug)]
 pub struct TcEnv {
     bindings: HashMap<String, Scheme>,
+    /// When true, any `near/*` symbol is accepted as `'any → 'any → ... → 'any`.
+    /// This avoids having to enumerate every host function while still catching
+    /// undefined user variables.
+    near_wildcard: bool,
+    /// When true, the checker is in a `pure` block — effectful operations
+    /// (near/storage_write, near/log, etc.) are forbidden.
+    pub pure_mode: bool,
+    /// Storage schema: maps literal storage keys to the type of value stored there.
+    /// Populated by near/storage_write, checked by near/storage_read.
+        #[allow(dead_code)]
+    pub storage_schema: HashMap<String, TcType>,
 }
-
 impl TcEnv {
     pub fn new() -> Self {
         TcEnv {
             bindings: HashMap::new(),
+            near_wildcard: false,
+            pure_mode: false,
+            storage_schema: HashMap::new(),
         }
     }
 
@@ -63,7 +144,26 @@ impl TcEnv {
     }
 
     pub fn get(&self, name: &str) -> Option<&Scheme> {
-        self.bindings.get(name)
+        if let Some(scheme) = self.bindings.get(name) {
+            return Some(scheme);
+        }
+        // Wildcard: accept any compiler builtin that isn't explicitly
+        // registered. The type checker's job is to catch user bugs —
+        // undefined user vars, arity mismatches — not validate every
+        // host function signature.
+        if self.near_wildcard && is_builtin_wildcard(name) {
+            thread_local! {
+                static WILDCARD: std::cell::RefCell<Scheme> = std::cell::RefCell::new(Scheme {
+                    vars: vec![0],
+                    ty: TcType::Var(0),
+                });
+            }
+            return WILDCARD.with(|s| {
+                let ptr: *const Scheme = s.as_ptr();
+                unsafe { Some(&*ptr) }
+            });
+        }
+        None
     }
 
     /// Insert a monomorphic (no quantified vars) binding.
@@ -76,7 +176,7 @@ impl TcEnv {
         let mut env = TcEnv::new();
 
         // Arithmetic: num → num → num
-        for name in &["+", "-", "*", "/", "mod", "min", "max"] {
+        for name in &["+", "-", "*", "/", "mod", "min", "max", "wrap-add", "wrap-sub", "wrap-mul"] {
             env.insert_mono(
                 name.to_string(),
                 TcType::Arrow(
@@ -271,6 +371,83 @@ impl TcEnv {
             ),
         );
 
+        env
+    }
+
+    /// NEAR host function builtins. These are effectful, so we type them as
+    /// returning `any` where the result could be anything. The point is to
+    /// avoid "undefined variable" errors, not to enforce effect discipline.
+    pub fn with_near_builtins() -> Self {
+        let mut env = Self::with_pure_builtins();
+        let str_ty = TcType::Con(TcCon::Str);
+        let int_ty = TcType::Con(TcCon::Int);
+        let bool_ty = TcType::Con(TcCon::Bool);
+        let any_ty = TcType::Con(TcCon::Any);
+
+        // near/input : () → str
+        env.insert_mono("near/input".into(), TcType::Arrow(vec![], Box::new(str_ty.clone())));
+        // near/return_str : str → any (terminates)
+        env.insert_mono("near/return_str".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(any_ty.clone())));
+        // near/return_value : str → any
+        env.insert_mono("near/return_value".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(any_ty.clone())));
+        // near/storage_read : str → str
+        env.insert_mono("near/storage_read".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())));
+        // near/storage_write : str → str → any
+        env.insert_mono("near/storage_write".into(), TcType::Arrow(vec![str_ty.clone(), str_ty.clone()], Box::new(any_ty.clone())));
+        // near/storage_has_key : str → bool
+        env.insert_mono("near/storage_has_key".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(bool_ty.clone())));
+        // near/storage_remove : str → any
+        env.insert_mono("near/storage_remove".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(any_ty.clone())));
+        // near/log : str → any
+        env.insert_mono("near/log".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(any_ty.clone())));
+        // near/account_id : () → str
+        env.insert_mono("near/account_id".into(), TcType::Arrow(vec![], Box::new(str_ty.clone())));
+        // near/predecessor : () → str
+        env.insert_mono("near/predecessor".into(), TcType::Arrow(vec![], Box::new(str_ty.clone())));
+        // near/signer_account_id : () → str
+        env.insert_mono("near/signer_account_id".into(), TcType::Arrow(vec![], Box::new(str_ty.clone())));
+        // near/signer_public_key : () → str
+        env.insert_mono("near/signer_public_key".into(), TcType::Arrow(vec![], Box::new(str_ty.clone())));
+        // near/attached_deposit : () → int
+        env.insert_mono("near/attached_deposit".into(), TcType::Arrow(vec![], Box::new(int_ty.clone())));
+        // near/block_timestamp : () → int
+        env.insert_mono("near/block_timestamp".into(), TcType::Arrow(vec![], Box::new(int_ty.clone())));
+        // near/block_height : () → int
+        env.insert_mono("near/block_height".into(), TcType::Arrow(vec![], Box::new(int_ty.clone())));
+        // near/ed25519_verify : str → str → str → int
+        env.insert_mono("near/ed25519_verify".into(), TcType::Arrow(vec![str_ty.clone(), str_ty.clone(), str_ty.clone()], Box::new(int_ty.clone())));
+        // near/p256_verify : str → str → str → int
+        env.insert_mono("near/p256_verify".into(), TcType::Arrow(vec![str_ty.clone(), str_ty.clone(), str_ty.clone()], Box::new(int_ty.clone())));
+        // near/sha256 : str → str
+        env.insert_mono("near/sha256".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())));
+        // near/keccak256 : str → str
+        env.insert_mono("near/keccak256".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())));
+        // near/random_seed : () → str
+        env.insert_mono("near/random_seed".into(), TcType::Arrow(vec![], Box::new(str_ty.clone())));
+        // near/prepaid_gas : () → int
+        env.insert_mono("near/prepaid_gas".into(), TcType::Arrow(vec![], Box::new(int_ty.clone())));
+        // near/used_gas : () → int
+        env.insert_mono("near/used_gas".into(), TcType::Arrow(vec![], Box::new(int_ty.clone())));
+        // near/value_return : str → any
+        env.insert_mono("near/value_return".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(any_ty.clone())));
+        // near/panic : str → any
+        env.insert_mono("near/panic".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(any_ty.clone())));
+        // near/promise_create : str → str → str → int → int → int
+        env.insert_mono("near/promise_create".into(), TcType::Arrow(vec![str_ty.clone(), str_ty.clone(), str_ty.clone(), int_ty.clone(), int_ty.clone()], Box::new(int_ty.clone())));
+        // near/promise_then : int → str → str → str → int → int → int
+        env.insert_mono("near/promise_then".into(), TcType::Arrow(vec![int_ty.clone(), str_ty.clone(), str_ty.clone(), str_ty.clone(), int_ty.clone(), int_ty.clone()], Box::new(int_ty.clone())));
+        // near/promise_and : int → int → int
+        env.insert_mono("near/promise_and".into(), TcType::Arrow(vec![int_ty.clone(), int_ty.clone()], Box::new(int_ty.clone())));
+        // near/promise_result : int → str
+        env.insert_mono("near/promise_result".into(), TcType::Arrow(vec![int_ty.clone()], Box::new(str_ty.clone())));
+
+        // String builtins used in NEAR contracts
+        env.insert_mono("str-len".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(int_ty.clone())));
+        env.insert_mono("str-slice".into(), TcType::Arrow(vec![str_ty.clone(), int_ty.clone(), int_ty.clone()], Box::new(str_ty.clone())));
+        env.insert_mono("str-from-bytes".into(), TcType::Arrow(vec![TcType::Con(TcCon::List(Box::new(int_ty.clone())))], Box::new(str_ty.clone())));
+        env.insert_mono("str-to-bytes".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(TcType::Con(TcCon::List(Box::new(int_ty.clone()))))));
+
+        env.near_wildcard = true;
         env
     }
 }

@@ -15,11 +15,11 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
     
     // ── Types for _start: () -> result<> ──
     // Define result<> type
-    let (result_type, mut renc) = b.ty(None);
+    let (result_type, renc) = b.ty(None);
     {
         renc.defined_type().result(None, None);
     }
-    let (run_type, mut run_enc) = b.ty(None);
+    let (run_type, run_enc) = b.ty(None);
     {
         run_enc.function().params([] as [(&str, ComponentValType); 0])
             .result(Some(ComponentValType::Type(result_type)));
@@ -29,7 +29,7 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
         // ── Outlayer component interface ──
         let mut func_types: Vec<u32> = Vec::new();
         for &nparams in &info.param_counts {
-            let (idx, mut enc) = b.ty(None);
+            let (idx, enc) = b.ty(None);
             {
                 let mut f = enc.function();
                 let params: Vec<(&str, ComponentValType)> = (0..nparams)
@@ -40,7 +40,7 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
             func_types.push(idx);
         }
 
-        let (outlayer_inst_type, mut inst_enc) = b.ty(None);
+        let (outlayer_inst_type, inst_enc) = b.ty(None);
         {
             let mut inst = InstanceType::new();
             for i in 0..func_types.len() as u32 {
@@ -70,7 +70,7 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
     let mut lowered_funcs: Vec<u32> = Vec::new();
     if has_outlayer {
         // Lower each outlayer function from the imported instance
-        for (i, name) in info.names.iter().enumerate() {
+        for (_i, name) in info.names.iter().enumerate() {
             let kebab = name.replace('_', "-");
             let comp_func = b.alias_export(0, &leak_str(kebab), ComponentExportKind::Func);
             let core_func = b.lower_func(None, comp_func, []);
@@ -78,7 +78,7 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
         }
 
         // Create outlayer core instance from lowered funcs
-        let outlayer_inst = b.core_instantiate_exports(
+        let _outlayer_inst = b.core_instantiate_exports(
             None,
             info.names.iter().zip(lowered_funcs.iter())
                 .map(|(n, &idx)| (n.as_str(), ExportKind::Func, idx)),
@@ -113,7 +113,7 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
     let mut shim = ComponentBuilder::default();
 
     // func type: () -> result<>  (result with no ok type = result<(), _> which maps to i32)
-    let (shim_fn_type, mut sf_enc) = shim.ty(None);
+    let (_shim_fn_type, sf_enc) = shim.ty(None);
     {
         let mut f = sf_enc.function();
         f.params([] as [(&str, ComponentValType); 0]);
@@ -121,7 +121,7 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
     }
 
     // Define result<> as a defined type
-    let (result_defined, mut rd_enc) = shim.ty(None);
+    let (_result_defined, rd_enc) = shim.ty(None);
     {
         rd_enc.defined_type().result(None, None);
     }
@@ -237,12 +237,12 @@ fn build_wasi_stub() -> Vec<u8> {
 fn build_run_shim() -> Vec<u8> {
     let mut shim = ComponentBuilder::default();
     // Define result<> type
-    let (result_type, mut renc) = shim.ty(None);
+    let (result_type, renc) = shim.ty(None);
     {
         renc.defined_type().result(None, None);
     }
     // func type: () -> result<>
-    let (fn_type, mut fenc) = shim.ty(None);
+    let (fn_type, fenc) = shim.ty(None);
     {
         fenc.function().params([] as [(&str, ComponentValType); 0])
             .result(Some(ComponentValType::Type(result_type)));

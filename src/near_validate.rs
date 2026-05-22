@@ -37,7 +37,7 @@ pub fn validate_near_wasm(wasm: &[u8]) -> Result<(), NearValidationError> {
     for line in wat.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("(import \"") {
-            if let Some(end) = trimmed.find('"') {
+            if let Some(_end) = trimmed.find('"') {
                 if let Some(start) = trimmed[9..].find('"') {
                     let module = &trimmed[9..9+start];
                     if module != "env" {

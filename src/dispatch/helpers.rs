@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Shared helper functions for the eval module.
 
 /// Truncate a string to `max_len` characters, appending "..." if truncated.

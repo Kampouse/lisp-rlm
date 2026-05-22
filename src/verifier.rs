@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Bytecode verifier for lisp-rlm compiled lambdas.
 //!
 //! Validates bytecode safety before execution. Catches structural bugs that would
@@ -318,6 +319,7 @@ fn verify_instruction_consistency(
                 }
             }
             Op::GetField(idx) => {
+                #[allow(unused_comparisons)]
                 if *idx > 255 {
                     return Err(err("instruction_consistency", Some(i),
                         format!("GetField({}) field index out of range", idx)));
@@ -484,7 +486,7 @@ fn successors(pc: usize, op: &Op, code_len: usize) -> Vec<usize> {
             }
             succs
         }
-        Op::RecurIncAccum(_, _, step, limit, exit_addr) => {
+        Op::RecurIncAccum(_, _, _step, _limit, exit_addr) => {
             // If counter >= limit → jump to exit, else jump to 0
             let mut succs = vec![*exit_addr];
             if *exit_addr != 0 {

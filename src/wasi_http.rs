@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+#![allow(non_snake_case)]
 //! WASI HTTP P2 integration for the Lisp compiler.
 //!
 //! Generates core WASM that directly imports canonical-lowered wasi:http@0.2.2
@@ -17,6 +19,7 @@ use wasm_encoder::*;
 pub const FN_DROP_INPUT_STREAM: u32 = 0;
 pub const FN_DROP_OUTPUT_STREAM: u32 = 1;
 pub const FN_DROP_INCOMING_RESPONSE: u32 = 2;
+const W: ValType = ValType::I32;
 pub const FN_DROP_FUTURE_INCOMING_RESPONSE: u32 = 3;
 pub const FN_CONSTRUCTOR_FIELDS: u32 = 4;
 pub const FN_CONSTRUCTOR_OUTGOING_REQUEST: u32 = 5;
@@ -140,7 +143,6 @@ impl WasiHttpLayout {
 /// Returns nothing — the type indices are positional (0..HTTP_TYPE_COUNT-1)
 /// and the import indices are the `FN_*` constants.
 pub fn add_http_imports_to_sections(types: &mut TypeSection, imports: &mut ImportSection) {
-    let W = ValType::I32;
 
     // Canonical ABI types for wasi:http@0.2.2 lowered functions.
     // Type indices must match what the import entries reference below.

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Cryptographic hash builtins — thin wrappers over the `sha2` and `sha3` crates.
 
 use crate::helpers::as_str;
