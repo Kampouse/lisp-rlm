@@ -207,6 +207,11 @@ const GAS_LIMIT: i64 = 1_000_000_000;
 const RETURN_FLAG: u32 = 0; // mutable i64 global for return flag
 const FP_GLOBAL: u32 = 1;  // mutable i64 global for frame pointer (NEAR mode)
 
+// ── Handle table for memory-safe struct access ──
+const HANDLE_COUNT_ADDR: i64 = 48;   // 8-byte slot: number of allocated handles
+const HANDLE_TABLE_BASE: i64 = 49152; // base of handle table (256 entries × 16 bytes = 4096 bytes)
+const MAX_HANDLES: i64 = 256;         // max concurrent allocations
+
 pub(crate) struct FuncDef {
     pub name: String,
     pub param_count: usize,

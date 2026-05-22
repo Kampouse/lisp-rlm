@@ -197,14 +197,16 @@ impl WasmEmitter {
     // All pointer arguments are UNTAGGED (dispatch handles untag).
     // Offsets are in BYTES (not field indices) for flexibility.
 
-    /// malloc(n_bytes): allocate ZEROED n_bytes from the runtime heap bump allocator (calloc).
-    /// Input: UNTAGGED n_bytes on stack. Returns TAGGED pointer.
-    /// Memory is zero-filled word-by-word after bump.
+    /// malloc(n_bytes): allocate ZEROED n_bytes, return a HANDLE (index into table).
+    /// Handle table at HANDLE_TABLE_BASE stores [real_ptr, size] per entry.
+    /// Input: UNTAGGED n_bytes on stack. Returns TAGGED handle index.
     pub(crate) fn emit_malloc(&mut self) -> Vec<Instruction<'static>> {
         let n = self.local_idx("__ma_n");
         let tmp = self.local_idx("__ma_tmp");
         let new_ptr = self.local_idx("__ma_new");
         let cursor = self.local_idx("__ma_cur");
+        let hcount = self.local_idx("__ma_hc");
+        let entry_addr = self.local_idx("__ma_ea");
         let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
         let mem_limit = (self.memory_pages as i64) * 65536;
         vec![
@@ -214,15 +216,29 @@ impl WasmEmitter {
             Instruction::LocalGet(n),
             Instruction::I64Const(7),
             Instruction::I64Add,
-            Instruction::I64Const(-8i64 as u64 as i64), // mask to 8-byte boundary
+            Instruction::I64Const(-8i64 as u64 as i64),
             Instruction::I64And,
             Instruction::LocalSet(n),
+            // Read handle count
+            Instruction::I64Const(HANDLE_COUNT_ADDR),
+            Instruction::I32WrapI64,
+            Instruction::I64Load(ma.clone()),
+            Instruction::LocalSet(hcount),
+            // Guard: hcount < MAX_HANDLES
+            Instruction::LocalGet(hcount),
+            Instruction::I64Const(MAX_HANDLES),
+            Instruction::I64LtU,
+            Instruction::If(BlockType::Empty),
+            Instruction::Else,
+            Instruction::Unreachable, // too many allocations
+            Instruction::End,
+            // ── Bump allocate from heap ──
             // Read current runtime heap ptr
             Instruction::I64Const(RUNTIME_HEAP_PTR),
             Instruction::I32WrapI64,
             Instruction::I64Load(ma.clone()),
             Instruction::LocalSet(tmp),
-            // Compute new ptr
+            // new_ptr = tmp + n
             Instruction::LocalGet(tmp),
             Instruction::LocalGet(n),
             Instruction::I64Add,
@@ -232,33 +248,29 @@ impl WasmEmitter {
             Instruction::I64Const(mem_limit),
             Instruction::I64LtU,
             Instruction::If(BlockType::Empty),
-            // OK: write back new ptr
+            // OK: write back new heap ptr
             Instruction::I64Const(RUNTIME_HEAP_PTR),
             Instruction::I32WrapI64,
             Instruction::LocalGet(new_ptr),
             Instruction::I64Store(ma.clone()),
             Instruction::Else,
-            // Overflow: trap
             Instruction::Unreachable,
             Instruction::End,
-            // ── Zero-fill: cursor = tmp; while cursor < new_ptr: store 0, cursor += 8 ──
+            // ── Zero-fill ──
             Instruction::LocalGet(tmp),
             Instruction::LocalSet(cursor),
             Instruction::Block(BlockType::Empty),
             Instruction::Loop(BlockType::Empty),
-            // if cursor >= new_ptr: done
             Instruction::LocalGet(cursor),
             Instruction::LocalGet(new_ptr),
             Instruction::I64GeU,
             Instruction::If(BlockType::Empty),
             Instruction::Br(2),
             Instruction::End,
-            // *cursor = 0
             Instruction::LocalGet(cursor),
             Instruction::I32WrapI64,
             Instruction::I64Const(0),
             Instruction::I64Store(ma.clone()),
-            // cursor += 8
             Instruction::LocalGet(cursor),
             Instruction::I64Const(8),
             Instruction::I64Add,
@@ -266,31 +278,105 @@ impl WasmEmitter {
             Instruction::Br(0),
             Instruction::End, // loop
             Instruction::End, // block
-            // Return old ptr tagged
+            // ── Write handle table entry ──
+            // entry_addr = HANDLE_TABLE_BASE + hcount * 16
+            Instruction::I64Const(HANDLE_TABLE_BASE),
+            Instruction::LocalGet(hcount),
+            Instruction::I64Const(16),
+            Instruction::I64Mul,
+            Instruction::I64Add,
+            Instruction::LocalSet(entry_addr),
+            // [+0] = real_ptr
+            Instruction::LocalGet(entry_addr),
+            Instruction::I32WrapI64,
             Instruction::LocalGet(tmp),
+            Instruction::I64Store(ma.clone()),
+            // [+8] = size
+            Instruction::LocalGet(entry_addr),
+            Instruction::I64Const(8),
+            Instruction::I64Add,
+            Instruction::I32WrapI64,
+            Instruction::LocalGet(n),
+            Instruction::I64Store(ma.clone()),
+            // Increment handle count
+            Instruction::I64Const(HANDLE_COUNT_ADDR),
+            Instruction::I32WrapI64,
+            Instruction::LocalGet(hcount),
+            Instruction::I64Const(1),
+            Instruction::I64Add,
+            Instruction::I64Store(ma.clone()),
+            // Return handle index tagged
+            Instruction::LocalGet(hcount),
             Instruction::I64Const(TAG_BITS), Instruction::I64Shl,
         ]
     }
 
-    /// store_i64(ptr, byte_offset, value): write i64 at ptr + byte_offset.
+    /// store_i64(handle, byte_offset, value): write i64 via handle table.
+    /// Validates: handle index < handle_count, offset + 8 <= alloc_size.
     /// All three inputs are UNTAGGED. Returns nil.
     pub(crate) fn emit_store_i64(&mut self) -> Vec<Instruction<'static>> {
-        let ptr = self.local_idx("__si_ptr");
+        let handle = self.local_idx("__si_h");
         let off = self.local_idx("__si_off");
         let val = self.local_idx("__si_val");
+        let hcount = self.local_idx("__si_hc");
+        let entry_addr = self.local_idx("__si_ea");
+        let real_ptr = self.local_idx("__si_rp");
+        let alloc_size = self.local_idx("__si_sz");
         let addr = self.local_idx("__si_addr");
         let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
         vec![
-            // Pop val, off, ptr (reverse stack order)
+            // Pop val, off, handle (reverse stack order)
             Instruction::LocalSet(val),
             Instruction::LocalSet(off),
-            Instruction::LocalSet(ptr),
-            // addr = ptr + off (both are byte addresses)
-            Instruction::LocalGet(ptr),
+            Instruction::LocalSet(handle),
+            // Read handle count
+            Instruction::I64Const(HANDLE_COUNT_ADDR),
+            Instruction::I32WrapI64,
+            Instruction::I64Load(ma.clone()),
+            Instruction::LocalSet(hcount),
+            // Validate: handle < hcount
+            Instruction::LocalGet(handle),
+            Instruction::LocalGet(hcount),
+            Instruction::I64LtU,
+            Instruction::If(BlockType::Empty),
+            Instruction::Else,
+            Instruction::Unreachable, // bad handle
+            Instruction::End,
+            // Look up entry: entry_addr = HANDLE_TABLE_BASE + handle * 16
+            Instruction::I64Const(HANDLE_TABLE_BASE),
+            Instruction::LocalGet(handle),
+            Instruction::I64Const(16),
+            Instruction::I64Mul,
+            Instruction::I64Add,
+            Instruction::LocalSet(entry_addr),
+            // Load real_ptr from entry[+0]
+            Instruction::LocalGet(entry_addr),
+            Instruction::I32WrapI64,
+            Instruction::I64Load(ma.clone()),
+            Instruction::LocalSet(real_ptr),
+            // Load alloc_size from entry[+8]
+            Instruction::LocalGet(entry_addr),
+            Instruction::I64Const(8),
+            Instruction::I64Add,
+            Instruction::I32WrapI64,
+            Instruction::I64Load(ma.clone()),
+            Instruction::LocalSet(alloc_size),
+            // Bounds check: offset + 8 <= alloc_size
+            Instruction::LocalGet(off),
+            Instruction::I64Const(8),
+            Instruction::I64Add,
+            Instruction::LocalGet(alloc_size),
+            Instruction::I64LeU,
+            Instruction::If(BlockType::Empty),
+            Instruction::Else,
+            Instruction::Unreachable, // out of bounds
+            Instruction::End,
+            // addr = real_ptr + offset
+            Instruction::LocalGet(real_ptr),
             Instruction::LocalGet(off),
             Instruction::I64Add,
             Instruction::LocalSet(addr),
-            // i64.store addr (needs i32 base)
+            // i64.store addr
             Instruction::LocalGet(addr),
             Instruction::I32WrapI64,
             Instruction::LocalGet(val),
@@ -300,19 +386,66 @@ impl WasmEmitter {
         ]
     }
 
-    /// load_i64(ptr, byte_offset): read i64 at ptr + byte_offset.
+    /// load_i64(handle, byte_offset): read i64 via handle table.
+    /// Validates: handle index < handle_count, offset + 8 <= alloc_size.
     /// Both inputs are UNTAGGED. Returns TAGGED value.
     pub(crate) fn emit_load_i64(&mut self) -> Vec<Instruction<'static>> {
-        let ptr = self.local_idx("__li_ptr");
+        let handle = self.local_idx("__li_h");
         let off = self.local_idx("__li_off");
+        let hcount = self.local_idx("__li_hc");
+        let entry_addr = self.local_idx("__li_ea");
+        let real_ptr = self.local_idx("__li_rp");
+        let alloc_size = self.local_idx("__li_sz");
         let addr = self.local_idx("__li_addr");
         let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
         vec![
-            // Pop off, ptr
+            // Pop off, handle
             Instruction::LocalSet(off),
-            Instruction::LocalSet(ptr),
-            // addr = ptr + off
-            Instruction::LocalGet(ptr),
+            Instruction::LocalSet(handle),
+            // Read handle count
+            Instruction::I64Const(HANDLE_COUNT_ADDR),
+            Instruction::I32WrapI64,
+            Instruction::I64Load(ma.clone()),
+            Instruction::LocalSet(hcount),
+            // Validate: handle < hcount
+            Instruction::LocalGet(handle),
+            Instruction::LocalGet(hcount),
+            Instruction::I64LtU,
+            Instruction::If(BlockType::Empty),
+            Instruction::Else,
+            Instruction::Unreachable, // bad handle
+            Instruction::End,
+            // Look up entry
+            Instruction::I64Const(HANDLE_TABLE_BASE),
+            Instruction::LocalGet(handle),
+            Instruction::I64Const(16),
+            Instruction::I64Mul,
+            Instruction::I64Add,
+            Instruction::LocalSet(entry_addr),
+            // Load real_ptr
+            Instruction::LocalGet(entry_addr),
+            Instruction::I32WrapI64,
+            Instruction::I64Load(ma.clone()),
+            Instruction::LocalSet(real_ptr),
+            // Load alloc_size
+            Instruction::LocalGet(entry_addr),
+            Instruction::I64Const(8),
+            Instruction::I64Add,
+            Instruction::I32WrapI64,
+            Instruction::I64Load(ma.clone()),
+            Instruction::LocalSet(alloc_size),
+            // Bounds check: offset + 8 <= alloc_size
+            Instruction::LocalGet(off),
+            Instruction::I64Const(8),
+            Instruction::I64Add,
+            Instruction::LocalGet(alloc_size),
+            Instruction::I64LeU,
+            Instruction::If(BlockType::Empty),
+            Instruction::Else,
+            Instruction::Unreachable, // out of bounds
+            Instruction::End,
+            // addr = real_ptr + offset
+            Instruction::LocalGet(real_ptr),
             Instruction::LocalGet(off),
             Instruction::I64Add,
             Instruction::LocalSet(addr),
