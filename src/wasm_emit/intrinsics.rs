@@ -197,15 +197,14 @@ impl WasmEmitter {
     // All pointer arguments are UNTAGGED (dispatch handles untag).
     // Offsets are in BYTES (not field indices) for flexibility.
 
-    /// malloc(n_bytes): allocate n_bytes from the runtime heap bump allocator.
+    /// malloc(n_bytes): allocate ZEROED n_bytes from the runtime heap bump allocator (calloc).
     /// Input: UNTAGGED n_bytes on stack. Returns TAGGED pointer.
+    /// Memory is zero-filled word-by-word after bump.
     pub(crate) fn emit_malloc(&mut self) -> Vec<Instruction<'static>> {
-        // emit_runtime_alloc handles the bump + bounds check.
-        // It reads the size from a local, but we want it from the stack.
-        // Instead, we inline it here for a dynamic size.
         let n = self.local_idx("__ma_n");
         let tmp = self.local_idx("__ma_tmp");
         let new_ptr = self.local_idx("__ma_new");
+        let cursor = self.local_idx("__ma_cur");
         let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
         let mem_limit = (self.memory_pages as i64) * 65536;
         vec![
@@ -215,7 +214,7 @@ impl WasmEmitter {
             Instruction::LocalGet(n),
             Instruction::I64Const(7),
             Instruction::I64Add,
-            Instruction::I64Const(-8i64 as u64 as i64), // 0xFFFFFFF...8 mask
+            Instruction::I64Const(-8i64 as u64 as i64), // mask to 8-byte boundary
             Instruction::I64And,
             Instruction::LocalSet(n),
             // Read current runtime heap ptr
@@ -237,11 +236,36 @@ impl WasmEmitter {
             Instruction::I64Const(RUNTIME_HEAP_PTR),
             Instruction::I32WrapI64,
             Instruction::LocalGet(new_ptr),
-            Instruction::I64Store(ma),
+            Instruction::I64Store(ma.clone()),
             Instruction::Else,
             // Overflow: trap
             Instruction::Unreachable,
             Instruction::End,
+            // ── Zero-fill: cursor = tmp; while cursor < new_ptr: store 0, cursor += 8 ──
+            Instruction::LocalGet(tmp),
+            Instruction::LocalSet(cursor),
+            Instruction::Block(BlockType::Empty),
+            Instruction::Loop(BlockType::Empty),
+            // if cursor >= new_ptr: done
+            Instruction::LocalGet(cursor),
+            Instruction::LocalGet(new_ptr),
+            Instruction::I64GeU,
+            Instruction::If(BlockType::Empty),
+            Instruction::Br(2),
+            Instruction::End,
+            // *cursor = 0
+            Instruction::LocalGet(cursor),
+            Instruction::I32WrapI64,
+            Instruction::I64Const(0),
+            Instruction::I64Store(ma.clone()),
+            // cursor += 8
+            Instruction::LocalGet(cursor),
+            Instruction::I64Const(8),
+            Instruction::I64Add,
+            Instruction::LocalSet(cursor),
+            Instruction::Br(0),
+            Instruction::End, // loop
+            Instruction::End, // block
             // Return old ptr tagged
             Instruction::LocalGet(tmp),
             Instruction::I64Const(TAG_BITS), Instruction::I64Shl,
