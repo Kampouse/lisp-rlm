@@ -622,6 +622,251 @@ impl WasmEmitter {
         ]
     }
 
+    // ─── NEAR-safe byte operation helpers ───
+    // I32Load8U / I32Store8 are broken on NEAR (return/store zeros).
+    // These helpers use I64Load/I64Store word operations instead.
+
+    /// Store a single byte at a given address.
+    /// Stack: [i64 addr, i32 byte_value]  →  []
+    /// Reads the 8-byte word at addr, masks out the target byte, ORs in the new byte, stores back.
+    fn emit_safe_store8(&mut self) -> Vec<Instruction<'static>> {
+        let addr = self.local_idx("__sb_addr");
+        let byte = self.local_idx("__sb_byte");
+        let word = self.local_idx("__sb_word");
+        let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+        vec![
+            Instruction::LocalSet(byte),    // save byte (i32)
+            Instruction::LocalSet(addr),    // save addr (i64)
+            // Align addr down to 8-byte boundary: aligned = addr & ~7
+            Instruction::LocalGet(addr),
+            Instruction::I64Const(!7i64 as i64), // 0xFFFFFFFFFFFFFFF8
+            Instruction::I64And,
+            Instruction::I32WrapI64,
+            Instruction::I64Load(ma8.clone()),
+            Instruction::LocalSet(word),
+            // Compute shift amount: (addr & 7) * 8
+            Instruction::LocalGet(addr),
+            Instruction::I64Const(7),
+            Instruction::I64And,
+            Instruction::I64Const(3),
+            Instruction::I64Shl, // shift_amount
+            // Create mask: ~(0xFF << shift_amount)
+            Instruction::I64Const(-1), // 0xFFFFFFFFFFFFFFFF
+            Instruction::LocalGet(addr),
+            Instruction::I64Const(7),
+            Instruction::I64And,
+            Instruction::I64Const(3),
+            Instruction::I64Shl,
+            Instruction::I64Const(8),
+            Instruction::I64Shl, // 0xFF << shift_amount
+            Instruction::I64Xor, // ~(0xFF << shift_amount) via XOR with -1
+            // Mask out the old byte: word & mask
+            Instruction::LocalGet(word),
+            Instruction::I64And,
+            // OR in new byte at the right position
+            Instruction::LocalGet(byte),
+            Instruction::I64ExtendI32U,
+            Instruction::LocalGet(addr),
+            Instruction::I64Const(7),
+            Instruction::I64And,
+            Instruction::I64Const(3),
+            Instruction::I64Shl,
+            Instruction::I64Shl,
+            Instruction::I64Or,
+            // Store back
+            Instruction::LocalGet(addr),
+            Instruction::I64Const(!7i64 as i64),
+            Instruction::I64And,
+            Instruction::I32WrapI64,
+            Instruction::I64Store(ma8),
+        ]
+    }
+
+    /// Load a single byte from a given address.
+    /// Stack: [i64 addr]  →  [i64 byte_value (0-255)]
+    /// Uses I64Load to read the 8-byte word, then extracts the target byte.
+    fn emit_safe_load8(&mut self) -> Vec<Instruction<'static>> {
+        let addr = self.local_idx("__lb_addr");
+        let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+        vec![
+            Instruction::LocalSet(addr),
+            // Align addr down to 8-byte boundary
+            Instruction::LocalGet(addr),
+            Instruction::I64Const(!7i64 as i64),
+            Instruction::I64And,
+            Instruction::I32WrapI64,
+            Instruction::I64Load(ma8),
+            // Shift right by (addr & 7) * 8 bits
+            Instruction::LocalGet(addr),
+            Instruction::I64Const(7),
+            Instruction::I64And,
+            Instruction::I64Const(3),
+            Instruction::I64Shl,
+            Instruction::I64ShrU,
+            // Mask to get just the byte
+            Instruction::I64Const(0xFF),
+            Instruction::I64And,
+        ]
+    }
+
+    /// Copy `n_bytes` bytes from src to dst using 8-byte word operations.
+    /// Src and dst addresses are already in locals `src_local` and `dst_local`.
+    /// Uses self.local_idx() for temporary locals.
+    fn emit_word_copy(&mut self, n_bytes: u64, src_local: u32, dst_local: u32) -> Vec<Instruction<'static>> {
+        let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+        let mut v = Vec::new();
+        let full_words = n_bytes / 8;
+        let tail = n_bytes % 8;
+
+        // Copy full 8-byte words
+        for i in 0..full_words {
+            let off = (i * 8) as u64;
+            let ma_off = wasm_encoder::MemArg { offset: off, align: 3, memory_index: 0 };
+            // Load word from src + off
+            v.push(Instruction::LocalGet(src_local));
+            v.push(Instruction::I32WrapI64);
+            v.push(Instruction::I64Load(ma_off.clone()));
+            // Store word to dst + off
+            v.push(Instruction::LocalGet(dst_local));
+            v.push(Instruction::I32WrapI64);
+            v.push(Instruction::I64Store(ma_off));
+        }
+
+        // Copy tail bytes: load last word from src (at src + full_words*8)
+        // and store masked to dst (at dst + full_words*8)
+        if tail > 0 {
+            let tail_off = (full_words * 8) as u64;
+            let w = self.local_idx("__wc_word");
+            let ma_tail = wasm_encoder::MemArg { offset: tail_off, align: 0, memory_index: 0 };
+            // Load last word from src
+            v.push(Instruction::LocalGet(src_local));
+            v.push(Instruction::I32WrapI64);
+            v.push(Instruction::I64Load(ma_tail.clone()));
+            v.push(Instruction::LocalSet(w));
+            // If we also wrote full words, we need to mask the tail
+            // to avoid overwriting bytes beyond the string in dst.
+            // Mask: (1 << (tail * 8)) - 1
+            // First, load the existing bytes at dst tail position
+            // Load existing word at dst tail position and merge
+            v.push(Instruction::LocalGet(dst_local));
+            v.push(Instruction::I32WrapI64);
+            v.push(Instruction::I64Load(ma_tail.clone()));
+            // Keep upper bytes (above tail) from dst: dst_word & ~((1 << tail_bits) - 1)
+            v.push(Instruction::I64Const(-1));
+            v.push(Instruction::I64Const((1i64 << (tail * 8)) - 1));
+            v.push(Instruction::I64Xor); // ~tail_mask
+            v.push(Instruction::I64And);
+            // OR in src tail bytes (masked)
+            v.push(Instruction::LocalGet(w));
+            v.push(Instruction::I64Const((1i64 << (tail * 8)) - 1));
+            v.push(Instruction::I64And);
+            v.push(Instruction::I64Or);
+            // Store
+            v.push(Instruction::LocalGet(dst_local));
+            v.push(Instruction::I32WrapI64);
+            v.push(Instruction::I64Store(ma_tail));
+        }
+
+        v
+    }
+
+    /// Runtime word-by-word copy loop: copies `len_local` bytes from `src_local` to `dst_local`.
+    /// Uses I64Load/I64Store for full words, then masked tail for remainder.
+    /// Locals must already be allocated; `len_local` holds byte count (i64).
+    fn emit_runtime_word_copy(&mut self, src_local: u32, dst_local: u32, len_local: u32) -> Vec<Instruction<'static>> {
+        let ma0 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+        let wc = self.local_idx("__rwc_words");
+        let tl = self.local_idx("__rwc_tail");
+        let wi = self.local_idx("__rwc_i");
+        let tmp = self.local_idx("__rwc_tmp");
+        let src_i = self.local_idx("__rwc_src");
+        let dst_i = self.local_idx("__rwc_dst");
+
+        vec![
+            // Save base pointers
+            Instruction::LocalGet(src_local), Instruction::LocalSet(src_i),
+            Instruction::LocalGet(dst_local), Instruction::LocalSet(dst_i),
+            // Compute word count and tail
+            Instruction::LocalGet(len_local), Instruction::I64Const(3), Instruction::I64ShrU, Instruction::LocalSet(wc),
+            Instruction::LocalGet(len_local), Instruction::I64Const(7), Instruction::I64And, Instruction::LocalSet(tl),
+            // Copy full words
+            Instruction::I64Const(0), Instruction::LocalSet(wi),
+            Instruction::Block(BlockType::Empty),
+            Instruction::Loop(BlockType::Empty),
+                Instruction::LocalGet(wi), Instruction::LocalGet(wc), Instruction::I64GeU, Instruction::BrIf(1),
+                // Load 8 bytes from src + i*8
+                Instruction::LocalGet(src_i),
+                Instruction::LocalGet(wi), Instruction::I64Const(3), Instruction::I64Shl,
+                Instruction::I64Add, Instruction::I32WrapI64,
+                Instruction::I64Load(ma0.clone()),
+                // Store to dst + i*8
+                Instruction::LocalGet(dst_i),
+                Instruction::LocalGet(wi), Instruction::I64Const(3), Instruction::I64Shl,
+                Instruction::I64Add, Instruction::I32WrapI64,
+                Instruction::I64Store(ma0.clone()),
+                // i++
+                Instruction::LocalGet(wi), Instruction::I64Const(1), Instruction::I64Add, Instruction::LocalSet(wi),
+                Instruction::Br(0),
+            Instruction::End, // loop
+            Instruction::End, // block
+
+            // Tail: if tail > 0, load word from src+full*8, mask, merge with dst+full*8, store
+            Instruction::LocalGet(tl), Instruction::I64Const(0), Instruction::I64Eq, Instruction::BrIf(0),
+            // Only do tail if there are words before it (otherwise just store directly — fresh allocation)
+            Instruction::LocalGet(wc), Instruction::I64Const(0), Instruction::I64Eq,
+            Instruction::If(BlockType::Empty),
+                // No full words: just load src word and store to dst
+                Instruction::LocalGet(src_i),
+                Instruction::LocalGet(wc), Instruction::I64Const(3), Instruction::I64Shl, Instruction::I64Add,
+                Instruction::I32WrapI64,
+                Instruction::I64Load(ma0.clone()),
+                Instruction::I64Const((1i64 << 56) - 1), // mask for up to 7 bytes — we'll mask properly below
+                Instruction::I64And, // rough mask — may include extra bytes but fresh alloc so OK
+                Instruction::LocalSet(tmp),
+                Instruction::LocalGet(dst_i),
+                Instruction::LocalGet(wc), Instruction::I64Const(3), Instruction::I64Shl, Instruction::I64Add,
+                Instruction::I32WrapI64,
+                Instruction::LocalGet(tmp),
+                Instruction::I64Store(ma0.clone()),
+            Instruction::Else,
+                // Has full words: read-modify-write to preserve upper bytes in dst
+                // Load existing dst word at tail offset
+                Instruction::LocalGet(dst_i),
+                Instruction::LocalGet(wc), Instruction::I64Const(3), Instruction::I64Shl, Instruction::I64Add,
+                Instruction::I32WrapI64,
+                Instruction::I64Load(ma0.clone()),
+                // Mask out tail portion: keep upper bytes only
+                Instruction::I64Const(-1),
+                // Compute ~(1 << (tl * 8) - 1) = mask for upper bytes
+                // Actually: upper_mask = -1 ^ ((1 << (tl*8)) - 1)
+                // But tl is runtime... so compute dynamically
+                Instruction::I64Const(1),
+                Instruction::LocalGet(tl), Instruction::I64Const(3), Instruction::I64Shl,
+                Instruction::I64Shl, // 1 << (tl*8)
+                Instruction::I64Const(1), Instruction::I64Sub, // (1 << tl*8) - 1 = tail_mask
+                Instruction::I64Xor, // ~tail_mask = upper_mask
+                Instruction::I64And, // dst_word & upper_mask
+                // Load src word at tail offset and mask tail bytes only
+                Instruction::LocalGet(src_i),
+                Instruction::LocalGet(wc), Instruction::I64Const(3), Instruction::I64Shl, Instruction::I64Add,
+                Instruction::I32WrapI64,
+                Instruction::I64Load(ma0.clone()),
+                Instruction::I64Const(1),
+                Instruction::LocalGet(tl), Instruction::I64Const(3), Instruction::I64Shl,
+                Instruction::I64Shl,
+                Instruction::I64Const(1), Instruction::I64Sub,
+                Instruction::I64And, // src_word & tail_mask
+                // Merge
+                Instruction::I64Or,
+                // Store
+                Instruction::LocalGet(dst_i),
+                Instruction::LocalGet(wc), Instruction::I64Const(3), Instruction::I64Shl, Instruction::I64Add,
+                Instruction::I32WrapI64,
+                Instruction::I64Store(ma0),
+            Instruction::End, // if
+        ]
+    }
+
     // Stack effect: [val] → [1] if truthy, [0] if falsy
     /// Check if a tagged i64 is truthy. Expects [i64 tagged_val] on stack,
     /// leaves [i64] (0 = falsy, 1 = truthy) on stack.
@@ -2484,12 +2729,11 @@ impl WasmEmitter {
                     v.push(Instruction::I64Sub);
                     v.push(Instruction::LocalSet(ptr));
                     v.push(Instruction::LocalGet(ptr));
-                    v.push(Instruction::I32WrapI64);
                     v.push(Instruction::LocalGet(tmp_digit));
                     v.push(Instruction::I64Const(48));
                     v.push(Instruction::I64Add);
                     v.push(Instruction::I32WrapI64);
-                    v.push(Instruction::I32Store8(ma8));
+                    v.extend(self.emit_safe_store8());
                     v.push(Instruction::LocalGet(digit_count));
                     v.push(Instruction::I64Const(1));
                     v.push(Instruction::I64Add);
@@ -2504,10 +2748,9 @@ impl WasmEmitter {
                     v.push(Instruction::I64Const(4183));
                     v.push(Instruction::LocalSet(ptr));
                     v.push(Instruction::I64Const(4183));
-                    v.push(Instruction::I32WrapI64);
                     v.push(Instruction::I64Const(48));
                     v.push(Instruction::I32WrapI64);
-                    v.push(Instruction::I32Store8(ma8));
+                    v.extend(self.emit_safe_store8());
                     v.push(Instruction::I64Const(1));
                     v.push(Instruction::LocalSet(digit_count));
                     v.push(Instruction::End);
@@ -2520,10 +2763,9 @@ impl WasmEmitter {
                     v.push(Instruction::I64Sub);
                     v.push(Instruction::LocalSet(ptr));
                     v.push(Instruction::LocalGet(ptr));
-                    v.push(Instruction::I32WrapI64);
                     v.push(Instruction::I64Const(45));
                     v.push(Instruction::I32WrapI64);
-                    v.push(Instruction::I32Store8(ma8));
+                    v.extend(self.emit_safe_store8());
                     v.push(Instruction::LocalGet(digit_count));
                     v.push(Instruction::I64Const(1));
                     v.push(Instruction::I64Add);
@@ -2607,12 +2849,11 @@ impl WasmEmitter {
                 v.push(Instruction::I64Sub);
                 v.push(Instruction::LocalSet(ptr));
                 v.push(Instruction::LocalGet(ptr));
-                v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalGet(tmp_digit));
                 v.push(Instruction::I64Const(48));
                 v.push(Instruction::I64Add);
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Store8(ma8));
+                v.extend(self.emit_safe_store8());
                 v.push(Instruction::LocalGet(digit_count));
                 v.push(Instruction::I64Const(1));
                 v.push(Instruction::I64Add);
@@ -2627,10 +2868,9 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(4183));
                 v.push(Instruction::LocalSet(ptr));
                 v.push(Instruction::I64Const(4183));
-                v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Const(48));
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Store8(ma8));
+                v.extend(self.emit_safe_store8());
                 v.push(Instruction::I64Const(1));
                 v.push(Instruction::LocalSet(digit_count));
                 v.push(Instruction::End);
@@ -2643,10 +2883,9 @@ impl WasmEmitter {
                 v.push(Instruction::I64Sub);
                 v.push(Instruction::LocalSet(ptr));
                 v.push(Instruction::LocalGet(ptr));
-                v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Const(45));
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Store8(ma8));
+                v.extend(self.emit_safe_store8());
                 v.push(Instruction::LocalGet(digit_count));
                 v.push(Instruction::I64Const(1));
                 v.push(Instruction::I64Add);
