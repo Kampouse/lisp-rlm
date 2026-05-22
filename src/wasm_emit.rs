@@ -10854,6 +10854,98 @@ impl WasmEmitter {
                 Ok(v)
             }
 
+            // ── Type predicates ──
+            // Each: eval arg, check tag, return tagged bool
+
+            // (number? x) → bool: check (val & 7) == TAG_NUM (0)
+            "number?" => {
+                if a.len() != 1 { return Err("number?: expected 1 arg".into()); }
+                let mut v = self.expr(&a[0])?;
+                v.push(Instruction::I64Const(7));
+                v.push(Instruction::I64And);
+                v.push(Instruction::I64Const(TAG_NUM));
+                v.push(Instruction::I64Eq);           // → i32
+                v.push(Instruction::I64ExtendI32U);   // → i64
+                v.extend(self.emit_tag_bool());
+                Ok(v)
+            }
+
+            // (zero? x) → bool: untag num, check == 0
+            "zero?" => {
+                if a.len() != 1 { return Err("zero?: expected 1 arg".into()); }
+                let mut v = self.expr(&a[0])?;
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Eqz);          // → i32
+                v.push(Instruction::I64ExtendI32U);   // → i64
+                v.extend(self.emit_tag_bool());
+                Ok(v)
+            }
+
+            // (nil? x) → bool: check val == TAGGED_NIL (4)
+            "nil?" => {
+                if a.len() != 1 { return Err("nil?: expected 1 arg".into()); }
+                let mut v = self.expr(&a[0])?;
+                v.push(Instruction::I64Const(TAGGED_NIL));
+                v.push(Instruction::I64Eq);           // → i32
+                v.push(Instruction::I64ExtendI32U);   // → i64
+                v.extend(self.emit_tag_bool());
+                Ok(v)
+            }
+
+            // (list? x) → bool: check (val & 7) == TAG_ARRAY (6)
+            "list?" => {
+                if a.len() != 1 { return Err("list?: expected 1 arg".into()); }
+                let mut v = self.expr(&a[0])?;
+                v.push(Instruction::I64Const(7));
+                v.push(Instruction::I64And);
+                v.push(Instruction::I64Const(TAG_ARRAY));
+                v.push(Instruction::I64Eq);           // → i32
+                v.push(Instruction::I64ExtendI32U);   // → i64
+                v.extend(self.emit_tag_bool());
+                Ok(v)
+            }
+
+            // (bool? x) → bool: check (val & 7) == TAG_BOOL (1)
+            "bool?" => {
+                if a.len() != 1 { return Err("bool?: expected 1 arg".into()); }
+                let mut v = self.expr(&a[0])?;
+                v.push(Instruction::I64Const(7));
+                v.push(Instruction::I64And);
+                v.push(Instruction::I64Const(TAG_BOOL));
+                v.push(Instruction::I64Eq);           // → i32
+                v.push(Instruction::I64ExtendI32U);   // → i64
+                v.extend(self.emit_tag_bool());
+                Ok(v)
+            }
+
+            // (string? x) → bool: check (val & 7) == TAG_STR (5)
+            "string?" => {
+                if a.len() != 1 { return Err("string?: expected 1 arg".into()); }
+                let mut v = self.expr(&a[0])?;
+                v.push(Instruction::I64Const(7));
+                v.push(Instruction::I64And);
+                v.push(Instruction::I64Const(TAG_STR));
+                v.push(Instruction::I64Eq);           // → i32
+                v.push(Instruction::I64ExtendI32U);   // → i64
+                v.extend(self.emit_tag_bool());
+                Ok(v)
+            }
+
+            // (len lst) → tagged number: load count from heap array
+            "len" => {
+                if a.len() != 1 { return Err("len: expected 1 arg".into()); }
+                let arr_tmp = self.local_idx("__len_arr");
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let mut v = self.expr(&a[0])?;
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(arr_tmp));
+                v.push(Instruction::LocalGet(arr_tmp));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(ma));
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
+
             // (length lst) → tagged number
             "length" => {
                 if a.len() != 1 { return Err("length: expected 1 arg".into()); }

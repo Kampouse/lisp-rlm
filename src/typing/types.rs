@@ -197,6 +197,27 @@ impl TcEnv {
             );
         }
 
+        // abs : num → num
+        env.insert_mono(
+            "abs".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Num)],
+                Box::new(TcType::Con(TcCon::Num)),
+            ),
+        );
+
+        // not : 'a → bool
+        {
+            let a = TcType::Var(0);
+            env.insert(
+                "not".to_string(),
+                Scheme {
+                    vars: vec![0],
+                    ty: TcType::Arrow(vec![a], Box::new(TcType::Con(TcCon::Bool))),
+                },
+            );
+        }
+
         // String ops
         for name in &["str-concat", "string-append"] {
             env.insert_mono(
@@ -334,6 +355,7 @@ impl TcEnv {
         // Predicates
         for name in &[
             "nil?", "null?", "list?", "pair?", "number?", "string?", "bool?", "boolean?", "empty?",
+            "zero?",
         ] {
             let a = TcType::Var(0);
             env.insert(
