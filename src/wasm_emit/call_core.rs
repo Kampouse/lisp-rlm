@@ -66,6 +66,30 @@ impl WasmEmitter {
                 v.extend(self.emit_ctz());
                 Ok(v)
             }
+            // ── Linear memory struct intrinsics ──
+            "malloc" if a.len() == 1 => {
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?); v.extend(self.emit_untag());
+                v.extend(self.emit_malloc());
+                Ok(v)
+            }
+            "store_i64" if a.len() == 3 => {
+                // (store_i64 ptr byte_offset value) → nil
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?); v.extend(self.emit_untag());
+                v.extend(self.expr(&a[1])?); v.extend(self.emit_untag());
+                v.extend(self.expr(&a[2])?); v.extend(self.emit_untag());
+                v.extend(self.emit_store_i64());
+                Ok(v)
+            }
+            "load_i64" if a.len() == 2 => {
+                // (load_i64 ptr byte_offset) → tagged value
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?); v.extend(self.emit_untag());
+                v.extend(self.expr(&a[1])?); v.extend(self.emit_untag());
+                v.extend(self.emit_load_i64());
+                Ok(v)
+            }
             "abs" => {
                 let temp = self.local_idx("__abs_tmp");
                 let mut v = Vec::new();

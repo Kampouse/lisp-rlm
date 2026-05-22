@@ -233,6 +233,32 @@ impl TcEnv {
             ),
         );
 
+        // ── Linear memory struct intrinsics ──
+        // malloc : num → num  (allocates n bytes, returns pointer)
+        env.insert_mono(
+            "malloc".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Num)],
+                Box::new(TcType::Con(TcCon::Num)),
+            ),
+        );
+        // store_i64 : num → num → num → nil  (ptr, byte_offset, value)
+        env.insert_mono(
+            "store_i64".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Num), TcType::Con(TcCon::Num), TcType::Con(TcCon::Num)],
+                Box::new(TcType::Con(TcCon::Nil)),
+            ),
+        );
+        // load_i64 : num → num → num  (ptr, byte_offset → value)
+        env.insert_mono(
+            "load_i64".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Num), TcType::Con(TcCon::Num)],
+                Box::new(TcType::Con(TcCon::Num)),
+            ),
+        );
+
         // not : 'a → bool
         {
             let a = TcType::Var(0);

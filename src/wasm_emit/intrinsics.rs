@@ -160,7 +160,7 @@ impl WasmEmitter {
     }
 
     /// ctz(x): count trailing zero bits.
-    /// Input is UNTAGGED raw i64 on stack. Returns tagged number (0-63).
+    /// Input is UNTAGGED raw i64 on the stack. Returns tagged number (0-63).
     /// Traps if x == 0.
     pub(crate) fn emit_ctz(&mut self) -> Vec<Instruction<'static>> {
         let v = self.local_idx("__ctz_v");
@@ -190,6 +190,114 @@ impl WasmEmitter {
             Instruction::End, // block
             // Return count tagged
             Instruction::LocalGet(count), Instruction::I64Const(TAG_BITS), Instruction::I64Shl,
+        ]
+    }
+
+    // ── Linear memory struct intrinsics ──
+    // All pointer arguments are UNTAGGED (dispatch handles untag).
+    // Offsets are in BYTES (not field indices) for flexibility.
+
+    /// malloc(n_bytes): allocate n_bytes from the runtime heap bump allocator.
+    /// Input: UNTAGGED n_bytes on stack. Returns TAGGED pointer.
+    pub(crate) fn emit_malloc(&mut self) -> Vec<Instruction<'static>> {
+        // emit_runtime_alloc handles the bump + bounds check.
+        // It reads the size from a local, but we want it from the stack.
+        // Instead, we inline it here for a dynamic size.
+        let n = self.local_idx("__ma_n");
+        let tmp = self.local_idx("__ma_tmp");
+        let new_ptr = self.local_idx("__ma_new");
+        let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+        let mem_limit = (self.memory_pages as i64) * 65536;
+        vec![
+            // Pop n_bytes (already untagged by dispatch)
+            Instruction::LocalSet(n),
+            // Align n to 8 bytes
+            Instruction::LocalGet(n),
+            Instruction::I64Const(7),
+            Instruction::I64Add,
+            Instruction::I64Const(-8i64 as u64 as i64), // 0xFFFFFFF...8 mask
+            Instruction::I64And,
+            Instruction::LocalSet(n),
+            // Read current runtime heap ptr
+            Instruction::I64Const(RUNTIME_HEAP_PTR),
+            Instruction::I32WrapI64,
+            Instruction::I64Load(ma.clone()),
+            Instruction::LocalSet(tmp),
+            // Compute new ptr
+            Instruction::LocalGet(tmp),
+            Instruction::LocalGet(n),
+            Instruction::I64Add,
+            Instruction::LocalSet(new_ptr),
+            // Guard: new_ptr < mem_limit
+            Instruction::LocalGet(new_ptr),
+            Instruction::I64Const(mem_limit),
+            Instruction::I64LtU,
+            Instruction::If(BlockType::Empty),
+            // OK: write back new ptr
+            Instruction::I64Const(RUNTIME_HEAP_PTR),
+            Instruction::I32WrapI64,
+            Instruction::LocalGet(new_ptr),
+            Instruction::I64Store(ma),
+            Instruction::Else,
+            // Overflow: trap
+            Instruction::Unreachable,
+            Instruction::End,
+            // Return old ptr tagged
+            Instruction::LocalGet(tmp),
+            Instruction::I64Const(TAG_BITS), Instruction::I64Shl,
+        ]
+    }
+
+    /// store_i64(ptr, byte_offset, value): write i64 at ptr + byte_offset.
+    /// All three inputs are UNTAGGED. Returns nil.
+    pub(crate) fn emit_store_i64(&mut self) -> Vec<Instruction<'static>> {
+        let ptr = self.local_idx("__si_ptr");
+        let off = self.local_idx("__si_off");
+        let val = self.local_idx("__si_val");
+        let addr = self.local_idx("__si_addr");
+        let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+        vec![
+            // Pop val, off, ptr (reverse stack order)
+            Instruction::LocalSet(val),
+            Instruction::LocalSet(off),
+            Instruction::LocalSet(ptr),
+            // addr = ptr + off (both are byte addresses)
+            Instruction::LocalGet(ptr),
+            Instruction::LocalGet(off),
+            Instruction::I64Add,
+            Instruction::LocalSet(addr),
+            // i64.store addr (needs i32 base)
+            Instruction::LocalGet(addr),
+            Instruction::I32WrapI64,
+            Instruction::LocalGet(val),
+            Instruction::I64Store(ma),
+            // Return tagged nil
+            Instruction::I64Const(TAG_NIL),
+        ]
+    }
+
+    /// load_i64(ptr, byte_offset): read i64 at ptr + byte_offset.
+    /// Both inputs are UNTAGGED. Returns TAGGED value.
+    pub(crate) fn emit_load_i64(&mut self) -> Vec<Instruction<'static>> {
+        let ptr = self.local_idx("__li_ptr");
+        let off = self.local_idx("__li_off");
+        let addr = self.local_idx("__li_addr");
+        let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+        vec![
+            // Pop off, ptr
+            Instruction::LocalSet(off),
+            Instruction::LocalSet(ptr),
+            // addr = ptr + off
+            Instruction::LocalGet(ptr),
+            Instruction::LocalGet(off),
+            Instruction::I64Add,
+            Instruction::LocalSet(addr),
+            // i64.load addr
+            Instruction::LocalGet(addr),
+            Instruction::I32WrapI64,
+            Instruction::I64Load(ma),
+            // Tag as number
+            Instruction::I64Const(TAG_BITS), Instruction::I64Shl,
         ]
     }
 }
