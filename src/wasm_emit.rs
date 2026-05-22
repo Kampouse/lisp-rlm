@@ -10758,7 +10758,14 @@ impl WasmEmitter {
                 v.push(Instruction::Br(0));
                 v.push(Instruction::End); // loop
                 v.push(Instruction::End); // block
+                // If new_count == 0, return nil instead of empty array
+                v.push(Instruction::LocalGet(n_tmp));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.push(Instruction::I64Const(TAG_NIL));
+                v.push(Instruction::Else);
                 v.push(Instruction::I64Const(((new_heap as i64) << TAG_BITS) | TAG_ARRAY));
+                v.push(Instruction::End);
                 Ok(v)
             }
 
@@ -11976,20 +11983,23 @@ impl WasmEmitter {
         v.push(Instruction::LocalSet(lambda_id_local));
         v.push(Instruction::End);
         
-        // Sequential if/else dispatch
+        // Sequential if/else dispatch — use Block+Br instead of Return
+        // so dynamic calls can be used as sub-expressions
+        v.push(Instruction::Block(BlockType::Result(ValType::I64)));
         for (lid, &(func_idx, _cap_count)) in self.lambda_info.iter().enumerate() {
             v.push(Instruction::LocalGet(lambda_id_local));
             v.push(Instruction::I64Const(lid as i64));
             v.push(Instruction::I64Eq);
-            v.push(Instruction::If(BlockType::Result(ValType::I64)));
+            v.push(Instruction::If(BlockType::Empty));
             v.push(Instruction::LocalGet(temp_closure_ptr));
             for &al in &arg_locals { v.push(Instruction::LocalGet(al)); }
             v.push(Instruction::Call(USER_BASE | func_idx as u32));
-            v.push(Instruction::Return);
+            v.push(Instruction::Br(1)); // break out of Block with result
             v.push(Instruction::Else);
         }
-        v.push(Instruction::I64Const(-1));
+        v.push(Instruction::I64Const(-1)); // unreachable fallback
         for _ in 0..n_lambdas { v.push(Instruction::End); }
+        v.push(Instruction::End); // end Block
         
         Ok(v)
     }
@@ -12025,11 +12035,11 @@ impl WasmEmitter {
                     "wrap-mul" => nums.iter().skip(1).fold(nums[0], |a, &b| a.wrapping_mul(b)),
                     "/" if nums.len() == 2 && nums[1] != 0 => nums[0] / nums[1],
                     "mod" if nums.len() == 2 && nums[1] != 0 => nums[0] % nums[1],
-                    "<" if nums.len() == 2 => if nums[0] < nums[1] { 1 } else { 0 },
-                    ">" if nums.len() == 2 => if nums[0] > nums[1] { 1 } else { 0 },
-                    "<=" if nums.len() == 2 => if nums[0] <= nums[1] { 1 } else { 0 },
-                    ">=" if nums.len() == 2 => if nums[0] >= nums[1] { 1 } else { 0 },
-                    "=" if nums.len() == 2 => if nums[0] == nums[1] { 1 } else { 0 },
+                    "<" if nums.len() == 2 => if nums[0] < nums[1] { return Some(LispVal::Bool(true)); } else { return Some(LispVal::Bool(false)); },
+                    ">" if nums.len() == 2 => if nums[0] > nums[1] { return Some(LispVal::Bool(true)); } else { return Some(LispVal::Bool(false)); },
+                    "<=" if nums.len() == 2 => if nums[0] <= nums[1] { return Some(LispVal::Bool(true)); } else { return Some(LispVal::Bool(false)); },
+                    ">=" if nums.len() == 2 => if nums[0] >= nums[1] { return Some(LispVal::Bool(true)); } else { return Some(LispVal::Bool(false)); },
+                    "=" if nums.len() == 2 => if nums[0] == nums[1] { return Some(LispVal::Bool(true)); } else { return Some(LispVal::Bool(false)); },
                     "abs" if nums.len() == 1 => nums[0].abs(),
                     "max" => *nums.iter().max().unwrap(),
                     "min" => *nums.iter().min().unwrap(),
