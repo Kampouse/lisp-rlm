@@ -88,7 +88,7 @@ pub(crate) const HOST_FUNCS: &[(&str, &[ValType], &[ValType])] = &[
     ("keccak512",                   &[ValType::I64, ValType::I64, ValType::I64], &[]),                // 52
     ("ripemd160",                   &[ValType::I64, ValType::I64, ValType::I64], &[]),                // 53
     ("ecrecover",                   &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]), // 54
-    ("p256_verify",                 &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]), // 55
+    ("p256_verify",                 &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]), // 55 — NEAR host: (sig_len, sig_ptr, msg_len, msg_ptr, pk_len, pk_ptr) → u64
     // Alt BN128
     ("alt_bn128_g1_multiexp",       &[ValType::I64, ValType::I64, ValType::I64], &[]),                // 56
     ("alt_bn128_g1_sum",            &[ValType::I64, ValType::I64, ValType::I64], &[]),                // 57
@@ -212,6 +212,7 @@ pub struct WasmEmitter {
     pub(crate) wasi_mode: bool, // true when targeting WASI/OutLayer
     pub(crate) p2_mode: bool,   // true when targeting P2 component (return i32 from _start)
     pub(crate) no_proc_exit: bool, // true when wrapping with wit-component adapter (return cleanly, don't call proc_exit)
+
     // Track which function each lambda maps to, and its captured var count
     // lambda_id -> (func_array_idx, captured_count)
     pub(crate) lambda_info: Vec<(usize, usize)>, 
@@ -230,7 +231,7 @@ impl WasmEmitter {
             locals: HashMap::new(), next_local: 0, free_locals: Vec::new(), current_func: None, current_param_count: 0,
             while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 1, exports: Vec::new(),
             data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(),
-            gas_local: None, needs_frame: false, heap_ptr: HEAP_START as u32, lambda_counter: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false,            borsh_schemas: HashMap::new(),
+            gas_local: None, needs_frame: false, heap_ptr: HEAP_START as u32, lambda_counter: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false, borsh_schemas: HashMap::new(),
             func_defs: HashMap::new(),
         }
     }
@@ -3190,8 +3191,10 @@ impl WasmEmitter {
             }
             "near/p256_verify" => {
                 // (near/p256_verify signature message public_key) → bool
-                // Same signature layout as ed25519_verify but for SECP256r1 (P-256)
                 // NEAR host: p256_verify(sig_len, sig_ptr, msg_len, msg_ptr, pk_len, pk_ptr) → u64 — idx 55
+                // sig: 64 bytes (r||s), msg: prehashed digest, pk: 33 bytes (compressed SEC1)
+                // ⚠ Requires protocol 85+ (p256_verify_host_fn). Fails with "unknown import" on older protocols.
+                eprintln!("⚠️  near/p256_verify requires protocol 85+ (p256_verify_host_fn). Will fail on older protocols.");
                 let sig = self.expr(&a[0])?;
                 let msg = self.expr(&a[1])?;
                 let pk = self.expr(&a[2])?;
@@ -3217,7 +3220,8 @@ impl WasmEmitter {
                 v.extend(pk);
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // pk_ptr
-                v.push(Self::host_call(55)); // p256_verify — returns u64 (1=valid, 0=invalid)
+                v.push(Self::host_call(55)); // p256_verify — returns u64 directly (1=valid, 0=invalid)
+                // Tag result as Num
                 v.extend(self.emit_tag_num());
                 Ok(v)
             }
@@ -14007,7 +14011,8 @@ pub fn compile_near(source: &str) -> Result<Vec<u8>, String> {
             em.add_export(&f.name.clone(), "_run", false);
         }
     }
-    Ok(em.finish("_run"))
+    let wasm = em.finish("_run");
+    Ok(wasm)
 }
 
 // ── Borsh schema parsing helpers ──

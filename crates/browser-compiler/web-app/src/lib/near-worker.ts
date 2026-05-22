@@ -331,6 +331,8 @@ function buildStubs(): Record<string, Function> {
 
     // ED25519 verify (not mocked)
     ed25519_verify: (): bigint => 0n,
+    // P-256 verify (not mocked)
+    p256_verify: (): bigint => 0n,
   };
 }
 

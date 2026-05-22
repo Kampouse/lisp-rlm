@@ -216,7 +216,7 @@ function buildEnvStubs(): Record<string, Function> {
     prepaid_gas: stubI64, used_gas: stubI64,
     storage_write: stubI64, storage_read: stubI64, storage_remove: stubI64,
     storage_has_key: stubI64,
-    sha256: stub, keccak256: stub, random_seed: stub, ed25519_verify: stubI64,
+    sha256: stub, keccak256: stub, random_seed: stub, ed25519_verify: stubI64, p256_verify: stubI64,
     value_return: stub, panic: stub, panic_utf8: stub, log_utf8: stub, log_utf16: stub,
     promise_create: stubI64, promise_then: stubI64, promise_and: stubI64,
     promise_results_count: stubI64, promise_result: stub, promise_return: stub,

@@ -111,7 +111,7 @@ function buildEnvStubs(): { env: Record<string, Function>; setMemory: (mem: WebA
       prepaid_gas: stubI64, used_gas: stubI64,
       storage_write: stubI64, storage_read: stubI64, storage_remove: stubI64,
       storage_has_key: stubI64,
-      sha256: stub, keccak256: stub, random_seed: stub, ed25519_verify: stubI64,
+      sha256: stub, keccak256: stub, random_seed: stub, ed25519_verify: stubI64, p256_verify: stubI64,
       value_return: vrStub,
       panic: stub, panic_utf8: stub, log_utf8: stub, log_utf16: stub,
       promise_create: stubI64, promise_then: stubI64, promise_and: stubI64,
@@ -608,6 +608,14 @@ function buildNearEnv(): Record<string, Function> {
       nearMemBytes().set(new Uint8Array(32), Number(resultPtr));
     },
     ed25519_verify: (): bigint => 1n,
+    // p256_verify(sig_len, sig_ptr, msg_len, msg_ptr, pk_len, pk_ptr) → u64
+    // Uses Web Crypto API SubtleCrypto to verify P-256 ECDSA signatures.
+    // sig: 64 bytes (r||s big-endian), pk: 33 bytes (compressed SEC1), msg: prehashed digest
+    // Returns 1 = valid, 0 = invalid.
+    // NOTE: This mock is synchronous but SubtleCrypto is async; for the browser playground
+    // we return 1 (always passes) as a stub. Real verification requires async integration.
+    // TODO: Integrate real P-256 verification via async worker or sync crypto library.
+    p256_verify: (): bigint => 1n,
 
     // ===== Promise (cross-contract view calls via RPC) =====
     // promise_create(account_id_len, account_id_ptr, method_name_len, method_name_ptr,
@@ -1085,6 +1093,7 @@ const HOST_GAS_BY_NAME: Record<string, number> = {
   keccak256: 5_879_491_275,
   random_seed: 0,
   ed25519_verify: 210_000_000_000,
+  p256_verify: 433_333_333_333,
   value_return: 0,
   panic: 0,
   panic_utf8: 0,
