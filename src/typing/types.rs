@@ -447,6 +447,15 @@ impl TcEnv {
         env.insert_mono("str-from-bytes".into(), TcType::Arrow(vec![TcType::Con(TcCon::List(Box::new(int_ty.clone())))], Box::new(str_ty.clone())));
         env.insert_mono("str-to-bytes".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(TcType::Con(TcCon::List(Box::new(int_ty.clone()))))));
 
+        // Dict builtins (string-keyed flat array)
+        let dict_ty = TcType::Con(TcCon::List(Box::new(any_ty.clone()))); // dicts are tagged arrays
+        env.insert_mono("dict".into(), TcType::Arrow(vec![], Box::new(dict_ty.clone()))); // variadic — type checker just accepts any arity
+        env.insert_mono("dict/get".into(), TcType::Arrow(vec![dict_ty.clone(), str_ty.clone()], Box::new(any_ty.clone())));
+        env.insert_mono("dict/set".into(), TcType::Arrow(vec![dict_ty.clone(), str_ty.clone(), any_ty.clone()], Box::new(dict_ty.clone())));
+        env.insert_mono("dict/has?".into(), TcType::Arrow(vec![dict_ty.clone(), str_ty.clone()], Box::new(TcType::Con(TcCon::Bool))));
+        env.insert_mono("dict/keys".into(), TcType::Arrow(vec![dict_ty.clone()], Box::new(TcType::Con(TcCon::List(Box::new(str_ty.clone()))))));
+        env.insert_mono("dict/vals".into(), TcType::Arrow(vec![dict_ty.clone()], Box::new(TcType::Con(TcCon::List(Box::new(any_ty.clone()))))));
+
         env.near_wildcard = true;
         env
     }

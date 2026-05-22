@@ -855,6 +855,13 @@ fn infer(
                 LispVal::Sym(s) if s == "list" => {
                     infer_list_literal(&list[1..], env, supply, subst)
                 }
+                LispVal::Sym(s) if s == "dict" => {
+                    // Variadic key-val pairs: infer each arg but don't enforce arity
+                    for arg in &list[1..] {
+                        let _ = infer(arg, env, supply, subst)?;
+                    }
+                    Ok(TcType::Con(TcCon::List(Box::new(TcType::Con(TcCon::Any)))))
+                }
                 _ => infer_application(list, env, supply, subst),
             }
         }
