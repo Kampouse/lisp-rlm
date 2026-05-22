@@ -90,6 +90,12 @@ impl WasmEmitter {
                 v.extend(self.emit_load_i64());
                 Ok(v)
             }
+            "itoa" if a.len() == 1 => {
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_itoa());
+                Ok(v)
+            }
             "abs" => {
                 let temp = self.local_idx("__abs_tmp");
                 let mut v = Vec::new();
@@ -421,7 +427,7 @@ impl WasmEmitter {
                         .ok_or_else(|| format!("loop: free var '{}' not in locals", fv))?;
                     v.push(Instruction::LocalGet(*idx));
                 }
-                v.push(Instruction::Call(func_idx as u32));
+                v.push(Instruction::Call(USER_BASE | func_idx as u32));
                 Ok(v)
             }
             "recur" => {

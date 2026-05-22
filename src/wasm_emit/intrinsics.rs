@@ -457,4 +457,158 @@ impl WasmEmitter {
             Instruction::I64Const(TAG_BITS), Instruction::I64Shl,
         ]
     }
+
+    /// itoa(n): convert tagged number to tagged string.
+    /// Input: TAGGED number on stack. Returns TAGGED string.
+    /// Handles positive, negative, zero.
+    pub(crate) fn emit_itoa(&mut self) -> Vec<Instruction<'static>> {
+        let n = self.local_idx("__itoa_n");
+        let neg = self.local_idx("__itoa_neg");
+        let tmp = self.local_idx("__itoa_tmp");
+        let pos = self.local_idx("__itoa_pos");
+        let count = self.local_idx("__itoa_cnt");
+        let digit = self.local_idx("__itoa_d");
+        let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+
+        // Allocate scratch buffer from data segment space
+        let buf_base = self.next_data_offset.max(3200);
+        self.next_data_offset = (buf_base + 32 + 7) & !7;
+
+        vec![
+            // Pop tagged number, untag
+            Instruction::LocalSet(n),
+            Instruction::LocalGet(n),
+            Instruction::I64Const(TAG_BITS),
+            Instruction::I64ShrU,
+            Instruction::LocalSet(n),
+
+            // Handle negative
+            Instruction::LocalGet(n),
+            Instruction::I64Const(0),
+            Instruction::I64LtS,
+            Instruction::I64ExtendI32U,
+            Instruction::LocalSet(neg),
+            Instruction::LocalGet(neg),
+            Instruction::I32WrapI64,
+            Instruction::If(BlockType::Empty),
+                Instruction::LocalGet(n),
+                Instruction::I64Const(0),
+                Instruction::I64Sub,
+                Instruction::LocalSet(n),
+            Instruction::End,
+
+            // Special case: n == 0 → "0"
+            Instruction::LocalGet(n),
+            Instruction::I64Eqz,
+            Instruction::If(BlockType::Result(ValType::I64)),
+                // Write "0" at buf_base, return tagged string
+                Instruction::I64Const(buf_base as i64),
+                Instruction::I32WrapI64,
+                Instruction::I32Const(48), // '0'
+                Instruction::I32Store8(ma8.clone()),
+                // packed = (1 << 32) | buf_base, then tag as string
+                Instruction::I64Const(buf_base as i64),
+                Instruction::I64Const(1),
+                Instruction::I64Const(32),
+                Instruction::I64Shl,
+                Instruction::I64Or,
+                Instruction::I64Const(TAG_BITS),
+                Instruction::I64Shl,
+                Instruction::I64Const(TAG_STR),
+                Instruction::I64Or,
+
+            Instruction::Else,
+                // Write digits backward from buf_base + 21
+                Instruction::I64Const(21),
+                Instruction::LocalSet(pos),
+                Instruction::I64Const(0),
+                Instruction::LocalSet(count),
+
+                Instruction::Block(BlockType::Empty),
+                Instruction::Loop(BlockType::Empty),
+                    // if n == 0: break
+                    Instruction::LocalGet(n),
+                    Instruction::I64Eqz,
+                    Instruction::If(BlockType::Empty),
+                        Instruction::Br(2),
+                    Instruction::End,
+                    // digit = n % 10
+                    Instruction::LocalGet(n),
+                    Instruction::I64Const(10),
+                    Instruction::I64RemU,
+                    Instruction::LocalSet(digit),
+                    // n = n / 10
+                    Instruction::LocalGet(n),
+                    Instruction::I64Const(10),
+                    Instruction::I64DivU,
+                    Instruction::LocalSet(n),
+                    // buf[pos] = '0' + digit
+                    Instruction::I64Const(buf_base as i64),
+                    Instruction::LocalGet(pos),
+                    Instruction::I64Add,
+                    Instruction::I32WrapI64,
+                    Instruction::LocalGet(digit),
+                    Instruction::I64Const(48),
+                    Instruction::I64Add,
+                    Instruction::I32WrapI64,
+                    Instruction::I32Store8(ma8.clone()),
+                    // pos--, count++
+                    Instruction::LocalGet(pos),
+                    Instruction::I64Const(1),
+                    Instruction::I64Sub,
+                    Instruction::LocalSet(pos),
+                    Instruction::LocalGet(count),
+                    Instruction::I64Const(1),
+                    Instruction::I64Add,
+                    Instruction::LocalSet(count),
+                    Instruction::Br(0),
+                Instruction::End, // loop
+                Instruction::End, // block
+
+                // Handle negative: write '-' before digits
+                Instruction::LocalGet(neg),
+                Instruction::I32WrapI64,
+                Instruction::If(BlockType::Empty),
+                    // buf[pos] = '-'
+                    Instruction::I64Const(buf_base as i64),
+                    Instruction::LocalGet(pos),
+                    Instruction::I64Add,
+                    Instruction::I32WrapI64,
+                    Instruction::I32Const(45), // '-'
+                    Instruction::I32Store8(ma8.clone()),
+                    // pos--, count++
+                    Instruction::LocalGet(pos),
+                    Instruction::I64Const(1),
+                    Instruction::I64Sub,
+                    Instruction::LocalSet(pos),
+                    Instruction::LocalGet(count),
+                    Instruction::I64Const(1),
+                    Instruction::I64Add,
+                    Instruction::LocalSet(count),
+                Instruction::End,
+
+                // String start = buf_base + pos + 1
+                // len = count
+                // packed = (count << 32) | (buf_base + pos + 1)
+                Instruction::I64Const(buf_base as i64),
+                Instruction::LocalGet(pos),
+                Instruction::I64Add,
+                Instruction::I64Const(1),
+                Instruction::I64Add,
+                Instruction::LocalSet(tmp),
+                // packed = (count << 32) | tmp
+                Instruction::LocalGet(count),
+                Instruction::I64Const(32),
+                Instruction::I64Shl,
+                Instruction::LocalGet(tmp),
+                Instruction::I64Or,
+                // Tag as string
+                Instruction::I64Const(TAG_BITS),
+                Instruction::I64Shl,
+                Instruction::I64Const(TAG_STR),
+                Instruction::I64Or,
+
+            Instruction::End, // if n==0
+        ]
+    }
 }

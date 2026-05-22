@@ -372,7 +372,7 @@ impl WasmEmitter {
                 if self.p2_mode { self.need_wasi_http = true; } else { self.need_outlayer = true; }
             }
             // FP-allocating builtins (need frame save/restore in NEAR mode)
-            "str-cat" | "str-slice" | "near/load-bytes" | "u32-to-bytes" | "near/store-bytes" => {
+            "str-cat" | "str-concat" | "string-append" | "str-slice" | "near/load-bytes" | "u32-to-bytes" | "near/store-bytes" => {
                 if !self.wasi_mode && !self.p2_mode { self.needs_frame = true; }
             }
             _ => {}

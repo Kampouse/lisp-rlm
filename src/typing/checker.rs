@@ -838,6 +838,45 @@ fn infer(
                     }
                     Ok(TcType::Con(TcCon::Nil))
                 }
+                LispVal::Sym(s) if s == "loop" => {
+                    // (loop ((var init) ...) body...) — TCO loop, type as body
+                    // Introduce loop vars into scope
+                    if list.len() >= 3 {
+                        let mut loop_env = env.clone();
+                        if let LispVal::List(bindings) = &list[1] {
+                            for b in bindings {
+                                if let LispVal::List(p) = b {
+                                    if p.len() >= 2 {
+                                        let _ = infer(&p[1], env, supply, subst)?;
+                                        if let LispVal::Sym(name) = &p[0] {
+                                            // Add loop var as monomorphic Any
+                                            loop_env.insert_mono(
+                                                name.clone(),
+                                                TcType::Con(TcCon::Any),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // Infer body expressions with loop vars in scope
+                        let mut last_ty = TcType::Con(TcCon::Any);
+                        for expr in &list[2..] {
+                            last_ty = infer(expr, &loop_env, supply, subst)?;
+                        }
+                        Ok(last_ty)
+                    } else {
+                        Ok(TcType::Con(TcCon::Any))
+                    }
+                }
+                LispVal::Sym(s) if s == "recur" => {
+                    // (recur val ...) — recursive call inside loop
+                    // Just infer args for side effects, return Any (it's a jump, not a value)
+                    for arg in &list[1..] {
+                        let _ = infer(arg, env, supply, subst)?;
+                    }
+                    Ok(TcType::Con(TcCon::Any))
+                }
                 LispVal::Sym(s) if s == "assert-equal" => {
                     // (assert-equal expected actual) — infer both, return nil
                     if list.len() >= 3 {
@@ -1213,6 +1252,16 @@ fn infer_application(
                     name
                 ));
             }
+        }
+    }
+
+    // Variadic builtins: accept any arity
+    if let LispVal::Sym(name) = func {
+        if name == "str-concat" || name == "string-append" || name == "str" {
+            for arg in args {
+                let _ = infer(arg, env, supply, subst)?;
+            }
+            return Ok(TcType::Con(TcCon::Str));
         }
     }
 

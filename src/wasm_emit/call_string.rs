@@ -848,6 +848,25 @@ impl WasmEmitter {
                 v.push(Instruction::I64Or);
                 Ok(v)
             }
+            "str-concat" | "string-append" => {
+                // Variadic str-concat: (str-concat a b c ...) → chains binary str-cat
+                if a.is_empty() { return Err("str-concat: need at least 1 arg".into()); }
+                if a.len() == 1 {
+                    // Single arg — just emit it
+                    return self.expr(&a[0]);
+                }
+                // Chain: str-cat(a[0], str-cat(a[1], str-cat(a[2], ...)))
+                // Build from right to left
+                let mut result_expr = a[a.len() - 1].clone();
+                for i in (0..a.len() - 1).rev() {
+                    result_expr = LispVal::List(vec![
+                        LispVal::Sym("str-cat".into()),
+                        a[i].clone(),
+                        result_expr,
+                    ]);
+                }
+                self.expr(&result_expr)
+            }
             "str-repeat" => {
                 if a.len() != 2 { return Err("str-repeat: expected 2 args".into()); }
                 let src_i = self.local_idx("__sr_src");

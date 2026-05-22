@@ -259,6 +259,15 @@ impl TcEnv {
             ),
         );
 
+        // itoa : num → str
+        env.insert_mono(
+            "itoa".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Num)],
+                Box::new(TcType::Con(TcCon::Str)),
+            ),
+        );
+
         // not : 'a → bool
         {
             let a = TcType::Var(0);
@@ -528,6 +537,8 @@ impl TcEnv {
         env.insert_mono("str-len".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(int_ty.clone())));
         env.insert_mono("str-slice".into(), TcType::Arrow(vec![str_ty.clone(), int_ty.clone(), int_ty.clone()], Box::new(str_ty.clone())));
         env.insert_mono("str-cat".into(), TcType::Arrow(vec![str_ty.clone(), str_ty.clone()], Box::new(str_ty.clone())));
+        // str-concat / string-append are variadic — type check skips them
+        // (handled by dispatching to binary str-cat in the emitter)
         env.insert_mono("u32-to-bytes".into(), TcType::Arrow(vec![int_ty.clone()], Box::new(str_ty.clone())));
         env.insert_mono("bytes-to-u32".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(int_ty.clone())));
 
