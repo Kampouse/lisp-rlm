@@ -34,8 +34,8 @@ impl WasmEmitter {
                 v.extend(key_expr);
                 v.push(Instruction::LocalSet(key_local));
                 // storage_read(key_len, key_ptr, register_id=1) — idx 18
-                // Note: storage_read return value is unreliable in view calls (returns 0
-                // even when key doesn't exist). Use register_len to check if value was written.
+                // Use return value (0=not found, 1=found) instead of register_len,
+                // because register_len doesn't clear stale data from previous reads.
                 v.push(Instruction::LocalGet(key_local));
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
@@ -43,13 +43,9 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(1)); // register 1
-                v.push(Self::host_call(18)); v.push(Instruction::Drop);
-
-                // register_len(1) — idx 1. Returns u64 length, or -1 if register not written.
-                v.push(Instruction::I64Const(1));
-                v.push(Self::host_call(1));
-                // Check if register_len returned -1 (key not found)
-                v.push(Instruction::I64Const(-1i64 as u64 as i64));
+                v.push(Self::host_call(18));
+                // Check return value: 0 = not found, nonzero = found
+                v.push(Instruction::I64Const(0));
                 v.push(Instruction::I64Eq);
                 v.push(Instruction::If(BlockType::Result(ValType::I64)));
                 // Key not found: return 0 (tagged as Num)
@@ -132,18 +128,15 @@ impl WasmEmitter {
                 v.extend(key_expr);
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // key_ptr
-                v.push(Instruction::I64Const(0)); // register 0
-                v.push(Self::host_call(18)); v.push(Instruction::Drop); // storage_read — discard return
- // discard unreliable return value
-                // Use register_len to check if value was written
+                v.push(Instruction::I64Const(1)); // register 1 (not 0, to avoid stale data)
+                v.push(Self::host_call(18));
+                // Check return value: 0 = not found, 1 = found
                 v.push(Instruction::I64Const(0));
-                v.push(Self::host_call(1)); // register_len
-                v.push(Instruction::I64Const(-1i64 as u64 as i64));
                 v.push(Instruction::I64Eq);
                 v.push(Instruction::If(wasm_encoder::BlockType::Result(ValType::I64)));
                     v.push(Instruction::I64Const(0));
                 v.push(Instruction::Else);
-                    v.push(Instruction::I64Const(0));
+                    v.push(Instruction::I64Const(1));
                     v.push(Instruction::I64Const(STORAGE_BUF));
                     v.push(Self::host_call(0)); // read_register
                     v.push(Instruction::I32Const(STORAGE_BUF as i32));
@@ -174,6 +167,69 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // key_ptr
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(19)); // storage_remove
+                Ok(v)
+            }
+            // near/store_num: (near/store_num key_i64 val_i64) — key is raw i64, 8 LE bytes
+            // Stores TAGGED val under 8-byte LE key. Gas-efficient numeric keys.
+            "near/store_num" => {
+                self.need_host(17); self.need_host(0);
+                let key_expr = self.expr(&a[0])?;
+                let val = self.expr(&a[1])?;
+                let key_local = self.local_idx("__sn_key");
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let mut v = Vec::new();
+                v.extend(key_expr);
+                v.push(Instruction::LocalSet(key_local));
+                // Store tagged val at STORAGE_BUF
+                v.push(Instruction::I32Const(STORAGE_BUF as i32)); v.extend(val);
+                v.push(Instruction::I64Store(ma));
+                // Write un-tagged key as 8 LE bytes at TEMP_MEM
+                v.push(Instruction::I32Const(TEMP_MEM as i32));
+                v.push(Instruction::LocalGet(key_local));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Store(ma));
+                // storage_write(key_len=8, key_ptr=TEMP_MEM, val_len=8, val_ptr=STORAGE_BUF, register_id=0)
+                v.push(Instruction::I64Const(8)); // key_len
+                v.push(Instruction::I64Const(TEMP_MEM)); // key_ptr
+                v.push(Instruction::I64Const(8)); // val_len
+                v.push(Instruction::I64Const(STORAGE_BUF)); // val_ptr
+                v.push(Instruction::I64Const(0)); // register_id
+                v.push(Self::host_call(17)); v.push(Instruction::Drop);
+                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
+            }
+            // near/load_num: (near/load_num key_i64) — key is raw i64, returns tagged value or 0
+            "near/load_num" => {
+                self.need_host(18); self.need_host(0);
+                let key_expr = self.expr(&a[0])?;
+                let key_local = self.local_idx("__ln_key");
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let mut v = Vec::new();
+                v.extend(key_expr);
+                v.push(Instruction::LocalSet(key_local));
+                // Write un-tagged key as 8 LE bytes at TEMP_MEM
+                v.push(Instruction::I32Const(TEMP_MEM as i32));
+                v.push(Instruction::LocalGet(key_local));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Store(ma));
+                // storage_read(key_len=8, key_ptr=TEMP_MEM, register_id=1) → returns 0 if not found, 1 if found
+                v.push(Instruction::I64Const(8));
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I64Const(1));
+                v.push(Self::host_call(18));
+                // Check return value: 0 = not found, 1 = found
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                // Not found: return tagged 0
+                v.push(Instruction::I64Const(0));
+                v.extend(self.emit_tag_num());
+                v.push(Instruction::Else);
+                // Key found: read_register(1, STORAGE_BUF)
+                v.push(Instruction::I64Const(1)); v.push(Instruction::I64Const(STORAGE_BUF));
+                v.push(Self::host_call(0));
+                v.push(Instruction::I32Const(STORAGE_BUF as i32));
+                v.push(Instruction::I64Load(ma));
+                v.push(Instruction::End);
                 Ok(v)
             }
             "near/storage_usage" => { let mut v = vec![Self::host_call(11)]; v.extend(self.emit_tag_num()); Ok(v) },
