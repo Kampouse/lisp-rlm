@@ -48,6 +48,306 @@ impl WasmEmitter {
 
         for (ki, k) in keys.iter().enumerate() {
             let is_last = ki == keys.len() - 1;
+            let is_array_index = !k.is_empty() && k.chars().all(|c| c.is_ascii_digit());
+
+            if is_array_index {
+                // ── Array index mode: scan [e0, e1, ...] for element at index k ──
+                // Skip whitespace to find opening '['
+                v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
+                v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Br(2)); v.push(Instruction::End);
+                v.push(Instruction::I64Const(buf)); v.push(Instruction::LocalGet(pos));
+                v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(sb));
+                v.push(Instruction::LocalGet(sb)); v.push(Instruction::I64Const(0x5B)); // '['
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End); // found [
+                // skip whitespace
+                v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); v.push(Instruction::End);
+
+                // Skip past '['
+                v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+
+                // Skip whitespace after '['
+                v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
+                v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Br(2)); v.push(Instruction::End);
+                v.push(Instruction::I64Const(buf)); v.push(Instruction::LocalGet(pos));
+                v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(sb));
+                v.push(Instruction::LocalGet(sb)); v.push(Instruction::I64Const(0x20)); v.push(Instruction::I64Eq);
+                v.push(Instruction::LocalGet(sb)); v.push(Instruction::I64Const(0x09)); v.push(Instruction::I64Eq);
+                v.push(Instruction::I32Or);
+                v.push(Instruction::LocalGet(sb)); v.push(Instruction::I64Const(0x0A)); v.push(Instruction::I64Eq);
+                v.push(Instruction::I32Or);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+                v.push(Instruction::Br(1)); v.push(Instruction::End);
+                v.push(Instruction::End); v.push(Instruction::End);
+
+                // Parse target index from k (compile-time constant)
+                let target_idx: i64 = k.parse().unwrap_or(0);
+                let elem_count = self.local_idx("__jgs_ec");
+                let arr_depth = self.local_idx("__jgs_ad");
+                let in_str = self.local_idx("__jgs_istr");
+                let esc_arr = self.local_idx("__jgs_ea");
+                let val_start = self.local_idx("__jgs_vs");
+                let val_end = self.local_idx("__jgs_ve");
+                let found = self.local_idx("__jgs_fd");
+                let byte_l = self.local_idx("__jgs_bl");
+
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(elem_count));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(arr_depth));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(in_str));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(esc_arr));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(val_start));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(val_end));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(found));
+
+                // Mark start of first element (skip leading whitespace already done)
+                v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalSet(val_start));
+
+                // Array scan loop
+                v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
+                v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Br(2)); v.push(Instruction::End);
+
+                // Load byte
+                v.push(Instruction::I64Const(buf)); v.push(Instruction::LocalGet(pos));
+                v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(byte_l));
+
+                // If in string: only track escapes and closing quote
+                v.push(Instruction::LocalGet(in_str)); v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Ne);
+                v.push(Instruction::If(BlockType::Empty));
+                // in string: check escape
+                v.push(Instruction::LocalGet(byte_l)); v.push(Instruction::I64Const(0x5C)); // '\'
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(esc_arr)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Xor); v.push(Instruction::LocalSet(esc_arr));
+                v.push(Instruction::Else);
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(esc_arr));
+                // check closing quote
+                v.push(Instruction::LocalGet(byte_l)); v.push(Instruction::I64Const(0x22)); // '"'
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(in_str));
+                v.push(Instruction::End);
+                v.push(Instruction::End);
+                v.push(Instruction::Else);
+                // not in string: track brackets, strings, commas
+                // Check opening quote
+                v.push(Instruction::LocalGet(byte_l)); v.push(Instruction::I64Const(0x22));
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::I64Const(1)); v.push(Instruction::LocalSet(in_str));
+                v.push(Instruction::I64Const(1)); v.push(Instruction::LocalSet(esc_arr));
+                v.push(Instruction::Else);
+                // Track { and [
+                v.push(Instruction::LocalGet(byte_l)); v.push(Instruction::I64Const(0x7B)); // '{'
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::LocalGet(byte_l)); v.push(Instruction::I64Const(0x5B)); // '['
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::I32Or);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(arr_depth)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(arr_depth));
+                v.push(Instruction::Else);
+                // Track } and ]
+                v.push(Instruction::LocalGet(byte_l)); v.push(Instruction::I64Const(0x7D)); // '}'
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::LocalGet(byte_l)); v.push(Instruction::I64Const(0x5D)); // ']'
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::I32Or);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(arr_depth)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Sub); v.push(Instruction::LocalSet(arr_depth));
+                // If depth goes to -1: we hit the outer ] — end of array
+                v.push(Instruction::LocalGet(arr_depth)); v.push(Instruction::I64Const(-1));
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Empty));
+                // End of array — if this is our element, record val_end
+                v.push(Instruction::LocalGet(found)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalSet(val_end));
+                v.push(Instruction::End);
+                v.push(Instruction::Br(3)); // break out of array scan
+                v.push(Instruction::End);
+                v.push(Instruction::Else);
+                // Comma at depth 0: element boundary
+                v.push(Instruction::LocalGet(byte_l)); v.push(Instruction::I64Const(0x2C)); // ','
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::LocalGet(arr_depth)); v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::I32And);
+                v.push(Instruction::If(BlockType::Empty));
+                // If this was our target element, record val_end
+                v.push(Instruction::LocalGet(found)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalSet(val_end));
+                v.push(Instruction::Br(3)); // done
+                v.push(Instruction::End);
+                // Increment element count
+                v.push(Instruction::LocalGet(elem_count)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(elem_count));
+                // If next element is our target, mark val_start after whitespace skip
+                v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+                // Skip whitespace
+                v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
+                v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Br(2)); v.push(Instruction::End);
+                v.push(Instruction::I64Const(buf)); v.push(Instruction::LocalGet(pos));
+                v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(sb));
+                v.push(Instruction::LocalGet(sb)); v.push(Instruction::I64Const(0x20)); v.push(Instruction::I64Eq);
+                v.push(Instruction::LocalGet(sb)); v.push(Instruction::I64Const(0x09)); v.push(Instruction::I64Eq);
+                v.push(Instruction::I32Or);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+                v.push(Instruction::Br(1)); v.push(Instruction::End);
+                v.push(Instruction::End); v.push(Instruction::End);
+                // Check if this is our target
+                v.push(Instruction::LocalGet(elem_count)); v.push(Instruction::I64Const(target_idx));
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::I64Const(1)); v.push(Instruction::LocalSet(found));
+                v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalSet(val_start));
+                v.push(Instruction::End);
+                v.push(Instruction::Else);
+                // Not a comma or bracket — just advance
+                v.push(Instruction::End); // else for comma check
+                v.push(Instruction::End); // else for }/]
+                v.push(Instruction::End); // else for {/[
+                v.push(Instruction::End); // else for "
+                v.push(Instruction::End); // else for in_str
+                v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); v.push(Instruction::End); // loop/block
+
+                // After array scan: check if found
+                v.push(Instruction::LocalGet(found)); v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Empty));
+                if is_last {
+                    // Extract value from val_start..val_end
+                    match value_type {
+                        "str" => {
+                            // Copy raw bytes to stdout_buf, building tagged string result
+                            let stdout_buf = 65536i64;
+                            let str_len = self.local_idx("__jgs_asl");
+                            let dst_a = self.local_idx("__jgs_adst");
+                            let ch_a = self.local_idx("__jgs_ach");
+                            let in_quote = self.local_idx("__jgs_aq");
+                            let esc_a = self.local_idx("__jgs_ae");
+                            let scan_a = self.local_idx("__jgs_as");
+                            let vstart = self.local_idx("__jgs_avs");
+
+                            v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(str_len));
+                            v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(in_quote));
+                            v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(esc_a));
+
+                            v.push(Instruction::LocalGet(val_start)); v.push(Instruction::LocalSet(scan_a));
+                            v.push(Instruction::I64Const(stdout_buf)); v.push(Instruction::LocalSet(dst_a));
+                            // Mark actual value start (for tagged string ptr)
+                            v.push(Instruction::I64Const(stdout_buf)); v.push(Instruction::LocalSet(vstart));
+
+                            // If first byte is '"', skip it (opening quote)
+                            v.push(Instruction::LocalGet(scan_a)); v.push(Instruction::LocalGet(val_end));
+                            v.push(Instruction::I64LtS);
+                            v.push(Instruction::If(BlockType::Empty));
+                            v.push(Instruction::I64Const(buf)); v.push(Instruction::LocalGet(scan_a));
+                            v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+                            v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+                            v.push(Instruction::I64Const(0x22)); v.push(Instruction::I64Eq);
+                            v.push(Instruction::If(BlockType::Empty));
+                            v.push(Instruction::LocalGet(scan_a)); v.push(Instruction::I64Const(1));
+                            v.push(Instruction::I64Add); v.push(Instruction::LocalSet(scan_a));
+                            v.push(Instruction::I64Const(1)); v.push(Instruction::LocalSet(in_quote));
+                            v.push(Instruction::End); v.push(Instruction::End);
+
+                            // Copy loop
+                            v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
+                            v.push(Instruction::LocalGet(scan_a)); v.push(Instruction::LocalGet(val_end));
+                            v.push(Instruction::I64GeS); v.push(Instruction::If(BlockType::Empty));
+                            v.push(Instruction::Br(2)); v.push(Instruction::End);
+                            v.push(Instruction::I64Const(buf)); v.push(Instruction::LocalGet(scan_a));
+                            v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+                            v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
+                            v.push(Instruction::LocalSet(ch_a));
+
+                            // If in quoted string, stop at unescaped closing quote
+                            v.push(Instruction::LocalGet(in_quote)); v.push(Instruction::I64Const(1));
+                            v.push(Instruction::I64Eq);
+                            v.push(Instruction::If(BlockType::Empty));
+                            v.push(Instruction::LocalGet(esc_a)); v.push(Instruction::I64Const(0));
+                            v.push(Instruction::I64Eq);
+                            v.push(Instruction::LocalGet(ch_a)); v.push(Instruction::I64Const(0x22));
+                            v.push(Instruction::I64Eq);
+                            v.push(Instruction::I32And);
+                            v.push(Instruction::If(BlockType::Empty));
+                            v.push(Instruction::Br(3)); // end of quoted value
+                            v.push(Instruction::End);
+                            v.push(Instruction::End);
+
+                            // Track escapes
+                            v.push(Instruction::LocalGet(ch_a)); v.push(Instruction::I64Const(0x5C));
+                            v.push(Instruction::I64Eq);
+                            v.push(Instruction::If(BlockType::Empty));
+                            v.push(Instruction::LocalGet(esc_a)); v.push(Instruction::I64Const(1));
+                            v.push(Instruction::I64Xor); v.push(Instruction::LocalSet(esc_a));
+                            v.push(Instruction::Else);
+                            v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(esc_a));
+                            v.push(Instruction::End);
+
+                            // Write byte
+                            v.push(Instruction::LocalGet(dst_a)); v.push(Instruction::I32WrapI64);
+                            v.push(Instruction::LocalGet(ch_a)); v.push(Instruction::I32WrapI64);
+                            v.push(Instruction::I32Store8(ma8.clone()));
+                            v.push(Instruction::LocalGet(dst_a)); v.push(Instruction::I64Const(1));
+                            v.push(Instruction::I64Add); v.push(Instruction::LocalSet(dst_a));
+                            v.push(Instruction::LocalGet(str_len)); v.push(Instruction::I64Const(1));
+                            v.push(Instruction::I64Add); v.push(Instruction::LocalSet(str_len));
+                            v.push(Instruction::LocalGet(scan_a)); v.push(Instruction::I64Const(1));
+                            v.push(Instruction::I64Add); v.push(Instruction::LocalSet(scan_a));
+                            v.push(Instruction::Br(0));
+                            v.push(Instruction::End); v.push(Instruction::End);
+
+                            // Build tagged string: (stdout_buf | (str_len << 32))
+                            v.push(Instruction::LocalGet(str_len)); v.push(Instruction::I64Const(32));
+                            v.push(Instruction::I64Shl);
+                            v.push(Instruction::I64Const(stdout_buf));
+                            v.push(Instruction::I64Or); v.push(Instruction::LocalSet(rv));
+                        }
+                        _ => { /* int/float: not typical for array, keep rv=0 */ }
+                    }
+                } else {
+                    // Not last key: pos = val_start, reset depth for next scan
+                    v.push(Instruction::LocalGet(val_start)); v.push(Instruction::LocalSet(pos));
+                    v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(depth));
+                }
+                v.push(Instruction::End);
+                // else: not found, rv stays 0
+            } else {
             let mut pattern = vec![b'"'];
             pattern.extend(k.as_bytes());
             pattern.extend_from_slice(b"\":" );
@@ -176,21 +476,44 @@ impl WasmEmitter {
                         let esc = self.local_idx("__jgs_esc");
                         let dst = self.local_idx("__jgs_dst");
                         let ch = self.local_idx("__jgs_ch");
+                        let raw_mode = self.local_idx("__jgs_rm");
+                        let raw_depth = self.local_idx("__jgs_rd");
                         let stdout_buf = 65536i64; // STDOUT_BUF
 
                         v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(str_len));
                         v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(esc));
+                        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(raw_mode));
+                        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(raw_depth));
+                        // Check if value starts with '"' (quoted string)
                         v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalGet(ilen));
                         v.push(Instruction::I64LtS);
                         v.push(Instruction::If(BlockType::Empty));
                         v.push(Instruction::I64Const(buf)); v.push(Instruction::LocalGet(pos));
                         v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
                         v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
-                        v.push(Instruction::I64Const(0x22)); v.push(Instruction::I64Eq);
+                        v.push(Instruction::LocalSet(ch));
+                        v.push(Instruction::LocalGet(ch)); v.push(Instruction::I64Const(0x22)); // '"'
+                        v.push(Instruction::I64Eq);
                         v.push(Instruction::If(BlockType::Empty));
+                        // Quoted string: skip opening quote
                         v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64Const(1));
                         v.push(Instruction::I64Add); v.push(Instruction::LocalSet(pos));
-                        v.push(Instruction::End); v.push(Instruction::End);
+                        v.push(Instruction::Else);
+                        // Not a quote: check if '{' or '[' (raw value mode)
+                        v.push(Instruction::LocalGet(ch)); v.push(Instruction::I64Const(0x7B)); // '{'
+                        v.push(Instruction::I64Eq);
+                        v.push(Instruction::LocalGet(ch)); v.push(Instruction::I64Const(0x5B)); // '['
+                        v.push(Instruction::I64Eq);
+                        v.push(Instruction::I32Or);
+                        v.push(Instruction::If(BlockType::Empty));
+                        v.push(Instruction::I64Const(1)); v.push(Instruction::LocalSet(raw_mode));
+                        v.push(Instruction::I64Const(1)); v.push(Instruction::LocalSet(raw_depth));
+                        v.push(Instruction::Else);
+                        // Number/bool/other: raw scan until ',', '}', ']', whitespace
+                        v.push(Instruction::I64Const(2)); v.push(Instruction::LocalSet(raw_mode));
+                        v.push(Instruction::End);
+                        v.push(Instruction::End);
+                        v.push(Instruction::End);
                         v.push(Instruction::LocalGet(pos)); v.push(Instruction::LocalSet(str_ptr));
                         v.push(Instruction::I64Const(stdout_buf)); v.push(Instruction::LocalSet(dst));
                         v.push(Instruction::Block(BlockType::Empty)); v.push(Instruction::Loop(BlockType::Empty));
@@ -201,13 +524,17 @@ impl WasmEmitter {
                         v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
                         v.push(Instruction::I32Load8U(ma8.clone())); v.push(Instruction::I64ExtendI32U);
                         v.push(Instruction::LocalSet(ch));
+                        // raw_mode == 0: quoted string (stop at unescaped '"')
+                        v.push(Instruction::LocalGet(raw_mode)); v.push(Instruction::I64Const(0));
+                        v.push(Instruction::I64Eq);
+                        v.push(Instruction::If(BlockType::Empty));
                         v.push(Instruction::LocalGet(esc)); v.push(Instruction::I64Const(0));
                         v.push(Instruction::I64Eq);
                         v.push(Instruction::If(BlockType::Empty));
                         v.push(Instruction::LocalGet(ch)); v.push(Instruction::I64Const(0x22));
                         v.push(Instruction::I64Eq);
                         v.push(Instruction::If(BlockType::Empty));
-                        v.push(Instruction::Br(3)); // end of string
+                        v.push(Instruction::Br(3)); // end of quoted string
                         v.push(Instruction::End);
                         v.push(Instruction::End);
                         v.push(Instruction::LocalGet(ch)); v.push(Instruction::I64Const(0x5C));
@@ -218,6 +545,62 @@ impl WasmEmitter {
                         v.push(Instruction::Else);
                         v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(esc));
                         v.push(Instruction::End);
+                        v.push(Instruction::Else);
+                        // raw_mode == 1: nested bracket tracking ({}/[])
+                        v.push(Instruction::LocalGet(raw_mode)); v.push(Instruction::I64Const(1));
+                        v.push(Instruction::I64Eq);
+                        v.push(Instruction::If(BlockType::Empty));
+                        v.push(Instruction::LocalGet(ch)); v.push(Instruction::I64Const(0x7B)); // '{'
+                        v.push(Instruction::I64Eq);
+                        v.push(Instruction::LocalGet(ch)); v.push(Instruction::I64Const(0x5B)); // '['
+                        v.push(Instruction::I64Eq);
+                        v.push(Instruction::I32Or);
+                        v.push(Instruction::If(BlockType::Empty));
+                        v.push(Instruction::LocalGet(raw_depth)); v.push(Instruction::I64Const(1));
+                        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(raw_depth));
+                        v.push(Instruction::Else);
+                        v.push(Instruction::LocalGet(ch)); v.push(Instruction::I64Const(0x7D)); // '}'
+                        v.push(Instruction::I64Eq);
+                        v.push(Instruction::LocalGet(ch)); v.push(Instruction::I64Const(0x5D)); // ']'
+                        v.push(Instruction::I64Eq);
+                        v.push(Instruction::I32Or);
+                        v.push(Instruction::If(BlockType::Empty));
+                        v.push(Instruction::LocalGet(raw_depth)); v.push(Instruction::I64Const(1));
+                        v.push(Instruction::I64Sub); v.push(Instruction::LocalSet(raw_depth));
+                        v.push(Instruction::LocalGet(raw_depth)); v.push(Instruction::I64Const(0));
+                        v.push(Instruction::I64Eq);
+                        v.push(Instruction::If(BlockType::Empty));
+                        // Write the closing bracket, then stop
+                        v.push(Instruction::LocalGet(dst)); v.push(Instruction::I32WrapI64);
+                        v.push(Instruction::LocalGet(ch)); v.push(Instruction::I32WrapI64);
+                        v.push(Instruction::I32Store8(ma8.clone()));
+                        v.push(Instruction::LocalGet(dst)); v.push(Instruction::I64Const(1));
+                        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(dst));
+                        v.push(Instruction::LocalGet(str_len)); v.push(Instruction::I64Const(1));
+                        v.push(Instruction::I64Add); v.push(Instruction::LocalSet(str_len));
+                        v.push(Instruction::Br(4)); // break out — done
+                        v.push(Instruction::End);
+                        v.push(Instruction::End);
+                        v.push(Instruction::End);
+                        v.push(Instruction::Else);
+                        // raw_mode == 2: simple raw value (stop at ',', '}', ']', whitespace)
+                        v.push(Instruction::LocalGet(ch)); v.push(Instruction::I64Const(0x2C)); // ','
+                        v.push(Instruction::I64Eq);
+                        v.push(Instruction::LocalGet(ch)); v.push(Instruction::I64Const(0x7D)); // '}'
+                        v.push(Instruction::I64Eq);
+                        v.push(Instruction::I32Or);
+                        v.push(Instruction::LocalGet(ch)); v.push(Instruction::I64Const(0x5D)); // ']'
+                        v.push(Instruction::I64Eq);
+                        v.push(Instruction::I32Or);
+                        v.push(Instruction::LocalGet(ch)); v.push(Instruction::I64Const(0x20)); // ' '
+                        v.push(Instruction::I64Eq);
+                        v.push(Instruction::I32Or);
+                        v.push(Instruction::If(BlockType::Empty));
+                        v.push(Instruction::Br(3)); // done
+                        v.push(Instruction::End);
+                        v.push(Instruction::End);
+                        v.push(Instruction::End);
+                        // Write byte
                         v.push(Instruction::LocalGet(dst)); v.push(Instruction::I32WrapI64);
                         v.push(Instruction::LocalGet(ch)); v.push(Instruction::I32WrapI64);
                         v.push(Instruction::I32Store8(ma8.clone()));
@@ -371,6 +754,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(depth));
             }
             v.push(Instruction::End);
+            } // close else (array vs object mode)
         }
         v.push(Instruction::LocalGet(rv));
         Ok(v)

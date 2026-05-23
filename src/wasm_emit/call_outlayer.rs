@@ -1048,6 +1048,191 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(TAG_NIL));
                 Ok(v)
             }
+            // ── P2 inline operations (no host calls, pure WASM) ──
+            "outlayer/http-post" => {
+                // (outlayer/http-post "url" "body" ["content-type"]) -> string or nil
+                if a.len() < 2 { return Err("outlayer/http-post requires (url body) or (url body content-type)".into()); }
+                if !self.wasi_mode { return Err("outlayer/http-post is only available on OutLayer (WASI) target".into()); }
+                if self.p2_mode { self.need_wasi_http = true; } else { self.need_outlayer = true; }
+
+                // For P2: register URL like http-get
+                let url_sentinel = if self.p2_mode {
+                    let url_str = match &a[0] {
+                        crate::types::LispVal::Str(s) => Some(s.clone()),
+                        _ => None
+                    };
+                    if let Some(url) = url_str {
+                        if !url.is_empty() {
+                            let (authority, path) = parse_url(&url);
+                            let idx = if let Some(existing) = self.http_urls.iter().position(|(a, p)| a == &authority && p == &path) {
+                                existing
+                            } else {
+                                self.http_urls.push((authority, path));
+                                self.http_urls.len() - 1
+                            };
+                            103 + idx as u32
+                        } else { 103u32 }
+                    } else { 103u32 }
+                } else { 103u32 };
+
+                let url_expr = self.expr(&a[0])?;
+                let body_expr = self.expr(&a[1])?;
+                let body_expr2 = self.expr(&a[1])?;
+                let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                let errno_l = self.local_idx("__hpost_err");
+                let len_l = self.local_idx("__hpost_len");
+                let mut v = Vec::new();
+
+                // url ptr/len from tagged string
+                v.extend(url_expr.clone());
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64);
+                v.extend(url_expr);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                // body ptr/len from tagged string
+                v.extend(body_expr.clone());
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64);
+                v.extend(body_expr2);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                // content-type ptr/len (default: application/json)
+                if a.len() > 2 {
+                    let ct_expr = self.expr(&a[2])?;
+                    v.extend(ct_expr.clone());
+                    v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                    v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                    v.push(Instruction::I32WrapI64);
+                    v.extend(ct_expr);
+                    v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                    v.push(Instruction::I32WrapI64);
+                } else {
+                    // Default content-type: "application/json"
+                    let ct_str = b"application/json";
+                    let ct_off = self.alloc_data(ct_str);
+                    v.push(Instruction::I32Const(ct_off as i32));
+                    v.push(Instruction::I32Const(ct_str.len() as i32));
+                }
+                // response_buf at 98304, buf_len = 65536, response_len_ptr at 163840
+                v.push(Instruction::I32Const(98304));
+                v.push(Instruction::I32Const(65536));
+                v.push(Instruction::I32Const(163840));
+                // Use sentinel 104 for http-post (103 = get, 104 = post)
+                v.push(Instruction::Call(url_sentinel + 1));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(errno_l));
+                // if errno != 0 → nil
+                v.push(Instruction::LocalGet(errno_l));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Ne);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.push(Instruction::I64Const(TAG_NIL));
+                v.push(Instruction::Else);
+                // Load response length
+                v.push(Instruction::I32Const(163840)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(len_l));
+                // Copy response to heap
+                let copy_dst_i = self.local_idx("__hpost_cdst");
+                let copy_src_i = self.local_idx("__hpost_csrc");
+                let copy_len_i = self.local_idx("__hpost_clen");
+                let ma1 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+                v.push(Instruction::I64Const(self.heap_ptr as i64)); v.push(Instruction::LocalSet(copy_dst_i));
+                v.push(Instruction::I64Const(98304)); v.push(Instruction::LocalSet(copy_src_i));
+                v.push(Instruction::LocalGet(len_l)); v.push(Instruction::LocalSet(copy_len_i));
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(copy_len_i)); v.push(Instruction::I64Const(0)); v.push(Instruction::I64Eq); v.push(Instruction::BrIf(1));
+                v.push(Instruction::LocalGet(copy_src_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Load8U(ma1));
+                v.push(Instruction::LocalGet(copy_dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Store8(ma1));
+                v.push(Instruction::LocalGet(copy_src_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(copy_src_i));
+                v.push(Instruction::LocalGet(copy_dst_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(copy_dst_i));
+                v.push(Instruction::LocalGet(copy_len_i)); v.push(Instruction::I64Const(-1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(copy_len_i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); v.push(Instruction::End);
+                let new_heap = self.heap_ptr as i64 + 65536; self.heap_ptr = new_heap as u32;
+                let dst_l = self.local_idx("__hpost_dst");
+                v.push(Instruction::I64Const(self.heap_ptr as i64 - 65536)); v.push(Instruction::LocalSet(dst_l));
+                v.push(Instruction::LocalGet(dst_l));
+                v.push(Instruction::LocalGet(len_l)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_STR)); v.push(Instruction::I64Or);
+                v.push(Instruction::End);
+                Ok(v)
+            }
+            "outlayer/json-get" => {
+                // (outlayer/json-get tagged_string "key") -> string or nil
+                // Scans JSON from a tagged string (e.g., HTTP response) for the given key
+                if a.len() < 2 { return Err("outlayer/json-get requires (string key)".into()); }
+                if !self.wasi_mode { return Err("outlayer/json-get is only available on OutLayer (WASI) target".into()); }
+                match &a[1] {
+                    crate::types::LispVal::Str(key) => {
+                        let buf_expr = self.expr(&a[0])?;
+                        let buf_expr2 = self.expr(&a[0])?;
+                        let tmp_l = self.local_idx("__ojg_tmp");
+                        let src_ptr_l = self.local_idx("__ojg_sp");
+                        let copy_i = self.local_idx("__ojg_ci");
+                        let target_buf = 98304i64; // response buffer
+                        let ma1 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+
+                        let mut setup = Vec::new();
+                        // Untag the source string: >>3 gives payload = (len << 32) | ptr
+                        setup.extend(buf_expr);
+                        setup.push(Instruction::I64Const(3)); setup.push(Instruction::I64ShrU);
+                        setup.push(Instruction::LocalSet(tmp_l));
+                        // Extract src_ptr = tmp & 0xFFFFFFFF
+                        setup.push(Instruction::LocalGet(tmp_l));
+                        setup.push(Instruction::I64Const(0xFFFFFFFF)); setup.push(Instruction::I64And);
+                        setup.push(Instruction::LocalSet(src_ptr_l));
+                        // Extract len = tmp >> 32
+                        setup.push(Instruction::LocalGet(tmp_l));
+                        setup.push(Instruction::I64Const(32)); setup.push(Instruction::I64ShrU);
+                        // Copy string to target_buf so json_get_from_buf can scan it
+                        // Save len to another local for the copy
+                        let src_len_l = self.local_idx("__ojg_slen");
+                        setup.push(Instruction::LocalSet(src_len_l));
+                        // Copy loop: target_buf[i] = src_ptr[i] for i in 0..len
+                        setup.push(Instruction::I64Const(0)); setup.push(Instruction::LocalSet(copy_i));
+                        setup.push(Instruction::Block(BlockType::Empty));
+                        setup.push(Instruction::Loop(BlockType::Empty));
+                        setup.push(Instruction::LocalGet(copy_i));
+                        setup.push(Instruction::LocalGet(src_len_l));
+                        setup.push(Instruction::I64GeU); setup.push(Instruction::BrIf(1));
+                        // target_buf[i] = src[i]
+                        setup.push(Instruction::I64Const(target_buf));
+                        setup.push(Instruction::LocalGet(copy_i)); setup.push(Instruction::I64Add);
+                        setup.push(Instruction::I32WrapI64);
+                        setup.push(Instruction::LocalGet(src_ptr_l)); setup.push(Instruction::I32WrapI64);
+                        setup.push(Instruction::LocalGet(copy_i)); setup.push(Instruction::I32WrapI64);
+                        setup.push(Instruction::I32Add);
+                        setup.push(Instruction::I32Load8U(ma1));
+                        setup.push(Instruction::I32Store8(ma1));
+                        setup.push(Instruction::LocalGet(copy_i)); setup.push(Instruction::I64Const(1));
+                        setup.push(Instruction::I64Add); setup.push(Instruction::LocalSet(copy_i));
+                        setup.push(Instruction::Br(0));
+                        setup.push(Instruction::End); setup.push(Instruction::End);
+                        // Push len for buf_len_setup
+                        setup.push(Instruction::LocalGet(src_len_l));
+
+                        let mut v = self.json_get_from_buf(key, "str", target_buf, &mut setup)?;
+                        v.extend(self.emit_tag_str());
+                        Ok(v)
+                    }
+                    _ => Err("outlayer/json-get key must be a string literal".into()),
+                }
+            }
+            "outlayer/str-concat" | "outlayer/str-cat" => {
+                // Delegate to str-concat (handles P2/WASI tagged strings)
+                if a.len() < 2 { return Err("outlayer/str-concat requires at least 2 args".into()); }
+                self.call_string("str-cat", a)
+            }
             _ => Err("__not_handled__".into()),
         }
     }
