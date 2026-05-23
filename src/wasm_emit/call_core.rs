@@ -96,6 +96,47 @@ impl WasmEmitter {
                 v.extend(self.emit_itoa());
                 Ok(v)
             }
+            // ── Bitwise intrinsics (untagged, return tagged) ──
+            "shl" if a.len() == 2 => {
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?); v.extend(self.emit_untag());
+                v.extend(self.expr(&a[1])?); v.extend(self.emit_untag());
+                v.push(Instruction::I64Shl);
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
+            "shr" if a.len() == 2 => {
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?); v.extend(self.emit_untag());
+                v.extend(self.expr(&a[1])?); v.extend(self.emit_untag());
+                v.push(Instruction::I64ShrU);
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
+            "band" if a.len() == 2 => {
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?); v.extend(self.emit_untag());
+                v.extend(self.expr(&a[1])?); v.extend(self.emit_untag());
+                v.push(Instruction::I64And);
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
+            "bor" if a.len() == 2 => {
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?); v.extend(self.emit_untag());
+                v.extend(self.expr(&a[1])?); v.extend(self.emit_untag());
+                v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
+            "bnot" if a.len() == 1 => {
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(-1));
+                v.push(Instruction::I64Xor);
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
             "abs" => {
                 let temp = self.local_idx("__abs_tmp");
                 let mut v = Vec::new();
@@ -538,7 +579,10 @@ impl WasmEmitter {
             }
             "mem-set!" => {
                 let mut v = Vec::new();
-                v.extend(self.expr(&a[0])?); v.extend(self.emit_untag()); v.push(Instruction::I32WrapI64);
+                v.extend(self.expr(&a[0])?); v.extend(self.emit_untag());
+                // Bounds check: trap if addr falls in a protected region
+                v.extend(self.emit_raw_write_bounds_check());
+                v.push(Instruction::I32WrapI64);
                 v.extend(self.expr(&a[1])?); v.extend(self.emit_untag());
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
                 v.push(Instruction::I64Const(TAG_NIL)); Ok(v)

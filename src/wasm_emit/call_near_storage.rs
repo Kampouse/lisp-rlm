@@ -229,6 +229,8 @@ impl WasmEmitter {
                 v.push(Self::host_call(0));
                 v.push(Instruction::I32Const(STORAGE_BUF as i32));
                 v.push(Instruction::I64Load(ma));
+                // Tag validation: trap if loaded value has invalid tag bits (7)
+                v.extend(self.emit_tag_validate());
                 v.push(Instruction::End);
                 Ok(v)
             }

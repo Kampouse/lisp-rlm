@@ -89,6 +89,9 @@ impl WasmEmitter {
         if removed > 0 {
             eprintln!("Tree-shake: removed {}/{} unused functions", removed, before);
         }
+        for (i, f) in self.funcs.iter().enumerate() {
+            eprintln!("  KEEP {} {} ({} instrs)", i, f.name, f.instrs.len());
+        }
     }
 
     pub fn gas_estimate(&self) -> Vec<(String, usize, f64)> {
@@ -290,11 +293,12 @@ impl WasmEmitter {
                             fb.instruction(&Instruction::I64Const(TEMP_MEM));
                             fb.instruction(&Instruction::Call(host_idx[&25])); // value_return
                             fb.instruction(&Instruction::Else);
-                            // TAG_STR/TAG_NUM/TAG_BOOL: store tagged value at TEMP_MEM and call value_return
-                            // The JS runtime decodes the tag from the captured bytes.
+                            // TAG_STR/TAG_NUM/TAG_BOOL: untag, store, value_return
                             fb.instruction(&Instruction::I64Const(TEMP_MEM));
                             fb.instruction(&Instruction::I32WrapI64);
                             fb.instruction(&Instruction::LocalGet(0)); // full tagged value
+                            fb.instruction(&Instruction::I64Const(TAG_BITS));
+                            fb.instruction(&Instruction::I64ShrU);    // un-tag
                             fb.instruction(&Instruction::I64Store(ma));
                             fb.instruction(&Instruction::I64Const(8));
                             fb.instruction(&Instruction::I64Const(TEMP_MEM));
@@ -401,7 +405,15 @@ impl WasmEmitter {
             }
             Instruction::Call(idx) if *idx >= USER_BASE => {
                 let pos = (*idx - USER_BASE) as usize;
-                Instruction::Call(name_map[funcs[pos].name.as_str()])
+                if pos >= funcs.len() {
+                    eprintln!("PANIC: Call idx={} pos={} funcs.len()={}", idx, pos, funcs.len());
+                }
+                let fname = funcs[pos].name.as_str();
+                if !name_map.contains_key(fname) {
+                    eprintln!("PANIC: name_map missing key '{}' pos={} idx={}", fname, pos, idx);
+                    eprintln!("  name_map keys: {:?}", name_map.keys().collect::<Vec<_>>());
+                }
+                Instruction::Call(name_map[fname])
             }
             Instruction::Call(idx) if outlayer_map.contains_key(idx) => {
                 Instruction::Call(outlayer_map[idx])

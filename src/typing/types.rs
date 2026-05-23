@@ -34,7 +34,7 @@ fn is_builtin_wildcard(name: &str) -> bool {
 /// Known NEAR host function names (the part after "near/").
 /// Derived from the HOST_FUNCS table in wasm_emit.rs.
 const KNOWN_NEAR_FUNCS: &[&str] = &[
-    "store", "load", "remove", "has_key",
+    "store", "load", "store_num", "load_num", "remove", "has_key",
     "storage_read", "storage_write", "storage_has_key", "storage_remove",
     "return", "return_str", "return_value", "value_return",
     "log",
@@ -227,6 +227,24 @@ impl TcEnv {
         // ctz : num → num  (count trailing zeros)
         env.insert_mono(
             "ctz".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Num)],
+                Box::new(TcType::Con(TcCon::Num)),
+            ),
+        );
+
+        // ── Bitwise intrinsics: shl, shr, band, bor, bnot ──
+        for name in &["shl", "shr", "band", "bor"] {
+            env.insert_mono(
+                name.to_string(),
+                TcType::Arrow(
+                    vec![TcType::Con(TcCon::Num), TcType::Con(TcCon::Num)],
+                    Box::new(TcType::Con(TcCon::Num)),
+                ),
+            );
+        }
+        env.insert_mono(
+            "bnot".to_string(),
             TcType::Arrow(
                 vec![TcType::Con(TcCon::Num)],
                 Box::new(TcType::Con(TcCon::Num)),
@@ -547,6 +565,9 @@ impl TcEnv {
         env.insert_mono("near/storage_get".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())));
         env.insert_mono("near/storage_has".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(bool_ty.clone())));
         env.insert_mono("near/storage_remove".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(any_ty.clone())));
+        // NEAR numeric-keyed storage (8-byte LE i64 keys — gas-efficient)
+        env.insert_mono("near/store_num".into(), TcType::Arrow(vec![int_ty.clone(), int_ty.clone()], Box::new(any_ty.clone())));
+        env.insert_mono("near/load_num".into(), TcType::Arrow(vec![int_ty.clone()], Box::new(int_ty.clone())));
         env.insert_mono("near/return".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(any_ty.clone())));
         env.insert_mono("near/return_str".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(any_ty.clone())));
         env.insert_mono("near/store-bytes".into(), TcType::Arrow(vec![str_ty.clone(), str_ty.clone()], Box::new(any_ty.clone())));

@@ -844,4 +844,100 @@ impl WasmEmitter {
         Instruction::Call(HOST_BASE | idx as u32)
     }
 
+    // ── Memory safety helpers ──
+
+    /// Tag validation: check that low 3 bits of value are a valid tag (0–6).
+    /// Traps if tag bits == 7 (TAG_INVALID).
+    /// Stack: [val] → [val]  (passes through unchanged, or traps)
+    pub(crate) fn emit_tag_validate(&mut self) -> Vec<Instruction<'static>> {
+        let tmp = self.local_idx("__tv_tmp");
+        vec![
+            Instruction::LocalTee(tmp),
+            Instruction::I64Const(TAG_INVALID), // 7
+            Instruction::I64And,
+            Instruction::I64Const(TAG_INVALID),
+            Instruction::I64Ne, // valid if (val & 7) != 7
+            Instruction::If(BlockType::Empty),
+            Instruction::Else,
+            Instruction::Unreachable, // invalid tag — trap
+            Instruction::End,
+            Instruction::LocalGet(tmp), // restore val
+        ]
+    }
+
+    /// Recursion depth guard: increments depth counter, traps if >= MAX_DEPTH.
+    /// Call at entry of every user function. Pairs with emit_depth_dec on return.
+    pub(crate) fn emit_depth_inc(&mut self) -> Vec<Instruction<'static>> {
+        let tmp = self.local_idx("__di_tmp");
+        let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+        vec![
+            // Read current depth
+            Instruction::I64Const(DEPTH_COUNTER),
+            Instruction::I32WrapI64,
+            Instruction::I64Load(ma.clone()),
+            Instruction::LocalTee(tmp),
+            // Check: depth < MAX_DEPTH
+            Instruction::I64Const(MAX_DEPTH),
+            Instruction::I64LtU,
+            Instruction::If(BlockType::Empty),
+            // OK: increment and write back
+            Instruction::I64Const(DEPTH_COUNTER),
+            Instruction::I32WrapI64,
+            Instruction::LocalGet(tmp),
+            Instruction::I64Const(1),
+            Instruction::I64Add,
+            Instruction::I64Store(ma),
+            Instruction::Else,
+            Instruction::Unreachable, // stack overflow — trap
+            Instruction::End,
+        ]
+    }
+
+    /// Decrement recursion depth counter on function return.
+    pub(crate) fn emit_depth_dec(&mut self) -> Vec<Instruction<'static>> {
+        let tmp = self.local_idx("__dd_tmp");
+        let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+        vec![
+            // addr first (for I64Store: [i32 addr, i64 val])
+            Instruction::I64Const(DEPTH_COUNTER),
+            Instruction::I32WrapI64,
+            // val: load current, subtract 1
+            Instruction::I64Const(DEPTH_COUNTER),
+            Instruction::I32WrapI64,
+            Instruction::I64Load(ma.clone()),
+            Instruction::I64Const(1),
+            Instruction::I64Sub,
+            Instruction::I64Store(ma),
+        ]
+    }
+
+    /// Raw memory write bounds check for mem-set!: verifies [addr, addr+8) doesn't
+    /// overlap any protected region. Stack: [addr] → [addr] or trap.
+    /// addr is UNTAGGED (already untagged by dispatch).
+    pub(crate) fn emit_raw_write_bounds_check(&mut self) -> Vec<Instruction<'static>> {
+        let addr = self.local_idx("__bc_addr");
+        let mut v = vec![
+            Instruction::LocalSet(addr),
+        ];
+        let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+        // For each protected region [start, end):
+        //   if addr+8 > start AND addr < end → trap
+        for &(start, end) in PROTECTED_REGIONS {
+            v.push(Instruction::LocalGet(addr));
+            v.push(Instruction::I64Const(8));
+            v.push(Instruction::I64Add);
+            v.push(Instruction::I64Const(start));
+            v.push(Instruction::I64GtU); // addr+8 > start
+            v.push(Instruction::LocalGet(addr));
+            v.push(Instruction::I64Const(end));
+            v.push(Instruction::I64LtU); // addr < end
+            v.push(Instruction::I64And);
+            v.push(Instruction::If(BlockType::Empty));
+            v.push(Instruction::Unreachable); // protected region write — trap
+            v.push(Instruction::End);
+        }
+        v.push(Instruction::LocalGet(addr));
+        v
+    }
+
 }

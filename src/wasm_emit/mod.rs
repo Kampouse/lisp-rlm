@@ -207,6 +207,26 @@ const GAS_LIMIT: i64 = 1_000_000_000;
 const RETURN_FLAG: u32 = 0; // mutable i64 global for return flag
 const FP_GLOBAL: u32 = 1;  // mutable i64 global for frame pointer (NEAR mode)
 
+// ── Memory safety constants ──
+const DEPTH_COUNTER: i64 = 40;  // 8-byte slot: recursion depth counter
+const MAX_DEPTH: i64 = 512;     // max call depth before trap
+// Protected memory regions: [start, end) — store_i64/load_i64/mem-set!/mem-get may NOT write here
+// Covers: TEMP_MEM(64), AMOUNT_MEM(256), STORAGE_BUF(8192), STORAGE_U128_BUF(8208),
+//         HANDLE_COUNT_ADDR(48), RUNTIME_HEAP_PTR(56), DEPTH_COUNTER(40), BORSH_BUF(36864)
+const PROTECTED_REGIONS: &[(i64, i64)] = &[
+    (40, 48),    // DEPTH_COUNTER + padding
+    (48, 56),    // HANDLE_COUNT_ADDR
+    (56, 64),    // RUNTIME_HEAP_PTR
+    (64, 72),    // TEMP_MEM
+    (256, 272),  // AMOUNT_MEM
+    (4096, 49152+4096), // HEAP..HANDLE_TABLE end
+    (8192, 8224),// STORAGE_BUF + STORAGE_U128_BUF
+    (16384, 32768+8192), // INPUT_BUF..RETURN_BUF end
+    (36864, 40960), // BORSH_BUF
+];
+// Tag validation: valid low 3 bits are 0–6 (TAG_NUM..TAG_ARRAY). 7 is invalid.
+const TAG_INVALID: i64 = 7;
+
 // ── Handle table for memory-safe struct access ──
 const HANDLE_COUNT_ADDR: i64 = 48;   // 8-byte slot: number of allocated handles
 const HANDLE_TABLE_BASE: i64 = 49152; // base of handle table (256 entries × 16 bytes = 4096 bytes)
@@ -417,6 +437,8 @@ impl WasmEmitter {
 
         // Build prologue: frame save (NEAR mode + function uses FP-allocating builtins)
         let mut prologue = Vec::new();
+        // Recursion depth guard: increment on entry, will decrement in epilogue
+        prologue.extend(self.emit_depth_inc());
         let fp_save = if !self.p2_mode && !self.wasi_mode && self.needs_frame {
             let fp_save = self.local_idx("__fp_save");
             prologue.push(Instruction::GlobalGet(FP_GLOBAL));
@@ -432,6 +454,8 @@ impl WasmEmitter {
         // Epilogue: save return, restore FP if needed, restore return
         let mut epilogue = Vec::new();
         epilogue.push(Instruction::LocalSet(ret_local));
+        // Recursion depth guard: decrement on exit
+        epilogue.extend(self.emit_depth_dec());
         if let Some(fp_save) = fp_save {
             epilogue.push(Instruction::LocalGet(fp_save));
             epilogue.push(Instruction::GlobalSet(FP_GLOBAL));
