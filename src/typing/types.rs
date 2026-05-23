@@ -102,6 +102,7 @@ pub enum TcCon {
     List(Box<TcType>),             // homogeneous list
     Map(Box<TcType>, Box<TcType>), // key → val
     Tuple(Vec<TcType>),
+    Ptr,  // raw WASM pointer — distinct from tagged Num
     Any, // escape hatch
 }
 
@@ -252,27 +253,44 @@ impl TcEnv {
         );
 
         // ── Linear memory struct intrinsics ──
-        // malloc : num → num  (allocates n bytes, returns pointer)
+        // malloc : num → ptr  (allocates n bytes, returns raw pointer)
         env.insert_mono(
             "malloc".to_string(),
             TcType::Arrow(
                 vec![TcType::Con(TcCon::Num)],
-                Box::new(TcType::Con(TcCon::Num)),
+                Box::new(TcType::Con(TcCon::Ptr)),
             ),
         );
-        // store_i64 : num → num → num → nil  (ptr, byte_offset, value)
+        // store_i64 : ptr → num → num → nil  (ptr, byte_offset, value)
         env.insert_mono(
             "store_i64".to_string(),
             TcType::Arrow(
-                vec![TcType::Con(TcCon::Num), TcType::Con(TcCon::Num), TcType::Con(TcCon::Num)],
+                vec![TcType::Con(TcCon::Ptr), TcType::Con(TcCon::Num), TcType::Con(TcCon::Num)],
                 Box::new(TcType::Con(TcCon::Nil)),
             ),
         );
-        // load_i64 : num → num → num  (ptr, byte_offset → value)
+        // load_i64 : ptr → num → num  (ptr, byte_offset → value)
         env.insert_mono(
             "load_i64".to_string(),
             TcType::Arrow(
-                vec![TcType::Con(TcCon::Num), TcType::Con(TcCon::Num)],
+                vec![TcType::Con(TcCon::Ptr), TcType::Con(TcCon::Num)],
+                Box::new(TcType::Con(TcCon::Num)),
+            ),
+        );
+
+        // mem-set! : ptr → num → nil  (raw memory write, untagged addr)
+        env.insert_mono(
+            "mem-set!".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Ptr), TcType::Con(TcCon::Num)],
+                Box::new(TcType::Con(TcCon::Nil)),
+            ),
+        );
+        // mem-get : ptr → num  (raw memory read, untagged addr)
+        env.insert_mono(
+            "mem-get".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Ptr)],
                 Box::new(TcType::Con(TcCon::Num)),
             ),
         );
@@ -492,6 +510,7 @@ impl TcEnv {
         let str_ty = TcType::Con(TcCon::Str);
         let int_ty = TcType::Con(TcCon::Int);
         let bool_ty = TcType::Con(TcCon::Bool);
+        let nil_ty = TcType::Con(TcCon::Nil);
         let any_ty = TcType::Con(TcCon::Any);
 
         // near/input : () → str
@@ -502,14 +521,14 @@ impl TcEnv {
         env.insert_mono("near/return_value".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(any_ty.clone())));
         // near/storage_read : str → str
         env.insert_mono("near/storage_read".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())));
-        // near/storage_write : str → str → any
-        env.insert_mono("near/storage_write".into(), TcType::Arrow(vec![str_ty.clone(), str_ty.clone()], Box::new(any_ty.clone())));
+        // near/storage_write : str → str → nil
+        env.insert_mono("near/storage_write".into(), TcType::Arrow(vec![str_ty.clone(), str_ty.clone()], Box::new(nil_ty.clone())));
         // near/storage_has_key : str → bool
         env.insert_mono("near/storage_has_key".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(bool_ty.clone())));
-        // near/storage_remove : str → any
-        env.insert_mono("near/storage_remove".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(any_ty.clone())));
-        // near/log : str → any
-        env.insert_mono("near/log".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(any_ty.clone())));
+        // near/storage_remove : str → nil
+        env.insert_mono("near/storage_remove".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(nil_ty.clone())));
+        // near/log : str → nil
+        env.insert_mono("near/log".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(nil_ty.clone())));
         // near/account_id : () → str
         env.insert_mono("near/account_id".into(), TcType::Arrow(vec![], Box::new(str_ty.clone())));
         // near/predecessor : () → str
@@ -561,16 +580,16 @@ impl TcEnv {
         env.insert_mono("bytes-to-u32".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(int_ty.clone())));
 
         // NEAR storage (emitter names)
-        env.insert_mono("near/storage_set".into(), TcType::Arrow(vec![str_ty.clone(), str_ty.clone()], Box::new(any_ty.clone())));
+        env.insert_mono("near/storage_set".into(), TcType::Arrow(vec![str_ty.clone(), str_ty.clone()], Box::new(nil_ty.clone())));
         env.insert_mono("near/storage_get".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())));
         env.insert_mono("near/storage_has".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(bool_ty.clone())));
-        env.insert_mono("near/storage_remove".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(any_ty.clone())));
+        env.insert_mono("near/storage_remove".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(nil_ty.clone())));
         // NEAR numeric-keyed storage (8-byte LE i64 keys — gas-efficient)
-        env.insert_mono("near/store_num".into(), TcType::Arrow(vec![int_ty.clone(), int_ty.clone()], Box::new(any_ty.clone())));
+        env.insert_mono("near/store_num".into(), TcType::Arrow(vec![int_ty.clone(), int_ty.clone()], Box::new(nil_ty.clone())));
         env.insert_mono("near/load_num".into(), TcType::Arrow(vec![int_ty.clone()], Box::new(int_ty.clone())));
         env.insert_mono("near/return".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(any_ty.clone())));
         env.insert_mono("near/return_str".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(any_ty.clone())));
-        env.insert_mono("near/store-bytes".into(), TcType::Arrow(vec![str_ty.clone(), str_ty.clone()], Box::new(any_ty.clone())));
+        env.insert_mono("near/store-bytes".into(), TcType::Arrow(vec![str_ty.clone(), str_ty.clone()], Box::new(nil_ty.clone())));
         env.insert_mono("near/load-bytes".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())));
         env.insert_mono("near/predecessor_account_id".into(), TcType::Arrow(vec![], Box::new(str_ty.clone())));
         env.insert_mono("near/current_account_id".into(), TcType::Arrow(vec![], Box::new(str_ty.clone())));
@@ -640,6 +659,7 @@ impl std::fmt::Display for TcCon {
                 let s: Vec<String> = ts.iter().map(|t| t.to_string()).collect();
                 write!(f, "(tuple {})", s.join(" "))
             }
+            TcCon::Ptr => write!(f, "ptr"),
             TcCon::Any => write!(f, "any"),
         }
     }

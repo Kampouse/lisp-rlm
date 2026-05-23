@@ -149,6 +149,7 @@ fn unify_con(c1: &TcCon, c2: &TcCon) -> UnifyResult {
         (TcCon::Num, TcCon::Num) => Ok(Subst::new()),
         (TcCon::Str, TcCon::Str) => Ok(Subst::new()),
         (TcCon::Sym, TcCon::Sym) => Ok(Subst::new()),
+        (TcCon::Ptr, TcCon::Ptr) => Ok(Subst::new()),
         (TcCon::Any, _) | (_, TcCon::Any) => Ok(Subst::new()),
         (TcCon::Num, TcCon::Int) | (TcCon::Int, TcCon::Num) => Ok(Subst::new()),
         (TcCon::Num, TcCon::Float) | (TcCon::Float, TcCon::Num) => Ok(Subst::new()),
@@ -262,6 +263,7 @@ fn parse_type_sym(s: &str) -> Result<TcType, String> {
         "str" | ":str" | "string" => TcType::Con(TcCon::Str),
         "sym" | ":sym" | "symbol" => TcType::Con(TcCon::Sym),
         "any" | ":any" => TcType::Con(TcCon::Any),
+        "ptr" | ":ptr" | "pointer" => TcType::Con(TcCon::Ptr),
         other => return Err(format!("unknown type: {}", other)),
     })
 }
