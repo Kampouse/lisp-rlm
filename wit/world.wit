@@ -26,5 +26,4 @@ interface host {
 
 world outlayer-world {
     import host;
-    import lisp:http/http-lib@0.1.0;
 }

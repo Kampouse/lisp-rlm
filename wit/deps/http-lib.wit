@@ -2,4 +2,5 @@ package lisp:http@0.1.0;
 
 interface http-lib {
     http-get: func(url: string) -> result<string, string>;
+    http-post: func(url: string, body: string) -> result<string, string>;
 }

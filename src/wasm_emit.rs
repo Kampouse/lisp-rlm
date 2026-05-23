@@ -137,6 +137,7 @@ fn outlayer_name_idx(name: &str) -> usize {
         "outlayer/storage-set-worker-public" => 17, "outlayer/storage-get-worker-from-project" => 18,
         "outlayer/env-signer" => 19, "outlayer/env-predecessor" => 20,
         "http/get" => 100, // HTTPLIB_BASE | 0
+        "http/post" => 101, // HTTPLIB_BASE | 1
         _ => 0,
     }
 }
@@ -152,10 +153,13 @@ const WASI_FUNCS: &[(&str, &[ValType], &[ValType])] = &[
 // [2000..2007] = iov struct: {ptr=i32, len=i32}
 // [2008..2011] = nread/nwritten (i32)
 // [2012..6147] = stdin buffer (4096 bytes)
+// [4096..6147] = host response buffer (2052 bytes) — safe copy of host call results
 // [6148..10243] = stdout buffer (4096)
 const WASI_IOV: u32 = 2000;
 const WASI_NREAD: u32 = 2008;
 const STDIN_BUF: u32 = 2012;
+const HOST_RESP_BUF: u32 = 4096;
+const HOST_RESP_BUF_SIZE: u32 = 2052; // 6148 - 4096
 const STDOUT_BUF: u32 = 6148;
 const STDIN_BUF_SIZE: u32 = 4096;
 const STDOUT_BUF_SIZE: u32 = 4096;
@@ -163,11 +167,13 @@ const STDOUT_BUF_SIZE: u32 = 4096;
 const GAS_LIMIT: i64 = 1_000_000_000;
 const DEPTH_LIMIT: i64 = 512;
 const DEPTH_GLOBAL: u32 = 0; // mutable i64 global for call depth
+const BUMP_GLOBAL: u32 = 1; // mutable i32 global for bump pointer (P2 only)
 
 struct FuncDef {
     name: String,
     param_count: usize,
     local_count: usize,
+    local_types: Vec<ValType>, // if empty, defaults to all I64
     instrs: Vec<Instruction<'static>>,
 }
 
@@ -188,6 +194,8 @@ pub struct WasmEmitter {
     httplib_needed: bool,
     p2_mode: bool,
     gas_local: Option<u32>, // index of the gas counter local (i64)
+    need_bulk_memory: bool, // whether memory.copy is needed
+    json_get_func_idx: Option<u32>, // emitted helper function index
 }
 
 impl WasmEmitter {
@@ -198,6 +206,8 @@ impl WasmEmitter {
             data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(), outlayer_needed: HashSet::new(), wasi_needed: HashSet::new(), httplib_needed: false, p2_mode: false,
             
             gas_local: None,
+            need_bulk_memory: false,
+            json_get_func_idx: None,
         }
     }
 
@@ -217,10 +227,1149 @@ impl WasmEmitter {
         off
     }
 
+    /// Allocate an aligned return buffer in the data area for canonical ABI results.
+    fn alloc_ret_ptr(&mut self) -> u32 {
+        self.next_data_offset = (self.next_data_offset + 3) & !3;
+        let off = self.next_data_offset;
+        self.next_data_offset += 32;
+        off
+    }
+
     fn need_host(&mut self, idx: usize) { self.host_needed.insert(idx); }
     fn need_outlayer(&mut self, idx: usize) { self.outlayer_needed.insert(idx); }
     fn need_wasi(&mut self, idx: usize) { self.wasi_needed.insert(idx); }
-    
+
+    /// Emit a json-get helper function if not already emitted.
+    /// Signature: (json_packed: i64, key_packed: i64) -> i64
+    /// Scans the JSON string for "key": at top level, returns the value as a packed string.
+    fn ensure_json_get_func(&mut self) {
+        if self.json_get_func_idx.is_some() { return; }
+
+        // Build a mini JSON key extractor as a standalone WASM function.
+        // Signature: (i64 json_packed, i64 key_packed) -> i64 result_packed
+        // Packed format: (len << 32 | ptr) as i64
+        //
+        // Algorithm: scan for "key": pattern, extract value (string or raw).
+        // Returns (val_len << 32 | val_ptr) or 0 if not found.
+        //
+        // We track block nesting depth explicitly so Br/BrIf depths are correct.
+
+        // Function locals (params are 0 and 1, both i64):
+        // local 2: json_ptr (i32), local 3: json_len (i32)
+        // local 4: key_ptr (i32), local 5: key_len (i32)
+        // local 6: scan_i (i32), local 7: temp (i32)
+        // local 8: val_start (i32), local 9: val_end (i32)
+        // local 10: cmp_j (i32), local 11: in_escape (i32)
+        // local 12: target_idx (i32), local 13: current_idx (i32)
+        // local 14: depth (i32) for bracket nesting, local 15: digit_i (i32)
+        let locals: Vec<ValType> = vec![
+            ValType::I32, ValType::I32, // json_ptr, json_len
+            ValType::I32, ValType::I32, // key_ptr, key_len
+            ValType::I32, ValType::I32, // scan_i, temp
+            ValType::I32, ValType::I32, // val_start, val_end
+            ValType::I32, ValType::I32, // cmp_j, in_escape
+            ValType::I32, ValType::I32, // target_idx, current_idx
+            ValType::I32, ValType::I32, // bracket_depth, digit_i
+        ];
+        let json_ptr = 2u32; let json_len = 3u32;
+        let key_ptr = 4u32; let key_len = 5u32;
+        let scan_i = 6u32; let temp = 7u32;
+        let val_start = 8u32; let val_end = 9u32;
+        let cmp_j = 10u32; let in_escape = 11u32;
+        let target_idx = 12u32; let current_idx = 13u32;
+        let bracket_depth = 14u32; let digit_i = 15u32;
+
+        let mut instrs: Vec<Instruction<'static>> = Vec::new();
+        // Block depth tracker: depth starts at 0 (function body is implicit depth 0)
+        // We maintain a stack of label depths for br targets.
+        let mut depth: u32 = 0;
+        let mut label_stack: Vec<u32> = Vec::new(); // stores depth at every block/loop/if entry
+
+        // Helper closures
+        let mut open_block = |ins: &mut Vec<Instruction>, lbl_stack: &mut Vec<u32>, d: &mut u32| {
+            lbl_stack.push(*d);
+            ins.push(Instruction::Block(BlockType::Empty));
+            *d += 1;
+        };
+        let mut open_loop = |ins: &mut Vec<Instruction>, lbl_stack: &mut Vec<u32>, d: &mut u32| {
+            lbl_stack.push(*d);
+            ins.push(Instruction::Loop(BlockType::Empty));
+            *d += 1;
+        };
+        // if blocks: push depth so br_to computes correct relative offsets
+        let mut open_if = |ins: &mut Vec<Instruction>, lbl_stack: &mut Vec<u32>, d: &mut u32| {
+            lbl_stack.push(*d);
+            ins.push(Instruction::If(BlockType::Empty));
+            *d += 1;
+        };
+        // else: doesn't change nesting, just emits Else inside current if
+        let mut open_else = |ins: &mut Vec<Instruction>, _lbl_stack: &mut Vec<u32>, _d: &mut u32| {
+            ins.push(Instruction::Else);
+        };
+        let mut close = |ins: &mut Vec<Instruction>, lbl_stack: &mut Vec<u32>, d: &mut u32| {
+            ins.push(Instruction::End);
+            // Every open (block/loop/if) pushes to label_stack, so every close pops.
+            lbl_stack.pop();
+            *d -= 1;
+        };
+        let mut br_to = |ins: &mut Vec<Instruction>, lbl_stack: &[u32], idx: usize, d: u32| {
+            if idx >= lbl_stack.len() {
+                panic!("br_to: idx={} but label_stack len={} (d={})", idx, lbl_stack.len(), d);
+            }
+            let target_depth = lbl_stack[idx];
+            ins.push(Instruction::Br(d - target_depth - 1));
+        };
+        let mut br_if_to = |ins: &mut Vec<Instruction>, lbl_stack: &[u32], idx: usize, d: u32| {
+            if idx >= lbl_stack.len() {
+                panic!("br_if_to: idx={} but label_stack len={} (d={})", idx, lbl_stack.len(), d);
+            }
+            let target_depth = lbl_stack[idx];
+            ins.push(Instruction::BrIf(d - target_depth - 1));
+        };
+
+        // Unpack json param (local 0): len >> 32, ptr & 0xFFFFFFFF
+        instrs.push(Instruction::LocalGet(0));
+        instrs.push(Instruction::I64Const(32));
+        instrs.push(Instruction::I64ShrU);
+        instrs.push(Instruction::I32WrapI64);
+        instrs.push(Instruction::LocalSet(json_len));
+        instrs.push(Instruction::LocalGet(0));
+        instrs.push(Instruction::I32WrapI64);
+        instrs.push(Instruction::LocalSet(json_ptr));
+
+        // Unpack key param (local 1)
+        instrs.push(Instruction::LocalGet(1));
+        instrs.push(Instruction::I64Const(32));
+        instrs.push(Instruction::I64ShrU);
+        instrs.push(Instruction::I32WrapI64);
+        instrs.push(Instruction::LocalSet(key_len));
+        instrs.push(Instruction::LocalGet(1));
+        instrs.push(Instruction::I32WrapI64);
+        instrs.push(Instruction::LocalSet(key_ptr));
+
+        // Init
+        instrs.push(Instruction::I32Const(0));
+        instrs.push(Instruction::LocalSet(scan_i));
+
+        // ── Digit check: if key is all digits, enter array mode ──
+        instrs.push(Instruction::I32Const(0));
+        instrs.push(Instruction::LocalSet(target_idx)); // target_idx = 0
+        instrs.push(Instruction::I32Const(0));
+        instrs.push(Instruction::LocalSet(digit_i));    // digit_i = 0
+
+        // block SKIP_ARRAY { if all digits → array path; else break to object path }
+        open_block(&mut instrs, &mut label_stack, &mut depth);
+        let skip_array = label_stack.len() - 1;
+
+        open_block(&mut instrs, &mut label_stack, &mut depth);
+        let digit_done = label_stack.len() - 1;
+        open_loop(&mut instrs, &mut label_stack, &mut depth);
+        let digit_loop = label_stack.len() - 1;
+
+        // if digit_i >= key_len → all digits checked, proceed to array
+        instrs.push(Instruction::LocalGet(digit_i));
+        instrs.push(Instruction::LocalGet(key_len));
+        instrs.push(Instruction::I32GeS);
+        br_if_to(&mut instrs, &label_stack, digit_done, depth);
+
+        // Load key[digit_i]
+        instrs.push(Instruction::LocalGet(key_ptr));
+        instrs.push(Instruction::LocalGet(digit_i));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+        instrs.push(Instruction::LocalSet(temp));
+
+        // if temp < '0' (0x30) → not digit → break to object path
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x30));
+        instrs.push(Instruction::I32LtU);
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+        br_to(&mut instrs, &label_stack, skip_array, depth);
+        close(&mut instrs, &mut label_stack, &mut depth); // end if < '0'
+
+        // if temp > '9' (0x39) → not digit → break to object path
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x39));
+        instrs.push(Instruction::I32GtU);
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+        br_to(&mut instrs, &label_stack, skip_array, depth);
+        close(&mut instrs, &mut label_stack, &mut depth); // end if > '9'
+
+        // target_idx = target_idx * 10 + (temp - 48)
+        instrs.push(Instruction::LocalGet(target_idx));
+        instrs.push(Instruction::I32Const(10));
+        instrs.push(Instruction::I32Mul);
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(48));
+        instrs.push(Instruction::I32Sub);
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(target_idx));
+
+        // digit_i++; continue
+        instrs.push(Instruction::LocalGet(digit_i));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(digit_i));
+        br_to(&mut instrs, &label_stack, digit_loop, depth);
+
+        close(&mut instrs, &mut label_stack, &mut depth); // end digit loop
+        close(&mut instrs, &mut label_stack, &mut depth); // end digit done block
+
+        // ── Array scan: key was all digits, target_idx is set ──
+        // Verify json starts with '['
+        instrs.push(Instruction::LocalGet(json_ptr));
+        instrs.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+        instrs.push(Instruction::I32Const(0x5B)); // '['
+        instrs.push(Instruction::I32Ne);
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+        // Not an array → return 0
+        instrs.push(Instruction::I64Const(0));
+        instrs.push(Instruction::Return);
+        close(&mut instrs, &mut label_stack, &mut depth); // end if not '['
+
+        // scan_i = 1 (skip '[')
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::LocalSet(scan_i));
+
+        // current_idx = 0
+        instrs.push(Instruction::I32Const(0));
+        instrs.push(Instruction::LocalSet(current_idx));
+
+        // Skip whitespace before first element
+        open_block(&mut instrs, &mut label_stack, &mut depth);
+        let arr_ws_block = label_stack.len() - 1;
+        open_loop(&mut instrs, &mut label_stack, &mut depth);
+        let arr_ws_loop = label_stack.len() - 1;
+        // if scan_i >= json_len → not found
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::LocalGet(json_len));
+        instrs.push(Instruction::I32GeS);
+        br_if_to(&mut instrs, &label_stack, arr_ws_block, depth);
+        // Load byte
+        instrs.push(Instruction::LocalGet(json_ptr));
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+        instrs.push(Instruction::LocalSet(temp));
+        // if not whitespace → done
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(32));
+        instrs.push(Instruction::I32Ne);
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(9));
+        instrs.push(Instruction::I32Ne);
+        instrs.push(Instruction::I32And);
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(10));
+        instrs.push(Instruction::I32Ne);
+        instrs.push(Instruction::I32And);
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(13));
+        instrs.push(Instruction::I32Ne);
+        instrs.push(Instruction::I32And);
+        br_if_to(&mut instrs, &label_stack, arr_ws_block, depth);
+        // scan_i++; continue
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(scan_i));
+        br_to(&mut instrs, &label_stack, arr_ws_loop, depth);
+        close(&mut instrs, &mut label_stack, &mut depth); // end arr ws loop
+        close(&mut instrs, &mut label_stack, &mut depth); // end arr ws block
+
+        // ── Array element scan loop ──
+        open_block(&mut instrs, &mut label_stack, &mut depth);
+        let arr_elem_block = label_stack.len() - 1;
+        open_loop(&mut instrs, &mut label_stack, &mut depth);
+        let arr_elem_loop = label_stack.len() - 1;
+
+        // if scan_i >= json_len → not found
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::LocalGet(json_len));
+        instrs.push(Instruction::I32GeS);
+        br_if_to(&mut instrs, &label_stack, arr_elem_block, depth);
+
+        // Load current char
+        instrs.push(Instruction::LocalGet(json_ptr));
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+        instrs.push(Instruction::LocalSet(temp));
+
+        // if ']' → end of array, not found
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x5D)); // ']'
+        instrs.push(Instruction::I32Eq);
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+        instrs.push(Instruction::I64Const(0));
+        instrs.push(Instruction::Return);
+        close(&mut instrs, &mut label_stack, &mut depth); // end if ']'
+
+        // ── Check if current_idx == target_idx → extract value ──
+        instrs.push(Instruction::LocalGet(current_idx));
+        instrs.push(Instruction::LocalGet(target_idx));
+        instrs.push(Instruction::I32Eq);
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+
+        // We found the target element — extract its value
+        // val_start = scan_i
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::LocalSet(val_start));
+
+        // Load first char of value
+        instrs.push(Instruction::LocalGet(json_ptr));
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+        instrs.push(Instruction::LocalSet(temp));
+
+        // If value starts with '"' → string value (skip quotes)
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x22));
+        instrs.push(Instruction::I32Eq);
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+
+        // String value: val_start = scan_i + 1, scan for closing quote
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(val_start));
+        instrs.push(Instruction::LocalGet(val_start));
+        instrs.push(Instruction::LocalSet(scan_i));
+        instrs.push(Instruction::I32Const(0));
+        instrs.push(Instruction::LocalSet(in_escape));
+
+        open_block(&mut instrs, &mut label_stack, &mut depth);
+        let arr_str_block = label_stack.len() - 1;
+        open_loop(&mut instrs, &mut label_stack, &mut depth);
+        let arr_str_loop = label_stack.len() - 1;
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::LocalGet(json_len));
+        instrs.push(Instruction::I32GeS);
+        br_if_to(&mut instrs, &label_stack, arr_str_block, depth);
+        instrs.push(Instruction::LocalGet(json_ptr));
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+        instrs.push(Instruction::LocalSet(temp));
+        // if in_escape
+        instrs.push(Instruction::LocalGet(in_escape));
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+        instrs.push(Instruction::I32Const(0));
+        instrs.push(Instruction::LocalSet(in_escape));
+        open_else(&mut instrs, &mut label_stack, &mut depth);
+        // if backslash
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(92)); // '\\'
+        instrs.push(Instruction::I32Eq);
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::LocalSet(in_escape));
+        close(&mut instrs, &mut label_stack, &mut depth); // end backslash
+        // else if closing quote
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x22));
+        instrs.push(Instruction::I32Eq);
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+        // val_end = scan_i
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::LocalSet(val_end));
+        // Return packed value
+        instrs.push(Instruction::LocalGet(val_end));
+        instrs.push(Instruction::LocalGet(val_start));
+        instrs.push(Instruction::I32Sub);
+        instrs.push(Instruction::I64ExtendI32U);
+        instrs.push(Instruction::I64Const(32));
+        instrs.push(Instruction::I64Shl);
+        instrs.push(Instruction::LocalGet(json_ptr));
+        instrs.push(Instruction::LocalGet(val_start));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::I64ExtendI32U);
+        instrs.push(Instruction::I64Or);
+        instrs.push(Instruction::Return);
+        close(&mut instrs, &mut label_stack, &mut depth); // end closing quote
+        close(&mut instrs, &mut label_stack, &mut depth); // end in_escape if/else
+
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(scan_i));
+        br_to(&mut instrs, &label_stack, arr_str_loop, depth);
+        close(&mut instrs, &mut label_stack, &mut depth); // end arr str loop
+        close(&mut instrs, &mut label_stack, &mut depth); // end arr str block
+
+        // ── Non-string value: scan until end (handling nested brackets) ──
+        open_else(&mut instrs, &mut label_stack, &mut depth);
+
+        // bracket_depth = 0
+        instrs.push(Instruction::I32Const(0));
+        instrs.push(Instruction::LocalSet(bracket_depth));
+
+        open_block(&mut instrs, &mut label_stack, &mut depth);
+        let arr_raw_block = label_stack.len() - 1;
+        open_loop(&mut instrs, &mut label_stack, &mut depth);
+        let arr_raw_loop = label_stack.len() - 1;
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::LocalGet(json_len));
+        instrs.push(Instruction::I32GeS);
+        br_if_to(&mut instrs, &label_stack, arr_raw_block, depth);
+        instrs.push(Instruction::LocalGet(json_ptr));
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+        instrs.push(Instruction::LocalSet(temp));
+
+        // if '{' or '[' → depth++
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x7B));
+        instrs.push(Instruction::I32Eq);
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x5B));
+        instrs.push(Instruction::I32Eq);
+        instrs.push(Instruction::I32Or);
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+        instrs.push(Instruction::LocalGet(bracket_depth));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(bracket_depth));
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(scan_i));
+        br_to(&mut instrs, &label_stack, arr_raw_loop, depth);
+        close(&mut instrs, &mut label_stack, &mut depth); // end if open bracket
+
+        // if '}' or ']' and depth > 0 → depth-- (nested bracket closing)
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x7D));
+        instrs.push(Instruction::I32Eq);
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x5D));
+        instrs.push(Instruction::I32Eq);
+        instrs.push(Instruction::I32Or);
+        instrs.push(Instruction::LocalGet(bracket_depth));
+        instrs.push(Instruction::I32Const(0));
+        instrs.push(Instruction::I32GtS);
+        instrs.push(Instruction::I32And);
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+        instrs.push(Instruction::LocalGet(bracket_depth));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Sub);
+        instrs.push(Instruction::LocalSet(bracket_depth));
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(scan_i));
+        // if depth==0 after decrement → end of nested value
+        instrs.push(Instruction::LocalGet(bracket_depth));
+        instrs.push(Instruction::I32Const(0));
+        instrs.push(Instruction::I32Eq);
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+        // val_end = scan_i, return
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::LocalSet(val_end));
+        instrs.push(Instruction::LocalGet(val_end));
+        instrs.push(Instruction::LocalGet(val_start));
+        instrs.push(Instruction::I32Sub);
+        instrs.push(Instruction::I64ExtendI32U);
+        instrs.push(Instruction::I64Const(32));
+        instrs.push(Instruction::I64Shl);
+        instrs.push(Instruction::LocalGet(json_ptr));
+        instrs.push(Instruction::LocalGet(val_start));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::I64ExtendI32U);
+        instrs.push(Instruction::I64Or);
+        instrs.push(Instruction::Return);
+        close(&mut instrs, &mut label_stack, &mut depth); // end if depth==0
+        br_to(&mut instrs, &label_stack, arr_raw_loop, depth);
+        close(&mut instrs, &mut label_stack, &mut depth); // end if close bracket at depth>0
+
+        // if ',' or ']' at depth 0 → end of value (plain values like numbers/bools)
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(44)); // ','
+        instrs.push(Instruction::I32Eq);
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x5D)); // ']'
+        instrs.push(Instruction::I32Eq);
+        instrs.push(Instruction::I32Or);
+        instrs.push(Instruction::LocalGet(bracket_depth));
+        instrs.push(Instruction::I32Const(0));
+        instrs.push(Instruction::I32Eq);
+        instrs.push(Instruction::I32And);
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+        // val_end = scan_i, return
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::LocalSet(val_end));
+        instrs.push(Instruction::LocalGet(val_end));
+        instrs.push(Instruction::LocalGet(val_start));
+        instrs.push(Instruction::I32Sub);
+        instrs.push(Instruction::I64ExtendI32U);
+        instrs.push(Instruction::I64Const(32));
+        instrs.push(Instruction::I64Shl);
+        instrs.push(Instruction::LocalGet(json_ptr));
+        instrs.push(Instruction::LocalGet(val_start));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::I64ExtendI32U);
+        instrs.push(Instruction::I64Or);
+        instrs.push(Instruction::Return);
+        close(&mut instrs, &mut label_stack, &mut depth); // end if comma/bracket at depth 0
+
+        // default: advance
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(scan_i));
+        br_to(&mut instrs, &label_stack, arr_raw_loop, depth);
+        close(&mut instrs, &mut label_stack, &mut depth); // end arr raw loop
+        close(&mut instrs, &mut label_stack, &mut depth); // end arr raw block
+
+        close(&mut instrs, &mut label_stack, &mut depth); // end string value if/else
+
+        close(&mut instrs, &mut label_stack, &mut depth); // end if current_idx == target_idx
+
+        // ── Skip this element (not the target) ──
+        // Need to skip over the element handling nested brackets, braces, strings
+        instrs.push(Instruction::I32Const(0));
+        instrs.push(Instruction::LocalSet(bracket_depth)); // depth = 0
+
+        open_block(&mut instrs, &mut label_stack, &mut depth);
+        let skip_block = label_stack.len() - 1;
+        open_loop(&mut instrs, &mut label_stack, &mut depth);
+        let skip_loop = label_stack.len() - 1;
+
+        // if scan_i >= json_len → not found
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::LocalGet(json_len));
+        instrs.push(Instruction::I32GeS);
+        br_if_to(&mut instrs, &label_stack, skip_block, depth);
+
+        // Load byte
+        instrs.push(Instruction::LocalGet(json_ptr));
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+        instrs.push(Instruction::LocalSet(temp));
+
+        // if '"' → skip string
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x22));
+        instrs.push(Instruction::I32Eq);
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+        // Skip string: advance past closing quote, handling escapes
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(scan_i));
+        instrs.push(Instruction::I32Const(0));
+        instrs.push(Instruction::LocalSet(in_escape));
+        // Inner string skip loop
+        open_block(&mut instrs, &mut label_stack, &mut depth);
+        let str_skip_block = label_stack.len() - 1;
+        open_loop(&mut instrs, &mut label_stack, &mut depth);
+        let str_skip_loop = label_stack.len() - 1;
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::LocalGet(json_len));
+        instrs.push(Instruction::I32GeS);
+        br_if_to(&mut instrs, &label_stack, str_skip_block, depth);
+        instrs.push(Instruction::LocalGet(json_ptr));
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+        instrs.push(Instruction::LocalSet(temp));
+        // if in_escape
+        instrs.push(Instruction::LocalGet(in_escape));
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+        instrs.push(Instruction::I32Const(0));
+        instrs.push(Instruction::LocalSet(in_escape));
+        open_else(&mut instrs, &mut label_stack, &mut depth);
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(92));
+        instrs.push(Instruction::I32Eq);
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::LocalSet(in_escape));
+        close(&mut instrs, &mut label_stack, &mut depth); // end if backslash
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x22));
+        instrs.push(Instruction::I32Eq);
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+        // closing quote found → advance past it and break
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(scan_i));
+        br_to(&mut instrs, &label_stack, str_skip_block, depth);
+        close(&mut instrs, &mut label_stack, &mut depth); // end if closing quote
+        close(&mut instrs, &mut label_stack, &mut depth); // end else
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(scan_i));
+        br_to(&mut instrs, &label_stack, str_skip_loop, depth);
+        close(&mut instrs, &mut label_stack, &mut depth); // end str skip loop
+        close(&mut instrs, &mut label_stack, &mut depth); // end str skip block
+        // Done skipping string → continue skip loop
+        br_to(&mut instrs, &label_stack, skip_loop, depth);
+        close(&mut instrs, &mut label_stack, &mut depth); // end if '"'
+
+        // if '{' or '[' → increase depth
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x7B)); // '{'
+        instrs.push(Instruction::I32Eq);
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x5B)); // '['
+        instrs.push(Instruction::I32Eq);
+        instrs.push(Instruction::I32Or);
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+        instrs.push(Instruction::LocalGet(bracket_depth));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(bracket_depth));
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(scan_i));
+        br_to(&mut instrs, &label_stack, skip_loop, depth);
+        close(&mut instrs, &mut label_stack, &mut depth); // end if open bracket
+
+        // if '}' or ']' → decrease depth
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x7D)); // '}'
+        instrs.push(Instruction::I32Eq);
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x5D)); // ']'
+        instrs.push(Instruction::I32Eq);
+        instrs.push(Instruction::I32Or);
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+        instrs.push(Instruction::LocalGet(bracket_depth));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Sub);
+        instrs.push(Instruction::LocalSet(bracket_depth));
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(scan_i));
+        // if depth == 0 and char is ']' → end of array, not found
+        instrs.push(Instruction::LocalGet(bracket_depth));
+        instrs.push(Instruction::I32Const(0));
+        instrs.push(Instruction::I32Eq);
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x5D));
+        instrs.push(Instruction::I32Eq);
+        instrs.push(Instruction::I32And);
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+        instrs.push(Instruction::I64Const(0));
+        instrs.push(Instruction::Return);
+        close(&mut instrs, &mut label_stack, &mut depth); // end if depth==0 and ']'
+        br_to(&mut instrs, &label_stack, skip_loop, depth);
+        close(&mut instrs, &mut label_stack, &mut depth); // end if close bracket
+
+        // if ',' at depth 0 → element boundary
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(44)); // ','
+        instrs.push(Instruction::I32Eq);
+        instrs.push(Instruction::LocalGet(bracket_depth));
+        instrs.push(Instruction::I32Const(0));
+        instrs.push(Instruction::I32Eq);
+        instrs.push(Instruction::I32And);
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+        // current_idx++; scan_i++; skip whitespace; continue to next element
+        instrs.push(Instruction::LocalGet(current_idx));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(current_idx));
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(scan_i));
+        // Skip whitespace
+        open_block(&mut instrs, &mut label_stack, &mut depth);
+        let elem_ws_block = label_stack.len() - 1;
+        open_loop(&mut instrs, &mut label_stack, &mut depth);
+        let elem_ws_loop = label_stack.len() - 1;
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::LocalGet(json_len));
+        instrs.push(Instruction::I32GeS);
+        br_if_to(&mut instrs, &label_stack, elem_ws_block, depth);
+        instrs.push(Instruction::LocalGet(json_ptr));
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+        instrs.push(Instruction::LocalSet(temp));
+        // not whitespace → break
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(32));
+        instrs.push(Instruction::I32Ne);
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(9));
+        instrs.push(Instruction::I32Ne);
+        instrs.push(Instruction::I32And);
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(10));
+        instrs.push(Instruction::I32Ne);
+        instrs.push(Instruction::I32And);
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(13));
+        instrs.push(Instruction::I32Ne);
+        instrs.push(Instruction::I32And);
+        br_if_to(&mut instrs, &label_stack, elem_ws_block, depth);
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(scan_i));
+        br_to(&mut instrs, &label_stack, elem_ws_loop, depth);
+        close(&mut instrs, &mut label_stack, &mut depth); // end elem ws loop
+        close(&mut instrs, &mut label_stack, &mut depth); // end elem ws block
+        // Now check if current_idx == target_idx in next iteration
+        br_to(&mut instrs, &label_stack, arr_elem_loop, depth);
+        close(&mut instrs, &mut label_stack, &mut depth); // end if comma at depth 0
+
+        // Default: advance scan_i
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(scan_i));
+        br_to(&mut instrs, &label_stack, skip_loop, depth);
+
+        close(&mut instrs, &mut label_stack, &mut depth); // end skip loop
+        close(&mut instrs, &mut label_stack, &mut depth); // end skip block
+
+        // End of array element loop — not found
+        br_to(&mut instrs, &label_stack, arr_elem_loop, depth);
+        close(&mut instrs, &mut label_stack, &mut depth); // end arr elem loop
+        close(&mut instrs, &mut label_stack, &mut depth); // end arr elem block
+
+        // Array not found — return 0
+        instrs.push(Instruction::I64Const(0));
+        instrs.push(Instruction::Return);
+
+        close(&mut instrs, &mut label_stack, &mut depth); // end SKIP_ARRAY block
+
+        // ── Main scan loop (object key scan — existing logic) ──
+        // block MAIN_BLOCK { loop MAIN_LOOP { ... } }
+        open_block(&mut instrs, &mut label_stack, &mut depth);
+        let main_block = label_stack.len() - 1;
+        open_loop(&mut instrs, &mut label_stack, &mut depth);
+        let main_loop = label_stack.len() - 1;
+
+        // if scan_i >= json_len, break (not found)
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::LocalGet(json_len));
+        instrs.push(Instruction::I32GeS);
+        br_if_to(&mut instrs, &label_stack, main_block, depth);
+
+        // Load ch = json[json_ptr + scan_i]
+        instrs.push(Instruction::LocalGet(json_ptr));
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+        instrs.push(Instruction::LocalSet(temp));
+
+        // if ch != '"', skip and continue
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x22));
+        instrs.push(Instruction::I32Ne);
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(scan_i));
+        br_to(&mut instrs, &label_stack, main_loop, depth);
+        close(&mut instrs, &mut label_stack, &mut depth); // end if
+
+        // ── Key comparison ──
+        // Found '"' at scan_i. Compare key_len bytes starting at json_ptr+scan_i+1
+        instrs.push(Instruction::I32Const(0));
+        instrs.push(Instruction::LocalSet(cmp_j));
+
+        open_block(&mut instrs, &mut label_stack, &mut depth);
+        let cmp_block = label_stack.len() - 1;
+        open_loop(&mut instrs, &mut label_stack, &mut depth);
+        let cmp_loop = label_stack.len() - 1;
+
+        // if cmp_j >= key_len, break (full match)
+        instrs.push(Instruction::LocalGet(cmp_j));
+        instrs.push(Instruction::LocalGet(key_len));
+        instrs.push(Instruction::I32GeS);
+        br_if_to(&mut instrs, &label_stack, cmp_block, depth);
+
+        // Load json[json_ptr + scan_i + 1 + cmp_j] and key[key_ptr + cmp_j]
+        instrs.push(Instruction::LocalGet(json_ptr));
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalGet(cmp_j));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+        instrs.push(Instruction::LocalGet(key_ptr));
+        instrs.push(Instruction::LocalGet(cmp_j));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+        instrs.push(Instruction::I32Ne);
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+        // Mismatch — advance scan_i past this quote and break to main loop
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(scan_i));
+        br_to(&mut instrs, &label_stack, cmp_block, depth);
+        close(&mut instrs, &mut label_stack, &mut depth); // end if mismatch
+
+        // Match so far — cmp_j++
+        instrs.push(Instruction::LocalGet(cmp_j));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(cmp_j));
+        br_to(&mut instrs, &label_stack, cmp_loop, depth);
+        close(&mut instrs, &mut label_stack, &mut depth); // end cmp loop
+        close(&mut instrs, &mut label_stack, &mut depth); // end cmp block
+
+        // Check if cmp_j == key_len (full match)
+        instrs.push(Instruction::LocalGet(cmp_j));
+        instrs.push(Instruction::LocalGet(key_len));
+        instrs.push(Instruction::I32Ne);
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+        // No match, continue main scan
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(scan_i));
+        br_to(&mut instrs, &label_stack, main_loop, depth);
+        close(&mut instrs, &mut label_stack, &mut depth); // end if no match
+
+        // ── Key matched! Check closing quote ──
+        // json[json_ptr + scan_i + 1 + key_len] must be '"'
+        instrs.push(Instruction::LocalGet(json_ptr));
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalGet(key_len));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::I32Add); // add json_ptr base
+        instrs.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+        instrs.push(Instruction::I32Const(0x22));
+        instrs.push(Instruction::I32Ne);
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+        // No closing quote, continue
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(scan_i));
+        br_to(&mut instrs, &label_stack, main_loop, depth);
+        close(&mut instrs, &mut label_stack, &mut depth); // end if no closing quote
+
+        // ── Skip to colon ──
+        // scan_i += key_len + 2 (past closing quote)
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::LocalGet(key_len));
+        instrs.push(Instruction::I32Const(2));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(scan_i));
+
+        // Skip whitespace and find ':'
+        open_block(&mut instrs, &mut label_stack, &mut depth);
+        let ws_block = label_stack.len() - 1;
+        open_loop(&mut instrs, &mut label_stack, &mut depth);
+        let ws_loop = label_stack.len() - 1;
+
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::LocalGet(json_len));
+        instrs.push(Instruction::I32GeS);
+        br_if_to(&mut instrs, &label_stack, ws_block, depth);
+
+        instrs.push(Instruction::LocalGet(json_ptr));
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+        instrs.push(Instruction::LocalSet(temp));
+
+        // if temp == ':', advance and break
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x3A));
+        instrs.push(Instruction::I32Eq);
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(scan_i));
+        br_to(&mut instrs, &label_stack, ws_block, depth);
+        close(&mut instrs, &mut label_stack, &mut depth); // end if ':'
+
+        // else skip whitespace char
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(scan_i));
+        br_to(&mut instrs, &label_stack, ws_loop, depth);
+        close(&mut instrs, &mut label_stack, &mut depth); // end ws loop
+        close(&mut instrs, &mut label_stack, &mut depth); // end ws block
+
+        // ── Skip whitespace after colon to find value start ──
+        open_block(&mut instrs, &mut label_stack, &mut depth);
+        let vws_block = label_stack.len() - 1;
+        open_loop(&mut instrs, &mut label_stack, &mut depth);
+        let vws_loop = label_stack.len() - 1;
+
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::LocalGet(json_len));
+        instrs.push(Instruction::I32GeS);
+        br_if_to(&mut instrs, &label_stack, vws_block, depth);
+
+        instrs.push(Instruction::LocalGet(json_ptr));
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+        instrs.push(Instruction::LocalSet(temp));
+
+        // if not whitespace, break
+        // (temp != ' ' && temp != '\t' && temp != '\n' && temp != '\r')
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x20));
+        instrs.push(Instruction::I32Ne);
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x09));
+        instrs.push(Instruction::I32Ne);
+        instrs.push(Instruction::I32And);
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x0A));
+        instrs.push(Instruction::I32Ne);
+        instrs.push(Instruction::I32And);
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x0D));
+        instrs.push(Instruction::I32Ne);
+        instrs.push(Instruction::I32And);
+        br_if_to(&mut instrs, &label_stack, vws_block, depth);
+
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(scan_i));
+        br_to(&mut instrs, &label_stack, vws_loop, depth);
+        close(&mut instrs, &mut label_stack, &mut depth); // end vws loop
+        close(&mut instrs, &mut label_stack, &mut depth); // end vws block
+
+        // val_start = scan_i
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::LocalSet(val_start));
+
+        // ── Extract value ──
+        instrs.push(Instruction::LocalGet(json_ptr));
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+        instrs.push(Instruction::LocalSet(temp));
+
+        // if temp == '"', extract string value (skip quotes)
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x22));
+        instrs.push(Instruction::I32Eq);
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+
+        // String value: scan for closing quote (handle escapes)
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(val_start)); // skip opening quote
+        instrs.push(Instruction::LocalGet(val_start));
+        instrs.push(Instruction::LocalSet(scan_i));
+        instrs.push(Instruction::I32Const(0));
+        instrs.push(Instruction::LocalSet(in_escape));
+
+        open_block(&mut instrs, &mut label_stack, &mut depth);
+        let str_block = label_stack.len() - 1;
+        open_loop(&mut instrs, &mut label_stack, &mut depth);
+        let str_loop = label_stack.len() - 1;
+
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::LocalGet(json_len));
+        instrs.push(Instruction::I32GeS);
+        br_if_to(&mut instrs, &label_stack, str_block, depth);
+
+        instrs.push(Instruction::LocalGet(json_ptr));
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+        instrs.push(Instruction::LocalSet(temp));
+
+        // if in_escape, clear and continue
+        instrs.push(Instruction::LocalGet(in_escape));
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+        instrs.push(Instruction::I32Const(0));
+        instrs.push(Instruction::LocalSet(in_escape));
+        instrs.push(Instruction::Else);
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x5C)); // backslash
+        instrs.push(Instruction::I32Eq);
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::LocalSet(in_escape));
+        instrs.push(Instruction::Else);
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x22));
+        instrs.push(Instruction::I32Eq);
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+        // Found closing quote
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::LocalSet(val_end));
+        br_to(&mut instrs, &label_stack, str_block, depth);
+        close(&mut instrs, &mut label_stack, &mut depth); // end quote check
+        close(&mut instrs, &mut label_stack, &mut depth); // end backslash check
+        close(&mut instrs, &mut label_stack, &mut depth); // end in_escape
+
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(scan_i));
+        br_to(&mut instrs, &label_stack, str_loop, depth);
+        close(&mut instrs, &mut label_stack, &mut depth); // end str loop
+        close(&mut instrs, &mut label_stack, &mut depth); // end str block
+
+        instrs.push(Instruction::Else);
+        // Non-string value: scan until end (handling nested brackets)
+        instrs.push(Instruction::I32Const(0));
+        instrs.push(Instruction::LocalSet(bracket_depth));
+
+        open_block(&mut instrs, &mut label_stack, &mut depth);
+        let raw_block = label_stack.len() - 1;
+        open_loop(&mut instrs, &mut label_stack, &mut depth);
+        let raw_loop = label_stack.len() - 1;
+
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::LocalGet(json_len));
+        instrs.push(Instruction::I32GeS);
+        br_if_to(&mut instrs, &label_stack, raw_block, depth);
+
+        instrs.push(Instruction::LocalGet(json_ptr));
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+        instrs.push(Instruction::LocalSet(temp));
+
+        // if '{' or '[' → depth++
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x7B));
+        instrs.push(Instruction::I32Eq);
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x5B));
+        instrs.push(Instruction::I32Eq);
+        instrs.push(Instruction::I32Or);
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+        instrs.push(Instruction::LocalGet(bracket_depth));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(bracket_depth));
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(scan_i));
+        br_to(&mut instrs, &label_stack, raw_loop, depth);
+        close(&mut instrs, &mut label_stack, &mut depth); // end if open bracket
+
+        // if '}' or ']' and depth > 0 → depth--
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x7D));
+        instrs.push(Instruction::I32Eq);
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x5D));
+        instrs.push(Instruction::I32Eq);
+        instrs.push(Instruction::I32Or);
+        instrs.push(Instruction::LocalGet(bracket_depth));
+        instrs.push(Instruction::I32Const(0));
+        instrs.push(Instruction::I32GtS);
+        instrs.push(Instruction::I32And);
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+        instrs.push(Instruction::LocalGet(bracket_depth));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Sub);
+        instrs.push(Instruction::LocalSet(bracket_depth));
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(scan_i));
+        // if depth==0 after decrement → end of nested value
+        instrs.push(Instruction::LocalGet(bracket_depth));
+        instrs.push(Instruction::I32Const(0));
+        instrs.push(Instruction::I32Eq);
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::LocalSet(val_end));
+        br_to(&mut instrs, &label_stack, raw_block, depth);
+        close(&mut instrs, &mut label_stack, &mut depth); // end if depth==0
+        br_to(&mut instrs, &label_stack, raw_loop, depth);
+        close(&mut instrs, &mut label_stack, &mut depth); // end if close bracket at depth>0
+
+        // if ',' or '}' or ']' at depth 0 → end of plain value
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x2C)); // ','
+        instrs.push(Instruction::I32Eq);
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x7D)); // '}'
+        instrs.push(Instruction::I32Eq);
+        instrs.push(Instruction::I32Or);
+        instrs.push(Instruction::LocalGet(temp));
+        instrs.push(Instruction::I32Const(0x5D)); // ']'
+        instrs.push(Instruction::I32Eq);
+        instrs.push(Instruction::I32Or);
+        instrs.push(Instruction::LocalGet(bracket_depth));
+        instrs.push(Instruction::I32Const(0));
+        instrs.push(Instruction::I32Eq);
+        instrs.push(Instruction::I32And);
+        open_if(&mut instrs, &mut label_stack, &mut depth);
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::LocalSet(val_end));
+        br_to(&mut instrs, &label_stack, raw_block, depth);
+        close(&mut instrs, &mut label_stack, &mut depth); // end if delimiter at depth 0
+
+        // default: advance
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(scan_i));
+        br_to(&mut instrs, &label_stack, raw_loop, depth);
+        close(&mut instrs, &mut label_stack, &mut depth); // end raw loop
+        close(&mut instrs, &mut label_stack, &mut depth); // end raw block
+
+        close(&mut instrs, &mut label_stack, &mut depth); // end if string/non-string
+
+        // Return packed i64: ((val_end - val_start) << 32 | (json_ptr + val_start))
+        instrs.push(Instruction::LocalGet(val_end));
+        instrs.push(Instruction::LocalGet(val_start));
+        instrs.push(Instruction::I32Sub);
+        instrs.push(Instruction::I64ExtendI32U);
+        instrs.push(Instruction::I64Const(32));
+        instrs.push(Instruction::I64Shl);
+        instrs.push(Instruction::LocalGet(json_ptr));
+        instrs.push(Instruction::LocalGet(val_start));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::I64ExtendI32U);
+        instrs.push(Instruction::I64Or);
+        instrs.push(Instruction::Return);
+
+        // Continue main scan (unreachable after return, but needed for loop structure)
+        instrs.push(Instruction::LocalGet(scan_i));
+        instrs.push(Instruction::I32Const(1));
+        instrs.push(Instruction::I32Add);
+        instrs.push(Instruction::LocalSet(scan_i));
+        br_to(&mut instrs, &label_stack, main_loop, depth);
+        close(&mut instrs, &mut label_stack, &mut depth); // end main loop
+        close(&mut instrs, &mut label_stack, &mut depth); // end main block
+
+        // Key not found — return empty string (0)
+        instrs.push(Instruction::I64Const(0));
+
+        // Register the function
+        let func = FuncDef {
+            name: "__json_get".into(),
+            param_count: 2,
+            local_count: locals.len(),
+            local_types: locals,
+            instrs,
+        };
+        self.funcs.push(func);
+        self.json_get_func_idx = Some((self.funcs.len() - 1) as u32);
+    }
 
 
     fn host_call(idx: usize) -> Instruction<'static> {
@@ -319,6 +1468,7 @@ impl WasmEmitter {
             "outlayer/env-predecessor" => self.need_outlayer(20),
             // HTTP lib (lisp:http/http-lib)
             "http/get" => { self.httplib_needed = true; }
+            "http/post" => { self.httplib_needed = true; }
             // Also scan children for outlayer usage
             // WASI builtins
             "wasi/read_stdin" => { self.need_wasi(0); }
@@ -344,7 +1494,7 @@ impl WasmEmitter {
 
         // Pre-insert placeholder so self-recursion resolves
         let placeholder_idx = self.funcs.len();
-        self.funcs.push(FuncDef { name: name.into(), param_count: params.len(), local_count: 0, instrs: Vec::new() });
+        self.funcs.push(FuncDef { name: name.into(), param_count: params.len(), local_count: 0, local_types: vec![], instrs: Vec::new() });
 
         let tc = self.has_tc(body);
 
@@ -391,7 +1541,7 @@ impl WasmEmitter {
         let total = self.next_local as usize;
         self.current_func = None;
         self.gas_local = None;
-        self.funcs[placeholder_idx] = FuncDef { name: name.into(), param_count: params.len(), local_count: total, instrs };
+        self.funcs[placeholder_idx] = FuncDef { name: name.into(), param_count: params.len(), local_count: total, local_types: vec![], instrs };
         Ok(())
     }
 
@@ -554,7 +1704,9 @@ impl WasmEmitter {
             LispVal::Sym(n) => self.locals.get(n).map(|&i| vec![Instruction::LocalGet(i)]).ok_or_else(|| format!("undef: {}", n)),
             LispVal::Str(s) => {
                 let off = self.alloc_data(s.as_bytes()) as u64;
-                Ok(vec![Instruction::I64Const((off | ((s.len() as u64) << 32)) as i64)])
+                let packed = (off | ((s.len() as u64) << 32)) as i64;
+                
+                Ok(vec![Instruction::I64Const(packed)])
             }
             LispVal::List(items) if !items.is_empty() => {
                 if let LispVal::Sym(op) = &items[0] { self.call(op, &items[1..]) } else { Err("expected symbol".into()) }
@@ -1322,44 +2474,156 @@ impl WasmEmitter {
                 Ok(v)
             }
 
+            // ── Inline WASM utilities (no host call needed) ──
+
+            // (outlayer/str-concat a b) → packed i64 string
+            // Copies both strings into a new buffer in data area
+            "outlayer/str-concat" => {
+                let a_code = self.expr(&a[0])?;
+                let b_code = self.expr(&a[1])?;
+                // Allocate a data buffer — we'll use a fixed max size approach:
+                // Reserve space in data area, copy a then b into it.
+                // At runtime: unpack both i64, compute total len, allocate, copy.
+                // Use a runtime bump allocator at memory offset stored in data area.
+                let mut v = Vec::new();
+                // Stack: [a_packed, b_packed]
+                v.extend(a_code);  // i64: (len_a << 32 | ptr_a)
+                v.extend(b_code);  // i64: (len_b << 32 | ptr_b)
+
+                // We need to:
+                // 1. Extract ptr_a, len_a, ptr_b, len_b
+                // 2. Compute total_len = len_a + len_b
+                // 3. Allocate buffer via bump pointer at ALLOC_PTR (offset 10240)
+                // 4. Copy a's bytes to new_buf
+                // 5. Copy b's bytes to new_buf + len_a
+                // 6. Return (total_len << 32 | new_buf)
+
+                // Use local variables (all I64 since they come from local_idx)
+                let l_packed_a = self.local_idx("__sc_a");
+                let l_packed_b = self.local_idx("__sc_b");
+                let l_dst = self.local_idx("__sc_dst");
+
+                // Stack: [a_i64, b_i64]
+                v.push(Instruction::LocalSet(l_packed_b));
+                v.push(Instruction::LocalSet(l_packed_a));
+                // Stack: empty
+
+                // Write directly to STDOUT_BUF (fixed, safe from realloc collision)
+                // dst = STDOUT_BUF, no bump allocation needed
+                v.push(Instruction::I64Const(STDOUT_BUF as i64));
+                v.push(Instruction::LocalSet(l_dst));
+
+                // Copy a: memory.copy(STDOUT_BUF, ptr_a, len_a)
+                v.push(Instruction::I32Const(STDOUT_BUF as i32));
+                v.push(Instruction::LocalGet(l_packed_a)); // ptr_a (low 32)
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(l_packed_a)); // len_a (high 32)
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+
+                // Copy b: memory.copy(STDOUT_BUF + len_a, ptr_b, len_b)
+                v.push(Instruction::I32Const(STDOUT_BUF as i32));
+                v.push(Instruction::LocalGet(l_packed_a)); // len_a
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);             // STDOUT_BUF + len_a
+                v.push(Instruction::LocalGet(l_packed_b)); // ptr_b (low 32)
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(l_packed_b)); // len_b (high 32)
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+
+                // Return packed i64: ((len_a + len_b) << 32 | STDOUT_BUF)
+                v.push(Instruction::LocalGet(l_packed_a));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);             // len_a as i64
+                v.push(Instruction::LocalGet(l_packed_b));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);             // len_b as i64
+                v.push(Instruction::I64Add);               // total_len
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);               // total_len << 32
+                v.push(Instruction::I64Const(STDOUT_BUF as i64));
+                v.push(Instruction::I64Or);
+
+                // Need bulk memory for memory.copy
+                self.need_bulk_memory = true;
+                Ok(v)
+            }
+
+            // (outlayer/json-get json key) → packed i64 string
+            // Scans json string for "key":<value> at top level
+            "outlayer/json-get" => {
+                // This is complex to do in pure WASM inline.
+                // For now, delegate to a helper function that we emit once.
+                // Use a WASM function with a simple state-machine parser.
+                self.ensure_json_get_func();
+                
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?);  // json i64
+                v.extend(self.expr(&a[1])?);  // key i64
+                v.push(Instruction::Call(USER_BASE + self.json_get_func_idx.unwrap()));
+                Ok(v)
+            }
+
             // ── Outlayer builtins (flat i32 params, void return, result via ret_ptr) ──
             op if op.starts_with("outlayer/") => {
                 let ol_idx = outlayer_name_idx(op);
                 let sig = OUTLAYER_FUNCS[ol_idx];
                 let mut v = Vec::new();
                 let mut param_idx = 0;
+                let mut mem_slot: i32 = 16; // use different slots for each string arg
                 for arg in a.iter() {
                     if param_idx < sig.1.len() && sig.1[param_idx] == ValType::I64 {
                         v.extend(self.expr(arg)?);
                         param_idx += 1;
                     } else {
-                        v.push(Instruction::I32Const(16));
+                        v.push(Instruction::I32Const(mem_slot));
                         v.extend(self.expr(arg)?);
                         v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                        v.push(Instruction::I32Const(16));
+                        v.push(Instruction::I32Const(mem_slot));
                         v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
-                        v.push(Instruction::I32Const(20));
+                        v.push(Instruction::I32Const(mem_slot + 4));
                         v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
                         param_idx += 2;
+                        mem_slot += 8; // advance slot so args don't overlap
                     }
                 }
-                let ret_ptr = self.next_data_offset;
-                self.next_data_offset += 32;
+                // http-post: default content-type to "application/json" if not provided
+                if op == "outlayer/http-post" && a.len() < 3 {
+                    let ct_off = self.alloc_data(b"application/json");
+                    v.push(Instruction::I32Const(ct_off as i32));
+                    v.push(Instruction::I32Const(16)); // "application/json" length
+                    param_idx += 2;
+                }
+                let ret_ptr = self.alloc_ret_ptr();
                 v.push(Instruction::I32Const(ret_ptr as i32));
                 v.push(Instruction::Call(OUTLAYER_BASE | ol_idx as u32));
-                // All outlayer funcs return tuple<string,string> or string via ret_ptr
-                // Read ptr+len from ret_ptr for the result string
+                // All outlayer funcs return tuple<string,string> via ret_ptr
+                // Read ptr+len from ret_ptr, copy to HOST_RESP_BUF (safe from realloc collision)
                 if sig.2.is_empty() && !op.ends_with("-has") && op != "outlayer/storage-clear-all" && !op.starts_with("outlayer/storage-set") && !op.starts_with("outlayer/storage-delete") {
                     let rp = ret_ptr as i32;
+                    // memory.copy(HOST_RESP_BUF, src, len)
+                    v.push(Instruction::I32Const(HOST_RESP_BUF as i32)); // dst
                     v.push(Instruction::I32Const(rp + 4));
-                    v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
-                    v.push(Instruction::I64ExtendI32S);
+                    v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 })); // src
+                    v.push(Instruction::I32Const(rp + 8));
+                    v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 })); // len
+                    v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+                    // Return packed: (len << 32 | HOST_RESP_BUF)
+                    v.push(Instruction::I64Const(HOST_RESP_BUF as i64));
                     v.push(Instruction::I32Const(rp + 8));
                     v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
-                    v.push(Instruction::I64ExtendI32S);
+                    v.push(Instruction::I64ExtendI32U);
                     v.push(Instruction::I64Const(32));
                     v.push(Instruction::I64Shl);
                     v.push(Instruction::I64Or);
+                    self.need_bulk_memory = true;
                 } else {
                     v.push(Instruction::I64Const(0));
                 }
@@ -1381,22 +2645,69 @@ impl WasmEmitter {
                 v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
                 v.push(Instruction::I32Const(20));
                 v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
-                // ret_ptr
-                let ret_ptr = self.next_data_offset;
-                self.next_data_offset += 32;
+                // ret_ptr (must be 4-byte aligned for canonical ABI)
+                let ret_ptr = self.alloc_ret_ptr();
                 v.push(Instruction::I32Const(ret_ptr as i32));
                 v.push(Instruction::Call(HTTPLIB_BASE));
                 // Read result: ret_ptr+4 (ok_ptr), ret_ptr+8 (ok_len) — result<string,string>
-                // Canonical ABI: [discrim i32, ok_ptr i32, ok_len i32] or [1, err_ptr, err_len]
+                // Copy to HOST_RESP_BUF to prevent realloc collision
+                v.push(Instruction::I32Const(HOST_RESP_BUF as i32)); // dst
                 v.push(Instruction::I32Const(ret_ptr as i32 + 4));
-                v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
-                v.push(Instruction::I64ExtendI32S);
+                v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 })); // src
+                v.push(Instruction::I32Const(ret_ptr as i32 + 8));
+                v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 })); // len
+                v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+                v.push(Instruction::I64Const(HOST_RESP_BUF as i64));
                 v.push(Instruction::I32Const(ret_ptr as i32 + 8));
                 v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
-                v.push(Instruction::I64ExtendI32S);
+                v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64Shl);
                 v.push(Instruction::I64Or);
+                self.need_bulk_memory = true;
+                Ok(v)
+            }
+
+            // (http/post url body) → result string via lisp:http/http-lib
+            "http/post" => {
+                self.httplib_needed = true;
+                let mut v = Vec::new();
+                // Push url string arg: store i64 to mem[16], load ptr+i32, len+i32
+                v.push(Instruction::I32Const(16));
+                v.extend(self.expr(&a[0])?);
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I32Const(16));
+                v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+                v.push(Instruction::I32Const(20));
+                v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+                // Push body string arg: store i64 to mem[24], load ptr+i32, len+i32
+                v.push(Instruction::I32Const(24));
+                v.extend(self.expr(&a[1])?);
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I32Const(24));
+                v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+                v.push(Instruction::I32Const(28));
+                v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+                // ret_ptr (must be 4-byte aligned for canonical ABI)
+                let ret_ptr = self.alloc_ret_ptr();
+                v.push(Instruction::I32Const(ret_ptr as i32));
+                v.push(Instruction::Call(HTTPLIB_BASE + 1)); // http-post sentinel
+                // Read result: ret_ptr+4 (ok_ptr), ret_ptr+8 (ok_len) — result<string,string>
+                // Copy to HOST_RESP_BUF to prevent realloc collision
+                v.push(Instruction::I32Const(HOST_RESP_BUF as i32)); // dst
+                v.push(Instruction::I32Const(ret_ptr as i32 + 4));
+                v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 })); // src
+                v.push(Instruction::I32Const(ret_ptr as i32 + 8));
+                v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 })); // len
+                v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+                v.push(Instruction::I64Const(HOST_RESP_BUF as i64));
+                v.push(Instruction::I32Const(ret_ptr as i32 + 8));
+                v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Or);
+                self.need_bulk_memory = true;
                 Ok(v)
             }
 
@@ -3940,7 +5251,8 @@ impl WasmEmitter {
         let host_list: Vec<usize> = (0..HOST_FUNCS.len()).filter(|i| self.host_needed.contains(i)).collect();
         let outlayer_list: Vec<usize> = (0..OUTLAYER_FUNCS.len()).filter(|i| self.outlayer_needed.contains(i)).collect();
         let wasi_list: Vec<usize> = (0..WASI_FUNCS.len()).filter(|i| self.wasi_needed.contains(i)).collect();
-        let host_count = (host_list.len() + outlayer_list.len() + wasi_list.len() + if self.httplib_needed { 1 } else { 0 }) as u32;
+        let host_count = (host_list.len() + outlayer_list.len() + wasi_list.len() + if self.httplib_needed { 2 } else { 0 }) as u32;
+
 
         // Type section
         let mut types = TypeSection::new();
@@ -3962,13 +5274,17 @@ impl WasmEmitter {
         for &wi in &wasi_list {
             types.ty().function(WASI_FUNCS[wi].1.iter().copied(), WASI_FUNCS[wi].2.iter().copied());
         }
-        // HTTPLIB type (lisp:http/http-lib@0.1.0.http-get)
-        let mut httplib_type_idx: Option<u32> = None;
+        // HTTPLIB types (lisp:http/http-lib@0.1.0)
+        let mut httplib_get_type_idx: Option<u32> = None;
+        let mut httplib_post_type_idx: Option<u32> = None;
         let mut httplib_func_idx: Option<u32> = None;
+        let mut httplib_post_func_idx: Option<u32> = None;
         if self.httplib_needed {
-            let ty = host_type_base + host_list.len() as u32 + outlayer_list.len() as u32 + wasi_list.len() as u32;
-            types.ty().function([ValType::I32; 3], []); // (url_ptr, url_len, ret_ptr) -> ()
-            httplib_type_idx = Some(ty);
+            let ty_base = host_type_base + host_list.len() as u32 + outlayer_list.len() as u32 + wasi_list.len() as u32;
+            types.ty().function([ValType::I32; 3], []); // http-get: (url_ptr, url_len, ret_ptr) -> ()
+            httplib_get_type_idx = Some(ty_base);
+            types.ty().function([ValType::I32; 5], []); // http-post: (url_ptr, url_len, body_ptr, body_len, ret_ptr) -> ()
+            httplib_post_type_idx = Some(ty_base + 1);
         }
         // P2 wrapper type: () -> i32 (for result<()> representation) — only used if WIT exports run
         // Standard WASI command expects _start: () -> ()
@@ -4020,13 +5336,16 @@ impl WasmEmitter {
             imports.import("wasi_snapshot_preview1", WASI_FUNCS[wi].0, EntityType::Function(wasi_type_base + i as u32));
             wasi_idx.insert(wi, wasi_func_base + i as u32);
         }
-        // HTTPLIB import (lisp:http/http-lib@0.1.0)
+        // HTTPLIB imports (lisp:http/http-lib@0.1.0)
         let mut httplib_resolve: HashMap<u32, u32> = HashMap::new();
         if self.httplib_needed {
-            let fi = host_list.len() as u32 + outlayer_list.len() as u32 + wasi_list.len() as u32;
-            imports.import("lisp:http/http-lib@0.1.0", "http-get", EntityType::Function(httplib_type_idx.unwrap()));
-            httplib_func_idx = Some(fi);
-            httplib_resolve.insert(HTTPLIB_BASE, fi);
+            let fi_base = host_list.len() as u32 + outlayer_list.len() as u32 + wasi_list.len() as u32;
+            imports.import("lisp:http/http-lib@0.1.0", "http-get", EntityType::Function(httplib_get_type_idx.unwrap()));
+            httplib_func_idx = Some(fi_base);
+            httplib_resolve.insert(HTTPLIB_BASE, fi_base);
+            imports.import("lisp:http/http-lib@0.1.0", "http-post", EntityType::Function(httplib_post_type_idx.unwrap()));
+            httplib_post_func_idx = Some(fi_base + 1);
+            httplib_resolve.insert(HTTPLIB_BASE + 1, fi_base + 1);
         }
         m.section(&imports);
 
@@ -4045,12 +5364,19 @@ impl WasmEmitter {
         mems.memory(MemoryType { minimum: self.memory_pages.max(4) as u64, maximum: None, memory64: false, shared: false, page_size_log2: None });
         m.section(&mems);
 
-        // Global section: mutable i64 for call depth tracking
+        // Global section: mutable i64 for call depth tracking, mutable i32 for bump ptr (P2)
         let mut globals = GlobalSection::new();
         globals.global(
             GlobalType { val_type: ValType::I64, mutable: true, shared: false },
             &ConstExpr::i64_const(0),
         );
+        if self.p2_mode {
+            // Bump pointer initialized at runtime from memory.size * 65536
+            globals.global(
+                GlobalType { val_type: ValType::I32, mutable: true, shared: false },
+                &ConstExpr::i32_const(0),
+            );
+        }
         m.section(&globals);
 
         // Exports
@@ -4069,6 +5395,9 @@ impl WasmEmitter {
         if self.p2_mode {
             let realloc_idx = wrapper_base + wrapper_count;
             exps.export("canonical_abi_realloc", ExportKind::Func, realloc_idx);
+            if let Some(jg_idx) = self.json_get_func_idx {
+                exps.export("__json_get", ExportKind::Func, internal_base + jg_idx as u32);
+            }
         }
         m.section(&exps);
 
@@ -4078,7 +5407,13 @@ impl WasmEmitter {
         let mut code = wasm_encoder::CodeSection::new();
         for f in &self.funcs {
             let extra = f.local_count.saturating_sub(f.param_count);
-            let locals: Vec<(u32, ValType)> = if extra > 0 { vec![(extra as u32, ValType::I64)] } else { vec![] };
+            let locals: Vec<(u32, ValType)> = if !f.local_types.is_empty() {
+                f.local_types.iter().map(|t| (1, *t)).collect()
+            } else if extra > 0 {
+                vec![(extra as u32, ValType::I64)]
+            } else {
+                vec![]
+            };
             let resolved = Self::resolve_static(&f.instrs, &host_idx, &name_map, &self.funcs, &outlayer_idx, &wasi_idx, &httplib_resolve);
             let mut fb = Function::new(locals);
             for instr in &resolved { fb.instruction(instr); }
@@ -4087,10 +5422,17 @@ impl WasmEmitter {
         }
         // Wrappers
         if self.exports.is_empty() {
-            if let Some(_) = self.funcs.last() {
-                let idx = internal_base + (self.funcs.len()-1) as u32;
+            // Call the first user-defined function (entry point), not the last.
+            // Helper functions like __json_get are appended after main.
+            let main_idx = if let Some(pos) = self.funcs.iter().position(|f| f.name == "main") {
+                internal_base + pos as u32
+            } else {
+                // Fallback: first user function
+                internal_base
+            };
+            if !self.funcs.is_empty() {
                 let mut fb = Function::new(Vec::<(u32, ValType)>::new());
-                fb.instruction(&Instruction::Call(idx)); fb.instruction(&Instruction::Drop);
+                fb.instruction(&Instruction::Call(main_idx)); fb.instruction(&Instruction::Drop);
                 if self.p2_mode { /* no return value for _start */ }
                 fb.instruction(&Instruction::End);
                 code.function(&fb);
@@ -4104,22 +5446,30 @@ impl WasmEmitter {
                 }
             }
         }
-        // P2 mode: canonical_abi_realloc — bump allocator
-        // mem[10240] = bump pointer (i32), initialized to 10244
+        // P2 mode: canonical_abi_realloc — bump allocator using global[1]
         // realloc(ptr, old_size, align, new_size) -> new_ptr
         if self.p2_mode {
-            // 3 extra locals: bump(4), aligned(5), new_bump(6)
-            let mut fb = Function::new([(3, ValType::I32)]);
-            // Helper: bump allocate and return aligned ptr
-            // Leaves aligned ptr on stack, updates mem[10240]
+            // 4 extra locals: bump(4), aligned(5), new_bump(6), tmp(7)
+            let mut fb = Function::new([(4, ValType::I32)]);
+            // Lazy init: if bump ptr is 0, initialize from memory.size * 65536
+            // (component adapter may call realloc BEFORE _start runs)
+            fb.instruction(&Instruction::GlobalGet(BUMP_GLOBAL));
+            fb.instruction(&Instruction::I32Eqz);
+            fb.instruction(&Instruction::If(BlockType::Empty));
+            // Grow memory by 16 pages for bump space
+            fb.instruction(&Instruction::I32Const(16));
+            fb.instruction(&Instruction::MemoryGrow(0)); // returns old pages
+            fb.instruction(&Instruction::I32Const(16));
+            fb.instruction(&Instruction::I32Shl); // old_pages * 65536
+            fb.instruction(&Instruction::GlobalSet(BUMP_GLOBAL));
+            fb.instruction(&Instruction::End);
+
             // Check ptr != 0 && new_size <= old_size
             fb.instruction(&Instruction::LocalGet(0)); // ptr
             fb.instruction(&Instruction::I32Eqz); // ptr == 0?
             fb.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
             // ptr == 0: fresh bump allocate
-            // Load bump
-            fb.instruction(&Instruction::I32Const(10240));
-            fb.instruction(&Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+            fb.instruction(&Instruction::GlobalGet(BUMP_GLOBAL));
             fb.instruction(&Instruction::LocalTee(4)); // bump
             // Align: (bump + align - 1) & ~(align - 1)
             fb.instruction(&Instruction::LocalGet(2)); // align
@@ -4137,10 +5487,9 @@ impl WasmEmitter {
             fb.instruction(&Instruction::LocalGet(3)); // new_size
             fb.instruction(&Instruction::I32Add);
             fb.instruction(&Instruction::LocalSet(6)); // new_bump
-            // mem[10240] = new_bump
-            fb.instruction(&Instruction::I32Const(10240));
+            // global[BUMP_GLOBAL] = new_bump
             fb.instruction(&Instruction::LocalGet(6));
-            fb.instruction(&Instruction::I32Store(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+            fb.instruction(&Instruction::GlobalSet(BUMP_GLOBAL));
             // Return aligned
             fb.instruction(&Instruction::LocalGet(5));
             fb.instruction(&Instruction::Else);
@@ -4152,14 +5501,13 @@ impl WasmEmitter {
             fb.instruction(&Instruction::LocalGet(0)); // return ptr
             fb.instruction(&Instruction::Else);
             // Need to grow: bump allocate (same as fresh)
-            fb.instruction(&Instruction::I32Const(10240));
-            fb.instruction(&Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+            fb.instruction(&Instruction::GlobalGet(BUMP_GLOBAL));
             fb.instruction(&Instruction::LocalTee(4)); // bump
             fb.instruction(&Instruction::LocalGet(2)); // align
             fb.instruction(&Instruction::I32Const(1));
             fb.instruction(&Instruction::I32Sub);
             fb.instruction(&Instruction::I32Add);
-            fb.instruction(&Instruction::LocalGet(2));
+            fb.instruction(&Instruction::LocalGet(2)); // align
             fb.instruction(&Instruction::I32Const(1));
             fb.instruction(&Instruction::I32Sub);
             fb.instruction(&Instruction::I32Const(-1));
@@ -4169,9 +5517,8 @@ impl WasmEmitter {
             fb.instruction(&Instruction::LocalGet(3)); // new_size
             fb.instruction(&Instruction::I32Add);
             fb.instruction(&Instruction::LocalSet(6)); // new_bump
-            fb.instruction(&Instruction::I32Const(10240));
             fb.instruction(&Instruction::LocalGet(6));
-            fb.instruction(&Instruction::I32Store(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+            fb.instruction(&Instruction::GlobalSet(BUMP_GLOBAL));
             fb.instruction(&Instruction::LocalGet(5)); // return aligned
             fb.instruction(&Instruction::End); // end inner if
             fb.instruction(&Instruction::End); // end outer if
@@ -4181,12 +5528,9 @@ impl WasmEmitter {
         m.section(&code);
 
 
-        // Build final data segments (including P2 bump pointer init)
-        let mut final_data = self.data_segments.clone();
-        if self.p2_mode {
-            // Initialize bump pointer at mem[10240] = 10244
-            final_data.push((10240, 10244i32.to_le_bytes().to_vec()));
-        }
+        // Build final data segments
+        let final_data = self.data_segments.clone();
+        // Bump pointer is now a global, initialized from memory.size at runtime — no data segment needed
 
         // Data (section 11 — must come after code section 10)
         if !final_data.is_empty() {
@@ -4373,5 +5717,38 @@ mod tests {
         let wasm = compile_pure(src).unwrap();
         let wat = wasmprinter::print_bytes(&wasm).unwrap();
         println!("Implicit begin define WAT:\n{}", wat);
+    }
+
+    #[test]
+    fn test_http_get_compiles() {
+        let src = r#"(define (fetch url) (http/get url))"#;
+        let wasm = compile_pure(src).unwrap();
+        let wat = wasmprinter::print_bytes(&wasm).unwrap();
+        assert!(wat.contains("lisp:http/http-lib@0.1.0"), "should import http-lib");
+        assert!(wat.contains("http-get"), "should import http-get function");
+        println!("http/get WAT:\n{}", wat);
+    }
+
+    #[test]
+    fn test_http_post_compiles() {
+        let src = r#"(define (post url body) (http/post url body))"#;
+        let wasm = compile_pure(src).unwrap();
+        let wat = wasmprinter::print_bytes(&wasm).unwrap();
+        assert!(wat.contains("lisp:http/http-lib@0.1.0"), "should import http-lib");
+        assert!(wat.contains("http-post"), "should import http-post function");
+        println!("http/post WAT:\n{}", wat);
+    }
+
+    #[test]
+    fn test_http_get_and_post_compiles() {
+        let src = r#"
+(define (fetch url) (http/get url))
+(define (send url body) (http/post url body))
+"#;
+        let wasm = compile_pure(src).unwrap();
+        let wat = wasmprinter::print_bytes(&wasm).unwrap();
+        assert!(wat.contains("http-get"), "should import http-get");
+        assert!(wat.contains("http-post"), "should import http-post");
+        println!("http/get+post WAT:\n{}", wat);
     }
 }

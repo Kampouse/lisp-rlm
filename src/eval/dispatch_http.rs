@@ -25,11 +25,14 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
         "http-post" => {
             let url = as_str(&args[0])?;
             let body_str = as_str(args.get(1).ok_or("http-post: need body")?)?;
+            let ct: String = args.get(2)
+                .and_then(|v| as_str(v).ok())
+                .unwrap_or_else(|| "application/json".to_string());
             let rt = &SHARED_RUNTIME;
             let body = rt.block_on(async {
                 SHARED_CLIENT
                     .post(url)
-                    .header("Content-Type", "application/json")
+                    .header("Content-Type", ct)
                     .body(body_str)
                     .send()
                     .await
