@@ -4,6 +4,7 @@ pub mod types;
 
 pub use checker::check_pure_block;
 pub use checker::check_pure_define;
+pub use checker::check_set_value_positions;
 pub use checker::check_storage_schema;
 pub use checker::type_check_program;
 #[allow(unused_imports)]

@@ -441,6 +441,7 @@ fn parse_and_compile_opts(source: &str, near: bool, typecheck: bool) -> Result<W
     // Storage schema validation — warns about reads without matching writes
     if near {
         crate::typing::check_storage_schema(&exprs);
+        crate::typing::check_set_value_positions(&exprs);
     }
 
     let mut em = WasmEmitter::new();
@@ -623,6 +624,7 @@ pub fn compile_near_from_exprs(exprs: &[LispVal]) -> Result<Vec<u8>, String> {
 
     // Storage schema validation
     crate::typing::check_storage_schema(exprs);
+    crate::typing::check_set_value_positions(exprs);
 
     let mut em = WasmEmitter::new();
     for e in exprs {

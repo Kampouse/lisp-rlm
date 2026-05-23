@@ -1471,10 +1471,12 @@ pub fn type_check_program(exprs: &[LispVal], near: bool) -> Result<(), String> {
 }
 
 /// Scan all expressions for storage key consistency.
-/// Tracks `(near/storage_write "key" val)` to build a schema, then warns if
-/// `(near/storage_read "key")` is used where a different type was written.
+/// Tracks `(near/storage_write "key" val)` and `(near/store_num key val)` to
+/// build a schema, then warns if reads don't match writes.
 pub fn check_storage_schema(exprs: &[LispVal]) {
-    let mut schema: HashMap<String, String> = HashMap::new(); // key → location info
+    let mut schema: HashMap<String, String> = HashMap::new(); // key → "written" | "read"
+    // t2: also track string keys used alongside numeric keys for collision detection
+    let mut string_keys: HashMap<String, ()> = HashMap::new(); // bare string keys seen
 
     fn extract_str_key(val: &LispVal) -> Option<String> {
         match val {
@@ -1483,24 +1485,82 @@ pub fn check_storage_schema(exprs: &[LispVal]) {
         }
     }
 
-    fn walk_for_storage(exprs: &[LispVal], schema: &mut HashMap<String, String>) {
-        for expr in exprs {
-            walk_expr_storage(expr, schema);
+    /// t2: Extract a numeric literal key from a LispVal.
+    fn extract_num_key(val: &LispVal) -> Option<i64> {
+        match val {
+            LispVal::Num(n) => Some(*n),
+            _ => None,
         }
     }
 
-    fn walk_expr_storage(expr: &LispVal, schema: &mut HashMap<String, String>) {
+    // ── t5: Best-effort static evaluation of simple arithmetic expressions ──
+    // Handles: literals, (+ a b), (* a b), (shl a b), (bor a b), (- a b)
+    fn eval_const(expr: &LispVal) -> Option<i64> {
         match expr {
+            LispVal::Num(n) => Some(*n),
             LispVal::List(list) if list.len() >= 3 => {
                 if let LispVal::Sym(op) = &list[0] {
-                    if op == "near/storage_write" {
-                        if let Some(key) = extract_str_key(&list[1]) {
-                            // Record that this key is written to
-                            schema.entry(key).or_insert_with(|| "written".into());
+                    let a = eval_const(&list[1])?;
+                    let b = eval_const(&list[2])?;
+                    match op.as_str() {
+                        "+" => Some(a.wrapping_add(b)),
+                        "*" => a.checked_mul(b),
+                        "shl" => {
+                            if b >= 0 && b < 64 {
+                                Some(a.wrapping_shl(b as u32))
+                            } else {
+                                None
+                            }
                         }
-                    } else if op == "near/storage_read" {
+                        "bor" => Some(a | b),
+                        "-" => Some(a.wrapping_sub(b)),
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// t2: Get a numeric key from an expression — tries literal first, then
+    /// t5 static eval, then gives up (returns None silently).
+    fn resolve_num_key(key_expr: &LispVal) -> Option<i64> {
+        // Direct literal first
+        if let Some(n) = extract_num_key(key_expr) {
+            return Some(n);
+        }
+        // t5: try static evaluation of arithmetic expressions
+        eval_const(key_expr)
+    }
+
+    fn walk_for_storage(
+        exprs: &[LispVal],
+        schema: &mut HashMap<String, String>,
+        string_keys: &mut HashMap<String, ()>,
+    ) {
+        for expr in exprs {
+            walk_expr_storage(expr, schema, string_keys);
+        }
+    }
+
+    fn walk_expr_storage(
+        expr: &LispVal,
+        schema: &mut HashMap<String, String>,
+        string_keys: &mut HashMap<String, ()>,
+    ) {
+        match expr {
+            LispVal::List(list) if !list.is_empty() => {
+                if let LispVal::Sym(op) = &list[0] {
+                    // ── String-keyed storage ──
+                    if op == "near/storage_write" && list.len() >= 3 {
                         if let Some(key) = extract_str_key(&list[1]) {
-                            // Check if this key was ever written
+                            schema.entry(key.clone()).or_insert_with(|| "written".into());
+                            string_keys.insert(key, ());
+                        }
+                    } else if op == "near/storage_read" && list.len() >= 2 {
+                        if let Some(key) = extract_str_key(&list[1]) {
                             if !schema.contains_key(&key) {
                                 eprintln!(
                                     "⚠ warning: storage_read of key \"{}\" but no matching storage_write found",
@@ -1509,22 +1569,255 @@ pub fn check_storage_schema(exprs: &[LispVal]) {
                             }
                         }
                     }
+                    // ── t2: Numeric-keyed storage ──
+                    else if op == "near/store_num" && list.len() >= 3 {
+                        if let Some(n) = resolve_num_key(&list[1]) {
+                            let num_key = format!("num:{}", n);
+                            schema.entry(num_key.clone()).or_insert_with(|| "written".into());
+                            // t2: detect collision with string key of same digits
+                            let bare = format!("{}", n);
+                            if string_keys.contains_key(&bare) {
+                                eprintln!(
+                                    "⚠ warning: numeric key {} used alongside string key \"{}\" — potential confusion",
+                                    n, bare
+                                );
+                            }
+                        }
+                    } else if op == "near/load_num" && list.len() >= 2 {
+                        if let Some(n) = resolve_num_key(&list[1]) {
+                            let num_key = format!("num:{}", n);
+                            if !schema.contains_key(&num_key) {
+                                eprintln!(
+                                    "⚠ warning: load_num of key {} but no matching store_num found",
+                                    n
+                                );
+                            }
+                            // t2: detect collision with string key
+                            let bare = format!("{}", n);
+                            if string_keys.contains_key(&bare) {
+                                eprintln!(
+                                    "⚠ warning: numeric key {} used alongside string key \"{}\" — potential confusion",
+                                    n, bare
+                                );
+                            }
+                        }
+                    }
                 }
                 // Recurse into sub-expressions
                 for sub in list {
-                    walk_expr_storage(sub, schema);
-                }
-            }
-            LispVal::List(list) => {
-                for sub in list {
-                    walk_expr_storage(sub, schema);
+                    walk_expr_storage(sub, schema, string_keys);
                 }
             }
             _ => {}
         }
     }
 
-    walk_for_storage(exprs, &mut schema);
+    walk_for_storage(exprs, &mut schema, &mut string_keys);
+
+    // ── t5: Check for collisions among statically-evaluated numeric keys ──
+    // We already stored all resolved numeric keys in schema as "num:N".
+    // Check that no two different source expressions resolved to the same key.
+    // (This is implicitly handled: if two different expressions produce the same
+    //  "num:N", they both insert into the same schema entry — no duplication error.
+    //  But we can scan for duplicate static key values that came from different
+    //  expressions by re-walking and tracking expression→key mappings.)
+    let mut const_keys: Vec<(i64, String)> = Vec::new(); // (resolved_key, source_snippet)
+    fn collect_const_keys(exprs: &[LispVal], const_keys: &mut Vec<(i64, String)>) {
+        for expr in exprs {
+            collect_const_keys_expr(expr, const_keys);
+        }
+    }
+    fn collect_const_keys_expr(expr: &LispVal, const_keys: &mut Vec<(i64, String)>) {
+        if let LispVal::List(list) = expr {
+            if list.len() >= 3 {
+                if let LispVal::Sym(op) = &list[0] {
+                    if op == "near/store_num" || op == "near/load_num" {
+                        if let Some(n) = eval_const(&list[1]) {
+                            let snippet = format!("{}", list[1]);
+                            const_keys.push((n, snippet));
+                        }
+                    }
+                }
+            }
+            for sub in list {
+                collect_const_keys_expr(sub, const_keys);
+            }
+        }
+    }
+    collect_const_keys(exprs, &mut const_keys);
+    // Check for collisions: same numeric key from different expressions
+    let mut seen: HashMap<i64, String> = HashMap::new();
+    for (key, snippet) in &const_keys {
+        if let Some(prev) = seen.get(key) {
+            if prev != snippet {
+                eprintln!(
+                    "⚠ warning: storage key collision — key {} produced by both {} and {}",
+                    key, prev, snippet
+                );
+            }
+        } else {
+            seen.insert(*key, snippet.clone());
+        }
+    }
+}
+
+/// t3: Warn when `set!` is used in a value position where its nil return
+/// is likely unintentional. Specifically checks:
+/// - `set!` as the last expression in a `define` body (function returns nil)
+/// - `set!` in an `if` branch (either then or else)
+/// - `set!` in a `cond` branch body
+/// - `set!` as the last expression in a `begin` block that's used as a value
+pub fn check_set_value_positions(exprs: &[LispVal]) {
+    for expr in exprs {
+        walk_set_check(expr, ValueContext::Other);
+    }
+}
+
+/// Tracks whether we're in a context where the expression's value matters.
+#[derive(Clone, Copy, PartialEq)]
+enum ValueContext {
+    /// The expression is the last in a define body — its value IS the function result
+    DefineBody,
+    /// Inside an if/cond branch — value matters
+    BranchValue,
+    /// Inside a begin block as the last expression — value propagates
+    BeginTail,
+    /// Other positions — value may or may not matter
+    Other,
+}
+
+fn walk_set_check(expr: &LispVal, ctx: ValueContext) {
+    if let LispVal::List(list) = expr {
+        if list.is_empty() {
+            return;
+        }
+
+        // Check if this is a (set! ...) form
+        if let LispVal::Sym(s) = &list[0] {
+            if s == "set!" {
+                // Warn if set! is in a value position
+                if ctx == ValueContext::DefineBody || ctx == ValueContext::BranchValue || ctx == ValueContext::BeginTail {
+                    let var_name = list.get(1).map(|v| v.to_string()).unwrap_or_else(|| "?".into());
+                    eprintln!(
+                        "⚠ warning: set! returns nil — result used as value in {} position (var: {})",
+                        match ctx {
+                            ValueContext::DefineBody => "function body (function returns nil)",
+                            ValueContext::BranchValue => "branch",
+                            ValueContext::BeginTail => "begin block",
+                            _ => "expression",
+                        },
+                        var_name
+                    );
+                }
+                // Still recurse into the value expression
+                if list.len() >= 3 {
+                    walk_set_check(&list[2], ValueContext::Other);
+                }
+                return;
+            }
+
+            // (if cond then else) — both branches are value positions
+            if s == "if" && list.len() >= 3 {
+                walk_set_check(&list[1], ValueContext::Other); // condition
+                walk_set_check(&list[2], ValueContext::BranchValue); // then
+                if list.len() >= 4 {
+                    walk_set_check(&list[3], ValueContext::BranchValue); // else
+                }
+                return;
+            }
+
+            // (cond (cond1 val1) (cond2 val2) ...) — each branch value
+            if s == "cond" {
+                for clause in &list[1..] {
+                    if let LispVal::List(cl) = clause {
+                        if cl.len() >= 2 {
+                            walk_set_check(&cl[0], ValueContext::Other); // condition
+                            walk_set_check(&cl[1], ValueContext::BranchValue); // value
+                        }
+                    }
+                }
+                return;
+            }
+
+            // (begin ...) — last expression is the value
+            if s == "begin" {
+                for (i, sub) in list[1..].iter().enumerate() {
+                    let is_last = i + 1 == list.len() - 1;
+                    let sub_ctx = if is_last { ctx } else { ValueContext::Other };
+                    walk_set_check(sub, sub_ctx);
+                }
+                return;
+            }
+
+            // (define (name params...) body) — body is a define-body context
+            if s == "define" {
+                if list.len() >= 3 {
+                    if let LispVal::List(_sig) = &list[1] {
+                        // Function define: body is define-body context
+                        if list.len() > 3 {
+                            // Multi-body: wrapped in begin
+                            for (i, sub) in list[2..].iter().enumerate() {
+                                let is_last = i + 1 == list.len() - 2;
+                                let sub_ctx = if is_last { ValueContext::DefineBody } else { ValueContext::Other };
+                                walk_set_check(sub, sub_ctx);
+                            }
+                        } else {
+                            walk_set_check(&list[2], ValueContext::DefineBody);
+                        }
+                    } else {
+                        // Value define: (define name value)
+                        walk_set_check(&list[2], ValueContext::Other);
+                    }
+                }
+                return;
+            }
+
+            // (let ((var val)) body) — body is value context
+            if s == "let" || s == "let*" {
+                if list.len() >= 3 {
+                    if let LispVal::List(bindings) = &list[1] {
+                        for b in bindings {
+                            if let LispVal::List(pair) = b {
+                                if pair.len() >= 2 {
+                                    walk_set_check(&pair[1], ValueContext::Other);
+                                }
+                            }
+                        }
+                    }
+                    walk_set_check(&list[2], ctx);
+                }
+                return;
+            }
+
+            // (loop ((var init) ...) body...) — last body expr is value
+            if s == "loop" && list.len() >= 3 {
+                if let LispVal::List(bindings) = &list[1] {
+                    for b in bindings {
+                        if let LispVal::List(p) = b {
+                            if p.len() >= 2 {
+                                walk_set_check(&p[1], ValueContext::Other);
+                            }
+                        }
+                    }
+                }
+                for sub in &list[2..] {
+                    walk_set_check(sub, ctx);
+                }
+                return;
+            }
+
+            // (lambda (params) body) — body inherits define-body-like context
+            if s == "lambda" && list.len() >= 3 {
+                walk_set_check(&list[2], ValueContext::DefineBody);
+                return;
+            }
+        }
+
+        // Generic recursion for other list forms
+        for sub in list {
+            walk_set_check(sub, ValueContext::Other);
+        }
+    }
 }
 
 #[cfg(test)]
