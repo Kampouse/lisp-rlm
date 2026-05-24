@@ -443,7 +443,8 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
 
     // Determine URL list: if the emitter collected URLs from http-get calls, use those;
     // otherwise fall back to a single hardcoded URL for backward compatibility.
-    let http_urls: Vec<(String, String)> = if em.http_urls.is_empty() {
+    // Only apply fallback if there are no POST URLs either (to avoid sentinel collision).
+    let http_urls: Vec<(String, String)> = if em.http_urls.is_empty() && em.http_post_urls.is_empty() {
         vec![(
             "api.open-meteo.com".to_string(),
             "/v1/forecast?latitude=45.50&longitude=-73.57&current=temperature_2m".to_string(),
@@ -454,7 +455,11 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
     let http_get_count = http_urls.len() as u32;
 
     // Compute all indices dynamically
-    let layout = WasiHttpLayout::new(em.funcs.len() as u32, http_get_count);
+    let http_post_count = em.http_post_urls.len() as u32;
+    let layout = WasiHttpLayout::new(em.funcs.len() as u32, http_get_count, http_post_count);
+
+    // POST sentinel base must account for the actual (possibly fallback-augmented) GET count
+    let post_sentinel_base = 103 + http_get_count;
 
     // ═══ Type Section ═══
     let mut types = TypeSection::new();
@@ -473,15 +478,22 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
     types.ty().function([ValType::I32; 4], [ValType::I32]);
     // __wasi_http_get: (i32,i32,i32,i32,i32) -> i32
     types.ty().function([ValType::I32; 5], [ValType::I32]);
+    // __wasi_http_post: (i32,i32,i32,i32,i32,i32,i32) -> i32
+    types.ty().function([ValType::I32; 7], [ValType::I32]);
     module.section(&types);
     module.section(&imports);
 
     // ═══ Function Section ═══
     let mut functions = FunctionSection::new();
-    // For each URL, emit an http_get + poll_read pair
+    // For each GET URL, emit an http_get + poll_read pair
     for _ in &http_urls {
         functions.function(layout.http_get_type);
         functions.function(layout.http_get_type); // poll_read — same type
+    }
+    // For each POST URL, emit an http_post + poll_read pair
+    for _ in &em.http_post_urls {
+        functions.function(layout.http_post_type);
+        functions.function(layout.http_get_type); // poll_read — same type as GET
     }
     for f in &em.funcs {
         let type_idx = layout.user_type_base + f.param_count as u32;
@@ -575,21 +587,74 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
         current_data_offset = (current_data_offset + 3) & !3;
     }
 
+    // ── Generate HTTP POST functions: one (post + poll_read) pair per POST URL ──
+    let post_headers: &[( &[u8], &[u8] )] = &[
+        (b"User-Agent", b"lisp-rlm/0.1 (wasi:http)"),
+        (b"Accept", b"application/json"),
+        (b"Content-Type", b"application/json"),
+    ];
+
+    for (_url_idx, (authority, path)) in em.http_post_urls.iter().enumerate() {
+        let http_data = wasi_http_buffer::build_url_data_segments_with_base(
+            authority.as_bytes(),
+            path.as_bytes(),
+            post_headers,
+            current_data_offset,
+        );
+
+        // ── __wasi_http_post for this URL ──
+        // Params: 0=url_ptr, 1=url_len, 2=body_ptr, 3=body_len, 4=buf_ptr, 5=buf_len, 6=len_ptr
+        let mut http_post_fn = Function::new([
+            (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32),
+            (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32),
+            (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32),
+            (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32),
+        ]);
+        wasi_http_buffer::emit_http_post_to_buffer(&mut http_post_fn, &http_data);
+        http_post_fn.instruction(&Instruction::End);
+        codes.function(&http_post_fn);
+
+        // ── http_poll_read for this POST URL (same as GET) ──
+        let mut poll_read_fn = Function::new([
+            (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32),
+            (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32),
+            (1u32, ValType::I32),
+        ]);
+        wasi_http_buffer::emit_http_poll_read(&mut poll_read_fn);
+        poll_read_fn.instruction(&Instruction::End);
+        codes.function(&poll_read_fn);
+
+        let span = http_data.total_span();
+        for (off, bytes) in http_data.segments {
+            all_http_data_segments.push((off, bytes));
+        }
+        current_data_offset = span;
+        current_data_offset = (current_data_offset + 3) & !3;
+    }
+
     // ── User functions from the emitter ──
     let name_map: std::collections::HashMap<&str, u32> = em.funcs.iter().enumerate()
         .map(|(i, f)| (f.name.as_str(), layout.user_fn_base + i as u32))
         .collect();
 
     for f in &em.funcs {
-        let extra = f.local_count.saturating_sub(f.param_count);
-        let locals: Vec<(u32, ValType)> = if extra > 0 { vec![(extra as u32, ValType::I64)] } else { vec![] };
+        let locals = if let Some(ref entries) = f.local_entries {
+            entries.clone()
+        } else {
+            let extra = f.local_count.saturating_sub(f.param_count);
+            if extra > 0 { vec![(extra as u32, ValType::I64)] } else { vec![] }
+        };
 
         let resolved = {
             let base_resolved = WasmEmitter::resolve_static_pub(&f.instrs, &std::collections::HashMap::new(), &name_map, &em.funcs);
             let mut ol_map: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
-            // Map each sentinel 103+i to the corresponding HTTP function
+            // Map each sentinel 103+i to the corresponding HTTP GET function
             for i in 0..http_get_count {
                 ol_map.insert(103 + i, layout.http_get_fn_idx + (i * 2));
+            }
+            // Map POST sentinels: post_sentinel_base+i → POST function
+            for i in 0..http_post_count {
+                ol_map.insert(post_sentinel_base + i, layout.http_post_fn_idx + (i * 2));
             }
             ol_map.insert(crate::wasm_emit::WASI_FD_WRITE, layout.user_fn_base + em.funcs.len() as u32 + 2); // sentinel
             WasmEmitter::resolve_static_pub_ex(&base_resolved, &std::collections::HashMap::new(), &name_map, &em.funcs, &ol_map)
@@ -632,15 +697,16 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
         // and writes the result to stdout. The user function should use http-get directly.
 
         // Minimal _start: resolve through trivial wrappers to find the real function
+        // Prefer the function named "run", fall back to heuristics
         let mut real_func_idx = layout.user_fn_base + (em.funcs.len() - 1) as u32;
         let mut real_param_count = em.funcs.last().unwrap().param_count;
-        // Simple heuristic: if the last function has 0 params and its body is just depth+gas+call+epilogue,
-        // try the second-to-last function instead.
-        // In P2 mode (no gas/depth), a trivial wrapper body is just: Call(N); LocalSet; LocalGet
-        if em.funcs.len() > 1 {
+        // First: look for a function explicitly named "run"
+        if let Some(run_pos) = em.funcs.iter().position(|f| f.name == "run") {
+            real_func_idx = layout.user_fn_base + run_pos as u32;
+            real_param_count = em.funcs[run_pos].param_count;
+        } else if em.funcs.len() > 1 {
             let last = em.funcs.last().unwrap();
-            if last.param_count == 0 {
-                // Check if body is essentially just a call to another user function
+            if last.param_count == 0 && last.name != "run" {
                 let call_count = last.instrs.iter().filter(|i| matches!(i, Instruction::Call(_))).count();
                 if call_count == 1 {
                     real_func_idx = layout.user_fn_base + (em.funcs.len() - 2) as u32;
@@ -1204,8 +1270,12 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     
     // Emit user functions (same resolution logic as finish())
     for f in &em.funcs {
-        let extra = f.local_count.saturating_sub(f.param_count);
-        let locals: Vec<(u32, ValType)> = if extra > 0 { vec![(extra as u32, ValType::I64)] } else { vec![] };
+        let locals = if let Some(ref entries) = f.local_entries {
+            entries.clone()
+        } else {
+            let extra = f.local_count.saturating_sub(f.param_count);
+            if extra > 0 { vec![(extra as u32, ValType::I64)] } else { vec![] }
+        };
         let resolved = WasmEmitter::resolve_static_pub(&f.instrs, &near_host_idx, &name_map, &em.funcs);
         let resolved = if em.need_outlayer || em.wasi_mode {
             let mut ol_map: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
@@ -1246,8 +1316,18 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     // ── _start() wrapper ──
     // Reads stdin → tagged string → calls run(input) → writes result to stdout
     {
-        let last_func = em.funcs.last().unwrap();
-        let last_idx = internal_base + (em.funcs.len() - 1) as u32;
+        // Prefer function named "run", fall back to last
+        let run_pos = em.funcs.iter().position(|f| f.name == "run");
+        let last_idx = if let Some(pos) = run_pos {
+            internal_base + pos as u32
+        } else {
+            internal_base + (em.funcs.len() - 1) as u32
+        };
+        let last_func = if let Some(pos) = run_pos {
+            &em.funcs[pos]
+        } else {
+            em.funcs.last().unwrap()
+        };
         let param_count = last_func.param_count;
         
         // Locals: all i64 (matching the i64-only convention)

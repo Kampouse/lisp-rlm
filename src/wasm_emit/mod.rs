@@ -237,6 +237,8 @@ pub(crate) struct FuncDef {
     pub param_count: usize,
     pub local_count: usize,
     pub instrs: Vec<Instruction<'static>>,
+    /// If set, overrides the default (extra locals as I64) for this function's code section.
+    pub local_entries: Option<Vec<(u32, ValType)>>,
 }
 
 /// Parse a URL string into (authority, path).
@@ -272,6 +274,7 @@ pub struct WasmEmitter {
     pub(crate) need_outlayer: bool, // true if outlayer/* dispatch forms are used
     pub(crate) need_wasi_http: bool, // true if http-get is used (for P2 wasi:http path)
     pub(crate) http_urls: Vec<(String, String)>, // (authority, path) per http-get call in p2_mode
+    pub(crate) http_post_urls: Vec<(String, String)>, // (authority, path) per http-post call in p2_mode
     pub(crate) wasi_mode: bool, // true when targeting WASI/OutLayer
     pub(crate) p2_mode: bool,   // true when targeting P2 component (return i32 from _start)
     pub(crate) no_proc_exit: bool, // true when wrapping with wit-component adapter (return cleanly, don't call proc_exit)
@@ -294,7 +297,7 @@ impl WasmEmitter {
             locals: HashMap::new(), next_local: 0, free_locals: Vec::new(), current_func: None, current_param_count: 0,
             while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 1, exports: Vec::new(),
             data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(),
-            gas_local: None, needs_frame: false, heap_ptr: HEAP_START as u32, lambda_counter: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false, borsh_schemas: HashMap::new(),
+            gas_local: None, needs_frame: false, heap_ptr: HEAP_START as u32, lambda_counter: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), http_post_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false, borsh_schemas: HashMap::new(),
             func_defs: HashMap::new(),
         }
     }
@@ -429,7 +432,7 @@ impl WasmEmitter {
             idx
         } else {
             let idx = self.funcs.len();
-            self.funcs.push(FuncDef { name: name.into(), param_count: params.len(), local_count: 0, instrs: Vec::new() });
+            self.funcs.push(FuncDef { name: name.into(), param_count: params.len(), local_count: 0, instrs: Vec::new(), local_entries: None });
             idx
         };
 
@@ -474,7 +477,7 @@ impl WasmEmitter {
         let total = self.next_local as usize;
         self.current_func = None;
         self.gas_local = None;
-        self.funcs[placeholder_idx] = FuncDef { name: name.into(), param_count: params.len(), local_count: total, instrs };
+        self.funcs[placeholder_idx] = FuncDef { name: name.into(), param_count: params.len(), local_count: total, instrs, local_entries: None };
         Ok(())
     }
 

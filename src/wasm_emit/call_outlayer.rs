@@ -61,8 +61,8 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I32WrapI64); // url_len
-                // response_buf at 98304, buf_len = 65536, response_len_ptr at 163840
-                v.push(Instruction::I32Const(98304));
+                // response_buf directly at heap (4096), buf_len = 65536, response_len_ptr at 163840
+                v.push(Instruction::I32Const(4096));
                 v.push(Instruction::I32Const(65536));
                 v.push(Instruction::I32Const(163840));
                 // Call http_get (sentinel 103 + url_index for P2, or 103 for P1)
@@ -78,30 +78,9 @@ impl WasmEmitter {
                 // Load response length
                 v.push(Instruction::I32Const(163840)); v.push(Instruction::I32Load(ma4));
                 v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(len_l));
-                // Copy response to heap using byte-by-byte copy (NEAR doesn't support memory.copy)
-                let copy_dst_i = self.local_idx("__resp_cdst");
-                let copy_src_i = self.local_idx("__resp_csrc");
-                let copy_len_i = self.local_idx("__resp_clen");
-                v.push(Instruction::I64Const(self.heap_ptr as i64)); v.push(Instruction::LocalSet(copy_dst_i)); // dst
-                v.push(Instruction::I64Const(98304)); v.push(Instruction::LocalSet(copy_src_i)); // src
-                v.push(Instruction::LocalGet(len_l)); v.push(Instruction::LocalSet(copy_len_i)); // len
-                v.push(Instruction::Block(BlockType::Empty));
-                v.push(Instruction::Loop(BlockType::Empty));
-                v.push(Instruction::LocalGet(copy_len_i)); v.push(Instruction::I64Const(0)); v.push(Instruction::I64Eq); v.push(Instruction::BrIf(1));
-                v.push(Instruction::LocalGet(copy_src_i)); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
-                v.push(Instruction::LocalGet(copy_dst_i)); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Store8(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
-                v.push(Instruction::LocalGet(copy_src_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(copy_src_i));
-                v.push(Instruction::LocalGet(copy_dst_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(copy_dst_i));
-                v.push(Instruction::LocalGet(copy_len_i)); v.push(Instruction::I64Const(-1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(copy_len_i));
-                v.push(Instruction::Br(0));
-                v.push(Instruction::End); // loop
-                v.push(Instruction::End); // block
-                // Advance heap
-                let new_heap = self.heap_ptr as i64 + 65536; self.heap_ptr = new_heap as u32;
-                // Tagged string: ((dst | (len << 32)) << 3) | TAG_STR
-                v.push(Instruction::I64Const(self.heap_ptr as i64 - 65536)); v.push(Instruction::LocalSet(dst_l));
+                // Response data is already at heap (4096), no copy needed
+                // Tagged string: ((heap_start | (len << 32)) << 3) | TAG_STR
+                v.push(Instruction::I64Const(4096)); v.push(Instruction::LocalSet(dst_l));
                 v.push(Instruction::LocalGet(dst_l));
                 v.push(Instruction::LocalGet(len_l)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
                 v.push(Instruction::I64Or);
@@ -1055,7 +1034,7 @@ impl WasmEmitter {
                 if !self.wasi_mode { return Err("outlayer/http-post is only available on OutLayer (WASI) target".into()); }
                 if self.p2_mode { self.need_wasi_http = true; } else { self.need_outlayer = true; }
 
-                // For P2: register URL like http-get
+                // For P2: register URL in http_post_urls (separate from GET URLs)
                 let url_sentinel = if self.p2_mode {
                     let url_str = match &a[0] {
                         crate::types::LispVal::Str(s) => Some(s.clone()),
@@ -1064,16 +1043,16 @@ impl WasmEmitter {
                     if let Some(url) = url_str {
                         if !url.is_empty() {
                             let (authority, path) = parse_url(&url);
-                            let idx = if let Some(existing) = self.http_urls.iter().position(|(a, p)| a == &authority && p == &path) {
+                            let idx = if let Some(existing) = self.http_post_urls.iter().position(|(a, p)| a == &authority && p == &path) {
                                 existing
                             } else {
-                                self.http_urls.push((authority, path));
-                                self.http_urls.len() - 1
+                                self.http_post_urls.push((authority, path));
+                                self.http_post_urls.len() - 1
                             };
-                            103 + idx as u32
-                        } else { 103u32 }
-                    } else { 103u32 }
-                } else { 103u32 };
+                            103 + self.http_urls.len() as u32 + idx as u32  // sentinel after GET range (matches post_sentinel_base in wasi_emit)
+                        } else { 104u32 }
+                    } else { 104u32 }
+                } else { 104u32 };
 
                 let url_expr = self.expr(&a[0])?;
                 let body_expr = self.expr(&a[1])?;
@@ -1101,30 +1080,37 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I32WrapI64);
-                // content-type ptr/len (default: application/json)
-                if a.len() > 2 {
-                    let ct_expr = self.expr(&a[2])?;
-                    v.extend(ct_expr.clone());
-                    v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
-                    v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
-                    v.push(Instruction::I32WrapI64);
-                    v.extend(ct_expr);
-                    v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
-                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                    v.push(Instruction::I32WrapI64);
-                } else {
-                    // Default content-type: "application/json"
-                    let ct_str = b"application/json";
-                    let ct_off = self.alloc_data(ct_str);
-                    v.push(Instruction::I32Const(ct_off as i32));
-                    v.push(Instruction::I32Const(ct_str.len() as i32));
+                // content-type ptr/len (P1 only — P2 bakes it into data segments)
+                if !self.p2_mode {
+                    if a.len() > 2 {
+                        let ct_expr = self.expr(&a[2])?;
+                        v.extend(ct_expr.clone());
+                        v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                        v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                        v.push(Instruction::I32WrapI64);
+                        v.extend(ct_expr);
+                        v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                        v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                        v.push(Instruction::I32WrapI64);
+                    } else {
+                        // Default content-type: "application/json"
+                        let ct_str = b"application/json";
+                        let ct_off = self.alloc_data(ct_str);
+                        v.push(Instruction::I32Const(ct_off as i32));
+                        v.push(Instruction::I32Const(ct_str.len() as i32));
+                    }
                 }
                 // response_buf at 98304, buf_len = 65536, response_len_ptr at 163840
                 v.push(Instruction::I32Const(98304));
                 v.push(Instruction::I32Const(65536));
                 v.push(Instruction::I32Const(163840));
-                // Use sentinel 104 for http-post (103 = get, 104 = post)
-                v.push(Instruction::Call(url_sentinel + 1));
+                // Use sentinel 104+idx for http-post. For P2, resolve_static_pub_ex remaps it.
+                // For P1, the +1 skips past the GET sentinel range.
+                if self.p2_mode {
+                    v.push(Instruction::Call(url_sentinel));
+                } else {
+                    v.push(Instruction::Call(url_sentinel + 1));
+                }
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::LocalSet(errno_l));
                 // if errno != 0 → nil
@@ -1147,9 +1133,11 @@ impl WasmEmitter {
                 v.push(Instruction::Block(BlockType::Empty));
                 v.push(Instruction::Loop(BlockType::Empty));
                 v.push(Instruction::LocalGet(copy_len_i)); v.push(Instruction::I64Const(0)); v.push(Instruction::I64Eq); v.push(Instruction::BrIf(1));
+                // Push dst addr FIRST (stays on stack), then load src byte (top)
+                // i32.store8 pops val (top), then addr — so we need [dst_addr, loaded_byte]
+                v.push(Instruction::LocalGet(copy_dst_i)); v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalGet(copy_src_i)); v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I32Load8U(ma1));
-                v.push(Instruction::LocalGet(copy_dst_i)); v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I32Store8(ma1));
                 v.push(Instruction::LocalGet(copy_src_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(copy_src_i));
                 v.push(Instruction::LocalGet(copy_dst_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(copy_dst_i));
@@ -1175,7 +1163,6 @@ impl WasmEmitter {
                 match &a[1] {
                     crate::types::LispVal::Str(key) => {
                         let buf_expr = self.expr(&a[0])?;
-                        let buf_expr2 = self.expr(&a[0])?;
                         let tmp_l = self.local_idx("__ojg_tmp");
                         let src_ptr_l = self.local_idx("__ojg_sp");
                         let copy_i = self.local_idx("__ojg_ci");

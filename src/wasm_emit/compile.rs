@@ -45,6 +45,10 @@ impl WasmEmitter {
             let last = self.funcs.len() - 1;
             if !reachable[last] { reachable[last] = true; queue.push_back(last); }
         }
+        // Always keep "run" — it's the standard entry point
+        if let Some(&idx) = name_to_idx.get("run") {
+            if !reachable[idx] { reachable[idx] = true; queue.push_back(idx); }
+        }
 
         while let Some(idx) = queue.pop_front() {
             for &callee in &calls[idx] {
@@ -212,8 +216,12 @@ impl WasmEmitter {
             .map(|(i, f)| (f.name.as_str(), internal_base + i as u32)).collect();
         let mut code = wasm_encoder::CodeSection::new();
         for f in &self.funcs {
-            let extra = f.local_count.saturating_sub(f.param_count);
-            let locals: Vec<(u32, ValType)> = if extra > 0 { vec![(extra as u32, ValType::I64)] } else { vec![] };
+            let locals = if let Some(ref entries) = f.local_entries {
+                entries.clone()
+            } else {
+                let extra = f.local_count.saturating_sub(f.param_count);
+                if extra > 0 { vec![(extra as u32, ValType::I64)] } else { vec![] }
+            };
             let resolved = Self::resolve_static_pub(&f.instrs, &host_idx, &name_map, &self.funcs);
             let mut fb = Function::new(locals);
             for instr in &resolved { fb.instruction(instr); }
@@ -457,7 +465,7 @@ fn parse_and_compile_opts(source: &str, near: bool, typecheck: bool) -> Result<W
                             if !sig.is_empty() {
                                 if let LispVal::Sym(name) = &sig[0] {
                                     if !em.funcs.iter().any(|f| &f.name == name) {
-                                        em.funcs.push(FuncDef { name: name.clone(), param_count: sig.len()-1, local_count: 0, instrs: Vec::new() });
+                                        em.funcs.push(FuncDef { name: name.clone(), param_count: sig.len()-1, local_count: 0, instrs: Vec::new(), local_entries: None });
                                     }
                                 }
                             }
@@ -465,7 +473,7 @@ fn parse_and_compile_opts(source: &str, near: bool, typecheck: bool) -> Result<W
                         // Value define: (define name value)
                         if let LispVal::Sym(name) = &items[1] {
                             if !em.funcs.iter().any(|f| &f.name == name) {
-                                em.funcs.push(FuncDef { name: name.clone(), param_count: 0, local_count: 0, instrs: Vec::new() });
+                                em.funcs.push(FuncDef { name: name.clone(), param_count: 0, local_count: 0, instrs: Vec::new(), local_entries: None });
                             }
                         }
                     }

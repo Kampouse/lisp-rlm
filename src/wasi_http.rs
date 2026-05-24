@@ -82,13 +82,17 @@ pub struct WasiHttpLayout {
     pub realloc_type: u32,
     /// Type index for __wasi_http_get: (i32,i32,i32,i32,i32) -> i32
     pub http_get_type: u32,
+    /// Type index for __wasi_http_post: (i32,i32,i32,i32,i32,i32,i32) -> i32
+    pub http_post_type: u32,
     /// Total number of types in the type section.
     pub total_types: u32,
 
-    /// Number of internal functions (http_get + poll_read = 2).
+    /// Number of internal functions (http_get*2 + http_post*2).
     pub internal_fn_count: u32,
-    /// Function index of __wasi_http_get (first function after imports).
+    /// Function index of first __wasi_http_get.
     pub http_get_fn_idx: u32,
+    /// Function index of first __wasi_http_post.
+    pub http_post_fn_idx: u32,
     /// Function index where user functions start.
     pub user_fn_base: u32,
 
@@ -101,20 +105,26 @@ pub struct WasiHttpLayout {
 }
 
 impl WasiHttpLayout {
-    /// Compute the full layout given the number of user functions and HTTP GET count.
-    ///
-    /// `http_get_count` is the number of distinct URL calls (each gets a get + poll_read pair).
-    pub fn new(user_fn_count: u32, http_get_count: u32) -> Self {
+    /// Compute the full layout given the number of user functions, HTTP GET count, and HTTP POST count.
+    pub fn new(user_fn_count: u32, http_get_count: u32, http_post_count: u32) -> Self {
         let user_type_count = 17; // types for (i64×0..=16) -> i64
         let user_type_base = HTTP_TYPE_COUNT;
         let start_type = user_type_base + user_type_count;
         let realloc_type = start_type + 1;
         let http_get_type = realloc_type + 1;
-        let total_types = http_get_type + 1;
+        let http_post_type = http_get_type + 1;
+        let total_types = http_post_type + 1;
 
-        let http_get_count = http_get_count.max(1); // at least 1 HTTP function pair
-        let internal_fn_count = http_get_count * 2; // each URL gets (get + poll_read)
+        let http_get_count = if http_get_count == 0 && http_post_count == 0 {
+            1 // at least 1 HTTP function pair when nothing else
+        } else {
+            http_get_count
+        };
+        let get_fn_count = http_get_count * 2; // each URL gets (get + poll_read)
+        let post_fn_count = http_post_count * 2; // each POST URL gets (post + poll_read)
+        let internal_fn_count = get_fn_count + post_fn_count;
         let http_get_fn_idx = HTTP_IMPORT_COUNT;
+        let http_post_fn_idx = http_get_fn_idx + get_fn_count;
         let user_fn_base = http_get_fn_idx + internal_fn_count;
 
         let start_fn_idx = user_fn_base + user_fn_count;
@@ -126,9 +136,11 @@ impl WasiHttpLayout {
             start_type,
             realloc_type,
             http_get_type,
+            http_post_type,
             total_types,
             internal_fn_count,
             http_get_fn_idx,
+            http_post_fn_idx,
             user_fn_base,
             user_fn_count,
             start_fn_idx,
@@ -473,7 +485,7 @@ mod tests {
 
     #[test]
     fn test_layout_indices_zero_user_fns() {
-        let layout = WasiHttpLayout::new(0, 1);
+        let layout = WasiHttpLayout::new(0, 1, 0);
         assert_eq!(layout.user_type_base, HTTP_TYPE_COUNT); // 10
         assert_eq!(layout.start_type, 27); // 10 + 17
         assert_eq!(layout.realloc_type, 28);
@@ -486,7 +498,7 @@ mod tests {
 
     #[test]
     fn test_layout_indices_with_user_fns() {
-        let layout = WasiHttpLayout::new(5, 1);
+        let layout = WasiHttpLayout::new(5, 1, 0);
         assert_eq!(layout.user_fn_base, 30);
         assert_eq!(layout.start_fn_idx, 35); // 30 + 5
         assert_eq!(layout.realloc_fn_idx, 36); // 35 + 1
@@ -495,7 +507,7 @@ mod tests {
     #[test]
     fn test_layout_multi_url() {
         // 3 URLs → 6 internal functions (3 × 2)
-        let layout = WasiHttpLayout::new(2, 3);
+        let layout = WasiHttpLayout::new(2, 3, 0);
         assert_eq!(layout.internal_fn_count, 6);
         assert_eq!(layout.http_get_fn_idx, HTTP_IMPORT_COUNT); // 28
         assert_eq!(layout.user_fn_base, HTTP_IMPORT_COUNT + 6); // 34

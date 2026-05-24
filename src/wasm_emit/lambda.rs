@@ -194,11 +194,11 @@ impl WasmEmitter {
         // Pre-insert placeholder
         let total_params = params.len() + 1;
         let placeholder_idx = self.funcs.len();
-        self.funcs.push(FuncDef { name: name.clone(), param_count: total_params, local_count: 0, instrs: Vec::new() });
+        self.funcs.push(FuncDef { name: name.clone(), param_count: total_params, local_count: 0, instrs: Vec::new(), local_entries: None });
         
         let instrs = self.expr(body)?;
         let total_locals = self.next_local as usize;
-        self.funcs[placeholder_idx] = FuncDef { name: name.clone(), param_count: total_params, local_count: total_locals, instrs };
+        self.funcs[placeholder_idx] = FuncDef { name: name.clone(), param_count: total_params, local_count: total_locals, instrs, local_entries: None };
         
         // Record lambda info
         self.lambda_info.push((placeholder_idx, captured_count));
