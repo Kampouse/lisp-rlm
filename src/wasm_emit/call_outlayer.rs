@@ -5,54 +5,18 @@ impl WasmEmitter {
         match op {
             "http-get" => {
                 // (http-get "https://api.example.com/data") -> string or nil
+                // Canonical ABI: http-get(url_ptr, url_len, ret_area) -> ()
+                // ret_area: disc(4) + ptr(4) + len(4) = 12 bytes
                 if a.is_empty() { return Err("http-get requires a URL string argument".into()); }
                 if !self.wasi_mode { return Err("http-get is only available on OutLayer (WASI) target".into()); }
-                if self.p2_mode { self.need_wasi_http = true; } else { self.need_outlayer = true; }
-
-                // For P2 mode: parse the URL string literal from the source and register it
-                // so that a dedicated WASM function is generated for this URL.
-                let url_sentinel = if self.p2_mode {
-                    // Extract URL string from the Lisp source argument
-                    let url_str = match &a[0] {
-                        crate::types::LispVal::Str(s) => Some(s.clone()),
-                        _ => {
-                            // Non-literal URL — fall back to sentinel 103 (first HTTP fn)
-                            // This shouldn't happen in well-formed P2 code
-                            eprintln!("⚠️ http-get with non-literal URL in P2 mode, using sentinel 103");
-                            None
-                        }
-                    };
-                    if let Some(url) = url_str {
-                        if !url.is_empty() {
-                            // Parse URL into (authority, path)
-                            let (authority, path) = parse_url(&url);
-                            // Check if this exact (authority, path) is already registered
-                            let idx = if let Some(existing) = self.http_urls.iter().position(|(a, p)| a == &authority && p == &path) {
-                                existing
-                            } else {
-                                self.http_urls.push((authority, path));
-                                self.http_urls.len() - 1
-                            };
-                            103 + idx as u32
-                        } else {
-                            103u32
-                        }
-                    } else {
-                        103u32
-                    }
-                } else {
-                    103u32 // P1 mode: single sentinel
-                };
+                self.need_outlayer = true;
 
                 let url_expr = self.expr(&a[0])?;
                 let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
-                let errno_l = self.local_idx("__http_err");
-                let len_l = self.local_idx("__http_len");
-                let dst_l = self.local_idx("__http_dst");
+                let ret_area: i32 = 163840; // RET_AREA offset
                 let mut v = Vec::new();
 
-                // outlayer.http_get(url_ptr, url_len, response_buf, response_buf_len, response_len_ptr)
-                // URL ptr/len from tagged string
+                // Push url_ptr, url_len
                 v.extend(url_expr.clone());
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
@@ -61,28 +25,24 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I32WrapI64); // url_len
-                // response_buf directly at heap (4096), buf_len = 65536, response_len_ptr at 163840
-                v.push(Instruction::I32Const(4096));
-                v.push(Instruction::I32Const(65536));
-                v.push(Instruction::I32Const(163840));
-                // Call http_get (sentinel 103 + url_index for P2, or 103 for P1)
-                v.push(Instruction::Call(url_sentinel));
+                // Push ret_area
+                v.push(Instruction::I32Const(ret_area));
+                // Call http-get (sentinel 103) — canonical ABI
+                v.push(Instruction::Call(103));
+                // Read discriminant: 0 = ok, 1 = err
+                v.push(Instruction::I32Const(ret_area)); v.push(Instruction::I32Load(ma4));
                 v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::LocalSet(errno_l));
-                // if errno != 0 → nil
-                v.push(Instruction::LocalGet(errno_l));
                 v.push(Instruction::I64Const(0)); v.push(Instruction::I64Ne);
                 v.push(Instruction::If(BlockType::Result(ValType::I64)));
-                v.push(Instruction::I64Const(TAG_NIL));
+                v.push(Instruction::I64Const(TAG_NIL)); // error → nil
                 v.push(Instruction::Else);
-                // Load response length
-                v.push(Instruction::I32Const(163840)); v.push(Instruction::I32Load(ma4));
-                v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(len_l));
-                // Response data is already at heap (4096), no copy needed
-                // Tagged string: ((heap_start | (len << 32)) << 3) | TAG_STR
-                v.push(Instruction::I64Const(4096)); v.push(Instruction::LocalSet(dst_l));
-                v.push(Instruction::LocalGet(dst_l));
-                v.push(Instruction::LocalGet(len_l)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                // ok: read ptr from ret_area+4, len from ret_area+8
+                v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I32Const(ret_area + 8)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                // Tag: ((ptr | (len << 32)) << 3) | TAG_STR
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
                 v.push(Instruction::I64Or);
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl);
                 v.push(Instruction::I64Const(TAG_STR)); v.push(Instruction::I64Or);
@@ -1030,129 +990,75 @@ impl WasmEmitter {
             // ── P2 inline operations (no host calls, pure WASM) ──
             "outlayer/http-post" => {
                 // (outlayer/http-post "url" "body" ["content-type"]) -> string or nil
+                // Canonical ABI: http-post(url_ptr, url_len, body_ptr, body_len, ct_ptr, ct_len, ret_area) -> ()
+                // ret_area: disc(4) + ptr(4) + len(4) = 12 bytes
                 if a.len() < 2 { return Err("outlayer/http-post requires (url body) or (url body content-type)".into()); }
                 if !self.wasi_mode { return Err("outlayer/http-post is only available on OutLayer (WASI) target".into()); }
-                if self.p2_mode { self.need_wasi_http = true; } else { self.need_outlayer = true; }
-
-                // For P2: register URL in http_post_urls (separate from GET URLs)
-                let url_sentinel = if self.p2_mode {
-                    let url_str = match &a[0] {
-                        crate::types::LispVal::Str(s) => Some(s.clone()),
-                        _ => None
-                    };
-                    if let Some(url) = url_str {
-                        if !url.is_empty() {
-                            let (authority, path) = parse_url(&url);
-                            let idx = if let Some(existing) = self.http_post_urls.iter().position(|(a, p)| a == &authority && p == &path) {
-                                existing
-                            } else {
-                                self.http_post_urls.push((authority, path));
-                                self.http_post_urls.len() - 1
-                            };
-                            103 + self.http_urls.len() as u32 + idx as u32  // sentinel after GET range (matches post_sentinel_base in wasi_emit)
-                        } else { 104u32 }
-                    } else { 104u32 }
-                } else { 104u32 };
+                self.need_outlayer = true;
 
                 let url_expr = self.expr(&a[0])?;
                 let body_expr = self.expr(&a[1])?;
-                let body_expr2 = self.expr(&a[1])?;
                 let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
-                let errno_l = self.local_idx("__hpost_err");
-                let len_l = self.local_idx("__hpost_len");
+                let ret_area: i32 = 163840 + 16; // POST ret_area after GET's
                 let mut v = Vec::new();
 
-                // url ptr/len from tagged string
+                // url ptr/len
                 v.extend(url_expr.clone());
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
-                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32WrapI64); // url_ptr
                 v.extend(url_expr);
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.push(Instruction::I32WrapI64);
-                // body ptr/len from tagged string
+                v.push(Instruction::I32WrapI64); // url_len
+                // body ptr/len
                 v.extend(body_expr.clone());
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
-                v.push(Instruction::I32WrapI64);
-                v.extend(body_expr2);
+                v.push(Instruction::I32WrapI64); // body_ptr
+                v.extend(body_expr);
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.push(Instruction::I32WrapI64);
-                // content-type ptr/len (P1 only — P2 bakes it into data segments)
-                if !self.p2_mode {
-                    if a.len() > 2 {
-                        let ct_expr = self.expr(&a[2])?;
-                        v.extend(ct_expr.clone());
-                        v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
-                        v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
-                        v.push(Instruction::I32WrapI64);
-                        v.extend(ct_expr);
-                        v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
-                        v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                        v.push(Instruction::I32WrapI64);
-                    } else {
-                        // Default content-type: "application/json"
-                        let ct_str = b"application/json";
-                        let ct_off = self.alloc_data(ct_str);
-                        v.push(Instruction::I32Const(ct_off as i32));
-                        v.push(Instruction::I32Const(ct_str.len() as i32));
-                    }
-                }
-                // response_buf at 98304, buf_len = 65536, response_len_ptr at 163840
-                v.push(Instruction::I32Const(98304));
-                v.push(Instruction::I32Const(65536));
-                v.push(Instruction::I32Const(163840));
-                // Use sentinel 104+idx for http-post. For P2, resolve_static_pub_ex remaps it.
-                // For P1, the +1 skips past the GET sentinel range.
-                if self.p2_mode {
-                    v.push(Instruction::Call(url_sentinel));
+                v.push(Instruction::I32WrapI64); // body_len
+                // content-type ptr/len
+                if a.len() > 2 {
+                    let ct_expr = self.expr(&a[2])?;
+                    v.extend(ct_expr.clone());
+                    v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                    v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                    v.push(Instruction::I32WrapI64); // ct_ptr
+                    v.extend(ct_expr);
+                    v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                    v.push(Instruction::I32WrapI64); // ct_len
                 } else {
-                    v.push(Instruction::Call(url_sentinel + 1));
+                    let ct_str = b"application/json";
+                    let ct_off = self.alloc_data(ct_str);
+                    v.push(Instruction::I32Const(ct_off as i32)); // ct_ptr
+                    v.push(Instruction::I32Const(ct_str.len() as i32)); // ct_len
                 }
+                // ret_area pointer
+                v.push(Instruction::I32Const(ret_area));
+                // Call http-post (sentinel 104) — canonical ABI
+                v.push(Instruction::Call(104));
+                // Read discriminant: 0 = ok, 1 = err
+                v.push(Instruction::I32Const(ret_area)); v.push(Instruction::I32Load(ma4));
                 v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::LocalSet(errno_l));
-                // if errno != 0 → nil
-                v.push(Instruction::LocalGet(errno_l));
                 v.push(Instruction::I64Const(0)); v.push(Instruction::I64Ne);
                 v.push(Instruction::If(BlockType::Result(ValType::I64)));
-                v.push(Instruction::I64Const(TAG_NIL));
+                v.push(Instruction::I64Const(TAG_NIL)); // error → nil
                 v.push(Instruction::Else);
-                // Load response length
-                v.push(Instruction::I32Const(163840)); v.push(Instruction::I32Load(ma4));
-                v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(len_l));
-                // Copy response to heap
-                let copy_dst_i = self.local_idx("__hpost_cdst");
-                let copy_src_i = self.local_idx("__hpost_csrc");
-                let copy_len_i = self.local_idx("__hpost_clen");
-                let ma1 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
-                v.push(Instruction::I64Const(self.heap_ptr as i64)); v.push(Instruction::LocalSet(copy_dst_i));
-                v.push(Instruction::I64Const(98304)); v.push(Instruction::LocalSet(copy_src_i));
-                v.push(Instruction::LocalGet(len_l)); v.push(Instruction::LocalSet(copy_len_i));
-                v.push(Instruction::Block(BlockType::Empty));
-                v.push(Instruction::Loop(BlockType::Empty));
-                v.push(Instruction::LocalGet(copy_len_i)); v.push(Instruction::I64Const(0)); v.push(Instruction::I64Eq); v.push(Instruction::BrIf(1));
-                // Push dst addr FIRST (stays on stack), then load src byte (top)
-                // i32.store8 pops val (top), then addr — so we need [dst_addr, loaded_byte]
-                v.push(Instruction::LocalGet(copy_dst_i)); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::LocalGet(copy_src_i)); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Load8U(ma1));
-                v.push(Instruction::I32Store8(ma1));
-                v.push(Instruction::LocalGet(copy_src_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(copy_src_i));
-                v.push(Instruction::LocalGet(copy_dst_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(copy_dst_i));
-                v.push(Instruction::LocalGet(copy_len_i)); v.push(Instruction::I64Const(-1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(copy_len_i));
-                v.push(Instruction::Br(0));
-                v.push(Instruction::End); v.push(Instruction::End);
-                let new_heap = self.heap_ptr as i64 + 65536; self.heap_ptr = new_heap as u32;
-                let dst_l = self.local_idx("__hpost_dst");
-                v.push(Instruction::I64Const(self.heap_ptr as i64 - 65536)); v.push(Instruction::LocalSet(dst_l));
-                v.push(Instruction::LocalGet(dst_l));
-                v.push(Instruction::LocalGet(len_l)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                // ok: read ptr from ret_area+4, len from ret_area+8
+                v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I32Const(ret_area + 8)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                // Tag: ((ptr | (len << 32)) << 3) | TAG_STR
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
                 v.push(Instruction::I64Or);
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl);
                 v.push(Instruction::I64Const(TAG_STR)); v.push(Instruction::I64Or);
-                v.push(Instruction::End);
+                v.push(Instruction::End); // if
                 Ok(v)
             }
             "outlayer/json-get" => {

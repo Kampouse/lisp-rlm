@@ -1,27 +1,27 @@
-package outlayer:api@0.1.0;
+package outlayer:api;
 
 interface host {
-    view: func(a1: s32, a2: s32, a3: s32, a4: s32, a5: s32, a6: s32, a7: s32, a8: s32) -> s32;
-    call: func(a1: s32, a2: s32, a3: s32, a4: s32, a5: s32, a6: s32, a7: s32, a8: s32, a9: s32, a10: s32, a11: s32, a12: s32, a13: s32) -> s32;
-    transfer: func(a1: s32, a2: s32, a3: s32, a4: s32, a5: s32, a6: s32, a7: s32, a8: s32, a9: s32, a10: s32) -> s32;
-    http-get: func(a1: s32, a2: s32, a3: s32, a4: s32, a5: s32) -> s32;
-    http-post: func(a1: s32, a2: s32, a3: s32, a4: s32, a5: s32, a6: s32, a7: s32) -> s32;
-    storage-set: func(a1: s32, a2: s32, a3: s32, a4: s32) -> s32;
-    storage-get: func(a1: s32, a2: s32, a3: s32, a4: s32, a5: s32) -> s32;
-    storage-has: func(a1: s32, a2: s32) -> s32;
-    storage-delete: func(a1: s32, a2: s32) -> s32;
-    storage-increment: func(a1: s32, a2: s32, a3: s32, a4: s32, a5: s32, a6: s32) -> s32;
-    env-signer: func(a1: s32, a2: s32, a3: s32) -> s32;
-    env-predecessor: func(a1: s32, a2: s32, a3: s32) -> s32;
-    storage-decrement: func(a1: s32, a2: s32, a3: s32, a4: s32, a5: s32, a6: s32) -> s32;
-    storage-set-if-absent: func(a1: s32, a2: s32, a3: s32, a4: s32) -> s32;
-    storage-set-if-equals: func(a1: s32, a2: s32, a3: s32, a4: s32, a5: s32, a6: s32, a7: s32, a8: s32) -> s32;
-    storage-list-keys: func(a1: s32, a2: s32, a3: s32, a4: s32, a5: s32) -> s32;
-    storage-clear-all: func() -> s32;
-    storage-set-worker: func(a1: s32, a2: s32, a3: s32, a4: s32) -> s32;
-    storage-get-worker: func(a1: s32, a2: s32, a3: s32, a4: s32, a5: s32) -> s32;
-    storage-set-worker-public: func(a1: s32, a2: s32, a3: s32, a4: s32) -> s32;
-    storage-get-worker-from-project: func(a1: s32, a2: s32, a3: s32, a4: s32, a5: s32, a6: s32, a7: s32) -> s32;
+    view: func(contract-id: string, method-name: string, args-json: string) -> result<string, string>;
+    call: func(signer-key: string, receiver-id: string, method-name: string, args-json: string, deposit-yocto: string, gas: string) -> result<string, string>;
+    transfer: func(signer-key: string, receiver-id: string, amount-yocto: string) -> result<string, string>;
+    http-get: func(url: string) -> result<list<u8>, string>;
+    http-post: func(url: string, body: list<u8>, content-type: string) -> result<list<u8>, string>;
+    storage-set: func(key: string, value: list<u8>) -> result<_, string>;
+    storage-get: func(key: string) -> result<option<list<u8>>, string>;
+    storage-has: func(key: string) -> result<bool, string>;
+    storage-delete: func(key: string) -> result<_, string>;
+    storage-increment: func(key: string, delta: s64) -> result<s64, string>;
+    storage-decrement: func(key: string, delta: s64) -> result<s64, string>;
+    storage-set-if-absent: func(key: string, value: list<u8>) -> result<bool, string>;
+    storage-set-if-equals: func(key: string, expected: list<u8>, new-value: list<u8>) -> result<bool, string>;
+    storage-list-keys: func(prefix: string) -> result<list<string>, string>;
+    storage-clear-all: func() -> result<_, string>;
+    storage-set-worker: func(key: string, value: list<u8>) -> result<_, string>;
+    storage-get-worker: func(key: string) -> result<option<list<u8>>, string>;
+    storage-set-worker-public: func(key: string, value: list<u8>) -> result<_, string>;
+    storage-get-worker-from-project: func(key: string, project: string) -> result<option<list<u8>>, string>;
+    env-signer: func() -> string;
+    env-predecessor: func() -> string;
 }
 
 world outlayer-world {

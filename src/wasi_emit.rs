@@ -20,6 +20,7 @@ const STDIN_BUF: i64 = 32768;   // 32KB for stdin data
 const STDOUT_BUF: i64 = 65536;  // 32KB for stdout data  
 const STDIN_LEN: i64 = 98304;   // i32: actual bytes read
 const RESULT_BUF: i64 = 65536;  // reuse STDOUT_BUF for result
+const OL_RET_AREA: i32 = 163840; // canonical ABI return area for outlayer host calls (20 bytes)
 
 /// WASI Preview 1 function descriptors (module, name, params, results)
 struct WasiFunc {
@@ -73,74 +74,106 @@ fn wasi_p1_imports_minimal() -> Vec<WasiFunc> {
     ]
 }
 
-/// OutLayer host function imports (view, call, transfer via WIT)
+/// OutLayer host function imports via canonical ABI (typed WIT).
+///
+/// All functions use canonical ABI: string = (ptr, len) as 2xi32,
+/// list<u8> = (ptr, len) as 2xi32, s64 = (lo, hi) as 2xi32.
+/// Results returned via return-area pointer (last i32 param), all functions return ().
+///
+/// Function index order MUST match WIT order (same as FLAT_NAMES/WIT_NAMES in outlayer_adapter.rs):
+/// 0:view 1:call 2:transfer 3:http-get 4:http-post 5:storage-set 6:storage-get
+/// 7:storage-has 8:storage-delete 9:storage-increment 10:storage-decrement
+/// 11:storage-set-if-absent 12:storage-set-if-equals 13:storage-list-keys
+/// 14:storage-clear-all 15:storage-set-worker 16:storage-get-worker
+/// 17:storage-set-worker-public 18:storage-get-worker-from-project
+/// 19:env-signer 20:env-predecessor
 fn outlayer_imports() -> Vec<WasiFunc> {
     vec![
-        // 0: view(contract_ptr, contract_len, method_ptr, method_len, 
-        //         args_ptr, args_len, result_ptr, result_len_ptr) -> errno
-        WasiFunc { module: "outlayer", name: "view",
-            params: vec![W, W, W, W, W, W, W, W], results: vec![W] },
-        // 1: call(contract_ptr, contract_len, method_ptr, method_len,
-        //         args_ptr, args_len, gas, deposit_lo, deposit_hi,
-        //         result_ptr, result_len_ptr, callback_ptr, callback_len) -> errno
-        WasiFunc { module: "outlayer", name: "call",
-            params: vec![W; 13], results: vec![W] },
-        // 2: transfer(recipient_ptr, recipient_len, amount_lo, amount_hi,
-        //             result_ptr, result_len_ptr, msg_ptr, msg_len,
-        //             callback_ptr, callback_len) -> errno
-        WasiFunc { module: "outlayer", name: "transfer",
-            params: vec![W; 10], results: vec![W] },
-        // 3: http_get(url_ptr, url_len, response_buf_ptr, response_buf_len, response_len_ptr) -> errno
-        WasiFunc { module: "outlayer", name: "http_get",
-            params: vec![W, W, W, W, W], results: vec![W] },
-        // 4: storage_set(key_ptr, key_len, val_ptr, val_len) -> errno
-        WasiFunc { module: "outlayer", name: "storage_set",
-            params: vec![W, W, W, W], results: vec![W] },
-        // 5: storage_get(key_ptr, key_len, buf_ptr, buf_len, len_ptr) -> errno
-        WasiFunc { module: "outlayer", name: "storage_get",
-            params: vec![W, W, W, W, W], results: vec![W] },
-        // 6: storage_has(key_ptr, key_len) -> i32 (0 or 1)
-        WasiFunc { module: "outlayer", name: "storage_has",
-            params: vec![W, W], results: vec![W] },
-        // 7: storage_delete(key_ptr, key_len) -> errno
-        WasiFunc { module: "outlayer", name: "storage_delete",
-            params: vec![W, W], results: vec![W] },
-        // 8: storage_increment(key_ptr, key_len, delta_lo, delta_hi, result_lo_ptr, result_hi_ptr) -> errno
-        WasiFunc { module: "outlayer", name: "storage_increment",
-            params: vec![W, W, W, W, W, W], results: vec![W] },
-        // 9: env_signer(buf_ptr, buf_len, len_ptr) -> errno
-        WasiFunc { module: "outlayer", name: "env_signer",
-            params: vec![W, W, W], results: vec![W] },
-        // 10: env_predecessor(buf_ptr, buf_len, len_ptr) -> errno
-        WasiFunc { module: "outlayer", name: "env_predecessor",
-            params: vec![W, W, W], results: vec![W] },
-        // 11: storage_decrement — same sig as increment
-        WasiFunc { module: "outlayer", name: "storage_decrement",
-            params: vec![W; 6], results: vec![W] },
-        // 12: storage_set_if_absent(key, val) -> bool (0=not inserted, 1=inserted)
-        WasiFunc { module: "outlayer", name: "storage_set_if_absent",
-            params: vec![W; 4], results: vec![W] },
-        // 13: storage_set_if_equals(key, expected, new, old_buf, old_len_ptr) -> errno
-        WasiFunc { module: "outlayer", name: "storage_set_if_equals",
-            params: vec![W; 8], results: vec![W] },
-        // 14: storage_list_keys(prefix, buf, buf_len, len_ptr) -> errno
-        WasiFunc { module: "outlayer", name: "storage_list_keys",
-            params: vec![W; 5], results: vec![W] },
-        // 15: storage_clear_all() -> errno
-        WasiFunc { module: "outlayer", name: "storage_clear_all",
-            params: vec![], results: vec![W] },
-        // 16: storage_set_worker(key, val) -> errno
-        WasiFunc { module: "outlayer", name: "storage_set_worker",
-            params: vec![W; 4], results: vec![W] },
-        // 17: storage_get_worker(key, buf, buf_len, len_ptr) -> errno
-        WasiFunc { module: "outlayer", name: "storage_get_worker",
-            params: vec![W; 5], results: vec![W] },
-        // 18: storage_set_worker_public(key, val) -> errno
-        WasiFunc { module: "outlayer", name: "storage_set_worker_public",
-            params: vec![W; 4], results: vec![W] },
-        // 19: storage_get_worker_from_project(key, project, buf, buf_len, len_ptr) -> errno
-        WasiFunc { module: "outlayer", name: "storage_get_worker_from_project",
-            params: vec![W; 7], results: vec![W] },
+        // 0: view(contract_id: string, method_name: string, args_json: string) -> result<string, string>
+        // canonical: 6 i32 + ret_area = 7 params
+        WasiFunc { module: "outlayer:api/host", name: "view",
+            params: vec![W; 7], results: vec![] },
+        // 1: call(signer_key: string, receiver_id: string, method_name: string, args_json: string,
+        //         deposit_yocto: string, gas: string) -> result<string, string>
+        // canonical: 12 i32 + ret_area = 13 params
+        WasiFunc { module: "outlayer:api/host", name: "call",
+            params: vec![W; 13], results: vec![] },
+        // 2: transfer(signer_key: string, receiver_id: string, amount_yocto: string) -> result<string, string>
+        // canonical: 6 i32 + ret_area = 7 params
+        WasiFunc { module: "outlayer:api/host", name: "transfer",
+            params: vec![W; 7], results: vec![] },
+        // 3: http-get(url: string) -> result<list<u8>, string>
+        // canonical: 2 i32 + ret_area = 3 params
+        WasiFunc { module: "outlayer:api/host", name: "http-get",
+            params: vec![W; 3], results: vec![] },
+        // 4: http-post(url: string, body: list<u8>, content_type: string) -> result<list<u8>, string>
+        // canonical: 6 i32 + ret_area = 7 params
+        WasiFunc { module: "outlayer:api/host", name: "http-post",
+            params: vec![W; 7], results: vec![] },
+        // 5: storage-set(key: string, value: list<u8>) -> result<_, string>
+        // canonical: 4 i32 + ret_area = 5 params
+        WasiFunc { module: "outlayer:api/host", name: "storage-set",
+            params: vec![W; 5], results: vec![] },
+        // 6: storage-get(key: string) -> result<option<list<u8>>, string>
+        // canonical: 2 i32 + ret_area = 3 params
+        WasiFunc { module: "outlayer:api/host", name: "storage-get",
+            params: vec![W; 3], results: vec![] },
+        // 7: storage-has(key: string) -> result<bool, string>
+        // canonical: 2 i32 + ret_area = 3 params
+        WasiFunc { module: "outlayer:api/host", name: "storage-has",
+            params: vec![W; 3], results: vec![] },
+        // 8: storage-delete(key: string) -> result<_, string>
+        // canonical: 2 i32 + ret_area = 3 params
+        WasiFunc { module: "outlayer:api/host", name: "storage-delete",
+            params: vec![W; 3], results: vec![] },
+        // 9: storage-increment(key: string, delta: s64) -> result<s64, string>
+        // canonical: 2 i32 + 2 i32 (s64 as lo,hi) + ret_area = 5 params
+        WasiFunc { module: "outlayer:api/host", name: "storage-increment",
+            params: vec![W; 5], results: vec![] },
+        // 10: storage-decrement(key: string, delta: s64) -> result<s64, string>
+        // canonical: 2 i32 + 2 i32 (s64 as lo,hi) + ret_area = 5 params
+        WasiFunc { module: "outlayer:api/host", name: "storage-decrement",
+            params: vec![W; 5], results: vec![] },
+        // 11: storage-set-if-absent(key: string, value: list<u8>) -> result<bool, string>
+        // canonical: 4 i32 + ret_area = 5 params
+        WasiFunc { module: "outlayer:api/host", name: "storage-set-if-absent",
+            params: vec![W; 5], results: vec![] },
+        // 12: storage-set-if-equals(key: string, expected: list<u8>, new_value: list<u8>) -> result<bool, string>
+        // canonical: 6 i32 + ret_area = 7 params
+        WasiFunc { module: "outlayer:api/host", name: "storage-set-if-equals",
+            params: vec![W; 7], results: vec![] },
+        // 13: storage-list-keys(prefix: string) -> result<list<string>, string>
+        // canonical: 2 i32 + ret_area = 3 params
+        WasiFunc { module: "outlayer:api/host", name: "storage-list-keys",
+            params: vec![W; 3], results: vec![] },
+        // 14: storage-clear-all() -> result<_, string>
+        // canonical: ret_area = 1 param
+        WasiFunc { module: "outlayer:api/host", name: "storage-clear-all",
+            params: vec![W; 1], results: vec![] },
+        // 15: storage-set-worker(key: string, value: list<u8>) -> result<_, string>
+        // canonical: 4 i32 + ret_area = 5 params
+        WasiFunc { module: "outlayer:api/host", name: "storage-set-worker",
+            params: vec![W; 5], results: vec![] },
+        // 16: storage-get-worker(key: string) -> result<option<list<u8>>, string>
+        // canonical: 2 i32 + ret_area = 3 params
+        WasiFunc { module: "outlayer:api/host", name: "storage-get-worker",
+            params: vec![W; 3], results: vec![] },
+        // 17: storage-set-worker-public(key: string, value: list<u8>) -> result<_, string>
+        // canonical: 4 i32 + ret_area = 5 params
+        WasiFunc { module: "outlayer:api/host", name: "storage-set-worker-public",
+            params: vec![W; 5], results: vec![] },
+        // 18: storage-get-worker-from-project(key: string, project: string) -> result<option<list<u8>>, string>
+        // canonical: 4 i32 + ret_area = 5 params
+        WasiFunc { module: "outlayer:api/host", name: "storage-get-worker-from-project",
+            params: vec![W; 5], results: vec![] },
+        // 19: env-signer() -> string
+        // canonical: ret_area = 1 param
+        WasiFunc { module: "outlayer:api/host", name: "env-signer",
+            params: vec![W; 1], results: vec![] },
+        // 20: env-predecessor() -> string
+        // canonical: ret_area = 1 param
+        WasiFunc { module: "outlayer:api/host", name: "env-predecessor",
+            params: vec![W; 1], results: vec![] },
     ]
 }
 
@@ -369,7 +402,8 @@ pub fn compile_outlayer_p2_from_exprs(exprs: &[crate::types::LispVal]) -> Result
         } else {
             finish_outlayer_no_ol(&mut em)?
         };
-        build_p2_with_adapter(&core_bytes)?
+        std::fs::write("/tmp/core_before_patch.wasm", &core_bytes).ok();
+        crate::p2_native::build_native_p2_component(&core_bytes)?
     };
     Ok(bytes)
 }
@@ -419,7 +453,7 @@ pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
         } else {
             finish_outlayer_no_ol(&mut em)?
         };
-        build_p2_with_adapter(&core_bytes)?
+        crate::p2_native::build_native_p2_component(&core_bytes)?
     };
     Ok(bytes)
 }
@@ -880,26 +914,62 @@ fn build_p2_with_adapter(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
     let mut encoder = wit_component::ComponentEncoder::default()
         .module(core_bytes)
         .map_err(|e| format!("wit-component: failed to set module: {}", e))?
-        .validate(true)
+        .validate(false)
         .adapter("wasi_snapshot_preview1", &adapter_bytes)
         .map_err(|e| format!("wit-component: failed to set WASI adapter: {}", e))?;
 
-    // Check if the core module imports "outlayer" — if so, add the outlayer adapter
+    // outlayer:api/host imports — use raw passthrough adapter (no WIT metadata).
+    // The adapter imports from "outlayer-impl:api/host" to avoid wit-component cycles.
+    // We map it to "outlayer:api/host" so the runtime can provide it.
     let imports = analyze_core_imports(core_bytes);
-    if imports.contains(&"outlayer") {
+    if imports.contains(&"outlayer:api/host") {
         let ol_adapter = crate::outlayer_adapter::build_outlayer_adapter();
-        encoder = encoder.adapter("outlayer", &ol_adapter)
+        std::fs::write("/tmp/outlayer_adapter.wasm", &ol_adapter).ok();
+        encoder = encoder.adapter("outlayer:api/host", &ol_adapter)
             .map_err(|e| format!("wit-component: failed to set outlayer adapter: {}", e))?;
+        let mut name_map = std::collections::HashMap::new();
+        name_map.insert(
+            "outlayer-impl:api/host".to_string(),
+            "outlayer:api/host".to_string(),
+        );
+        encoder = encoder.import_name_map(name_map);
     }
 
     let component = encoder.encode()
-        .map_err(|e| format!("wit-component encode failed: {}", e))?;
+        .map_err(|e| format!("wit-component encode failed: {:#}", e))?;
 
     eprintln!("✅ P2 component via wit-component: {} bytes", component.len());
     Ok(component)
 }
 
 /// Analyze a core WASM module to find which import module names are referenced.
+/// Inject WIT metadata custom section into the core module so wit-component
+/// can type the `outlayer:api/host` imports correctly.
+/// Uses the official `embed_component_metadata` API.
+fn inject_outlayer_wit(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
+    const OUTLAYER_WIT: &str = include_str!("../wit/outlayer/api/outlayer.wit");
+    let mut resolve = wit_parser::Resolve::new();
+    let ast = wit_parser::UnresolvedPackageGroup::parse("wit/outlayer/api/outlayer.wit", OUTLAYER_WIT)
+        .map_err(|e| format!("WIT parse error: {}", e))?;
+    let pkg_id = resolve.push_group(ast).map_err(|e| format!("WIT push error: {}", e))?;
+    let world_id = resolve.packages[pkg_id]
+        .worlds
+        .iter()
+        .find(|(name, _)| *name == "outlayer-world")
+        .map(|(_, &id)| id)
+        .ok_or("outlayer-world not found in WIT package")?;
+
+    let mut bytes = core_bytes.to_vec();
+    wit_component::embed_component_metadata(
+        &mut bytes,
+        &resolve,
+        world_id,
+        wit_component::StringEncoding::UTF8,
+    ).map_err(|e| format!("embed WIT metadata: {}", e))?;
+
+    Ok(bytes)
+}
+
 fn analyze_core_imports(wasm: &[u8]) -> Vec<&str> {
     let mut modules = Vec::new();
     let mut pos = 8;
@@ -1018,13 +1088,9 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
 
     // ── Type section ──
     let mut types = TypeSection::new();
-    // P2: _start returns i32 (result code, 0=success) for wasi:cli/run compatibility
+    // P2 via adapter: _start returns () (wasi:cli expects () -> ())
     // P1: _start returns () and calls proc_exit
-    if em.p2_mode {
-        types.ty().function([], [ValType::I32]); // type 0: () -> i32 (_start for P2)
-    } else {
-        types.ty().function([], []); // type 0: () -> () (_start for P1)
-    }
+    types.ty().function([], []); // type 0: () -> () (_start)
     // type 1: (i32, i32, i32, i32) -> i32 — fd_read, fd_write
     types.ty().function([W, W, W, W], [W]);
     // type 2: (i32) -> () — proc_exit
@@ -1038,35 +1104,18 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     // type 6: (i32, i64, i32, i32) -> i32 — fd_seek
     types.ty().function([W, ValType::I64, W, W], [W]);
 
-    // OutLayer host types
-    // type 7: view — 8 i32 params -> i32
-    types.ty().function(vec![W; 8], [W]);
-    // type 8: call — 13 i32 params -> i32  
-    types.ty().function(vec![W; 13], [W]);
-    // type 9: transfer — 10 i32 params -> i32
-    types.ty().function(vec![W; 10], [W]);
-    // type 10: http_get — 5 i32 params -> i32
-    types.ty().function(vec![W; 5], [W]);
-    // type 11: storage_set — 4 i32 params -> i32
-    types.ty().function(vec![W; 4], [W]);
-    // type 12: storage_get — 5 i32 params -> i32
-    types.ty().function(vec![W; 5], [W]);
-    // type 13: storage_has — 2 i32 params -> i32
-    types.ty().function(vec![W; 2], [W]);
-    // type 14: storage_delete — 2 i32 params -> i32
-    types.ty().function(vec![W; 2], [W]);
-    // type 15: storage_increment — 6 i32 params -> i32
-    types.ty().function(vec![W; 6], [W]);
-    // type 16: env_signer — 3 i32 params -> i32
-    types.ty().function(vec![W; 3], [W]);
-    // type 17: env_predecessor — 3 i32 params -> i32
-    types.ty().function(vec![W; 3], [W]);
-    // type 18: () -> i32 (storage_clear_all)
-    types.ty().function([], [W]);
-    // type 19: 7 i32 -> i32 (get_worker_from_project)
-    types.ty().function(vec![W; 7], [W]);
-    // type 20: 8 i32 -> i32 (set_if_equals)
-    types.ty().function(vec![W; 8], [W]);
+    // OutLayer canonical ABI host types — all return () via ret_area pointer
+    // Unique signatures needed: (i32*1)->(), (i32*3)->(), (i32*5)->(), (i32*7)->(), (i32*13)->()
+    // type 7: (i32) -> () — env-signer, env-predecessor, storage-clear-all
+    types.ty().function(vec![W; 1], []);
+    // type 8: (i32, i32, i32) -> () — http-get, storage-get, storage-has, storage-delete, storage-list-keys, storage-get-worker
+    types.ty().function(vec![W; 3], []);
+    // type 9: (i32*5) -> () — storage-set, storage-increment, storage-decrement, storage-set-if-absent, storage-set-worker, storage-set-worker-public, storage-get-worker-from-project
+    types.ty().function(vec![W; 5], []);
+    // type 10: (i32*7) -> () — view, transfer, http-post, storage-set-if-equals
+    types.ty().function(vec![W; 7], []);
+    // type 11: (i32*13) -> () — call
+    types.ty().function(vec![W; 13], []);
 
     // NEAR-style host function types (for NEAR compat stubs)
     // We need types for each unique NEAR host function signature used
@@ -1074,7 +1123,7 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     let _ = &near_host_used; // used below
     // User function types: each function has (i64 × param_count) -> i64
     let max_p = em.funcs.iter().map(|f| f.param_count).max().unwrap_or(0);
-    let user_type_base: u32 = 21;
+    let user_type_base: u32 = 12;
     for p in 0..=max_p {
         let params: Vec<ValType> = (0..p).map(|_| ValType::I64).collect();
         types.ty().function(params, [ValType::I64]);
@@ -1173,27 +1222,29 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
         imports.import(f.module, f.name, EntityType::Function(type_idx));
     }
     // OutLayer imports (indices wasi_count..wasi_count+ol_count)
+    // Canonical ABI types: type 7=(i32)->(), type 8=(i32*3)->(), type 9=(i32*5)->(), type 10=(i32*7)->(), type 11=(i32*13)->()
     let ol_type_map: Vec<u32> = vec![
-        7,  // view: 8 i32 -> i32
-        8,  // call: 14 i32 -> i32
-        9,  // transfer: 10 i32 -> i32
-        10, // http_get: 5 i32 -> i32
-        11, // storage_set: 4 i32 -> i32
-        12, // storage_get: 5 i32 -> i32
-        13, // storage_has: 2 i32 -> i32
-        14, // storage_delete: 2 i32 -> i32
-        15, // storage_increment: 6 i32 -> i32
-        16, // env_signer: 3 i32 -> i32
-        17, // env_predecessor: 3 i32 -> i32
-        15, // storage_decrement: 6 i32 -> i32 (reuse type 15)
-        11, // storage_set_if_absent: 4 i32 -> i32 (reuse type 11)
-        20, // storage_set_if_equals: 8 i32 -> i32
-        12, // storage_list_keys: 5 i32 -> i32 (reuse type 12)
-        18, // storage_clear_all: () -> i32
-        11, // storage_set_worker: 4 i32 -> i32 (reuse type 11)
-        12, // storage_get_worker: 5 i32 -> i32 (reuse type 12)
-        11, // storage_set_worker_public: 4 i32 -> i32 (reuse type 11)
-        19, // storage_get_worker_from_project: 7 i32 -> i32
+        10, // 0: view — 7 i32 -> ()
+        11, // 1: call — 13 i32 -> ()
+        10, // 2: transfer — 7 i32 -> ()
+        8,  // 3: http-get — 3 i32 -> ()
+        10, // 4: http-post — 7 i32 -> ()
+        9,  // 5: storage-set — 5 i32 -> ()
+        8,  // 6: storage-get — 3 i32 -> ()
+        8,  // 7: storage-has — 3 i32 -> ()
+        8,  // 8: storage-delete — 3 i32 -> ()
+        9,  // 9: storage-increment — 5 i32 -> ()
+        9,  // 10: storage-decrement — 5 i32 -> ()
+        9,  // 11: storage-set-if-absent — 5 i32 -> ()
+        10, // 12: storage-set-if-equals — 7 i32 -> ()
+        8,  // 13: storage-list-keys — 3 i32 -> ()
+        7,  // 14: storage-clear-all — 1 i32 -> ()
+        9,  // 15: storage-set-worker — 5 i32 -> ()
+        8,  // 16: storage-get-worker — 3 i32 -> ()
+        9,  // 17: storage-set-worker-public — 5 i32 -> ()
+        9,  // 18: storage-get-worker-from-project — 5 i32 -> ()
+        7,  // 19: env-signer — 1 i32 -> ()
+        7,  // 20: env-predecessor — 1 i32 -> ()
     ];
     for (i, f) in ol.iter().enumerate() {
         let type_idx = ol_type_map[i];
@@ -1282,26 +1333,45 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
             // outlayer.view is at import index wasi_count + 0
             // outlayer.call is at import index wasi_count + 1
             // outlayer.transfer is at import index wasi_count + 2
-            ol_map.insert(100, wasi_count); // sentinel 100 -> outlayer.view
-            ol_map.insert(101, wasi_count + 1); // sentinel 101 -> outlayer.call
-            ol_map.insert(102, wasi_count + 2); // sentinel 102 -> outlayer.transfer
-            ol_map.insert(103, wasi_count + 3); // sentinel 103 -> outlayer.http_get
-            ol_map.insert(110, wasi_count + 4); // sentinel 110 -> outlayer.storage_set
-            ol_map.insert(111, wasi_count + 5); // sentinel 111 -> outlayer.storage_get
-            ol_map.insert(112, wasi_count + 6); // sentinel 112 -> outlayer.storage_has
-            ol_map.insert(113, wasi_count + 7); // sentinel 113 -> outlayer.storage_delete
-            ol_map.insert(114, wasi_count + 8); // sentinel 114 -> outlayer.storage_increment
-            ol_map.insert(120, wasi_count + 9); // sentinel 120 -> outlayer.env_signer
-            ol_map.insert(121, wasi_count + 10); // sentinel 121 -> outlayer.env_predecessor
-            ol_map.insert(130, wasi_count + 11); // sentinel 130 -> outlayer.storage_decrement
-            ol_map.insert(131, wasi_count + 12); // sentinel 131 -> outlayer.storage_set_if_absent
-            ol_map.insert(132, wasi_count + 13); // sentinel 132 -> outlayer.storage_set_if_equals
-            ol_map.insert(133, wasi_count + 14); // sentinel 133 -> outlayer.storage_list_keys
-            ol_map.insert(134, wasi_count + 15); // sentinel 134 -> outlayer.storage_clear_all
-            ol_map.insert(135, wasi_count + 16); // sentinel 135 -> outlayer.storage_set_worker
-            ol_map.insert(136, wasi_count + 17); // sentinel 136 -> outlayer.storage_get_worker
-            ol_map.insert(137, wasi_count + 18); // sentinel 137 -> outlayer.storage_set_worker_public
-            ol_map.insert(138, wasi_count + 19); // sentinel 138 -> outlayer.storage_get_worker_from_project
+            // outlayer.http-get is at import index wasi_count + 3
+            // outlayer.http-post is at import index wasi_count + 4
+            // outlayer.storage-set is at import index wasi_count + 5
+            // outlayer.storage-get is at import index wasi_count + 6
+            // outlayer.storage-has is at import index wasi_count + 7
+            // outlayer.storage-delete is at import index wasi_count + 8
+            // outlayer.storage-increment is at import index wasi_count + 9
+            // outlayer.storage-decrement is at import index wasi_count + 10
+            // outlayer.storage-set-if-absent is at import index wasi_count + 11
+            // outlayer.storage-set-if-equals is at import index wasi_count + 12
+            // outlayer.storage-list-keys is at import index wasi_count + 13
+            // outlayer.storage-clear-all is at import index wasi_count + 14
+            // outlayer.storage-set-worker is at import index wasi_count + 15
+            // outlayer.storage-get-worker is at import index wasi_count + 16
+            // outlayer.storage-set-worker-public is at import index wasi_count + 17
+            // outlayer.storage-get-worker-from-project is at import index wasi_count + 18
+            // outlayer.env-signer is at import index wasi_count + 19
+            // outlayer.env-predecessor is at import index wasi_count + 20
+            ol_map.insert(100, wasi_count);      // sentinel 100 -> outlayer.view
+            ol_map.insert(101, wasi_count + 1);   // sentinel 101 -> outlayer.call
+            ol_map.insert(102, wasi_count + 2);   // sentinel 102 -> outlayer.transfer
+            ol_map.insert(103, wasi_count + 3);   // sentinel 103 -> outlayer.http-get
+            ol_map.insert(104, wasi_count + 4);   // sentinel 104 -> outlayer.http-post
+            ol_map.insert(110, wasi_count + 5);   // sentinel 110 -> outlayer.storage-set
+            ol_map.insert(111, wasi_count + 6);   // sentinel 111 -> outlayer.storage-get
+            ol_map.insert(112, wasi_count + 7);   // sentinel 112 -> outlayer.storage-has
+            ol_map.insert(113, wasi_count + 8);   // sentinel 113 -> outlayer.storage-delete
+            ol_map.insert(114, wasi_count + 9);   // sentinel 114 -> outlayer.storage-increment
+            ol_map.insert(120, wasi_count + 19);  // sentinel 120 -> outlayer.env-signer
+            ol_map.insert(121, wasi_count + 20);  // sentinel 121 -> outlayer.env-predecessor
+            ol_map.insert(130, wasi_count + 10);  // sentinel 130 -> outlayer.storage-decrement
+            ol_map.insert(131, wasi_count + 11);  // sentinel 131 -> outlayer.storage-set-if-absent
+            ol_map.insert(132, wasi_count + 12);  // sentinel 132 -> outlayer.storage-set-if-equals
+            ol_map.insert(133, wasi_count + 13);  // sentinel 133 -> outlayer.storage-list-keys
+            ol_map.insert(134, wasi_count + 14);  // sentinel 134 -> outlayer.storage-clear-all
+            ol_map.insert(135, wasi_count + 15);  // sentinel 135 -> outlayer.storage-set-worker
+            ol_map.insert(136, wasi_count + 16);  // sentinel 136 -> outlayer.storage-get-worker
+            ol_map.insert(137, wasi_count + 17);  // sentinel 137 -> outlayer.storage-set-worker-public
+            ol_map.insert(138, wasi_count + 18);  // sentinel 138 -> outlayer.storage-get-worker-from-project
             ol_map.insert(crate::wasm_emit::WASI_FD_WRITE, 1); // fd_write is WASI import index 1
             WasmEmitter::resolve_static_pub_ex(&resolved, &near_host_idx, &name_map, &em.funcs, &ol_map)
         } else {
@@ -1507,16 +1577,13 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
 
         fb.instruction(&Instruction::End); // if
 
+        // P2 via adapter: _start returns () — just end cleanly
         // P1: proc_exit(0) — terminates process
-        // P2: return i32 0 — signals success to wasi:cli/run  
-        // no_proc_exit: just return cleanly (wit-component adapter handles exit)
-        if em.p2_mode {
-            fb.instruction(&Instruction::I32Const(0));
-        } else if !em.no_proc_exit {
+        if !em.p2_mode && !em.no_proc_exit {
             fb.instruction(&Instruction::I32Const(0));
             fb.instruction(&Instruction::Call(2)); // proc_exit
         }
-        // else: no_proc_exit && !p2_mode — just fall through (return void)
+        // P2/no_proc_exit: just fall through (return void)
 
         fb.instruction(&Instruction::End);
         code.function(&fb);
@@ -1533,7 +1600,9 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
         m.section(&data);
     }
 
-    Ok(m.finish())
+    let core_bytes = m.finish();
+    std::fs::write("/tmp/p2_outlayer_core.wasm", &core_bytes).ok();
+    Ok(core_bytes)
 }
 
 /// Map NEAR host function index to type index for the OutLayer target

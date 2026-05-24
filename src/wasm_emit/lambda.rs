@@ -368,8 +368,8 @@ impl WasmEmitter {
             "storage-set-worker" | "storage-get-worker" | "storage-set-worker-public" | "storage-get-worker-from-project" => {
                 self.need_outlayer = true;
             }
-            "http-get" => {
-                if self.p2_mode { self.need_wasi_http = true; } else { self.need_outlayer = true; }
+            "http-get" | "outlayer/http-post" => {
+                self.need_outlayer = true;
             }
             // FP-allocating builtins (need frame save/restore in NEAR mode)
             "str-cat" | "str-concat" | "string-append" | "str-slice" | "near/load-bytes" | "u32-to-bytes" | "near/store-bytes" => {

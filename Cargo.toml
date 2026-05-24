@@ -34,6 +34,7 @@ hmac = "0.12"
 rand = "0.8"
 rand_chacha = "0.3"
 solang-parser = "0.3.5"
+leb128 = "0.2.6"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 wasmtime = { version = "44.0.1", features = ["cranelift"] }

@@ -1605,6 +1605,7 @@ dependencies = [
  "finite-wasm",
  "hmac",
  "im",
+ "leb128",
  "libc",
  "proptest",
  "rand 0.8.6",
