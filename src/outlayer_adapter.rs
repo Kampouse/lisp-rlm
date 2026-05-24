@@ -4,41 +4,47 @@
 //! The adapter imports from `outlayer-impl:api/host` to avoid wit-component cycles,
 //! then import_name_map renames to `outlayer:api/host` in the final component.
 //!
-//! Only includes functions that use pure canonical-ABI-compatible types (strings, lists, bools).
-//! Functions with s64 params (storage-increment/decrement) are excluded because the
-//! core module uses all-i32 calling convention which doesn't match canonical i64 ABI.
+//! All functions use proper canonical ABI types, including s64 for increment/decrement.
+//! Adapter modules can only import functions — no memory import/definition allowed.
+//! cabi_realloc is a stub since the adapter never allocates.
 
 use wasm_encoder::*;
 
-/// Functions included in the adapter — only those with pure i32 canonical ABI params.
-const ADAPTER_FUNCS: &[(&str, usize)] = &[
-    ("view", 7),            // 3 strings (6 i32) + ret_area
-    ("call", 13),           // 6 strings (12 i32) + ret_area
-    ("transfer", 7),        // 3 strings (6 i32) + ret_area
-    ("http-get", 3),        // 1 string (2 i32) + ret_area
-    ("http-post", 7),       // 1 string + 1 list<u8> + 1 string (6 i32) + ret_area
-    ("storage-set", 5),     // 1 string + 1 list<u8> (4 i32) + ret_area
-    ("storage-get", 3),     // 1 string (2 i32) + ret_area
-    ("storage-has", 3),     // 1 string (2 i32) + ret_area
-    ("storage-delete", 3),  // 1 string (2 i32) + ret_area
-    ("storage-increment", 4), // 1 string (2 i32) + s32 (1 i32) + ret_area
-    ("storage-decrement", 4), // same
-    ("storage-set-if-absent", 5),   // 1 string + 1 list<u8> (4 i32) + ret_area
-    ("storage-set-if-equals", 7),   // 1 string + 2 list<u8> (6 i32) + ret_area
-    ("storage-list-keys", 3),       // 1 string (2 i32) + ret_area
-    ("storage-clear-all", 1),       // ret_area only
-    ("storage-set-worker", 5),      // 1 string + 1 list<u8> (4 i32) + ret_area
-    ("storage-get-worker", 3),      // 1 string (2 i32) + ret_area
-    ("storage-set-worker-public", 5),  // 1 string + 1 list<u8> (4 i32) + ret_area
-    ("storage-get-worker-from-project", 5), // 2 strings (4 i32) + ret_area
-    ("env-signer", 1),       // ret_area only
-    ("env-predecessor", 1),  // ret_area only
+const W: ValType = ValType::I32;
+const I64: ValType = ValType::I64;
+
+struct FuncDef {
+    name: &'static str,
+    params: &'static [ValType],
+}
+
+const ADAPTER_FUNCS: &[FuncDef] = &[
+    FuncDef { name: "view", params: &[W, W, W, W, W, W, W] },
+    FuncDef { name: "call", params: &[W, W, W, W, W, W, W, W, W, W, W, W, W] },
+    FuncDef { name: "transfer", params: &[W, W, W, W, W, W, W] },
+    FuncDef { name: "http-get", params: &[W, W, W] },
+    FuncDef { name: "http-post", params: &[W, W, W, W, W, W, W] },
+    FuncDef { name: "storage-set", params: &[W, W, W, W, W] },
+    FuncDef { name: "storage-get", params: &[W, W, W] },
+    FuncDef { name: "storage-has", params: &[W, W, W] },
+    FuncDef { name: "storage-delete", params: &[W, W, W] },
+    FuncDef { name: "storage-increment", params: &[W, W, I64, W] },
+    FuncDef { name: "storage-decrement", params: &[W, W, I64, W] },
+    FuncDef { name: "storage-set-if-absent", params: &[W, W, W, W, W] },
+    FuncDef { name: "storage-set-if-equals", params: &[W, W, W, W, W, W, W] },
+    FuncDef { name: "storage-list-keys", params: &[W, W, W] },
+    FuncDef { name: "storage-clear-all", params: &[W] },
+    FuncDef { name: "storage-set-worker", params: &[W, W, W, W, W] },
+    FuncDef { name: "storage-get-worker", params: &[W, W, W] },
+    FuncDef { name: "storage-set-worker-public", params: &[W, W, W, W, W] },
+    FuncDef { name: "storage-get-worker-from-project", params: &[W, W, W, W, W] },
+    FuncDef { name: "env-signer", params: &[W] },
+    FuncDef { name: "env-predecessor", params: &[W] },
 ];
 
 const ADAPTER_IMPORT_NS: &str = "outlayer-impl:api/host";
 
-/// WIT with s64 functions replaced by placeholder s32 — allows wit-component to accept all-i32 params.
-/// We replace `delta: s64` with `delta: s32` so canonical ABI generates i32 instead of i64.
+/// WIT with real s64 types matching the production outlayer:api/host interface.
 const ADAPTER_WIT: &str = r#"
 package outlayer-impl:api;
 
@@ -52,8 +58,8 @@ interface host {
     storage-get: func(key: string) -> result<option<list<u8>>, string>;
     storage-has: func(key: string) -> result<bool, string>;
     storage-delete: func(key: string) -> result<_, string>;
-    storage-increment: func(key: string, delta: s32) -> result<s32, string>;
-    storage-decrement: func(key: string, delta: s32) -> result<s32, string>;
+    storage-increment: func(key: string, delta: s64) -> result<s64, string>;
+    storage-decrement: func(key: string, delta: s64) -> result<s64, string>;
     storage-set-if-absent: func(key: string, value: list<u8>) -> result<bool, string>;
     storage-set-if-equals: func(key: string, expected: list<u8>, new-value: list<u8>) -> result<bool, string>;
     storage-list-keys: func(prefix: string) -> result<list<string>, string>;
@@ -73,65 +79,84 @@ world outlayer-world {
 
 pub fn build_outlayer_adapter() -> Vec<u8> {
     let num_funcs = ADAPTER_FUNCS.len();
-
     let mut module = Module::new();
 
-    // Type section — all (i32 * N) -> ()
+    // ═══ Type section ═══
     let mut types = TypeSection::new();
-    // Deduplicate param counts
-    let mut unique_counts: Vec<usize> = ADAPTER_FUNCS.iter().map(|(_, n)| *n).collect();
-    unique_counts.sort();
-    unique_counts.dedup();
-    let mut count_to_type: std::collections::HashMap<usize, u32> = std::collections::HashMap::new();
-    for (i, &count) in unique_counts.iter().enumerate() {
-        let params: Vec<ValType> = (0..count).map(|_| ValType::I32).collect();
-        types.ty().function(params, []);
-        count_to_type.insert(count, i as u32);
+    let mut sig_to_type: std::collections::HashMap<Vec<ValType>, u32> = std::collections::HashMap::new();
+    for desc in ADAPTER_FUNCS.iter() {
+        if !sig_to_type.contains_key(desc.params) {
+            let idx = sig_to_type.len() as u32;
+            types.ty().function(desc.params.iter().copied(), std::iter::empty::<ValType>());
+            sig_to_type.insert(desc.params.to_vec(), idx);
+        }
     }
+    // cabi_realloc type: (i32, i32, i32, i32) -> i32
+    let cabi_realloc_type_idx = sig_to_type.len() as u32;
+    types.ty().function([W, W, W, W], Some(W));
     module.section(&types);
 
-    // Import section
+    // ═══ Import section — function imports only (adapters can't import memory) ═══
     let mut imports = ImportSection::new();
-    for (i, (name, nparams)) in ADAPTER_FUNCS.iter().enumerate() {
-        let type_idx = count_to_type[nparams];
-        imports.import(ADAPTER_IMPORT_NS, *name, EntityType::Function(type_idx));
+    for desc in ADAPTER_FUNCS.iter() {
+        let type_idx = sig_to_type[desc.params];
+        imports.import(ADAPTER_IMPORT_NS, desc.name, EntityType::Function(type_idx));
     }
     module.section(&imports);
 
-    // Function section — adapter bodies with same types
+    // ═══ Function section — adapter bodies + cabi_realloc ═══
     let mut funcs = FunctionSection::new();
-    for (_, nparams) in ADAPTER_FUNCS.iter() {
-        funcs.function(count_to_type[nparams]);
+    for desc in ADAPTER_FUNCS.iter() {
+        funcs.function(sig_to_type[desc.params]);
     }
+    funcs.function(cabi_realloc_type_idx);
     module.section(&funcs);
 
-    // Export section — adapter function indices start at num_funcs
+    // ═══ Export section ═══
     let mut exports = ExportSection::new();
-    for (i, (name, _)) in ADAPTER_FUNCS.iter().enumerate() {
-        exports.export(*name, ExportKind::Func, (num_funcs + i) as u32);
+    for (i, desc) in ADAPTER_FUNCS.iter().enumerate() {
+        exports.export(desc.name, ExportKind::Func, (num_funcs + i) as u32);
     }
+    let realloc_idx = (num_funcs + ADAPTER_FUNCS.len()) as u32;
+    exports.export("cabi_realloc", ExportKind::Func, realloc_idx);
     module.section(&exports);
 
-    // Code section — passthrough
+    // ═══ Code section — passthrough + cabi_realloc stub ═══
     let mut codes = CodeSection::new();
-    for (_, nparams) in ADAPTER_FUNCS.iter() {
+    for (i, desc) in ADAPTER_FUNCS.iter().enumerate() {
         let mut func = Function::new(Vec::new());
-        for p in 0..*nparams {
-            func.instruction(&Instruction::LocalGet(p as u32));
+        let mut local_idx = 0u32;
+        for _ in desc.params.iter() {
+            func.instruction(&Instruction::LocalGet(local_idx));
+            local_idx += 1;
         }
+        func.instruction(&Instruction::Call(i as u32));
         func.instruction(&Instruction::End);
         codes.function(&func);
     }
+
+    // cabi_realloc stub: adapter never allocates, so just return old_ptr
+    let mut realloc = Function::new(Vec::new());
+    // If new_size == 0, return 0 (free)
+    realloc.instruction(&Instruction::LocalGet(3)); // new_size
+    realloc.instruction(&Instruction::I32Eqz);
+    realloc.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
+    realloc.instruction(&Instruction::I32Const(0));
+    realloc.instruction(&Instruction::Return);
+    realloc.instruction(&Instruction::End);
+    // Otherwise return old_ptr unchanged
+    realloc.instruction(&Instruction::LocalGet(0)); // old_ptr
+    realloc.instruction(&Instruction::End);
+    codes.function(&realloc);
+
     module.section(&codes);
 
     let bytes = module.finish();
 
-    // Embed WIT metadata with s32 instead of s64 (matches all-i32 canonical ABI)
+    // Embed WIT metadata
     let mut resolve = wit_parser::Resolve::new();
-    let ast = wit_parser::UnresolvedPackageGroup::parse(
-        "wit/outlayer-impl/api/host.wit",
-        ADAPTER_WIT,
-    ).expect("failed to parse adapter WIT");
+    let ast = wit_parser::UnresolvedPackageGroup::parse("wit/outlayer-impl/api/host.wit", ADAPTER_WIT)
+        .expect("failed to parse adapter WIT");
     let pkg_id = resolve.push_group(ast).expect("failed to push WIT package");
     let world_id = resolve.packages[pkg_id]
         .worlds
@@ -146,7 +171,8 @@ pub fn build_outlayer_adapter() -> Vec<u8> {
         &resolve,
         world_id,
         wit_component::StringEncoding::UTF8,
-    ).expect("failed to embed WIT metadata");
+    )
+    .expect("failed to embed WIT metadata");
 
     bytes
 }

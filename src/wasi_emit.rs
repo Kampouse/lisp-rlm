@@ -77,7 +77,7 @@ fn wasi_p1_imports_minimal() -> Vec<WasiFunc> {
 /// OutLayer host function imports via canonical ABI (typed WIT).
 ///
 /// All functions use canonical ABI: string = (ptr, len) as 2xi32,
-/// list<u8> = (ptr, len) as 2xi32, s64 = (lo, hi) as 2xi32.
+/// list<u8> = (ptr, len) as 2xi32, s64 = i64.
 /// Results returned via return-area pointer (last i32 param), all functions return ().
 ///
 /// Function index order MUST match WIT order (same as FLAT_NAMES/WIT_NAMES in outlayer_adapter.rs):
@@ -127,13 +127,13 @@ fn outlayer_imports() -> Vec<WasiFunc> {
         WasiFunc { module: "outlayer:api/host", name: "storage-delete",
             params: vec![W; 3], results: vec![] },
         // 9: storage-increment(key: string, delta: s64) -> result<s64, string>
-        // canonical: 2 i32 + 2 i32 (s64 as lo,hi) + ret_area = 5 params
+        // canonical: 2 i32 (string) + i64 (s64) + i32 (ret_area) = (i32,i32,i64,i32)
         WasiFunc { module: "outlayer:api/host", name: "storage-increment",
-            params: vec![W; 5], results: vec![] },
+            params: vec![W, W, ValType::I64, W], results: vec![] },
         // 10: storage-decrement(key: string, delta: s64) -> result<s64, string>
-        // canonical: 2 i32 + 2 i32 (s64 as lo,hi) + ret_area = 5 params
+        // canonical: 2 i32 (string) + i64 (s64) + i32 (ret_area) = (i32,i32,i64,i32)
         WasiFunc { module: "outlayer:api/host", name: "storage-decrement",
-            params: vec![W; 5], results: vec![] },
+            params: vec![W, W, ValType::I64, W], results: vec![] },
         // 11: storage-set-if-absent(key: string, value: list<u8>) -> result<bool, string>
         // canonical: 4 i32 + ret_area = 5 params
         WasiFunc { module: "outlayer:api/host", name: "storage-set-if-absent",
@@ -453,6 +453,8 @@ pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
         } else {
             finish_outlayer_no_ol(&mut em)?
         };
+        // Use manual component builder (production-compatible, handles wasi_snapshot_preview1 stubs)
+        std::fs::write("/tmp/p2_ol_core.wasm", &core_bytes).ok();
         crate::p2_native::build_native_p2_component(&core_bytes)?
     };
     Ok(bytes)
@@ -493,7 +495,7 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
     let layout = WasiHttpLayout::new(em.funcs.len() as u32, http_get_count, http_post_count);
 
     // POST sentinel base must account for the actual (possibly fallback-augmented) GET count
-    let post_sentinel_base = 103 + http_get_count;
+    let post_sentinel_base = 200;
 
     // ═══ Type Section ═══
     let mut types = TypeSection::new();
@@ -558,7 +560,7 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
     // ═══ Export Section ═══
     let mut exports = ExportSection::new();
     exports.export("memory", ExportKind::Memory, 0);
-    exports.export("wasi:cli/run@0.2.2#run", ExportKind::Func, layout.start_fn_idx);
+    exports.export("_start", ExportKind::Func, layout.start_fn_idx);
     exports.export("cabi_realloc", ExportKind::Func, layout.realloc_fn_idx);
     module.section(&exports);
 
@@ -877,21 +879,12 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
         }
     }
 
-    // ═══ Build and embed WIT metadata ═══
-    let mut core_bytes = module.finish();
+    // ═══ Build component using manual encoding ═══
+    let core_bytes = module.finish();
     std::fs::write("/tmp/p2_http_core.wasm", &core_bytes).ok();
 
-    let (resolve, world) = crate::wasi_http::build_http_wit_metadata()?;
-    let before = core_bytes.len();
-    wit_component::embed_component_metadata(&mut core_bytes, &resolve, world, wit_component::StringEncoding::UTF8)
-        .map_err(|e| format!("embed metadata failed: {}", e))?;
-    eprintln!("WIT metadata: {} -> {} bytes", before, core_bytes.len());
-    std::fs::write("/tmp/p2_http_core_with_meta.wasm", &core_bytes).ok();
-
-    let component = wit_component::ComponentEncoder::default()
-        .module(&core_bytes).map_err(|e| format!("encoder: {:#}", e))?
-        .validate(true)
-        .encode().map_err(|e| format!("encode: {:#}", e))?;
+    // Use p2_native to wrap as component — it handles the wasi:cli/run export properly
+    let component = crate::p2_native::build_wasi_http_component(&core_bytes, &em)?;
 
     eprintln!("✅ P2 wasi:http component: {} bytes", component.len());
     std::fs::write("/tmp/p2_wasi_http.wasm", &component).ok();
@@ -905,22 +898,18 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
 
 
 fn build_p2_with_adapter(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
-    // Load WASI adapter
-    let adapter_bytes = crate::p2_native::load_wasi_adapter();
-    if adapter_bytes.len() < 100 {
-        return Err("WASI adapter not found. Set WASI_ADAPTER_PATH or place wasi_snapshot_preview1.command.wasm in /tmp/".into());
-    }
+    // Debug: check what we're passing to the encoder
+    std::fs::write("/tmp/p2_core_to_encode.wasm", core_bytes).ok();
 
+    // Build encoder with just the core module — no WASI adapter.
+    // The production OutLayer worker provides wasi-snapshot-preview1 at core level
+    // and wasi:cli at component level via wasmtime_wasi::add_to_linker_async.
     let mut encoder = wit_component::ComponentEncoder::default()
         .module(core_bytes)
         .map_err(|e| format!("wit-component: failed to set module: {}", e))?
-        .validate(false)
-        .adapter("wasi_snapshot_preview1", &adapter_bytes)
-        .map_err(|e| format!("wit-component: failed to set WASI adapter: {}", e))?;
+        .validate(false);
 
-    // outlayer:api/host imports — use raw passthrough adapter (no WIT metadata).
-    // The adapter imports from "outlayer-impl:api/host" to avoid wit-component cycles.
-    // We map it to "outlayer:api/host" so the runtime can provide it.
+    // outlayer:api/host imports — raw passthrough adapter
     let imports = analyze_core_imports(core_bytes);
     if imports.contains(&"outlayer:api/host") {
         let ol_adapter = crate::outlayer_adapter::build_outlayer_adapter();
@@ -1110,12 +1099,14 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     types.ty().function(vec![W; 1], []);
     // type 8: (i32, i32, i32) -> () — http-get, storage-get, storage-has, storage-delete, storage-list-keys, storage-get-worker
     types.ty().function(vec![W; 3], []);
-    // type 9: (i32*5) -> () — storage-set, storage-increment, storage-decrement, storage-set-if-absent, storage-set-worker, storage-set-worker-public, storage-get-worker-from-project
+    // type 9: (i32*5) -> () — storage-set, storage-set-if-absent, storage-set-worker, storage-set-worker-public, storage-get-worker-from-project
     types.ty().function(vec![W; 5], []);
     // type 10: (i32*7) -> () — view, transfer, http-post, storage-set-if-equals
     types.ty().function(vec![W; 7], []);
     // type 11: (i32*13) -> () — call
     types.ty().function(vec![W; 13], []);
+    // type 12: (i32, i32, i64, i32) -> () — storage-increment, storage-decrement (s64 canonical ABI)
+    types.ty().function(vec![W, W, ValType::I64, W], []);
 
     // NEAR-style host function types (for NEAR compat stubs)
     // We need types for each unique NEAR host function signature used
@@ -1123,7 +1114,7 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     let _ = &near_host_used; // used below
     // User function types: each function has (i64 × param_count) -> i64
     let max_p = em.funcs.iter().map(|f| f.param_count).max().unwrap_or(0);
-    let user_type_base: u32 = 12;
+    let user_type_base: u32 = 13;
     for p in 0..=max_p {
         let params: Vec<ValType> = (0..p).map(|_| ValType::I64).collect();
         types.ty().function(params, [ValType::I64]);
@@ -1222,7 +1213,7 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
         imports.import(f.module, f.name, EntityType::Function(type_idx));
     }
     // OutLayer imports (indices wasi_count..wasi_count+ol_count)
-    // Canonical ABI types: type 7=(i32)->(), type 8=(i32*3)->(), type 9=(i32*5)->(), type 10=(i32*7)->(), type 11=(i32*13)->()
+    // Canonical ABI types: type 7=(i32)->(), type 8=(i32*3)->(), type 9=(i32*5)->(), type 10=(i32*7)->(), type 11=(i32*13)->(), type 12=(i32,i32,i64,i32)->()
     let ol_type_map: Vec<u32> = vec![
         10, // 0: view — 7 i32 -> ()
         11, // 1: call — 13 i32 -> ()
@@ -1233,8 +1224,8 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
         8,  // 6: storage-get — 3 i32 -> ()
         8,  // 7: storage-has — 3 i32 -> ()
         8,  // 8: storage-delete — 3 i32 -> ()
-        9,  // 9: storage-increment — 5 i32 -> ()
-        9,  // 10: storage-decrement — 5 i32 -> ()
+        12, // 9: storage-increment — (i32,i32,i64,i32) -> ()
+        12, // 10: storage-decrement — (i32,i32,i64,i32) -> ()
         9,  // 11: storage-set-if-absent — 5 i32 -> ()
         10, // 12: storage-set-if-equals — 7 i32 -> ()
         8,  // 13: storage-list-keys — 3 i32 -> ()
@@ -1280,6 +1271,8 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     }
     // _start wrapper: () -> ()
     funcs.function(0);
+    // cabi_realloc: (i32, i32, i32, i32) -> i32 — type 1
+    funcs.function(1);
     m.section(&funcs);
 
     // ── Memory ──
@@ -1305,11 +1298,14 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     // ── Exports ──
     let mut exps = ExportSection::new();
     exps.export("memory", ExportKind::Memory, 0);
-    // _start is the last function
+    // _start is the second-to-last function (before cabi_realloc)
     let start_func_idx = internal_base + em.funcs.len() as u32;
     // P2 components export "run", WASI P1 exports "_start"
     let entry_name = "_start"; // always _start; P2 wrapper handles naming
     exps.export(entry_name, ExportKind::Func, start_func_idx);
+    // cabi_realloc is the last function
+    let realloc_idx = start_func_idx + 1;
+    exps.export("cabi_realloc", ExportKind::Func, realloc_idx);
     m.section(&exps);
 
     // ── Code section ──
@@ -1587,6 +1583,44 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
 
         fb.instruction(&Instruction::End);
         code.function(&fb);
+    }
+
+    // ── cabi_realloc ──
+    // Bump allocator: stores heap pointer at memory address 196608 (192KB),
+    // lazy-inits to 1MB, bumps by new_size aligned to 4.
+    // Signature: (i32 old_ptr, i32 old_size, i32 align, i32 new_size) -> i32
+    {
+        let heap_ptr_addr: i32 = 196608;
+        let mut realloc = Function::new([(1, ValType::I32)]); // extra local 4
+        let ma4 = MemArg { offset: 0, align: 2, memory_index: 0 };
+        // Load heap_ptr from memory
+        realloc.instruction(&Instruction::I32Const(heap_ptr_addr));
+        realloc.instruction(&Instruction::I32Load(ma4));
+        // If heap_ptr == 0, initialize to 1048576 (1MB)
+        realloc.instruction(&Instruction::LocalTee(4));
+        realloc.instruction(&Instruction::I32Eqz);
+        realloc.instruction(&Instruction::If(BlockType::Empty));
+        realloc.instruction(&Instruction::I32Const(1048576));
+        realloc.instruction(&Instruction::I32Const(heap_ptr_addr));
+        realloc.instruction(&Instruction::I32Store(ma4));
+        realloc.instruction(&Instruction::I32Const(1048576));
+        realloc.instruction(&Instruction::LocalSet(4));
+        realloc.instruction(&Instruction::End);
+        // new heap_ptr = old_ptr + new_size, aligned up to 4
+        realloc.instruction(&Instruction::LocalGet(4));
+        realloc.instruction(&Instruction::LocalGet(3)); // new_size (param 3)
+        realloc.instruction(&Instruction::I32Add);
+        realloc.instruction(&Instruction::I32Const(3));
+        realloc.instruction(&Instruction::I32Add);
+        realloc.instruction(&Instruction::I32Const(-4));
+        realloc.instruction(&Instruction::I32And);
+        // Store updated heap_ptr
+        realloc.instruction(&Instruction::I32Const(heap_ptr_addr));
+        realloc.instruction(&Instruction::I32Store(ma4));
+        // Return old heap_ptr
+        realloc.instruction(&Instruction::LocalGet(4));
+        realloc.instruction(&Instruction::End);
+        code.function(&realloc);
     }
 
     m.section(&code);

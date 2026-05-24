@@ -5,10 +5,10 @@ impl WasmEmitter {
         match op {
             "http-get" => {
                 // (http-get "https://api.example.com/data") -> string or nil
-                // Canonical ABI: http-get(url_ptr, url_len, ret_area) -> ()
-                // ret_area: disc(4) + ptr(4) + len(4) = 12 bytes
                 if a.is_empty() { return Err("http-get requires a URL string argument".into()); }
                 if !self.wasi_mode { return Err("http-get is only available on OutLayer (WASI) target".into()); }
+
+                // OutLayer host function path (works on both P1 and P2)
                 self.need_outlayer = true;
 
                 let url_expr = self.expr(&a[0])?;
@@ -47,6 +47,67 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl);
                 v.push(Instruction::I64Const(TAG_STR)); v.push(Instruction::I64Or);
                 v.push(Instruction::End); // if
+                Ok(v)
+            }
+            "http-post" => {
+                // (http-post "https://api.example.com/data" "body") -> string or nil
+                if a.len() < 2 { return Err("http-post requires (url body)".into()); }
+                if !self.wasi_mode { return Err("http-post is only available on OutLayer (WASI) target".into()); }
+
+                // OutLayer host function path (works on both P1 and P2)
+                // WIT: http-post(url: string, body: list<u8>, content_type: string) -> result<list<u8>, string>
+                // Canonical ABI: url(2) + body(2) + content_type(2) + retptr(1) = 7 i32 params
+                self.need_outlayer = true;
+                let url_expr = self.expr(&a[0])?;
+                let body_expr = self.expr(&a[1])?;
+                let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                let ret_area: i32 = 163840;
+                let content_type_area: i32 = 163900;
+                // Store default content-type "application/json" as data segment
+                self.data_segments.push((content_type_area as u32, b"application/json".to_vec()));
+                let content_type_len: i32 = 16; // "application/json".len()
+                let mut v = Vec::new();
+                // url ptr/len
+                v.extend(url_expr.clone());
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64);
+                v.extend(url_expr);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                // body ptr/len
+                v.extend(body_expr.clone());
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64);
+                v.extend(body_expr);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                // content_type ptr/len
+                v.push(Instruction::I32Const(content_type_area));
+                v.push(Instruction::I32Const(content_type_len));
+                // ret_area
+                v.push(Instruction::I32Const(ret_area));
+                // Call http-post (sentinel 104) — canonical ABI with 7 params
+                v.push(Instruction::Call(104));
+                // Read result (same pattern as http-get)
+                v.push(Instruction::I32Const(ret_area)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Ne);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.push(Instruction::I64Const(TAG_NIL));
+                v.push(Instruction::Else);
+                v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I32Const(ret_area + 8)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_STR)); v.push(Instruction::I64Or);
+                v.push(Instruction::End);
                 Ok(v)
             }
             "storage-set" => {
@@ -187,40 +248,31 @@ impl WasmEmitter {
             }
             "storage-increment" => {
                 // (storage-increment "key" delta) -> i64 (new value)
+                // Canonical ABI: (i32 key_ptr, i32 key_len, i64 delta, i32 ret_area) -> ()
+                // result<s64, string> ret_area layout: [i32 disc] [4 pad] [i64 s64 @ +8]
                 if a.len() < 2 { return Err("storage-increment requires (key delta)".into()); }
                 if !self.wasi_mode { return Err("storage-increment is only available on OutLayer".into()); }
                 let key_expr = self.expr(&a[0])?;
                 let delta_expr = self.expr(&a[1])?;
-                let delta_expr2 = self.expr(&a[1])?;
                 let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
                 let mut v = Vec::new();
-                // key ptr/len
+                // key ptr/len (2 × i32) — extract from tagged pair
                 v.extend(key_expr.clone());
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
-                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32WrapI64); // key_ptr (i32)
                 v.extend(key_expr);
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.push(Instruction::I32WrapI64);
-                // delta_lo, delta_hi from untagged delta
+                v.push(Instruction::I32WrapI64); // key_len (i32)
+                // delta (i64) — untag, keep as i64 for canonical ABI
                 v.extend(delta_expr);
-                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU); // untag
-                v.push(Instruction::I32WrapI64); // delta_lo
-                v.extend(delta_expr2);
-                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.push(Instruction::I32WrapI64); // delta_hi
-                // result_lo_ptr, result_hi_ptr (use heap)
-                let res_lo = self.heap_ptr;
-                let res_hi = self.heap_ptr + 8;
-                self.heap_ptr += 16;
-                v.push(Instruction::I32Const(res_lo as i32));
-                v.push(Instruction::I32Const(res_hi as i32));
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU); // untag → i64
+                // ret_area pointer (i32)
+                v.push(Instruction::I32Const(163840)); // OL_RET_AREA
                 v.push(Instruction::Call(114));
-                v.push(Instruction::Drop); // ignore errno for now
-                // Load result as i64 from (res_lo, res_hi)
-                v.push(Instruction::I32Const(res_lo as i32));
+                // Read s64 result from ret_area + 8 (canonical ABI: disc@0, payload@8)
+                v.push(Instruction::I32Const(163840 + 8));
                 v.push(Instruction::I64Load(ma8));
                 v.extend(self.emit_tag_num());
                 Ok(v)
@@ -1129,4 +1181,17 @@ impl WasmEmitter {
             _ => Err("__not_handled__".into()),
         }
     }
+}
+
+/// Parse a URL string into (authority, path_with_query).
+/// Supports `https://host/path?query` and `http://host/path?query`.
+fn parse_url(url: &str) -> Result<(String, String), String> {
+    let url = url.trim();
+    let rest = url.strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .ok_or_else(|| format!("http-get: URL must start with https:// or http://, got: {}", url))?;
+    let slash_pos = rest.find('/').unwrap_or(rest.len());
+    let authority = &rest[..slash_pos];
+    let path = if slash_pos < rest.len() { &rest[slash_pos..] } else { "/" };
+    Ok((authority.to_string(), path.to_string()))
 }

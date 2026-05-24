@@ -452,8 +452,8 @@ fn build_memory_module(min_pages: u64) -> Vec<u8> {
     types.ty().function([], []);
     // type 1: (i32, i32, i32, i32) -> i32 — realloc signature
     types.ty().function([ValType::I32, ValType::I32, ValType::I32, ValType::I32], [ValType::I32]);
-    // type 2: (i32, i32, i32, i32, i32) -> () — s64 trap stub (5 i32 params)
-    types.ty().function([ValType::I32, ValType::I32, ValType::I32, ValType::I32, ValType::I32], []);
+    // type 2: (i32, i32, i64, i32) -> () — s64 trap stub (canonical ABI for s64 params)
+    types.ty().function([ValType::I32, ValType::I32, ValType::I64, ValType::I32], []);
     m.section(&types);
 
     // Function section: func 0 = realloc (type 1), func 1 = s64_trap (type 2)
@@ -501,10 +501,12 @@ fn build_memory_module(min_pages: u64) -> Vec<u8> {
     f.instruction(&Instruction::End);
     codes.function(&f);
 
-    // s64_trap: just trap (unreachable)
+    // s64_trap: just trap (unreachable) — matches canon-lowered (i32, i32, i64, i32) -> ()
     let mut trap = Function::new([
-        (0, ValType::I32), (1, ValType::I32), (2, ValType::I32),
-        (3, ValType::I32), (4, ValType::I32),
+        (0, ValType::I32),
+        (1, ValType::I32),
+        (2, ValType::I64),
+        (3, ValType::I32),
     ]);
     trap.instruction(&Instruction::Unreachable);
     trap.instruction(&Instruction::End);
@@ -944,4 +946,31 @@ fn test_shim_standalone() {
     eprintln!("Shim: {} bytes", bytes.len());
     eprintln!("Hex: {:02x?}", bytes);
     std::fs::write("/tmp/test_shim_builder.wasm", &bytes).unwrap();
+}
+/// Build a P2 component for wasi:http modules.
+/// Uses wit-component encoder with relaxed validation.
+pub fn build_wasi_http_component(
+    core_bytes: &[u8],
+    _em: &crate::wasm_emit::WasmEmitter,
+) -> Result<Vec<u8>, String> {
+    let mut mod_bytes = core_bytes.to_vec();
+
+    // Embed WIT metadata (imports only — no export, runtime uses _start)
+    let (resolve, world) = crate::wasi_http::build_http_wit_metadata()
+        .map_err(|e| format!("WIT metadata: {}", e))?;
+    wit_component::embed_component_metadata(
+        &mut mod_bytes,
+        &resolve,
+        world,
+        wit_component::StringEncoding::UTF8,
+    )
+    .map_err(|e| format!("embed metadata: {}", e))?;
+
+    let component = wit_component::ComponentEncoder::default()
+        .module(&mod_bytes)
+        .map_err(|e| format!("encoder module: {:#}", e))?
+        .validate(false)
+        .encode()
+        .map_err(|e| format!("encode: {:#}", e))?;
+    Ok(component)
 }
