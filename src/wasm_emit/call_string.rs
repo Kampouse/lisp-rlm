@@ -9,6 +9,8 @@ impl WasmEmitter {
                 Ok(v)
             }
             "str_cat" => {
+                // (str-cat s1 s2) — runtime bump-allocated string concatenation
+                // Uses emit_runtime_alloc (reads/writes RUNTIME_HEAP_PTR at addr 56)
                 let s1 = self.expr(&a[0])?;
                 let s2 = self.expr(&a[1])?;
                 let s1_i = self.local_idx("__sc1");
@@ -22,7 +24,7 @@ impl WasmEmitter {
                 // Save tagged strings, then untag to get raw packed (len<<32|ptr)
                 v.extend(s1); v.extend(self.emit_untag()); v.push(Instruction::LocalSet(s1_i));
                 v.extend(s2); v.extend(self.emit_untag()); v.push(Instruction::LocalSet(s2_i));
-                // Extract lengths from raw packed: len = raw >> 32
+                // Extract lengths: len = raw >> 32
                 v.push(Instruction::LocalGet(s1_i)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); v.push(Instruction::LocalSet(l1_i));
                 v.push(Instruction::LocalGet(s2_i)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); v.push(Instruction::LocalSet(l2_i));
                 // Extract pointers: ptr = raw & 0xFFFFFFFF
@@ -30,49 +32,75 @@ impl WasmEmitter {
                 let ptr2_i = self.local_idx("__scp2");
                 v.push(Instruction::LocalGet(s1_i)); v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(ptr1_i));
                 v.push(Instruction::LocalGet(s2_i)); v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(ptr2_i));
-                // Allocate destination buffer
-                let alloc_base = self.next_data_offset.max(2048);
-                v.push(Instruction::I64Const(alloc_base as i64)); v.push(Instruction::LocalSet(dst_i));
-                // ── Copy s1 bytes: dst[0..l1] = s1_ptr[0..l1] ──
+                // Compute total_len = l1 + l2
+                let total_i = self.local_idx("__sctot");
+                v.push(Instruction::LocalGet(l1_i)); v.push(Instruction::LocalGet(l2_i)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(total_i));
+                // Allocate via runtime bump allocator
+                // We need to emit: compute total_i at runtime, then call emit_runtime_alloc
+                // emit_runtime_alloc expects a compile-time constant, so we inline the alloc here
+                let rha_tmp = self.local_idx("__rha_tmp");
+                let rha_new = self.local_idx("__rha_new");
+                let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let mem_limit = (self.memory_pages as i64) * 65536;
+                // Read current heap ptr from RUNTIME_HEAP_PTR (addr 56)
+                v.push(Instruction::I64Const(56));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(ma8));
+                v.push(Instruction::LocalSet(rha_tmp));
+                // new_ptr = old + total_len
+                v.push(Instruction::LocalGet(rha_tmp));
+                v.push(Instruction::LocalGet(total_i));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(rha_new));
+                // Guard: new_ptr < mem_limit
+                v.push(Instruction::LocalGet(rha_new));
+                v.push(Instruction::I64Const(mem_limit));
+                v.push(Instruction::I64LtU);
+                v.push(Instruction::If(BlockType::Empty));
+                // Write back new ptr
+                v.push(Instruction::I64Const(56));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(rha_new));
+                v.push(Instruction::I64Store(ma8));
+                v.push(Instruction::Else);
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
+                // dst = old ptr
+                v.push(Instruction::LocalGet(rha_tmp));
+                v.push(Instruction::LocalSet(dst_i));
+                // ── Copy s1 bytes: dst[0..l1] = ptr1[0..l1] ──
                 v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(i_i));
                 v.push(Instruction::Block(BlockType::Empty));
                 v.push(Instruction::Loop(BlockType::Empty));
                 v.push(Instruction::LocalGet(i_i)); v.push(Instruction::LocalGet(l1_i)); v.push(Instruction::I64GeU);
-                v.push(Instruction::BrIf(1)); // break if i >= l1
-                // dst[i] = ptr1[i]
+                v.push(Instruction::BrIf(1));
                 v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalGet(ptr1_i)); v.push(Instruction::I32WrapI64); v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I32WrapI64); v.push(Instruction::I32Add);
                 v.push(Instruction::I32Load8U(ma));
                 v.push(Instruction::I32Store8(ma));
                 v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(i_i));
                 v.push(Instruction::Br(0));
-                v.push(Instruction::End); // loop
-                v.push(Instruction::End); // block
-
-                // ── Copy s2 bytes: dst[l1..l1+l2] = s2_ptr[0..l2] ──
+                v.push(Instruction::End);
+                v.push(Instruction::End);
+                // ── Copy s2 bytes: dst[l1..l1+l2] = ptr2[0..l2] ──
                 v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(i_i));
                 v.push(Instruction::Block(BlockType::Empty));
                 v.push(Instruction::Loop(BlockType::Empty));
                 v.push(Instruction::LocalGet(i_i)); v.push(Instruction::LocalGet(l2_i)); v.push(Instruction::I64GeU);
-                v.push(Instruction::BrIf(1)); // break if i >= l2
-                // dst[l1+i] = ptr2[i]
+                v.push(Instruction::BrIf(1));
                 v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::LocalGet(l1_i)); v.push(Instruction::I64Add); v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalGet(ptr2_i)); v.push(Instruction::I32WrapI64); v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I32WrapI64); v.push(Instruction::I32Add);
                 v.push(Instruction::I32Load8U(ma));
                 v.push(Instruction::I32Store8(ma));
                 v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(i_i));
                 v.push(Instruction::Br(0));
-                v.push(Instruction::End); // loop
-                v.push(Instruction::End); // block
-
-                // Return (total_len << 32) | dst — tagged as Str
-                v.push(Instruction::LocalGet(l1_i)); v.push(Instruction::LocalGet(l2_i)); v.push(Instruction::I64Add);
+                v.push(Instruction::End);
+                v.push(Instruction::End);
+                // Return tagged string: (total_len << 32) | dst, tagged TAG_STR
+                v.push(Instruction::LocalGet(total_i));
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
                 v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
-                // Bump allocator for next allocation
-                let new_off = (alloc_base + 4096) & !7;
-                self.next_data_offset = new_off;
                 Ok(v)
             }
             "str_eq" => {

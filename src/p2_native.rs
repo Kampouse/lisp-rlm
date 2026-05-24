@@ -162,13 +162,18 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
 
     let mut b = ComponentBuilder::default();
 
-    // ── Types for _start: () -> () ──
+    // ── Types for wasi:cli/run: () -> result<()> ──
+    // result<()> = result { ok: None, err: None } — canonical i32 discriminant
+    let (result_ok_err_type, roe_enc) = b.type_defined(None);
+    {
+        roe_enc.result(None::<ComponentValType>, None::<ComponentValType>);
+    }
     let (run_type, run_enc) = b.ty(None);
     {
         run_enc
             .function()
             .params([] as [(&str, ComponentValType); 0])
-            .result(None);
+            .result(Some(ComponentValType::Type(result_ok_err_type)));
     }
 
     // Set of core module import names (snake_case)
@@ -183,19 +188,16 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
         .copied()
         .collect();
 
+    // ── Shared type definitions (needed for outlayer WIT and P2 streams) ──
+    let string_ty = ComponentValType::Primitive(PrimitiveValType::String);
+    let s64_ty = ComponentValType::Primitive(PrimitiveValType::S64);
+
+    // list<u8>
+    let (list_u8_idx, list_u8_enc) = b.type_defined(None);
+    list_u8_enc.list(ComponentValType::Primitive(PrimitiveValType::U8));
+    let list_u8_ty = ComponentValType::Type(list_u8_idx);
+
     if has_outlayer {
-        // ══════════════════════════════════════════════════════════
-        // 1. Define all WIT defined types
-        // ══════════════════════════════════════════════════════════
-
-        // Primitive shortcuts (these are Copy, no allocation needed)
-        let string_ty = ComponentValType::Primitive(PrimitiveValType::String);
-        let s64_ty = ComponentValType::Primitive(PrimitiveValType::S64);
-
-        // list<u8>
-        let (list_u8_idx, list_u8_enc) = b.type_defined(None);
-        list_u8_enc.list(ComponentValType::Primitive(PrimitiveValType::U8));
-        let list_u8_ty = ComponentValType::Type(list_u8_idx);
 
         // bool
         let (bool_idx, bool_enc) = b.type_defined(None);
@@ -307,10 +309,6 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
     let mem_mod_bytes = build_memory_module(mem_pages);
     let mem_mod = b.core_module_raw(None, &mem_mod_bytes);
 
-    // ── Build WASI stub (no-op P1 implementations) ──
-    let wasi_stub_bytes = build_wasi_stub();
-    let wasi_stub_mod = b.core_module_raw(None, &wasi_stub_bytes);
-
     // ── Instantiate memory module FIRST (provides memory + realloc for canon lower) ──
     let mem_inst = b.core_instantiate(None, mem_mod, []);
     let mem = b.core_alias_export(None, mem_inst, "memory", ExportKind::Memory);
@@ -318,6 +316,213 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
 
     // For s64 functions, alias the unreachable stubs from the memory module
     let s64_trap = b.core_alias_export(None, mem_inst, "s64_trap", ExportKind::Func);
+
+    // ════════════════════════════════════════════════════════════════
+    // P2 WASI stream imports — proper resource-owning instance types
+    // matching the standard WASI P2 WIT definitions.
+    //
+    // Pattern (from p2_wasi_http.wasm):
+    //   1. wasi:io/streams exports resource types (input-stream, output-stream)
+    //      as (sub resource) inside the instance type, plus functions.
+    //   2. After import, alias resource types out at component level.
+    //   3. wasi:cli/stdin and wasi:cli/stdout alias those resource types
+    //      from outer scope, re-export them, and define get-stdin/get-stdout.
+    // ════════════════════════════════════════════════════════════════
+
+    // ── wasi:io/error@0.2.2 instance type (needed by streams) ──
+    let error_type_idx = {
+        let (it, ie) = b.ty(None);
+        let mut inst = InstanceType::new();
+        inst.export("error", ComponentTypeRef::Type(TypeBounds::SubResource));
+        ie.instance(&inst);
+        it
+    };
+    let error_comp_inst = b.import("wasi:io/error@0.2.2", ComponentTypeRef::Instance(error_type_idx));
+    let error_type = b.alias_export(error_comp_inst, "error", ComponentExportKind::Type);
+
+    // ── wasi:io/streams@0.2.2 instance type ──
+    // Must match the exact shape from WIT: exports input-stream, output-stream (sub resource),
+    // error (eq aliased), stream-error (variant), and two methods.
+    // Match reference p2_wasi_http.wasm exactly:
+    // 0=input-stream(SubResource), 1=output-stream(SubResource),
+    // 2=alias error, 3=export error Eq(2), 4=own(3), 5=stream-error variant,
+    // 6=export stream-error Eq(5), 7=borrow(0), 8=list<u8> inline,
+    // 9=result<8,6>, 10=func(7,u64)->9, export read func(10),
+    // 11=borrow(1), 12=result<_,6>, 13=func(11,8)->12, export write func(13)
+    let streams_type_idx = {
+        let (it, ie) = b.ty(None);
+        let mut inst = InstanceType::new();
+        // 0: input-stream (SubResource)
+        inst.export("input-stream", ComponentTypeRef::Type(TypeBounds::SubResource));
+        // 1: output-stream (SubResource)
+        inst.export("output-stream", ComponentTypeRef::Type(TypeBounds::SubResource));
+        // 2: alias error from outer (component-level error_type)
+        inst.alias(Alias::Outer {
+            kind: ComponentOuterAliasKind::Type,
+            count: 1,
+            index: error_type,
+        });
+        // 3: export "error" (eq 2)
+        inst.export("error", ComponentTypeRef::Type(TypeBounds::Eq(2)));
+        // 4: own(3) — own<error>
+        inst.ty().defined_type().own(3);
+        // 5: stream-error variant { last-operation-failed(4), closed }
+        inst.ty().defined_type().variant([
+            ("last-operation-failed", Some(ComponentValType::Type(4))),
+            ("closed", None),
+        ]);
+        // 6: export "stream-error" (eq 5)
+        inst.export("stream-error", ComponentTypeRef::Type(TypeBounds::Eq(5)));
+        // 7: borrow(0) — borrow<input-stream>
+        inst.ty().defined_type().borrow(0);
+        // 8: list<u8> defined inline (NOT aliased from outer)
+        inst.ty().defined_type().list(ComponentValType::Primitive(PrimitiveValType::U8));
+        // 9: result<list<u8>=8, stream-error=6>
+        inst.ty().defined_type().result(
+            Some(ComponentValType::Type(8)),
+            Some(ComponentValType::Type(6)),
+        );
+        // 10: func (self:7, len: u64) -> result<list<u8>, stream-error>=9
+        inst.ty().function()
+            .params([
+                ("self", ComponentValType::Type(7)),
+                ("len", ComponentValType::Primitive(PrimitiveValType::U64)),
+            ])
+            .result(Some(ComponentValType::Type(9)));
+        // Export "[method]input-stream.read" func(10)
+        inst.export("[method]input-stream.read", ComponentTypeRef::Func(10));
+        // 11: borrow(1) — borrow<output-stream>
+        inst.ty().defined_type().borrow(1);
+        // 12: result<_, stream-error=6>
+        inst.ty().defined_type().result(None, Some(ComponentValType::Type(6)));
+        // 13: func (self:11, contents:8) -> result<_, stream-error>=12
+        inst.ty().function()
+            .params([
+                ("self", ComponentValType::Type(11)),
+                ("contents", ComponentValType::Type(8)),
+            ])
+            .result(Some(ComponentValType::Type(12)));
+        // Export "[method]output-stream.blocking-write-and-flush" func(13)
+        inst.export("[method]output-stream.blocking-write-and-flush", ComponentTypeRef::Func(13));
+        ie.instance(&inst);
+        it
+    };
+    let streams_comp_inst = b.import(
+        "wasi:io/streams@0.2.2",
+        ComponentTypeRef::Instance(streams_type_idx),
+    );
+    // ── Alias resource types from streams import to component level ──
+    let input_stream_type = b.alias_export(streams_comp_inst, "input-stream", ComponentExportKind::Type);
+    let output_stream_type = b.alias_export(streams_comp_inst, "output-stream", ComponentExportKind::Type);
+
+    // ── wasi:cli/stdin@0.2.2 instance type ──
+    let stdin_type_idx = {
+        let (it, ie) = b.ty(None);
+        let mut inst = InstanceType::new();
+        // Alias input-stream resource from outer (component-level) — local 0
+        inst.alias(Alias::Outer {
+            kind: ComponentOuterAliasKind::Type,
+            count: 1,
+            index: input_stream_type,
+        });
+        // Re-export as local type — local 1 = (eq 0)
+        inst.export("input-stream", ComponentTypeRef::Type(TypeBounds::Eq(0)));
+        // own<input-stream> using local 1 — local 2
+        inst.ty().defined_type().own(1);
+        // get-stdin func: () -> own(1) — local 3
+        inst.ty().function()
+            .params([] as [(&str, ComponentValType); 0])
+            .result(Some(ComponentValType::Type(2)));
+        inst.export("get-stdin", ComponentTypeRef::Func(3));
+        ie.instance(&inst);
+        it
+    };
+    let stdin_comp_inst = b.import(
+        "wasi:cli/stdin@0.2.2",
+        ComponentTypeRef::Instance(stdin_type_idx),
+    );
+
+    // ── wasi:cli/stdout@0.2.2 instance type ──
+    let stdout_type_idx = {
+        let (it, ie) = b.ty(None);
+        let mut inst = InstanceType::new();
+        // Alias output-stream resource from outer (component-level) — local 0
+        inst.alias(Alias::Outer {
+            kind: ComponentOuterAliasKind::Type,
+            count: 1,
+            index: output_stream_type,
+        });
+        // Re-export as local type — local 1 = (eq 0)
+        inst.export("output-stream", ComponentTypeRef::Type(TypeBounds::Eq(0)));
+        // own<output-stream> using local 1 — local 2
+        inst.ty().defined_type().own(1);
+        // get-stdout func: () -> own(1) — local 3
+        inst.ty().function()
+            .params([] as [(&str, ComponentValType); 0])
+            .result(Some(ComponentValType::Type(2)));
+        inst.export("get-stdout", ComponentTypeRef::Func(3));
+        ie.instance(&inst);
+        it
+    };
+    let stdout_comp_inst = b.import(
+        "wasi:cli/stdout@0.2.2",
+        ComponentTypeRef::Instance(stdout_type_idx),
+    );
+
+    // ── Lower P2 stream functions to core ──
+    let get_stdin_comp = b.alias_export(stdin_comp_inst, "get-stdin", ComponentExportKind::Func);
+    let get_stdin_core = b.lower_func(None, get_stdin_comp, [CanonicalOption::Memory(mem)]);
+
+    let get_stdout_comp = b.alias_export(stdout_comp_inst, "get-stdout", ComponentExportKind::Func);
+    let get_stdout_core = b.lower_func(None, get_stdout_comp, [CanonicalOption::Memory(mem)]);
+
+    // Methods use [method] naming in streams instance type
+    // Alias [method]input-stream.read from streams instance (not blocking-read)
+    let blocking_read_comp = b.alias_export(
+        streams_comp_inst,
+        "[method]input-stream.read",
+        ComponentExportKind::Func,
+    );
+    // Realloc needed for blocking_read (returns list<u8> which host writes to memory)
+    let blocking_read_core = b.lower_func(None, blocking_read_comp, [
+        CanonicalOption::Memory(mem),
+        CanonicalOption::Realloc(realloc),
+    ]);
+
+    let blocking_write_comp = b.alias_export(
+        streams_comp_inst,
+        "[method]output-stream.blocking-write-and-flush",
+        ComponentExportKind::Func,
+    );
+    // No realloc needed for blocking_write — list<u8> is a param (guest→host), result is just discriminant
+    let blocking_write_core = b.lower_func(None, blocking_write_comp, [
+        CanonicalOption::Memory(mem),
+    ]);
+
+    // Resource drops use canon resource.drop on the component-level type
+    let drop_input_core = b.resource_drop(input_stream_type);
+    let drop_output_core = b.resource_drop(output_stream_type);
+
+    // ── Build P2 WASI bridge module ──
+    let bridge_bytes = crate::p2_wasi_bridge::build_p2_wasi_bridge();
+    let bridge_mod = b.core_module_raw(None, &bridge_bytes);
+
+    let p2_funcs_inst = b.core_instantiate_exports(
+        None,
+        [
+            ("get_stdin", ExportKind::Func, get_stdin_core),
+            ("blocking_read", ExportKind::Func, blocking_read_core),
+            ("drop_input_stream", ExportKind::Func, drop_input_core),
+            ("get_stdout", ExportKind::Func, get_stdout_core),
+            ("blocking_write_and_flush", ExportKind::Func, blocking_write_core),
+            ("drop_output_stream", ExportKind::Func, drop_output_core),
+        ],
+    );
+
+    let bridge_inst = b.core_instantiate(None, bridge_mod, [
+        ("env", ModuleArg::Instance(mem_inst)),
+        ("p2", ModuleArg::Instance(p2_funcs_inst)),
+    ]);
 
     let mut lowered_funcs: Vec<u32> = Vec::new();
     let mut lowered_names: Vec<String> = Vec::new();
@@ -361,10 +566,7 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
         );
     }
 
-    // ── Instantiate WASI stub ──
-    let wasi_stub_inst = b.core_instantiate(None, wasi_stub_mod, []);
-
-    // ── Instantiate core module with env(memory) + WASI + outlayer ──
+    // ── Instantiate core module with env(memory) + WASI bridge + outlayer ──
     let core_inst = if has_outlayer {
         b.core_instantiate(
             None,
@@ -372,7 +574,7 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
             [
                 ("env", ModuleArg::Instance(mem_inst)),
                 ("outlayer:api/host", ModuleArg::Instance(outlayer_inst_idx)),
-                ("wasi_snapshot_preview1", ModuleArg::Instance(wasi_stub_inst)),
+                ("wasi_snapshot_preview1", ModuleArg::Instance(bridge_inst)),
             ],
         )
     } else {
@@ -381,14 +583,21 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
             module_idx,
             [
                 ("env", ModuleArg::Instance(mem_inst)),
-                ("wasi_snapshot_preview1", ModuleArg::Instance(wasi_stub_inst)),
+                ("wasi_snapshot_preview1", ModuleArg::Instance(bridge_inst)),
             ],
         )
     };
 
-    // ── Lift _start → run (using shared memory) ──
-    let start_func = b.core_alias_export(None, core_inst, "_start", ExportKind::Func);
-    let run_func = b.lift_func(None, start_func, run_type, [CanonicalOption::Memory(mem)]);
+    // ── Wrap _start to return i32(0) for wasi:cli/run result<()> ──
+    // The lift expects () -> result<()> which in canonical ABI = () -> i32 (discriminant)
+    // Our core _start returns (), so we wrap it with a tiny adapter module
+    let wrapper_bytes = build_run_wrapper();
+    let wrapper_mod = b.core_module_raw(None, &wrapper_bytes);
+    let wrapper_inst = b.core_instantiate(None, wrapper_mod, [
+        ("env", ModuleArg::Instance(core_inst)),
+    ]);
+    let run_core = b.core_alias_export(None, wrapper_inst, "run", ExportKind::Func);
+    let run_func = b.lift_func(None, run_core, run_type, []);
 
     // ── Export wasi:cli/run@0.2.2 instance ──
     let shim_bytes = build_run_shim();
@@ -758,13 +967,59 @@ fn build_wasi_stub() -> Vec<u8> {
     m.finish()
 }
 
+/// Tiny core module that calls `_start` from "env" instance and returns i32(0).
+/// This bridges the core module's `() -> ()` _start to the canonical ABI's
+/// `() -> i32` expected by the lift for `wasi:cli/run` `() -> result<()>`.
+fn build_run_wrapper() -> Vec<u8> {
+    use wasm_encoder::{Module, TypeSection, ImportSection, FunctionSection, ExportSection, CodeSection, Function, Instruction};
+
+    let mut m = Module::new();
+    // Type section
+    let mut types = TypeSection::new();
+    types.ty().function([], []);          // type 0: () -> ()  (_start signature)
+    types.ty().function([], [ValType::I32]); // type 1: () -> i32 (run wrapper signature)
+    m.section(&types);
+
+    // Import section: import _start from env
+    let mut imports = ImportSection::new();
+    imports.import("env", "_start", wasm_encoder::EntityType::Function(0));
+    m.section(&imports);
+
+    // Function section: func 1 (after import) = type 1
+    let mut funcs = FunctionSection::new();
+    funcs.function(1);
+    m.section(&funcs);
+
+    // Export section: export "run" = func 1
+    let mut exports = ExportSection::new();
+    exports.export("run", ExportKind::Func, 1);
+    m.section(&exports);
+
+    // Code section: call _start, return 0
+    let mut codes = CodeSection::new();
+    let mut f = Function::new([]);
+    f.instruction(&Instruction::Call(0)); // call imported _start
+    f.instruction(&Instruction::I32Const(0)); // result<()> discriminant = 0 (ok)
+    f.instruction(&Instruction::End);
+    codes.function(&f);
+    m.section(&codes);
+
+    m.finish()
+}
+
 fn build_run_shim() -> Vec<u8> {
     let mut shim = ComponentBuilder::default();
+    // type 0: result<()> — ok: None, err: None
+    let (result_type, renc) = shim.type_defined(None);
+    {
+        renc.result(None::<ComponentValType>, None::<ComponentValType>);
+    }
+    // type 1: () -> result<()>
     let (fn_type, fenc) = shim.ty(None);
     {
         fenc.function()
             .params([] as [(&str, ComponentValType); 0])
-            .result(None);
+            .result(Some(ComponentValType::Type(result_type)));
     }
     shim.import("import-func-run", ComponentTypeRef::Func(fn_type));
     shim.export(

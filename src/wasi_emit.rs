@@ -11,7 +11,7 @@
 //! Uses WASI Preview 1 (fd_read/fd_write/proc_exit/random_get/environ_*).
 //! Core WASM emission (arithmetic, control flow, HOFs) is shared with NEAR target.
 
-use crate::wasm_emit::WasmEmitter;
+use crate::wasm_emit::{WasmEmitter, HEAP_START};
 use wasm_encoder::*;
 
 // ── Memory layout for OutLayer target ──
@@ -864,6 +864,12 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
     {
         let mut data = DataSection::new();
         let mut has_data = false;
+        // Initialize RUNTIME_HEAP_PTR (addr 56) to HEAP_START (4096)
+        {
+            let heap_start_bytes: [u8; 8] = (HEAP_START as u64).to_le_bytes();
+            data.active(0, &ConstExpr::i32_const(56), heap_start_bytes.iter().copied());
+            has_data = true;
+        }
         // String literals from lisp emitter
         for (off, bytes) in &em.data_segments {
             data.active(0, &ConstExpr::i32_const(*off as i32), bytes.iter().copied());
@@ -1626,8 +1632,11 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     m.section(&code);
 
     // ── Data section ──
-    if !em.data_segments.is_empty() {
+    {
         let mut data = DataSection::new();
+        // Initialize RUNTIME_HEAP_PTR (addr 56) to HEAP_START (4096)
+        let heap_start_bytes: [u8; 8] = (HEAP_START as u64).to_le_bytes();
+        data.active(0, &ConstExpr::i32_const(56), heap_start_bytes.iter().copied());
         for (off, bytes) in &em.data_segments {
             data.active(0, &ConstExpr::i32_const(*off as i32), bytes.iter().copied());
         }

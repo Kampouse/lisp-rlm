@@ -38,6 +38,7 @@ pub mod wasm_emit;
 pub mod outlayer_adapter;
 pub mod wasi_emit;
 pub mod p2_native;
+pub mod p2_wasi_bridge;
 pub mod near_validate;
 pub mod gas_estimate;
 pub mod tagged_value;
