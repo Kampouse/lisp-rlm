@@ -305,6 +305,12 @@ impl WasmEmitter {
         ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(scan_i));
         br_to!(scan_loop); close!();
 
+        // Quick skip: at depth 1, keys always start with '"' — if not '"', advance immediately
+        ins.push(Instruction::LocalGet(temp)); ins.push(Instruction::I32Const(0x22)); ins.push(Instruction::I32Ne);
+        open_if!();
+        ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(scan_i));
+        br_to!(scan_loop); close!();
+
         // ── Try each key pattern ──
         // We chain: try key 0, if match goto extract; try key 1, if match goto extract; ...
         // After all keys tried, advance scan_i and continue
