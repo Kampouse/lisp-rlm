@@ -733,9 +733,10 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
         // and writes the result to stdout. The user function should use http-get directly.
 
         // Minimal _start: resolve through trivial wrappers to find the real function
-        // Prefer the function named "run", fall back to heuristics
-        let mut real_func_idx = layout.user_fn_base + (em.funcs.len() - 1) as u32;
-        let mut real_param_count = em.funcs.last().unwrap().param_count;
+        // Prefer the function named "run", fall back to last user function (skip __ helpers)
+        let default_pos = em.funcs.iter().rposition(|f| !f.name.starts_with("__")).unwrap_or(em.funcs.len() - 1);
+        let mut real_func_idx = layout.user_fn_base + default_pos as u32;
+        let mut real_param_count = em.funcs[default_pos].param_count;
         // First: look for a function explicitly named "run"
         if let Some(run_pos) = em.funcs.iter().position(|f| f.name == "run") {
             real_func_idx = layout.user_fn_base + run_pos as u32;
@@ -1388,18 +1389,13 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     // ── _start() wrapper ──
     // Reads stdin → tagged string → calls run(input) → writes result to stdout
     {
-        // Prefer function named "run", fall back to last
+        // Prefer function named "run", then last user function (skip __ helpers)
         let run_pos = em.funcs.iter().position(|f| f.name == "run");
-        let last_idx = if let Some(pos) = run_pos {
-            internal_base + pos as u32
-        } else {
-            internal_base + (em.funcs.len() - 1) as u32
-        };
-        let last_func = if let Some(pos) = run_pos {
-            &em.funcs[pos]
-        } else {
-            em.funcs.last().unwrap()
-        };
+        let entry_pos = run_pos.or_else(|| {
+            em.funcs.iter().rposition(|f| !f.name.starts_with("__"))
+        }).unwrap_or(em.funcs.len() - 1);
+        let last_idx = internal_base + entry_pos as u32;
+        let last_func = &em.funcs[entry_pos];
         let param_count = last_func.param_count;
         
         // Locals: all i64 (matching the i64-only convention)
@@ -1452,8 +1448,12 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
         // ── Call user function ──
         if param_count == 0 {
             fb.instruction(&Instruction::Call(last_idx));
+        } else if param_count == 1 {
+            // Single-param: pass the tagged input string from local 2
+            fb.instruction(&Instruction::LocalGet(2)); // tagged stdin string
+            fb.instruction(&Instruction::Call(last_idx));
         } else {
-            // Load params from STDIN_BUF as raw tagged i64s (same as NEAR pattern)
+            // Multi-param: load each 8-byte slot from STDIN_BUF as raw tagged i64s
             for i in 0..param_count {
                 fb.instruction(&Instruction::I64Const(STDIN_BUF + (i as i64) * 8));
                 fb.instruction(&Instruction::I32WrapI64);

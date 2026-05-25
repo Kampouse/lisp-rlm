@@ -270,6 +270,7 @@ pub struct WasmEmitter {
     pub(crate) needs_frame: bool, // function body allocates from FP_GLOBAL
     pub(crate) heap_ptr: u32, // bump allocator for closures
     pub(crate) lambda_counter: u32, // unique lambda id
+    pub(crate) str_cat_depth: u32, // nesting depth for str-cat local isolation
     pub(crate) fuzz_mode: bool, // if true, export wrappers store tagged values (no untag, no value_return)
     pub(crate) need_outlayer: bool, // true if outlayer/* dispatch forms are used
     pub(crate) need_wasi_http: bool, // true if http-get is used (for P2 wasi:http path)
@@ -297,7 +298,7 @@ impl WasmEmitter {
             locals: HashMap::new(), next_local: 0, free_locals: Vec::new(), current_func: None, current_param_count: 0,
             while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 1, exports: Vec::new(),
             data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(),
-            gas_local: None, needs_frame: false, heap_ptr: HEAP_START as u32, lambda_counter: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), http_post_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false, borsh_schemas: HashMap::new(),
+            gas_local: None, needs_frame: false, heap_ptr: HEAP_START as u32, lambda_counter: 0, str_cat_depth: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), http_post_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false, borsh_schemas: HashMap::new(),
             func_defs: HashMap::new(),
         }
     }

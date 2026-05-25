@@ -676,17 +676,20 @@ impl WasmEmitter {
                 if a.len() != 2 { return Err("str-cat: expected 2 args".into()); }
                 if self.p2_mode || self.wasi_mode {
                     // P2/WASI: use heap_ptr bump allocator (no FP_GLOBAL)
-                    let a_raw_i = self.local_idx("__sc_a");
-                    let b_raw_i = self.local_idx("__sc_b");
-                    let a_len_i = self.local_idx("__sc_a_len");
-                    let a_ptr_i = self.local_idx("__sc_a_ptr");
-                    let b_len_i = self.local_idx("__sc_b_len");
-                    let b_ptr_i = self.local_idx("__sc_b_ptr");
-                    let total_len_i = self.local_idx("__sc_total");
-                    let dst_i = self.local_idx("__sc_dst");
-                    let dst_save_i = self.local_idx("__sc_dst_save");
-                    let qwords_i = self.local_idx("__sc_qw");
-                    let remain_i = self.local_idx("__sc_rem");
+                    // Use depth-scoped locals to avoid clobbering on nested str-cat calls
+                    let d = self.str_cat_depth;
+                    self.str_cat_depth += 1;
+                    let a_raw_i = self.local_idx(&format!("__sc{}_a", d));
+                    let b_raw_i = self.local_idx(&format!("__sc{}_b", d));
+                    let a_len_i = self.local_idx(&format!("__sc{}_a_len", d));
+                    let a_ptr_i = self.local_idx(&format!("__sc{}_a_ptr", d));
+                    let b_len_i = self.local_idx(&format!("__sc{}_b_len", d));
+                    let b_ptr_i = self.local_idx(&format!("__sc{}_b_ptr", d));
+                    let total_len_i = self.local_idx(&format!("__sc{}_total", d));
+                    let dst_i = self.local_idx(&format!("__sc{}_dst", d));
+                    let dst_save_i = self.local_idx(&format!("__sc{}_dst_save", d));
+                    let qwords_i = self.local_idx(&format!("__sc{}_qw", d));
+                    let remain_i = self.local_idx(&format!("__sc{}_rem", d));
                     let mut v = Vec::new();
                     let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
                     let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
@@ -740,11 +743,11 @@ impl WasmEmitter {
                     v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(dst_i));
                     v.push(Instruction::LocalGet(remain_i)); v.push(Instruction::I64Const(-1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(remain_i));
                     v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
-                    // Build result
+                    // Build result: ((total_len << 32) | dst_save) tagged as TAG_STR
                     v.push(Instruction::LocalGet(total_len_i)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
                     v.push(Instruction::LocalGet(dst_save_i)); v.push(Instruction::I64Or);
-                    v.extend(self.emit_tag_num());
-                    v.push(Instruction::I64Const(5)); v.push(Instruction::I64Or);
+                    v.extend(self.emit_tag_str());
+                    self.str_cat_depth -= 1;
                     return Ok(v);
                 }
                 // NEAR mode: frame-based allocation

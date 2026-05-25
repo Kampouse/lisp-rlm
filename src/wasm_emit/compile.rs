@@ -40,10 +40,11 @@ impl WasmEmitter {
                 queue.push_back(func_idx);
             }
         }
-        // If no exports, keep last function (default export)
+        // If no exports, keep last user function (skip __ helpers)
         if self.exports.is_empty() && !self.funcs.is_empty() {
-            let last = self.funcs.len() - 1;
-            if !reachable[last] { reachable[last] = true; queue.push_back(last); }
+            if let Some(idx) = (0..self.funcs.len()).rev().find(|&i| !self.funcs[i].name.starts_with("__")) {
+                if !reachable[idx] { reachable[idx] = true; queue.push_back(idx); }
+            }
         }
         // Always keep "run" — it's the standard entry point
         if let Some(&idx) = name_to_idx.get("run") {

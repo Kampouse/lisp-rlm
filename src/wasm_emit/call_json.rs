@@ -146,7 +146,65 @@ impl WasmEmitter {
                 if a.is_empty() { return Err("json-get-str requires a string key argument".into()); }
                 match &a[0] {
                     LispVal::Str(key) => {
-                        let mut v = if self.wasi_mode { self.json_get_wasi(key, "str")? } else { self.json_get_with_scanner(key, "str")? };
+                        let mut v = if a.len() > 1 {
+                            // (json-get-str "key" buffer) — copy buffer to STDIN_BUF then scan
+                            let buf_expr = self.expr(&a[1])?;
+                            let tmp = self.local_idx("__jgs_tmp");
+                            let src_ptr_l = self.local_idx("__jgs_sp");
+                            let copy_i = self.local_idx("__jgs_ci");
+                            let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+                            let target_buf = if self.wasi_mode { 32768i64 } else { INPUT_BUF };
+
+                            let mut copy_setup = Vec::new();
+                            // Untag buf_expr → payload
+                            copy_setup.extend(buf_expr.clone());
+                            copy_setup.push(Instruction::I64Const(3)); copy_setup.push(Instruction::I64ShrU);
+                            copy_setup.push(Instruction::LocalSet(tmp));
+                            // Write length to STDIN_LEN for json_get_wasi
+                            copy_setup.push(Instruction::I32Const(98304)); // STDIN_LEN
+                            copy_setup.push(Instruction::LocalGet(tmp));
+                            copy_setup.push(Instruction::I64Const(32)); copy_setup.push(Instruction::I64ShrU);
+                            copy_setup.push(Instruction::I32WrapI64);
+                            let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                            copy_setup.push(Instruction::I32Store(ma4));
+                            // src_ptr = tmp & 0xFFFFFFFF
+                            copy_setup.push(Instruction::LocalGet(tmp));
+                            copy_setup.push(Instruction::I64Const(0xFFFFFFFF)); copy_setup.push(Instruction::I64And);
+                            copy_setup.push(Instruction::LocalSet(src_ptr_l));
+                            // Copy loop: target_buf[i] = src[i]
+                            copy_setup.push(Instruction::I64Const(0)); copy_setup.push(Instruction::LocalSet(copy_i));
+                            copy_setup.push(Instruction::Block(BlockType::Empty));
+                            copy_setup.push(Instruction::Loop(BlockType::Empty));
+                            copy_setup.push(Instruction::LocalGet(copy_i));
+                            copy_setup.push(Instruction::LocalGet(tmp));
+                            copy_setup.push(Instruction::I64Const(32)); copy_setup.push(Instruction::I64ShrU);
+                            copy_setup.push(Instruction::I64GeU); copy_setup.push(Instruction::BrIf(1));
+                            // target_buf[i] = src[i]
+                            copy_setup.push(Instruction::I64Const(target_buf));
+                            copy_setup.push(Instruction::LocalGet(copy_i)); copy_setup.push(Instruction::I64Add);
+                            copy_setup.push(Instruction::I32WrapI64);
+                            copy_setup.push(Instruction::LocalGet(src_ptr_l));
+                            copy_setup.push(Instruction::LocalGet(copy_i)); copy_setup.push(Instruction::I64Add);
+                            copy_setup.push(Instruction::I32WrapI64);
+                            copy_setup.push(Instruction::I32Load8U(ma8.clone()));
+                            copy_setup.push(Instruction::I32Store8(ma8.clone()));
+                            copy_setup.push(Instruction::LocalGet(copy_i));
+                            copy_setup.push(Instruction::I64Const(1)); copy_setup.push(Instruction::I64Add);
+                            copy_setup.push(Instruction::LocalSet(copy_i));
+                            copy_setup.push(Instruction::Br(0));
+                            copy_setup.push(Instruction::End); copy_setup.push(Instruction::End);
+                            // Now scan from STDIN_BUF with the copied length
+                            // Must use json_get_from_buf directly (json_get_wasi creates its own vec)
+                            let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                            copy_setup.push(Instruction::I32Const(98304));
+                            copy_setup.push(Instruction::I32Load(ma4));
+                            copy_setup.push(Instruction::I64ExtendI32U);
+                            self.json_get_from_buf(key, "str", 32768, &mut copy_setup)?
+                        } else if self.wasi_mode {
+                            self.json_get_wasi(key, "str")?
+                        } else {
+                            self.json_get_with_scanner(key, "str")?
+                        };
                         v.extend(self.emit_tag_str());
                         Ok(v)
                     }

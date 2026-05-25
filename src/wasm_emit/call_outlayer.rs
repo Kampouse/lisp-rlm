@@ -112,10 +112,14 @@ impl WasmEmitter {
             }
             "storage-set" => {
                 // (storage-set "key" "value") -> bool
+                // WIT: storage-set(key: string, value: list<u8>) -> result<(), string>
+                // Canonical ABI: (key_ptr, key_len, val_ptr, val_len, ret_ptr) -> ()
                 if a.len() < 2 { return Err("storage-set requires (key value)".into()); }
                 if !self.wasi_mode { return Err("storage-set is only available on OutLayer".into()); }
                 let key_expr = self.expr(&a[0])?;
                 let val_expr = self.expr(&a[1])?;
+                let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                let ret_area: i32 = 163840 + 64; // offset past http ret areas
                 let mut v = Vec::new();
                 // key ptr/len
                 v.extend(key_expr.clone());
@@ -135,26 +139,32 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I32WrapI64);
-                // Call storage_set (sentinel 110)
+                // ret_ptr
+                v.push(Instruction::I32Const(ret_area));
+                // Call storage-set (sentinel 110) — canonical ABI: 5 params, void
                 v.push(Instruction::Call(110));
-                // Return true (errno == 0) as tagged bool
+                // Read discriminant from ret_area: 0 = ok, 1 = err
+                v.push(Instruction::I32Const(ret_area)); v.push(Instruction::I32Load(ma4));
+                // Return (discriminant == 0) as tagged bool
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(0)); v.push(Instruction::I64Eq);
-                v.push(Instruction::I64ExtendI32U); // convert bool i32 to i64
+                v.push(Instruction::I64ExtendI32U);
                 v.extend(self.emit_tag_num());
                 Ok(v)
             }
             "storage-get" => {
                 // (storage-get "key") -> string or nil
+                // WIT: result<option<list<u8>>, string>
+                // Canonical ABI layout (NOT flattened, nested result+option):
+                //   +0: result disc (0=ok, 1=err)
+                //   +4: option disc (0=none, 1=some) — only valid when result=ok
+                //   +8: ptr (i32) — only valid when option=some
+                //   +12: len (i32) — only valid when option=some
                 if a.is_empty() { return Err("storage-get requires a key".into()); }
                 if !self.wasi_mode { return Err("storage-get is only available on OutLayer".into()); }
                 let key_expr = self.expr(&a[0])?;
                 let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
-                let ma1 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
-                let errno_l = self.local_idx("__sg_err");
-                let len_l = self.local_idx("__sg_len");
-                let dst_l = self.local_idx("__sg_dst");
-                let i_l = self.local_idx("__sg_i");
+                let ret_area: i32 = 163840 + 128;
                 let mut v = Vec::new();
                 // key ptr/len
                 v.extend(key_expr.clone());
@@ -165,52 +175,48 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I32WrapI64);
-                // response buf at 98304, buf_len=65536, len_ptr at 163840
-                v.push(Instruction::I32Const(98304));
-                v.push(Instruction::I32Const(65536));
-                v.push(Instruction::I32Const(163840));
+                // ret_ptr
+                v.push(Instruction::I32Const(ret_area));
                 v.push(Instruction::Call(111));
+                // Read result discriminant: 0=ok, 1=err
+                v.push(Instruction::I32Const(ret_area)); v.push(Instruction::I32Load(ma4));
                 v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::LocalSet(errno_l));
-                v.push(Instruction::LocalGet(errno_l));
                 v.push(Instruction::I64Const(0)); v.push(Instruction::I64Ne);
                 v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                // disc != 0 → error → TAG_NIL
                 v.push(Instruction::I64Const(TAG_NIL));
                 v.push(Instruction::Else);
-                v.push(Instruction::I32Const(163840)); v.push(Instruction::I32Load(ma4));
-                v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(len_l));
-                v.push(Instruction::I64Const(self.heap_ptr as i64)); v.push(Instruction::LocalSet(dst_l));
-                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(i_l));
-                v.push(Instruction::Block(BlockType::Empty));
-                v.push(Instruction::Loop(BlockType::Empty));
-                v.push(Instruction::LocalGet(i_l)); v.push(Instruction::LocalGet(len_l));
-                v.push(Instruction::I64GeU); v.push(Instruction::BrIf(1));
-                v.push(Instruction::LocalGet(dst_l)); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::LocalGet(i_l)); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Add);
-                v.push(Instruction::I32Const(98304));
-                v.push(Instruction::LocalGet(i_l)); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Add);
-                v.push(Instruction::I32Load8U(ma1));
-                v.push(Instruction::I32Store8(ma1));
-                v.push(Instruction::LocalGet(i_l)); v.push(Instruction::I64Const(1));
-                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(i_l));
-                v.push(Instruction::Br(0));
-                v.push(Instruction::End); v.push(Instruction::End);
-                let new_heap = self.heap_ptr as i64 + 65536; self.heap_ptr = new_heap as u32;
-                v.push(Instruction::LocalGet(dst_l));
-                v.push(Instruction::LocalGet(len_l)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                // disc=0 (ok): read option discriminant at +4
+                v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                // option=0 → none → TAG_NIL
+                v.push(Instruction::I64Const(TAG_NIL));
+                v.push(Instruction::Else);
+                // option=1 → some: read ptr@+8, len@+12
+                v.push(Instruction::I32Const(ret_area + 8)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I32Const(ret_area + 12)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
                 v.push(Instruction::I64Or);
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl);
                 v.push(Instruction::I64Const(TAG_STR)); v.push(Instruction::I64Or);
-                v.push(Instruction::End);
+                v.push(Instruction::End); // inner if (option)
+                v.push(Instruction::End); // outer if (result)
                 Ok(v)
             }
             "storage-has" => {
                 // (storage-has "key") -> bool
+                // WIT: storage-has(key: string) -> result<bool, string>
+                // Canonical ABI: (key_ptr, key_len, ret_ptr) -> ()
+                // Result: disc(0=ok,1=err), if ok: i32(0=false,1=true) at +4
                 if a.is_empty() { return Err("storage-has requires a key".into()); }
                 if !self.wasi_mode { return Err("storage-has is only available on OutLayer".into()); }
                 let key_expr = self.expr(&a[0])?;
+                let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                let ret_area: i32 = 163840 + 192;
                 let mut v = Vec::new();
                 v.extend(key_expr.clone());
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
@@ -220,16 +226,24 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(ret_area));
                 v.push(Instruction::Call(112));
+                // Read discriminant then bool
+                v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4));
                 v.push(Instruction::I64ExtendI32U);
-                v.extend(self.emit_tag_num()); // 0 or 1 as tagged num (also truthy as bool)
+                v.extend(self.emit_tag_num());
                 Ok(v)
             }
             "storage-delete" => {
                 // (storage-delete "key") -> bool
+                // WIT: storage-delete(key: string) -> result<_, string>
+                // Canonical ABI: (key_ptr, key_len, ret_ptr) -> ()
+                // Result: disc(0=ok,1=err) at ret_ptr
                 if a.is_empty() { return Err("storage-delete requires a key".into()); }
                 if !self.wasi_mode { return Err("storage-delete is only available on OutLayer".into()); }
                 let key_expr = self.expr(&a[0])?;
+                let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                let ret_area: i32 = 163840 + 256;
                 let mut v = Vec::new();
                 v.extend(key_expr.clone());
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
@@ -239,7 +253,10 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(ret_area));
                 v.push(Instruction::Call(113));
+                // Read discriminant: 0=ok, nonzero=err → return as bool
+                v.push(Instruction::I32Const(ret_area)); v.push(Instruction::I32Load(ma4));
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(0)); v.push(Instruction::I64Eq);
                 v.push(Instruction::I64ExtendI32U);
@@ -278,96 +295,45 @@ impl WasmEmitter {
                 Ok(v)
             }
             "env/signer" => {
+                // WIT: env-signer() -> string
+                // Canonical ABI: (ret_ptr) -> ()
+                // Result: (ptr, len) written by host to ret_area
                 if !self.wasi_mode { return Err("env/signer is only available on OutLayer".into()); }
                 let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
-                let ma1 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
-                let len_l = self.local_idx("__env_len");
-                let dst_l = self.local_idx("__env_dst");
-                let i_l = self.local_idx("__env_i");
+                let ret_area: i32 = 163840 + 320;
                 let mut v = Vec::new();
-                v.push(Instruction::I32Const(98304)); // buf
-                v.push(Instruction::I32Const(65536)); // buf_len
-                v.push(Instruction::I32Const(163840)); // len_ptr
+                v.push(Instruction::I32Const(ret_area));
                 v.push(Instruction::Call(120));
+                // Read ptr/len from ret_area
+                v.push(Instruction::I32Const(ret_area)); v.push(Instruction::I32Load(ma4));
                 v.push(Instruction::I64ExtendI32U);
-                // If errno != 0, return nil
-                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Ne);
-                v.push(Instruction::If(BlockType::Result(ValType::I64)));
-                v.push(Instruction::I64Const(TAG_NIL));
-                v.push(Instruction::Else);
-                v.push(Instruction::I32Const(163840)); v.push(Instruction::I32Load(ma4));
-                v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(len_l));
-                v.push(Instruction::I64Const(self.heap_ptr as i64)); v.push(Instruction::LocalSet(dst_l));
-                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(i_l));
-                v.push(Instruction::Block(BlockType::Empty));
-                v.push(Instruction::Loop(BlockType::Empty));
-                v.push(Instruction::LocalGet(i_l)); v.push(Instruction::LocalGet(len_l));
-                v.push(Instruction::I64GeU); v.push(Instruction::BrIf(1));
-                v.push(Instruction::LocalGet(dst_l)); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::LocalGet(i_l)); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Add);
-                v.push(Instruction::I32Const(98304));
-                v.push(Instruction::LocalGet(i_l)); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Add);
-                v.push(Instruction::I32Load8U(ma1));
-                v.push(Instruction::I32Store8(ma1));
-                v.push(Instruction::LocalGet(i_l)); v.push(Instruction::I64Const(1));
-                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(i_l));
-                v.push(Instruction::Br(0));
-                v.push(Instruction::End); v.push(Instruction::End);
-                let new_heap = self.heap_ptr as i64 + 65536; self.heap_ptr = new_heap as u32;
-                v.push(Instruction::LocalGet(dst_l));
-                v.push(Instruction::LocalGet(len_l)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
                 v.push(Instruction::I64Or);
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl);
                 v.push(Instruction::I64Const(TAG_STR)); v.push(Instruction::I64Or);
-                v.push(Instruction::End);
                 Ok(v)
             }
             "env/predecessor" => {
+                // WIT: env-predecessor() -> string
+                // Canonical ABI: (ret_ptr) -> ()
+                // Result: (ptr, len) written by host to ret_area
                 if !self.wasi_mode { return Err("env/predecessor is only available on OutLayer".into()); }
                 let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
-                let ma1 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
-                let len_l = self.local_idx("__env_len2");
-                let dst_l = self.local_idx("__env_dst2");
-                let i_l = self.local_idx("__env_i2");
+                let ret_area: i32 = 163840 + 384;
                 let mut v = Vec::new();
-                v.push(Instruction::I32Const(98304));
-                v.push(Instruction::I32Const(65536));
-                v.push(Instruction::I32Const(163840));
+                v.push(Instruction::I32Const(ret_area));
                 v.push(Instruction::Call(121));
+                // Read ptr/len from ret_area
+                v.push(Instruction::I32Const(ret_area)); v.push(Instruction::I32Load(ma4));
                 v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Ne);
-                v.push(Instruction::If(BlockType::Result(ValType::I64)));
-                v.push(Instruction::I64Const(TAG_NIL));
-                v.push(Instruction::Else);
-                v.push(Instruction::I32Const(163840)); v.push(Instruction::I32Load(ma4));
-                v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(len_l));
-                v.push(Instruction::I64Const(self.heap_ptr as i64)); v.push(Instruction::LocalSet(dst_l));
-                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(i_l));
-                v.push(Instruction::Block(BlockType::Empty));
-                v.push(Instruction::Loop(BlockType::Empty));
-                v.push(Instruction::LocalGet(i_l)); v.push(Instruction::LocalGet(len_l));
-                v.push(Instruction::I64GeU); v.push(Instruction::BrIf(1));
-                v.push(Instruction::LocalGet(dst_l)); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::LocalGet(i_l)); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Add);
-                v.push(Instruction::I32Const(98304));
-                v.push(Instruction::LocalGet(i_l)); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Add);
-                v.push(Instruction::I32Load8U(ma1));
-                v.push(Instruction::I32Store8(ma1));
-                v.push(Instruction::LocalGet(i_l)); v.push(Instruction::I64Const(1));
-                v.push(Instruction::I64Add); v.push(Instruction::LocalSet(i_l));
-                v.push(Instruction::Br(0));
-                v.push(Instruction::End); v.push(Instruction::End);
-                let new_heap = self.heap_ptr as i64 + 65536; self.heap_ptr = new_heap as u32;
-                v.push(Instruction::LocalGet(dst_l));
-                v.push(Instruction::LocalGet(len_l)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
                 v.push(Instruction::I64Or);
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl);
                 v.push(Instruction::I64Const(TAG_STR)); v.push(Instruction::I64Or);
-                v.push(Instruction::End);
                 Ok(v)
             }
             "storage-decrement" => {
