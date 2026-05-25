@@ -31,6 +31,7 @@ impl WasmEmitter {
         let _val_start = 8u32; let depth = 9u32;
         let cmp_j = 10u32; let esc = 11u32;
         let str_len = 12u32; let dst = 13u32; let ch = 14u32;
+        let memchr_tmp = 15u32; // i64 for memchr/fast copy
 
         let mut ins: Vec<Instruction<'static>> = Vec::new();
         let mut d: u32 = 0;
@@ -124,6 +125,54 @@ impl WasmEmitter {
             ins.push(Instruction::I32Const(0)); ins.push(Instruction::LocalSet(str_len));
             ins.push(Instruction::I32Const(0)); ins.push(Instruction::LocalSet(esc));
             open_block!(); let str_block = ls.len() - 1;
+
+            // Fast 8-byte string copy loop
+            open_block!(); let fast_str_block = ls.len() - 1;
+            open_loop!();  let fast_str_loop = ls.len() - 1;
+            // Need at least 8 bytes remaining AND not in escape state
+            ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Const(8)); ins.push(Instruction::I32Add);
+            ins.push(Instruction::LocalGet(json_len)); ins.push(Instruction::I32GtS);
+            open_if!(); br_to!(fast_str_block); close!();
+            ins.push(Instruction::LocalGet(esc)); ins.push(Instruction::I32Const(0)); ins.push(Instruction::I32Ne);
+            open_if!(); br_to!(fast_str_block); close!();
+            // Check for '"' and '\' in 8-byte chunk
+            ins.push(Instruction::LocalGet(json_ptr)); ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Add);
+            ins.push(Instruction::I64Load(ma8.clone()));
+            ins.push(Instruction::LocalTee(memchr_tmp));
+            ins.push(Instruction::I64Const(0x2222222222222222_u64 as i64)); ins.push(Instruction::I64Xor);
+            ins.push(Instruction::LocalTee(memchr_tmp));
+            ins.push(Instruction::I64Const(-1)); ins.push(Instruction::I64Xor);
+            ins.push(Instruction::LocalGet(memchr_tmp));
+            ins.push(Instruction::I64Const(0x0101010101010101)); ins.push(Instruction::I64Sub);
+            ins.push(Instruction::I64And);
+            ins.push(Instruction::I64Const(0x8080808080808080_u64 as i64)); ins.push(Instruction::I64And);
+            // has_zero for '"'
+            ins.push(Instruction::LocalGet(json_ptr)); ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Add);
+            ins.push(Instruction::I64Load(ma8.clone()));
+            ins.push(Instruction::I64Const(0x5C5C5C5C5C5C5C5C_u64 as i64)); ins.push(Instruction::I64Xor);
+            ins.push(Instruction::LocalTee(memchr_tmp));
+            ins.push(Instruction::I64Const(-1)); ins.push(Instruction::I64Xor);
+            ins.push(Instruction::LocalGet(memchr_tmp));
+            ins.push(Instruction::I64Const(0x0101010101010101)); ins.push(Instruction::I64Sub);
+            ins.push(Instruction::I64And);
+            ins.push(Instruction::I64Const(0x8080808080808080_u64 as i64)); ins.push(Instruction::I64And);
+            // has_zero for '\'
+            ins.push(Instruction::I64Or);
+            ins.push(Instruction::I64Eqz);
+            open_if!();
+            // No special char → copy 8 bytes
+            ins.push(Instruction::LocalGet(dst));
+            ins.push(Instruction::LocalGet(json_ptr)); ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Add);
+            ins.push(Instruction::I64Load(ma8.clone()));
+            ins.push(Instruction::I64Store(ma8.clone()));
+            ins.push(Instruction::LocalGet(dst)); ins.push(Instruction::I32Const(8)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(dst));
+            ins.push(Instruction::LocalGet(str_len)); ins.push(Instruction::I32Const(8)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(str_len));
+            ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Const(8)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(scan_i));
+            br_to!(fast_str_loop);
+            close!(); // no special char
+            close!(); close!(); // fast_str_loop, fast_str_block
+
+            // Slow byte-by-byte fallback
             open_loop!();  let str_loop = ls.len() - 1;
             ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::LocalGet(json_len)); ins.push(Instruction::I32GeS);
             open_if!(); br_to!(str_block); close!();
@@ -208,7 +257,7 @@ impl WasmEmitter {
             close!(); close!();
         }
         ins.push(Instruction::I64Const(0)); ins.push(Instruction::Return);
-        self.funcs.push(FuncDef { name: "__json_get".to_string(), param_count: 2, local_count: 13, instrs: ins, local_entries: Some(vec![(13u32, ValType::I32)]) });
+        self.funcs.push(FuncDef { name: "__json_get".to_string(), param_count: 2, local_count: 13, instrs: ins, local_entries: Some(vec![(13u32, ValType::I32), (1u32, ValType::I64)]) });
         (self.funcs.len() - 1) as u32
     }
 
