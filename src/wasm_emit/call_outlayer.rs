@@ -112,14 +112,14 @@ impl WasmEmitter {
             }
             "storage-set" => {
                 // (storage-set "key" "value") -> bool
-                // WIT: storage-set(key: string, value: list<u8>) -> result<(), string>
-                // Canonical ABI: (key_ptr, key_len, val_ptr, val_len, ret_ptr) -> ()
+                // Production WIT: set(key: string, value: list<u8>) -> string
+                // Canonical ABI: (kp, kl, vp, vl, ret_ptr) -> () — 5 params
+                // ret_ptr layout: +0: str_ptr, +4: str_len (success response string)
                 if a.len() < 2 { return Err("storage-set requires (key value)".into()); }
                 if !self.wasi_mode { return Err("storage-set is only available on OutLayer".into()); }
                 let key_expr = self.expr(&a[0])?;
                 let val_expr = self.expr(&a[1])?;
-                let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
-                let ret_area: i32 = 163840 + 64; // offset past http ret areas
+                let ret_area: i32 = 163840 + 64;
                 let mut v = Vec::new();
                 // key ptr/len
                 v.extend(key_expr.clone());
@@ -139,27 +139,19 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I32WrapI64);
-                // ret_ptr
+                // ret_ptr for string return
                 v.push(Instruction::I32Const(ret_area));
-                // Call storage-set (sentinel 110) — canonical ABI: 5 params, void
                 v.push(Instruction::Call(110));
-                // Read discriminant from ret_area: 0 = ok, 1 = err
-                v.push(Instruction::I32Const(ret_area)); v.push(Instruction::I32Load(ma4));
-                // Return (discriminant == 0) as tagged bool
-                v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Eq);
-                v.push(Instruction::I64ExtendI32U);
+                // Production returns string via ret_ptr — just return true (success)
+                v.push(Instruction::I64Const(1));
                 v.extend(self.emit_tag_num());
                 Ok(v)
             }
             "storage-get" => {
                 // (storage-get "key") -> string or nil
-                // WIT: result<option<list<u8>>, string>
-                // Canonical ABI layout (NOT flattened, nested result+option):
-                //   +0: result disc (0=ok, 1=err)
-                //   +4: option disc (0=none, 1=some) — only valid when result=ok
-                //   +8: ptr (i32) — only valid when option=some
-                //   +12: len (i32) — only valid when option=some
+                // Production WIT: get(key: string) -> tuple<list<u8>, string>
+                // Canonical ABI: (kp, kl, ret_ptr) -> () — 3 params
+                // ret_ptr layout: +0: list_ptr, +4: list_len, +8: str_ptr, +12: str_len
                 if a.is_empty() { return Err("storage-get requires a key".into()); }
                 if !self.wasi_mode { return Err("storage-get is only available on OutLayer".into()); }
                 let key_expr = self.expr(&a[0])?;
@@ -178,45 +170,36 @@ impl WasmEmitter {
                 // ret_ptr
                 v.push(Instruction::I32Const(ret_area));
                 v.push(Instruction::Call(111));
-                // Read result discriminant: 0=ok, 1=err
-                v.push(Instruction::I32Const(ret_area)); v.push(Instruction::I32Load(ma4));
-                v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Ne);
-                v.push(Instruction::If(BlockType::Result(ValType::I64)));
-                // disc != 0 → error → TAG_NIL
-                v.push(Instruction::I64Const(TAG_NIL));
-                v.push(Instruction::Else);
-                // disc=0 (ok): read option discriminant at +4
+                // Read tuple<list<u8>, string> from ret_ptr:
+                // +0: list_ptr, +4: list_len (the value bytes)
+                // +8: str_ptr, +12: str_len (error/info string — ignored)
+                // Check if list_len > 0 → has value
                 v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4));
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(0)); v.push(Instruction::I64Eq);
                 v.push(Instruction::If(BlockType::Result(ValType::I64)));
-                // option=0 → none → TAG_NIL
+                // list_len == 0 → not found → TAG_NIL
                 v.push(Instruction::I64Const(TAG_NIL));
                 v.push(Instruction::Else);
-                // option=1 → some: read ptr@+8, len@+12
-                v.push(Instruction::I32Const(ret_area + 8)); v.push(Instruction::I32Load(ma4));
+                // list_len > 0 → read list_ptr@+0, list_len@+4 as tagged string
+                v.push(Instruction::I32Const(ret_area)); v.push(Instruction::I32Load(ma4));
                 v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::I32Const(ret_area + 12)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4));
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
                 v.push(Instruction::I64Or);
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl);
                 v.push(Instruction::I64Const(TAG_STR)); v.push(Instruction::I64Or);
-                v.push(Instruction::End); // inner if (option)
-                v.push(Instruction::End); // outer if (result)
+                v.push(Instruction::End);
                 Ok(v)
             }
             "storage-has" => {
                 // (storage-has "key") -> bool
-                // WIT: storage-has(key: string) -> result<bool, string>
-                // Canonical ABI: (key_ptr, key_len, ret_ptr) -> ()
-                // Result: disc(0=ok,1=err), if ok: i32(0=false,1=true) at +4
+                // Production WIT: has(key: string) -> bool
+                // Canonical ABI: (kp, kl) -> i32 — 2 params, direct i32 return (NO ret_ptr)
                 if a.is_empty() { return Err("storage-has requires a key".into()); }
                 if !self.wasi_mode { return Err("storage-has is only available on OutLayer".into()); }
                 let key_expr = self.expr(&a[0])?;
-                let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
-                let ret_area: i32 = 163840 + 192;
                 let mut v = Vec::new();
                 v.extend(key_expr.clone());
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
@@ -226,24 +209,19 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Const(ret_area));
+                // bool returned directly as i32 — no ret_ptr
                 v.push(Instruction::Call(112));
-                // Read discriminant then bool
-                v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4));
                 v.push(Instruction::I64ExtendI32U);
                 v.extend(self.emit_tag_num());
                 Ok(v)
             }
             "storage-delete" => {
                 // (storage-delete "key") -> bool
-                // WIT: storage-delete(key: string) -> result<_, string>
-                // Canonical ABI: (key_ptr, key_len, ret_ptr) -> ()
-                // Result: disc(0=ok,1=err) at ret_ptr
+                // Production WIT: delete(key: string) -> bool
+                // Canonical ABI: (kp, kl) -> i32 — 2 params, direct i32 return (NO ret_ptr)
                 if a.is_empty() { return Err("storage-delete requires a key".into()); }
                 if !self.wasi_mode { return Err("storage-delete is only available on OutLayer".into()); }
                 let key_expr = self.expr(&a[0])?;
-                let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
-                let ret_area: i32 = 163840 + 256;
                 let mut v = Vec::new();
                 v.extend(key_expr.clone());
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
@@ -253,12 +231,8 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Const(ret_area));
+                // bool returned directly as i32 — no ret_ptr
                 v.push(Instruction::Call(113));
-                // Read discriminant: 0=ok, nonzero=err → return as bool
-                v.push(Instruction::I32Const(ret_area)); v.push(Instruction::I32Load(ma4));
-                v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Eq);
                 v.push(Instruction::I64ExtendI32U);
                 v.extend(self.emit_tag_num());
                 Ok(v)

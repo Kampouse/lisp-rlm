@@ -1,5 +1,6 @@
 [workspace]
 members = [".", "clojure-rlm", "crates/browser-compiler"]
+exclude = ["http-adapter"]
 
 [package]
 name = "lisp-rlm-wasm"
