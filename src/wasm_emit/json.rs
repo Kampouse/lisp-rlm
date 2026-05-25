@@ -19,7 +19,7 @@ impl WasmEmitter {
         self.json_get_from_buf(key, value_type, 32768, &mut setup)
     }
 
-    fn ensure_json_get_func(&mut self) -> u32 {
+    pub(crate) fn ensure_json_get_func(&mut self) -> u32 {
         if let Some(idx) = self.funcs.iter().position(|f| f.name == "__json_get") {
             return idx as u32;
         }

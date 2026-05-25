@@ -1465,15 +1465,6 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
         }
         fb.instruction(&Instruction::LocalSet(1)); // result
 
-        // ── Write result to stdout AND store at RESULT_BUF ──
-        // Always store untagged payload at RESULT_BUF (for testing)
-        fb.instruction(&Instruction::I64Const(RESULT_BUF));
-        fb.instruction(&Instruction::I32WrapI64);
-        fb.instruction(&Instruction::LocalGet(1));
-        fb.instruction(&Instruction::I64Const(3));
-        fb.instruction(&Instruction::I64ShrU);
-        fb.instruction(&Instruction::I64Store(ma));
-
         // Check tag for fd_write output
         fb.instruction(&Instruction::LocalGet(1));
         fb.instruction(&Instruction::I64Const(7));
