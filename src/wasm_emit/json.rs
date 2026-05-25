@@ -222,6 +222,7 @@ impl WasmEmitter {
         }
         let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
         let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+        let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
         let stdout_buf: i32 = 65536;
         let slot_size: i32 = 256; // bytes per result string area
 
@@ -318,21 +319,45 @@ impl WasmEmitter {
 
         for k in 0..n_keys {
             // Pattern match: compare json_ptr[scan_i..] against key_ptrs[k] for key_lens[k] bytes
+            // Multi-byte: use I32Load (4 bytes) when possible for 4x fewer iterations
             ins.push(Instruction::I32Const(1)); ins.push(Instruction::LocalSet(temp)); // assume match
             ins.push(Instruction::I32Const(0)); ins.push(Instruction::LocalSet(cmp_j));
             open_block!(); let pat_block_k = ls.len() - 1;
             open_loop!();  let pat_loop_k = ls.len() - 1;
             ins.push(Instruction::LocalGet(cmp_j)); ins.push(Instruction::LocalGet(key_lens[k])); ins.push(Instruction::I32GeS);
             open_if!(); br_to!(pat_block_k); close!();
+            // Check if we can do a 4-byte comparison
+            ins.push(Instruction::LocalGet(cmp_j)); ins.push(Instruction::I32Const(4)); ins.push(Instruction::I32Add);
+            ins.push(Instruction::LocalGet(key_lens[k])); ins.push(Instruction::I32LeS);
+            open_if!();
+            // 4-byte comparison: I32Load from both JSON and pattern
+            ins.push(Instruction::LocalGet(json_ptr)); ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Add);
+            ins.push(Instruction::LocalGet(cmp_j)); ins.push(Instruction::I32Add);
+            ins.push(Instruction::I32Load(ma4.clone()));
+            ins.push(Instruction::LocalGet(key_ptrs[k])); ins.push(Instruction::LocalGet(cmp_j)); ins.push(Instruction::I32Add);
+            ins.push(Instruction::I32Load(ma4.clone()));
+            ins.push(Instruction::I32Eq);
+            // If 4-byte match → advance by 4; else → mismatch
+            open_if!();
+            ins.push(Instruction::LocalGet(cmp_j)); ins.push(Instruction::I32Const(4)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(cmp_j));
+            open_else!();
+            ins.push(Instruction::I32Const(0)); ins.push(Instruction::LocalSet(temp)); br_to!(pat_block_k);
+            close!(); // end 4-byte match/mismatch if
+            // Else: single-byte comparison (remaining < 4 bytes)
+            open_else!();
             ins.push(Instruction::LocalGet(json_ptr)); ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Add);
             ins.push(Instruction::LocalGet(cmp_j)); ins.push(Instruction::I32Add);
             ins.push(Instruction::I32Load8U(ma8.clone()));
             ins.push(Instruction::LocalGet(key_ptrs[k])); ins.push(Instruction::LocalGet(cmp_j)); ins.push(Instruction::I32Add);
             ins.push(Instruction::I32Load8U(ma8.clone()));
             ins.push(Instruction::I32Eq);
-            open_if!(); open_else!();
-            ins.push(Instruction::I32Const(0)); ins.push(Instruction::LocalSet(temp)); br_to!(pat_block_k); close!();
+            // If byte match → advance by 1; else → mismatch
+            open_if!();
             ins.push(Instruction::LocalGet(cmp_j)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(cmp_j));
+            open_else!();
+            ins.push(Instruction::I32Const(0)); ins.push(Instruction::LocalSet(temp)); br_to!(pat_block_k);
+            close!(); // end byte match/mismatch if
+            close!(); // end can-4-byte if/else
             br_to!(pat_loop_k);
             close!(); close!(); // pat loop, pat block
 
