@@ -23,16 +23,17 @@
         (str-concat "{\"status\":\"ok\",\"api_key\":\"" (str-concat existing "\",\"message\":\"existing\"}"))
         ;; Register new via OutLayer API
         (let ((resp (http-post "https://api.outlayer.fastnear.com/register" "{}")))
-          (let ((api-key (json-get-str "api_key" resp))
-                (near-acct (json-get-str "near_account_id" resp)))
-            ;; json-get-str returns "" on miss (str-len = 0)
-            (if (= (str-len api-key) 0)
-              "{\"status\":\"error\",\"message\":\"registration failed\"}"
-              (begin
-                (storage-set key api-key)
-                (str-concat "{\"status\":\"ok\",\"api_key\":\""
-                  (str-concat api-key (str-concat "\",\"near_account_id\":\""
-                    (str-concat near-acct "\"}"))))))))))))
+          (let ((extracted (json-extract resp "api_key" "near_account_id")))
+            (let ((api-key (vec-nth extracted 0))
+                  (near-acct (vec-nth extracted 1)))
+              ;; api-key is "" on miss (str-len = 0)
+              (if (= (str-len api-key) 0)
+                "{\"status\":\"error\",\"message\":\"registration failed\"}"
+                (begin
+                  (storage-set key api-key)
+                  (str-concat "{\"status\":\"ok\",\"api_key\":\""
+                    (str-concat api-key (str-concat "\",\"near_account_id\":\""
+                      (str-concat near-acct "\"}")))))))))))))
 
 (define (do-recover google-sub)
   (let ((key (storage-key google-sub)))

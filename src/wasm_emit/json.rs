@@ -212,6 +212,366 @@ impl WasmEmitter {
         (self.funcs.len() - 1) as u32
     }
 
+    /// Generate a `__json_extract_N` function that scans a JSON buffer once and
+    /// extracts N key values. Returns a tagged array pointer.
+    /// Signature: (buf_packed: i64, key0_packed: i64, ..., keyN-1_packed: i64) -> i64
+    pub(crate) fn ensure_json_extract_func(&mut self, n_keys: usize) -> u32 {
+        let fname = format!("__json_extract_{}", n_keys);
+        if let Some(idx) = self.funcs.iter().position(|f| f.name == fname) {
+            return idx as u32;
+        }
+        let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+        let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+        let stdout_buf: i32 = 65536;
+        let slot_size: i32 = 256; // bytes per result string area
+
+        // Locals (all i32 — params are i64 at indices 0..n_keys, rest are i32)
+        let mut next_local = (n_keys + 1) as u32; // params: buf + N keys
+        let json_ptr = next_local; next_local += 1;
+        let json_len = next_local; next_local += 1;
+        // Key ptrs and lens
+        let mut key_ptrs = Vec::new();
+        let mut key_lens = Vec::new();
+        for _ in 0..n_keys {
+            key_ptrs.push(next_local); next_local += 1;
+            key_lens.push(next_local); next_local += 1;
+        }
+        let scan_i = next_local; next_local += 1;
+        let depth = next_local; next_local += 1;
+        let temp = next_local; next_local += 1;
+        let cmp_j = next_local; next_local += 1;
+        let ch = next_local; next_local += 1;
+        let dst = next_local; next_local += 1;
+        let str_len = next_local; next_local += 1;
+        let esc = next_local; next_local += 1;
+        let found = next_local; next_local += 1;
+        let cur_key = next_local; next_local += 1;
+        let val_type = next_local; next_local += 1; // 0=string, 1=object/array, 2=raw
+        let n_i32_locals = next_local - (n_keys as u32 + 1);
+
+        let mut ins: Vec<Instruction<'static>> = Vec::new();
+        let mut d: u32 = 0;
+        let mut ls: Vec<u32> = Vec::new();
+        macro_rules! open_block { () => { ls.push(d); ins.push(Instruction::Block(BlockType::Empty)); d += 1; } }
+        macro_rules! open_loop { () => { ls.push(d); ins.push(Instruction::Loop(BlockType::Empty)); d += 1; } }
+        macro_rules! open_if { () => { ls.push(d); ins.push(Instruction::If(BlockType::Empty)); d += 1; } }
+        macro_rules! open_else { () => { ins.push(Instruction::Else); } }
+        macro_rules! close { () => { ins.push(Instruction::End); ls.pop(); d -= 1; } }
+        macro_rules! br_to { ($idx:expr) => { let t = ls[$idx]; ins.push(Instruction::Br(d - t - 1)); } }
+
+        // ── Extract buf ──
+        ins.push(Instruction::LocalGet(0)); ins.push(Instruction::I64Const(32)); ins.push(Instruction::I64ShrU);
+        ins.push(Instruction::I32WrapI64); ins.push(Instruction::LocalSet(json_len));
+        ins.push(Instruction::LocalGet(0)); ins.push(Instruction::I32WrapI64); ins.push(Instruction::LocalSet(json_ptr));
+
+        // ── Extract keys ──
+        for k in 0..n_keys {
+            let param_idx = (k + 1) as u32;
+            ins.push(Instruction::LocalGet(param_idx)); ins.push(Instruction::I64Const(32)); ins.push(Instruction::I64ShrU);
+            ins.push(Instruction::I32WrapI64); ins.push(Instruction::LocalSet(key_lens[k]));
+            ins.push(Instruction::LocalGet(param_idx)); ins.push(Instruction::I32WrapI64); ins.push(Instruction::LocalSet(key_ptrs[k]));
+        }
+
+        ins.push(Instruction::I32Const(0)); ins.push(Instruction::LocalSet(found));
+        ins.push(Instruction::I32Const(0)); ins.push(Instruction::LocalSet(scan_i));
+        ins.push(Instruction::I32Const(0)); ins.push(Instruction::LocalSet(depth));
+
+        // ── Outer scan loop ──
+        open_block!(); let scan_block = ls.len() - 1;
+        open_loop!();  let scan_loop = ls.len() - 1;
+
+        // Early exit: all found
+        ins.push(Instruction::LocalGet(found)); ins.push(Instruction::I32Const(n_keys as i32)); ins.push(Instruction::I32Eq);
+        open_if!(); br_to!(scan_block); close!();
+
+        // Bounds check (need at least 2 bytes for shortest possible key match)
+        ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Const(2)); ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalGet(json_len)); ins.push(Instruction::I32GeS);
+        open_if!(); br_to!(scan_block); close!();
+
+        // Read byte
+        ins.push(Instruction::LocalGet(json_ptr)); ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Add);
+        ins.push(Instruction::I32Load8U(ma8.clone())); ins.push(Instruction::LocalSet(temp));
+
+        // Track brace depth
+        ins.push(Instruction::LocalGet(temp)); ins.push(Instruction::I32Const(0x7B)); ins.push(Instruction::I32Eq);
+        open_if!(); ins.push(Instruction::LocalGet(depth)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(depth)); close!();
+        ins.push(Instruction::LocalGet(temp)); ins.push(Instruction::I32Const(0x7D)); ins.push(Instruction::I32Eq);
+        open_if!(); ins.push(Instruction::LocalGet(depth)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Sub); ins.push(Instruction::LocalSet(depth)); close!();
+
+        // Only match at depth 1
+        ins.push(Instruction::LocalGet(depth)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Ne);
+        open_if!();
+        ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(scan_i));
+        br_to!(scan_loop); close!();
+
+        // ── Try each key pattern ──
+        // We chain: try key 0, if match goto extract; try key 1, if match goto extract; ...
+        // After all keys tried, advance scan_i and continue
+        open_block!(); let try_block = ls.len() - 1; // break to here after trying all keys
+
+        for k in 0..n_keys {
+            // Pattern match: compare json_ptr[scan_i..] against key_ptrs[k] for key_lens[k] bytes
+            ins.push(Instruction::I32Const(1)); ins.push(Instruction::LocalSet(temp)); // assume match
+            ins.push(Instruction::I32Const(0)); ins.push(Instruction::LocalSet(cmp_j));
+            open_block!(); let pat_block_k = ls.len() - 1;
+            open_loop!();  let pat_loop_k = ls.len() - 1;
+            ins.push(Instruction::LocalGet(cmp_j)); ins.push(Instruction::LocalGet(key_lens[k])); ins.push(Instruction::I32GeS);
+            open_if!(); br_to!(pat_block_k); close!();
+            ins.push(Instruction::LocalGet(json_ptr)); ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Add);
+            ins.push(Instruction::LocalGet(cmp_j)); ins.push(Instruction::I32Add);
+            ins.push(Instruction::I32Load8U(ma8.clone()));
+            ins.push(Instruction::LocalGet(key_ptrs[k])); ins.push(Instruction::LocalGet(cmp_j)); ins.push(Instruction::I32Add);
+            ins.push(Instruction::I32Load8U(ma8.clone()));
+            ins.push(Instruction::I32Eq);
+            open_if!(); open_else!();
+            ins.push(Instruction::I32Const(0)); ins.push(Instruction::LocalSet(temp)); br_to!(pat_block_k); close!();
+            ins.push(Instruction::LocalGet(cmp_j)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(cmp_j));
+            br_to!(pat_loop_k);
+            close!(); close!(); // pat loop, pat block
+
+            // If match (temp == 1), validate preceding char and extract
+            ins.push(Instruction::LocalGet(temp)); open_if!();
+            // Validate preceding char
+            ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Const(0)); ins.push(Instruction::I32GtS); open_if!();
+            ins.push(Instruction::LocalGet(json_ptr)); ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Sub);
+            ins.push(Instruction::I32Add); ins.push(Instruction::I32Load8U(ma8.clone())); ins.push(Instruction::LocalSet(ch));
+            ins.push(Instruction::LocalGet(ch)); ins.push(Instruction::I32Const(0x7B)); ins.push(Instruction::I32Eq);
+            ins.push(Instruction::LocalGet(ch)); ins.push(Instruction::I32Const(0x2C)); ins.push(Instruction::I32Eq); ins.push(Instruction::I32Or);
+            ins.push(Instruction::LocalGet(ch)); ins.push(Instruction::I32Const(0x20)); ins.push(Instruction::I32Eq); ins.push(Instruction::I32Or);
+            ins.push(Instruction::LocalGet(ch)); ins.push(Instruction::I32Const(0x09)); ins.push(Instruction::I32Eq); ins.push(Instruction::I32Or);
+            ins.push(Instruction::LocalGet(ch)); ins.push(Instruction::I32Const(0x0A)); ins.push(Instruction::I32Eq); ins.push(Instruction::I32Or);
+            ins.push(Instruction::I32Eqz); open_if!();
+            ins.push(Instruction::I32Const(0)); ins.push(Instruction::LocalSet(temp)); close!(); close!(); // close invalid + prev_char blocks only
+
+            // If still matching after validation
+            ins.push(Instruction::LocalGet(temp)); open_if!();
+            // Set cur_key = k
+            ins.push(Instruction::I32Const(k as i32)); ins.push(Instruction::LocalSet(cur_key));
+            // Advance scan_i past pattern
+            ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::LocalGet(key_lens[k])); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(scan_i));
+            br_to!(try_block); // break out of try-all-keys block → go to value extraction
+            close!(); // match valid
+            close!(); // match
+        }
+
+        // No key matched — advance and continue scan
+        ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(scan_i));
+        br_to!(scan_loop);
+        close!(); // try_block
+
+        // ── Value extraction (land here after a key match) ──
+        // Skip whitespace
+        open_block!(); let ws_block = ls.len() - 1;
+        open_loop!();  let ws_loop = ls.len() - 1;
+        ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::LocalGet(json_len)); ins.push(Instruction::I32GeS);
+        open_if!(); br_to!(ws_block); close!();
+        ins.push(Instruction::LocalGet(json_ptr)); ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Add);
+        ins.push(Instruction::I32Load8U(ma8.clone())); ins.push(Instruction::LocalSet(ch));
+        ins.push(Instruction::LocalGet(ch)); ins.push(Instruction::I32Const(0x20)); ins.push(Instruction::I32Eq);
+        ins.push(Instruction::LocalGet(ch)); ins.push(Instruction::I32Const(0x09)); ins.push(Instruction::I32Eq); ins.push(Instruction::I32Or);
+        ins.push(Instruction::LocalGet(ch)); ins.push(Instruction::I32Const(0x0A)); ins.push(Instruction::I32Eq); ins.push(Instruction::I32Or);
+        open_if!(); ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(scan_i)); br_to!(ws_loop); close!();
+        close!(); close!(); // ws
+
+        // Read first non-ws byte
+        ins.push(Instruction::LocalGet(json_ptr)); ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Add);
+        ins.push(Instruction::I32Load8U(ma8.clone())); ins.push(Instruction::LocalSet(ch));
+
+        // dst_base = stdout_buf + cur_key * slot_size
+        ins.push(Instruction::I32Const(stdout_buf));
+        ins.push(Instruction::LocalGet(cur_key)); ins.push(Instruction::I32Const(slot_size)); ins.push(Instruction::I32Mul);
+        ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(dst));
+        ins.push(Instruction::I32Const(0)); ins.push(Instruction::LocalSet(str_len));
+
+        // ── STRING: '"' ──
+        ins.push(Instruction::LocalGet(ch)); ins.push(Instruction::I32Const(0x22)); ins.push(Instruction::I32Eq);
+        open_if!();
+        ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(scan_i));
+        ins.push(Instruction::I32Const(0)); ins.push(Instruction::LocalSet(esc));
+        open_block!(); let str_block = ls.len() - 1;
+        open_loop!();  let str_loop = ls.len() - 1;
+        ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::LocalGet(json_len)); ins.push(Instruction::I32GeS);
+        open_if!(); br_to!(str_block); close!();
+        ins.push(Instruction::LocalGet(json_ptr)); ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Add);
+        ins.push(Instruction::I32Load8U(ma8.clone())); ins.push(Instruction::LocalSet(ch));
+        ins.push(Instruction::LocalGet(esc)); ins.push(Instruction::I32Const(0)); ins.push(Instruction::I32Eq);
+        ins.push(Instruction::LocalGet(ch)); ins.push(Instruction::I32Const(0x22)); ins.push(Instruction::I32Eq);
+        ins.push(Instruction::I32And); open_if!(); br_to!(str_block); close!();
+        ins.push(Instruction::LocalGet(ch)); ins.push(Instruction::I32Const(0x5C)); ins.push(Instruction::I32Eq);
+        open_if!(); ins.push(Instruction::LocalGet(esc)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Xor); ins.push(Instruction::LocalSet(esc));
+        open_else!(); ins.push(Instruction::I32Const(0)); ins.push(Instruction::LocalSet(esc)); close!();
+        ins.push(Instruction::LocalGet(dst)); ins.push(Instruction::LocalGet(ch)); ins.push(Instruction::I32Store8(ma8.clone()));
+        ins.push(Instruction::LocalGet(dst)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(dst));
+        ins.push(Instruction::LocalGet(str_len)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(str_len));
+        ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(scan_i));
+        br_to!(str_loop); close!(); close!(); // str
+        // Store packed result: (str_len << 32) | dst_base
+        ins.push(Instruction::I32Const(stdout_buf));
+        ins.push(Instruction::LocalGet(cur_key)); ins.push(Instruction::I32Const(slot_size)); ins.push(Instruction::I32Mul);
+        ins.push(Instruction::I32Add); // dst_base on stack as i32
+        ins.push(Instruction::I64ExtendI32U);
+        ins.push(Instruction::LocalGet(str_len)); ins.push(Instruction::I64ExtendI32U);
+        ins.push(Instruction::I64Const(32)); ins.push(Instruction::I64Shl);
+        ins.push(Instruction::I64Or);
+        // Stash packed value, compute addr, then store
+        ins.push(Instruction::LocalSet(0)); // reuse param 0 (buf_packed, already consumed) as i64 temp
+        {
+            let result_base = stdout_buf + (n_keys as i32) * slot_size;
+            ins.push(Instruction::I32Const(result_base));
+            ins.push(Instruction::LocalGet(cur_key)); ins.push(Instruction::I32Const(8)); ins.push(Instruction::I32Mul);
+            ins.push(Instruction::I32Add);
+            ins.push(Instruction::LocalGet(0));
+            ins.push(Instruction::I64Store(ma));
+        }
+        // found++; continue scan
+        ins.push(Instruction::LocalGet(found)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(found));
+        br_to!(scan_loop);
+        close!(); // string branch
+
+        // ── OBJECT/ARRAY: '{' or '[' ──
+        ins.push(Instruction::LocalGet(ch)); ins.push(Instruction::I32Const(0x7B)); ins.push(Instruction::I32Eq);
+        ins.push(Instruction::LocalGet(ch)); ins.push(Instruction::I32Const(0x5B)); ins.push(Instruction::I32Eq); ins.push(Instruction::I32Or);
+        open_if!();
+        ins.push(Instruction::I32Const(1)); ins.push(Instruction::LocalSet(depth)); // reuse depth for brace tracking
+        open_block!(); let brk_block = ls.len() - 1;
+        open_loop!();  let brk_loop = ls.len() - 1;
+        ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::LocalGet(json_len)); ins.push(Instruction::I32GeS);
+        open_if!(); br_to!(brk_block); close!();
+        ins.push(Instruction::LocalGet(json_ptr)); ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Add);
+        ins.push(Instruction::I32Load8U(ma8.clone())); ins.push(Instruction::LocalSet(ch));
+        ins.push(Instruction::LocalGet(dst)); ins.push(Instruction::LocalGet(ch)); ins.push(Instruction::I32Store8(ma8.clone()));
+        ins.push(Instruction::LocalGet(dst)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(dst));
+        ins.push(Instruction::LocalGet(str_len)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(str_len));
+        ins.push(Instruction::LocalGet(ch)); ins.push(Instruction::I32Const(0x7B)); ins.push(Instruction::I32Eq);
+        ins.push(Instruction::LocalGet(ch)); ins.push(Instruction::I32Const(0x5B)); ins.push(Instruction::I32Eq); ins.push(Instruction::I32Or);
+        open_if!(); ins.push(Instruction::LocalGet(depth)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(depth)); close!();
+        ins.push(Instruction::LocalGet(ch)); ins.push(Instruction::I32Const(0x7D)); ins.push(Instruction::I32Eq);
+        ins.push(Instruction::LocalGet(ch)); ins.push(Instruction::I32Const(0x5D)); ins.push(Instruction::I32Eq); ins.push(Instruction::I32Or);
+        open_if!();
+        ins.push(Instruction::LocalGet(depth)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Sub); ins.push(Instruction::LocalSet(depth));
+        ins.push(Instruction::LocalGet(depth)); ins.push(Instruction::I32Const(0)); ins.push(Instruction::I32Eq);
+        open_if!(); br_to!(brk_block); close!(); close!();
+        ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(scan_i));
+        br_to!(brk_loop); close!(); close!(); // brk
+        // Store packed result
+        ins.push(Instruction::I32Const(stdout_buf));
+        ins.push(Instruction::LocalGet(cur_key)); ins.push(Instruction::I32Const(slot_size)); ins.push(Instruction::I32Mul);
+        ins.push(Instruction::I32Add); ins.push(Instruction::I64ExtendI32U);
+        ins.push(Instruction::LocalGet(str_len)); ins.push(Instruction::I64ExtendI32U);
+        ins.push(Instruction::I64Const(32)); ins.push(Instruction::I64Shl);
+        ins.push(Instruction::I64Or);
+        ins.push(Instruction::LocalSet(0)); // stash packed value
+        {
+            let result_base = stdout_buf + (n_keys as i32) * slot_size;
+            ins.push(Instruction::I32Const(result_base));
+            ins.push(Instruction::LocalGet(cur_key)); ins.push(Instruction::I32Const(8)); ins.push(Instruction::I32Mul);
+            ins.push(Instruction::I32Add);
+            ins.push(Instruction::LocalGet(0));
+            ins.push(Instruction::I64Store(ma));
+        }
+        ins.push(Instruction::LocalGet(found)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(found));
+        br_to!(scan_loop);
+        close!(); // object/array branch
+
+        // ── RAW: number, null, bool, etc. ──
+        {
+            open_block!(); let raw_block = ls.len() - 1;
+            open_loop!();  let raw_loop = ls.len() - 1;
+            ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::LocalGet(json_len)); ins.push(Instruction::I32GeS);
+            open_if!(); br_to!(raw_block); close!();
+            ins.push(Instruction::LocalGet(json_ptr)); ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Add);
+            ins.push(Instruction::I32Load8U(ma8.clone())); ins.push(Instruction::LocalSet(ch));
+            ins.push(Instruction::LocalGet(ch)); ins.push(Instruction::I32Const(0x2C)); ins.push(Instruction::I32Eq);
+            ins.push(Instruction::LocalGet(ch)); ins.push(Instruction::I32Const(0x7D)); ins.push(Instruction::I32Eq); ins.push(Instruction::I32Or);
+            ins.push(Instruction::LocalGet(ch)); ins.push(Instruction::I32Const(0x5D)); ins.push(Instruction::I32Eq); ins.push(Instruction::I32Or);
+            ins.push(Instruction::LocalGet(ch)); ins.push(Instruction::I32Const(0x20)); ins.push(Instruction::I32Eq); ins.push(Instruction::I32Or);
+            ins.push(Instruction::LocalGet(ch)); ins.push(Instruction::I32Const(0x0A)); ins.push(Instruction::I32Eq); ins.push(Instruction::I32Or);
+            open_if!(); br_to!(raw_block); close!();
+            ins.push(Instruction::LocalGet(dst)); ins.push(Instruction::LocalGet(ch)); ins.push(Instruction::I32Store8(ma8.clone()));
+            ins.push(Instruction::LocalGet(dst)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(dst));
+            ins.push(Instruction::LocalGet(str_len)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(str_len));
+            ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(scan_i));
+            br_to!(raw_loop); close!(); close!(); // raw
+            // Store packed result
+            ins.push(Instruction::I32Const(stdout_buf));
+            ins.push(Instruction::LocalGet(cur_key)); ins.push(Instruction::I32Const(slot_size)); ins.push(Instruction::I32Mul);
+            ins.push(Instruction::I32Add); ins.push(Instruction::I64ExtendI32U);
+            ins.push(Instruction::LocalGet(str_len)); ins.push(Instruction::I64ExtendI32U);
+            ins.push(Instruction::I64Const(32)); ins.push(Instruction::I64Shl);
+            ins.push(Instruction::I64Or);
+            ins.push(Instruction::LocalSet(0));
+            {
+                let result_base = stdout_buf + (n_keys as i32) * slot_size;
+                ins.push(Instruction::I32Const(result_base));
+                ins.push(Instruction::LocalGet(cur_key)); ins.push(Instruction::I32Const(8)); ins.push(Instruction::I32Mul);
+                ins.push(Instruction::I32Add);
+                ins.push(Instruction::LocalGet(0));
+                ins.push(Instruction::I64Store(ma));
+            }
+            ins.push(Instruction::LocalGet(found)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(found));
+            br_to!(scan_loop);
+        }
+
+        close!(); close!(); // scan_block, scan_loop
+
+        // ── Build result array on heap ──
+        // Layout: [count, val0_packed, val1_packed, ...]
+        // Read from result slots at result_base
+        let result_base = stdout_buf + (n_keys as i32) * slot_size;
+        let slots = 1 + n_keys; // count + values
+        // Use runtime bump allocator
+        ins.push(Instruction::I64Const(RUNTIME_HEAP_PTR));
+        ins.push(Instruction::I32WrapI64);
+        ins.push(Instruction::I64Load(ma));
+        ins.push(Instruction::I32WrapI64);
+        let arr_ptr_local = next_local; next_local += 1;
+        ins.push(Instruction::LocalSet(arr_ptr_local));
+        // Bump by slots * 8
+        ins.push(Instruction::I64Const(RUNTIME_HEAP_PTR));
+        ins.push(Instruction::I32WrapI64);
+        ins.push(Instruction::LocalGet(arr_ptr_local));
+        ins.push(Instruction::I64ExtendI32U);
+        ins.push(Instruction::I64Const((slots * 8) as i64));
+        ins.push(Instruction::I64Add);
+        ins.push(Instruction::I64Store(ma));
+        // Store count
+        ins.push(Instruction::LocalGet(arr_ptr_local));
+        ins.push(Instruction::I64Const(n_keys as i64));
+        ins.push(Instruction::I64Store(ma));
+        // Store each value from result slot (tagged as string)
+        for k in 0..n_keys {
+            ins.push(Instruction::LocalGet(arr_ptr_local));
+            ins.push(Instruction::I64ExtendI32U);
+            ins.push(Instruction::I64Const(((k as i32 + 1) * 8) as i64));
+            ins.push(Instruction::I64Add);
+            ins.push(Instruction::I32WrapI64);
+            // Load from result slot and tag as string: (packed << 3) | 5
+            ins.push(Instruction::I32Const(result_base + (k as i32) * 8));
+            ins.push(Instruction::I64Load(ma));
+            ins.push(Instruction::I64Const(3)); ins.push(Instruction::I64Shl);
+            ins.push(Instruction::I64Const(5)); ins.push(Instruction::I64Or);
+            ins.push(Instruction::I64Store(ma));
+        }
+        // Return tagged array
+        ins.push(Instruction::LocalGet(arr_ptr_local));
+        ins.push(Instruction::I64ExtendI32U);
+        ins.push(Instruction::I64Const(3)); ins.push(Instruction::I64Shl);
+        ins.push(Instruction::I64Const(6)); // TAG_ARRAY
+        ins.push(Instruction::I64Or);
+
+        let extra_i32 = next_local - (n_keys as u32 + 1) - n_i32_locals;
+        let total_i32 = n_i32_locals + extra_i32;
+        self.funcs.push(FuncDef {
+            name: fname,
+            param_count: (n_keys + 1) as usize,
+            local_count: total_i32 as usize,
+            instrs: ins,
+            local_entries: Some(vec![(total_i32 as u32, ValType::I32)]),
+        });
+        (self.funcs.len() - 1) as u32
+    }
+
     pub(crate) fn json_get_from_buf(&mut self, key: &str, value_type: &str, buf: i64, buf_len_setup: &mut Vec<Instruction<'static>>) -> Result<Vec<Instruction<'static>>, String> {
         let func_idx = self.ensure_json_get_func();
         let keys: Vec<&str> = key.split('.').collect();

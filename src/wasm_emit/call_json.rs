@@ -200,6 +200,40 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(1)); v.push(Instruction::GlobalSet(RETURN_FLAG));
                 v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
+            "json-extract" => {
+                // (json-extract json_str "key0" "key1" ...) → tagged array of values
+                if a.len() < 3 { return Err("json-extract requires a JSON string and at least 2 keys".into()); }
+                let n_keys = a.len() - 1;
+                if n_keys > 8 { return Err("json-extract supports at most 8 keys".into()); }
+                // Build pattern data for each key: "key":
+                let mut v = Vec::new();
+                // Evaluate the JSON string argument
+                v.extend(self.expr(&a[0])?);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU); // untag string
+                // Push each key pattern as packed (len << 32) | ptr
+                for key_arg in &a[1..] {
+                    match key_arg {
+                        LispVal::Str(key) => {
+                            let pat = {
+                                let mut p = vec![b'"'];
+                                p.extend(key.as_bytes());
+                                p.extend_from_slice(b"\":");
+                                p
+                            };
+                            let pat_off = self.alloc_data(&pat) as i64;
+                            let pat_len = pat.len() as i64;
+                            let pat_packed = (pat_off as u64) | ((pat_len as u64) << 32);
+                            v.push(Instruction::I64Const(pat_packed as i64));
+                        }
+                        _ => return Err("json-extract keys must be string literals".into()),
+                    }
+                }
+                // Call __json_extract_N
+                let idx = self.ensure_json_extract_func(n_keys);
+                v.push(Instruction::Call(crate::wasm_emit::USER_BASE | idx));
+                // Result is already tagged as array (TAG_ARRAY)
+                Ok(v)
+            }
             _ => Err("__not_handled__".into()),
         }
     }
