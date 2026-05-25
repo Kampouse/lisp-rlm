@@ -248,6 +248,9 @@ impl WasmEmitter {
         let found = next_local; next_local += 1;
         let cur_key = next_local; next_local += 1;
         let val_type = next_local; next_local += 1; // 0=string, 1=object/array, 2=raw
+        // memchr_tmp is i64 — index = all i32 locals (including any added below) + params
+        // We know exactly 1 extra i32 local (arr_ptr_local) is added later in the body
+        let memchr_tmp = next_local + 1; // +1 for arr_ptr_local
         let n_i32_locals = next_local - (n_keys as u32 + 1);
 
         let mut ins: Vec<Instruction<'static>> = Vec::new();
@@ -306,11 +309,61 @@ impl WasmEmitter {
         ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(scan_i));
         br_to!(scan_loop); close!();
 
-        // Quick skip: at depth 1, keys always start with '"' — if not '"', advance immediately
+        // Memchr skip: at depth 1, keys start with '"' — use 8-byte I64Load chunks
+        // to skip non-'"' bytes in bulk instead of one-by-one
         ins.push(Instruction::LocalGet(temp)); ins.push(Instruction::I32Const(0x22)); ins.push(Instruction::I32Ne);
         open_if!();
-        ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(scan_i));
-        br_to!(scan_loop); close!();
+        {
+            open_block!(); let memchr_block = ls.len() - 1;
+            open_loop!();  let memchr_loop = ls.len() - 1;
+
+            // Bounds check: need at least 8 bytes remaining
+            ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Const(8)); ins.push(Instruction::I32Add);
+            ins.push(Instruction::LocalGet(json_len)); ins.push(Instruction::I32GtS);
+            open_if!();
+            // Less than 8 bytes — fall back to byte-by-byte
+            ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(scan_i));
+            br_to!(scan_loop);
+            close!();
+
+            // Load 8 bytes from current position
+            ins.push(Instruction::LocalGet(json_ptr)); ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Add);
+            ins.push(Instruction::I64Load(ma8.clone())); // byte-aligned i64 load
+
+            // XOR with 0x2222222222222222 — zero bytes now indicate '"' positions
+            ins.push(Instruction::I64Const(0x2222222222222222)); ins.push(Instruction::I64Xor);
+
+            // has_zero(v) = (v - 0x0101...) & ~v & 0x8080...
+            // Save v to temp, compute ~v, then compute v - K, AND together
+            ins.push(Instruction::LocalTee(memchr_tmp)); // temp = v (i64)
+            ins.push(Instruction::I64Const(-1)); ins.push(Instruction::I64Xor); // ~v
+            ins.push(Instruction::LocalGet(memchr_tmp));
+            ins.push(Instruction::I64Const(0x0101010101010101)); ins.push(Instruction::I64Sub); // v - K
+            ins.push(Instruction::I64And); // ~v & (v-K)
+            ins.push(Instruction::I64Const(0x8080808080808080_u64 as i64)); ins.push(Instruction::I64And);
+            // Stack: [has_zero result] — non-zero if any byte was '"'
+
+            // Save result, check if zero (no '"' found)
+            ins.push(Instruction::LocalTee(memchr_tmp)); // reuse temp for result
+            ins.push(Instruction::I64Eqz);
+            open_if!();
+            // No '"' in these 8 bytes — advance by 8 and continue
+            ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Const(8)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(scan_i));
+            br_to!(memchr_loop);
+            close!();
+
+            // Found '"' — extract byte position from CTZ of result
+            ins.push(Instruction::LocalGet(memchr_tmp));
+            ins.push(Instruction::I64Ctz);
+            ins.push(Instruction::I64Const(3)); ins.push(Instruction::I64ShrU); // ctz >> 3 = byte position
+            ins.push(Instruction::I32WrapI64);
+            ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Add);
+            ins.push(Instruction::LocalSet(scan_i));
+            br_to!(scan_loop); // main loop handles the '"' at this position
+
+            close!(); close!(); // memchr_loop, memchr_block
+        }
+        close!();
 
         // ── Try each key pattern ──
         // We chain: try key 0, if match goto extract; try key 1, if match goto extract; ...
@@ -596,9 +649,9 @@ impl WasmEmitter {
         self.funcs.push(FuncDef {
             name: fname,
             param_count: (n_keys + 1) as usize,
-            local_count: total_i32 as usize,
+            local_count: total_i32 as usize + 1,
             instrs: ins,
-            local_entries: Some(vec![(total_i32 as u32, ValType::I32)]),
+            local_entries: Some(vec![(total_i32 as u32, ValType::I32), (1u32, ValType::I64)]),
         });
         (self.funcs.len() - 1) as u32
     }
