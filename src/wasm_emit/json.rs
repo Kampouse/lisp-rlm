@@ -474,6 +474,61 @@ impl WasmEmitter {
         ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(scan_i));
         ins.push(Instruction::I32Const(0)); ins.push(Instruction::LocalSet(esc));
         open_block!(); let str_block = ls.len() - 1;
+
+        // Fast 8-byte string copy loop
+        open_block!(); let fast_str_block = ls.len() - 1;
+        open_loop!();  let fast_str_loop = ls.len() - 1;
+        // Need at least 8 bytes remaining AND not in escape state
+        ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Const(8)); ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalGet(json_len)); ins.push(Instruction::I32GtS);
+        open_if!(); br_to!(fast_str_block); close!(); // fall back to byte-by-byte
+        ins.push(Instruction::LocalGet(esc)); ins.push(Instruction::I32Const(0)); ins.push(Instruction::I32Ne);
+        open_if!(); br_to!(fast_str_block); close!(); // in escape, fall back
+
+        // Load 8 bytes from source
+        ins.push(Instruction::LocalGet(json_ptr)); ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Add);
+        ins.push(Instruction::I64Load(ma8.clone()));
+        ins.push(Instruction::LocalTee(memchr_tmp)); // save for copy
+
+        // Check for '"' (0x22) in chunk: has_zero(chunk XOR 0x2222...)
+        ins.push(Instruction::I64Const(0x2222222222222222_u64 as i64)); ins.push(Instruction::I64Xor);
+        ins.push(Instruction::LocalTee(memchr_tmp)); // temp save XOR result for has_zero
+        ins.push(Instruction::I64Const(-1)); ins.push(Instruction::I64Xor); // ~v
+        ins.push(Instruction::LocalGet(memchr_tmp));
+        ins.push(Instruction::I64Const(0x0101010101010101)); ins.push(Instruction::I64Sub);
+        ins.push(Instruction::I64And);
+        ins.push(Instruction::I64Const(0x8080808080808080_u64 as i64)); ins.push(Instruction::I64And);
+        // has_zero result on stack for '"'
+
+        // Check for '\' (0x5C) in chunk: has_zero(chunk XOR 0x5C5C...)
+        ins.push(Instruction::LocalGet(json_ptr)); ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Add);
+        ins.push(Instruction::I64Load(ma8.clone()));
+        ins.push(Instruction::I64Const(0x5C5C5C5C5C5C5C5C_u64 as i64)); ins.push(Instruction::I64Xor);
+        ins.push(Instruction::LocalTee(memchr_tmp));
+        ins.push(Instruction::I64Const(-1)); ins.push(Instruction::I64Xor);
+        ins.push(Instruction::LocalGet(memchr_tmp));
+        ins.push(Instruction::I64Const(0x0101010101010101)); ins.push(Instruction::I64Sub);
+        ins.push(Instruction::I64And);
+        ins.push(Instruction::I64Const(0x8080808080808080_u64 as i64)); ins.push(Instruction::I64And);
+        // has_zero for '\'
+
+        // If either has_zero is non-zero, special char found → fall back
+        ins.push(Instruction::I64Or); // OR the two has_zero results
+        ins.push(Instruction::I64Eqz);
+        open_if!();
+        // No '"' or '\' in this 8-byte chunk → copy all 8 bytes at once
+        ins.push(Instruction::LocalGet(dst)); // dst addr
+        ins.push(Instruction::LocalGet(json_ptr)); ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Add);
+        ins.push(Instruction::I64Load(ma8.clone())); // reload source (tee was consumed by has_zero)
+        ins.push(Instruction::I64Store(ma8.clone())); // 8-byte copy
+        ins.push(Instruction::LocalGet(dst)); ins.push(Instruction::I32Const(8)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(dst));
+        ins.push(Instruction::LocalGet(str_len)); ins.push(Instruction::I32Const(8)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(str_len));
+        ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::I32Const(8)); ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(scan_i));
+        br_to!(fast_str_loop);
+        close!(); // no special char
+        close!(); close!(); // fast_str_loop, fast_str_block
+
+        // Slow byte-by-byte path (for tail bytes or chunks with '"' / '\')
         open_loop!();  let str_loop = ls.len() - 1;
         ins.push(Instruction::LocalGet(scan_i)); ins.push(Instruction::LocalGet(json_len)); ins.push(Instruction::I32GeS);
         open_if!(); br_to!(str_block); close!();
