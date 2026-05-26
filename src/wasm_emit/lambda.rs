@@ -368,10 +368,16 @@ impl WasmEmitter {
             "storage-set-worker" | "storage-get-worker" | "storage-set-worker-public" | "storage-get-worker-from-project" => {
                 self.need_outlayer = true;
             }
-            "http-get" | "http-post" | "outlayer/http-post" => {
-                // wasi:http P2 path requires canonical ABI signatures that our compiler
-                // doesn't generate — use outlayer host function path instead (works on production)
+            "outlayer/http-post" => {
                 self.need_outlayer = true;
+            }
+            "http-get" | "http-post" => {
+                if self.p2_mode {
+                    // Direct wasi:http — emit canonical ABI calls, no adapter needed
+                    self.need_wasi_http = true;
+                } else {
+                    self.need_outlayer = true;
+                }
             }
             // FP-allocating builtins (need frame save/restore in NEAR mode)
             "str-cat" | "str-concat" | "string-append" | "str-slice" | "near/load-bytes" | "u32-to-bytes" | "near/store-bytes" => {

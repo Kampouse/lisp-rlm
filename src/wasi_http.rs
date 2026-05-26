@@ -39,7 +39,7 @@ pub const FN_POLL: u32 = 18;
 pub const FN_DROP_POLLABLE: u32 = 19;
 pub const FN_INCOMING_RESPONSE_CONSUME: u32 = 20;
 pub const FN_INCOMING_BODY_STREAM: u32 = 21;
-pub const FN_INPUT_STREAM_READ: u32 = 22;
+pub const FN_INPUT_STREAM_BLOCKING_READ: u32 = 22;
 pub const FN_GET_STDOUT: u32 = 23;
 pub const FN_OUTPUT_STREAM_WRITE: u32 = 24;
 pub const FN_DROP_INCOMING_BODY: u32 = 25;
@@ -63,6 +63,11 @@ pub const SCRATCH_CONSUME_RESULT: i32 = SCRATCH + 24;
 pub const SCRATCH_READ_RESULT: i32 = SCRATCH + 32;
 pub const SCRATCH_POLL_RESULT: i32 = SCRATCH + 48;
 pub const SCRATCH_WRITE_RESULT: i32 = SCRATCH + 64; // write result area (runtime path)
+
+/// Buffer for HTTP response body (used by data-segment path in call_outlayer.rs).
+/// Placed between STDOUT_BUF (65536) and SCRATCH (131072) — 61KB available.
+pub const SENTINEL_BUF: i32 = 69632; // 65536 + 4096, between STDOUT and SCRATCH
+pub const SENTINEL_BUF_SIZE: i32 = 57344; // 56KB response buffer
 // Data-segment path uses different sub-offsets (see wasi_http_buffer.rs),
 // but all start from SCRATCH.
 
@@ -200,7 +205,7 @@ pub fn add_http_imports_to_sections(types: &mut TypeSection, imports: &mut Impor
     imports.import(ip, "[resource-drop]pollable", EntityType::Function(3));
     imports.import(ht, "[method]incoming-response.consume", EntityType::Function(2));
     imports.import(ht, "[method]incoming-body.stream", EntityType::Function(2));
-    imports.import(is, "[method]input-stream.read", EntityType::Function(8));
+    imports.import(is, "[method]input-stream.blocking-read", EntityType::Function(8));
     imports.import(cs, "get-stdout", EntityType::Function(0));
     imports.import(is, "[method]output-stream.blocking-write-and-flush", EntityType::Function(6));
     imports.import(ht, "[resource-drop]incoming-body", EntityType::Function(3));
@@ -413,7 +418,7 @@ pub fn emit_http_get(func: &mut Function, url_ptr_local: u32, url_len_local: u32
     func.instruction(&lg(7));
     func.instruction(&Instruction::I64Const(65536));
     func.instruction(&cst(SCRATCH_READ_RESULT));
-    func.instruction(&cl(FN_INPUT_STREAM_READ));
+    func.instruction(&cl(FN_INPUT_STREAM_BLOCKING_READ));
     // Check result disc (0=ok, 1=error)
     func.instruction(&cst(0));
     func.instruction(&ld(SCRATCH_READ_RESULT));
@@ -456,6 +461,37 @@ pub fn build_http_wit_metadata() -> Result<(wit_parser::Resolve, wit_parser::Wor
         let world = pkg.worlds.iter()
             .find_map(|(name, id)| if name == "simple-http" { Some(*id) } else { None })
             .ok_or("world 'simple-http' not found")?;
+
+        Ok((resolve, world))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        crate::wit_embed::build_http_wit_metadata_embedded()
+    }
+}
+
+pub fn build_combined_wit_metadata() -> Result<(wit_parser::Resolve, wit_parser::WorldId), String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut resolve = wit_parser::Resolve::new();
+        let wit_dir = find_wit_dir()?;
+
+        // Use the same wit/ tree as build_http_wit_metadata — it has all deps.
+        // combined.wit lives at wit/combined.wit in package lisp:simple-http.
+        let (pkg_id, _) = resolve
+            .push_dir(&wit_dir)
+            .map_err(|e| format!("push_dir wit failed: {}", e))?;
+        let mut found_world = None;
+        for (_pkg_id, pkg) in resolve.packages.iter() {
+            for (name, world_id) in &pkg.worlds {
+                if name == "combined-http-ol" {
+                    found_world = Some(*world_id);
+                    break;
+                }
+            }
+            if found_world.is_some() { break; }
+        }
+        let world = found_world.ok_or("world 'combined-http-ol' not found")?;
 
         Ok((resolve, world))
     }
@@ -534,7 +570,7 @@ mod tests {
             FN_OUTGOING_REQUEST_BODY, FN_OUTGOING_BODY_WRITE, FN_OUTGOING_BODY_FINISH,
             FN_DROP_OUTGOING_BODY, FN_HANDLE, FN_DROP_OUTGOING_REQUEST, FN_FUTURE_GET,
             FN_FUTURE_SUBSCRIBE, FN_POLL, FN_DROP_POLLABLE, FN_INCOMING_RESPONSE_CONSUME,
-            FN_INCOMING_BODY_STREAM, FN_INPUT_STREAM_READ, FN_GET_STDOUT, FN_OUTPUT_STREAM_WRITE,
+            FN_INCOMING_BODY_STREAM, FN_INPUT_STREAM_BLOCKING_READ, FN_GET_STDOUT, FN_OUTPUT_STREAM_WRITE,
             FN_DROP_INCOMING_BODY, FN_DROP_FIELDS, FN_FIELDS_SET,
         ].iter().max().unwrap();
         assert_eq!(HTTP_IMPORT_COUNT, max_fn + 1, "HTTP_IMPORT_COUNT should be max FN_* + 1");

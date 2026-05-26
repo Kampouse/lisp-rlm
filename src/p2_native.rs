@@ -1385,9 +1385,9 @@ fn analyze_outlayer(wasm: &[u8]) -> OutlayerInfo {
                             }
                             names.push(name.clone());
                             outlayer_names_in_order.push(name);
-                            param_counts
-                                .push(type_params.get(tl as usize).copied().unwrap_or(0));
+                            param_counts.push(type_params.get(tl as usize).copied().unwrap_or(0));
                         }
+                        // Detect wasi:http imports (informational — not used here)
                         total_import_funcs += 1;
                     }
                     1 => {
@@ -1652,9 +1652,9 @@ pub fn build_wasi_http_component(
 ) -> Result<Vec<u8>, String> {
     let mut mod_bytes = core_bytes.to_vec();
 
-    // Embed WIT metadata (imports only — no export, runtime uses _start)
-    let (resolve, world) = crate::wasi_http::build_http_wit_metadata()
-        .map_err(|e| format!("WIT metadata: {}", e))?;
+    // Embed WIT metadata (imports + wasi:cli/run export)
+    let (resolve, world) =
+        crate::wasi_http::build_http_wit_metadata().map_err(|e| format!("WIT metadata: {}", e))?;
     wit_component::embed_component_metadata(
         &mut mod_bytes,
         &resolve,

@@ -394,7 +394,11 @@ pub fn compile_outlayer_p2_from_exprs(exprs: &[crate::types::LispVal]) -> Result
         }
     }
 
-    let bytes = if em.need_wasi_http {
+    let bytes = if em.need_wasi_http && em.need_outlayer {
+        // Combined: wasi:http + outlayer in one component
+        let core_bytes = build_combined_p2_core(&mut em)?;
+        build_combined_p2_component(&core_bytes)?
+    } else if em.need_wasi_http {
         build_p2_with_wasi_http(&em)?
     } else {
         let core_bytes = if em.need_outlayer {
@@ -444,7 +448,10 @@ pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
         }
     }
 
-    let bytes = if em.need_wasi_http {
+    let bytes = if em.need_wasi_http && em.need_outlayer {
+        let core_bytes = build_combined_p2_core(&mut em)?;
+        build_combined_p2_component(&core_bytes)?
+    } else if em.need_wasi_http {
         // wasi:http path — build component with embedded HTTP metadata
         build_p2_with_wasi_http(&em)?
     } else {
@@ -1575,8 +1582,10 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
         if !em.p2_mode && !em.no_proc_exit {
             fb.instruction(&Instruction::I32Const(0));
             fb.instruction(&Instruction::Call(2)); // proc_exit
+        } else {
+            // P2: wasi:cli/run expects () -> result, core returns i32(0) for Ok
+            fb.instruction(&Instruction::I32Const(0)); // Ok = 0
         }
-        // P2/no_proc_exit: just fall through (return void)
 
         fb.instruction(&Instruction::End);
         code.function(&fb);
@@ -1693,6 +1702,499 @@ fn near_host_type_for(
     }
 }
 
+// ═══════════════════════════════════════════════════════════════
+// Combined P2 Component: wasi:http + outlayer in one component
+// ═══════════════════════════════════════════════════════════════
+
+fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
+    eprintln!("DEBUG data_segments: {} entries", em.data_segments.len());
+    for (off, bytes) in &em.data_segments {
+        eprintln!("  seg @{off}: {} bytes {:?}", *off, String::from_utf8_lossy(&bytes[..bytes.len().min(40)]));
+    }
+    use crate::wasi_http::*;
+
+    let mut module = Module::new();
+
+    let http_urls: Vec<(String, String)> = if em.http_urls.is_empty() && em.http_post_urls.is_empty() {
+        vec![("api.open-meteo.com".to_string(), "/v1/forecast?latitude=45.50&longitude=-73.57&current=temperature_2m".to_string())]
+    } else {
+        em.http_urls.clone()
+    };
+    let http_get_count = http_urls.len() as u32;
+    let http_post_count = em.http_post_urls.len() as u32;
+    let post_sentinel_base = 200u32;
+
+    let ol = outlayer_imports();
+    let ol_count = ol.len() as u32;
+
+    // Import layout: HTTP 0..27, get-stdin 28, outlayer 29..49
+    let get_stdin_import_idx = HTTP_IMPORT_COUNT; // 28
+    let ol_import_base = HTTP_IMPORT_COUNT + 1; // 29
+    let internal_fn_base = ol_import_base + ol_count; // 50
+
+    // Type layout
+    let user_type_count = 17u32;
+    let user_type_base = HTTP_TYPE_COUNT; // 10
+    let start_type = user_type_base + user_type_count; // 27
+    let realloc_type = start_type + 1; // 28
+    let http_get_type = realloc_type + 1; // 29
+    let http_post_type = http_get_type + 1; // 30
+
+    let ol_type_base = http_post_type + 1; // 31
+    let ol_type_1 = ol_type_base;
+    let ol_type_3 = ol_type_base + 1;
+    let ol_type_5 = ol_type_base + 2;
+    let ol_type_7 = ol_type_base + 3;
+    let ol_type_13 = ol_type_base + 4;
+    let ol_type_s64 = ol_type_base + 5;
+
+    // Function indices
+    let get_fn_count = http_get_count * 2;
+    let post_fn_count = http_post_count * 2;
+    let http_get_fn_idx = internal_fn_base;
+    let http_post_fn_idx = http_get_fn_idx + get_fn_count;
+    let user_fn_base = http_post_fn_idx + post_fn_count;
+    let start_fn_idx = user_fn_base + em.funcs.len() as u32;
+    let realloc_fn_idx = start_fn_idx + 1;
+
+    // ═══ Type Section + Import Section ═══
+    let mut types = TypeSection::new();
+    let mut imports = ImportSection::new();
+
+    add_http_imports_to_sections(&mut types, &mut imports);
+
+    for i in 0..=16u32 {
+        types.ty().function(vec![ValType::I64; i as usize], [ValType::I64]);
+    }
+    types.ty().function([], [ValType::I32]); // start_type: () -> i32 for wasi:cli/run result
+    types.ty().function([ValType::I32; 4], [ValType::I32]);
+    types.ty().function([ValType::I32; 5], [ValType::I32]);
+    types.ty().function([ValType::I32; 7], [ValType::I32]);
+
+    types.ty().function(vec![W; 1], []);
+    types.ty().function(vec![W; 3], []);
+    types.ty().function(vec![W; 5], []);
+    types.ty().function(vec![W; 7], []);
+    types.ty().function(vec![W; 13], []);
+    types.ty().function(vec![W, W, ValType::I64, W], []);
+
+    module.section(&types);
+
+    let ol_type_map: Vec<u32> = vec![
+        ol_type_7, ol_type_13, ol_type_7, ol_type_3, ol_type_7,
+        ol_type_5, ol_type_3, ol_type_3, ol_type_3, ol_type_s64,
+        ol_type_s64, ol_type_5, ol_type_7, ol_type_3, ol_type_1,
+        ol_type_5, ol_type_3, ol_type_5, ol_type_5, ol_type_1, ol_type_1,
+    ];
+
+    imports.import("wasi:cli/stdin@0.2.2", "get-stdin", EntityType::Function(0));
+
+    for (i, f) in ol.iter().enumerate() {
+        imports.import(f.module, f.name, EntityType::Function(ol_type_map[i]));
+    }
+
+    module.section(&imports);
+
+    // ═══ Function Section ═══
+    let mut functions = FunctionSection::new();
+    for _ in &http_urls {
+        functions.function(http_get_type);
+        functions.function(http_get_type);
+    }
+    for _ in &em.http_post_urls {
+        functions.function(http_post_type);
+        functions.function(http_post_type);
+    }
+    for f in &em.funcs {
+        functions.function(user_type_base + f.param_count as u32);
+    }
+    functions.function(start_type);
+    functions.function(realloc_type);
+    module.section(&functions);
+
+    // ═══ Memory ═══
+    let mut memory = MemorySection::new();
+    let pages = em.memory_pages.max(17) as u64;
+    memory.memory(MemoryType { minimum: pages, maximum: None, memory64: false, shared: false, page_size_log2: None });
+    module.section(&memory);
+
+    // ═══ Globals ═══
+    let mut globals = GlobalSection::new();
+    globals.global(GlobalType { val_type: ValType::I64, mutable: true, shared: false }, &ConstExpr::i64_const(0));
+    globals.global(GlobalType { val_type: ValType::I64, mutable: true, shared: false }, &ConstExpr::i64_const(0));
+    module.section(&globals);
+
+    // ═══ Exports ═══
+    let mut exports = ExportSection::new();
+    exports.export("memory", ExportKind::Memory, 0);
+    exports.export("_start", ExportKind::Func, start_fn_idx);
+    exports.export("wasi:cli/run@0.2.2#run", ExportKind::Func, start_fn_idx);
+    exports.export("cabi_realloc", ExportKind::Func, realloc_fn_idx);
+    module.section(&exports);
+
+    // ═══ Code Section ═══
+    let mut codes = CodeSection::new();
+    let ma4 = MemArg { offset: 0, align: 2, memory_index: 0 };
+
+    // Data segments for URL strings
+    let mut all_http_data_segments: Vec<(i32, Vec<u8>)> = Vec::new();
+    let mut current_data_offset: i32 = 16384;
+
+    let headers: &[(&[u8], &[u8])] = &[
+        (b"User-Agent", b"lisp-rlm/0.1 (wasi:http)"),
+        (b"Accept", b"application/json"),
+    ];
+    let post_headers: &[(&[u8], &[u8])] = &[
+        (b"User-Agent", b"lisp-rlm/0.1 (wasi:http)"),
+        (b"Accept", b"application/json"),
+        (b"Content-Type", b"application/json"),
+    ];
+
+    // ── HTTP GET internal functions ──
+    for (idx, (authority, path)) in http_urls.iter().enumerate() {
+        let http_data = crate::wasi_http_buffer::build_url_data_segments_with_base(
+            authority.as_bytes(),
+            path.as_bytes(),
+            headers,
+            current_data_offset,
+        );
+
+        let mut http_get_fn = Function::new([
+            (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32),
+            (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32),
+            (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32),
+        ]);
+        crate::wasi_http_buffer::emit_http_get_to_buffer(&mut http_get_fn, &http_data);
+        http_get_fn.instruction(&Instruction::End);
+        codes.function(&http_get_fn);
+
+        let mut poll_read_fn = Function::new([
+            (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32),
+            (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32),
+        ]);
+        crate::wasi_http_buffer::emit_http_poll_read(&mut poll_read_fn);
+        poll_read_fn.instruction(&Instruction::End);
+        codes.function(&poll_read_fn);
+
+        let span = http_data.total_span();
+        for (off, bytes) in http_data.segments {
+            all_http_data_segments.push((off as i32, bytes));
+        }
+        current_data_offset = span;
+        current_data_offset = (current_data_offset + 3) & !3;
+    }
+
+    // ── HTTP POST internal functions ──
+    for (idx, (authority, path)) in em.http_post_urls.iter().enumerate() {
+        let http_data = crate::wasi_http_buffer::build_url_data_segments_with_base(
+            authority.as_bytes(),
+            path.as_bytes(),
+            post_headers,
+            current_data_offset,
+        );
+
+        let mut http_post_fn = Function::new([
+            (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32),
+            (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32),
+            (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32),
+            (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32),
+        ]);
+        crate::wasi_http_buffer::emit_http_post_to_buffer(&mut http_post_fn, &http_data);
+        http_post_fn.instruction(&Instruction::End);
+        codes.function(&http_post_fn);
+
+        let mut poll_read_fn = Function::new([
+            (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32),
+            (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32),
+        ]);
+        crate::wasi_http_buffer::emit_http_poll_read(&mut poll_read_fn);
+        poll_read_fn.instruction(&Instruction::End);
+        codes.function(&poll_read_fn);
+
+        let span = http_data.total_span();
+        for (off, bytes) in http_data.segments {
+            all_http_data_segments.push((off as i32, bytes));
+        }
+        current_data_offset = span;
+        current_data_offset = (current_data_offset + 3) & !3;
+    }
+
+
+    // ── User functions ──
+    let name_map: std::collections::HashMap<&str, u32> = em.funcs.iter()
+        .enumerate()
+        .map(|(i, f)| (f.name.as_str(), user_fn_base + i as u32))
+        .collect();
+
+    for f in &em.funcs {
+        let locals = if let Some(ref entries) = f.local_entries {
+            entries.clone()
+        } else {
+            let extra = f.local_count.saturating_sub(f.param_count);
+            if extra > 0 { vec![(extra as u32, ValType::I64)] } else { vec![] }
+        };
+
+        let resolved = {
+            let base_resolved = WasmEmitter::resolve_static_pub(
+                &f.instrs, &std::collections::HashMap::new(), &name_map, &em.funcs,
+            );
+            let mut ol_map: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+            // Outlayer host function sentinels (matching P2 outlayer path)
+            ol_map.insert(100, ol_import_base + 0);  // outlayer.view
+            ol_map.insert(101, ol_import_base + 1);  // outlayer.call
+            ol_map.insert(102, ol_import_base + 2);  // outlayer.transfer
+            // 103 = http-get: in wasi:http mode, maps to internal GET function
+            // 104 = http-post host: not used in wasi:http mode (sentinel 200 used instead)
+            ol_map.insert(104, ol_import_base + 4);  // outlayer.http-post (fallback)
+            ol_map.insert(110, ol_import_base + 5);  // outlayer.storage-set
+            ol_map.insert(111, ol_import_base + 6);  // outlayer.storage-get
+            ol_map.insert(112, ol_import_base + 7);  // outlayer.storage-has
+            ol_map.insert(113, ol_import_base + 8);  // outlayer.storage-delete
+            ol_map.insert(114, ol_import_base + 9);  // outlayer.storage-increment
+            ol_map.insert(120, ol_import_base + 19); // outlayer.env-signer
+            ol_map.insert(121, ol_import_base + 20); // outlayer.env-predecessor
+            ol_map.insert(130, ol_import_base + 10); // outlayer.storage-decrement
+            ol_map.insert(131, ol_import_base + 11); // outlayer.storage-set-if-absent
+            ol_map.insert(132, ol_import_base + 12); // outlayer.storage-set-if-equals
+            ol_map.insert(133, ol_import_base + 13); // outlayer.storage-list-keys
+            ol_map.insert(134, ol_import_base + 14); // outlayer.storage-clear-all
+            ol_map.insert(135, ol_import_base + 15); // outlayer.storage-set-worker
+            ol_map.insert(136, ol_import_base + 16); // outlayer.storage-get-worker
+            ol_map.insert(137, ol_import_base + 17); // outlayer.storage-set-worker-public
+            ol_map.insert(138, ol_import_base + 18); // outlayer.storage-get-worker-from-project
+            // HTTP GET sentinels → internal HTTP GET functions (wasi:http mode)
+            for i in 0..http_get_count {
+                ol_map.insert(103 + i, http_get_fn_idx + i * 2);
+            }
+            // HTTP POST sentinels → internal HTTP POST functions (wasi:http mode)
+            for i in 0..http_post_count {
+                ol_map.insert(post_sentinel_base + i, http_post_fn_idx + i * 2);
+            }
+            ol_map.insert(crate::wasm_emit::WASI_FD_WRITE, realloc_fn_idx);
+            WasmEmitter::resolve_static_pub_ex(
+                &base_resolved, &std::collections::HashMap::new(), &name_map, &em.funcs, &ol_map,
+            )
+        };
+
+        let mut fb = Function::new(locals);
+        for instr in &resolved { fb.instruction(instr); }
+        fb.instruction(&Instruction::End);
+        codes.function(&fb);
+    }
+
+    // ── _start() ──
+    // Uses get-stdin + blocking-read (NOT read — read requires wasi:io/poll)
+    {
+        let default_pos = em.funcs.iter().rposition(|f| !f.name.starts_with("__")).unwrap_or(em.funcs.len() - 1);
+        let mut real_func_idx = user_fn_base + default_pos as u32;
+        let mut real_param_count = em.funcs[default_pos].param_count;
+        if let Some(run_pos) = em.funcs.iter().position(|f| f.name == "run") {
+            real_func_idx = user_fn_base + run_pos as u32;
+            real_param_count = em.funcs[run_pos].param_count;
+        }
+
+        let mut fb = Function::new([
+            (1u32, W),  // 0: stdout handle
+            (1u32, W),  // 1: string ptr
+            (1u32, ValType::I64), // 2: result
+            (1u32, W),  // 3: string len
+            (1u32, W),  // 4: stdin handle
+            (1u32, W),  // 5: data ptr
+            (1u32, W),  // 6: data len
+        ]);
+
+        // get-stdin → handle
+        fb.instruction(&Instruction::Call(get_stdin_import_idx));
+        fb.instruction(&Instruction::LocalSet(4));
+
+        // blocking-read(self, limit, result_ptr)
+        fb.instruction(&Instruction::LocalGet(4));
+        fb.instruction(&Instruction::I64Const(STDIN_BUF));
+        fb.instruction(&Instruction::I32Const(SCRATCH_READ_RESULT));
+        fb.instruction(&Instruction::Call(FN_INPUT_STREAM_BLOCKING_READ as u32));
+
+        // Read result: ptr at +4, len at +8
+        fb.instruction(&Instruction::I32Const(SCRATCH_READ_RESULT + 4));
+        fb.instruction(&Instruction::I32Load(ma4.clone()));
+        fb.instruction(&Instruction::LocalSet(5)); // ptr
+
+        fb.instruction(&Instruction::I32Const(SCRATCH_READ_RESULT + 8));
+        fb.instruction(&Instruction::I32Load(ma4));
+        fb.instruction(&Instruction::LocalSet(6)); // len
+
+        // memory.copy data → STDIN_BUF
+        fb.instruction(&Instruction::I32Const(STDIN_BUF as i32));
+        fb.instruction(&Instruction::LocalGet(5));
+        fb.instruction(&Instruction::LocalGet(6));
+        fb.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+
+        // store len at STDIN_LEN
+        fb.instruction(&Instruction::I32Const(STDIN_LEN as i32)); // addr first
+        fb.instruction(&Instruction::LocalGet(6));                 // value second
+        fb.instruction(&Instruction::I32Store(ma4));
+
+        // drop stdin
+        fb.instruction(&Instruction::LocalGet(4));
+        fb.instruction(&Instruction::Call(FN_DROP_INPUT_STREAM as u32));
+
+        // Tagged string: (STDIN_BUF | (len << 32)) << 3 | TAG_STR
+        fb.instruction(&Instruction::I64Const(STDIN_BUF));
+        fb.instruction(&Instruction::LocalGet(6));
+        fb.instruction(&Instruction::I64ExtendI32U);
+        fb.instruction(&Instruction::I64Const(32));
+        fb.instruction(&Instruction::I64Shl);
+        fb.instruction(&Instruction::I64Or);
+        fb.instruction(&Instruction::I64Const(3));
+        fb.instruction(&Instruction::I64Shl);
+        fb.instruction(&Instruction::I64Const(crate::wasm_emit::TAG_STR));
+        fb.instruction(&Instruction::I64Or);
+
+        if real_param_count == 0 {
+            fb.instruction(&Instruction::Drop);
+        } else if real_param_count > 1 {
+            for _ in 1..real_param_count {
+                fb.instruction(&Instruction::I64Const(crate::wasm_emit::TAG_NIL));
+            }
+        }
+        fb.instruction(&Instruction::Call(real_func_idx));
+        fb.instruction(&Instruction::LocalSet(2));
+
+        // Write result to stdout
+        fb.instruction(&Instruction::Call(FN_GET_STDOUT));
+        fb.instruction(&Instruction::LocalSet(0));
+
+        fb.instruction(&Instruction::LocalGet(2));
+        fb.instruction(&Instruction::I64Const(7));
+        fb.instruction(&Instruction::I64And);
+        fb.instruction(&Instruction::I64Const(crate::wasm_emit::TAG_STR as i64));
+        fb.instruction(&Instruction::I64Eq);
+        fb.instruction(&Instruction::If(BlockType::Empty));
+        {
+            // String result: extract ptr and len, write to stdout
+            fb.instruction(&Instruction::LocalGet(2));
+            fb.instruction(&Instruction::I64Const(3));
+            fb.instruction(&Instruction::I64ShrU);
+            fb.instruction(&Instruction::I64Const(0xFFFFFFFF));
+            fb.instruction(&Instruction::I64And);
+            fb.instruction(&Instruction::I32WrapI64);
+            fb.instruction(&Instruction::LocalSet(1));
+
+            fb.instruction(&Instruction::LocalGet(2));
+            fb.instruction(&Instruction::I64Const(35));
+            fb.instruction(&Instruction::I64ShrU);
+            fb.instruction(&Instruction::I64Const(0xFFFFFFFF));
+            fb.instruction(&Instruction::I64And);
+            fb.instruction(&Instruction::I32WrapI64);
+            fb.instruction(&Instruction::LocalSet(3));
+
+            fb.instruction(&Instruction::LocalGet(0));
+            fb.instruction(&Instruction::LocalGet(1));
+            fb.instruction(&Instruction::LocalGet(3));
+            fb.instruction(&Instruction::I32Const(0));
+            fb.instruction(&Instruction::Call(FN_OUTPUT_STREAM_WRITE));
+        }
+        fb.instruction(&Instruction::Else);
+        {
+            // Non-string result: write nothing
+        }
+        fb.instruction(&Instruction::End);
+
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::Call(FN_DROP_OUTPUT_STREAM));
+
+        fb.instruction(&Instruction::I32Const(0));
+        fb.instruction(&Instruction::End);
+        codes.function(&fb);
+    }
+
+    // ── cabi_realloc: (i32, i32, i32, i32) -> i32 ──
+    // params: 0=old_ptr, 1=old_len, 2=align, 3=new_len
+    // returns: ptr to newly allocated region
+    {
+        let heap_ptr_addr: i32 = 196608;
+        let mut realloc = Function::new([
+            (1u32, ValType::I32), // extra local 4: heap_ptr
+        ]);
+        let ma4 = MemArg { offset: 0, align: 2, memory_index: 0 };
+        // Load heap_ptr from memory
+        realloc.instruction(&Instruction::I32Const(heap_ptr_addr));
+        realloc.instruction(&Instruction::I32Load(ma4));
+        realloc.instruction(&Instruction::LocalTee(4));
+        // If heap_ptr == 0, initialize to 1048576 (1MB)
+        realloc.instruction(&Instruction::I32Eqz);
+        realloc.instruction(&Instruction::If(BlockType::Empty));
+        realloc.instruction(&Instruction::I32Const(1048576));
+        realloc.instruction(&Instruction::I32Const(heap_ptr_addr));
+        realloc.instruction(&Instruction::I32Store(ma4));
+        realloc.instruction(&Instruction::I32Const(1048576));
+        realloc.instruction(&Instruction::LocalSet(4));
+        realloc.instruction(&Instruction::End);
+        // Advance heap_ptr by new_len (param 3)
+        realloc.instruction(&Instruction::LocalGet(4));
+        realloc.instruction(&Instruction::LocalGet(3));
+        realloc.instruction(&Instruction::I32Add);
+        realloc.instruction(&Instruction::I32Const(heap_ptr_addr));
+        realloc.instruction(&Instruction::I32Store(ma4));
+        // Return old heap_ptr (the allocated region)
+        realloc.instruction(&Instruction::LocalGet(4));
+        realloc.instruction(&Instruction::End);
+        codes.function(&realloc);
+    }
+
+    module.section(&codes);
+    // ── Emit data segments ──
+    {
+        let mut data = DataSection::new();
+        // Initialize RUNTIME_HEAP_PTR (addr 56) to HEAP_START (4096)
+        let heap_start_bytes: [u8; 8] = (HEAP_START as u64).to_le_bytes();
+        data.active(0, &ConstExpr::i32_const(56), heap_start_bytes.iter().copied());
+        // String literals from lisp emitter
+        for (off, bytes) in &em.data_segments {
+            data.active(0, &ConstExpr::i32_const(*off as i32), bytes.iter().copied());
+        }
+        // HTTP URL/header data segments
+        for (offset, bytes) in &all_http_data_segments {
+            data.active(0, &ConstExpr::i32_const(*offset), bytes.iter().copied());
+        }
+        module.section(&data);
+    }
+
+    let core_bytes = module.finish();
+    eprintln!("✅ Combined P2 core: {} bytes", core_bytes.len());
+    std::fs::write("/tmp/p2_combined_core.wasm", &core_bytes).ok();
+    Ok(core_bytes)
+}
+
+fn build_combined_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
+    std::fs::write("/tmp/p2_combined_core_to_encode.wasm", core_bytes).ok();
+
+    let (resolve, world) = crate::wasi_http::build_combined_wit_metadata()
+        .map_err(|e| format!("WIT metadata: {}", e))?;
+    let mut mod_bytes = core_bytes.to_vec();
+    wit_component::embed_component_metadata(
+        &mut mod_bytes,
+        &resolve,
+        world,
+        wit_component::StringEncoding::UTF8,
+    )
+    .map_err(|e| format!("embed metadata: {}", e))?;
+
+    let component = wit_component::ComponentEncoder::default()
+        .module(&mod_bytes)
+        .map_err(|e| format!("wit-component set module: {}", e))?
+        .validate(false)
+        .encode()
+        .map_err(|e| format!("wit-component encode: {:#}", e))?;
+
+    eprintln!("✅ Combined P2 component: {} bytes", component.len());
+    std::fs::write("/tmp/p2_combined.wasm", &component).ok();
+
+    if let Err(e) = wasmparser::validate(&component) {
+        eprintln!("⚠️ Validation warning: {}", e);
+    }
+
+    Ok(component)
+}
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;

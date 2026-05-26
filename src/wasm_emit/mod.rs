@@ -303,6 +303,20 @@ impl WasmEmitter {
         }
     }
 
+    /// Split a URL string into (authority, path_with_query).
+    /// e.g. "https://api.example.com/v1/data?q=1" → ("api.example.com", "/v1/data?q=1")
+    pub fn split_url(url: &str) -> Option<(String, String)> {
+        // Find "://"
+        let after_scheme = url.find("://")?;
+        let rest = &url[after_scheme + 3..];
+        // Find first "/" after scheme — that separates authority from path
+        if let Some(slash_pos) = rest.find('/') {
+            Some((rest[..slash_pos].to_string(), rest[slash_pos..].to_string()))
+        } else {
+            Some((rest.to_string(), "/".to_string()))
+        }
+    }
+
     fn local_idx(&mut self, name: &str) -> u32 {
         if let Some(&i) = self.locals.get(name) { return i; }
         // Reuse freed slot if available (for __ temporaries)

@@ -270,7 +270,7 @@ pub fn emit_http_get_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     func.instruction(&lg(12));
     func.instruction(&Instruction::I64Const(65536));
     func.instruction(&cst(SCRATCH_READ_RESULT));
-    func.instruction(&cl(FN_INPUT_STREAM_READ));
+    func.instruction(&cl(FN_INPUT_STREAM_BLOCKING_READ));
     func.instruction(&cst(0));
     func.instruction(&ld(SCRATCH_READ_RESULT + 4));
     func.instruction(&ls(13)); // data ptr
@@ -477,7 +477,7 @@ pub fn emit_http_post_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     func.instruction(&lg(14));
     func.instruction(&Instruction::I64Const(65536));
     func.instruction(&cst(SCRATCH_READ_RESULT));
-    func.instruction(&cl(FN_INPUT_STREAM_READ));
+    func.instruction(&cl(FN_INPUT_STREAM_BLOCKING_READ));
     func.instruction(&cst(0));
     func.instruction(&ld(SCRATCH_READ_RESULT + 4));
     func.instruction(&ls(15)); // data ptr
