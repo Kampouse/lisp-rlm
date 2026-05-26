@@ -10,7 +10,7 @@
 ;; --- Storage key ---
 
 (define (storage-key sub)
-  (str-concat "wallet:" sub))
+  (str-cat "wallet:" sub))
 
 ;; --- Actions ---
 
@@ -20,7 +20,7 @@
       ;; nil = tagged 4
       (if (not (nil? existing))
         ;; Already registered — return existing key
-        (str-concat "{\"status\":\"ok\",\"api_key\":\"" (str-concat existing "\",\"message\":\"existing\"}"))
+        (str-cat "{\"status\":\"ok\",\"api_key\":\"" existing "\",\"message\":\"existing\"}")
         ;; Register new via OutLayer API
         (let ((resp (http-post "https://api.outlayer.fastnear.com/register" "{}")))
           (let ((extracted (json-extract resp "api_key" "near_account_id")))
@@ -31,16 +31,16 @@
                 "{\"status\":\"error\",\"message\":\"registration failed\"}"
                 (begin
                   (storage-set key api-key)
-                  (str-concat "{\"status\":\"ok\",\"api_key\":\""
-                    (str-concat api-key (str-concat "\",\"near_account_id\":\""
-                      (str-concat near-acct "\"}")))))))))))))
+                  (str-cat "{\"status\":\"ok\",\"api_key\":\""
+                    api-key "\",\"near_account_id\":\""
+                    near-acct "\"}"))))))))))
 
 (define (do-recover google-sub)
   (let ((key (storage-key google-sub)))
     (let ((api-key (storage-get key)))
       (if (nil? api-key)
         "{\"status\":\"not_found\",\"message\":\"no wallet for this google account\"}"
-        (str-concat "{\"status\":\"ok\",\"api_key\":\"" (str-concat api-key "\"}"))))))
+        (str-cat "{\"status\":\"ok\",\"api_key\":\"" api-key "\"}")))))
 
 ;; --- Entry point (last define = called by _start with stdin) ---
 

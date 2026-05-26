@@ -1762,13 +1762,15 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
     let ol_type_6 = ol_type_base + 8;
     let ol_type_s64 = ol_type_base + 9;
     let ol_type_2ret = ol_type_base + 10;
+    let memcpy_type = ol_type_base + 11; // (i64, i64, i64) -> ()
 
     // Function indices
     let get_fn_count = http_get_count * 2;
     let post_fn_count = http_post_count * 2;
     let http_get_fn_idx = internal_fn_base;
     let http_post_fn_idx = http_get_fn_idx + get_fn_count;
-    let user_fn_base = http_post_fn_idx + post_fn_count;
+    let memcpy_fn_idx = http_post_fn_idx + post_fn_count;
+    let user_fn_base = memcpy_fn_idx + 1;
     let start_fn_idx = user_fn_base + em.funcs.len() as u32;
     let realloc_fn_idx = start_fn_idx + 1;
 
@@ -1797,6 +1799,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
     types.ty().function(vec![W; 6], []);
     types.ty().function(vec![W, W, ValType::I64, W], []);
     types.ty().function(vec![W; 2], [W]); // has/delete direct bool return
+    types.ty().function([ValType::I32; 3], []); // memcpy_type: (dst, src, len) -> ()
 
     module.section(&types);
 
@@ -1836,6 +1839,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
         functions.function(http_post_type);
         functions.function(http_post_type);
     }
+    functions.function(memcpy_type); // shared memcpy helper
     for f in &em.funcs {
         functions.function(user_type_base + f.param_count as u32);
     }
@@ -1950,6 +1954,58 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
         current_data_offset = (current_data_offset + 3) & !3;
     }
 
+    // ── Memcpy helper: (dst: i32, src: i32, len: i32) -> () ──
+    // Copies len bytes from src to dst using word loop + remainder tail
+    {
+        let ma = MemArg { offset: 0, align: 3, memory_index: 0 };
+        let ma8 = MemArg { offset: 0, align: 0, memory_index: 0 };
+        let mut fb = Function::new([
+            (1u32, ValType::I32), // dst (param 0, reused as moving pointer)
+            (1u32, ValType::I32), // src (param 1, reused as moving pointer)
+            (1u32, ValType::I32), // len (param 2)
+            (1u32, ValType::I32), // local 3: qw (qword count)
+            (1u32, ValType::I32), // local 4: rem (remainder bytes)
+        ]);
+        // qw = len >> 3
+        fb.instruction(&Instruction::LocalGet(2));
+        fb.instruction(&Instruction::I32Const(3)); fb.instruction(&Instruction::I32ShrU);
+        fb.instruction(&Instruction::LocalSet(3));
+        // rem = len & 7
+        fb.instruction(&Instruction::LocalGet(2));
+        fb.instruction(&Instruction::I32Const(7)); fb.instruction(&Instruction::I32And);
+        fb.instruction(&Instruction::LocalSet(4));
+        // Word copy loop: while qw > 0
+        fb.instruction(&Instruction::Block(BlockType::Empty));
+        fb.instruction(&Instruction::Loop(BlockType::Empty));
+        fb.instruction(&Instruction::LocalGet(3)); fb.instruction(&Instruction::I32Const(0)); fb.instruction(&Instruction::I32Eq);
+        fb.instruction(&Instruction::BrIf(1));
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::I64Load(ma)); fb.instruction(&Instruction::I64Store(ma));
+        fb.instruction(&Instruction::LocalGet(1)); fb.instruction(&Instruction::I32Const(8)); fb.instruction(&Instruction::I32Add); fb.instruction(&Instruction::LocalSet(1));
+        fb.instruction(&Instruction::LocalGet(0)); fb.instruction(&Instruction::I32Const(8)); fb.instruction(&Instruction::I32Add); fb.instruction(&Instruction::LocalSet(0));
+        fb.instruction(&Instruction::LocalGet(3)); fb.instruction(&Instruction::I32Const(-1)); fb.instruction(&Instruction::I32Add); fb.instruction(&Instruction::LocalSet(3));
+        fb.instruction(&Instruction::Br(0));
+        fb.instruction(&Instruction::End); // loop
+        fb.instruction(&Instruction::End); // block
+        // Remainder tail: while rem > 0
+        fb.instruction(&Instruction::Block(BlockType::Empty));
+        fb.instruction(&Instruction::Loop(BlockType::Empty));
+        fb.instruction(&Instruction::LocalGet(4)); fb.instruction(&Instruction::I32Const(0)); fb.instruction(&Instruction::I32Eq);
+        fb.instruction(&Instruction::BrIf(1));
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::I64Load8U(ma8)); fb.instruction(&Instruction::I64Store8(ma8));
+        fb.instruction(&Instruction::LocalGet(1)); fb.instruction(&Instruction::I32Const(1)); fb.instruction(&Instruction::I32Add); fb.instruction(&Instruction::LocalSet(1));
+        fb.instruction(&Instruction::LocalGet(0)); fb.instruction(&Instruction::I32Const(1)); fb.instruction(&Instruction::I32Add); fb.instruction(&Instruction::LocalSet(0));
+        fb.instruction(&Instruction::LocalGet(4)); fb.instruction(&Instruction::I32Const(-1)); fb.instruction(&Instruction::I32Add); fb.instruction(&Instruction::LocalSet(4));
+        fb.instruction(&Instruction::Br(0));
+        fb.instruction(&Instruction::End); // loop
+        fb.instruction(&Instruction::End); // block
+        fb.instruction(&Instruction::End); // func
+        codes.function(&fb);
+    }
+
 
     // ── User functions ──
     let name_map: std::collections::HashMap<&str, u32> = em.funcs.iter()
@@ -1983,6 +2039,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
                 ol_map.insert(post_sentinel_base + i, http_post_fn_idx + i * 2);
             }
             ol_map.insert(crate::wasm_emit::WASI_FD_WRITE, realloc_fn_idx);
+            ol_map.insert(crate::wasm_emit::MEMCPY_SENTINEL, memcpy_fn_idx);
             WasmEmitter::resolve_static_pub_ex(
                 &base_resolved, &std::collections::HashMap::new(), &name_map, &em.funcs, &ol_map,
             )

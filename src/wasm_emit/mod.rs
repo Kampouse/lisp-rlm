@@ -166,6 +166,7 @@ pub(crate) const HOST_FUNCS: &[(&str, &[ValType], &[ValType])] = &[
 const HOST_BASE: u32 = 0xFF00_0000;
 const USER_BASE: u32 = 0xFF01_0000;
 pub const WASI_FD_WRITE: u32 = 90; // sentinel for WASI fd_write in outlayer mode
+pub const MEMCPY_SENTINEL: u32 = 91; // sentinel for shared memcpy helper
 const TEMP_MEM: i64 = 64;
 const AMOUNT_MEM: i64 = 256; // u128 deposit buffer (16 bytes at 256..272)
 const INPUT_BUF: i64 = 16384;  // 16KB for input JSON args
@@ -257,6 +258,7 @@ pub struct WasmEmitter {
     pub(crate) locals: HashMap<String, u32>,
     pub(crate) next_local: u32,
     pub(crate) free_locals: Vec<u32>, // recyclable local slots
+    pub(crate) local_type_map: Vec<ValType>, // per-local type (indexed by local idx)
     pub(crate) current_func: Option<String>,
     pub(crate) current_param_count: usize,
     pub(crate) while_id: Cell<usize>,
@@ -295,7 +297,7 @@ pub struct WasmEmitter {
 impl WasmEmitter {
     pub fn new() -> Self {
         Self {
-            locals: HashMap::new(), next_local: 0, free_locals: Vec::new(), current_func: None, current_param_count: 0,
+            locals: HashMap::new(), next_local: 0, free_locals: Vec::new(), local_type_map: Vec::new(), current_func: None, current_param_count: 0,
             while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 1, exports: Vec::new(),
             data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(),
             gas_local: None, needs_frame: false, heap_ptr: HEAP_START as u32, lambda_counter: 0, str_cat_depth: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), http_post_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false, borsh_schemas: HashMap::new(),
@@ -319,10 +321,26 @@ impl WasmEmitter {
 
     fn local_idx(&mut self, name: &str) -> u32 {
         if let Some(&i) = self.locals.get(name) { return i; }
-        // Reuse freed slot if available (for __ temporaries)
         let i = self.free_locals.pop().unwrap_or(self.next_local);
-        // If we reused a slot and it's >= next_local, something's wrong; but pop gives valid slots
-        if i == self.next_local { self.next_local += 1; }
+        if i == self.next_local {
+            self.next_local += 1;
+            self.local_type_map.push(ValType::I64);
+        }
+        self.locals.insert(name.to_string(), i);
+        i
+    }
+
+    /// Allocate an i32 local (for pointers, lengths, offsets)
+    fn local_idx_i32(&mut self, name: &str) -> u32 {
+        if let Some(&i) = self.locals.get(name) { return i; }
+        let i = self.free_locals.pop().unwrap_or(self.next_local);
+        if i == self.next_local {
+            self.next_local += 1;
+            self.local_type_map.push(ValType::I32);
+        } else {
+            // Reused slot — overwrite type
+            self.local_type_map[i as usize] = ValType::I32;
+        }
         self.locals.insert(name.to_string(), i);
         i
     }
@@ -431,7 +449,7 @@ impl WasmEmitter {
     pub fn emit_define(&mut self, name: &str, params: &[String], body: &LispVal) -> Result<(), String> {
         // Store AST for compile-time inlining
         self.func_defs.insert(name.to_string(), (params.to_vec(), body.clone()));
-        self.locals.clear(); self.next_local = 0; self.free_locals.clear(); self.needs_frame = false;
+        self.locals.clear(); self.next_local = 0; self.free_locals.clear(); self.local_type_map.clear(); self.needs_frame = false;
         for p in params { self.local_idx(p); }
         self.current_func = Some(name.to_string());
         self.current_param_count = params.len();
@@ -490,9 +508,39 @@ impl WasmEmitter {
         let instrs = Self::peephole(instrs);
 
         let total = self.next_local as usize;
+        // Build per-local type entries for code section (params are declared in type, extras need declaring)
+        let local_entries_vec: Vec<(u32, ValType)> = {
+            let param_count = params.len();
+            if total > param_count {
+                // Group consecutive same-type locals
+                let mut entries = Vec::new();
+                let mut i = param_count;
+                let ltm = &self.local_type_map;
+                while i < total {
+                    let ty = if i < ltm.len() { ltm[i] } else { ValType::I64 };
+                    let mut count = 1u32;
+                    while (i + count as usize) < total {
+                        let next_ty = if (i + count as usize) < ltm.len() { ltm[i + count as usize] } else { ValType::I64 };
+                        if next_ty != ty { break; }
+                        count += 1;
+                    }
+                    entries.push((count, ty));
+                    i += count as usize;
+                }
+                entries
+            } else {
+                vec![]
+            }
+        };
         self.current_func = None;
         self.gas_local = None;
-        self.funcs[placeholder_idx] = FuncDef { name: name.into(), param_count: params.len(), local_count: total, instrs, local_entries: None };
+        self.funcs[placeholder_idx] = FuncDef {
+            name: name.into(),
+            param_count: params.len(),
+            local_count: total,
+            instrs,
+            local_entries: Some(local_entries_vec),
+        };
         Ok(())
     }
 
