@@ -47,38 +47,39 @@ impl WasmEmitter {
             }
             "vec-nth" => {
                 if a.len() != 2 { return Err("vec-nth: expected 2 args".into()); }
-                let arr_tmp = self.local_idx("__vn_arr");
-                let idx_tmp = self.local_idx("__vn_idx");
-                let count_tmp = self.local_idx("__vn_count");
+                let arr_tmp = self.local_idx_i32("__vn_arr");
+                let idx_tmp = self.local_idx_i32("__vn_idx");
+                let count_tmp = self.local_idx_i32("__vn_count");
                 let result_tmp = self.local_idx("__vn_result");
                 let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
                 let mut v = Vec::new();
-                // Compile and save array
+                // Compile and save array ptr
                 v.extend(self.expr(&a[0])?);
                 v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalSet(arr_tmp));
-                // Compile and save index (untag if tagged number)
+                // Compile and save index
                 v.extend(self.expr(&a[1])?);
-                v.extend(self.emit_untag()); // untag the index to raw i64
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalSet(idx_tmp));
                 // Bounds check: idx < count
                 v.push(Instruction::LocalGet(arr_tmp));
-                v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(ma)); // load count
+                v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalSet(count_tmp));
                 v.push(Instruction::LocalGet(idx_tmp));
                 v.push(Instruction::LocalGet(count_tmp));
-                v.push(Instruction::I64LtU); // idx < count (unsigned)
+                v.push(Instruction::I32LtU); // idx < count (unsigned)
                 v.push(Instruction::If(BlockType::Empty));
                 // In bounds: load element at arr + (1 + idx) * 8
                 v.push(Instruction::LocalGet(arr_tmp));
-                v.push(Instruction::I64Const(8)); // skip count slot
-                v.push(Instruction::I64Add);
+                v.push(Instruction::I32Const(8)); // skip count slot
+                v.push(Instruction::I32Add);
                 v.push(Instruction::LocalGet(idx_tmp));
-                v.push(Instruction::I64Const(8));
-                v.push(Instruction::I64Mul);
-                v.push(Instruction::I64Add);
-                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(3)); // idx * 8 = idx << 3
+                v.push(Instruction::I32Shl);
+                v.push(Instruction::I32Add);
                 v.push(Instruction::I64Load(ma));
                 v.push(Instruction::LocalSet(result_tmp));
                 v.push(Instruction::Else);
@@ -91,45 +92,45 @@ impl WasmEmitter {
             }
             "vec-set!" => {
                 if a.len() != 3 { return Err("vec-set!: expected 3 args".into()); }
-                let arr_tmp = self.local_idx("__vs_arr");
-                let idx_tmp = self.local_idx("__vs_idx");
+                let arr_tmp = self.local_idx_i32("__vs_arr");
+                let idx_tmp = self.local_idx_i32("__vs_idx");
                 let val_tmp = self.local_idx("__vs_val");
-                let count_tmp = self.local_idx("__vs_count");
+                let count_tmp = self.local_idx_i32("__vs_count");
                 let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
                 let mut v = Vec::new();
-                // Compile and save array
+                // Compile and save array ptr
                 v.extend(self.expr(&a[0])?);
                 v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalSet(arr_tmp));
                 // Compile and save index
                 v.extend(self.expr(&a[1])?);
                 v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalSet(idx_tmp));
-                // Compile and save value
+                // Compile and save value (stays tagged i64)
                 v.extend(self.expr(&a[2])?);
                 v.push(Instruction::LocalSet(val_tmp));
                 // Bounds check: idx < count
                 v.push(Instruction::LocalGet(arr_tmp));
-                v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(ma)); // load count
+                v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalSet(count_tmp));
                 v.push(Instruction::LocalGet(idx_tmp));
                 v.push(Instruction::LocalGet(count_tmp));
-                v.push(Instruction::I64LtU); // idx < count (unsigned)
+                v.push(Instruction::I32LtU);
                 v.push(Instruction::If(BlockType::Empty));
                 // In bounds: store at arr_ptr + (1 + idx) * 8
                 v.push(Instruction::LocalGet(arr_tmp));
-                v.push(Instruction::I64Const(8)); // skip count slot
-                v.push(Instruction::I64Add);
+                v.push(Instruction::I32Const(8));
+                v.push(Instruction::I32Add);
                 v.push(Instruction::LocalGet(idx_tmp));
-                v.push(Instruction::I64Const(8));
-                v.push(Instruction::I64Mul);
-                v.push(Instruction::I64Add);
-                v.push(Instruction::I32WrapI64); // addr as i32
-                v.push(Instruction::LocalGet(val_tmp)); // tagged value
-                v.push(Instruction::I64Store(ma)); // [i32 addr, i64 val]
+                v.push(Instruction::I32Const(3)); // idx * 8 = idx << 3
+                v.push(Instruction::I32Shl);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::LocalGet(val_tmp));
+                v.push(Instruction::I64Store(ma));
                 v.push(Instruction::End);
-                // Return nil
                 v.push(Instruction::I64Const(TAG_NIL));
                 Ok(v)
             }
