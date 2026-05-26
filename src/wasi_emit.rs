@@ -23,6 +23,7 @@ const RESULT_BUF: i64 = 65536;  // reuse STDOUT_BUF for result
 const OL_RET_AREA: i32 = 163840; // canonical ABI return area for outlayer host calls (20 bytes)
 
 /// WASI Preview 1 function descriptors (module, name, params, results)
+#[derive(Clone)]
 struct WasiFunc {
     module: &'static str,
     name: &'static str,
@@ -87,97 +88,140 @@ fn wasi_p1_imports_minimal() -> Vec<WasiFunc> {
 /// 14:storage-clear-all 15:storage-set-worker 16:storage-get-worker
 /// 17:storage-set-worker-public 18:storage-get-worker-from-project
 /// 19:env-signer 20:env-predecessor
+///
+/// Uses production split interfaces:
+/// - Storage → near:storage/api (set, get, has, delete, etc.)
+/// - RPC → near:rpc/api (view, call, transfer — with extra params)
+/// - HTTP → outlayer:api/host (http-get, http-post — legacy until wasi:http replaces)
 fn outlayer_imports() -> Vec<WasiFunc> {
     vec![
-        // 0: view(contract_id: string, method_name: string, args_json: string) -> result<string, string>
-        // canonical: 6 i32 + ret_area = 7 params
-        WasiFunc { module: "outlayer:api/host", name: "view",
-            params: vec![W; 7], results: vec![] },
-        // 1: call(signer_key: string, receiver_id: string, method_name: string, args_json: string,
-        //         deposit_yocto: string, gas: string) -> result<string, string>
-        // canonical: 12 i32 + ret_area = 13 params
-        WasiFunc { module: "outlayer:api/host", name: "call",
-            params: vec![W; 13], results: vec![] },
-        // 2: transfer(signer_key: string, receiver_id: string, amount_yocto: string) -> result<string, string>
-        // canonical: 6 i32 + ret_area = 7 params
-        WasiFunc { module: "outlayer:api/host", name: "transfer",
-            params: vec![W; 7], results: vec![] },
-        // 3: http-get(url: string) -> result<list<u8>, string>
-        // canonical: 2 i32 + ret_area = 3 params
-        WasiFunc { module: "outlayer:api/host", name: "http-get",
-            params: vec![W; 3], results: vec![] },
-        // 4: http-post(url: string, body: list<u8>, content_type: string) -> result<list<u8>, string>
-        // canonical: 6 i32 + ret_area = 7 params
-        WasiFunc { module: "outlayer:api/host", name: "http-post",
-            params: vec![W; 7], results: vec![] },
-        // 5: storage-set(key: string, value: list<u8>) -> result<_, string>
-        // canonical: 4 i32 + ret_area = 5 params
-        WasiFunc { module: "outlayer:api/host", name: "storage-set",
+        // Upstream split interfaces only — no custom outlayer:api/host
+        // 0: view(contract_id, method_name, args_json, finality_or_block) -> tuple<string, string>
+        // near:rpc/api canonical: 8 i32 + ret_area = 9 params
+        WasiFunc { module: "near:rpc/api@0.1.0", name: "view",
+            params: vec![W; 9], results: vec![] },
+        // 1: call(signer_id, signer_key, receiver_id, method_name, args_json,
+        //         deposit_yocto, gas, wait_until) -> tuple<string, string>
+        // near:rpc/api canonical: 16 i32 + ret_area = 17 params
+        WasiFunc { module: "near:rpc/api@0.1.0", name: "call",
+            params: vec![W; 17], results: vec![] },
+        // 2: transfer(signer_id, signer_key, receiver_id, amount_yocto, wait_until)
+        // near:rpc/api canonical: 10 i32 + ret_area = 11 params
+        WasiFunc { module: "near:rpc/api@0.1.0", name: "transfer",
+            params: vec![W; 11], results: vec![] },
+        // 3: set(key, value: list<u8>) -> string
+        // near:storage/api canonical: 4 i32 + ret_area = 5 params
+        WasiFunc { module: "near:storage/api@0.1.0", name: "set",
             params: vec![W; 5], results: vec![] },
-        // 6: storage-get(key: string) -> result<option<list<u8>>, string>
-        // canonical: 2 i32 + ret_area = 3 params
-        WasiFunc { module: "outlayer:api/host", name: "storage-get",
+        // 4: get(key) -> tuple<list<u8>, string>
+        // near:storage/api canonical: 2 i32 + ret_area = 3 params
+        WasiFunc { module: "near:storage/api@0.1.0", name: "get",
             params: vec![W; 3], results: vec![] },
-        // 7: storage-has(key: string) -> result<bool, string>
-        // canonical: 2 i32 + ret_area = 3 params
-        WasiFunc { module: "outlayer:api/host", name: "storage-has",
-            params: vec![W; 3], results: vec![] },
-        // 8: storage-delete(key: string) -> result<_, string>
-        // canonical: 2 i32 + ret_area = 3 params
-        WasiFunc { module: "outlayer:api/host", name: "storage-delete",
-            params: vec![W; 3], results: vec![] },
-        // 9: storage-increment(key: string, delta: s64) -> result<s64, string>
-        // canonical: 2 i32 (string) + i64 (s64) + i32 (ret_area) = (i32,i32,i64,i32)
-        WasiFunc { module: "outlayer:api/host", name: "storage-increment",
+        // 5: has(key) -> bool
+        WasiFunc { module: "near:storage/api@0.1.0", name: "has",
+            params: vec![W; 2], results: vec![ValType::I32] },
+        // 6: delete(key) -> bool
+        WasiFunc { module: "near:storage/api@0.1.0", name: "delete",
+            params: vec![W; 2], results: vec![ValType::I32] },
+        // 7: increment(key, delta: s64) -> tuple<s64, string>
+        WasiFunc { module: "near:storage/api@0.1.0", name: "increment",
             params: vec![W, W, ValType::I64, W], results: vec![] },
-        // 10: storage-decrement(key: string, delta: s64) -> result<s64, string>
-        // canonical: 2 i32 (string) + i64 (s64) + i32 (ret_area) = (i32,i32,i64,i32)
-        WasiFunc { module: "outlayer:api/host", name: "storage-decrement",
+        // 8: decrement(key, delta: s64) -> tuple<s64, string>
+        WasiFunc { module: "near:storage/api@0.1.0", name: "decrement",
             params: vec![W, W, ValType::I64, W], results: vec![] },
-        // 11: storage-set-if-absent(key: string, value: list<u8>) -> result<bool, string>
-        // canonical: 4 i32 + ret_area = 5 params
-        WasiFunc { module: "outlayer:api/host", name: "storage-set-if-absent",
+        // 9: set-if-absent(key, value) -> tuple<bool, string>
+        WasiFunc { module: "near:storage/api@0.1.0", name: "set-if-absent",
             params: vec![W; 5], results: vec![] },
-        // 12: storage-set-if-equals(key: string, expected: list<u8>, new_value: list<u8>) -> result<bool, string>
-        // canonical: 6 i32 + ret_area = 7 params
-        WasiFunc { module: "outlayer:api/host", name: "storage-set-if-equals",
+        // 10: set-if-equals(key, expected, new_value) -> tuple<bool, list<u8>, string>
+        WasiFunc { module: "near:storage/api@0.1.0", name: "set-if-equals",
             params: vec![W; 7], results: vec![] },
-        // 13: storage-list-keys(prefix: string) -> result<list<string>, string>
-        // canonical: 2 i32 + ret_area = 3 params
-        WasiFunc { module: "outlayer:api/host", name: "storage-list-keys",
+        // 11: list-keys(prefix) -> tuple<string, string>
+        WasiFunc { module: "near:storage/api@0.1.0", name: "list-keys",
             params: vec![W; 3], results: vec![] },
-        // 14: storage-clear-all() -> result<_, string>
-        // canonical: ret_area = 1 param
-        WasiFunc { module: "outlayer:api/host", name: "storage-clear-all",
+        // 12: clear-all() -> string
+        WasiFunc { module: "near:storage/api@0.1.0", name: "clear-all",
             params: vec![W; 1], results: vec![] },
-        // 15: storage-set-worker(key: string, value: list<u8>) -> result<_, string>
-        // canonical: 4 i32 + ret_area = 5 params
-        WasiFunc { module: "outlayer:api/host", name: "storage-set-worker",
+        // 13: set-worker(key, value, is_encrypted: option<bool>) -> string
+        // near:storage/api canonical: 2+2+2+1 = 7 params
+        WasiFunc { module: "near:storage/api@0.1.0", name: "set-worker",
+            params: vec![W; 7], results: vec![] },
+        // 14: get-worker(key, project: option<string>) -> tuple<list<u8>, string>
+        // near:storage/api canonical: 2+1+2+1 = 6 params
+        WasiFunc { module: "near:storage/api@0.1.0", name: "get-worker",
+            params: vec![W; 6], results: vec![] },
+        // 15: raw(method, params-json) -> tuple<string, string>
+        // near:rpc/api canonical: 4 i32 + ret_area = 5 params
+        WasiFunc { module: "near:rpc/api@0.1.0", name: "raw",
             params: vec![W; 5], results: vec![] },
-        // 16: storage-get-worker(key: string) -> result<option<list<u8>>, string>
-        // canonical: 2 i32 + ret_area = 3 params
-        WasiFunc { module: "outlayer:api/host", name: "storage-get-worker",
-            params: vec![W; 3], results: vec![] },
-        // 17: storage-set-worker-public(key: string, value: list<u8>) -> result<_, string>
-        // canonical: 4 i32 + ret_area = 5 params
-        WasiFunc { module: "outlayer:api/host", name: "storage-set-worker-public",
-            params: vec![W; 5], results: vec![] },
-        // 18: storage-get-worker-from-project(key: string, project: string) -> result<option<list<u8>>, string>
-        // canonical: 4 i32 + ret_area = 5 params
-        WasiFunc { module: "outlayer:api/host", name: "storage-get-worker-from-project",
-            params: vec![W; 5], results: vec![] },
-        // 19: env-signer() -> string
-        // canonical: ret_area = 1 param
-        WasiFunc { module: "outlayer:api/host", name: "env-signer",
-            params: vec![W; 1], results: vec![] },
-        // 20: env-predecessor() -> string
-        // canonical: ret_area = 1 param
-        WasiFunc { module: "outlayer:api/host", name: "env-predecessor",
-            params: vec![W; 1], results: vec![] },
     ]
 }
 
-/// Compile to WASI P1 core module with minimal imports (no outlayer).
+/// Sentinel values that map to outlayer_imports() indices.
+/// Sentinels 103/104/120/121/137/138/200 are NOT in outlayer_imports() — they're special paths.
+const OUTLAYER_SENTINELS: &[(u32, usize)] = &[
+    (100, 0),   // view
+    (101, 1),   // call
+    (102, 2),   // transfer
+    (110, 3),   // storage-set
+    (111, 4),   // storage-get
+    (112, 5),   // storage-has
+    (113, 6),   // storage-delete
+    (114, 7),   // storage-increment
+    (130, 8),   // storage-decrement
+    (131, 9),   // storage-set-if-absent
+    (132, 10),  // storage-set-if-equals
+    (133, 11),  // storage-list-keys
+    (134, 12),  // storage-clear-all
+    (135, 13),  // storage-set-worker
+    (136, 14),  // storage-get-worker
+    (140, 15),  // raw
+];
+
+/// Scan emitted instructions for sentinel Call(N) values and return
+/// the set of outlayer_imports() indices that are actually needed.
+fn scan_used_outlayer_indices(em: &crate::wasm_emit::WasmEmitter) -> std::collections::HashSet<usize> {
+    let mut used_sentinels = std::collections::HashSet::new();
+    for f in &em.funcs {
+        for instr in &f.instrs {
+            if let wasm_encoder::Instruction::Call(idx) = instr {
+                if *idx >= 100 && *idx <= 200 {
+                    used_sentinels.insert(*idx);
+                }
+            }
+        }
+    }
+    // Map sentinels to outlayer import indices
+    let mut used_indices = std::collections::HashSet::new();
+    for &(sentinel, ol_idx) in OUTLAYER_SENTINELS {
+        if used_sentinels.contains(&sentinel) {
+            used_indices.insert(ol_idx);
+        }
+    }
+    used_indices
+}
+
+/// Build filtered outlayer imports — only includes imports whose outlayer_imports() index
+/// is in `used_indices`. Returns (filtered_imports, sentinel_to_actual_fn_idx mapping, count).
+fn build_filtered_outlayer(
+    used_indices: &std::collections::HashSet<usize>,
+    base_fn_idx: u32,
+) -> (Vec<WasiFunc>, std::collections::HashMap<u32, u32>, u32) {
+    let all_ol = outlayer_imports();
+    let mut filtered = Vec::new();
+    let mut sentinel_map = std::collections::HashMap::new();
+    let mut actual_idx = base_fn_idx;
+
+    for &(sentinel, ol_idx) in OUTLAYER_SENTINELS {
+        if used_indices.contains(&ol_idx) {
+            sentinel_map.insert(sentinel, actual_idx);
+            filtered.push(all_ol[ol_idx].clone());
+            actual_idx += 1;
+        }
+    }
+
+    let count = filtered.len() as u32;
+    (filtered, sentinel_map, count)
+}
 /// Suitable for wrapping with `wasm-tools component new --adapt`.
 pub fn compile_wasi_p1(source: &str) -> Result<Vec<u8>, String> {
     let resolved = crate::wasm_emit::resolve_modules(source, std::path::Path::new("."))?;
@@ -923,20 +967,7 @@ fn build_p2_with_adapter(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("wit-component: failed to set module: {}", e))?
         .validate(false);
 
-    // outlayer:api/host imports — raw passthrough adapter
-    let imports = analyze_core_imports(core_bytes);
-    if imports.contains(&"outlayer:api/host") {
-        let ol_adapter = crate::outlayer_adapter::build_outlayer_adapter();
-        std::fs::write("/tmp/outlayer_adapter.wasm", &ol_adapter).ok();
-        encoder = encoder.adapter("outlayer:api/host", &ol_adapter)
-            .map_err(|e| format!("wit-component: failed to set outlayer adapter: {}", e))?;
-        let mut name_map = std::collections::HashMap::new();
-        name_map.insert(
-            "outlayer-impl:api/host".to_string(),
-            "outlayer:api/host".to_string(),
-        );
-        encoder = encoder.import_name_map(name_map);
-    }
+    // outlayer:api/host adapter removed — upstream uses split interfaces
 
     let component = encoder.encode()
         .map_err(|e| format!("wit-component encode failed: {:#}", e))?;
@@ -950,17 +981,19 @@ fn build_p2_with_adapter(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
 /// can type the `outlayer:api/host` imports correctly.
 /// Uses the official `embed_component_metadata` API.
 fn inject_outlayer_wit(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
-    const OUTLAYER_WIT: &str = include_str!("../wit/outlayer/api/outlayer.wit");
+    // Uses the combined WIT (outlayer-http world) for upstream split interfaces
+    // NOTE: This function is currently dead code - P2 uses build_combined_wit_metadata instead
+    const COMBINED_WIT: &str = include_str!("../wit/deps/combined.wit");
     let mut resolve = wit_parser::Resolve::new();
-    let ast = wit_parser::UnresolvedPackageGroup::parse("wit/outlayer/api/outlayer.wit", OUTLAYER_WIT)
+    let ast = wit_parser::UnresolvedPackageGroup::parse("wit/deps/combined.wit", COMBINED_WIT)
         .map_err(|e| format!("WIT parse error: {}", e))?;
     let pkg_id = resolve.push_group(ast).map_err(|e| format!("WIT push error: {}", e))?;
     let world_id = resolve.packages[pkg_id]
         .worlds
         .iter()
-        .find(|(name, _)| *name == "outlayer-world")
+        .find(|(name, _)| *name == "outlayer-http")
         .map(|(_, &id)| id)
-        .ok_or("outlayer-world not found in WIT package")?;
+        .ok_or("outlayer-http world not found in WIT package")?;
 
     let mut bytes = core_bytes.to_vec();
     wit_component::embed_component_metadata(
@@ -1075,9 +1108,15 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     em.tree_shake();
 
     let wasi = if skip_outlayer { wasi_p1_imports_minimal() } else { wasi_p1_imports() };
-    let ol: Vec<WasiFunc> = if skip_outlayer { vec![] } else { outlayer_imports() };
+    // Tree-shake: only import outlayer functions that are actually used
+    let (ol, ol_sentinel_map_p1, ol_count) = if skip_outlayer {
+        (vec![], std::collections::HashMap::new(), 0u32)
+    } else {
+        let used_ol_indices = scan_used_outlayer_indices(em);
+        let (filtered, smap, count) = build_filtered_outlayer(&used_ol_indices, wasi.len() as u32);
+        (filtered, smap, count)
+    };
     let wasi_count = wasi.len() as u32;
-    let ol_count = ol.len() as u32;
     let total_imports = wasi_count + ol_count;
 
     // Find which NEAR host functions are actually used, so we can emit stubs
@@ -1108,19 +1147,27 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     types.ty().function([W, ValType::I64, W, W], [W]);
 
     // OutLayer canonical ABI host types — all return () via ret_area pointer
-    // Unique signatures needed: (i32*1)->(), (i32*3)->(), (i32*5)->(), (i32*7)->(), (i32*13)->()
-    // type 7: (i32) -> () — env-signer, env-predecessor, storage-clear-all
+    // Unique signatures needed for split interfaces:
+    // type 7: (i32) -> () — env-signer, env-predecessor, clear-all
     types.ty().function(vec![W; 1], []);
-    // type 8: (i32, i32, i32) -> () — http-get, storage-get, storage-has, storage-delete, storage-list-keys, storage-get-worker
+    // type 8: (i32, i32, i32) -> () — http-get, get, has, delete, list-keys, get-worker
     types.ty().function(vec![W; 3], []);
-    // type 9: (i32*5) -> () — storage-set, storage-set-if-absent, storage-set-worker, storage-set-worker-public, storage-get-worker-from-project
+    // type 9: (i32*5) -> () — set, set-if-absent, raw, set-worker, set-worker-public, get-worker-from-project
     types.ty().function(vec![W; 5], []);
-    // type 10: (i32*7) -> () — view, transfer, http-post, storage-set-if-equals
+    // type 10: (i32*7) -> () — http-post, set-if-equals
     types.ty().function(vec![W; 7], []);
-    // type 11: (i32*13) -> () — call
-    types.ty().function(vec![W; 13], []);
-    // type 12: (i32, i32, i64, i32) -> () — storage-increment, storage-decrement (s64 canonical ABI)
+    // type 11: (i32*9) -> () — view (4 strings + ret_area)
+    types.ty().function(vec![W; 9], []);
+    // type 12: (i32*11) -> () — transfer (5 strings + ret_area)
+    types.ty().function(vec![W; 11], []);
+    // type 13: (i32*17) -> () — call (8 strings + ret_area)
+    types.ty().function(vec![W; 17], []);
+    // type 14: (i32, i32, i64, i32) -> () — increment, decrement (s64 canonical ABI)
     types.ty().function(vec![W, W, ValType::I64, W], []);
+    // type 15: (i32, i32) -> i32 — has, delete (direct bool return, no ret_area)
+    types.ty().function(vec![W; 2], [W]);
+    // type 16: (i32*6) -> () — get-worker, get-worker-from-project
+    types.ty().function(vec![W; 6], []);
 
     // NEAR-style host function types (for NEAR compat stubs)
     // We need types for each unique NEAR host function signature used
@@ -1128,7 +1175,7 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     let _ = &near_host_used; // used below
     // User function types: each function has (i64 × param_count) -> i64
     let max_p = em.funcs.iter().map(|f| f.param_count).max().unwrap_or(0);
-    let user_type_base: u32 = 13;
+    let user_type_base: u32 = 17;
     for p in 0..=max_p {
         let params: Vec<ValType> = (0..p).map(|_| ValType::I64).collect();
         types.ty().function(params, [ValType::I64]);
@@ -1226,34 +1273,34 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
         };
         imports.import(f.module, f.name, EntityType::Function(type_idx));
     }
-    // OutLayer imports (indices wasi_count..wasi_count+ol_count)
-    // Canonical ABI types: type 7=(i32)->(), type 8=(i32*3)->(), type 9=(i32*5)->(), type 10=(i32*7)->(), type 11=(i32*13)->(), type 12=(i32,i32,i64,i32)->()
-    let ol_type_map: Vec<u32> = vec![
-        10, // 0: view — 7 i32 -> ()
-        11, // 1: call — 13 i32 -> ()
-        10, // 2: transfer — 7 i32 -> ()
-        8,  // 3: http-get — 3 i32 -> ()
-        10, // 4: http-post — 7 i32 -> ()
-        9,  // 5: storage-set — 5 i32 -> ()
-        8,  // 6: storage-get — 3 i32 -> ()
-        8,  // 7: storage-has — 3 i32 -> ()
-        8,  // 8: storage-delete — 3 i32 -> ()
-        12, // 9: storage-increment — (i32,i32,i64,i32) -> ()
-        12, // 10: storage-decrement — (i32,i32,i64,i32) -> ()
-        9,  // 11: storage-set-if-absent — 5 i32 -> ()
-        10, // 12: storage-set-if-equals — 7 i32 -> ()
-        8,  // 13: storage-list-keys — 3 i32 -> ()
-        7,  // 14: storage-clear-all — 1 i32 -> ()
-        9,  // 15: storage-set-worker — 5 i32 -> ()
-        8,  // 16: storage-get-worker — 3 i32 -> ()
-        9,  // 17: storage-set-worker-public — 5 i32 -> ()
-        9,  // 18: storage-get-worker-from-project — 5 i32 -> ()
-        7,  // 19: env-signer — 1 i32 -> ()
-        7,  // 20: env-predecessor — 1 i32 -> ()
+    // OutLayer imports (indices wasi_count..wasi_count+ol_count) — upstream split interfaces only
+    // Canonical ABI types: type 7=(i32)->(), type 8=(i32*3)->(), type 9=(i32*5)->(), type 10=(i32*7)->(),
+    //   type 11=(i32*9)->(), type 12=(i32*11)->(), type 13=(i32*17)->(), type 14=(i32,i32,i64,i32)->(), type 15=(i32*2)->i32, type 16=(i32*6)->()
+    let ol_type_map_full: Vec<u32> = vec![
+        11, // 0: view — 9 i32 -> ()
+        13, // 1: call — 17 i32 -> ()
+        12, // 2: transfer — 11 i32 -> ()
+        9,  // 3: set — 5 i32 -> ()
+        8,  // 4: get — 3 i32 -> ()
+        15, // 5: has — 2 i32 -> i32 (direct bool return)
+        15, // 6: delete — 2 i32 -> i32 (direct bool return)
+        14, // 7: increment — (i32,i32,i64,i32) -> ()
+        14, // 8: decrement — (i32,i32,i64,i32) -> ()
+        9,  // 9: set-if-absent — 5 i32 -> ()
+        10, // 10: set-if-equals — 7 i32 -> ()
+        8,  // 11: list-keys — 3 i32 -> ()
+        7,  // 12: clear-all — 1 i32 -> ()
+        10, // 13: set-worker — 7 i32 -> () (key+val+option_bool+ret)
+        16, // 14: get-worker — 6 i32 -> ()
+        9,  // 15: raw — 5 i32 -> ()
     ];
-    for (i, f) in ol.iter().enumerate() {
-        let type_idx = ol_type_map[i];
-        imports.import(f.module, f.name, EntityType::Function(type_idx));
+    // Emit only filtered outlayer imports
+    for &(sentinel, ol_idx) in OUTLAYER_SENTINELS {
+        if ol_sentinel_map_p1.contains_key(&sentinel) {
+            let all_ol = outlayer_imports();
+            let f = &all_ol[ol_idx];
+            imports.import(f.module, f.name, EntityType::Function(ol_type_map_full[ol_idx]));
+        }
     }
     // NEAR host stubs as imports from "env" — same as NEAR target
     // This lets the existing NEAR-style instruction emission work unchanged
@@ -1340,48 +1387,10 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
         let resolved = WasmEmitter::resolve_static_pub(&f.instrs, &near_host_idx, &name_map, &em.funcs);
         let resolved = if em.need_outlayer || em.wasi_mode {
             let mut ol_map: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
-            // outlayer.view is at import index wasi_count + 0
-            // outlayer.call is at import index wasi_count + 1
-            // outlayer.transfer is at import index wasi_count + 2
-            // outlayer.http-get is at import index wasi_count + 3
-            // outlayer.http-post is at import index wasi_count + 4
-            // outlayer.storage-set is at import index wasi_count + 5
-            // outlayer.storage-get is at import index wasi_count + 6
-            // outlayer.storage-has is at import index wasi_count + 7
-            // outlayer.storage-delete is at import index wasi_count + 8
-            // outlayer.storage-increment is at import index wasi_count + 9
-            // outlayer.storage-decrement is at import index wasi_count + 10
-            // outlayer.storage-set-if-absent is at import index wasi_count + 11
-            // outlayer.storage-set-if-equals is at import index wasi_count + 12
-            // outlayer.storage-list-keys is at import index wasi_count + 13
-            // outlayer.storage-clear-all is at import index wasi_count + 14
-            // outlayer.storage-set-worker is at import index wasi_count + 15
-            // outlayer.storage-get-worker is at import index wasi_count + 16
-            // outlayer.storage-set-worker-public is at import index wasi_count + 17
-            // outlayer.storage-get-worker-from-project is at import index wasi_count + 18
-            // outlayer.env-signer is at import index wasi_count + 19
-            // outlayer.env-predecessor is at import index wasi_count + 20
-            ol_map.insert(100, wasi_count);      // sentinel 100 -> outlayer.view
-            ol_map.insert(101, wasi_count + 1);   // sentinel 101 -> outlayer.call
-            ol_map.insert(102, wasi_count + 2);   // sentinel 102 -> outlayer.transfer
-            ol_map.insert(103, wasi_count + 3);   // sentinel 103 -> outlayer.http-get
-            ol_map.insert(104, wasi_count + 4);   // sentinel 104 -> outlayer.http-post
-            ol_map.insert(110, wasi_count + 5);   // sentinel 110 -> outlayer.storage-set
-            ol_map.insert(111, wasi_count + 6);   // sentinel 111 -> outlayer.storage-get
-            ol_map.insert(112, wasi_count + 7);   // sentinel 112 -> outlayer.storage-has
-            ol_map.insert(113, wasi_count + 8);   // sentinel 113 -> outlayer.storage-delete
-            ol_map.insert(114, wasi_count + 9);   // sentinel 114 -> outlayer.storage-increment
-            ol_map.insert(120, wasi_count + 19);  // sentinel 120 -> outlayer.env-signer
-            ol_map.insert(121, wasi_count + 20);  // sentinel 121 -> outlayer.env-predecessor
-            ol_map.insert(130, wasi_count + 10);  // sentinel 130 -> outlayer.storage-decrement
-            ol_map.insert(131, wasi_count + 11);  // sentinel 131 -> outlayer.storage-set-if-absent
-            ol_map.insert(132, wasi_count + 12);  // sentinel 132 -> outlayer.storage-set-if-equals
-            ol_map.insert(133, wasi_count + 13);  // sentinel 133 -> outlayer.storage-list-keys
-            ol_map.insert(134, wasi_count + 14);  // sentinel 134 -> outlayer.storage-clear-all
-            ol_map.insert(135, wasi_count + 15);  // sentinel 135 -> outlayer.storage-set-worker
-            ol_map.insert(136, wasi_count + 16);  // sentinel 136 -> outlayer.storage-get-worker
-            ol_map.insert(137, wasi_count + 17);  // sentinel 137 -> outlayer.storage-set-worker-public
-            ol_map.insert(138, wasi_count + 18);  // sentinel 138 -> outlayer.storage-get-worker-from-project
+            // Tree-shaken: only map sentinels that were actually imported
+            for (&sentinel, &fn_idx) in &ol_sentinel_map_p1 {
+                ol_map.insert(sentinel, fn_idx);
+            }
             ol_map.insert(crate::wasm_emit::WASI_FD_WRITE, 1); // fd_write is WASI import index 1
             WasmEmitter::resolve_static_pub_ex(&resolved, &near_host_idx, &name_map, &em.funcs, &ol_map)
         } else {
@@ -1724,13 +1733,14 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
     let http_post_count = em.http_post_urls.len() as u32;
     let post_sentinel_base = 200u32;
 
-    let ol = outlayer_imports();
-    let ol_count = ol.len() as u32;
-
-    // Import layout: HTTP 0..27, get-stdin 28, outlayer 29..49
-    let get_stdin_import_idx = HTTP_IMPORT_COUNT; // 28
+    // Tree-shake: only import outlayer functions that are actually used
+    let used_ol_indices = scan_used_outlayer_indices(em);
     let ol_import_base = HTTP_IMPORT_COUNT + 1; // 29
-    let internal_fn_base = ol_import_base + ol_count; // 50
+    let (ol, ol_sentinel_map, ol_count) = build_filtered_outlayer(&used_ol_indices, ol_import_base);
+
+    // Import layout: HTTP 0..27, get-stdin 28, outlayer 29..29+ol_count
+    let get_stdin_import_idx = HTTP_IMPORT_COUNT; // 28
+    let internal_fn_base = ol_import_base + ol_count;
 
     // Type layout
     let user_type_count = 17u32;
@@ -1745,8 +1755,13 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
     let ol_type_3 = ol_type_base + 1;
     let ol_type_5 = ol_type_base + 2;
     let ol_type_7 = ol_type_base + 3;
-    let ol_type_13 = ol_type_base + 4;
-    let ol_type_s64 = ol_type_base + 5;
+    let ol_type_9 = ol_type_base + 4;
+    let ol_type_11 = ol_type_base + 5;
+    let ol_type_13 = ol_type_base + 6;
+    let ol_type_17 = ol_type_base + 7;
+    let ol_type_6 = ol_type_base + 8;
+    let ol_type_s64 = ol_type_base + 9;
+    let ol_type_2ret = ol_type_base + 10;
 
     // Function indices
     let get_fn_count = http_get_count * 2;
@@ -1775,22 +1790,38 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
     types.ty().function(vec![W; 3], []);
     types.ty().function(vec![W; 5], []);
     types.ty().function(vec![W; 7], []);
+    types.ty().function(vec![W; 9], []);
+    types.ty().function(vec![W; 11], []);
     types.ty().function(vec![W; 13], []);
+    types.ty().function(vec![W; 17], []);
+    types.ty().function(vec![W; 6], []);
     types.ty().function(vec![W, W, ValType::I64, W], []);
+    types.ty().function(vec![W; 2], [W]); // has/delete direct bool return
 
     module.section(&types);
 
-    let ol_type_map: Vec<u32> = vec![
-        ol_type_7, ol_type_13, ol_type_7, ol_type_3, ol_type_7,
-        ol_type_5, ol_type_3, ol_type_3, ol_type_3, ol_type_s64,
-        ol_type_s64, ol_type_5, ol_type_7, ol_type_3, ol_type_1,
-        ol_type_5, ol_type_3, ol_type_5, ol_type_5, ol_type_1, ol_type_1,
+    // Full type map: outlayer_imports index → type index (for filtered lookup)
+    let ol_type_map_full: Vec<u32> = vec![
+        // Upstream split interfaces only (16 entries)
+        ol_type_9,   ol_type_17,  ol_type_11,   // 0: view, 1: call, 2: transfer
+        ol_type_5,   ol_type_3,                  // 3: set, 4: get
+        ol_type_2ret, ol_type_2ret,              // 5: has, 6: delete (bool return)
+        ol_type_s64,  ol_type_s64,               // 7: increment, 8: decrement
+        ol_type_5,    ol_type_7,                 // 9: set-if-absent, 10: set-if-equals
+        ol_type_3,    ol_type_1,                 // 11: list-keys, 12: clear-all
+        ol_type_7,    ol_type_6,                 // 13: set-worker, 14: get-worker
+        ol_type_5,                                // 15: raw
     ];
 
     imports.import("wasi:cli/stdin@0.2.2", "get-stdin", EntityType::Function(0));
 
-    for (i, f) in ol.iter().enumerate() {
-        imports.import(f.module, f.name, EntityType::Function(ol_type_map[i]));
+    // Emit only filtered outlayer imports
+    for &(sentinel, ol_idx) in OUTLAYER_SENTINELS {
+        if used_ol_indices.contains(&ol_idx) {
+            let all_ol = outlayer_imports();
+            let f = &all_ol[ol_idx];
+            imports.import(f.module, f.name, EntityType::Function(ol_type_map_full[ol_idx]));
+        }
     }
 
     module.section(&imports);
@@ -1939,29 +1970,10 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
                 &f.instrs, &std::collections::HashMap::new(), &name_map, &em.funcs,
             );
             let mut ol_map: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
-            // Outlayer host function sentinels (matching P2 outlayer path)
-            ol_map.insert(100, ol_import_base + 0);  // outlayer.view
-            ol_map.insert(101, ol_import_base + 1);  // outlayer.call
-            ol_map.insert(102, ol_import_base + 2);  // outlayer.transfer
-            // 103 = http-get: in wasi:http mode, maps to internal GET function
-            // 104 = http-post host: not used in wasi:http mode (sentinel 200 used instead)
-            ol_map.insert(104, ol_import_base + 4);  // outlayer.http-post (fallback)
-            ol_map.insert(110, ol_import_base + 5);  // outlayer.storage-set
-            ol_map.insert(111, ol_import_base + 6);  // outlayer.storage-get
-            ol_map.insert(112, ol_import_base + 7);  // outlayer.storage-has
-            ol_map.insert(113, ol_import_base + 8);  // outlayer.storage-delete
-            ol_map.insert(114, ol_import_base + 9);  // outlayer.storage-increment
-            ol_map.insert(120, ol_import_base + 19); // outlayer.env-signer
-            ol_map.insert(121, ol_import_base + 20); // outlayer.env-predecessor
-            ol_map.insert(130, ol_import_base + 10); // outlayer.storage-decrement
-            ol_map.insert(131, ol_import_base + 11); // outlayer.storage-set-if-absent
-            ol_map.insert(132, ol_import_base + 12); // outlayer.storage-set-if-equals
-            ol_map.insert(133, ol_import_base + 13); // outlayer.storage-list-keys
-            ol_map.insert(134, ol_import_base + 14); // outlayer.storage-clear-all
-            ol_map.insert(135, ol_import_base + 15); // outlayer.storage-set-worker
-            ol_map.insert(136, ol_import_base + 16); // outlayer.storage-get-worker
-            ol_map.insert(137, ol_import_base + 17); // outlayer.storage-set-worker-public
-            ol_map.insert(138, ol_import_base + 18); // outlayer.storage-get-worker-from-project
+            // Tree-shaken: only map sentinels that were actually imported
+            for (&sentinel, &fn_idx) in &ol_sentinel_map {
+                ol_map.insert(sentinel, fn_idx);
+            }
             // HTTP GET sentinels → internal HTTP GET functions (wasi:http mode)
             for i in 0..http_get_count {
                 ol_map.insert(103 + i, http_get_fn_idx + i * 2);
@@ -2224,7 +2236,9 @@ mod tests {
         eprintln!("Counter OutLayer WAT:\n{}", wat);
         assert!(wat.contains("_start"));
         assert!(wat.contains("wasi_snapshot_preview1"));
-        assert!(wat.contains("outlayer"));
+        // NEAR host functions (near/load, near/store) are imported as "env" stubs,
+        // not as outlayer sentinels. Tree-shaking correctly omits unused outlayer imports.
+        assert!(wat.contains("\"env\""), "should import env stubs for NEAR host functions");
     }
 
     /// Test with wasmtime: compile and run a simple function
@@ -2465,9 +2479,9 @@ fn run_outlayer_wasm(wasm: &[u8], stdin_data: &[u8]) -> i64 {
     let environ_get_fn = Func::wrap(&mut store, |_: i32, _: i32| -> i32 { 0 });
     let fd_seek_fn = Func::wrap(&mut store, |_: i32, _: i64, _: i32, _: i32| -> i32 { 0 });
 
-    let ol_view_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
-    let ol_call_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
-    let ol_transfer_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
+    let ol_view_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| {});
+    let ol_call_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| {});
+    let ol_transfer_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| {});
 
     let read_reg_fn = Func::wrap(&mut store, |_: i64, _: i64| {});
     let reg_len_fn = Func::wrap(&mut store, |_: i64| -> i64 { 0 });
@@ -2481,26 +2495,26 @@ fn run_outlayer_wasm(wasm: &[u8], stdin_data: &[u8]) -> i64 {
     linker.define(&store, "wasi_snapshot_preview1", "environ_sizes_get", environ_sizes_fn).unwrap();
     linker.define(&store, "wasi_snapshot_preview1", "environ_get", environ_get_fn).unwrap();
     linker.define(&store, "wasi_snapshot_preview1", "fd_seek", fd_seek_fn).unwrap();
-    linker.define(&store, "outlayer", "view", ol_view_fn).unwrap();
-    linker.define(&store, "outlayer", "call", ol_call_fn).unwrap();
-    linker.define(&store, "outlayer", "transfer", ol_transfer_fn).unwrap();
-    let ol_http_get_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 5], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "http_get", ol_http_get_fn).unwrap();
-    let storage_stub_4 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 4], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "storage_set", storage_stub_4).unwrap();
-    let storage_stub_5 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 5], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "storage_get", storage_stub_5).unwrap();
-    let storage_stub_2 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 2], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_has", storage_stub_2).unwrap();
-    let storage_stub_2d = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 2], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_delete", storage_stub_2d).unwrap();
-    let storage_stub_6 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 6], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_increment", storage_stub_6).unwrap();
-    let env_signer_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 3], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "env_signer", env_signer_fn).unwrap();
-    let env_pred_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 3], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "env_predecessor", env_pred_fn).unwrap();
-    let stub_11 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 6], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_decrement", stub_11).unwrap();
-    let stub_12 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 4], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_set_if_absent", stub_12).unwrap();
-    let stub_13 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 8], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "storage_set_if_equals", stub_13).unwrap();
-    let stub_14 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 5], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "storage_list_keys", stub_14).unwrap();
-    let stub_15 = Func::new(&mut store, FuncType::new(&engine, vec![], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_clear_all", stub_15).unwrap();
-    let stub_16 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 4], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_set_worker", stub_16).unwrap();
-    let stub_17 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 5], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "storage_get_worker", stub_17).unwrap();
-    let stub_18 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 4], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_set_worker_public", stub_18).unwrap();
-    let stub_19 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 7], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "storage_get_worker_from_project", stub_19).unwrap();
+    // near:rpc/api — all return void (canonical ABI writes to ret_area)
+    linker.define(&store, "near:rpc/api@0.1.0", "view", ol_view_fn).unwrap();
+    linker.define(&store, "near:rpc/api@0.1.0", "call", ol_call_fn).unwrap();
+    linker.define(&store, "near:rpc/api@0.1.0", "transfer", ol_transfer_fn).unwrap();
+    // near:storage/api — has/delete return i32 (bool), rest return void
+    let storage_set_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 5], vec![]), |_caller, _args, _results| Ok(())); linker.define(&store, "near:storage/api@0.1.0", "set", storage_set_fn).unwrap();
+    let storage_get_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 3], vec![]), |_caller, _args, _results| Ok(())); linker.define(&store, "near:storage/api@0.1.0", "get", storage_get_fn).unwrap();
+    let storage_has_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 2], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "near:storage/api@0.1.0", "has", storage_has_fn).unwrap();
+    let storage_delete_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 2], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "near:storage/api@0.1.0", "delete", storage_delete_fn).unwrap();
+    let storage_incr_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32, ValType::I32, ValType::I64, ValType::I32], vec![]), |_caller, _args, _results| Ok(())); linker.define(&store, "near:storage/api@0.1.0", "increment", storage_incr_fn).unwrap();
+    let storage_decr_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32, ValType::I32, ValType::I64, ValType::I32], vec![]), |_caller, _args, _results| Ok(())); linker.define(&store, "near:storage/api@0.1.0", "decrement", storage_decr_fn).unwrap();
+    let storage_sia_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 5], vec![]), |_caller, _args, _results| Ok(())); linker.define(&store, "near:storage/api@0.1.0", "set-if-absent", storage_sia_fn).unwrap();
+    let storage_sie_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 7], vec![]), |_caller, _args, _results| Ok(())); linker.define(&store, "near:storage/api@0.1.0", "set-if-equals", storage_sie_fn).unwrap();
+    let storage_lk_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 3], vec![]), |_caller, _args, _results| Ok(())); linker.define(&store, "near:storage/api@0.1.0", "list-keys", storage_lk_fn).unwrap();
+    let storage_ca_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 1], vec![]), |_caller, _args, _results| Ok(())); linker.define(&store, "near:storage/api@0.1.0", "clear-all", storage_ca_fn).unwrap();
+    let storage_sw_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 7], vec![]), |_caller, _args, _results| Ok(())); linker.define(&store, "near:storage/api@0.1.0", "set-worker", storage_sw_fn).unwrap();
+    let storage_gw_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 6], vec![]), |_caller, _args, _results| Ok(())); linker.define(&store, "near:storage/api@0.1.0", "get-worker", storage_gw_fn).unwrap();
+    // near:rpc/api — raw
+    let raw_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 5], vec![]), |_caller, _args, _results| Ok(())); linker.define(&store, "near:rpc/api@0.1.0", "raw", raw_fn).unwrap();
+    // NEAR compat stubs
     linker.define(&store, "env", "read_register", read_reg_fn).unwrap();
     linker.define(&store, "env", "register_len", reg_len_fn).unwrap();
 
@@ -2567,24 +2581,32 @@ fn run_outlayer_wasm_with_view(wasm: &[u8], stdin_data: &[u8], response: &[u8]) 
     let environ_get_fn = Func::wrap(&mut store, |_: i32, _: i32| -> i32 { 0 });
     let fd_seek_fn = Func::wrap(&mut store, |_: i32, _: i64, _: i32, _: i32| -> i32 { 0 });
 
-    // Mock outlayer.view: writes response to result_buf
+    // Mock near:rpc/api view: writes response to ret_area as tuple<string, string>
     let resp = response_arc.clone();
     let ol_view_fn = Func::new(&mut store,
-        FuncType::new(&engine, vec![ValType::I32; 8], vec![ValType::I32]),
-        move |mut caller, args, results| {
-            let result_buf = args[6].unwrap_i32() as usize;
-            let result_len_ptr = args[7].unwrap_i32() as usize;
+        FuncType::new(&engine, vec![ValType::I32; 9], vec![]),
+        move |mut caller, args, _results| {
+            // args: contract_ptr, contract_len, method_ptr, method_len, args_ptr, args_len, finality_ptr, finality_len, ret_area
+            let ret_area = args[8].unwrap_i32() as usize;
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 let data = mem.data_mut(&mut caller);
                 let copy_len = resp.len().min(65536);
-                if result_buf + copy_len <= data.len() { data[result_buf..result_buf+copy_len].copy_from_slice(&resp[..copy_len]); }
-                if result_len_ptr + 4 <= data.len() { data[result_len_ptr..result_len_ptr+4].copy_from_slice(&(copy_len as u32).to_le_bytes()); }
+                // Write response bytes at a safe offset after ret_area
+                let resp_offset = ret_area + 32;
+                if resp_offset + copy_len <= data.len() { data[resp_offset..resp_offset+copy_len].copy_from_slice(&resp[..copy_len]); }
+                // tuple<string, string>: ptr1, len1, ptr2=0, len2=0 (no error)
+                if ret_area + 16 <= data.len() {
+                    data[ret_area..ret_area+4].copy_from_slice(&(resp_offset as u32).to_le_bytes());
+                    data[ret_area+4..ret_area+8].copy_from_slice(&(copy_len as u32).to_le_bytes());
+                    data[ret_area+8..ret_area+12].copy_from_slice(&0u32.to_le_bytes());
+                    data[ret_area+12..ret_area+16].copy_from_slice(&0u32.to_le_bytes());
+                }
             }
-            results[0] = Val::I32(0); Ok(())
+            Ok(())
         },
     );
-    let ol_call_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
-    let ol_transfer_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
+    let ol_call_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| {});
+    let ol_transfer_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| {});
     let read_reg_fn = Func::wrap(&mut store, |_: i64, _: i64| {});
     let reg_len_fn = Func::wrap(&mut store, |_: i64| -> i64 { 0 });
 
@@ -2596,26 +2618,26 @@ fn run_outlayer_wasm_with_view(wasm: &[u8], stdin_data: &[u8], response: &[u8]) 
     linker.define(&store, "wasi_snapshot_preview1", "environ_sizes_get", environ_sizes_fn).unwrap();
     linker.define(&store, "wasi_snapshot_preview1", "environ_get", environ_get_fn).unwrap();
     linker.define(&store, "wasi_snapshot_preview1", "fd_seek", fd_seek_fn).unwrap();
-    linker.define(&store, "outlayer", "view", ol_view_fn).unwrap();
-    linker.define(&store, "outlayer", "call", ol_call_fn).unwrap();
-    linker.define(&store, "outlayer", "transfer", ol_transfer_fn).unwrap();
-    let ol_http_get_fn2 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 5], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "http_get", ol_http_get_fn2).unwrap();
-    let storage_stub_4 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 4], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "storage_set", storage_stub_4).unwrap();
-    let storage_stub_5 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 5], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "storage_get", storage_stub_5).unwrap();
-    let storage_stub_2 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 2], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_has", storage_stub_2).unwrap();
-    let storage_stub_2d = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 2], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_delete", storage_stub_2d).unwrap();
-    let storage_stub_6 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 6], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_increment", storage_stub_6).unwrap();
-    let env_signer_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 3], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "env_signer", env_signer_fn).unwrap();
-    let env_pred_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 3], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "env_predecessor", env_pred_fn).unwrap();
-    let stub_11 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 6], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_decrement", stub_11).unwrap();
-    let stub_12 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 4], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_set_if_absent", stub_12).unwrap();
-    let stub_13 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 8], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "storage_set_if_equals", stub_13).unwrap();
-    let stub_14 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 5], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "storage_list_keys", stub_14).unwrap();
-    let stub_15 = Func::new(&mut store, FuncType::new(&engine, vec![], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_clear_all", stub_15).unwrap();
-    let stub_16 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 4], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_set_worker", stub_16).unwrap();
-    let stub_17 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 5], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "storage_get_worker", stub_17).unwrap();
-    let stub_18 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 4], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "outlayer", "storage_set_worker_public", stub_18).unwrap();
-    let stub_19 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 7], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(1); Ok(()) }); linker.define(&store, "outlayer", "storage_get_worker_from_project", stub_19).unwrap();
+    linker.define(&store, "near:rpc/api@0.1.0", "view", ol_view_fn).unwrap();
+    linker.define(&store, "near:rpc/api@0.1.0", "call", ol_call_fn).unwrap();
+    linker.define(&store, "near:rpc/api@0.1.0", "transfer", ol_transfer_fn).unwrap();
+    // outlayer:api/host removed — upstream uses split interfaces
+    let storage_set_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 5], vec![]), |_caller, _args, _results| Ok(())); linker.define(&store, "near:storage/api@0.1.0", "set", storage_set_fn).unwrap();
+    let storage_get_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 3], vec![]), |_caller, _args, _results| Ok(())); linker.define(&store, "near:storage/api@0.1.0", "get", storage_get_fn).unwrap();
+    let storage_has_fn2 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 2], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "near:storage/api@0.1.0", "has", storage_has_fn2).unwrap();
+    let storage_delete_fn2 = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 2], vec![ValType::I32]), |_caller, _args, results| { results[0] = Val::I32(0); Ok(()) }); linker.define(&store, "near:storage/api@0.1.0", "delete", storage_delete_fn2).unwrap();
+    let storage_incr_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32, ValType::I32, ValType::I64, ValType::I32], vec![]), |_caller, _args, _results| Ok(())); linker.define(&store, "near:storage/api@0.1.0", "increment", storage_incr_fn).unwrap();
+    let storage_decr_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32, ValType::I32, ValType::I64, ValType::I32], vec![]), |_caller, _args, _results| Ok(())); linker.define(&store, "near:storage/api@0.1.0", "decrement", storage_decr_fn).unwrap();
+    let storage_sia_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 5], vec![]), |_caller, _args, _results| Ok(())); linker.define(&store, "near:storage/api@0.1.0", "set-if-absent", storage_sia_fn).unwrap();
+    let storage_sie_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 7], vec![]), |_caller, _args, _results| Ok(())); linker.define(&store, "near:storage/api@0.1.0", "set-if-equals", storage_sie_fn).unwrap();
+    let storage_lk_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 3], vec![]), |_caller, _args, _results| Ok(())); linker.define(&store, "near:storage/api@0.1.0", "list-keys", storage_lk_fn).unwrap();
+    let storage_ca_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 1], vec![]), |_caller, _args, _results| Ok(())); linker.define(&store, "near:storage/api@0.1.0", "clear-all", storage_ca_fn).unwrap();
+    let storage_sw_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 7], vec![]), |_caller, _args, _results| Ok(())); linker.define(&store, "near:storage/api@0.1.0", "set-worker", storage_sw_fn).unwrap();
+    let storage_gw_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 6], vec![]), |_caller, _args, _results| Ok(())); linker.define(&store, "near:storage/api@0.1.0", "get-worker", storage_gw_fn).unwrap();
+    let storage_swp_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 7], vec![]), |_caller, _args, _results| Ok(())); linker.define(&store, "near:storage/api@0.1.0", "set-worker-public", storage_swp_fn).unwrap();
+    let storage_gwfp_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 6], vec![]), |_caller, _args, _results| Ok(())); linker.define(&store, "near:storage/api@0.1.0", "get-worker-from-project", storage_gwfp_fn).unwrap();
+    let raw_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32; 5], vec![]), |_caller, _args, _results| Ok(())); linker.define(&store, "near:rpc/api@0.1.0", "raw", raw_fn).unwrap();
+    // outlayer:api/host env-signer/predecessor removed — upstream uses env vars
     linker.define(&store, "env", "read_register", read_reg_fn).unwrap();
     linker.define(&store, "env", "register_len", reg_len_fn).unwrap();
 

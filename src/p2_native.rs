@@ -20,48 +20,54 @@ const WIT_FUNC_NAMES: &[&str] = &[
     "transfer",
     "http-get",
     "http-post",
-    "storage-set",
-    "storage-get",
-    "storage-has",
-    "storage-delete",
-    "storage-increment",
-    "storage-decrement",
-    "storage-set-if-absent",
-    "storage-set-if-equals",
-    "storage-list-keys",
-    "storage-clear-all",
-    "storage-set-worker",
-    "storage-get-worker",
-    "storage-set-worker-public",
-    "storage-get-worker-from-project",
+    "set",
+    "get",
+    "has",
+    "delete",
+    "increment",
+    "decrement",
+    "set-if-absent",
+    "set-if-equals",
+    "list-keys",
+    "clear-all",
+    "set-worker",
+    "get-worker",
+    "set-worker-public",
+    "get-worker-from-project",
     "env-signer",
     "env-predecessor",
+    "raw",
 ];
 
 /// Which component interface a function belongs to.
 /// Uses production split interfaces for storage and RPC.
-/// Returns the core module import param signature for a given outlayer function name.
-/// All outlayer imports return () — only params vary. Signatures must match the
-/// core module's type section (set by wasi_emit.rs outlayer_imports).
 fn core_import_sig(kebab: &str) -> Vec<wasm_encoder::ValType> {
     use wasm_encoder::ValType;
     match kebab {
-        // 7 i32 params: ptr pairs + ret_ptr
-        "view" | "transfer" | "http-post" | "storage-set-if-equals" => vec![ValType::I32; 7],
-        // 13 i32 params: many ptr/len pairs
-        "call" => vec![ValType::I32; 13],
-        // 5 i32 params
-        "storage-set" | "storage-set-if-absent" | "storage-set-worker"
-        | "storage-set-worker-public" | "storage-get-worker-from-project" => vec![ValType::I32; 5],
+        // 9 i32 params: 4 strings (contract, method, args, finality) + ret_area
+        "view" => vec![ValType::I32; 9],
+        // 17 i32 params: 8 strings (signer-id, signer-key, receiver, method, args, deposit, gas, wait-until) + ret_area
+        "call" => vec![ValType::I32; 17],
+        // 11 i32 params: 5 strings (signer-id, signer-key, receiver, amount, wait-until) + ret_area
+        "transfer" => vec![ValType::I32; 11],
+        // 7 i32 params
+        "http-post" | "set-if-equals" => vec![ValType::I32; 7],
+        // 6 i32 params: key + value + option<bool> + ret_area
+        "set-worker" | "get-worker" | "set-worker-public" | "get-worker-from-project" => vec![ValType::I32; 6],
+        // 5 i32 params: key + value + ret_area
+        "set" | "set-if-absent" => vec![ValType::I32; 5],
+        // 5 i32 params: 2 strings + ret_area
+        "raw" => vec![ValType::I32; 5],
         // 3 i32 params
-        "http-get" | "storage-get" | "storage-has" | "storage-delete"
-        | "storage-list-keys" | "storage-get-worker" => vec![ValType::I32; 3],
+        "http-get" | "get" | "list-keys" => vec![ValType::I32; 3],
+        // 2 i32 params (returns i32 directly, no ret_area)
+        "has" | "delete" => vec![ValType::I32; 2],
         // s64 signature: 2 i32 + i64 + i32
-        "storage-increment" | "storage-decrement" => vec![
+        "increment" | "decrement" => vec![
             ValType::I32, ValType::I32, ValType::I64, ValType::I32,
         ],
         // 1 i32 param
-        "storage-clear-all" | "env-signer" | "env-predecessor" => vec![ValType::I32; 1],
+        "clear-all" | "env-signer" | "env-predecessor" => vec![ValType::I32; 1],
         // Fallback
         _ => vec![ValType::I32; 1],
     }
@@ -69,23 +75,21 @@ fn core_import_sig(kebab: &str) -> Vec<wasm_encoder::ValType> {
 
 fn func_interface(kebab: &str) -> &'static str {
     match kebab {
-        "storage-set"
-        | "storage-get"
-        | "storage-has"
-        | "storage-delete"
-        | "storage-increment"
-        | "storage-decrement"
-        | "storage-set-if-absent"
-        | "storage-set-if-equals"
-        | "storage-list-keys"
-        | "storage-clear-all"
-        | "storage-set-worker"
-        | "storage-get-worker"
-        | "storage-set-worker-public"
-        | "storage-get-worker-public"
-        | "storage-get-by-version"
-        | "storage-clear-version" => "near:storage/api@0.1.0",
-        "view" | "call" | "transfer" => "near:rpc/api@0.1.0",
+        "set"
+        | "get"
+        | "has"
+        | "delete"
+        | "increment"
+        | "decrement"
+        | "set-if-absent"
+        | "set-if-equals"
+        | "list-keys"
+        | "clear-all"
+        | "set-worker"
+        | "get-worker"
+        | "set-worker-public"
+        | "get-worker-from-project" => "near:storage/api@0.1.0",
+        "view" | "call" | "transfer" | "raw" => "near:rpc/api@0.1.0",
         "http-get" | "http-post" => "lisp:http-adapter/api@0.1.0",
         "env-signer" | "env-predecessor" => "trap",
         _ => "trap",
@@ -96,14 +100,8 @@ fn func_interface(kebab: &str) -> &'static str {
 /// Storage functions drop the "storage-" prefix in near:storage/api@0.1.0.
 /// RPC functions use production names (view, call, transfer) in near:rpc/api@0.1.0.
 fn func_wit_name(kebab: &str) -> &str {
-    match kebab {
-        // Storage: drop "storage-" prefix
-        s if s.starts_with("storage-") => &s[8..],
-        // RPC: same name
-        "view" | "call" | "transfer" => kebab,
-        // Legacy: same name
-        _ => kebab,
-    }
+    // Core module import names now match split WIT names directly
+    kebab
 }
 
 /// Returns the WIT param types and result type for a given function name.
@@ -140,69 +138,61 @@ fn wit_func_signature(
 ) {
     match name {
         // ── near:storage/api@0.1.0 (production WIT: bare returns, not result<>) ──
-        "storage-set" => (
+        "set" => (
             vec![("key", string_ty), ("value", list_u8_ty)],
-            Some(string_ty), // -> string (empty on success, error msg on failure)
+            Some(string_ty),
         ),
-        "storage-get" => (
+        "get" => (
             vec![("key", string_ty)],
-            Some(_tuple_list_u8_string), // -> tuple<list<u8>, string>
+            Some(_tuple_list_u8_string),
         ),
-        "storage-has" => (
+        "has" => (
             vec![("key", string_ty)],
-            Some(ComponentValType::Primitive(PrimitiveValType::Bool)), // -> bool
+            Some(ComponentValType::Primitive(PrimitiveValType::Bool)),
         ),
-        "storage-delete" => (
+        "delete" => (
             vec![("key", string_ty)],
-            Some(ComponentValType::Primitive(PrimitiveValType::Bool)), // -> bool
+            Some(ComponentValType::Primitive(PrimitiveValType::Bool)),
         ),
-        "storage-increment" => (
+        "increment" => (
             vec![("key", string_ty), ("delta", s64_ty)],
-            Some(_tuple_s64_string), // -> tuple<s64, string>
+            Some(_tuple_s64_string),
         ),
-        "storage-decrement" => (
+        "decrement" => (
             vec![("key", string_ty), ("delta", s64_ty)],
-            Some(_tuple_s64_string), // -> tuple<s64, string>
+            Some(_tuple_s64_string),
         ),
-        "storage-set-if-absent" => (
+        "set-if-absent" => (
             vec![("key", string_ty), ("value", list_u8_ty)],
-            Some(_tuple_bool_string), // -> tuple<bool, string>
+            Some(_tuple_bool_string),
         ),
-        "storage-set-if-equals" => (
+        "set-if-equals" => (
             vec![("key", string_ty), ("expected", list_u8_ty), ("new-value", list_u8_ty)],
-            Some(_tuple_bool_list_u8_string), // -> tuple<bool, list<u8>, string>
+            Some(_tuple_bool_list_u8_string),
         ),
-        "storage-list-keys" => (
+        "list-keys" => (
             vec![("prefix", string_ty)],
-            Some(_tuple_string_string), // -> tuple<string, string>
+            Some(_tuple_string_string),
         ),
-        "storage-clear-all" => (
+        "clear-all" => (
             vec![],
-            Some(string_ty), // -> string
+            Some(string_ty),
         ),
-        "storage-clear-version" => (
-            vec![("wasm-hash", string_ty)],
-            Some(string_ty), // -> string
-        ),
-        "storage-set-worker" => (
+        "set-worker" => (
             vec![("key", string_ty), ("value", list_u8_ty), ("is-encrypted", _option_bool_ty)],
-            Some(string_ty), // -> string
+            Some(string_ty),
         ),
-        "storage-get-worker" => (
+        "get-worker" => (
             vec![("key", string_ty), ("project", _option_string_ty)],
-            Some(_tuple_list_u8_string), // -> tuple<list<u8>, string>
+            Some(_tuple_list_u8_string),
         ),
-        "storage-set-worker-public" => (
+        "set-worker-public" => (
             vec![("key", string_ty), ("value", list_u8_ty), ("is-encrypted", _option_bool_ty)],
-            Some(string_ty), // -> string (same as set-worker)
+            Some(string_ty),
         ),
-        "storage-get-worker-from-project" => (
+        "get-worker-from-project" => (
             vec![("key", string_ty), ("project", _option_string_ty)],
-            Some(_tuple_list_u8_string), // -> tuple<list<u8>, string>
-        ),
-        "storage-get-by-version" => (
-            vec![("key", string_ty), ("wasm-hash", string_ty)],
-            Some(_tuple_list_u8_string), // -> tuple<list<u8>, string>
+            Some(_tuple_list_u8_string),
         ),
         "env-signer" => (
             vec![],
@@ -231,7 +221,12 @@ fn wit_func_signature(
             Some(result_string_string),
         ),
 
-        // ── outlayer:api/host (legacy) ──
+        "raw" => (
+            vec![("method", string_ty), ("args-json", string_ty)],
+            Some(result_string_string),
+        ),
+
+        // ── lisp:http-adapter/api@0.1.0 ──
         "http-get" => (
             vec![("url", string_ty)],
             Some(result_list_u8_string),
@@ -914,12 +909,16 @@ fn build_memory_module(min_pages: u64) -> (Vec<u8>, std::collections::HashMap<Ve
     // Collect unique param signatures needed for trap stubs
     // All outlayer imports return () — only params vary
     let trap_sigs: Vec<Vec<ValType>> = vec![
-        vec![ValType::I32; 1],   // storage-clear-all, env-signer, env-predecessor
-        vec![ValType::I32; 3],   // http-get, storage-get, storage-has, storage-delete, storage-list-keys
-        vec![ValType::I32; 5],   // storage-set, storage-set-if-absent, storage-set-worker, storage-set-worker-public, storage-get-worker-from-project
-        vec![ValType::I32; 7],   // view, transfer, http-post, storage-set-if-equals
-        vec![ValType::I32; 13],  // call
-        vec![ValType::I32, ValType::I32, ValType::I64, ValType::I32], // storage-increment, storage-decrement (s64)
+        vec![ValType::I32; 1],   // clear-all, env-signer, env-predecessor
+        vec![ValType::I32; 2],   // has, delete
+        vec![ValType::I32; 3],   // http-get, get, list-keys
+        vec![ValType::I32; 5],   // set, set-if-absent, raw
+        vec![ValType::I32; 6],   // set-worker, get-worker, set-worker-public, get-worker-from-project
+        vec![ValType::I32; 7],   // http-post, set-if-equals
+        vec![ValType::I32; 9],   // view
+        vec![ValType::I32; 11],  // transfer
+        vec![ValType::I32; 17],  // call
+        vec![ValType::I32, ValType::I32, ValType::I64, ValType::I32], // increment, decrement (s64)
     ];
 
     // Type section
@@ -1378,7 +1377,9 @@ fn analyze_outlayer(wasm: &[u8]) -> OutlayerInfo {
                     0 => {
                         let (tl, tll) = rleb(wasm, pos);
                         pos += tll;
-                        if module == "outlayer" || module == "outlayer:api/host" {
+                        if module == "outlayer" || module == "outlayer:api/host"
+                            || module == "near:storage/api" || module == "near:rpc/api"
+                        {
                             if !found_outlayer {
                                 outlayer_import_start = total_import_funcs;
                                 found_outlayer = true;

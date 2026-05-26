@@ -7,7 +7,7 @@ use wit_parser::SourceMap;
 pub fn build_http_wit_metadata_embedded() -> Result<(wit_parser::Resolve, wit_parser::WorldId), String> {
     let mut resolve = wit_parser::Resolve::new();
 
-    const WORLD_WIT: &str = include_str!("../wit/world.wit");
+    const WORLD_WIT: &str = include_str!("../wit/deps/simple-http/simple-http.wit");
     const DEPS_CLI_COMMAND_WIT: &str = include_str!("../wit/deps/cli/command.wit");
     const DEPS_CLI_ENVIRONMENT_WIT: &str = include_str!("../wit/deps/cli/environment.wit");
     const DEPS_CLI_EXIT_WIT: &str = include_str!("../wit/deps/cli/exit.wit");
@@ -41,7 +41,7 @@ pub fn build_http_wit_metadata_embedded() -> Result<(wit_parser::Resolve, wit_pa
     const DEPS_SOCKETS_UDP_CREATE_SOCKET_WIT: &str = include_str!("../wit/deps/sockets/udp-create-socket.wit");
     const DEPS_SOCKETS_UDP_WIT: &str = include_str!("../wit/deps/sockets/udp.wit");
     const DEPS_SOCKETS_WORLD_WIT: &str = include_str!("../wit/deps/sockets/world.wit");
-    const OUTLAYER_API_OUTLAYER_WIT: &str = include_str!("../wit/outlayer/api/outlayer.wit");
+    // outlayer:api/host removed — P1 only uses wasi:http
 
     fn build_group(files: &[(&str, &str)]) -> Result<wit_parser::UnresolvedPackageGroup, String> {
         let mut map = SourceMap::default();
@@ -113,10 +113,7 @@ pub fn build_http_wit_metadata_embedded() -> Result<(wit_parser::Resolve, wit_pa
     ])?;
     resolve.push_group(pkg_deps_http).map_err(|e| format!("push_group deps/http: {:?}", e))?;
 
-    let pkg_outlayer_api = build_group(&[
-        ("outlayer/api/outlayer.wit", OUTLAYER_API_OUTLAYER_WIT),
-    ])?;
-    resolve.push_group(pkg_outlayer_api).map_err(|e| format!("push_group outlayer/api: {:?}", e))?;
+    // outlayer:api/host removed — upstream uses split interfaces, not loaded for P1
 
     let pkg_main = build_group(&[
         ("world.wit", WORLD_WIT),

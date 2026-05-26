@@ -476,22 +476,35 @@ pub fn build_combined_wit_metadata() -> Result<(wit_parser::Resolve, wit_parser:
         let mut resolve = wit_parser::Resolve::new();
         let wit_dir = find_wit_dir()?;
 
-        // Use the same wit/ tree as build_http_wit_metadata — it has all deps.
-        // combined.wit lives at wit/combined.wit in package lisp:simple-http.
-        let (pkg_id, _) = resolve
-            .push_dir(&wit_dir)
-            .map_err(|e| format!("push_dir wit failed: {}", e))?;
+        // push_dir processes one directory at a time. We need to push deps in
+        // dependency order so that cross-package imports resolve correctly.
+        // The outlayer-http world (in combined.wit) imports packages
+        // from near-rpc, near-storage, near-payment, near-vrf, outlayer-wallet,
+        // and all wasi packages, so those must be loaded first.
+        let dep_dirs: &[&str] = &[
+            "io", "clocks", "random", "filesystem", "sockets", "cli", "http",
+            "near-storage", "near-payment", "near-vrf", "outlayer-wallet", "near-rpc",
+        ];
+        for subdir in dep_dirs {
+            let dir = wit_dir.join(subdir);
+            if dir.exists() {
+                resolve.push_dir(&dir).map_err(|e| format!("push_dir {} failed: {}", subdir, e))?;
+            }
+        }
+        // Now push the root deps/ dir which contains combined.wit with outlayer-http
+        resolve.push_dir(&wit_dir).map_err(|e| format!("push_dir root failed: {}", e))?;
+
         let mut found_world = None;
         for (_pkg_id, pkg) in resolve.packages.iter() {
             for (name, world_id) in &pkg.worlds {
-                if name == "combined-http-ol" {
+                if name == "outlayer-http" {
                     found_world = Some(*world_id);
                     break;
                 }
             }
             if found_world.is_some() { break; }
         }
-        let world = found_world.ok_or("world 'combined-http-ol' not found")?;
+        let world = found_world.ok_or("world 'outlayer-http' not found")?;
 
         Ok((resolve, world))
     }
@@ -503,10 +516,10 @@ pub fn build_combined_wit_metadata() -> Result<(wit_parser::Resolve, wit_parser:
 
 fn find_wit_dir() -> Result<std::path::PathBuf, String> {
     let candidates = [
-        concat!(env!("CARGO_MANIFEST_DIR"), "/wit"),
-        "wit",
-        "lisp-rlm/wit",
-        "/Users/asil/.openclaw/workspace/lisp-rlm/wit",
+        concat!(env!("CARGO_MANIFEST_DIR"), "/wit/deps"),
+        "wit/deps",
+        "lisp-rlm/wit/deps",
+        "/Users/asil/.openclaw/workspace/lisp-rlm/wit/deps",
     ];
     for dir in &candidates {
         let p = std::path::Path::new(dir);
