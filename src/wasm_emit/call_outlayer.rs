@@ -276,11 +276,15 @@ impl WasmEmitter {
                 // Production WIT: get(key: string) -> tuple<list<u8>, string>
                 // Canonical ABI: (kp, kl, ret_ptr) -> () — 3 params
                 // ret_ptr layout: +0: list_ptr, +4: list_len, +8: str_ptr, +12: str_len
+                // Each call gets a unique ret_area to avoid overwriting previous results
                 if a.is_empty() { return Err("storage-get requires a key".into()); }
                 if !self.wasi_mode { return Err("storage-get is only available on OutLayer".into()); }
                 let key_expr = self.expr(&a[0])?;
                 let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
-                let ret_area: i32 = 163840 + 128;
+                let call_idx = self.storage_get_count;
+                self.storage_get_count += 1;
+                // Each storage-get gets its own 16-byte ret_area: base=163968, stride=16
+                let ret_area: i32 = 163840 + 128 + (call_idx as i32) * 16;
                 let mut v = Vec::new();
                 // key ptr/len
                 v.extend(key_expr.clone());
@@ -294,10 +298,10 @@ impl WasmEmitter {
                 // ret_ptr
                 v.push(Instruction::I32Const(ret_area));
                 v.push(Instruction::Call(111));
-                // Read tuple<list<u8>, string> from ret_ptr:
-                // +0: list_ptr, +4: list_len (the value bytes)
-                // +8: str_ptr, +12: str_len (error/info string — ignored)
-                // Check if list_len > 0 → has value
+                // IMMEDIATELY copy list data to safe buffer to prevent corruption
+                // Safe buffer starts at 163968 + 4096 = 168064, each get gets 256 bytes
+                let safe_buf: i32 = 168064 + (call_idx as i32) * 256;
+                // Read list_ptr and list_len from ret_area
                 v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4));
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(0)); v.push(Instruction::I64Eq);
@@ -305,8 +309,14 @@ impl WasmEmitter {
                 // list_len == 0 → not found → TAG_NIL
                 v.push(Instruction::I64Const(TAG_NIL));
                 v.push(Instruction::Else);
-                // list_len > 0 → read list_ptr@+0, list_len@+4 as tagged string
-                v.push(Instruction::I32Const(ret_area)); v.push(Instruction::I32Load(ma4));
+                // list_len > 0 → copy data to safe buffer, then construct tagged string
+                // memory.copy(dst=safe_buf, src=list_ptr, len=list_len)
+                v.push(Instruction::I32Const(safe_buf));      // dst
+                v.push(Instruction::I32Const(ret_area)); v.push(Instruction::I32Load(ma4)); // src = list_ptr
+                v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4)); // len = list_len
+                v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+                // Construct tagged string pointing to safe buffer
+                v.push(Instruction::I32Const(safe_buf));
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4));
                 v.push(Instruction::I64ExtendI32U);

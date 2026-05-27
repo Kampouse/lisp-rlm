@@ -281,6 +281,7 @@ pub struct WasmEmitter {
     pub(crate) wasi_mode: bool, // true when targeting WASI/OutLayer
     pub(crate) p2_mode: bool,   // true when targeting P2 component (return i32 from _start)
     pub(crate) no_proc_exit: bool, // true when wrapping with wit-component adapter (return cleanly, don't call proc_exit)
+    pub(crate) storage_get_count: u32, // counter for unique ret_area per storage-get call
 
     // Track which function each lambda maps to, and its captured var count
     // lambda_id -> (func_array_idx, captured_count)
@@ -300,7 +301,7 @@ impl WasmEmitter {
             locals: HashMap::new(), next_local: 0, free_locals: Vec::new(), local_type_map: Vec::new(), current_func: None, current_param_count: 0,
             while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 1, exports: Vec::new(),
             data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(),
-            gas_local: None, needs_frame: false, heap_ptr: HEAP_START as u32, lambda_counter: 0, str_cat_depth: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), http_post_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false, borsh_schemas: HashMap::new(),
+            gas_local: None, needs_frame: false, heap_ptr: HEAP_START as u32, lambda_counter: 0, str_cat_depth: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), http_post_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false, borsh_schemas: HashMap::new(), storage_get_count: 0,
             func_defs: HashMap::new(),
         }
     }

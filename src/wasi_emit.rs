@@ -438,18 +438,15 @@ pub fn compile_outlayer_p2_from_exprs(exprs: &[crate::types::LispVal]) -> Result
         }
     }
 
-    let bytes = if em.need_wasi_http && em.need_outlayer {
-        // Combined: wasi:http + outlayer in one component
+    let bytes = if em.need_outlayer {
+        // Always use combined P2 path for outlayer programs — produces valid WASI P2
+        // (no wasi_snapshot_preview1 imports). Works with or without HTTP.
         let core_bytes = build_combined_p2_core(&mut em)?;
         build_combined_p2_component(&core_bytes)?
     } else if em.need_wasi_http {
         build_p2_with_wasi_http(&em)?
     } else {
-        let core_bytes = if em.need_outlayer {
-            finish_outlayer(&mut em)?
-        } else {
-            finish_outlayer_no_ol(&mut em)?
-        };
+        let core_bytes = finish_outlayer_no_ol(&mut em)?;
         std::fs::write("/tmp/core_before_patch.wasm", &core_bytes).ok();
         crate::p2_native::build_native_p2_component(&core_bytes)?
     };
@@ -492,18 +489,16 @@ pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
         }
     }
 
-    let bytes = if em.need_wasi_http && em.need_outlayer {
+    let bytes = if em.need_outlayer {
+        // Always use combined P2 path for outlayer programs — produces valid WASI P2
+        // (no wasi_snapshot_preview1 imports). Works with or without HTTP.
         let core_bytes = build_combined_p2_core(&mut em)?;
         build_combined_p2_component(&core_bytes)?
     } else if em.need_wasi_http {
         // wasi:http path — build component with embedded HTTP metadata
         build_p2_with_wasi_http(&em)?
     } else {
-        let core_bytes = if em.need_outlayer {
-            finish_outlayer(&mut em)?
-        } else {
-            finish_outlayer_no_ol(&mut em)?
-        };
+        let core_bytes = finish_outlayer_no_ol(&mut em)?;
         // Use manual component builder (production-compatible, handles wasi_snapshot_preview1 stubs)
         std::fs::write("/tmp/p2_ol_core.wasm", &core_bytes).ok();
         crate::p2_native::build_native_p2_component(&core_bytes)?
@@ -873,40 +868,40 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
     }
 
     // ── cabi_realloc ──
-    // Uses memory at offset 196608 (192KB) as bump allocator pointer.
-    // This is after all other static data (stdin, stdout, scratch, etc.)
+    // Bump allocator: stores bump offset at memory address 999996,
+    // base address 1000000. Offset starts at 0 (uninitialized memory = 0).
+    // Returns 0 (null) for new_size == 0, matching Rust SDK behavior.
     {
-        let heap_ptr_addr: i32 = 196608;
         let mut realloc = Function::new([(1, ValType::I32)]); // extra local 4
         let ma4 = MemArg { offset: 0, align: 2, memory_index: 0 };
-        // Initialize heap_ptr if zero (first call)
-        // result = heap_ptr (from memory)
-        realloc.instruction(&Instruction::I32Const(heap_ptr_addr));
+        // cabi_realloc(old_ptr, old_size, align, new_size) -> ptr
+        // Always fresh allocate (bump allocator can't realloc in place)
+        // If new_size == 0 → return 0 (null)
+        realloc.instruction(&Instruction::LocalGet(3)); // new_len
+        realloc.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
+        // new_size > 0 → fresh allocation
+        realloc.instruction(&Instruction::I32Const(999996));
         realloc.instruction(&Instruction::I32Load(ma4));
-        // If heap_ptr == 0, initialize to 1048576 (1MB)
         realloc.instruction(&Instruction::LocalTee(4));
-        realloc.instruction(&Instruction::I32Eqz);
-        realloc.instruction(&Instruction::If(BlockType::Empty));
-        realloc.instruction(&Instruction::I32Const(1048576));
-        realloc.instruction(&Instruction::I32Const(heap_ptr_addr));
-        realloc.instruction(&Instruction::I32Store(ma4));
-        realloc.instruction(&Instruction::I32Const(1048576));
+        realloc.instruction(&Instruction::I32Const(1000000));
+        realloc.instruction(&Instruction::I32Add);
         realloc.instruction(&Instruction::LocalSet(4));
-        realloc.instruction(&Instruction::End);
-        // heap_ptr += new_len (param 3), aligned to 4
-        realloc.instruction(&Instruction::LocalGet(4));
+        realloc.instruction(&Instruction::I32Const(999996));
+        realloc.instruction(&Instruction::I32Load(ma4));
         realloc.instruction(&Instruction::LocalGet(3));
         realloc.instruction(&Instruction::I32Add);
         realloc.instruction(&Instruction::I32Const(3));
         realloc.instruction(&Instruction::I32Add);
         realloc.instruction(&Instruction::I32Const(-4));
         realloc.instruction(&Instruction::I32And);
-        // Store new heap_ptr
-        realloc.instruction(&Instruction::I32Const(heap_ptr_addr));
+        realloc.instruction(&Instruction::I32Const(999996));
         realloc.instruction(&Instruction::I32Store(ma4));
-        // Return old ptr
         realloc.instruction(&Instruction::LocalGet(4));
-        realloc.instruction(&Instruction::End);
+        realloc.instruction(&Instruction::Else);
+        // new_size == 0 → return 0 (null)
+        realloc.instruction(&Instruction::I32Const(0));
+        realloc.instruction(&Instruction::End); // end new_size check
+        realloc.instruction(&Instruction::End); // end function body
         codes.function(&realloc);
     }
 
@@ -1601,40 +1596,41 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     }
 
     // ── cabi_realloc ──
-    // Bump allocator: stores heap pointer at memory address 196608 (192KB),
-    // lazy-inits to 1MB, bumps by new_size aligned to 4.
+    // Bump allocator: stores bump offset at memory address 999996,
+    // base address 1000000. Offset starts at 0 (uninitialized memory = 0).
+    // Returns 0 (null) for new_size == 0, matching Rust SDK behavior.
     // Signature: (i32 old_ptr, i32 old_size, i32 align, i32 new_size) -> i32
     {
-        let heap_ptr_addr: i32 = 196608;
         let mut realloc = Function::new([(1, ValType::I32)]); // extra local 4
         let ma4 = MemArg { offset: 0, align: 2, memory_index: 0 };
-        // Load heap_ptr from memory
-        realloc.instruction(&Instruction::I32Const(heap_ptr_addr));
+        // cabi_realloc(old_ptr, old_size, align, new_size) -> ptr
+        // Always fresh allocate (bump allocator can't realloc in place)
+        // If new_size == 0 → return 0 (null)
+        realloc.instruction(&Instruction::LocalGet(3)); // new_size
+        realloc.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
+        // new_size > 0 → fresh allocation
+        realloc.instruction(&Instruction::I32Const(999996));
         realloc.instruction(&Instruction::I32Load(ma4));
-        // If heap_ptr == 0, initialize to 1048576 (1MB)
         realloc.instruction(&Instruction::LocalTee(4));
-        realloc.instruction(&Instruction::I32Eqz);
-        realloc.instruction(&Instruction::If(BlockType::Empty));
-        realloc.instruction(&Instruction::I32Const(1048576));
-        realloc.instruction(&Instruction::I32Const(heap_ptr_addr));
-        realloc.instruction(&Instruction::I32Store(ma4));
-        realloc.instruction(&Instruction::I32Const(1048576));
+        realloc.instruction(&Instruction::I32Const(1000000));
+        realloc.instruction(&Instruction::I32Add);
         realloc.instruction(&Instruction::LocalSet(4));
-        realloc.instruction(&Instruction::End);
-        // new heap_ptr = old_ptr + new_size, aligned up to 4
-        realloc.instruction(&Instruction::LocalGet(4));
-        realloc.instruction(&Instruction::LocalGet(3)); // new_size (param 3)
+        realloc.instruction(&Instruction::I32Const(999996));
+        realloc.instruction(&Instruction::I32Load(ma4));
+        realloc.instruction(&Instruction::LocalGet(3));
         realloc.instruction(&Instruction::I32Add);
         realloc.instruction(&Instruction::I32Const(3));
         realloc.instruction(&Instruction::I32Add);
         realloc.instruction(&Instruction::I32Const(-4));
         realloc.instruction(&Instruction::I32And);
-        // Store updated heap_ptr
-        realloc.instruction(&Instruction::I32Const(heap_ptr_addr));
+        realloc.instruction(&Instruction::I32Const(999996));
         realloc.instruction(&Instruction::I32Store(ma4));
-        // Return old heap_ptr
         realloc.instruction(&Instruction::LocalGet(4));
-        realloc.instruction(&Instruction::End);
+        realloc.instruction(&Instruction::Else);
+        // new_size == 0 → return 0 (null)
+        realloc.instruction(&Instruction::I32Const(0));
+        realloc.instruction(&Instruction::End); // end new_size check
+        realloc.instruction(&Instruction::End); // end function body
         code.function(&realloc);
     }
 
@@ -2179,34 +2175,42 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
     // ── cabi_realloc: (i32, i32, i32, i32) -> i32 ──
     // params: 0=old_ptr, 1=old_len, 2=align, 3=new_len
     // returns: ptr to newly allocated region
+    // Canonical ABI: always fresh allocate (bump allocator can't realloc in place)
     {
-        let heap_ptr_addr: i32 = 196608;
         let mut realloc = Function::new([
-            (1u32, ValType::I32), // extra local 4: heap_ptr
+            (1u32, ValType::I32), // extra local 4: bump offset
         ]);
         let ma4 = MemArg { offset: 0, align: 2, memory_index: 0 };
-        // Load heap_ptr from memory
-        realloc.instruction(&Instruction::I32Const(heap_ptr_addr));
-        realloc.instruction(&Instruction::I32Load(ma4));
+        // cabi_realloc(old_ptr, old_size, align, new_size) -> ptr
+        // If new_size == 0 → return 0 (null)
+        // Bump allocator: counter at memory[900000], base 900004
+        realloc.instruction(&Instruction::LocalGet(3)); // new_len
+        realloc.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
+        // Fresh allocation from bump counter at address 900000, base 900004
+        realloc.instruction(&Instruction::I32Const(900000));
+        realloc.instruction(&Instruction::I32Load(ma4)); // load offset
         realloc.instruction(&Instruction::LocalTee(4));
-        // If heap_ptr == 0, initialize to 1048576 (1MB)
-        realloc.instruction(&Instruction::I32Eqz);
-        realloc.instruction(&Instruction::If(BlockType::Empty));
-        realloc.instruction(&Instruction::I32Const(1048576));
-        realloc.instruction(&Instruction::I32Const(heap_ptr_addr));
-        realloc.instruction(&Instruction::I32Store(ma4));
-        realloc.instruction(&Instruction::I32Const(1048576));
-        realloc.instruction(&Instruction::LocalSet(4));
-        realloc.instruction(&Instruction::End);
-        // Advance heap_ptr by new_len (param 3)
-        realloc.instruction(&Instruction::LocalGet(4));
-        realloc.instruction(&Instruction::LocalGet(3));
+        realloc.instruction(&Instruction::I32Const(900004));
+        realloc.instruction(&Instruction::I32Add); // abs addr = 900004 + offset
+        realloc.instruction(&Instruction::LocalSet(4)); // local 4 = abs addr
+        // Advance offset by new_len aligned up to 4
+        realloc.instruction(&Instruction::I32Const(900000));
+        realloc.instruction(&Instruction::I32Load(ma4)); // load old offset
+        realloc.instruction(&Instruction::LocalGet(3)); // new_len
         realloc.instruction(&Instruction::I32Add);
-        realloc.instruction(&Instruction::I32Const(heap_ptr_addr));
-        realloc.instruction(&Instruction::I32Store(ma4));
-        // Return old heap_ptr (the allocated region)
+        realloc.instruction(&Instruction::I32Const(3));
+        realloc.instruction(&Instruction::I32Add);
+        realloc.instruction(&Instruction::I32Const(-4));
+        realloc.instruction(&Instruction::I32And);
+        realloc.instruction(&Instruction::I32Const(900000));
+        realloc.instruction(&Instruction::I32Store(ma4)); // store new offset
+        // Return the allocated address
         realloc.instruction(&Instruction::LocalGet(4));
-        realloc.instruction(&Instruction::End);
+        realloc.instruction(&Instruction::Else);
+        // new_size == 0 → return 0 (null)
+        realloc.instruction(&Instruction::I32Const(0));
+        realloc.instruction(&Instruction::End); // end new_size check
+        realloc.instruction(&Instruction::End); // end function body
         codes.function(&realloc);
     }
 
