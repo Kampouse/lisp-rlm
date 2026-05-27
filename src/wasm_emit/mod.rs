@@ -209,13 +209,13 @@ const RETURN_FLAG: u32 = 0; // mutable i64 global for return flag
 const FP_GLOBAL: u32 = 1;  // mutable i64 global for frame pointer (NEAR mode)
 
 // ── Memory safety constants ──
-const DEPTH_COUNTER: i64 = 40;  // 8-byte slot: recursion depth counter
+const DEPTH_COUNTER: i64 = 999980;  // 8-byte slot: recursion depth counter (high address to avoid component adapter clobber)
 const MAX_DEPTH: i64 = 512;     // max call depth before trap
 // Protected memory regions: [start, end) — store_i64/load_i64/mem-set!/mem-get may NOT write here
 // Covers: TEMP_MEM(64), AMOUNT_MEM(256), STORAGE_BUF(8192), STORAGE_U128_BUF(8208),
-//         HANDLE_COUNT_ADDR(48), RUNTIME_HEAP_PTR(56), DEPTH_COUNTER(40), BORSH_BUF(36864)
+//         HANDLE_COUNT_ADDR(48), RUNTIME_HEAP_PTR(56), DEPTH_COUNTER(999980), BORSH_BUF(36864)
 const PROTECTED_REGIONS: &[(i64, i64)] = &[
-    (40, 48),    // DEPTH_COUNTER + padding
+    (999980, 999988), // DEPTH_COUNTER
     (48, 56),    // HANDLE_COUNT_ADDR
     (56, 64),    // RUNTIME_HEAP_PTR
     (64, 72),    // TEMP_MEM
