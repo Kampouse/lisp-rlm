@@ -1,6 +1,5 @@
 (define (storage-key sub) (str-cat "gw:" sub ""))
 (define (acct-key sub) (str-cat "gw:" sub ":acct"))
-(define (bal-key sub) (str-cat "gw:" sub ":bal"))
 
 (define (do-register)
   (let ((sub-raw (json-get-str "google_sub")))
@@ -33,35 +32,12 @@
                       (let ((amount-raw (json-get-str "amount" result)))
                         (let ((amount (str-cat amount-raw "")))
                           (if (nil? amount-raw)
-                            "{\"status\":\"error\",\"message\":\"parse failed\"}"
+                            "{\"status\":\"error\",\"message\":\"account not found on chain\"}"
                             (str-cat "{\"status\":\"ok\",\"balance\":\"" amount "\",\"account\":\"" near-acct "\"}")))))))))))))))
-
-(define (do-deposit)
-  (let ((sub-raw (json-get-str "google_sub")))
-    (let ((sub (str-cat sub-raw "")))
-      (let ((bkey (bal-key sub)))
-        (let ((amount (json-get "amount")))
-          (let ((new-bal (storage-increment bkey amount)))
-            (str-cat "{\"status\":\"ok\",\"balance\":\"" (to-string new-bal) "\"}")))))))
-
-(define (do-withdraw)
-  (let ((sub-raw (json-get-str "google_sub")))
-    (let ((sub (str-cat sub-raw "")))
-      (let ((bkey (bal-key sub)))
-        (let ((current (storage-increment bkey 0)))
-          (let ((amount (json-get "amount")))
-            (if (< current amount)
-              "{\"status\":\"error\",\"message\":\"insufficient balance\"}"
-              (let ((new-bal (storage-decrement bkey amount)))
-                (let ((destination-raw (json-get-str "destination")))
-                  (let ((destination (str-cat destination-raw "")))
-                    (str-cat "{\"status\":\"ok\",\"balance\":\"" (to-string new-bal) "\",\"destination\":\"" destination "\"}")))))))))))
 
 (define (run input)
   (let ((action-num (json-get "action_num")))
     (cond
       ((= action-num 1) (do-register))
       ((= action-num 2) (do-balance))
-      ((= action-num 3) (do-deposit))
-      ((= action-num 4) (do-withdraw))
       (true "{\"status\":\"error\",\"message\":\"unknown action\"}"))))
