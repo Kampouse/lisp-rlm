@@ -394,7 +394,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(TAG_NIL));
                 Ok(v)
             }
-            "let" => {
+            "let" | "let*" => {
                 let mut v = Vec::new();
                 if let LispVal::List(bs) = &a[0] {
                     for b in bs { if let LispVal::List(p) = b { if p.len()==2 { if let LispVal::Sym(n) = &p[0] {
