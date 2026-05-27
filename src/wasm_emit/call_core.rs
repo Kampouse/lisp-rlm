@@ -286,8 +286,8 @@ impl WasmEmitter {
                 v.push(Instruction::End); Ok(v)
             }
             "cond" => {
-                // (cond (test1 val1) (test2 val2) ... (else valN))
-                // Desugar to nested if
+                // (cond (test1 val1 ...) (test2 val2 ...) ... (else valN ...))
+                // Supports implicit begin in clause bodies (multiple values after test)
                 if a.is_empty() { return Ok(vec![Instruction::I64Const(TAG_NIL)]); }
                 let mut v = Vec::new();
                 let mut clauses: Vec<&[LispVal]> = Vec::new();
@@ -302,7 +302,13 @@ impl WasmEmitter {
                     if clause.len() >= 2 {
                         if let LispVal::Sym(s) = &clause[0] {
                             if s == "else" {
-                                else_val = self.expr(&clause[1])?;
+                                // Implicit begin for else body
+                                let body: Vec<Instruction<'static>> = clause[1..].iter().enumerate().map(|(i, x)| {
+                                    let mut inner = self.expr(x).unwrap_or_default();
+                                    if i < clause.len() - 2 { inner.push(Instruction::Drop); }
+                                    inner
+                                }).flatten().collect();
+                                else_val = body;
                                 continue;
                             }
                         }
@@ -310,7 +316,12 @@ impl WasmEmitter {
                         new_else.extend(self.expr(&clause[0])?);
                         new_else.extend(self.emit_cond_branch());
                         new_else.push(Instruction::If(BlockType::Result(ValType::I64)));
-                        new_else.extend(self.expr(&clause[1])?);
+                        // Implicit begin: compile all body expressions, drop intermediates, keep last
+                        let body_exprs = &clause[1..];
+                        for (i, x) in body_exprs.iter().enumerate() {
+                            new_else.extend(self.expr(x)?);
+                            if i < body_exprs.len() - 1 { new_else.push(Instruction::Drop); }
+                        }
                         new_else.push(Instruction::Else);
                         new_else.extend(else_val);
                         new_else.push(Instruction::End);

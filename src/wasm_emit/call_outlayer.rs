@@ -142,6 +142,9 @@ impl WasmEmitter {
                     // writes response to buf_ptr, length to *len_ptr.
                     let buf_ptr: i32 = crate::wasi_http::SENTINEL_BUF;
                     let buf_len: i32 = crate::wasi_http::SENTINEL_BUF_SIZE;
+                    // Compute per-call sentinel offset (200 + call_idx)
+                    let post_sentinel: u32 = 200 + self.http_post_call_count;
+                    self.http_post_call_count += 1;
                     // url ptr/len (ignored by data-segment path)
                     v.extend(url_expr.clone());
                     v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
@@ -165,8 +168,8 @@ impl WasmEmitter {
                     v.push(Instruction::I32Const(buf_len));
                     // len_ptr = ret_area+8 (length will be written here directly)
                     v.push(Instruction::I32Const(ret_area + 8));
-                    // Call http-post (sentinel 200 for wasi:http path) — returns i32 (status), drop it
-                    v.push(Instruction::Call(200));
+                    // Call http-post (sentinel 200+call_idx for wasi:http path) — returns i32 (status), drop it
+                    v.push(Instruction::Call(post_sentinel));
                     v.push(Instruction::Drop);
                     // Write disc=0 (ok) at ret_area+0
                     v.push(Instruction::I32Const(ret_area));
@@ -396,8 +399,8 @@ impl WasmEmitter {
                 // ret_area pointer (i32)
                 v.push(Instruction::I32Const(163840)); // OL_RET_AREA
                 v.push(Instruction::Call(114));
-                // Read s64 result from ret_area + 8 (canonical ABI: disc@0, payload@8)
-                v.push(Instruction::I32Const(163840 + 8));
+                // Read s64 result from ret_area + 0 (tuple<s64, string>: s64 @ 0, string @ +8)
+                v.push(Instruction::I32Const(163840));
                 v.push(Instruction::I64Load(ma8));
                 v.extend(self.emit_tag_num());
                 Ok(v)
@@ -445,35 +448,32 @@ impl WasmEmitter {
                 Ok(v)
             }
             "storage-decrement" => {
-                // (storage-decrement "key" delta) -> i64
+                // (storage-decrement "key" delta) -> i64 (new value)
+                // Canonical ABI: (i32 key_ptr, i32 key_len, i64 delta, i32 ret_area) -> ()
+                // result<s64, string> ret_area layout: [i32 disc] [4 pad] [i64 s64 @ +8]
                 if a.len() < 2 { return Err("storage-decrement requires (key delta)".into()); }
                 if !self.wasi_mode { return Err("storage-decrement is only available on OutLayer".into()); }
                 let key_expr = self.expr(&a[0])?;
                 let delta_expr = self.expr(&a[1])?;
-                let delta_expr2 = self.expr(&a[1])?;
                 let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
                 let mut v = Vec::new();
+                // key ptr/len (2 × i32) — extract from tagged pair
                 v.extend(key_expr.clone());
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
-                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32WrapI64); // key_ptr (i32)
                 v.extend(key_expr);
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32WrapI64); // key_len (i32)
+                // delta (i64) — untag, keep as i64 for canonical ABI
                 v.extend(delta_expr);
-                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
-                v.push(Instruction::I32WrapI64);
-                v.extend(delta_expr2);
-                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.push(Instruction::I32WrapI64);
-                let res_lo = self.heap_ptr; let res_hi = self.heap_ptr + 8; self.heap_ptr += 16;
-                v.push(Instruction::I32Const(res_lo as i32));
-                v.push(Instruction::I32Const(res_hi as i32));
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU); // untag → i64
+                // ret_area pointer (i32)
+                v.push(Instruction::I32Const(163840 + 384)); // separate from increment's 163840
                 v.push(Instruction::Call(130));
-                v.push(Instruction::Drop);
-                v.push(Instruction::I32Const(res_lo as i32));
+                // Read s64 result from ret_area + 0 (tuple<s64, string>: s64 @ 0)
+                v.push(Instruction::I32Const(163840 + 384));
                 v.push(Instruction::I64Load(ma8));
                 v.extend(self.emit_tag_num());
                 Ok(v)
