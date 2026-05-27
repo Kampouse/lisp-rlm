@@ -503,7 +503,6 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
 
     // ── Embed core module (patched to import memory from "env") ──
     let mem_pages = extract_memory_pages(core_bytes);
-    eprintln!("DEBUG: core_bytes {} bytes, mem_pages={}", core_bytes.len(), mem_pages);
     let patched_core = make_memory_import(core_bytes);
     let module_idx = b.core_module_raw(None, &patched_core);
 
@@ -749,7 +748,6 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
             // Skip functions that are imported but never called —
             // use a type-matched trap stub so the core module's imports are satisfied
             if !called_names.contains(kebab.as_str()) {
-                eprintln!("DEBUG: trap stub for unused import {}", kebab);
                 let sig = core_import_sig(kebab.as_str());
                 let trap = trap_stubs.get(&sig).expect(&format!("no trap stub for {} sig {:?}", kebab, sig));
                 lowered_funcs.push(*trap);
@@ -1077,9 +1075,10 @@ fn make_memory_import(wasm: &[u8]) -> Vec<u8> {
 
     // Second pass: rebuild the module, skipping memory section (5) and removing "memory" export
     while pos < wasm.len() {
-        let sid = wasm[pos]; pos += 1;
-        let (sz, lb) = rleb(wasm, pos); pos += lb;
-        eprintln!("DEBUG: section {} at {}, size {}", sid, pos, sz);
+        let sid = wasm[pos];
+        pos += 1;
+        let (sz, lb) = rleb(wasm, pos);
+        pos += lb;
 
         // Skip memory section entirely
         if sid == 5 {
@@ -1090,7 +1089,6 @@ fn make_memory_import(wasm: &[u8]) -> Vec<u8> {
         if sid == 2 {
             // Import section — prepend one memory import
             let (cnt, cl) = rleb(wasm, pos);
-            eprintln!("DEBUG: import section, cnt={}, cl={}, section_end={}", cnt, cl, pos + sz);
             let header_end = pos + cl;
             let body = &wasm[header_end..pos + sz];
 

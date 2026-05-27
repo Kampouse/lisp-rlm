@@ -1074,76 +1074,23 @@ impl WasmEmitter {
             // ── P2 inline operations (no host calls, pure WASM) ──
             "outlayer/http-post" => {
                 // (outlayer/http-post "url" "body" ["content-type"]) -> string or nil
-                // Canonical ABI: http-post(url_ptr, url_len, body_ptr, body_len, ct_ptr, ct_len, ret_area) -> ()
-                // ret_area: disc(4) + ptr(4) + len(4) = 12 bytes
+                // Uses wasi:http POST path (same as http-post kebab form)
                 if a.len() < 2 { return Err("outlayer/http-post requires (url body) or (url body content-type)".into()); }
                 if !self.wasi_mode { return Err("outlayer/http-post is only available on OutLayer (WASI) target".into()); }
-                self.need_outlayer = true;
 
-                let url_expr = self.expr(&a[0])?;
-                let body_expr = self.expr(&a[1])?;
-                let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
-                let ret_area: i32 = 163840 + 16; // POST ret_area after GET's
-                let mut v = Vec::new();
-
-                // url ptr/len
-                v.extend(url_expr.clone());
-                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
-                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
-                v.push(Instruction::I32WrapI64); // url_ptr
-                v.extend(url_expr);
-                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.push(Instruction::I32WrapI64); // url_len
-                // body ptr/len
-                v.extend(body_expr.clone());
-                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
-                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
-                v.push(Instruction::I32WrapI64); // body_ptr
-                v.extend(body_expr);
-                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.push(Instruction::I32WrapI64); // body_len
-                // content-type ptr/len
-                if a.len() > 2 {
-                    let ct_expr = self.expr(&a[2])?;
-                    v.extend(ct_expr.clone());
-                    v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
-                    v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
-                    v.push(Instruction::I32WrapI64); // ct_ptr
-                    v.extend(ct_expr);
-                    v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
-                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                    v.push(Instruction::I32WrapI64); // ct_len
-                } else {
-                    let ct_str = b"application/json";
-                    let ct_off = self.alloc_data(ct_str);
-                    v.push(Instruction::I32Const(ct_off as i32)); // ct_ptr
-                    v.push(Instruction::I32Const(ct_str.len() as i32)); // ct_len
+                // Register URL for wasi:http POST helper generation
+                if self.need_wasi_http {
+                    if let crate::types::LispVal::Str(url) = &a[0] {
+                        if let Some((auth, path)) = Self::split_url(url) {
+                            if !self.http_post_urls.iter().any(|(a, p)| a == &auth && p == &path) {
+                                self.http_post_urls.push((auth, path));
+                            }
+                        }
+                    }
                 }
-                // ret_area pointer
-                v.push(Instruction::I32Const(ret_area));
-                // Call http-post (sentinel 104) — canonical ABI
-                v.push(Instruction::Call(104));
-                // Read discriminant: 0 = ok, 1 = err
-                v.push(Instruction::I32Const(ret_area)); v.push(Instruction::I32Load(ma4));
-                v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Ne);
-                v.push(Instruction::If(BlockType::Result(ValType::I64)));
-                v.push(Instruction::I64Const(TAG_NIL)); // error → nil
-                v.push(Instruction::Else);
-                // ok: read ptr from ret_area+4, len from ret_area+8
-                v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4));
-                v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::I32Const(ret_area + 8)); v.push(Instruction::I32Load(ma4));
-                v.push(Instruction::I64ExtendI32U);
-                // Tag: ((ptr | (len << 32)) << 3) | TAG_STR
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Or);
-                v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TAG_STR)); v.push(Instruction::I64Or);
-                v.push(Instruction::End); // if
-                Ok(v)
+
+                // Delegate to http-post kebab form (same logic)
+                return self.call_outlayer("http-post", a);
             }
             "outlayer/json-get" => {
                 // (outlayer/json-get tagged_string "key") -> string or nil
