@@ -247,22 +247,31 @@ impl WasmEmitter {
                 let key_expr = self.expr(&a[0])?;
                 let val_expr = self.expr(&a[1])?;
                 let ret_area: i32 = 163840 + 64;
+                // Use locals to evaluate key/val ONCE — avoids double-execution of str-cat
+                let key_local = self.local_idx("__ss_key");
+                let val_local = self.local_idx("__ss_val");
                 let mut v = Vec::new();
-                // key ptr/len
-                v.extend(key_expr.clone());
+                // Evaluate key → local
+                v.extend(key_expr);
+                v.push(Instruction::LocalSet(key_local));
+                // Evaluate val → local
+                v.extend(val_expr);
+                v.push(Instruction::LocalSet(val_local));
+                // key ptr/len from local
+                v.push(Instruction::LocalGet(key_local));
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
                 v.push(Instruction::I32WrapI64);
-                v.extend(key_expr);
+                v.push(Instruction::LocalGet(key_local));
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I32WrapI64);
-                // val ptr/len
-                v.extend(val_expr.clone());
+                // val ptr/len from local
+                v.push(Instruction::LocalGet(val_local));
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
                 v.push(Instruction::I32WrapI64);
-                v.extend(val_expr);
+                v.push(Instruction::LocalGet(val_local));
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I32WrapI64);
@@ -288,13 +297,18 @@ impl WasmEmitter {
                 self.storage_get_count += 1;
                 // Each storage-get gets its own 16-byte ret_area: base=163968, stride=16
                 let ret_area: i32 = 163840 + 128 + (call_idx as i32) * 16;
+                // Use local to evaluate key ONCE — avoids double-execution of str-cat
+                let key_local = self.local_idx("__sg_key");
                 let mut v = Vec::new();
-                // key ptr/len
-                v.extend(key_expr.clone());
+                // Evaluate key → local
+                v.extend(key_expr);
+                v.push(Instruction::LocalSet(key_local));
+                // key ptr/len from local
+                v.push(Instruction::LocalGet(key_local));
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
                 v.push(Instruction::I32WrapI64);
-                v.extend(key_expr);
+                v.push(Instruction::LocalGet(key_local));
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I32WrapI64);

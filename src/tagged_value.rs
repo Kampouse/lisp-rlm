@@ -22,7 +22,7 @@ pub const TAG_MASK: i64 = (1 << TAG_BITS) - 1; // 0b111 = 7
 
 pub const TEMP_MEM: i64 = 64;
 pub const RUNTIME_HEAP_PTR: i64 = 56; // 8-byte slot holding bump-allocator pointer
-pub const HEAP_START: i64 = 4096;
+pub const HEAP_START: i64 = 200_000;
 pub const STORAGE_BUF: i64 = 8192;
 pub const STORAGE_U128_BUF: i64 = 8208;
 pub const INPUT_BUF: i64 = 16384;
@@ -307,11 +307,12 @@ mod tests {
     fn memory_layout_constants_sanity() {
         // Buffers should not overlap — check relative ordering in memory
         assert!(RUNTIME_HEAP_PTR < TEMP_MEM);
-        assert!(TEMP_MEM < HEAP_START);
-        assert!(HEAP_START < STORAGE_BUF);
+        assert!(TEMP_MEM < STORAGE_BUF);
         assert!(STORAGE_BUF < INPUT_BUF);
         assert!(INPUT_BUF < RETURN_BUF);
         assert!(RETURN_BUF < BORSH_BUF);
+        // HEAP_START must be above all fixed buffers and data segments
+        assert!(BORSH_BUF < HEAP_START);
     }
 
     #[test]

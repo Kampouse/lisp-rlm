@@ -56,8 +56,8 @@
 (define (do-link)
   (let* ((sub-raw (json-get-str "google_sub"))
          (sub (str-cat sub-raw ""))
-         (api-key (json-get-str "api_key"))
-         (near-acct (json-get-str "near_account_id")))
+         (api-key (str-cat (json-get-str "api_key") ""))
+         (near-acct (str-cat (json-get-str "near_account_id") "")))
     (if (or (nil? api-key) (nil? near-acct))
       "{\"status\":\"error\",\"message\":\"missing api_key or near_account_id\"}"
       (let* ((cnt (count-wallets sub 0 0))
@@ -83,7 +83,7 @@
          (sub (str-cat sub-raw ""))
          (idx-raw (json-get "wallet_index"))
          (idx (if (nil? idx-raw) 0 idx-raw))
-         (label (json-get-str "label")))
+         (label (str-cat (json-get-str "label") "")))
     (if (nil? label)
       "{\"status\":\"error\",\"message\":\"missing label\"}"
       (begin
