@@ -704,9 +704,8 @@ impl WasmEmitter {
                         v.push(Instruction::LocalGet(total_len_i)); v.push(Instruction::LocalGet(len_is[i])); v.push(Instruction::I32Add); v.push(Instruction::LocalSet(total_len_i));
                     }
                     // Allocate from heap_ptr
-                    let hp = self.heap_ptr as i32;
                     let max_reserve: i64 = a.iter().map(|_| 4096i64).sum::<i64>().max(4096);
-                    self.heap_ptr = (self.heap_ptr as i64 + max_reserve) as u32;
+                    let hp = self.heap_bump(max_reserve as u32) as i32;
                     v.push(Instruction::I32Const(hp)); v.push(Instruction::LocalSet(dst_i));
                     v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::LocalSet(dst_save_i));
                     // Phase 2: copy each arg into dst using shared memcpy helper

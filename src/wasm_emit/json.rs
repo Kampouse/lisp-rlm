@@ -16,7 +16,33 @@ impl WasmEmitter {
         setup.push(Instruction::I32Const(98304));
         setup.push(Instruction::I32Load(ma4));
         setup.push(Instruction::I64ExtendI32U);
-        self.json_get_from_buf(key, value_type, 32768, &mut setup)
+        let mut v = self.json_get_from_buf(key, value_type, 32768, &mut setup)?;
+        // Heap copy for "str" results: __json_get writes to stdout_buf (65536),
+        // which gets overwritten by subsequent __json_get calls.
+        if value_type == "str" {
+            let jgs_tmp = self.local_idx("__jgw_tmp");
+            let jgs_len = self.local_idx_i32("__jgw_len");
+            let jgs_ptr = self.local_idx_i32("__jgw_ptr");
+            v.push(Instruction::LocalSet(jgs_tmp));
+            // Extract len and ptr from packed result
+            v.push(Instruction::LocalGet(jgs_tmp));
+            v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+            v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(jgs_len));
+            v.push(Instruction::LocalGet(jgs_tmp));
+            v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(jgs_ptr));
+            // Copy to compile-time heap above all static buffers
+            let heap_dst = self.heap_bump(256);
+            v.push(Instruction::I32Const(heap_dst as i32));
+            v.push(Instruction::LocalGet(jgs_ptr));
+            v.push(Instruction::LocalGet(jgs_len));
+            v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+            // Repack: (len << 32) | heap_dst
+            v.push(Instruction::LocalGet(jgs_len)); v.push(Instruction::I64ExtendI32U);
+            v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+            v.push(Instruction::I64Const(heap_dst as i64));
+            v.push(Instruction::I64Or);
+        }
+        Ok(v)
     }
 
     pub(crate) fn ensure_json_get_func(&mut self) -> u32 {
@@ -1520,9 +1546,15 @@ pub(crate) fn json_get_int(&mut self, key: &str) -> Result<Vec<Instruction<'stat
         v.push(Instruction::I32Add); v.push(Instruction::LocalSet(slen));
         v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
 
-        // Return packed: (slen << 32) | (ib + pos) — needs i64 for tagged return
+        // Copy to compile-time heap area above all static buffers
+        let heap_dst = self.heap_bump(256);
+        v.push(Instruction::I32Const(heap_dst as i32));                            // dst
+        v.push(Instruction::I32Const(ib)); v.push(Instruction::LocalGet(pos)); v.push(Instruction::I32Add); // src
+        v.push(Instruction::LocalGet(slen));                                        // len
+        v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+        // Return packed: (slen << 32) | heap_dst
         v.push(Instruction::LocalGet(slen)); v.push(Instruction::I64ExtendI32U); v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
-        v.push(Instruction::I64Const(ib as i64)); v.push(Instruction::LocalGet(pos)); v.push(Instruction::I64ExtendI32U); v.push(Instruction::I64Add);
+        v.push(Instruction::I64Const(heap_dst as i64));
         v.push(Instruction::I64Or);
         v.push(Instruction::Else);
         // Key not found: return 0

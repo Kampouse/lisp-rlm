@@ -270,7 +270,7 @@ pub struct WasmEmitter {
     pub(crate) host_needed: HashSet<usize>,
     pub(crate) gas_local: Option<u32>, // index of the gas counter local (i64)
     pub(crate) needs_frame: bool, // function body allocates from FP_GLOBAL
-    pub(crate) heap_ptr: u32, // bump allocator for closures
+    pub(crate) heap_ptr: u32, // bump allocator; 0 = not yet initialized (lazy snap to data section end)
     pub(crate) lambda_counter: u32, // unique lambda id
     pub(crate) str_cat_depth: u32, // nesting depth for str-cat local isolation
     pub(crate) fuzz_mode: bool, // if true, export wrappers store tagged values (no untag, no value_return)
@@ -302,9 +302,34 @@ impl WasmEmitter {
             locals: HashMap::new(), next_local: 0, free_locals: Vec::new(), local_type_map: Vec::new(), current_func: None, current_param_count: 0,
             while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 1, exports: Vec::new(),
             data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(),
-            gas_local: None, needs_frame: false, heap_ptr: HEAP_START as u32, lambda_counter: 0, str_cat_depth: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), http_post_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false, borsh_schemas: HashMap::new(), storage_get_count: 0, http_post_call_count: 0,
+            gas_local: None, needs_frame: false, heap_ptr: 0, lambda_counter: 0, str_cat_depth: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), http_post_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false, borsh_schemas: HashMap::new(), storage_get_count: 0, http_post_call_count: 0,
             func_defs: HashMap::new(),
         }
+    }
+
+    /// Ensure heap_ptr is initialized: snap to just past the data section end.
+    /// Called lazily on first heap allocation so it accounts for all data segments.
+    pub(crate) fn ensure_heap_init(&mut self) {
+        if self.heap_ptr == 0 {
+            let data_end = (self.next_data_offset as u64 + 7) & !7u64;
+            // Floor: must be above fixed buffers (BORSH_BUF=36864 + 4096 scratch)
+            let min_heap = 40_960u64;
+            self.heap_ptr = std::cmp::max(data_end, min_heap) as u32;
+        }
+    }
+
+    /// Return current heap_ptr as i32, initializing if needed.
+    pub(crate) fn heap_ptr_i32(&mut self) -> i32 {
+        self.ensure_heap_init();
+        self.heap_ptr as i32
+    }
+
+    /// Bump heap_ptr by `bytes`, return old position.
+    pub(crate) fn heap_bump(&mut self, bytes: u32) -> u32 {
+        self.ensure_heap_init();
+        let old = self.heap_ptr;
+        self.heap_ptr = old + bytes;
+        old
     }
 
     /// Split a URL string into (authority, path_with_query).

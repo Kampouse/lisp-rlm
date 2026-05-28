@@ -6,14 +6,9 @@ impl WasmEmitter {
             "dict" => {
                 if a.len() % 2 != 0 { return Err("dict: expected even number of args (key val pairs)".into()); }
                 let n_pairs = a.len() / 2;
-                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
-                let heap = self.heap_ptr;
-                // count + 2*n_pairs elements
                 let total_slots = 1 + 2 * n_pairs;
-                self.heap_ptr = heap + (total_slots * 8) as u32;
-                // But we need extra for alloc_data or strings — no, values are already tagged
-                // We need enough space. Pad to 64 slots minimum for safety.
-                if total_slots < 64 { self.heap_ptr = heap + 64 * 8; }
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let heap = self.heap_bump(std::cmp::max((total_slots * 8) as u32, 64 * 8));
                 let mut v = Vec::new();
                 // Store n_pairs at ptr[0]: addr, value, store
                 v.push(Instruction::I64Const(heap as i64));
@@ -161,10 +156,7 @@ impl WasmEmitter {
                 // Now: found != 0 means key exists at index (found-1)... actually found = idx
                 // Determine new count: if found, same count; else count+1
                 // Alloc new dict
-                let new_heap = self.heap_ptr;
-                // Max slots needed: 1 + 2*(n+1) — enough for either case
-                let alloc_slots = 1 + 2 * 64; // generous allocation (max 64 pairs)
-                self.heap_ptr = new_heap + alloc_slots * 8;
+                let new_heap = self.heap_bump((1 + 2 * 64) * 8);
                 v.push(Instruction::I64Const(new_heap as i64)); v.push(Instruction::LocalSet(new_ptr));
 
                 // Branch: key found or not
@@ -354,9 +346,8 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(d_ptr)); v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(ma)); v.push(Instruction::LocalSet(n));
                 // Alloc result list: [n, key0, key1, ...]
-                let res_heap = self.heap_ptr;
                 let alloc = std::cmp::max(1 + n as usize, 64);
-                self.heap_ptr = res_heap + (alloc * 8) as u32;
+                let res_heap = self.heap_bump((alloc * 8) as u32);
                 // Store count
                 v.push(Instruction::I64Const(res_heap as i64)); v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalGet(n));
@@ -402,9 +393,8 @@ impl WasmEmitter {
                 v.extend(self.emit_untag()); v.push(Instruction::LocalSet(d_ptr));
                 v.push(Instruction::LocalGet(d_ptr)); v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(ma)); v.push(Instruction::LocalSet(n));
-                let res_heap = self.heap_ptr;
                 let alloc = std::cmp::max(1 + n as usize, 64);
-                self.heap_ptr = res_heap + (alloc * 8) as u32;
+                let res_heap = self.heap_bump((alloc * 8) as u32);
                 v.push(Instruction::I64Const(res_heap as i64)); v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalGet(n));
                 v.push(Instruction::I64Store(ma));

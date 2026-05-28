@@ -193,7 +193,7 @@ impl WasmEmitter {
         if !self.wasi_mode && !self.p2_mode {
             globals.global(
                 GlobalType { val_type: ValType::I64, mutable: true, shared: false },
-                &ConstExpr::i64_const(self.heap_ptr as i64),
+                &ConstExpr::i64_const(self.heap_ptr_i32() as i64),
             );
         }
         m.section(&globals);
@@ -381,7 +381,7 @@ impl WasmEmitter {
         {
             let mut data = DataSection::new();
             // Initialize runtime heap ptr with final compile-time heap_ptr
-            let hp_bytes = self.heap_ptr.to_le_bytes();
+            let hp_bytes = self.heap_ptr_i32().to_le_bytes();
             data.active(0, &ConstExpr::i32_const(RUNTIME_HEAP_PTR as i32), hp_bytes.iter().copied());
             for (off, bytes) in &self.data_segments {
                 data.active(0, &ConstExpr::i32_const(*off as i32), bytes.iter().copied());
@@ -410,7 +410,13 @@ impl WasmEmitter {
     ) -> Vec<Instruction<'static>> {
         instrs.iter().map(|i| match i {
             Instruction::Call(idx) if *idx >= HOST_BASE && *idx < USER_BASE => {
-                Instruction::Call(host_map[&((*idx - HOST_BASE) as usize)])
+                let sentinel = (*idx - HOST_BASE) as usize;
+                if let Some(&fn_idx) = host_map.get(&sentinel) {
+                    Instruction::Call(fn_idx)
+                } else {
+                    eprintln!("WARNING: unresolved HOST_BASE sentinel {} in resolve_static", sentinel);
+                    i.clone()
+                }
             }
             Instruction::Call(idx) if *idx >= USER_BASE => {
                 let pos = (*idx - USER_BASE) as usize;

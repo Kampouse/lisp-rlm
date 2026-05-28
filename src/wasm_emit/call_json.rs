@@ -165,6 +165,30 @@ impl WasmEmitter {
                             setup.push(Instruction::I64Const(pat_packed as i64));
                             let jg_idx = self.ensure_json_get_func();
                             setup.push(Instruction::Call(crate::wasm_emit::USER_BASE | jg_idx));
+                            // Bump-allocate 256 bytes from runtime heap (addr 56) for heap-safe copy
+                            let rhp: i32 = 56; // RUNTIME_HEAP_PTR (i64 at addr 56)
+                            let jgs_tmp = self.local_idx("jgs_packed");
+                            let jgs_len = self.local_idx_i32("jgs_len");
+                            let jgs_ptr = self.local_idx_i32("jgs_ptr");
+                            setup.push(Instruction::LocalSet(jgs_tmp));
+                            // Extract len and ptr from packed result
+                            setup.push(Instruction::LocalGet(jgs_tmp));
+                            setup.push(Instruction::I64Const(32)); setup.push(Instruction::I64ShrU);
+                            setup.push(Instruction::I32WrapI64); setup.push(Instruction::LocalSet(jgs_len));
+                            setup.push(Instruction::LocalGet(jgs_tmp));
+                            setup.push(Instruction::I32WrapI64); setup.push(Instruction::LocalSet(jgs_ptr));
+                            // Bump runtime heap by 256
+                            // Copy to compile-time heap above all static buffers
+                            let heap_dst = self.heap_bump(256);
+                            setup.push(Instruction::I32Const(heap_dst as i32));
+                            setup.push(Instruction::LocalGet(jgs_ptr));
+                            setup.push(Instruction::LocalGet(jgs_len));
+                            setup.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+                            // Repack: (len << 32) | heap_dst
+                            setup.push(Instruction::LocalGet(jgs_len)); setup.push(Instruction::I64ExtendI32U);
+                            setup.push(Instruction::I64Const(32)); setup.push(Instruction::I64Shl);
+                            setup.push(Instruction::I64Const(heap_dst as i64));
+                            setup.push(Instruction::I64Or);
                             setup
                         } else if self.wasi_mode {
                             self.json_get_wasi(key, "str")?

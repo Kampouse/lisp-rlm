@@ -8,3 +8,4 @@ near.json
 /*.lisp
 /fuzz_*.py
 /gen_*.py
+storage/

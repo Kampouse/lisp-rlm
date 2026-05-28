@@ -592,7 +592,7 @@ impl WasmEmitter {
                 v.push(Instruction::Else);
                 v.push(Instruction::I32Const(163840)); v.push(Instruction::I32Load(ma4));
                 v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(len_l));
-                v.push(Instruction::I64Const(self.heap_ptr as i64)); v.push(Instruction::LocalSet(dst_l));
+                v.push(Instruction::I64Const(self.heap_ptr_i32() as i64)); v.push(Instruction::LocalSet(dst_l));
                 v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(i_l));
                 v.push(Instruction::Block(BlockType::Empty));
                 v.push(Instruction::Loop(BlockType::Empty));
@@ -610,7 +610,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Add); v.push(Instruction::LocalSet(i_l));
                 v.push(Instruction::Br(0));
                 v.push(Instruction::End); v.push(Instruction::End);
-                let new_heap = self.heap_ptr as i64 + 65536; self.heap_ptr = new_heap as u32;
+                self.heap_bump(65536);
                 v.push(Instruction::LocalGet(dst_l));
                 v.push(Instruction::LocalGet(len_l)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
                 v.push(Instruction::I64Or);
@@ -697,7 +697,7 @@ impl WasmEmitter {
                 let i_l = self.local_idx("__sg_wi");
                 v.push(Instruction::I32Const(163840)); v.push(Instruction::I32Load(ma4));
                 v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(len_l));
-                v.push(Instruction::I64Const(self.heap_ptr as i64)); v.push(Instruction::LocalSet(dst_l));
+                v.push(Instruction::I64Const(self.heap_ptr_i32() as i64)); v.push(Instruction::LocalSet(dst_l));
                 v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(i_l));
                 v.push(Instruction::Block(BlockType::Empty));
                 v.push(Instruction::Loop(BlockType::Empty));
@@ -715,7 +715,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Add); v.push(Instruction::LocalSet(i_l));
                 v.push(Instruction::Br(0));
                 v.push(Instruction::End); v.push(Instruction::End);
-                let new_heap = self.heap_ptr as i64 + 65536; self.heap_ptr = new_heap as u32;
+                self.heap_bump(65536);
                 v.push(Instruction::LocalGet(dst_l));
                 v.push(Instruction::LocalGet(len_l)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
                 v.push(Instruction::I64Or);
@@ -800,7 +800,7 @@ impl WasmEmitter {
                 let i_l = self.local_idx("__sg_cpi");
                 v.push(Instruction::I32Const(163840)); v.push(Instruction::I32Load(ma4));
                 v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(len_l));
-                v.push(Instruction::I64Const(self.heap_ptr as i64)); v.push(Instruction::LocalSet(dst_l));
+                v.push(Instruction::I64Const(self.heap_ptr_i32() as i64)); v.push(Instruction::LocalSet(dst_l));
                 v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(i_l));
                 v.push(Instruction::Block(BlockType::Empty));
                 v.push(Instruction::Loop(BlockType::Empty));
@@ -818,7 +818,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Add); v.push(Instruction::LocalSet(i_l));
                 v.push(Instruction::Br(0));
                 v.push(Instruction::End); v.push(Instruction::End);
-                let new_heap = self.heap_ptr as i64 + 65536; self.heap_ptr = new_heap as u32;
+                self.heap_bump(65536);
                 v.push(Instruction::LocalGet(dst_l));
                 v.push(Instruction::LocalGet(len_l)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
                 v.push(Instruction::I64Or);
@@ -958,11 +958,10 @@ impl WasmEmitter {
                 let ret_area: i32 = 163840 + 448;
                 // Store "status" at a known offset
                 let status_str = b"status";
-                let status_offset = self.heap_ptr;
+                let status_offset = self.heap_bump(64);
                 for (j, &byte) in status_str.iter().enumerate() {
                     self.data_segments.push((status_offset + j as u32, vec![byte]));
                 }
-                self.heap_ptr = status_offset + 64; // align
                 // view(contract_ptr, contract_len, method_ptr, method_len, args_ptr, args_len, finality_ptr, finality_len, ret_area)
                 v.push(Instruction::I32Const(0)); v.push(Instruction::I32Const(0)); // empty contract
                 v.push(Instruction::I32Const(status_offset as i32)); v.push(Instruction::I32Const(6)); // "status"

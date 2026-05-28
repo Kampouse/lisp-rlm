@@ -219,8 +219,7 @@ impl WasmEmitter {
         } else {
             // Allocate closure on heap: [lambda_id, captured_val_1, captured_val_2, ...]
             let closure_size = (1 + captured_count) as u32; // i64 slots
-            let ptr = self.heap_ptr;
-            self.heap_ptr += closure_size * 8;
+            let ptr = self.heap_bump(closure_size * 8);
             
             // Store lambda_id at closure[0]
             v.push(Instruction::I64Const(ptr as i64));
