@@ -1,6 +1,8 @@
 (define (wallet-api-key sub idx) (str-cat "wallet:gw:" sub ":" (to-string idx) ":api_key"))
 (define (wallet-acct sub idx) (str-cat "wallet:gw:" sub ":" (to-string idx) ":acct"))
 
+(define (wallet-label sub idx) (str-cat "wallet:gw:" sub ":" (to-string idx) ":label"))
+
 (define (count-wallets sub idx acc)
   (if (> idx 9)
     acc
@@ -76,6 +78,39 @@
         (storage-set (wallet-acct sub 0) "")
         "{\"status\":\"ok\",\"unlinked\":true}"))))
 
+(define (do-set-label)
+  (let* ((sub-raw (json-get-str "google_sub"))
+         (sub (str-cat sub-raw ""))
+         (idx-raw (json-get "wallet_index"))
+         (idx (if (nil? idx-raw) 0 idx-raw))
+         (label (json-get-str "label")))
+    (if (nil? label)
+      "{\"status\":\"error\",\"message\":\"missing label\"}"
+      (begin
+        (storage-set (wallet-label sub idx) label)
+        "{\"status\":\"ok\"}"))))
+
+(define (build-label-entry sub idx need-comma)
+  (let* ((lbl (storage-get (wallet-label sub idx))))
+    (if (nil? lbl)
+      ""
+      (if need-comma
+        (str-cat ",{\"index\":" (to-string idx) ",\"label\":\"" lbl "\"}")
+        (str-cat "{\"index\":" (to-string idx) ",\"label\":\"" lbl "\"}")))))
+
+(define (scan-labels sub idx need-comma acc)
+  (if (> idx 9)
+    acc
+    (let ((entry (build-label-entry sub idx need-comma)))
+      (if (= (str-len entry) 0)
+        (scan-labels sub (+ idx 1) need-comma acc)
+        (scan-labels sub (+ idx 1) true (str-cat acc entry))))))
+
+(define (do-get-labels)
+  (let* ((sub-raw (json-get-str "google_sub"))
+         (sub (str-cat sub-raw "")))
+    (str-cat "{\"status\":\"ok\",\"labels\":[" (scan-labels sub 0 false "") "]}")))
+
 (define (run input)
   (let ((action-num (json-get "action_num")))
     (cond
@@ -84,4 +119,6 @@
       ((= action-num 3) (do-check))
       ((= action-num 4) (do-link))
       ((= action-num 5) (do-unlink))
+      ((= action-num 6) (do-set-label))
+      ((= action-num 7) (do-get-labels))
       (true "{\"status\":\"error\",\"message\":\"unknown action\"}"))))
