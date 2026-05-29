@@ -292,6 +292,7 @@
     'outlayer/call': '(outlayer/call "account" "method" args)',
     'outlayer/transfer': '(outlayer/transfer "account" amount)',
     'outlayer/http_get': '(outlayer/http_get "url")',
+    'outlayer/http_post': '(outlayer/http_post "url" body ["content-type"])',
   };
 
   const ALL_FNS = Object.keys(SNIPPETS);
@@ -316,6 +317,7 @@
       'env/signer','env/predecessor',
       'http-get','http-post','http-get-json',
       'outlayer/view','outlayer/raw','outlayer/status','outlayer/context','outlayer/storage-set','outlayer/storage-get','outlayer/storage-has','outlayer/storage-delete','outlayer/call','outlayer/transfer','outlayer/http_get',
+      'outlayer/http_post',
     ]);
 
     const formFns = new Set(['define','defn','def','let','fn','lambda','loop','recur','set!','quote','do','begin']);
@@ -767,6 +769,33 @@
   // ============================================
   // Monaco setup
   // ============================================
+  // Configure Monaco to use web workers via import.meta.url
+  // Prevents "Could not create web worker(s)" warning
+  (self as any).MonacoEnvironment = {
+    getWorker: function (_moduleId: string, label: string) {
+      const getWorkerModule = (workerUrl: string, label: string) => {
+        return new Worker(workerUrl, { type: 'module', name: label });
+      };
+      switch (label) {
+        case 'json':
+          return getWorkerModule(new URL('monaco-editor/esm/vs/language/json/json.worker', import.meta.url).href, label);
+        case 'css':
+        case 'scss':
+        case 'less':
+          return getWorkerModule(new URL('monaco-editor/esm/vs/language/css/css.worker', import.meta.url).href, label);
+        case 'html':
+        case 'handlebars':
+        case 'razor':
+          return getWorkerModule(new URL('monaco-editor/esm/vs/language/html/html.worker', import.meta.url).href, label);
+        case 'typescript':
+        case 'javascript':
+          return getWorkerModule(new URL('monaco-editor/esm/vs/language/typescript/ts.worker', import.meta.url).href, label);
+        default:
+          return getWorkerModule(new URL('monaco-editor/esm/vs/editor/editor.worker', import.meta.url).href, label);
+      }
+    }
+  };
+
   function setupMonaco() {
     if (!editorContainer) return;
 
@@ -1649,10 +1678,10 @@
           <h3>String Functions</h3>
           <pre class="learn-code">(str-concat "hello" " " "world")  ; → "hello world"
 (str-length "hello")             ; → 5
-(string-ref "hello" 1)            ; → "e"
-(str-upcase "hello")          ; → "HELLO"
-(str-downcase "HELLO")        ; → "hello"
-(substring "hello" 1 4)       ; → "ell"</pre>
+(str-substring "hello" 1 4)       ; → "ell"
+(str-index-of "hello" "ll")       ; → 2
+(str-contains "hello" "ell")      ; → true
+(str-replace "hello" "l" "r")    ; → "herro"</pre>
         </div>
 
         <div class="learn-section">
@@ -1700,14 +1729,15 @@
             </div>
           </div>
           <pre class="learn-code">;; Example: Counter contract with state
-(defvar *counter* 0)
+(memory 1)
 
-(defun increment ()
-  (set! *counter* (+ *counter* 1))
-  *counter*)
+(define (get-counter) (near/load "c"))
 
-(defun get-counter ()
-  *counter*)</pre>
+(define (set-counter val) (near/store "c" val))
+(define (increment) (set-counter (+ (get-counter) 1)))
+(define (get) (near/return (get-counter)))
+(export "increment" increment false)
+(export "get" get true)</pre>
         </div>
 
         <div class="learn-section">

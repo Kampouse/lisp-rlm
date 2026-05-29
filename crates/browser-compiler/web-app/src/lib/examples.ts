@@ -98,4 +98,25 @@ export const examples: Example[] = [
   (assert-equal -8 (add -5 -3)))
 `,
   },
+  {
+    name: 'HTTP POST',
+    icon: '📤',
+    target: 'p2',
+    source: `(define (main)
+  (let ((url "https://httpbin.org/post")
+        (body "{\\"hello\\": \\"world\\"}"))
+    (http-post url body)))`,
+  },
+  {
+    name: 'Wallet POST',
+    icon: '💳',
+    target: 'p2',
+    source: `;; Wallet-style: POST balance data to API
+(define (report-balance account)
+  (let ((body (str-concat "{\\"account\\":\\"" account "\\"}")))
+    (http-post "https://api.example.com/balance" body)))
+
+(define (main)
+  (report-balance "user.near"))`,
+  },
 ];
