@@ -1677,11 +1677,8 @@
         <div class="learn-section">
           <h3>String Functions</h3>
           <pre class="learn-code">(str-concat "hello" " " "world")  ; → "hello world"
-(str-length "hello")             ; → 5
-(str-substring "hello" 1 4)       ; → "ell"
-(str-index-of "hello" "ll")       ; → 2
-(str-contains "hello" "ell")      ; → true
-(str-replace "hello" "l" "r")    ; → "herro"</pre>
+(to-string 42)                     ; → "42"</pre>
+          <p class="learn-note">ℹ️ Advanced string functions (<code>str-length</code>, <code>str-substring</code>, <code>str-index-of</code>, <code>str-contains</code>, <code>str-replace</code>, <code>str-upcase</code>, <code>str-downcase</code>) are available in the WASI target but not yet wired in the WASM emitter. Use the WASI tab for those.</p>
         </div>
 
         <div class="learn-section">
@@ -1690,10 +1687,8 @@
 ; → (1 4 9 16)
 
 (filter (lambda (x) (> x 2)) (list 1 2 3 4))
-; → (3 4)
-
-(fold-left + 0 (list 1 2 3 4))
-; → 10</pre>
+; → (3 4)</pre>
+          <p class="learn-note">ℹ️ <code>fold-left</code>, <code>fold-right</code>, <code>reduce</code>, <code>sort</code>, <code>range</code>, <code>find</code> are coming soon. Use <code>hof/map</code>, <code>hof/reduce</code>, <code>hof/filter</code> for inline HOFs that compile to WASM.</p>
         </div>
 
         <div class="learn-section">
@@ -1751,13 +1746,12 @@
           </div>
           <pre class="learn-code">;; Example: Fetch external API
 (define (fetch-price)
-  (json-parse (http-get "https://api.coinbase.com/v2/prices/BTC-USD/spot")))
+  (http-get "https://api.coinbase.com/v2/prices/BTC-USD/spot"))
 
-;; Example: P2 Storage
-(define (main)
-  (begin
-    (storage-set "key" "value")
-    (storage-get "key")))  ; → "value"</pre>
+;; Example: HTTP POST
+(define (submit-data)
+  (http-post "https://api.example.com/submit" "hello"))</pre>
+          <p class="learn-note">ℹ️ HTTP functions compile in WASI mode. Storage (<code>storage-set</code>, <code>storage-get</code>) and JSON (<code>json-parse</code>, <code>to-json</code>) are coming soon to the WASI emitter.</p>
         </div>
 
         <div class="learn-section">
@@ -1808,27 +1802,27 @@
             </div>
             <div class="learn-fn-group">
               <strong>Lists</strong>
-              <code>car cdr cons list length null? append reverse</code>
+              <code>car cdr cons list length null? append reverse nth map filter apply</code>
             </div>
             <div class="learn-fn-group">
               <strong>Strings</strong>
-              <code>str-concat str-length str-substring str-upcase str-downcase str-index-of str-contains str-replace</code>
+              <code>str-concat to-string</code>
             </div>
             <div class="learn-fn-group">
               <strong>Higher-Order</strong>
-              <code>map filter fold-left fold-right apply</code>
+              <code>map filter apply hof/map hof/reduce hof/filter</code>
             </div>
             <div class="learn-fn-group">
               <strong>Predicates</strong>
               <code>null? list? number? string? symbol?</code>
             </div>
             <div class="learn-fn-group">
-              <strong>WASI Only</strong>
-              <code>http-get http-post http-get-json json-parse to-json from-json storage-increment storage-decrement storage-list-keys env/signer env/predecessor</code>
+              <strong>WASI — HTTP</strong>
+              <code>http-get http-post</code>
             </div>
             <div class="learn-fn-group">
-              <strong>P2 Storage</strong>
-              <code>storage-set storage-get storage-has storage-delete</code>
+              <strong>WASI — Coming Soon</strong>
+              <code>storage-set storage-get http-get-json json-parse to-json from-json env/signer env/predecessor</code>
             </div>
             <div class="learn-fn-group">
               <strong>P1 OutLayer</strong>
