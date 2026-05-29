@@ -278,7 +278,7 @@
     'env/predecessor': '(env/predecessor)',
     // WASI HTTP
     'http-get': '(http-get "https://example.com")',
-    'http-post': '(http-post "https://example.com" body)',
+    'http-post': '(let ((body "hello")) (http-post "https://httpbin.org/post" body))',
     'http-get-json': '(http-get-json "https://api.example.com/data")',
     // OutLayer
     'outlayer/view': '(outlayer/view "account" "method" args)',
@@ -447,7 +447,7 @@
   let nearCtx: NearContext = $state(getNearContext());
 
   // NEAR run results (new fields)
-  let nearInputJson: string = $state('');
+  let nearInputJson: string = $state('{"account_id": "jemartel.near"}');
   let nearLogs: string[] = $state([]);
   let nearPanic: string | null = $state(null);
   let nearStorageDiff: Array<{ key: string; oldVal: string | null; newVal: string | null }> = $state([]);
@@ -1323,7 +1323,18 @@
     const storedState = loadState();
     
     // Priority: URL > files > localStorage > default
-    if (urlState.source) {
+    if (urlState.example !== undefined && urlState.example >= 0 && urlState.example < examples.length) {
+      // Load example by index from URL
+      const ex = examples[urlState.example];
+      source = ex.source;
+      target = urlState.target || ex.target;
+      activeExample = urlState.example;
+      if (editorInstance) editorInstance.setValue(source);
+      const file: VFile = { id: generateId(), name: 'main.lisp', source, target, updatedAt: Date.now() };
+      files = [file];
+      activeFileId = file.id;
+      saveFiles();
+    } else if (urlState.source) {
       source = urlState.source;
       if (urlState.target) target = urlState.target;
       if (editorInstance) editorInstance.setValue(source);
@@ -1752,14 +1763,17 @@
 (define (greet name)
   (str-concat "Hello, " (str-repeat name 2) "!"))
 
-;; Example: Fetch external API
-(define (fetch-price)
-  (http-get "https://api.coinbase.com/v2/prices/BTC-USD/spot"))
+;; Example: GET request
+(define (fetch-json)
+  (let ((resp (http-get "https://httpbin.org/get")))
+    resp))
 
-;; Example: HTTP POST
-(define (submit-data)
-  (http-post "https://api.example.com/submit" "hello"))</pre>
-          <p class="learn-note">ℹ️ HTTP functions compile in WASI mode. Storage (<code>storage-set</code>, <code>storage-get</code>) and JSON (<code>json-parse</code>, <code>to-json</code>) are coming soon to the WASI emitter.</p>
+;; Example: POST with JSON body
+(define (post-hello)
+  (let ((body (str "hello world"))
+        (url "https://httpbin.org/post"))
+    (http-post url body)))</pre>
+          <p class="learn-note">ℹ️ HTTP functions compile in WASI mode and execute via the host's HTTP client. <code>http-get</code> returns the response as a tagged string. <code>http-post</code> sends a body to the URL and returns the response.</p>
         </div>
 
         <div class="learn-section">

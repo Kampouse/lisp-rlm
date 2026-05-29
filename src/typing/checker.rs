@@ -824,7 +824,7 @@ fn infer(
         // Lambda: (lambda (params...) body)
         LispVal::List(list) if !list.is_empty() => {
             match &list[0] {
-                LispVal::Sym(s) if s == "lambda" => infer_lambda(&list[1..], env, supply, subst),
+                LispVal::Sym(s) if s == "lambda" || s == "fn" => infer_lambda(&list[1..], env, supply, subst),
                 LispVal::Sym(s) if s == "if" => infer_if(&list[1..], env, supply, subst),
                 LispVal::Sym(s) if s == "let" => infer_let(&list[1..], env, supply, subst),
                 LispVal::Sym(s) if s == "let*" => infer_let_star(&list[1..], env, supply, subst),
@@ -1806,8 +1806,8 @@ fn walk_set_check(expr: &LispVal, ctx: ValueContext) {
                 return;
             }
 
-            // (lambda (params) body) — body inherits define-body-like context
-            if s == "lambda" && list.len() >= 3 {
+            // (lambda (params) body) or (fn (params) body) — body inherits define-body-like context
+            if (s == "lambda" || s == "fn") && list.len() >= 3 {
                 walk_set_check(&list[2], ValueContext::DefineBody);
                 return;
             }

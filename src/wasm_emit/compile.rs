@@ -573,6 +573,121 @@ pub fn compile_pure(source: &str) -> Result<Vec<u8>, String> {
     Ok(em.finish("run"))
 }
 
+/// Compile to standalone WASM with `_start` entry point (no host imports).
+/// Suitable for inlayer / wasip1 runtimes. The last function becomes `_start`.
+/// Returns the tagged i64 result in memory at offset 1024 (8 bytes).
+pub fn compile_standalone(source: &str) -> Result<Vec<u8>, String> {
+    let mut em = parse_and_compile(source, false)?;
+    em.tree_shake();
+    let mut m = Module::new();
+
+    // Type section
+    let mut types = TypeSection::new();
+    types.ty().function([], []); // type 0: () -> ()
+    let max_p = em.funcs.iter().map(|f| f.param_count).max().unwrap_or(0);
+    for p in 0..=max_p {
+        let params: Vec<ValType> = (0..p).map(|_| ValType::I64).collect();
+        types.ty().function(params, [ValType::I64]);
+    }
+    // WASI proc_exit: (i32) -> ()
+    types.ty().function([ValType::I32], []);
+    m.section(&types);
+
+    // WASI P1 imports (minimal — proc_exit, needed for inlayer validation)
+    let mut imports = ImportSection::new();
+    imports.import(
+        "wasi_snapshot_preview1",
+        "proc_exit",
+        EntityType::Function(max_p as u32 + 2), // type N+2: (i32) -> ()
+    );
+    m.section(&imports);
+    let wasi_proc_exit = 0u32; // import index
+
+    // Function section
+    let mut funcs = FunctionSection::new();
+    for f in &em.funcs { funcs.function(f.param_count as u32 + 1); }
+    // _start wrapper
+    funcs.function(0); // () -> ()
+    m.section(&funcs);
+
+    // Memory — 16 pages (1MB) for standalone (NEAR uses 1 page, but standalone needs depth counter at 999980)
+    let mut mems = MemorySection::new();
+    mems.memory(MemoryType { minimum: 16, maximum: None, memory64: false, shared: false, page_size_log2: None });
+    m.section(&mems);
+
+    // Globals
+    let mut globals = GlobalSection::new();
+    globals.global(
+        GlobalType { val_type: ValType::I64, mutable: true, shared: false },
+        &ConstExpr::i64_const(0), // return flag
+    );
+    // Heap pointer
+    globals.global(
+        GlobalType { val_type: ValType::I64, mutable: true, shared: false },
+        &ConstExpr::i64_const(em.heap_ptr_i32() as i64),
+    );
+    m.section(&globals);
+
+    // Exports
+    let mut exps = ExportSection::new();
+    exps.export("memory", ExportKind::Memory, 0);
+    let start_idx = em.funcs.len() as u32 + 1; // +1 for WASI proc_exit import
+    exps.export("_start", ExportKind::Func, start_idx);
+    m.section(&exps);
+
+    // Code section (id=10 — must come before data id=11)
+    // WASM func indices: 0 = WASI proc_exit import, 1..N = user funcs, N+1 = _start wrapper
+    let func_offset = 1u32; // +1 for WASI import at index 0
+    let name_map: HashMap<&str, u32> = em.funcs.iter().enumerate()
+        .map(|(i, f)| (f.name.as_str(), func_offset + i as u32)).collect();
+    let mut code = wasm_encoder::CodeSection::new();
+    for f in &em.funcs {
+        let locals = if let Some(ref entries) = f.local_entries {
+            entries.clone()
+        } else {
+            let extra = f.local_count.saturating_sub(f.param_count);
+            if extra > 0 { vec![(extra as u32, ValType::I64)] } else { vec![] }
+        };
+        let resolved = WasmEmitter::resolve_static_pub(&f.instrs, &HashMap::new(), &name_map, &em.funcs);
+        let mut fb = Function::new(locals);
+        for instr in &resolved { fb.instruction(instr); }
+        fb.instruction(&Instruction::End);
+        code.function(&fb);
+    }
+
+    // _start wrapper: call last function, store result at mem[1024], exit clean
+    let mut fb = Function::new(vec![]);
+    if let Some(f) = em.funcs.last() {
+        let idx = name_map.get(f.name.as_str()).copied().unwrap_or(0);
+        // Push address first (i64.store expects [i32 addr, i64 val] — addr on bottom, val on top)
+        fb.instruction(&Instruction::I64Const(1024));
+        fb.instruction(&Instruction::I32WrapI64); // addr: i64 → i32
+        // Push default args (0) for each param, then call
+        for _ in 0..f.param_count {
+            fb.instruction(&Instruction::I64Const(0));
+        }
+        fb.instruction(&Instruction::Call(idx)); // returns i64 — stack: [i32_addr, i64_val]
+        fb.instruction(&Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+    }
+    fb.instruction(&Instruction::End);
+    code.function(&fb);
+
+    m.section(&code);
+
+    // Data section (id=11 — must come after code section 10)
+    {
+        let mut ds = DataSection::new();
+        for (off, bytes) in &em.data_segments {
+            ds.active(0, &ConstExpr::i32_const(*off as i32), bytes.iter().copied());
+        }
+        m.section(&ds);
+    }
+
+    let bytes = m.finish();
+    eprintln!("✅ standalone WASM ({} bytes) — _start, no host imports", bytes.len());
+    Ok(bytes.to_vec())
+}
+
 
 pub fn compile_fuzz(source: &str) -> Result<Vec<u8>, String> {
     let mut em = parse_and_compile(source, false)?;

@@ -131,6 +131,10 @@ impl WasmEmitter {
                                 self.http_post_urls.push((auth, path));
                             }
                         }
+                    } else {
+                        // Non-literal URL (variable) — still need a sentinel entry
+                        // so build_combined_p2_core generates the shim function
+                        self.http_post_urls.push(("_dynamic".to_string(), "/".to_string()));
                     }
                 }
 

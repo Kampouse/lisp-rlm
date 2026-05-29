@@ -402,9 +402,15 @@ impl WasmEmitter {
                     }}}}
                 }
                 // Implicit begin: evaluate all body expressions, drop intermediates, keep last
-                for (i, x) in a[1..].iter().enumerate() {
-                    v.extend(self.expr(x)?);
-                    if i < a.len() - 2 { v.push(Instruction::Drop); }
+                let body_exprs = &a[1..];
+                if body_exprs.is_empty() {
+                    // Empty let body → push nil
+                    v.push(Instruction::I64Const(TAG_NIL));
+                } else {
+                    for (i, x) in body_exprs.iter().enumerate() {
+                        v.extend(self.expr(x)?);
+                        if i < body_exprs.len() - 1 { v.push(Instruction::Drop); }
+                    }
                 }
                 Ok(v)
             }

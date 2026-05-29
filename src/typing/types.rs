@@ -377,6 +377,59 @@ impl TcEnv {
             ),
         );
 
+        // JSON path accessors
+        // json-get: (str, str) → num  — extracts numeric value at dot-path
+        env.insert_mono(
+            "json-get".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Str), TcType::Con(TcCon::Str)],
+                Box::new(TcType::Con(TcCon::Int)),
+            ),
+        );
+        // json-get-str: (str, str) → str  — extracts string value at dot-path
+        env.insert_mono(
+            "json-get-str".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Str), TcType::Con(TcCon::Str)],
+                Box::new(TcType::Con(TcCon::Str)),
+            ),
+        );
+        // json-get-float: (str, str) → num  — extracts float as integer (price * 100)
+        env.insert_mono(
+            "json-get-float".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Str), TcType::Con(TcCon::Str)],
+                Box::new(TcType::Con(TcCon::Int)),
+            ),
+        );
+        // json-extract: (str, str, str, ...) → array  — extracts multiple values at once
+        // json/get: (str) → num  — single-key shorthand from input (NEAR)
+        env.insert_mono(
+            "json/get".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Str)],
+                Box::new(TcType::Con(TcCon::Int)),
+            ),
+        );
+        // json-return: (any) → nil  — return JSON result (host)
+        env.insert_mono(
+            "json-return".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Any)],
+                Box::new(TcType::Con(TcCon::Nil)),
+            ),
+        );
+        // json-extract: variadic — (str, str, str, ...) → array
+        // Type checker just needs to know it exists; emitter validates arity
+        let arr_ty = TcType::Con(TcCon::List(Box::new(TcType::Con(TcCon::Any))));
+        env.insert_mono(
+            "json-extract".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Str), TcType::Con(TcCon::Str), TcType::Con(TcCon::Str)],
+                Box::new(arr_ty),
+            ),
+        );
+
         // List ops with polymorphism: ('a list → 'a)
         let a = TcType::Var(0);
         let list_a = TcType::Con(TcCon::List(Box::new(a.clone())));

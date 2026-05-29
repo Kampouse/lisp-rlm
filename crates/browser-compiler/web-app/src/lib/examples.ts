@@ -49,9 +49,10 @@ export const examples: Example[] = [
     icon: '🔗',
     target: 'p1',
     source: `(memory 1)
-;; Cross-contract view call — queries wrap.near wNEAR balance via RPC
+;; Cross-contract view call — queries wrap.near wNEAR balance
+;; Set the JSON args below to query any account
 (define (query)
-  (let ((p (near/promise_create "wrap.near" "ft_balance_of" "{\\\"account_id\\\":\\\"jemartel.near\\\"}" 0 0)))
+  (let ((p (near/promise_create "wrap.near" "ft_balance_of" (near/input) 0 0)))
     (near/promise_result 0)))
 (export "query" query true)`,
   },

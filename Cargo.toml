@@ -64,6 +64,10 @@ name = "dump-wasm"
 path = "src/bin/dump_wasm.rs"
 
 [[bin]]
+name = "emit-wasm"
+path = "src/bin/emit_wasm.rs"
+
+[[bin]]
 name = "near-mock"
 path = "src/bin/near_mock.rs"
 

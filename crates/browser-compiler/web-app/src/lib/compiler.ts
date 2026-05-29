@@ -38,7 +38,7 @@ export function compile(source: string, target: CompileTarget): CompileResult {
     let wasmBytes: Uint8Array;
     switch (target) {
       case 'p1': wasmBytes = compile_p1(source); break;
-      case 'p2': wasmBytes = compile_p2(source); break;
+      case 'p2': wasmBytes = compile_p2_core(source); break;
       case 'pure': wasmBytes = compile_pure(source); break;
       default: wasmBytes = compile_p1(source); break;
     }
@@ -115,7 +115,7 @@ function buildEnvStubs(): { env: Record<string, Function>; setMemory: (mem: WebA
       value_return: vrStub,
       panic: stub, panic_utf8: stub, log_utf8: stub, log_utf16: stub,
       promise_create: stubI64, promise_then: stubI64, promise_and: stubI64,
-      promise_results_count: stubI64, promise_result: stub, promise_return: stub,
+      promise_results_count: stubI64, promise_result: stubI64, promise_return: stubI64,
       storage_iter_prefix: stubI64, storage_iter_range: stubI64, storage_iter_next: stubI64,
       promise_batch_create: stubI64, promise_batch_then: stubI64,
     },
@@ -667,15 +667,17 @@ function buildNearEnv(): Record<string, Function> {
     },
 
     // promise_result(result_idx, register_id) → writes result bytes to register
-    promise_result: (resultIdx: bigint, registerId: bigint) => {
+    promise_result: (resultIdx: bigint, registerId: bigint): bigint => {
       const data = nearPromiseResults.get(Number(resultIdx));
       if (data) {
         nearRegisters.set(Number(registerId), data);
       }
+      return 1n;
     },
 
-    promise_return: (_promiseIdx: bigint) => {
+    promise_return: (_promiseIdx: bigint): bigint => {
       // No-op in mock — the return value is already captured
+      return 0n;
     },
     promise_batch_create: (): bigint => BigInt(0),
     promise_batch_then: (): bigint => BigInt(0),
@@ -699,7 +701,7 @@ function buildNearEnv(): Record<string, Function> {
     },
     storage_iter_prefix: (): bigint => BigInt(0),
     storage_iter_range: (): bigint => BigInt(0),
-    storage_iter_next: () => {},
+    storage_iter_next: (): bigint => 0n,
     // #25: value_return(len, ptr)
     value_return: (len: bigint, ptr: bigint) => {
       if (nearReturnValue !== null) return; // only capture the first call
@@ -941,6 +943,7 @@ export async function runNear(
       // === Pass 2: Re-run with results populated ===
       nearPass = 1;
       nearPromiseCounter = 0;
+      nearPromiseNodes = []; // Clear nodes from pass 1 to avoid duplicates
       nearStdout += `Methods: ${methods.join(', ')}\n`;
 
       // Re-instantiate WASM for clean state
@@ -1634,6 +1637,88 @@ async function runWasiSync(wasmBytes: Uint8Array, stdinData?: Uint8Array): Promi
     outlayer: outlayer as unknown as Record<string, WebAssembly.ImportValue>,
     env: buildEnvStubs().env as unknown as Record<string, WebAssembly.ImportValue>,
   };
+
+  // wasi:http polyfill for browsers without SharedArrayBuffer (e.g. Safari)
+  // Uses mock HTTP — real HTTP requires Chrome/Firefox with COOP/COEP headers
+  const httpResources: Map<number, any> = new Map();
+  let nextRid = 1;
+  const alloc = (v: any) => { const id = nextRid++; httpResources.set(id, v); return id; };
+  const readStr = (mem: WebAssembly.Memory, p: number, l: number) =>
+    l === 0 ? '' : new TextDecoder().decode(new Uint8Array(mem.buffer).slice(p, p + l));
+  const writeBuf = (mem: WebAssembly.Memory, p: number, d: Uint8Array) => {
+    const b = new Uint8Array(mem.buffer);
+    const n = Math.min(d.length, b.length - p);
+    b.set(d.slice(0, n), p);
+    return n;
+  };
+
+  const wasiHttpTypes: Record<string, (...a: number[]) => number> = {
+    '[resource-drop]input-stream': (r: number) => { httpResources.delete(r); return 0; },
+    '[resource-drop]output-stream': (r: number) => { httpResources.delete(r); return 0; },
+    '[resource-drop]incoming-response': (r: number) => { httpResources.delete(r); return 0; },
+    '[resource-drop]future-incoming-response': (r: number) => { httpResources.delete(r); return 0; },
+    '[resource-drop]outgoing-body': (r: number) => { httpResources.delete(r); return 0; },
+    '[resource-drop]outgoing-request': (r: number) => { httpResources.delete(r); return 0; },
+    '[resource-drop]incoming-body': (r: number) => { httpResources.delete(r); return 0; },
+    '[resource-drop]fields': (r: number) => { httpResources.delete(r); return 0; },
+    '[resource-drop]pollable': (r: number) => { httpResources.delete(r); return 0; },
+    '[constructor]fields': () => alloc({ type: 'fields', entries: [] }),
+    '[constructor]outgoing-request': (h: number) => alloc({ type: 'outgoing-request', headers: h, method: 'GET', scheme: 'HTTPS', authority: '', path: '' }),
+    '[method]outgoing-request.set-method': (r: number, p: number, l: number) => { const o = httpResources.get(r); if (o) o.method = readStr(getMemory()!, p, l); return 0; },
+    '[method]outgoing-request.set-scheme': (r: number, p: number, l: number) => { const o = httpResources.get(r); if (o) o.scheme = readStr(getMemory()!, p, l); return 0; },
+    '[method]outgoing-request.set-authority': (r: number, p: number, l: number) => { const o = httpResources.get(r); if (o) o.authority = readStr(getMemory()!, p, l); return 0; },
+    '[method]outgoing-request.set-path-with-query': (r: number, p: number, l: number) => { const o = httpResources.get(r); if (o) o.path = readStr(getMemory()!, p, l); return 0; },
+    '[method]outgoing-request.body': (r: number, out: number) => { const o = httpResources.get(r); if (o) { const b = alloc({ type: 'outgoing-body', data: [] }); new DataView(getMemory()!.buffer).setUint32(out, b, true); } return 0; },
+    '[method]outgoing-body.write': (r: number, out: number) => { const o = httpResources.get(r); if (o) { const s = alloc({ type: 'output-stream' }); new DataView(getMemory()!.buffer).setUint32(out, s, true); } return 0; },
+    '[static]outgoing-body.finish': (r: number) => { httpResources.delete(r); return 0; },
+    '[method]fields.set': (r: number, kp: number, kl: number, vp: number, vl: number) => { const f = httpResources.get(r); if (f) f.entries.push({ k: readStr(getMemory()!, kp, kl), v: readStr(getMemory()!, vp, vl) }); return 0; },
+    '[method]future-incoming-response.subscribe': (r: number) => { const o = httpResources.get(r); if (o) o.pollable = alloc({ type: 'pollable' }); return 0; },
+    '[method]future-incoming-response.get': (r: number) => { const o = httpResources.get(r); return (o && o.response) ? 0 : 1; },
+    '[method]incoming-response.consume': (r: number, out: number) => { const o = httpResources.get(r); if (o) { const b = alloc({ type: 'incoming-body', data: o.bodyData || new Uint8Array() }); new DataView(getMemory()!.buffer).setUint32(out, b, true); } return 0; },
+    '[method]incoming-body.stream': (r: number, out: number) => { const o = httpResources.get(r); if (o) { const s = alloc({ type: 'input-stream', data: o.data }); new DataView(getMemory()!.buffer).setUint32(out, s, true); } return 0; },
+    '[method]input-stream.blocking-read': (r: number, bp: number, bl: number, ol: number) => { const s = httpResources.get(r); if (s && s.data) { const n = Math.min(s.data.length, bl); writeBuf(getMemory()!, bp, s.data.slice(0, n)); new DataView(getMemory()!.buffer).setUint32(ol, n, true); s.data = s.data.slice(n); return 0; } return 1; },
+    '[method]output-stream.blocking-write-and-flush': (r: number, dp: number, dl: number) => {
+      const bodyData = new Uint8Array(getMemory()!.buffer).slice(163840, 163840 + dl);
+      for (const [, res] of httpResources) { if (res.type === 'outgoing-body') { res.data = bodyData; break; } }
+      return 0;
+    },
+  };
+
+  const RETAREA = 131072;
+  const wasiHttpOutgoing: Record<string, (...a: number[]) => number> = {
+    'handle': (reqRid: number, outPtr: number) => {
+      const req = httpResources.get(reqRid);
+      if (!req) { new DataView(getMemory()!.buffer).setUint32(outPtr, 1, true); return 0; }
+      const url = `${(req.scheme || 'https').toLowerCase()}://${req.authority || ''}${req.path || '/'}`;
+      let bodyBytes: Uint8Array | undefined;
+      for (const [, res] of httpResources) { if (res.type === 'outgoing-body' && res.data?.length) { bodyBytes = new Uint8Array(res.data); break; } }
+      // Mock response for Safari (no SharedArrayBuffer → no sync fetch)
+      const mockJson = JSON.stringify({ mocked: true, url, message: 'SharedArrayBuffer unavailable — use Chrome/Firefox for real HTTP, or deploy to OutLayer' });
+      const responseData = new TextEncoder().encode(mockJson);
+      writeBuf(getMemory()!, RETAREA, responseData);
+      const respRid = alloc({ type: 'incoming-response', statusCode: 200, bodyData: responseData });
+      const firRid = alloc({ type: 'future-incoming-response', response: respRid });
+      new DataView(getMemory()!.buffer).setUint32(outPtr, 0, true);
+      new DataView(getMemory()!.buffer).setUint32(outPtr + 4, firRid, true);
+      return 0;
+    },
+  };
+
+  const wasiIoStreams: Record<string, (...a: number[]) => number> = {
+    '[method]output-stream.blocking-write-and-flush': wasiHttpTypes['[method]output-stream.blocking-write-and-flush'],
+  };
+  const wasiIoPoll: Record<string, (...a: number[]) => number> = {
+    'poll': () => alloc({ type: 'pollable' }),
+  };
+  const wasiCliStdout: Record<string, (...a: number[]) => number> = { 'get-stdout': () => alloc({ type: 'output-stream' }) };
+  const wasiCliStdin: Record<string, (...a: number[]) => number> = { 'get-stdin': () => alloc({ type: 'input-stream' }) };
+
+  importObj['wasi:io/streams@0.2.2'] = wasiIoStreams;
+  importObj['wasi:http/types@0.2.2'] = wasiHttpTypes;
+  importObj['wasi:http/outgoing-handler@0.2.2'] = wasiHttpOutgoing;
+  importObj['wasi:io/poll@0.2.2'] = wasiIoPoll;
+  importObj['wasi:cli/stdout@0.2.2'] = wasiCliStdout;
+  importObj['wasi:cli/stdin@0.2.2'] = wasiCliStdin;
 
   // Instantiate
   const { instance } = await WebAssembly.instantiate(wasmBytes.buffer as ArrayBuffer, importObj);

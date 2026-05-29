@@ -69,17 +69,29 @@ fn desugar_expr(expr: &mut LispVal) {
 
 /// (defn name [params...] body...) → (define (name params...) body...)
 /// (defn name doc-string [params...] body...) → (define (name params...) body...)
+/// Also handles: (defn [params...] name body...)  — swapped form
 fn desugar_defn(items: &mut Vec<LispVal>, _private: bool) {
-    // items[0] = "defn", items[1] = name, items[2] = [params] or doc-string, ...
+    // items[0] = "defn", items[1..] = rest
     if items.len() < 3 { return; }
 
-    let name = items[1].clone();
+    let mut name_idx = 1;
     let mut param_idx = 2;
 
-    // Skip doc-string if present (a string literal after the name)
-    if items.len() > 3 {
-        if let LispVal::Str(_) = &items[2] {
-            param_idx = 3;
+    // Handle swapped form: (defn [params] name body...)
+    if matches!(&items[1], LispVal::Vec(v) if !v.is_empty()) || matches!(&items[1], LispVal::List(v) if !v.is_empty()) {
+        // items[1] looks like a param vector, check if items[2] is a symbol (the name)
+        if let LispVal::Sym(_) = &items[2] {
+            param_idx = 1;
+            name_idx = 2;
+        }
+    }
+
+    let name = items[name_idx].clone();
+
+    // Skip doc-string if present (a string literal at param_idx position)
+    if param_idx + 1 < items.len() {
+        if let LispVal::Str(_) = &items[param_idx] {
+            param_idx += 1;
         }
     }
 
@@ -332,5 +344,27 @@ mod tests {
             (count-to 10)
         "#).unwrap();
         assert_eq!(r, "45");
+    }
+
+    #[test]
+    fn test_defn_no_space_name_brackets() {
+        // fib[] parses as fib + [] — zero params, no crash
+        let r = run(r#"
+            (defn fib[]
+              (if true 42 0))
+            (fib)
+        "#).unwrap();
+        assert_eq!(r, "42");
+    }
+
+    #[test]
+    fn test_defn_swapped_params_name() {
+        // (defn [params] name body...) — params before name
+        let r = run(r#"
+            (defn [x y] my-add
+              (+ x y))
+            (my-add 3 4)
+        "#).unwrap();
+        assert_eq!(r, "7");
     }
 }

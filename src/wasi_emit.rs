@@ -407,9 +407,7 @@ pub fn compile_outlayer_p2_core_browser(source: &str) -> Result<Vec<u8>, String>
     
     // Return CORE WASM (before component wrapping) — browser can run this with WASI polyfills
     if em.need_wasi_http {
-        // HTTP example: return simple WASI core with http_get stub
-        // (real http_get would be polyfilled to fetch() in browser)
-        finish_outlayer(&mut em)
+        build_combined_p2_core(&mut em)
     } else if em.need_outlayer {
         finish_outlayer(&mut em)
     } else {
@@ -1625,10 +1623,8 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
         if !em.p2_mode && !em.no_proc_exit {
             fb.instruction(&Instruction::I32Const(0));
             fb.instruction(&Instruction::Call(2)); // proc_exit
-        } else {
-            // P2: wasi:cli/run expects () -> result, core returns i32(0) for Ok
-            fb.instruction(&Instruction::I32Const(0)); // Ok = 0
         }
+        // P2: wasi:cli/run expects () -> (), no return value needed
 
         fb.instruction(&Instruction::End);
         code.function(&fb);
@@ -3262,3 +3258,28 @@ fn run_outlayer_wasm_with_http(wasm: &[u8], stdin_data: &[u8]) -> i64 {
             }
         }
     }
+
+#[cfg(test)]
+mod p2_debug_test {
+    use super::*;
+
+    #[test]
+    fn debug_p2_http_post() {
+        let wasm = compile_outlayer_p2_core_browser(r#"(define (main)
+  (let ((url "https://httpbin.org/post")
+        (body "{\"hello\": \"world\"}"))
+    (http-post url body)))"#).unwrap();
+        std::fs::write("/tmp/p2_debug.wasm", &wasm).unwrap();
+        eprintln!("WASM: {} bytes", wasm.len());
+        eprintln!("First 8 bytes: {:02x?}", &wasm[..wasm.len().min(8)]);
+        // Validate with wasm-tools
+        let out = std::process::Command::new("wasm-tools")
+            .args(["validate", "/tmp/p2_debug.wasm"])
+            .output()
+            .expect("failed to run wasm-tools validate");
+        if !out.status.success() {
+            panic!("wasm-tools validate FAILED:\n{}", String::from_utf8_lossy(&out.stderr));
+        }
+        eprintln!("VALID!");
+    }
+}

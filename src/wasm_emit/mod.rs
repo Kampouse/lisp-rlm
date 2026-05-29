@@ -51,7 +51,7 @@ pub mod call_dict;
 pub mod compile;
 
 // Re-exports: public API lives in compile.rs
-pub use compile::{compile_pure, compile_fuzz, compile_near, compile_near_untyped, compile_near_from_exprs, compile_near_to_wat_from_exprs, compile_pure_to_wat, compile_near_to_wat, resolve_modules};
+pub use compile::{compile_pure, compile_standalone, compile_fuzz, compile_near, compile_near_untyped, compile_near_from_exprs, compile_near_to_wat_from_exprs, compile_pure_to_wat, compile_near_to_wat, resolve_modules};
 
 
 // ── NEAR host functions (name, params, results) ──
@@ -300,7 +300,7 @@ impl WasmEmitter {
     pub fn new() -> Self {
         Self {
             locals: HashMap::new(), next_local: 0, free_locals: Vec::new(), local_type_map: Vec::new(), current_func: None, current_param_count: 0,
-            while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 1, exports: Vec::new(),
+            while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 16, exports: Vec::new(),
             data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(),
             gas_local: None, needs_frame: false, heap_ptr: 0, lambda_counter: 0, str_cat_depth: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), http_post_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false, borsh_schemas: HashMap::new(), storage_get_count: 0, http_post_call_count: 0,
             func_defs: HashMap::new(),
@@ -867,6 +867,19 @@ impl WasmEmitter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_near_input_compiles() {
+        let src = r#"(memory 1)
+(define (query)
+  (let ((p (near/promise_create "wrap.near" "ft_balance_of" (near/input) 0 0)))
+    (near/promise_result 0)))
+(export "query" query true)"#;
+        let wat = compile_near_to_wat(src).expect("compile near/input");
+        assert!(wat.contains("input"));
+        assert!(wat.contains("promise_create"));
+        eprintln!("WAT:\n{}", wat);
+    }
 
     #[test]
     fn test_near_counter() {
