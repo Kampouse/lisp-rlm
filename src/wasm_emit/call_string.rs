@@ -860,6 +860,23 @@ impl WasmEmitter {
                 // Variadic: delegate directly to str-cat (now variadic)
                 self.call_string("str-cat", a)
             }
+            // ── User-facing aliases ──
+            "str-length" | "string-length" => {
+                self.call_string("str-len", a)
+            }
+            "str-substring" | "substring" => {
+                self.call_string("str-slice", a)
+            }
+            "str-contains" => {
+                if a.len() != 2 { return Err("str-contains: expected 2 args (haystack, needle)".into()); }
+                // Optimized: if needle is a single char, use str-contains-byte path
+                // Otherwise, do a substring search loop
+                self.str_contains(a)
+            }
+            "str-index-of" => {
+                if a.len() != 2 { return Err("str-index-of: expected 2 args (haystack, needle)".into()); }
+                self.str_index_of(a)
+            }
             "str-repeat" => {
                 if a.len() != 2 { return Err("str-repeat: expected 2 args".into()); }
                 let src_i = self.local_idx("__sr_src");
@@ -1885,5 +1902,258 @@ impl WasmEmitter {
             }
             _ => Err("__not_handled__".into()),
         }
+    }
+
+    /// (str-contains haystack needle) → 1 if needle found in haystack, 0 otherwise
+    /// Needle must be a string literal (compile-time known) for WASM emission.
+    fn str_contains(&mut self, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
+        let ma = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+        let hay_i = self.local_idx("__sct_hay");
+        let hay_len_i = self.local_idx("__sct_hlen");
+        let hay_ptr_i = self.local_idx("__sct_hptr");
+        let idx_i = self.local_idx("__sct_idx");
+        let found_i = self.local_idx("__sct_found");
+        let mut v = Vec::new();
+
+        // Eval haystack, untag to (len<<32|ptr)
+        v.extend(self.expr(&a[0])?);
+        v.extend(self.emit_untag());
+        v.push(Instruction::LocalSet(hay_i));
+        // Extract len and ptr
+        v.push(Instruction::LocalGet(hay_i));
+        v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+        v.push(Instruction::LocalSet(hay_len_i));
+        v.push(Instruction::LocalGet(hay_i));
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::LocalSet(hay_ptr_i));
+
+        // Get needle string literal bytes
+        let needle_str = match &a[1] {
+            LispVal::Str(s) => s.clone(),
+            _ => return Err("str-contains: needle must be a string literal".into()),
+        };
+        let needle_bytes = needle_str.as_bytes();
+        let needle_len = needle_bytes.len() as i64;
+
+        // If needle is empty, return 1
+        if needle_len == 0 {
+            v.push(Instruction::I64Const(1));
+            v.extend(self.emit_tag_num());
+            return Ok(v);
+        }
+
+        // Pre-store needle bytes in memory at compile-time offset
+        let needle_base = self.next_data_offset.max(4096);
+        self.next_data_offset = ((needle_base as u64 + needle_bytes.len() as u64 + 8) & !7) as u32;
+        // We'll store needle at needle_base at runtime via memory.init or just hardcode the bytes
+        // Actually for simplicity, store each byte
+        for (j, &b) in needle_bytes.iter().enumerate() {
+            v.push(Instruction::I64Const(needle_base as i64 + j as i64));
+            v.push(Instruction::I32WrapI64);
+            v.push(Instruction::I64Const(b as i64));
+            v.push(Instruction::I32WrapI64);
+            v.push(Instruction::I32Store8(ma));
+        }
+
+        // found = 0, idx = 0
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(found_i));
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(idx_i));
+
+        // Outer loop: idx from 0 to hay_len - needle_len
+        v.push(Instruction::Block(BlockType::Empty));
+        v.push(Instruction::Loop(BlockType::Empty));
+        // if found != 0, break
+        v.push(Instruction::LocalGet(found_i));
+        v.push(Instruction::I64Const(0)); v.push(Instruction::I64Ne);
+        v.push(Instruction::BrIf(1));
+        // if idx > hay_len - needle_len, break (not found)
+        v.push(Instruction::LocalGet(idx_i));
+        v.push(Instruction::LocalGet(hay_len_i));
+        v.push(Instruction::I64Const(needle_len));
+        v.push(Instruction::I64Sub);
+        v.push(Instruction::I64GtU);
+        v.push(Instruction::BrIf(1));
+        // Inner loop: compare needle[0..needle_len] with hay[idx..idx+needle_len]
+        let match_i = self.local_idx("__sct_match");
+        v.push(Instruction::I64Const(1)); v.push(Instruction::LocalSet(match_i));
+        v.push(Instruction::Block(BlockType::Empty));
+        v.push(Instruction::Loop(BlockType::Empty));
+        let j_i = self.local_idx("__sct_j");
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(j_i));
+        v.push(Instruction::Loop(BlockType::Empty));
+        // if j >= needle_len or !match, break inner-inner
+        v.push(Instruction::LocalGet(j_i));
+        v.push(Instruction::I64Const(needle_len));
+        v.push(Instruction::I64GeU);
+        v.push(Instruction::BrIf(1));
+        v.push(Instruction::LocalGet(match_i));
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::BrIf(1));
+        // Compare byte: hay[idx+j] vs needle[j]
+        v.push(Instruction::LocalGet(hay_ptr_i));
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::LocalGet(idx_i));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::LocalGet(j_i));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma));
+        v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::I64Const(needle_base as i64));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::LocalGet(j_i));
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Add);
+        v.push(Instruction::I32Load8U(ma));
+        v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::I64Ne);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(match_i));
+        v.push(Instruction::End);
+        // j++
+        v.push(Instruction::LocalGet(j_i));
+        v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add);
+        v.push(Instruction::LocalSet(j_i));
+        v.push(Instruction::Br(0));
+        v.push(Instruction::End); // inner loop
+        v.push(Instruction::End); // block
+        // if match, set found=1
+        v.push(Instruction::LocalGet(match_i));
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::I64Const(1)); v.push(Instruction::LocalSet(found_i));
+        v.push(Instruction::End);
+        // idx++
+        v.push(Instruction::LocalGet(idx_i));
+        v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add);
+        v.push(Instruction::LocalSet(idx_i));
+        v.push(Instruction::Br(0));
+        v.push(Instruction::End); // outer loop
+        v.push(Instruction::End); // outer block
+
+        // Return found as tagged number
+        v.push(Instruction::LocalGet(found_i));
+        v.extend(self.emit_tag_num());
+        Ok(v)
+    }
+
+    /// (str-index-of haystack needle) → position of first occurrence, or -1 if not found
+    fn str_index_of(&mut self, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
+        let ma = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+        let hay_i = self.local_idx("__stio_hay");
+        let hay_len_i = self.local_idx("__stio_hlen");
+        let hay_ptr_i = self.local_idx("__stio_hptr");
+        let idx_i = self.local_idx("__stio_idx");
+        let result_i = self.local_idx("__stio_result");
+        let mut v = Vec::new();
+
+        // Eval haystack, untag
+        v.extend(self.expr(&a[0])?);
+        v.extend(self.emit_untag());
+        v.push(Instruction::LocalSet(hay_i));
+        v.push(Instruction::LocalGet(hay_i));
+        v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+        v.push(Instruction::LocalSet(hay_len_i));
+        v.push(Instruction::LocalGet(hay_i));
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::LocalSet(hay_ptr_i));
+
+        let needle_str = match &a[1] {
+            LispVal::Str(s) => s.clone(),
+            _ => return Err("str-index-of: needle must be a string literal".into()),
+        };
+        let needle_bytes = needle_str.as_bytes();
+        let needle_len = needle_bytes.len() as i64;
+
+        // Store needle bytes in memory
+        let needle_base = self.next_data_offset.max(4096);
+        self.next_data_offset = ((needle_base as u64 + needle_bytes.len() as u64 + 8) & !7) as u32;
+        for (j, &b) in needle_bytes.iter().enumerate() {
+            v.push(Instruction::I64Const(needle_base as i64 + j as i64));
+            v.push(Instruction::I32WrapI64);
+            v.push(Instruction::I64Const(b as i64));
+            v.push(Instruction::I32WrapI64);
+            v.push(Instruction::I32Store8(ma));
+        }
+
+        // Default result = -1
+        v.push(Instruction::I64Const(-1i64 as u64 as i64)); v.push(Instruction::LocalSet(result_i));
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(idx_i));
+
+        v.push(Instruction::Block(BlockType::Empty));
+        v.push(Instruction::Loop(BlockType::Empty));
+        // if result != -1, break (found)
+        v.push(Instruction::LocalGet(result_i));
+        v.push(Instruction::I64Const(-1i64 as u64 as i64));
+        v.push(Instruction::I64Ne);
+        v.push(Instruction::BrIf(1));
+        // if idx > hay_len - needle_len, break (not found)
+        v.push(Instruction::LocalGet(idx_i));
+        v.push(Instruction::LocalGet(hay_len_i));
+        v.push(Instruction::I64Const(needle_len));
+        v.push(Instruction::I64Sub);
+        v.push(Instruction::I64GtU);
+        v.push(Instruction::BrIf(1));
+        // Compare bytes
+        let match_i = self.local_idx("__stio_match");
+        v.push(Instruction::I64Const(1)); v.push(Instruction::LocalSet(match_i));
+        let j_i = self.local_idx("__stio_j");
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(j_i));
+        v.push(Instruction::Block(BlockType::Empty));
+        v.push(Instruction::Loop(BlockType::Empty));
+        v.push(Instruction::LocalGet(j_i));
+        v.push(Instruction::I64Const(needle_len));
+        v.push(Instruction::I64GeU);
+        v.push(Instruction::BrIf(1));
+        v.push(Instruction::LocalGet(match_i));
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::BrIf(1));
+        v.push(Instruction::LocalGet(hay_ptr_i));
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::LocalGet(idx_i));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::LocalGet(j_i));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma));
+        v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::I64Const(needle_base as i64));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::LocalGet(j_i));
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Add);
+        v.push(Instruction::I32Load8U(ma));
+        v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::I64Ne);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(match_i));
+        v.push(Instruction::End);
+        v.push(Instruction::LocalGet(j_i));
+        v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add);
+        v.push(Instruction::LocalSet(j_i));
+        v.push(Instruction::Br(0));
+        v.push(Instruction::End);
+        v.push(Instruction::End);
+        // If match, result = idx
+        v.push(Instruction::LocalGet(match_i));
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(idx_i)); v.push(Instruction::LocalSet(result_i));
+        v.push(Instruction::End);
+        // idx++
+        v.push(Instruction::LocalGet(idx_i));
+        v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add);
+        v.push(Instruction::LocalSet(idx_i));
+        v.push(Instruction::Br(0));
+        v.push(Instruction::End);
+        v.push(Instruction::End);
+
+        v.push(Instruction::LocalGet(result_i));
+        v.extend(self.emit_tag_num());
+        Ok(v)
     }
 }

@@ -333,6 +333,49 @@ impl TcEnv {
                 Box::new(TcType::Con(TcCon::Int)),
             ),
         );
+        // String aliases
+        env.insert_mono(
+            "string-length".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Str)],
+                Box::new(TcType::Con(TcCon::Int)),
+            ),
+        );
+        env.insert_mono(
+            "str-substring".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Str), TcType::Con(TcCon::Int), TcType::Con(TcCon::Int)],
+                Box::new(TcType::Con(TcCon::Str)),
+            ),
+        );
+        env.insert_mono(
+            "str-contains".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Str), TcType::Con(TcCon::Str)],
+                Box::new(TcType::Con(TcCon::Int)),
+            ),
+        );
+        env.insert_mono(
+            "str-index-of".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Str), TcType::Con(TcCon::Str)],
+                Box::new(TcType::Con(TcCon::Int)),
+            ),
+        );
+        env.insert_mono(
+            "str-repeat".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Str), TcType::Con(TcCon::Int)],
+                Box::new(TcType::Con(TcCon::Str)),
+            ),
+        );
+        env.insert_mono(
+            "to-string".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Num)],
+                Box::new(TcType::Con(TcCon::Str)),
+            ),
+        );
 
         // List ops with polymorphism: ('a list → 'a)
         let a = TcType::Var(0);

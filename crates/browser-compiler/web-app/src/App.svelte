@@ -1744,7 +1744,15 @@
               <p><strong>How it works:</strong> Compiles to WASM with WASI extensions, runs via OutLayer. Can call HTTP APIs and use persistent storage. Results are verifiable on-chain.</p>
             </div>
           </div>
-          <pre class="learn-code">;; Example: Fetch external API
+          <pre class="learn-code">;; String functions
+(define (first-word s)
+  (let ((space (str-index-of s " ")))
+    (if (= space -1) s (str-substring s 0 space))))
+
+(define (greet name)
+  (str-concat "Hello, " (str-repeat name 2) "!"))
+
+;; Example: Fetch external API
 (define (fetch-price)
   (http-get "https://api.coinbase.com/v2/prices/BTC-USD/spot"))
 
@@ -1806,7 +1814,7 @@
             </div>
             <div class="learn-fn-group">
               <strong>Strings</strong>
-              <code>str-concat to-string</code>
+              <code>str-concat str-length str-substring str-contains str-index-of str-repeat to-string</code>
             </div>
             <div class="learn-fn-group">
               <strong>Higher-Order</strong>
