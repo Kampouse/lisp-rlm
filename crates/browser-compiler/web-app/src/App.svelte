@@ -1637,13 +1637,13 @@
           <p>Define variables with <code>let</code>:</p>
           <pre class="learn-code">(let ((x 10) (y 20))
   (+ x y))     ; → 30</pre>
-          <p>Define functions with <code>defun</code>:</p>
-          <pre class="learn-code">(defun square (n)
+          <p>Define functions with <code>define</code>:</p>
+          <pre class="learn-code">(define (square n)
   (* n n))
 
 (square 5)    ; → 25
 
-(defun factorial (n)
+(define (factorial n)
   (if (&lt;= n 1)
       1
       (* n (factorial (- n 1)))))
@@ -1750,12 +1750,11 @@
             </div>
           </div>
           <pre class="learn-code">;; Example: Fetch external API
-(defun fetch-price ()
-  (let ((response (http-get "https://api.coinbase.com/v2/prices/BTC-USD/spot")))
-    (json-parse response)))
+(define (fetch-price)
+  (json-parse (http-get "https://api.coinbase.com/v2/prices/BTC-USD/spot")))
 
 ;; Example: P2 Storage
-(defun main ()
+(define (main)
   (begin
     (storage-set "key" "value")
     (storage-get "key")))  ; → "value"</pre>
@@ -1765,7 +1764,7 @@
           <h3>✓ Testing</h3>
           <p>Write tests to verify your code works as expected. Use the Test button (✓) in the header to run tests.</p>
           <pre class="learn-code">;; Define a function
-(defun add (a b)
+(define (add a b)
   (+ a b))
 
 ;; Write tests with (test "name" body...)
@@ -1813,7 +1812,7 @@
             </div>
             <div class="learn-fn-group">
               <strong>Strings</strong>
-              <code>str-concat str-length substring str-upcase str-downcase string-ref</code>
+              <code>str-concat str-length str-substring str-upcase str-downcase str-index-of str-contains str-replace</code>
             </div>
             <div class="learn-fn-group">
               <strong>Higher-Order</strong>
@@ -1825,11 +1824,15 @@
             </div>
             <div class="learn-fn-group">
               <strong>WASI Only</strong>
-              <code>http-get http-post json-parse from-json</code>
+              <code>http-get http-post http-get-json json-parse to-json from-json storage-increment storage-decrement storage-list-keys env/signer env/predecessor</code>
             </div>
             <div class="learn-fn-group">
               <strong>P2 Storage</strong>
               <code>storage-set storage-get storage-has storage-delete</code>
+            </div>
+            <div class="learn-fn-group">
+              <strong>P1 OutLayer</strong>
+              <code>outlayer/http_get outlayer/http_post outlayer/view outlayer/call outlayer/transfer outlayer/storage-set outlayer/storage-get outlayer/context</code>
             </div>
           </div>
         </div>

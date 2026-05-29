@@ -1,6 +1,6 @@
 # lisp-rlm
 
-A Lisp dialect that compiles to tiny NEAR smart contracts. Write Lisp, get sub-1KB WASM that runs on NEAR testnet/mainnet.
+A Lisp dialect that compiles to tiny WASM — NEAR smart contracts, WASI off-chain compute, and OutLayer P2 components. Write Lisp, deploy everywhere.
 
 **→ Try it in your browser: [lisp-rlm.pages.dev](https://lisp-rlm.pages.dev)**
 
@@ -278,15 +278,18 @@ $ near-compile test file.lisp
 
 ## Web Playground
 
-Browser-based Lisp-to-WASM compiler with a NEAR mock runtime — test contracts in the browser without installing anything.
+Browser-based Lisp-to-WASM compiler — test contracts in the browser without installing anything.
 
 Live at: [lisp-rlm.pages.dev](https://lisp-rlm.pages.dev)
 
 Features:
-- Code editor with syntax highlighting
-- Compile → WASM in-browser
+- Three execution modes: **Run** (pure browser), **NEAR** (on-chain mock), **WASI** (OffLayer P2 component)
+- Monaco editor with syntax highlighting and file outline
+- Compile to WASM in-browser with WAT disassembly
 - Mock NEAR runtime for testing storage, logging, and crypto
+- Live WASI compilation with component model output
 - Test runner with pass/fail reporting
+- Interactive REPL mode
 
 ## Project Configuration
 
@@ -325,19 +328,73 @@ Error: '__hof_it' is an internal variable used by hof/map — not accessible fro
 
 ## Architecture
 
+### Execution Targets
+
+| Target | Flag | Output | Use Case |
+|--------|------|--------|----------|
+| **NEAR** | (default) | Core WASM module | On-chain smart contracts, sub-1KB |
+| **OutLayer P1** | `--target outlayer` | WASI component | Off-chain HTTP + storage via OutLayer host |
+| **OutLayer P2** | `--target outlayer-p2` | WASI component | P2 component model, HTTPLIB imports |
+
+### WASI Functions
+
+HTTP and storage available in OutLayer targets:
+
+```lisp
+;; HTTP — P2 (component model imports)
+(http-get "https://api.example.com/data")        ; → response string
+(http-post "https://api.example.com/submit" body) ; → response string
+
+;; HTTP — P1 (OutLayer host dispatch)
+(outlayer/http_get "https://api.example.com/data")
+(outlayer/http_post "https://api.example.com/submit" body)
+
+;; Storage (both P1 and P2)
+(storage-set "key" "value")
+(storage-get "key")              ; → "value"
+(storage-has "key")              ; → true/false
+(storage-delete "key")
+(storage-increment "counter" 1)
+(storage-decrement "counter" 1)
+(storage-list-keys "prefix")
+
+;; JSON
+(json-parse "{\"price\":42}")    ; → LispVal
+(to-json data)                   ; → string
+
+;; Environment
+(env/signer)                     ; → account id
+(env/predecessor)                ; → caller account id
+```
+
+### OutLayer Host Functions
+
+P1 OutLayer provides blockchain interaction from off-chain WASM:
+
+```lisp
+(outlayer/view "contract.near" "method" args)
+(outlayer/call "contract.near" "method" args)
+(outlayer/transfer "account.near" "1NEAR")
+(outlayer/storage-set "key" "value")
+(outlayer/storage-get "key")
+(outlayer/context)
+(outlayer/status)
+```
+
 ```
 input.lisp
     ↓ resolve_modules() — text-level #include
     ↓ parse
 LispVal AST
+    ↓ clojure desugar (defun, let, loop/recur → canonical forms)
     ↓ typecheck (catches type errors)
-    ↓ WasmEmitter::compile_near()
+    ↓ compile_near() / compile_outlayer() / compile_outlayer_p2()
     ↓ tree_shake() — remove unused functions
-wasm-encoder Module
+wasm-encoder Module (NEAR) or Component (WASI/P2)
     ↓ wasmparser validation
 output.wasm (binary, no WAT strings)
-    ↓ deploy to NEAR
-live contract
+    ↓ deploy to NEAR / run via OutLayer
+live contract / off-chain compute
 ```
 
 The WASM emitter produces binary directly via `wasm-encoder` — no string-based WAT generation, impossible to emit structurally invalid modules.
