@@ -4,6 +4,7 @@ impl WasmEmitter {
     pub(crate) fn call_u128(&mut self, op: &str, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
         match op {
             "u128/store" => {
+                if a.len() != 3 { return Err("u128/store: need 3 args (addr, lo, hi)".into()); }
                 let addr = self.expr(&a[0])?;
                 let lo = self.expr(&a[1])?;
                 let hi = self.expr(&a[2])?;
@@ -20,18 +21,23 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
             "u128/load" => {
+                if a.len() != 1 { return Err("u128/load: need 1 arg (addr)".into()); }
                 let mut v = self.expr(&a[0])?;
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
                 Ok(v)
             }
             "u128/load_high" => {
+                if a.len() != 1 {
+                    return Err("u128/load_high: need 1 arg (addr)".into());
+                }
                 let mut v = self.expr(&a[0])?;
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 }));
                 Ok(v)
             }
             "u128/add" => {
+                if a.len() != 2 { return Err("u128/add: need 2 args (dst, src)".into()); }
                 let dst = self.expr(&a[0])?;
                 let src = self.expr(&a[1])?;
                 let dst_i = self.local_idx("__u128a");
@@ -75,6 +81,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
             "u128/sub" => {
+                if a.len() != 2 { return Err("u128/sub: need 2 args (dst, src)".into()); }
                 let dst = self.expr(&a[0])?;
                 let src = self.expr(&a[1])?;
                 let dst_i = self.local_idx("__u128sa");
@@ -121,6 +128,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
             "u128/mul" => {
+                if a.len() != 2 { return Err("u128/mul: need 2 args (dst, val)".into()); }
                 let dst = self.expr(&a[0])?;
                 let val = self.expr(&a[1])?;
                 let dst_i = self.local_idx("__u128ma");
@@ -246,6 +254,9 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
             "u128/lt" => {
+                if a.len() != 2 {
+                    return Err("u128/lt: need 2 args (a1, a2)".into());
+                }
                 let a1 = self.expr(&a[0])?;
                 let a2 = self.expr(&a[1])?;
                 let a1_i = self.local_idx("__u128lt1");
@@ -283,6 +294,9 @@ impl WasmEmitter {
                 Ok(v)
             }
             "u128/eq" => {
+                if a.len() != 2 {
+                    return Err("u128/eq: need 2 args (a1, a2)".into());
+                }
                 let a1 = self.expr(&a[0])?;
                 let a2 = self.expr(&a[1])?;
                 let a1_i = self.local_idx("__u128eq1");
@@ -311,6 +325,9 @@ impl WasmEmitter {
                 Ok(v)
             }
             "u128/is_zero" => {
+                if a.len() != 1 {
+                    return Err("u128/is_zero: need 1 arg (addr)".into());
+                }
                 let mut v = self.expr(&a[0])?;
                 let addr_i = self.local_idx("__u128zz");
                 v.push(Instruction::LocalSet(addr_i));
@@ -381,6 +398,9 @@ impl WasmEmitter {
                 Ok(v)
             }
             "u128/to_i64" => {
+                if a.len() != 1 {
+                    return Err("u128/to_i64: need 1 arg (addr)".into());
+                }
                 let mut v = self.expr(&a[0])?;
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));

@@ -13,6 +13,11 @@ fn is_builtin_wildcard(name: &str) -> bool {
         // Validate against known NEAR host functions — typos should be caught
         return is_known_near_func(&name[5..]);
     }
+    // OutLayer/P1 host function prefix — accept all outlayer/* functions
+    // The emitter provides specific error messages for non-OutLayer targets
+    if name.starts_with("outlayer/") {
+        return true;
+    }
     name.starts_with("json")
         || name.starts_with("u128/")
         || name.starts_with("borsh-")
@@ -28,6 +33,23 @@ fn is_builtin_wildcard(name: &str) -> bool {
                 | "module"
                 | "borsh-schema"
                 | "extend-runtime"
+                // P1/OutLayer HTTP functions (emitter guards with wasi_mode)
+                | "http-get"
+                | "http-post"
+                // P1/OutLayer storage aliases (kebab-case)
+                | "storage-set"
+                | "storage-get"
+                | "storage-has"
+                | "storage-delete"
+                | "storage-increment"
+                | "storage-decrement"
+                | "storage-set-if-absent"
+                | "storage-set-if-equals"
+                | "storage-list-keys"
+                | "storage-clear-all"
+                // P1 context functions (OutLayer env)
+                | "env/signer"
+                | "env/predecessor"
         )
 }
 
@@ -63,7 +85,6 @@ const KNOWN_NEAR_FUNCS: &[&str] = &[
     "promise_batch_action_delete_account",
     "log_utf8", "log_utf16",
     "abort",
-    "global_contract_set", "global_contract_status",
     // JSON convenience builtins
     "json_get_int", "json_get_str", "json_return_int", "json_return_str",
 ];
@@ -617,6 +638,8 @@ impl TcEnv {
         env.insert_mono("near/return_value".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(any_ty.clone())));
         // near/storage_read : str → str
         env.insert_mono("near/storage_read".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())));
+        // storage_read is in emitter host table at index 18
+        env.insert_mono("storage_read".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())));
         // near/storage_write : str → str → nil
         env.insert_mono("near/storage_write".into(), TcType::Arrow(vec![str_ty.clone(), str_ty.clone()], Box::new(nil_ty.clone())));
         // near/storage_has_key : str → bool
@@ -661,10 +684,8 @@ impl TcEnv {
         env.insert_mono("near/promise_create".into(), TcType::Arrow(vec![str_ty.clone(), str_ty.clone(), str_ty.clone(), int_ty.clone(), int_ty.clone()], Box::new(int_ty.clone())));
         // near/promise_then : int → str → str → str → int → int → int
         env.insert_mono("near/promise_then".into(), TcType::Arrow(vec![int_ty.clone(), str_ty.clone(), str_ty.clone(), str_ty.clone(), int_ty.clone(), int_ty.clone()], Box::new(int_ty.clone())));
-        // near/promise_and : int → int → int
-        env.insert_mono("near/promise_and".into(), TcType::Arrow(vec![int_ty.clone(), int_ty.clone()], Box::new(int_ty.clone())));
-        // near/promise_result : int → str
-        env.insert_mono("near/promise_result".into(), TcType::Arrow(vec![int_ty.clone()], Box::new(str_ty.clone())));
+        // near/promise_and: variadic — accepts any number of promise indices (emitter has two impls)
+        // near/promise_result: 0-arg or 1-arg — no explicit type, emitter handles both (wildcard fallback)
 
         // String builtins used in NEAR contracts
         env.insert_mono("str-len".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(int_ty.clone())));
@@ -677,13 +698,16 @@ impl TcEnv {
 
         // NEAR storage (emitter names)
         env.insert_mono("near/storage_set".into(), TcType::Arrow(vec![str_ty.clone(), str_ty.clone()], Box::new(nil_ty.clone())));
-        env.insert_mono("near/storage_get".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())));
+        // near/storage_get : str → any (returns nil on miss, str on hit)
+        env.insert_mono("near/storage_get".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(any_ty.clone())));
         env.insert_mono("near/storage_has".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(bool_ty.clone())));
         env.insert_mono("near/storage_remove".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(nil_ty.clone())));
         // NEAR numeric-keyed storage (8-byte LE i64 keys — gas-efficient)
         env.insert_mono("near/store_num".into(), TcType::Arrow(vec![int_ty.clone(), int_ty.clone()], Box::new(nil_ty.clone())));
         env.insert_mono("near/load_num".into(), TcType::Arrow(vec![int_ty.clone()], Box::new(int_ty.clone())));
-        env.insert_mono("near/return".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(any_ty.clone())));
+        // near/return: str → nil (returns nil after setting return value)
+        env.insert_mono("near/return".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(nil_ty.clone())));
+        // near/return_str: str → any (terminates execution, return type is 'any' as escape hatch)
         env.insert_mono("near/return_str".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(any_ty.clone())));
         env.insert_mono("near/store-bytes".into(), TcType::Arrow(vec![str_ty.clone(), str_ty.clone()], Box::new(nil_ty.clone())));
         env.insert_mono("near/load-bytes".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())));

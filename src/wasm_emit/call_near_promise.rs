@@ -3,146 +3,6 @@ use super::*;
 impl WasmEmitter {
     pub(crate) fn call_near_promise(&mut self, op: &str, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
         match op {
-            "near/promise_create" => {
-                if a.len() != 5 { return Err("near/promise_create: need 5 args (account_id, method, args, gas, deposit)".into()); }
-                let acct = self.expr(&a[0])?;
-                let meth = self.expr(&a[1])?;
-                let args_val = self.expr(&a[2])?;
-                let gas = self.expr(&a[3])?;
-                let dep = self.expr(&a[4])?;
-                let mut v = Vec::new();
-                // Write deposit u128 to TEMP_MEM (16 bytes: low 64 bits at offset 0, high 64 bits at offset 8)
-                // First zero out the full 16 bytes
-                v.push(Instruction::I64Const(TEMP_MEM));
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Const(0));
-                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                v.push(Instruction::I64Const(TEMP_MEM));
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Const(0));
-                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 }));
-                // Write deposit low 64 bits to TEMP_MEM (addr first, then val)
-                v.push(Instruction::I64Const(TEMP_MEM));
-                v.push(Instruction::I32WrapI64);
-                v.extend(dep); v.extend(self.emit_untag());
-                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                // account_id (len, ptr)
-                v.extend(acct.clone()); v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(acct); v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
-                // method (len, ptr)
-                v.extend(meth.clone()); v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(meth); v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
-                // args (len, ptr)
-                v.extend(args_val.clone()); v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(args_val); v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
-                // amount_ptr (TEMP_MEM where u128 deposit was written)
-                v.push(Instruction::I64Const(TEMP_MEM));
-                // gas (tagged Num → untagged i64)
-                v.extend(gas); v.extend(self.emit_untag());
-                v.push(Self::host_call(30)); // promise_create → returns u64
-                v.extend(self.emit_tag_num());
-                Ok(v)
-            }
-            "near/promise_then" => {
-                if a.len() != 6 { return Err("near/promise_then: need 6 args (promise_idx, account_id, method, args, gas, deposit)".into()); }
-                let pidx = self.expr(&a[0])?;
-                let acct = self.expr(&a[1])?;
-                let meth = self.expr(&a[2])?;
-                let args_val = self.expr(&a[3])?;
-                let gas = self.expr(&a[4])?;
-                let dep = self.expr(&a[5])?;
-                let mut v = Vec::new();
-                // Write deposit u128 to TEMP_MEM
-                // Stack: [addr_i32, val_i64] for i64.store
-                // First zero out high 64 bits
-                v.push(Instruction::I64Const(TEMP_MEM));
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Const(0));
-                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 }));
-                // Zero out low 64 bits
-                v.push(Instruction::I64Const(TEMP_MEM));
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Const(0));
-                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                // Write deposit low 64 bits to TEMP_MEM (addr first, then val)
-                v.push(Instruction::I64Const(TEMP_MEM));
-                v.push(Instruction::I32WrapI64);
-                v.extend(dep); v.extend(self.emit_untag());
-                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                // promise_idx (untagged Num)
-                v.extend(pidx); v.extend(self.emit_untag());
-                // account_id (len, ptr)
-                v.extend(acct.clone()); v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(acct); v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
-                // method (len, ptr)
-                v.extend(meth.clone()); v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(meth); v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
-                // args (len, ptr)
-                v.extend(args_val.clone()); v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(args_val); v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
-                // amount_ptr (TEMP_MEM)
-                v.push(Instruction::I64Const(TEMP_MEM));
-                // gas
-                v.extend(gas); v.extend(self.emit_untag());
-                v.push(Self::host_call(31)); // promise_then → returns u64
-                v.extend(self.emit_tag_num());
-                Ok(v)
-            }
-            "near/promise_and" => {
-                if a.len() != 2 { return Err("near/promise_and: need 2 args".into()); }
-                let pa = self.expr(&a[0])?;
-                let pb = self.expr(&a[1])?;
-                let mut v = Vec::new();
-                v.extend(pa); v.extend(self.emit_untag());
-                v.extend(pb); v.extend(self.emit_untag());
-                v.push(Self::host_call(32));
-                v.extend(self.emit_tag_num());
-                Ok(v)
-            }
-            "near/promise_return" => {
-                if a.len() != 1 { return Err("near/promise_return: need 1 arg".into()); }
-                let pidx = self.expr(&a[0])?;
-                let mut v = Vec::new();
-                v.extend(pidx); v.extend(self.emit_untag());
-                v.push(Self::host_call(35)); // promise_return
-                v.push(Instruction::I64Const(TAG_NIL));
-                Ok(v)
-            }
-            "near/promise_result" => {
-                self.need_host(34); self.need_host(0); self.need_host(1);
-                let mut v = Vec::new();
-                // promise_result(0, 0) — result_idx=0, register_id=0 → u64 (PromiseResult enum: 0=NotReady, 1=Successful, 2=Failed)
-                v.push(Instruction::I64Const(0));
-                v.push(Instruction::I64Const(0));
-                v.push(Self::host_call(34)); // promise_result — returns u64, drop it
-                v.push(Instruction::Drop);
-                // read_register(0, TEMP_MEM)
-                v.push(Instruction::I64Const(0));
-                v.push(Instruction::I64Const(TEMP_MEM));
-                v.push(Self::host_call(0)); // read_register
-                // register_len(0)
-                v.push(Instruction::I64Const(0));
-                v.push(Self::host_call(1)); // register_len
-                // Pack as tagged Str: (len << 32) | TEMP_MEM
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TEMP_MEM));
-                v.push(Instruction::I64Or);
-                v.extend(self.emit_tag_str());
-                Ok(v)
-            }
             "near/call" => {
                 if a.len() != 5 { return Err("near/call: need 5 args (target, method, args, gas, deposit)".into()); }
                 let acct = self.expr(&a[0])?;
@@ -298,6 +158,7 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/promise_batch_create" => {
+                if a.len() != 2 { return Err("near/promise_batch_create: need 2 args (ptr, len)".into()); }
                 let ptr = self.expr(&a[0])?;
                 let len = self.expr(&a[1])?;
                 let mut v = Vec::new();
@@ -306,6 +167,7 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/promise_batch_then" => {
+                if a.len() != 3 { return Err("near/promise_batch_then: need 3 args (idx, ptr, len)".into()); }
                 let idx = self.expr(&a[0])?;
                 let ptr = self.expr(&a[1])?;
                 let len = self.expr(&a[2])?;
@@ -315,6 +177,7 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/promise_batch_action_create_account" => {
+                if a.len() != 1 { return Err("near/promise_batch_action_create_account: need 1 args (idx)".into()); }
                 let idx = self.expr(&a[0])?;
                 let mut v = Vec::new();
                 v.extend(idx);
@@ -323,6 +186,7 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/promise_batch_action_deploy_contract" => {
+                if a.len() != 3 { return Err("near/promise_batch_action_deploy_contract: need 3 args (idx, code_ptr, code_len)".into()); }
                 let idx = self.expr(&a[0])?;
                 let code_ptr = self.expr(&a[1])?;
                 let code_len = self.expr(&a[2])?;
@@ -333,6 +197,7 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/promise_batch_action_function_call" => {
+                if a.len() != 7 { return Err("near/promise_batch_action_function_call: need 7 args (idx, method_ptr, method_len, args_ptr, args_len, amount_ptr, gas)".into()); }
                 let idx = self.expr(&a[0])?;
                 let method_ptr = self.expr(&a[1])?;
                 let method_len = self.expr(&a[2])?;
@@ -349,6 +214,7 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/promise_batch_action_transfer" => {
+                if a.len() != 3 { return Err("near/promise_batch_action_transfer: need 3 args (idx, amount_ptr, amount_len)".into()); }
                 let idx = self.expr(&a[0])?;
                 let amount_ptr = self.expr(&a[1])?;
                 let amount_len = self.expr(&a[2])?;
@@ -359,6 +225,7 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/promise_batch_action_stake" => {
+                if a.len() != 5 { return Err("near/promise_batch_action_stake: need 5 args (idx, amount_ptr, amount_len, pk_ptr, pk_len)".into()); }
                 let idx = self.expr(&a[0])?;
                 let amount_ptr = self.expr(&a[1])?;
                 let amount_len = self.expr(&a[2])?;
@@ -372,6 +239,7 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/promise_batch_action_add_key_with_full_access" => {
+                if a.len() != 4 { return Err("near/promise_batch_action_add_key_with_full_access: need 4 args (idx, pk_ptr, pk_len, nonce)".into()); }
                 let idx = self.expr(&a[0])?;
                 let pk_ptr = self.expr(&a[1])?;
                 let pk_len = self.expr(&a[2])?;
@@ -383,6 +251,7 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/promise_batch_action_add_key_with_function_call" => {
+                if a.len() != 7 { return Err("near/promise_batch_action_add_key_with_function_call: need 7 args (idx, pk_ptr, pk_len, nonce, method_ptr, method_len, allowance)".into()); }
                 let idx = self.expr(&a[0])?;
                 let pk_ptr = self.expr(&a[1])?;
                 let pk_len = self.expr(&a[2])?;
@@ -398,6 +267,7 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/promise_batch_action_delete_key" => {
+                if a.len() != 3 { return Err("near/promise_batch_action_delete_key: need 3 args (idx, pk_ptr, pk_len)".into()); }
                 let idx = self.expr(&a[0])?;
                 let pk_ptr = self.expr(&a[1])?;
                 let pk_len = self.expr(&a[2])?;
@@ -408,6 +278,7 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/promise_batch_action_delete_account" => {
+                if a.len() != 3 { return Err("near/promise_batch_action_delete_account: need 3 args (idx, ptr, len)".into()); }
                 let idx = self.expr(&a[0])?;
                 let ptr = self.expr(&a[1])?;
                 let len = self.expr(&a[2])?;
@@ -531,6 +402,7 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/deploy_contract" => {
+                if a.len() != 2 { return Err("near/deploy_contract: need 2 args (code_ptr, code_len)".into()); }
                 let code_ptr = self.expr(&a[0])?;
                 let code_len = self.expr(&a[1])?;
                 let mut v = Vec::new();
@@ -546,6 +418,7 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/promise_set_refund_to" => {
+                if a.len() != 2 { return Err("near/promise_set_refund_to: need 2 args (idx, acct)".into()); }
                 let idx = self.expr(&a[0])?;
                 let acct = self.expr(&a[1])?;
                 let mut v = Vec::new();
@@ -558,6 +431,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0)); Ok(v)
             }
             "near/promise_batch_action_state_init" => {
+                if a.len() != 3 { return Err("near/promise_batch_action_state_init: need 3 args (idx, code, amt)".into()); }
                 let idx = self.expr(&a[0])?;
                 let code = self.expr(&a[1])?;
                 let amt = self.expr(&a[2])?;
@@ -572,6 +446,7 @@ impl WasmEmitter {
                 v.extend(self.emit_tag_num()); Ok(v)
             }
             "near/promise_batch_action_state_init_by_account_id" => {
+                if a.len() != 3 { return Err("near/promise_batch_action_state_init_by_account_id: need 3 args (idx, acct, amt)".into()); }
                 let idx = self.expr(&a[0])?;
                 let acct = self.expr(&a[1])?;
                 let amt = self.expr(&a[2])?;
@@ -586,6 +461,7 @@ impl WasmEmitter {
                 v.extend(self.emit_tag_num()); Ok(v)
             }
             "near/set_state_init_data_entry" => {
+                if a.len() != 4 { return Err("near/set_state_init_data_entry: need 4 args (pidx, aidx, key, val)".into()); }
                 let pidx = self.expr(&a[0])?;
                 let aidx = self.expr(&a[1])?;
                 let key = self.expr(&a[2])?;
@@ -604,6 +480,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0)); Ok(v)
             }
             "near/promise_batch_action_function_call_weight" => {
+                if a.len() != 6 { return Err("near/promise_batch_action_function_call_weight: need 6 args (idx, method, args, amount, gas, weight)".into()); }
                 let idx = self.expr(&a[0])?;
                 let method = self.expr(&a[1])?;
                 let args = self.expr(&a[2])?;
@@ -625,6 +502,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0)); Ok(v)
             }
             "near/promise_batch_action_deploy_global_contract" => {
+                if a.len() != 2 { return Err("near/promise_batch_action_deploy_global_contract: need 2 args (idx, code)".into()); }
                 let idx = self.expr(&a[0])?;
                 let code = self.expr(&a[1])?;
                 let mut v = Vec::new();
@@ -637,6 +515,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0)); Ok(v)
             }
             "near/promise_batch_action_deploy_global_contract_by_account_id" => {
+                if a.len() != 2 { return Err("near/promise_batch_action_deploy_global_contract_by_account_id: need 2 args (idx, code)".into()); }
                 let idx = self.expr(&a[0])?;
                 let code = self.expr(&a[1])?;
                 let mut v = Vec::new();
@@ -649,6 +528,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0)); Ok(v)
             }
             "near/promise_batch_action_use_global_contract" => {
+                if a.len() != 2 { return Err("near/promise_batch_action_use_global_contract: need 2 args (idx, hash)".into()); }
                 let idx = self.expr(&a[0])?;
                 let hash = self.expr(&a[1])?;
                 let mut v = Vec::new();
@@ -661,6 +541,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0)); Ok(v)
             }
             "near/promise_batch_action_use_global_contract_by_account_id" => {
+                if a.len() != 2 { return Err("near/promise_batch_action_use_global_contract_by_account_id: need 2 args (idx, acct)".into()); }
                 let idx = self.expr(&a[0])?;
                 let acct = self.expr(&a[1])?;
                 let mut v = Vec::new();
@@ -673,6 +554,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0)); Ok(v)
             }
             "near/promise_batch_action_transfer_to_gas_key" => {
+                if a.len() != 3 { return Err("near/promise_batch_action_transfer_to_gas_key: need 3 args (idx, pk, amt)".into()); }
                 let idx = self.expr(&a[0])?;
                 let pk = self.expr(&a[1])?;
                 let amt = self.expr(&a[2])?;
@@ -687,6 +569,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0)); Ok(v)
             }
             "near/promise_batch_action_add_gas_key_with_full_access" => {
+                if a.len() != 3 { return Err("near/promise_batch_action_add_gas_key_with_full_access: need 3 args (idx, pk, nonces)".into()); }
                 let idx = self.expr(&a[0])?;
                 let pk = self.expr(&a[1])?;
                 let nonces = self.expr(&a[2])?;
@@ -701,6 +584,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0)); Ok(v)
             }
             "near/promise_batch_action_add_gas_key_with_function_call" => {
+                if a.len() != 6 { return Err("near/promise_batch_action_add_gas_key_with_function_call: need 6 args (idx, pk, nonces, allow, recv, methods)".into()); }
                 let idx = self.expr(&a[0])?;
                 let pk = self.expr(&a[1])?;
                 let nonces = self.expr(&a[2])?;
@@ -726,6 +610,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0)); Ok(v)
             }
             "near/promise_yield_create" => {
+                if a.len() != 4 { return Err("near/promise_yield_create: need 4 args (method, args, gas, weight)".into()); }
                 let method = self.expr(&a[0])?;
                 let args = self.expr(&a[1])?;
                 let gas = self.expr(&a[2])?;
@@ -745,6 +630,7 @@ impl WasmEmitter {
                 v.extend(self.emit_tag_num()); Ok(v)
             }
             "near/promise_yield_resume" => {
+                if a.len() != 2 { return Err("near/promise_yield_resume: need 2 args (data_id, payload)".into()); }
                 let data_id = self.expr(&a[0])?;
                 let payload = self.expr(&a[1])?;
                 let mut v = Vec::new();

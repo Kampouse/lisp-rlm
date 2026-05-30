@@ -4,6 +4,7 @@ impl WasmEmitter {
     pub(crate) fn call_near_iter(&mut self, op: &str, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
         match op {
             "near/iter_prefix" => {
+                if a.len() < 2 { return Err("near/iter_prefix: need 2 args (prefix_ptr, prefix_len)".into()); }
                 let prefix = self.expr(&a[0])?;
                 let prefix_len = self.expr(&a[1])?;
                 let mut v = Vec::new();
@@ -31,6 +32,7 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/iter_range" => {
+                if a.len() < 4 { return Err("near/iter_range: need 4 args (start_ptr, start_len, end_ptr, end_len)".into()); }
                 let start = self.expr(&a[0])?;
                 let start_len = self.expr(&a[1])?;
                 let end = self.expr(&a[2])?;
@@ -55,6 +57,7 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/iter_next" => {
+                if a.len() < 3 { return Err("near/iter_next: need 3 args (iter_id, key_ptr, val_ptr)".into()); }
                 let iter_id = self.expr(&a[0])?;
                 let key_ptr = self.expr(&a[1])?;
                 let val_ptr = self.expr(&a[2])?;
