@@ -455,12 +455,34 @@ pub fn build_http_wit_metadata() -> Result<(wit_parser::Resolve, wit_parser::Wor
     {
         let mut resolve = wit_parser::Resolve::new();
         let wit_dir = find_wit_dir()?;
-        let (pkg_id, _) = resolve.push_dir(&wit_dir).map_err(|e| format!("push_dir failed: {}", e))?;
 
-        let pkg = &resolve.packages[pkg_id];
-        let world = pkg.worlds.iter()
-            .find_map(|(name, id)| if name == "simple-http" { Some(*id) } else { None })
-            .ok_or("world 'simple-http' not found")?;
+        // Push dependency subdirs first so cross-package imports resolve
+        let dep_dirs: &[&str] = &[
+            "io", "clocks", "random", "filesystem", "sockets", "cli", "http",
+            "near-storage", "near-payment", "near-vrf", "outlayer-wallet", "near-rpc",
+            "simple-http",
+        ];
+        for subdir in dep_dirs {
+            let dir = wit_dir.join(subdir);
+            if dir.exists() {
+                resolve.push_dir(&dir).map_err(|e| format!("push_dir {} failed: {}", subdir, e))?;
+            }
+        }
+        // Now push root which contains combined.wit
+        resolve.push_dir(&wit_dir).map_err(|e| format!("push_dir root failed: {}", e))?;
+
+        // Look for simple-http world first, fall back to outlayer-http
+        let mut found_world = None;
+        for (_pkg_id, pkg) in resolve.packages.iter() {
+            for (name, world_id) in &pkg.worlds {
+                if name == "simple-http" || name == "outlayer-http" {
+                    found_world = Some(*world_id);
+                    break;
+                }
+            }
+            if found_world.is_some() { break; }
+        }
+        let world = found_world.ok_or("world 'simple-http' or 'outlayer-http' not found")?;
 
         Ok((resolve, world))
     }

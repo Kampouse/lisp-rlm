@@ -369,7 +369,6 @@ impl WasmEmitter {
             }
             "outlayer/http-post" | "http-post" => {
                 // HTTP POST → wasi:http path (upstream standard)
-                self.need_outlayer = true;
                 self.need_wasi_http = true;
             }
             "http-get" => {
