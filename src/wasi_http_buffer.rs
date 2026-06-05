@@ -266,49 +266,100 @@ pub fn emit_http_get_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     func.instruction(&ld(SCRATCH_STREAM_RESULT + 4));
     func.instruction(&ls(12)); // input-stream handle
 
-    // Read → ptr at +4, len at +8
-    func.instruction(&lg(12));
-    func.instruction(&Instruction::I64Const(65536));
-    func.instruction(&cst(SCRATCH_READ_RESULT));
-    func.instruction(&cl(FN_INPUT_STREAM_BLOCKING_READ));
-    func.instruction(&cst(0));
-    func.instruction(&ld(SCRATCH_READ_RESULT + 4));
-    func.instruction(&ls(13)); // data ptr
-    func.instruction(&cst(0));
-    func.instruction(&ld(SCRATCH_READ_RESULT + 8));
-    func.instruction(&ls(14)); // data len
-
-    // Copy to resp_buf (byte-by-byte, no memory.copy — avoids bulk-memory requirement)
-    {
-        let copy_i = 15u32; // local 15 = copy counter (i32)
+    // Read loop - keep reading until EOF (len=0)
+    // Local 13 = total accumulated length
+    // Local 14 = chunk length from blocking-read
+    // Local 15 = copy counter
+    func.instruction(&Instruction::I32Const(0));
+    func.instruction(&ls(13)); // total_len = 0
+    
+    func.instruction(&Instruction::Block(BlockType::Empty)); // outer block - break here on EOF/error
+    func.instruction(&Instruction::Loop(BlockType::Empty)); // read loop
+        
+        // blocking-read(stream, 65536, dst)
+        func.instruction(&lg(12)); // stream handle
+        func.instruction(&Instruction::I64Const(65536));
+        func.instruction(&cst(SCRATCH_READ_RESULT));
+        func.instruction(&cl(FN_INPUT_STREAM_BLOCKING_READ));
+        
+        // Check result disc: (disc != 0) means error → break outer
+        // Stack: push constant 0, load disc, compare for inequality
         func.instruction(&Instruction::I32Const(0));
-        func.instruction(&Instruction::LocalSet(copy_i));
-        func.instruction(&Instruction::Block(BlockType::Empty));
-        func.instruction(&Instruction::Loop(BlockType::Empty));
-        func.instruction(&lg(copy_i));
-        func.instruction(&lg(14)); // data len
-        func.instruction(&Instruction::I32GeU);
-        func.instruction(&Instruction::BrIf(1));
-        // resp_buf[i] = data_ptr[i]
-        func.instruction(&lg(2)); // resp_buf base
-        func.instruction(&lg(copy_i));
-        func.instruction(&Instruction::I32Add);
-        func.instruction(&lg(13)); // data ptr
-        func.instruction(&lg(copy_i));
-        func.instruction(&Instruction::I32Add);
-        func.instruction(&Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
-        func.instruction(&Instruction::I32Store8(MemArg { offset: 0, align: 0, memory_index: 0 }));
-        func.instruction(&lg(copy_i));
-        func.instruction(&Instruction::I32Const(1));
-        func.instruction(&Instruction::I32Add);
-        func.instruction(&Instruction::LocalSet(copy_i));
-        func.instruction(&Instruction::Br(0));
-        func.instruction(&Instruction::End); // loop
-        func.instruction(&Instruction::End); // block
-    }
+        func.instruction(&ld(SCRATCH_READ_RESULT)); // disc at offset 0
+        func.instruction(&Instruction::I32Const(0));
+        func.instruction(&Instruction::I32Ne);
+        func.instruction(&Instruction::BrIf(1)); // break outer on error
+        
+        // Check len (0=EOF) → break outer
+        func.instruction(&Instruction::I32Const(0));
+        func.instruction(&ld(SCRATCH_READ_RESULT + 8)); // len at offset 8
+        func.instruction(&Instruction::I32Eqz);
+        func.instruction(&Instruction::BrIf(1)); // break outer on EOF
+        
+        // Store chunk_len from result
+        func.instruction(&cst(0));
+        func.instruction(&ld(SCRATCH_READ_RESULT + 8));
+        func.instruction(&ls(14)); // chunk_len
+        
+        // Copy chunk to resp_buf at offset total_len
+        // First, load the chunk data pointer VALUE
+        func.instruction(&cst(0));
+        func.instruction(&ld(SCRATCH_READ_RESULT + 4));
+        func.instruction(&ls(15)); // chunk_data_ptr VALUE (store in local 15)
+        
+        // Copy loop
+        {
+            // local 16 = copy counter
+            let copy_i = 16u32;
+            func.instruction(&Instruction::I32Const(0));
+            func.instruction(&Instruction::LocalSet(copy_i));
+            func.instruction(&Instruction::Block(BlockType::Empty));
+            func.instruction(&Instruction::Loop(BlockType::Empty));
+            func.instruction(&lg(copy_i));
+            func.instruction(&lg(14)); // chunk_len
+            func.instruction(&Instruction::I32GeU);
+            func.instruction(&Instruction::BrIf(1));
+            // resp_buf[total_len + i] = chunk_data_ptr[i]
+            func.instruction(&lg(2)); // resp_buf base
+            func.instruction(&lg(13)); // total_len
+            func.instruction(&Instruction::I32Add);
+            func.instruction(&lg(copy_i));
+            func.instruction(&Instruction::I32Add);
+            func.instruction(&lg(15)); // chunk_data_ptr VALUE
+            func.instruction(&lg(copy_i));
+            func.instruction(&Instruction::I32Add);
+            func.instruction(&Instruction::I32Load8U(MemArg {
+                offset: 0,
+                align: 0,
+                memory_index: 0,
+            }));
+            func.instruction(&Instruction::I32Store8(MemArg {
+                offset: 0,
+                align: 0,
+                memory_index: 0,
+            }));
+            func.instruction(&lg(copy_i));
+            func.instruction(&Instruction::I32Const(1));
+            func.instruction(&Instruction::I32Add);
+            func.instruction(&Instruction::LocalSet(copy_i));
+            func.instruction(&Instruction::Br(0));
+            func.instruction(&Instruction::End); // loop
+            func.instruction(&Instruction::End); // block
+        }
 
+        // total_len += chunk_len
+        func.instruction(&lg(13));
+        func.instruction(&lg(14));
+        func.instruction(&Instruction::I32Add);
+        func.instruction(&ls(13));
+
+        func.instruction(&Instruction::Br(0)); // loop back for more chunks
+    func.instruction(&Instruction::End); // loop ends
+    func.instruction(&Instruction::End); // block ends
+
+    // Store total_len at resp_len_ptr (local 4)
     func.instruction(&lg(4));
-    func.instruction(&lg(14));
+    func.instruction(&lg(13)); // total_len
     func.instruction(&st(0));
     func.instruction(&Instruction::I32Const(0));
 }
