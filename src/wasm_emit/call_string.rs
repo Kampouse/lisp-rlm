@@ -2206,6 +2206,10 @@ impl WasmEmitter {
                 v.push(Instruction::End);
                 Ok(v)
             }
+            "string->number" | "str->num" | "str-to-num" => {
+                if a.len() != 1 { return Err("string->number: expected 1 arg".into()); }
+                self.str_to_num(&a[0])
+            }
             "to-string" | "int_to_str" => {
                 return self.int_to_str_clean(&a);
             }
@@ -2471,6 +2475,102 @@ impl WasmEmitter {
         v.push(Instruction::End);
 
         v.push(Instruction::LocalGet(result_i));
+        v.extend(self.emit_tag_num());
+        Ok(v)
+    }
+
+    /// (string->number str) → tagged number
+    /// Parses a decimal string to an i64 number.
+    fn str_to_num(&mut self, arg: &LispVal) -> Result<Vec<Instruction<'static>>, String> {
+        let ma = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+        let str_i = self.local_idx("__stn_str");       // packed (ptr<<32|len)
+        let ptr_i = self.local_idx_i32("__stn_ptr");
+        let len_i = self.local_idx_i32("__stn_len");
+        let idx_i = self.local_idx_i32("__stn_idx");
+        let acc_i = self.local_idx("__stn_acc");
+        let ch_i = self.local_idx_i32("__stn_ch");
+        let mut v = Vec::new();
+
+        // Evaluate arg (tagged string)
+        v.extend(self.expr(arg)?);
+        v.push(Instruction::LocalSet(str_i));
+
+        // Untag: get ptr and len
+        v.push(Instruction::LocalGet(str_i));
+        v.extend(self.emit_untag());
+        v.push(Instruction::I64Const(4294967295)); // 0xFFFFFFFF
+        v.push(Instruction::I64And);
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::LocalSet(ptr_i));
+
+        v.push(Instruction::LocalGet(str_i));
+        v.extend(self.emit_untag());
+        v.push(Instruction::I64Const(32));
+        v.push(Instruction::I64ShrU);
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::LocalSet(len_i));
+
+        // Initialize: idx=0, acc=0
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::LocalSet(acc_i));
+        v.push(Instruction::I32Const(0));
+        v.push(Instruction::LocalSet(idx_i));
+
+        // Loop: while idx < len
+        // block B2
+        v.push(Instruction::Block(wasm_encoder::BlockType::Empty));
+        // loop L3
+        v.push(Instruction::Loop(wasm_encoder::BlockType::Empty));
+
+        // if idx >= len, break to B2
+        v.push(Instruction::LocalGet(idx_i));
+        v.push(Instruction::LocalGet(len_i));
+        v.push(Instruction::I32GeU);
+        v.push(Instruction::BrIf(1)); // break to B2
+
+        // Load char at ptr + idx
+        v.push(Instruction::LocalGet(ptr_i));
+        v.push(Instruction::LocalGet(idx_i));
+        v.push(Instruction::I32Add);
+        v.push(Instruction::I32Load8U(ma));
+        v.push(Instruction::LocalSet(ch_i));
+
+        // if ch >= '0' && ch <= '9'
+        v.push(Instruction::LocalGet(ch_i));
+        v.push(Instruction::I32Const(48)); // '0'
+        v.push(Instruction::I32GeU);
+        v.push(Instruction::LocalGet(ch_i));
+        v.push(Instruction::I32Const(57)); // '9'
+        v.push(Instruction::I32LeU);
+        v.push(Instruction::I32And);
+        v.push(Instruction::If(wasm_encoder::BlockType::Empty));
+
+        // acc = acc * 10 + (ch - '0')
+        v.push(Instruction::LocalGet(acc_i));
+        v.push(Instruction::I64Const(10));
+        v.push(Instruction::I64Mul);
+        v.push(Instruction::LocalGet(ch_i));
+        v.push(Instruction::I64Const(48));
+        v.push(Instruction::I64Sub);
+        v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::I64Add);
+        v.push(Instruction::LocalSet(acc_i));
+
+        v.push(Instruction::End); // end if
+
+        // idx++
+        v.push(Instruction::LocalGet(idx_i));
+        v.push(Instruction::I32Const(1));
+        v.push(Instruction::I32Add);
+        v.push(Instruction::LocalSet(idx_i));
+
+        // continue loop
+        v.push(Instruction::Br(0)); // back to L3
+        v.push(Instruction::End); // end loop L3
+        v.push(Instruction::End); // end block B2
+
+        // Return tagged number
+        v.push(Instruction::LocalGet(acc_i));
         v.extend(self.emit_tag_num());
         Ok(v)
     }

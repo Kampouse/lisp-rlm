@@ -20,9 +20,11 @@ impl WasmEmitter {
         // Heap copy for "str" results: __json_get writes to stdout_buf (65536),
         // which gets overwritten by subsequent __json_get calls.
         if value_type == "str" {
+            let rhp: i32 = 56; // RUNTIME_HEAP_PTR
             let jgs_tmp = self.local_idx("__jgw_tmp");
             let jgs_len = self.local_idx_i32("__jgw_len");
             let jgs_ptr = self.local_idx_i32("__jgw_ptr");
+            let jgs_heap = self.local_idx_i32("__jgw_heap");
             v.push(Instruction::LocalSet(jgs_tmp));
             // Extract len and ptr from packed result
             v.push(Instruction::LocalGet(jgs_tmp));
@@ -30,16 +32,23 @@ impl WasmEmitter {
             v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(jgs_len));
             v.push(Instruction::LocalGet(jgs_tmp));
             v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(jgs_ptr));
-            // Copy to compile-time heap above all static buffers
-            let heap_dst = self.heap_bump(256);
+            // Use compile-time heap allocation (64KB) — large enough for any realistic JSON value
+            let heap_dst = self.heap_bump(65536);
             v.push(Instruction::I32Const(heap_dst as i32));
             v.push(Instruction::LocalGet(jgs_ptr));
             v.push(Instruction::LocalGet(jgs_len));
             v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
-            // Repack: (len << 32) | heap_dst
-            v.push(Instruction::LocalGet(jgs_len)); v.push(Instruction::I64ExtendI32U);
-            v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
-            v.push(Instruction::I64Const(heap_dst as i64));
+            // Repack: (len << 32) | heap
+            v.push(Instruction::LocalGet(jgs_len));
+            v.push(Instruction::I64ExtendI32U);
+            v.push(Instruction::I64Const(32));
+            v.push(Instruction::I64Shl);
+            v.push(Instruction::I32Const(heap_dst as i32));
+            v.push(Instruction::I64ExtendI32U);
+            v.push(Instruction::I64Or);
+            v.push(Instruction::I64Const(3));
+            v.push(Instruction::I64Shl);
+            v.push(Instruction::I64Const(crate::wasm_emit::TAG_STR));
             v.push(Instruction::I64Or);
         }
         Ok(v)
@@ -1734,9 +1743,12 @@ pub(crate) fn json_get_int(&mut self, key: &str) -> Result<Vec<Instruction<'stat
         v.push(Instruction::I64Add); v.push(Instruction::LocalSet(ci));
         v.push(Instruction::Br(0)); v.push(Instruction::End); v.push(Instruction::End);
 
-        // Unpack string
+        // Unpack string (untag first — expr() returns tagged values)
         v.extend(packed_expr);
         v.push(Instruction::LocalSet(packed));
+        v.push(Instruction::LocalGet(packed));
+        v.extend(self.emit_untag()); // >> 3 to get packed (len<<32|ptr)
+        v.push(Instruction::LocalSet(packed)); // store untagged packed
         v.push(Instruction::LocalGet(packed)); v.push(Instruction::I32WrapI64);
         v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(str_ptr));
         v.push(Instruction::LocalGet(packed)); v.push(Instruction::I64Const(32));
@@ -2083,9 +2095,9 @@ pub(crate) fn json_get_int(&mut self, key: &str) -> Result<Vec<Instruction<'stat
         ins.push(Instruction::If(BlockType::Empty)); // @I6
         ins.push(Instruction::LocalGet(4)); ins.push(Instruction::I32Const(0)); ins.push(Instruction::I32Eq);
         ins.push(Instruction::If(BlockType::Empty)); // @I7
-        ins.push(Instruction::LocalGet(2)); ins.push(Instruction::I32Const(1));
-        ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(10)); // val_end
-        ins.push(Instruction::Br(2)); // exit L5+B4
+        ins.push(Instruction::LocalGet(2));
+        ins.push(Instruction::LocalSet(10)); // val_end
+        ins.push(Instruction::Br(3)); // exit I7+I6+L5+B4
         ins.push(Instruction::End);
         ins.push(Instruction::LocalGet(4)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Sub); ins.push(Instruction::LocalSet(4));
         ins.push(Instruction::End);
@@ -2094,9 +2106,9 @@ pub(crate) fn json_get_int(&mut self, key: &str) -> Result<Vec<Instruction<'stat
         ins.push(Instruction::If(BlockType::Empty)); // @I6
         ins.push(Instruction::LocalGet(4)); ins.push(Instruction::I32Const(0)); ins.push(Instruction::I32Eq);
         ins.push(Instruction::If(BlockType::Empty)); // @I7
-        ins.push(Instruction::LocalGet(2)); ins.push(Instruction::I32Const(1));
-        ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(10)); // val_end
-        ins.push(Instruction::Br(2)); // exit L5+B4
+        ins.push(Instruction::LocalGet(2));
+        ins.push(Instruction::LocalSet(10)); // val_end
+        ins.push(Instruction::Br(3)); // exit I7+I6+L5+B4
         ins.push(Instruction::End);
         ins.push(Instruction::LocalGet(4)); ins.push(Instruction::I32Const(1)); ins.push(Instruction::I32Sub); ins.push(Instruction::LocalSet(4));
         ins.push(Instruction::End);
@@ -2115,29 +2127,16 @@ pub(crate) fn json_get_int(&mut self, key: &str) -> Result<Vec<Instruction<'stat
         ins.push(Instruction::End); // L5
         ins.push(Instruction::End); // B4
 
-        // Copy val_start..val_end to stdout_buf
+        // Copy val_start..val_end to stdout_buf via memory.copy (byte-by-byte loop
+        // writes null inside block+loop with WASI P1 runtimes — wasmtime bug)
         let stdout_buf: i32 = 65536;
         ins.push(Instruction::LocalGet(10)); ins.push(Instruction::LocalGet(9));
         ins.push(Instruction::I32Sub); ins.push(Instruction::LocalSet(11)); // str_len
-        ins.push(Instruction::I32Const(0)); ins.push(Instruction::LocalSet(12)); // dst=0
-        ins.push(Instruction::Block(BlockType::Empty)); // copy_block
-        ins.push(Instruction::Loop(BlockType::Empty)); // copy_loop
-        ins.push(Instruction::LocalGet(12)); ins.push(Instruction::LocalGet(11));
-        ins.push(Instruction::I32GeS);
-        ins.push(Instruction::If(BlockType::Empty));
-        ins.push(Instruction::Br(2));
-        ins.push(Instruction::End);
+        ins.push(Instruction::I32Const(stdout_buf));
         ins.push(Instruction::LocalGet(14)); ins.push(Instruction::LocalGet(9));
-        ins.push(Instruction::LocalGet(12)); ins.push(Instruction::I32Add);
-        ins.push(Instruction::I32Add); ins.push(Instruction::I32Load8U(ma.clone()));
-        ins.push(Instruction::I32Const(stdout_buf)); ins.push(Instruction::LocalGet(12));
         ins.push(Instruction::I32Add);
-        ins.push(Instruction::I32Store8(ma.clone()));
-        ins.push(Instruction::LocalGet(12)); ins.push(Instruction::I32Const(1));
-        ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(12));
-        ins.push(Instruction::Br(0));
-        ins.push(Instruction::End); // copy_loop
-        ins.push(Instruction::End); // copy_block
+        ins.push(Instruction::LocalGet(11));
+        ins.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
 
         // Return tagged: ((str_len << 32 | stdout_buf) << 3) | 5
         ins.push(Instruction::LocalGet(11)); ins.push(Instruction::I64ExtendI32U);
@@ -2296,7 +2295,7 @@ pub(crate) fn json_get_int(&mut self, key: &str) -> Result<Vec<Instruction<'stat
             return idx as u32;
         }
         let ma = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
-        let stdout_buf: i32 = 65536;
+        let decode_buf: i32 = 131072; // 128KB — well within 17-page memory, avoids stdout_buf collision
         // Param 0 = i64 packed (len<<32|ptr)
         // Locals 1..8 = i32: scan_i=1 ch=2 arr_len=3 arr_ptr=4 byte_val=5 out_i=6 in_num=7 num_val=8
         let mut ins: Vec<Instruction<'static>> = Vec::new();
@@ -2374,40 +2373,40 @@ pub(crate) fn json_get_int(&mut self, key: &str) -> Result<Vec<Instruction<'stat
         ins.push(Instruction::LocalGet(2)); ins.push(Instruction::I32Const(0x2C));
         ins.push(Instruction::I32Eq);
         ins.push(Instruction::If(BlockType::Empty));
-        ins.push(Instruction::I32Const(stdout_buf)); ins.push(Instruction::LocalGet(6));
-        ins.push(Instruction::I32Add);
-        ins.push(Instruction::LocalGet(8));
-        ins.push(Instruction::I32Store8(ma.clone()));
-        ins.push(Instruction::LocalGet(6)); ins.push(Instruction::I32Const(1));
-        ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(6));
-        ins.push(Instruction::I32Const(0)); ins.push(Instruction::LocalSet(8));
-        ins.push(Instruction::I32Const(0)); ins.push(Instruction::LocalSet(7));
-        ins.push(Instruction::LocalGet(1)); ins.push(Instruction::I32Const(1));
-        ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(1));
-        ins.push(Instruction::Br(0));
-        ins.push(Instruction::End);
-        // skip other
-        ins.push(Instruction::LocalGet(1)); ins.push(Instruction::I32Const(1));
-        ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(1));
-        ins.push(Instruction::Br(0));
-        ins.push(Instruction::End); // parse_loop
-        ins.push(Instruction::End); // parse_block
+            ins.push(Instruction::I32Const(decode_buf)); ins.push(Instruction::LocalGet(6));
+            ins.push(Instruction::I32Add);
+            ins.push(Instruction::LocalGet(8));
+            ins.push(Instruction::I32Store8(ma.clone()));
+            ins.push(Instruction::LocalGet(6)); ins.push(Instruction::I32Const(1));
+            ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(6));
+            ins.push(Instruction::I32Const(0)); ins.push(Instruction::LocalSet(8));
+            ins.push(Instruction::I32Const(0)); ins.push(Instruction::LocalSet(7));
+            ins.push(Instruction::LocalGet(1)); ins.push(Instruction::I32Const(1));
+            ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(1));
+            ins.push(Instruction::Br(0));
+            ins.push(Instruction::End);
+            // skip other
+            ins.push(Instruction::LocalGet(1)); ins.push(Instruction::I32Const(1));
+            ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(1));
+            ins.push(Instruction::Br(0));
+            ins.push(Instruction::End); // parse_loop
+            ins.push(Instruction::End); // parse_block
 
         // Flush final byte if in_num
         ins.push(Instruction::LocalGet(7));
         ins.push(Instruction::If(BlockType::Empty));
-        ins.push(Instruction::I32Const(stdout_buf)); ins.push(Instruction::LocalGet(6));
-        ins.push(Instruction::I32Add);
-        ins.push(Instruction::LocalGet(8));
-        ins.push(Instruction::I32Store8(ma.clone()));
-        ins.push(Instruction::LocalGet(6)); ins.push(Instruction::I32Const(1));
-        ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(6));
-        ins.push(Instruction::End);
+            ins.push(Instruction::I32Const(decode_buf)); ins.push(Instruction::LocalGet(6));
+            ins.push(Instruction::I32Add);
+            ins.push(Instruction::LocalGet(8));
+            ins.push(Instruction::I32Store8(ma.clone()));
+            ins.push(Instruction::LocalGet(6)); ins.push(Instruction::I32Const(1));
+            ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(6));
+            ins.push(Instruction::End);
 
         // Return tagged
         ins.push(Instruction::LocalGet(6)); ins.push(Instruction::I64ExtendI32U);
         ins.push(Instruction::I64Const(32)); ins.push(Instruction::I64Shl);
-        ins.push(Instruction::I64Const(stdout_buf as i64)); ins.push(Instruction::I64Or);
+        ins.push(Instruction::I64Const(decode_buf as i64)); ins.push(Instruction::I64Or);
         ins.push(Instruction::I64Const(3)); ins.push(Instruction::I64Shl);
         ins.push(Instruction::I64Const(5)); ins.push(Instruction::I64Or);
         ins.push(Instruction::Return);

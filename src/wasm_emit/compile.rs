@@ -577,8 +577,13 @@ pub fn compile_pure(source: &str) -> Result<Vec<u8>, String> {
 /// Suitable for inlayer / wasip1 runtimes. The last function becomes `_start`.
 /// Returns the tagged i64 result in memory at offset 1024 (8 bytes).
 pub fn compile_standalone(source: &str) -> Result<Vec<u8>, String> {
-    let mut em = parse_and_compile(source, false)?;
-    em.tree_shake();
+    compile_standalone_opts(source, true)
+}
+
+/// Compile standalone without type checking (for host functions not in type env).
+pub fn compile_standalone_opts(source: &str, typecheck: bool) -> Result<Vec<u8>, String> {
+    let mut em = parse_and_compile_opts(source, false, typecheck)?;
+    // No tree_shake — standalone _start references em.funcs directly
     let mut m = Module::new();
 
     // Type section
@@ -591,6 +596,8 @@ pub fn compile_standalone(source: &str) -> Result<Vec<u8>, String> {
     }
     // WASI proc_exit: (i32) -> ()
     types.ty().function([ValType::I32], []);
+    // WASI fd_write: (i32 fd, i32 iov_ptr, i32 iov_count, i32 nwritten_ptr) -> i32
+    types.ty().function([ValType::I32, ValType::I32, ValType::I32, ValType::I32], [ValType::I32]);
     m.section(&types);
 
     // WASI P1 imports (minimal — proc_exit, needed for inlayer validation)
@@ -600,8 +607,14 @@ pub fn compile_standalone(source: &str) -> Result<Vec<u8>, String> {
         "proc_exit",
         EntityType::Function(max_p as u32 + 2), // type N+2: (i32) -> ()
     );
+    imports.import(
+        "wasi_snapshot_preview1",
+        "fd_write",
+        EntityType::Function(max_p as u32 + 3), // type N+3: (i32 x4) -> i32
+    );
     m.section(&imports);
     let wasi_proc_exit = 0u32; // import index
+    let wasi_fd_write = 1u32;  // import index
 
     // Function section
     let mut funcs = FunctionSection::new();
@@ -631,13 +644,17 @@ pub fn compile_standalone(source: &str) -> Result<Vec<u8>, String> {
     // Exports
     let mut exps = ExportSection::new();
     exps.export("memory", ExportKind::Memory, 0);
-    let start_idx = em.funcs.len() as u32 + 1; // +1 for WASI proc_exit import
+    let start_idx = em.funcs.len() as u32 + 2; // +2 for WASI imports (proc_exit, fd_write)
     exps.export("_start", ExportKind::Func, start_idx);
     m.section(&exps);
 
     // Code section (id=10 — must come before data id=11)
-    // WASM func indices: 0 = WASI proc_exit import, 1..N = user funcs, N+1 = _start wrapper
-    let func_offset = 1u32; // +1 for WASI import at index 0
+    // WASM func indices: 0 = WASI proc_exit import, 1 = fd_write import, 2..N = user funcs, N+1 = _start wrapper
+    let func_offset = 2u32; // +2 for WASI imports (proc_exit, fd_write)
+    // Pre-compute heap ptr before borrowing em.funcs for name_map
+    let hp = em.heap_ptr_i32();
+    let hp_bytes = hp.to_le_bytes();
+    let hp_word = u32::from_le_bytes([hp_bytes[0], hp_bytes[1], hp_bytes[2], hp_bytes[3]]);
     let name_map: HashMap<&str, u32> = em.funcs.iter().enumerate()
         .map(|(i, f)| (f.name.as_str(), func_offset + i as u32)).collect();
     let mut code = wasm_encoder::CodeSection::new();
@@ -655,18 +672,70 @@ pub fn compile_standalone(source: &str) -> Result<Vec<u8>, String> {
         code.function(&fb);
     }
 
-    // _start wrapper: call last function, store result at mem[1024], exit clean
-    let mut fb = Function::new(vec![]);
-    if let Some(f) = em.funcs.last() {
+    // _start wrapper: call last function, output string result via fd_write
+    let mut fb = Function::new(vec![(1u32, ValType::I64)]); // local 0: result
+    // Re-initialize data segments programmatically (WASI P1 zeroes memory)
+    for (off, bytes) in &em.data_segments {
+        let mut i = 0usize;
+        while i < bytes.len() {
+            if i + 4 <= bytes.len() {
+                let word = u32::from_le_bytes([bytes[i], bytes[i+1], bytes[i+2], bytes[i+3]]);
+                fb.instruction(&Instruction::I32Const(*off as i32 + i as i32));
+                fb.instruction(&Instruction::I32Const(word as i32));
+                fb.instruction(&Instruction::I32Store(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+                i += 4;
+            } else {
+                fb.instruction(&Instruction::I32Const(*off as i32 + i as i32));
+                fb.instruction(&Instruction::I32Const(bytes[i] as i32));
+                fb.instruction(&Instruction::I32Store8(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                i += 1;
+            }
+        }
+    }
+    // Initialize RUNTIME_HEAP_PTR at memory[999980] (WASI zeroes memory)
+    fb.instruction(&Instruction::I32Const(RUNTIME_HEAP_PTR as i32));
+    fb.instruction(&Instruction::I32Const(hp_word as i32));
+    fb.instruction(&Instruction::I32Store(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+    if let Some(f) = em.funcs.iter().find(|f| f.name == "__toplevel") {
         let idx = name_map.get(f.name.as_str()).copied().unwrap_or(0);
-        // Push address first (i64.store expects [i32 addr, i64 val] — addr on bottom, val on top)
-        fb.instruction(&Instruction::I64Const(1024));
-        fb.instruction(&Instruction::I32WrapI64); // addr: i64 → i32
-        // Push default args (0) for each param, then call
         for _ in 0..f.param_count {
             fb.instruction(&Instruction::I64Const(0));
         }
-        fb.instruction(&Instruction::Call(idx)); // returns i64 — stack: [i32_addr, i64_val]
+        fb.instruction(&Instruction::Call(idx));
+        fb.instruction(&Instruction::LocalSet(0));
+        // Check if result is a string (tag == 5)
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32WrapI64);
+        fb.instruction(&Instruction::I32Const(7));
+        fb.instruction(&Instruction::I32And);
+        fb.instruction(&Instruction::I32Const(5));
+        fb.instruction(&Instruction::I32Eq);
+        fb.instruction(&Instruction::If(BlockType::Empty));
+        // String result: untag ptr and len, set up iov, fd_write
+        fb.instruction(&Instruction::I32Const(512));
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I64Const(3));
+        fb.instruction(&Instruction::I64ShrU);
+        fb.instruction(&Instruction::I32WrapI64); // low 32 = ptr
+        fb.instruction(&Instruction::I32Store(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+        fb.instruction(&Instruction::I32Const(516));
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I64Const(35)); // 3 (untag) + 32 (extract high)
+        fb.instruction(&Instruction::I64ShrU);
+        fb.instruction(&Instruction::I32WrapI64); // high 32 = len
+        fb.instruction(&Instruction::I32Store(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+        // fd_write(fd=1, iov_ptr=512, iov_count=1, nwritten_ptr=508)
+        fb.instruction(&Instruction::I32Const(1));     // fd
+        fb.instruction(&Instruction::I32Const(512));   // iov_ptr
+        fb.instruction(&Instruction::I32Const(1));     // iov_count
+        fb.instruction(&Instruction::I32Const(508));   // nwritten_ptr
+        fb.instruction(&Instruction::Call(wasi_fd_write));
+        fb.instruction(&Instruction::Drop);
+        fb.instruction(&Instruction::End);
+        // Num result: store at mem[1024] for inspection
+        fb.instruction(&Instruction::I64Const(1024));
+        fb.instruction(&Instruction::I32WrapI64);
+        fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
     }
     fb.instruction(&Instruction::End);

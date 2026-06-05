@@ -374,6 +374,7 @@ impl WasmEmitter {
             }
             "http-get" => {
                 self.need_outlayer = true;
+                self.need_wasi_http = true;
             }
             // FP-allocating builtins (need frame save/restore in NEAR mode)
             "str-cat" | "str-concat" | "string-append" | "str-slice" | "near/load-bytes" | "u32-to-bytes" | "near/store-bytes" => {

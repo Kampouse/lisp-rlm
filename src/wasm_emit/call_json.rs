@@ -165,11 +165,12 @@ impl WasmEmitter {
                             setup.push(Instruction::I64Const(pat_packed as i64));
                             let jg_idx = self.ensure_json_get_func();
                             setup.push(Instruction::Call(crate::wasm_emit::USER_BASE | jg_idx));
-                            // Bump-allocate 256 bytes from runtime heap (addr 56) for heap-safe copy
+                            // Runtime heap bump: copy jgs_len bytes (not fixed 256)
                             let rhp: i32 = 56; // RUNTIME_HEAP_PTR (i64 at addr 56)
                             let jgs_tmp = self.local_idx("jgs_packed");
                             let jgs_len = self.local_idx_i32("jgs_len");
                             let jgs_ptr = self.local_idx_i32("jgs_ptr");
+                            let jgs_heap = self.local_idx_i32("jgs_heap");
                             setup.push(Instruction::LocalSet(jgs_tmp));
                             // Extract len and ptr from packed result
                             setup.push(Instruction::LocalGet(jgs_tmp));
@@ -177,18 +178,20 @@ impl WasmEmitter {
                             setup.push(Instruction::I32WrapI64); setup.push(Instruction::LocalSet(jgs_len));
                             setup.push(Instruction::LocalGet(jgs_tmp));
                             setup.push(Instruction::I32WrapI64); setup.push(Instruction::LocalSet(jgs_ptr));
-                            // Bump runtime heap by 256
-                            // Copy to compile-time heap above all static buffers
-                            let heap_dst = self.heap_bump(256);
+                            // Use compile-time heap allocation (64KB) — large enough for any realistic JSON value
+                            let heap_dst = self.heap_bump(65536);
                             setup.push(Instruction::I32Const(heap_dst as i32));
                             setup.push(Instruction::LocalGet(jgs_ptr));
                             setup.push(Instruction::LocalGet(jgs_len));
                             setup.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
-                            // Repack: (len << 32) | heap_dst
+                            // Repack and tag: ((len << 32) | heap_dst) << 3 | TAG_STR
                             setup.push(Instruction::LocalGet(jgs_len)); setup.push(Instruction::I64ExtendI32U);
                             setup.push(Instruction::I64Const(32)); setup.push(Instruction::I64Shl);
-                            setup.push(Instruction::I64Const(heap_dst as i64));
+                            setup.push(Instruction::I32Const(heap_dst as i32));
+                            setup.push(Instruction::I64ExtendI32U);
                             setup.push(Instruction::I64Or);
+                            setup.push(Instruction::I64Const(3)); setup.push(Instruction::I64Shl);
+                            setup.push(Instruction::I64Const(crate::wasm_emit::TAG_STR)); setup.push(Instruction::I64Or);
                             setup
                         } else if self.wasi_mode {
                             self.json_get_wasi(key, "str")?
@@ -266,7 +269,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64ShrU); // untag to get packed (len<<32|ptr)
                 let idx = self.ensure_json_bytes_to_str_func();
                 v.push(Instruction::Call(crate::wasm_emit::USER_BASE | idx));
-                v.extend(self.emit_tag_str());
+                // __json_bytes_to_str returns TAGGED str — no need to tag again
                 Ok(v)
             }
             "json-array-get" => {
@@ -280,25 +283,32 @@ impl WasmEmitter {
                 v.push(Instruction::I64ShrU); // untag to raw i64 number
                 let idx = self.ensure_json_array_get_func();
                 v.push(Instruction::Call(crate::wasm_emit::USER_BASE | idx));
-                // Heap copy: result is packed (len<<32|stdout_buf), copy to heap to avoid stdout_buf collision
+                // Heap copy: jag returns tagged str ((len<<32|ptr)<<3|5).
+                // Must UNTAG first (>>3), then extract ptr/len.
                 let jag_tmp = self.local_idx("jag_packed");
                 let jag_len = self.local_idx_i32("jag_len");
                 let jag_ptr = self.local_idx_i32("jag_ptr");
+                let jag_heap = self.local_idx_i32("jag_heap");
+                let rhp: i32 = 56; // RUNTIME_HEAP_PTR
                 v.push(Instruction::LocalSet(jag_tmp));
                 v.push(Instruction::LocalGet(jag_tmp));
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(self.emit_untag()); // untag: >> 3
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // packed >> 32 = len
                 v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(jag_len));
                 v.push(Instruction::LocalGet(jag_tmp));
+                v.extend(self.emit_untag()); // untag: >> 3
                 v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(jag_ptr));
-                let heap_dst = self.heap_bump(256);
-                v.push(Instruction::I32Const(heap_dst as i32));
+                // Use compile-time heap allocation (64KB)
+                let jag_heap_val = self.heap_bump(65536);
+                v.push(Instruction::I32Const(jag_heap_val as i32));
                 v.push(Instruction::LocalGet(jag_ptr));
                 v.push(Instruction::LocalGet(jag_len));
                 v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
-                // Repack: (len << 32) | heap_dst
+                // Repack: (len << 32) | heap
                 v.push(Instruction::LocalGet(jag_len)); v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(heap_dst as i64));
+                v.push(Instruction::I32Const(jag_heap_val as i32));
+                v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 Ok(v)
