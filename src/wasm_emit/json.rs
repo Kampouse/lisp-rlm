@@ -2297,9 +2297,8 @@ pub(crate) fn json_get_int(&mut self, key: &str) -> Result<Vec<Instruction<'stat
         let ma = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
         // Use offset 131072 (128KB) — safely above:
         // - BORSH_BUF (36864 + 4096 = 40960)
-        // - All string literals (~64KB max data segment)
-        // - Well below HTTP buffers (65536+) and scratch (196608+)
-        let decode_buf: i32 = 131072;
+        // - Above SCRATCH (196608+) to avoid HTTP response buffer collision
+        let decode_buf: i32 = 198656; // SCRATCH + 2048
         // Param 0 = i64 packed (len<<32|ptr)
         // Locals 1..8 = i32: scan_i=1 ch=2 arr_len=3 arr_ptr=4 byte_val=5 out_i=6 in_num=7 num_val=8
         let mut ins: Vec<Instruction<'static>> = Vec::new();
