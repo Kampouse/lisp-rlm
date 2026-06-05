@@ -184,14 +184,13 @@ impl WasmEmitter {
                             setup.push(Instruction::LocalGet(jgs_ptr));
                             setup.push(Instruction::LocalGet(jgs_len));
                             setup.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
-                            // Repack and tag: ((len << 32) | heap_dst) << 3 | TAG_STR
+                            // Repack (untagged): (len << 32) | heap_dst
+                            // emit_tag_str() at line 201 adds the tag for ALL paths
                             setup.push(Instruction::LocalGet(jgs_len)); setup.push(Instruction::I64ExtendI32U);
                             setup.push(Instruction::I64Const(32)); setup.push(Instruction::I64Shl);
                             setup.push(Instruction::I32Const(heap_dst as i32));
                             setup.push(Instruction::I64ExtendI32U);
                             setup.push(Instruction::I64Or);
-                            setup.push(Instruction::I64Const(3)); setup.push(Instruction::I64Shl);
-                            setup.push(Instruction::I64Const(crate::wasm_emit::TAG_STR)); setup.push(Instruction::I64Or);
                             setup
                         } else if self.wasi_mode {
                             self.json_get_wasi(key, "str")?

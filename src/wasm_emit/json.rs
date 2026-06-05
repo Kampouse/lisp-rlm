@@ -2295,7 +2295,7 @@ pub(crate) fn json_get_int(&mut self, key: &str) -> Result<Vec<Instruction<'stat
             return idx as u32;
         }
         let ma = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
-        let decode_buf: i32 = 131072; // 128KB — well within 17-page memory, avoids stdout_buf collision
+        let decode_buf: i32 = 196608; // 192KB — past SENTINEL_BUF (65536+131008=196544), avoids all WASI buffer collisions
         // Param 0 = i64 packed (len<<32|ptr)
         // Locals 1..8 = i32: scan_i=1 ch=2 arr_len=3 arr_ptr=4 byte_val=5 out_i=6 in_num=7 num_val=8
         let mut ins: Vec<Instruction<'static>> = Vec::new();
