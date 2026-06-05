@@ -2295,7 +2295,11 @@ pub(crate) fn json_get_int(&mut self, key: &str) -> Result<Vec<Instruction<'stat
             return idx as u32;
         }
         let ma = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
-        let decode_buf: i32 = 196608; // 192KB — past SENTINEL_BUF (65536+131008=196544), avoids all WASI buffer collisions
+        // Use offset 131072 (128KB) — safely above:
+        // - BORSH_BUF (36864 + 4096 = 40960)
+        // - All string literals (~64KB max data segment)
+        // - Well below HTTP buffers (65536+) and scratch (196608+)
+        let decode_buf: i32 = 131072;
         // Param 0 = i64 packed (len<<32|ptr)
         // Locals 1..8 = i32: scan_i=1 ch=2 arr_len=3 arr_ptr=4 byte_val=5 out_i=6 in_num=7 num_val=8
         let mut ins: Vec<Instruction<'static>> = Vec::new();
@@ -2367,7 +2371,7 @@ pub(crate) fn json_get_int(&mut self, key: &str) -> Result<Vec<Instruction<'stat
         ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(8));
         ins.push(Instruction::LocalGet(1)); ins.push(Instruction::I32Const(1));
         ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(1));
-        ins.push(Instruction::Br(0));
+        ins.push(Instruction::Br(1)); // Continue parse_loop (targets Loop at depth 1)
         ins.push(Instruction::End);
         // ',' → flush byte
         ins.push(Instruction::LocalGet(2)); ins.push(Instruction::I32Const(0x2C));
@@ -2383,12 +2387,12 @@ pub(crate) fn json_get_int(&mut self, key: &str) -> Result<Vec<Instruction<'stat
             ins.push(Instruction::I32Const(0)); ins.push(Instruction::LocalSet(7));
             ins.push(Instruction::LocalGet(1)); ins.push(Instruction::I32Const(1));
             ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(1));
-            ins.push(Instruction::Br(0));
+            ins.push(Instruction::Br(1)); // Continue parse_loop (targets Loop at depth 1)
             ins.push(Instruction::End);
-            // skip other
+            // skip other (space, etc)
             ins.push(Instruction::LocalGet(1)); ins.push(Instruction::I32Const(1));
             ins.push(Instruction::I32Add); ins.push(Instruction::LocalSet(1));
-            ins.push(Instruction::Br(0));
+            ins.push(Instruction::Br(0)); // Continue parse_loop (targets Loop at depth 0)
             ins.push(Instruction::End); // parse_loop
             ins.push(Instruction::End); // parse_block
 
@@ -2414,9 +2418,9 @@ pub(crate) fn json_get_int(&mut self, key: &str) -> Result<Vec<Instruction<'stat
         self.funcs.push(FuncDef {
             name: "__json_bytes_to_str".to_string(),
             param_count: 1,
-            local_count: 9,
+            local_count: 8,
             instrs: ins,
-            local_entries: Some(vec![(8u32, ValType::I32), (0u32, ValType::I64)]),
+            local_entries: Some(vec![(8u32, ValType::I32)]),
         });
         (self.funcs.len() - 1) as u32
     }
