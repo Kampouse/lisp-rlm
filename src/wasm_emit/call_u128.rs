@@ -458,6 +458,455 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(od));
                 Ok(v)
             }
+            // ── BigInt operations (two-i64 pairs for 128-bit arithmetic) ──
+            // bigint-mul: (dst val) → multiply u128 at dst by u64 val, result in dst
+            "bigint-mul" => {
+                if a.len() != 2 { return Err("bigint-mul: need 2 args (dst addr, u64 multiplier)".into()); }
+                // Delegate to u128/mul
+                self.call_u128("u128/mul", a)
+            }
+            // bigint-div: (dst divisor) → divide u128 at dst by u64 divisor, quotient in dst
+            "bigint-div" | "u128/div" => {
+                if a.len() != 2 { return Err("bigint-div: need 2 args (dst addr, u64 divisor)".into()); }
+                let dst = self.expr(&a[0])?;
+                let divisor = self.expr(&a[1])?;
+                let dst_i = self.local_idx("__u128da");
+                let lo_i = self.local_idx("__u128dlo");
+                let hi_i = self.local_idx("__u128dhi");
+                let div_i = self.local_idx("__u128dv");
+                let rem_i = self.local_idx("__u128rem");
+                let qlo_i = self.local_idx("__u128qlo");
+                let qhi_i = self.local_idx("__u128qhi");
+                let bit_i = self.local_idx("__u128bit");
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let mut v = Vec::new();
+                v.extend(dst); v.push(Instruction::LocalSet(dst_i));
+                v.extend(divisor); v.push(Instruction::LocalSet(div_i));
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(ma)); v.push(Instruction::LocalSet(lo_i));
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(ma)); v.push(Instruction::LocalSet(hi_i));
+                // Check divisor != 0
+                v.push(Instruction::LocalGet(div_i));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
+                // Binary long division: 128 iterations
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(rem_i));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(qlo_i));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(qhi_i));
+                v.push(Instruction::I64Const(128)); v.push(Instruction::LocalSet(bit_i));
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(bit_i));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::BrIf(1));
+                v.push(Instruction::LocalGet(bit_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::LocalSet(bit_i));
+                // rem = rem << 1
+                v.push(Instruction::LocalGet(rem_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalSet(rem_i));
+                // Or with bit from dividend
+                v.push(Instruction::LocalGet(bit_i));
+                v.push(Instruction::I64Const(64));
+                v.push(Instruction::I64LtU);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.push(Instruction::LocalGet(lo_i));
+                v.push(Instruction::LocalGet(bit_i));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64And);
+                v.push(Instruction::Else);
+                v.push(Instruction::LocalGet(hi_i));
+                v.push(Instruction::LocalGet(bit_i));
+                v.push(Instruction::I64Const(64));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64And);
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(rem_i));
+                v.push(Instruction::I64Or);
+                v.push(Instruction::LocalSet(rem_i));
+                // if rem >= divisor: rem -= divisor, set bit in quotient
+                v.push(Instruction::LocalGet(rem_i));
+                v.push(Instruction::LocalGet(div_i));
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(rem_i));
+                v.push(Instruction::LocalGet(div_i));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::LocalSet(rem_i));
+                v.push(Instruction::LocalGet(bit_i));
+                v.push(Instruction::I64Const(64));
+                v.push(Instruction::I64LtU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(qlo_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::LocalGet(bit_i));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Or);
+                v.push(Instruction::LocalSet(qlo_i));
+                v.push(Instruction::Else);
+                v.push(Instruction::LocalGet(qhi_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::LocalGet(bit_i));
+                v.push(Instruction::I64Const(64));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Or);
+                v.push(Instruction::LocalSet(qhi_i));
+                v.push(Instruction::End);
+                v.push(Instruction::End);
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End);
+                v.push(Instruction::End);
+                // Store result
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(qlo_i));
+                v.push(Instruction::I64Store(ma));
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(qhi_i));
+                v.push(Instruction::I64Store(ma));
+                v.push(Instruction::LocalGet(dst_i));
+                Ok(v)
+            }
+            // bigint-from-str: (str dst) → parse decimal string at str to u128 at dst
+            "bigint-from-str" | "u128/from_str" => {
+                if a.len() != 2 { return Err("bigint-from-str: expected (str addr, dst offset)".into()); }
+                let str_addr = self.expr(&a[0])?;
+                let dst_off = self.expr(&a[1])?;
+                let str_i = self.local_idx("__bfs_str");
+                let dst_i = self.local_idx("__bfs_dst");
+                let len_i = self.local_idx("__bfs_len");
+                let lo_i = self.local_idx("__bfs_lo");
+                let hi_i = self.local_idx("__bfs_hi");
+                let i_i = self.local_idx("__bfs_i");
+                let ch_i = self.local_idx("__bfs_ch");
+                let t_lo = self.local_idx("__bfs_tlo");
+                let t_hi = self.local_idx("__bfs_thi");
+                let x_hi = self.local_idx("__bfs_xhi");
+                let ptr_i = self.local_idx("__bfs_ptr");
+                let ma = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+                let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let mut v = Vec::new();
+                v.extend(str_addr); v.extend(self.emit_untag()); v.push(Instruction::LocalSet(str_i));
+                v.extend(dst_off); v.push(Instruction::LocalSet(dst_i));
+                v.push(Instruction::LocalGet(str_i));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(len_i));
+                v.push(Instruction::LocalGet(str_i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(ptr_i));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(lo_i));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(hi_i));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(i_i));
+                // Skip leading minus
+                v.push(Instruction::LocalGet(ptr_i));
+                v.push(Instruction::I32Load8U(ma));
+                v.push(Instruction::I32Const(45));
+                v.push(Instruction::I32Eq);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(ptr_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(ptr_i));
+                v.push(Instruction::LocalGet(len_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::LocalSet(len_i));
+                v.push(Instruction::End);
+                // Loop over digits
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(i_i));
+                v.push(Instruction::LocalGet(len_i));
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::BrIf(1));
+                v.push(Instruction::LocalGet(ptr_i));
+                v.push(Instruction::LocalGet(i_i));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Load8U(ma));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(ch_i));
+                // Skip non-digits
+                v.push(Instruction::LocalGet(ch_i));
+                v.push(Instruction::I64Const(48));
+                v.push(Instruction::I64LtU);
+                v.push(Instruction::LocalGet(ch_i));
+                v.push(Instruction::I64Const(57));
+                v.push(Instruction::I64GtU);
+                v.push(Instruction::I32Or);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(i_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(i_i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(ch_i));
+                v.push(Instruction::I64Const(48));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::LocalSet(ch_i));
+                // lo:hi = lo:hi * 10 + digit
+                // t_lo = lo * 10 via shifts
+                v.push(Instruction::LocalGet(lo_i));
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalGet(lo_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(t_lo));
+                // carry = (lo >> 32) * 10 + ((lo & 0xFFFFFFFF) * 10) >> 32
+                v.push(Instruction::LocalGet(lo_i));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(x_hi));
+                v.push(Instruction::LocalGet(x_hi));
+                v.push(Instruction::I64Const(10));
+                v.push(Instruction::I64Mul);
+                v.push(Instruction::LocalGet(lo_i));
+                v.push(Instruction::I64Const(0xFFFFFFFF));
+                v.push(Instruction::I64And);
+                v.push(Instruction::I64Const(10));
+                v.push(Instruction::I64Mul);
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(t_hi));
+                // hi = hi * 10 + t_hi
+                v.push(Instruction::LocalGet(hi_i));
+                v.push(Instruction::I64Const(10));
+                v.push(Instruction::I64Mul);
+                v.push(Instruction::LocalGet(t_hi));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(hi_i));
+                // lo = t_lo + digit
+                v.push(Instruction::LocalGet(t_lo));
+                v.push(Instruction::LocalGet(ch_i));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(lo_i));
+                // If overflow, carry to hi
+                v.push(Instruction::LocalGet(lo_i));
+                v.push(Instruction::LocalGet(ch_i));
+                v.push(Instruction::I64LtU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(hi_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(hi_i));
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(i_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(i_i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End);
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(dst_i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(lo_i));
+                v.push(Instruction::I64Store(ma8));
+                v.push(Instruction::LocalGet(dst_i));
+                v.push(Instruction::I64Const(8));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(hi_i));
+                v.push(Instruction::I64Store(ma8));
+                v.push(Instruction::I64Const(TAG_NIL));
+                Ok(v)
+            }
+            // bigint-to-str: (addr buf) → convert u128 to decimal string, return tagged string
+            "bigint-to-str" | "u128/to_str" => {
+                if a.len() != 2 { return Err("bigint-to-str: expected (u128 addr, buffer addr)".into()); }
+                let addr = self.expr(&a[0])?;
+                let buf = self.expr(&a[1])?;
+                let addr_i = self.local_idx("__bts_addr");
+                let buf_i = self.local_idx("__bts_buf");
+                let lo_i = self.local_idx("__bts_lo");
+                let hi_i = self.local_idx("__bts_hi");
+                let pos_i = self.local_idx("__bts_pos");
+                let digit_i = self.local_idx("__bts_digit");
+                let tmp_i = self.local_idx("__bts_tmp");
+                let qlo_i = self.local_idx("__bts_qlo");
+                let qhi_i = self.local_idx("__bts_qhi");
+                let rem_i = self.local_idx("__bts_rem");
+                let bit_i = self.local_idx("__bts_bit");
+                let len_i = self.local_idx("__bts_len");
+                let ma = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+                let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let mut v = Vec::new();
+                v.extend(addr); v.push(Instruction::LocalSet(addr_i));
+                v.extend(buf); v.push(Instruction::LocalSet(buf_i));
+                v.push(Instruction::LocalGet(addr_i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(ma8));
+                v.push(Instruction::LocalSet(lo_i));
+                v.push(Instruction::LocalGet(addr_i));
+                v.push(Instruction::I64Const(8));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(ma8));
+                v.push(Instruction::LocalSet(hi_i));
+                // Check zero
+                v.push(Instruction::LocalGet(lo_i));
+                v.push(Instruction::LocalGet(hi_i));
+                v.push(Instruction::I64Or);
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(buf_i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(48));
+                v.push(Instruction::I32Store8(ma));
+                v.push(Instruction::LocalGet(buf_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.extend(self.emit_tag_str());
+                v.push(Instruction::Else);
+                // Write from buf+39 backwards
+                v.push(Instruction::LocalGet(buf_i));
+                v.push(Instruction::I64Const(39));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(pos_i));
+                v.push(Instruction::LocalGet(lo_i));
+                v.push(Instruction::LocalSet(tmp_i));
+                v.push(Instruction::LocalGet(hi_i));
+                v.push(Instruction::LocalSet(qhi_i)); // reuse qhi as tmp_hi
+                // Main loop
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(tmp_i));
+                v.push(Instruction::LocalGet(qhi_i)); // tmp_hi
+                v.push(Instruction::I64Or);
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::BrIf(1));
+                // Divide by 10 using binary division
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(rem_i));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(qlo_i));
+                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(qhi_i));
+                v.push(Instruction::I64Const(128)); v.push(Instruction::LocalSet(bit_i));
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(bit_i));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::BrIf(1));
+                v.push(Instruction::LocalGet(bit_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::LocalSet(bit_i));
+                v.push(Instruction::LocalGet(rem_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalSet(rem_i));
+                v.push(Instruction::LocalGet(bit_i));
+                v.push(Instruction::I64Const(64));
+                v.push(Instruction::I64LtU);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.push(Instruction::LocalGet(tmp_i));
+                v.push(Instruction::LocalGet(bit_i));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64And);
+                v.push(Instruction::Else);
+                v.push(Instruction::LocalGet(qhi_i));
+                v.push(Instruction::LocalGet(bit_i));
+                v.push(Instruction::I64Const(64));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64And);
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(rem_i));
+                v.push(Instruction::I64Or);
+                v.push(Instruction::LocalSet(rem_i));
+                v.push(Instruction::LocalGet(rem_i));
+                v.push(Instruction::I64Const(10));
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(rem_i));
+                v.push(Instruction::I64Const(10));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::LocalSet(rem_i));
+                v.push(Instruction::LocalGet(bit_i));
+                v.push(Instruction::I64Const(64));
+                v.push(Instruction::I64LtU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(qlo_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::LocalGet(bit_i));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Or);
+                v.push(Instruction::LocalSet(qlo_i));
+                v.push(Instruction::Else);
+                v.push(Instruction::LocalGet(qhi_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::LocalGet(bit_i));
+                v.push(Instruction::I64Const(64));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Or);
+                v.push(Instruction::LocalSet(qhi_i));
+                v.push(Instruction::End);
+                v.push(Instruction::End);
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End);
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(rem_i));
+                v.push(Instruction::LocalSet(digit_i));
+                v.push(Instruction::LocalGet(pos_i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(48));
+                v.push(Instruction::LocalGet(digit_i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Store8(ma));
+                v.push(Instruction::LocalGet(pos_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::LocalSet(pos_i));
+                v.push(Instruction::LocalGet(qlo_i));
+                v.push(Instruction::LocalSet(tmp_i));
+                // tmp_hi = qhi (already set)
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End);
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(pos_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(pos_i));
+                v.push(Instruction::I64Const(40));
+                v.push(Instruction::LocalGet(buf_i));
+                v.push(Instruction::LocalGet(pos_i));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(len_i));
+                v.push(Instruction::LocalGet(len_i));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalGet(pos_i));
+                v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
+                v.push(Instruction::End);
+                Ok(v)
+            }
+            // bigint-add: (dst src) → add u128 at src to u128 at dst
+            "bigint-add" => {
+                if a.len() != 2 { return Err("bigint-add: need 2 args (dst, src)".into()); }
+                self.call_u128("u128/add", a)
+            }
             _ => Err("__not_handled__".into()),
         }
     }

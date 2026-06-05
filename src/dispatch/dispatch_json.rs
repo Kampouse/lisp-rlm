@@ -135,6 +135,59 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
                 .map_err(|e| format!("to-json: {}", e))
         }
 
+        // --- JSON Array operations ---
+        "json-array-len" => {
+            // Accept either a JSON string or a pre-parsed LispVal list (from json-get)
+            match &args[0] {
+                LispVal::Str(s) => {
+                    let v: serde_json::Value =
+                        serde_json::from_str(s).map_err(|e| format!("json-array-len: parse error: {}", e))?;
+                    match v {
+                        serde_json::Value::Array(arr) => Ok(Some(LispVal::Num(arr.len() as i64))),
+                        _ => Err("json-array-len: expected JSON array".into()),
+                    }
+                }
+                LispVal::List(items) => Ok(Some(LispVal::Num(items.len() as i64))),
+                _ => Err("json-array-len: expected JSON string or list".into()),
+            }
+        }
+        "json-array-get" => {
+            // Accept either a JSON string or a pre-parsed LispVal list
+            let idx = as_num(&args[1])? as usize;
+            match &args[0] {
+                LispVal::Str(s) => {
+                    let v: serde_json::Value =
+                        serde_json::from_str(s).map_err(|e| format!("json-array-get: parse error: {}", e))?;
+                    match v {
+                        serde_json::Value::Array(arr) => {
+                            if idx >= arr.len() {
+                                Ok(Some(LispVal::Nil))
+                            } else {
+                                // Return the raw JSON string for the element.
+                                // This allows chaining with json-get on nested objects.
+                                let elem_str = serde_json::to_string(&arr[idx])
+                                    .map_err(|e| format!("json-array-get: serialize error: {}", e))?;
+                                Ok(Some(LispVal::Str(elem_str)))
+                            }
+                        }
+                        _ => Err("json-array-get: expected JSON array".into()),
+                    }
+                }
+                LispVal::List(items) => {
+                    if idx >= items.len() {
+                        Ok(Some(LispVal::Nil))
+                    } else {
+                        // For pre-parsed lists, convert back to JSON string for consistency
+                        let elem_val = &items[idx];
+                        let elem_str = serde_json::to_string(&lisp_to_json(elem_val))
+                            .map_err(|e| format!("json-array-get: serialize error: {}", e))?;
+                        Ok(Some(LispVal::Str(elem_str)))
+                    }
+                }
+                _ => Err("json-array-get: expected JSON string or list".into()),
+            }
+        }
+
         _ => Ok(None),
     }
 }

@@ -60,6 +60,7 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/account_balance" => self.read_u128_low(12),
+            "near/account_balance_high" => self.read_u128_high(12),
             "near/account_locked_balance" => self.read_u128_low(13),
             "near/account_locked_balance_high" => self.read_u128_high(13),
             "near/current_code_hash" => self.read_to_register(51, a),

@@ -407,7 +407,8 @@ pub fn compile_outlayer_p2_core_browser(source: &str) -> Result<Vec<u8>, String>
     
     // Return CORE WASM (before component wrapping) — browser can run this with WASI polyfills
     if em.need_wasi_http {
-        build_combined_p2_core(&mut em)
+        let (core_bytes, _) = build_combined_p2_core(&mut em)?;
+        Ok(core_bytes)
     } else if em.need_outlayer {
         finish_outlayer(&mut em)
     } else {
@@ -450,8 +451,8 @@ pub fn compile_outlayer_p2_from_exprs(exprs: &[crate::types::LispVal]) -> Result
     let bytes = if em.need_outlayer {
         // Always use combined P2 path for outlayer programs — produces valid WASI P2
         // (no wasi_snapshot_preview1 imports). Works with or without HTTP.
-        let core_bytes = build_combined_p2_core(&mut em)?;
-        build_combined_p2_component(&core_bytes)?
+        let (core_bytes, has_outlayer) = build_combined_p2_core(&mut em)?;
+        build_combined_p2_component(&core_bytes, has_outlayer)?
     } else if em.need_wasi_http {
         build_p2_with_wasi_http(&em)?
     } else {
@@ -498,10 +499,14 @@ pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
         }
     }
 
-    let bytes = if em.need_wasi_http || em.need_outlayer {
-        // All HTTP programs use the combined P2 path for proper wasi:cli/run export.
-        let core_bytes = build_combined_p2_core(&mut em)?;
-        build_combined_p2_component(&core_bytes)?
+    let bytes = if em.need_outlayer {
+        // Always use combined P2 path for outlayer programs — produces valid WASI P2
+        // (no wasi_snapshot_preview1 imports). Works with or without HTTP.
+        let (core_bytes, has_outlayer) = build_combined_p2_core(&mut em)?;
+        build_combined_p2_component(&core_bytes, has_outlayer)?
+    } else if em.need_wasi_http {
+        // wasi:http path — build component with embedded HTTP metadata
+        build_p2_with_wasi_http(&em)?
     } else {
         let core_bytes = finish_outlayer_no_ol(&mut em)?;
         // Use manual component builder (production-compatible, handles wasi_snapshot_preview1 stubs)
@@ -650,6 +655,7 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
             (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32),
             (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32),
             (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32),
+            (5u32, ValType::I32), // locals 13-17 (copy_i=16, etc.)
         ]);
         wasi_http_buffer::emit_http_get_to_buffer(&mut http_get_fn, &http_data);
         http_get_fn.instruction(&Instruction::End);
@@ -1092,13 +1098,8 @@ struct WasiImportMap {
 
 fn finish_outlayer(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
     if em.need_wasi_http {
-        // All HTTP programs (GET, POST, combined) use the combined P2 path.
-        // The outlayer-http WIT world produces both wasi:cli/run and
-        // wasi:http/incoming-handler exports, which is required for inlayer's
-        // Command-based execution. The simple-http world only produces
-        // incoming-handler, which breaks `inlayer run`.
-        let core_bytes = build_combined_p2_core(em)?;
-        build_combined_p2_component(&core_bytes)
+        let (core_bytes, has_outlayer) = build_combined_p2_core(em)?;
+        build_combined_p2_component(&core_bytes, has_outlayer)
     } else {
         finish_outlayer_inner(em, false)
     }
@@ -1301,7 +1302,6 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
         9,  // 13: set-worker — 5 i32 -> ()
         9,  // 14: get-worker — 5 i32 -> ()
         10, // 15: raw — 4 i32 -> i32 (canonical: ret_area)
-        8,  // 16: http-get — 3 i32 -> ()
     ];
     // Emit only filtered outlayer imports
     for &(sentinel, ol_idx) in OUTLAYER_SENTINELS {
@@ -1794,7 +1794,7 @@ fn near_host_type_for(
 // Combined P2 Component: wasi:http + outlayer in one component
 // ═══════════════════════════════════════════════════════════════
 
-fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
+fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), String> {
     use crate::wasi_http::*;
 
     let mut module = Module::new();
@@ -1889,15 +1889,12 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
         ol_type_3,    ol_type_1,                 // 11: list-keys, 12: clear-all
         ol_type_7,    ol_type_6,                 // 13: set-worker, 14: get-worker
         ol_type_5,                                // 15: raw
-        ol_type_3,                                // 16: http-get
     ];
 
     imports.import("wasi:cli/stdin@0.2.2", "get-stdin", EntityType::Function(0));
 
     // Emit only filtered outlayer imports
-    // Skip sentinel 103 (http_get) — handled via wasi:http internal functions
     for &(sentinel, ol_idx) in OUTLAYER_SENTINELS {
-        if sentinel == 103 { continue; }
         if used_ol_indices.contains(&ol_idx) {
             let all_ol = outlayer_imports();
             let f = &all_ol[ol_idx];
@@ -1976,6 +1973,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
             (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32),
             (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32),
             (1u32, ValType::I32), (1u32, ValType::I32), (1u32, ValType::I32),
+            (5u32, ValType::I32), // locals 13-17 (copy_i=16, etc.)
         ]);
         crate::wasi_http_buffer::emit_http_get_to_buffer(&mut http_get_fn, &http_data);
         http_get_fn.instruction(&Instruction::End);
@@ -2315,14 +2313,24 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<Vec<u8>, String> {
     }
 
     let core_bytes = module.finish();
+    let has_outlayer = !used_ol_indices.is_empty();
     std::fs::write("/tmp/p2_combined_core.wasm", &core_bytes).ok();
-    Ok(core_bytes)
+    Ok((core_bytes, has_outlayer))
 }
 
-fn build_combined_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
+fn build_combined_p2_component(core_bytes: &[u8], has_outlayer_imports: bool) -> Result<Vec<u8>, String> {
     std::fs::write("/tmp/p2_combined_core_to_encode.wasm", core_bytes).ok();
 
-    let (resolve, world) = crate::wasi_http::build_combined_wit_metadata()
+    // Use simple-http WIT world when no outlayer functions are imported — avoids
+    // broken shim adapters for near:rpc/near:storage that the component encoder
+    // generates even when those imports don't exist in the core module.
+    // When outlayer imports ARE present, use outlayer-http world which includes
+    // near:rpc, near:storage, near:payment, etc.
+    let (resolve, world) = if has_outlayer_imports {
+        crate::wasi_http::build_combined_wit_metadata()
+    } else {
+        crate::wasi_http::build_http_wit_metadata()
+    }
         .map_err(|e| format!("WIT metadata: {}", e))?;
     let mut mod_bytes = core_bytes.to_vec();
     wit_component::embed_component_metadata(
@@ -2806,9 +2814,12 @@ fn test_outlayer_json_deep() {
 fn test_outlayer_http_get_real() {
     let src = r#"(define (run) (http-get "https://wttr.in/Montreal?format=%t+%C"))"#;
     let wasm = compile_outlayer(src).unwrap();
-    // http-get now produces a P2 wasi:http component (not a core module)
-    wasmparser::validate(&wasm).unwrap_or_else(|e| panic!("component should be valid: {}", e));
-    assert!(wasm.len() > 500, "component should be non-trivial");
+    let result = run_outlayer_wasm_with_http(&wasm, &[]);
+    // RESULT_BUF stores untagged payload: ptr | (len << 32)
+    let ptr = (result & 0xFFFFFFFF) as usize;
+    let len = ((result >> 32) as u32) as usize;
+    assert!(len > 0, "http-get should return non-empty response, got ptr={} len={}", ptr, len);
+    assert!(ptr > 0, "ptr should be non-zero");
 }
 
 /// Run OutLayer WASM with a REAL http_get that makes actual HTTP requests
@@ -2997,7 +3008,6 @@ fn run_outlayer_wasm_with_http(wasm: &[u8], stdin_data: &[u8]) -> i64 {
     /// wasi:http component, run it in wasmtime with real HTTP support.
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
-    #[ignore]
     async fn test_p2_wasi_http_live() {
         use wasmtime::{Engine, Config};
         use wasmtime::component::{Linker, ResourceTable};
@@ -3094,7 +3104,6 @@ fn run_outlayer_wasm_with_http(wasm: &[u8], stdin_data: &[u8]) -> i64 {
     /// Test our Lisp-compiled P2 component in wasmtime with real HTTP
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
-    #[ignore]
     async fn test_lisp_p2_wasi_http_live() {
         use wasmtime::{Engine, Config};
         use wasmtime::component::{Linker, ResourceTable};
@@ -3176,7 +3185,6 @@ fn run_outlayer_wasm_with_http(wasm: &[u8], stdin_data: &[u8]) -> i64 {
     /// Test multi-URL http-get: compare Montreal vs Toronto weather
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
-    #[ignore]
     async fn test_lisp_p2_multi_url_http_get() {
         use wasmtime::{Engine, Config};
         use wasmtime::component::{Linker, ResourceTable};

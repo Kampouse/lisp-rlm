@@ -54,7 +54,7 @@ pub const HTTP_TYPE_COUNT: u32 = 10;
 
 // ── Scratch memory layout (single source of truth) ──
 // Shared by both wasi_http.rs (runtime URL path) and wasi_http_buffer.rs (data-segment path).
-pub const SCRATCH: i32 = 131072; // 128KB offset
+pub const SCRATCH: i32 = 196608; // 192KB offset
 pub const SCRATCH_BODY_RESULT: i32 = SCRATCH;
 pub const SCRATCH_STREAM_RESULT: i32 = SCRATCH + 4;
 pub const SCRATCH_FUTURE_RESULT: i32 = SCRATCH + 8;
@@ -65,9 +65,9 @@ pub const SCRATCH_POLL_RESULT: i32 = SCRATCH + 48;
 pub const SCRATCH_WRITE_RESULT: i32 = SCRATCH + 64; // write result area (runtime path)
 
 /// Buffer for HTTP response body (used by data-segment path in call_outlayer.rs).
-/// Placed between STDOUT_BUF (65536) and SCRATCH (131072) — 61KB available.
-pub const SENTINEL_BUF: i32 = 69632; // 65536 + 4096, between STDOUT and SCRATCH
-pub const SENTINEL_BUF_SIZE: i32 = 57344; // 56KB response buffer
+/// Placed between STDOUT_BUF (65536) and SCRATCH (196608) — 128KB available.
+pub const SENTINEL_BUF: i32 = 65536; // right after STDOUT
+pub const SENTINEL_BUF_SIZE: i32 = 131008; // ~128KB response buffer (ends at 196544, 64 byte gap before SCRATCH)
 // Data-segment path uses different sub-offsets (see wasi_http_buffer.rs),
 // but all start from SCRATCH.
 

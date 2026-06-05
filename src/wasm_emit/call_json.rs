@@ -258,6 +258,51 @@ impl WasmEmitter {
                 // Result is already tagged as array (TAG_ARRAY)
                 Ok(v)
             }
+            "json-bytes-to-str" => {
+                if a.len() != 1 { return Err("json-bytes-to-str: expected 1 arg".into()); }
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?);
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64ShrU); // untag to get packed (len<<32|ptr)
+                let idx = self.ensure_json_bytes_to_str_func();
+                v.push(Instruction::Call(crate::wasm_emit::USER_BASE | idx));
+                v.extend(self.emit_tag_str());
+                Ok(v)
+            }
+            "json-array-get" => {
+                if a.len() != 2 { return Err("json-array-get: expected 2 args (array-str, index)".into()); }
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?); // array string (tagged)
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64ShrU); // untag to packed (len<<32|ptr)
+                v.extend(self.expr(&a[1])?); // index (tagged number)
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64ShrU); // untag to raw i64 number
+                let idx = self.ensure_json_array_get_func();
+                v.push(Instruction::Call(crate::wasm_emit::USER_BASE | idx));
+                // Heap copy: result is packed (len<<32|stdout_buf), copy to heap to avoid stdout_buf collision
+                let jag_tmp = self.local_idx("jag_packed");
+                let jag_len = self.local_idx_i32("jag_len");
+                let jag_ptr = self.local_idx_i32("jag_ptr");
+                v.push(Instruction::LocalSet(jag_tmp));
+                v.push(Instruction::LocalGet(jag_tmp));
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(jag_len));
+                v.push(Instruction::LocalGet(jag_tmp));
+                v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(jag_ptr));
+                let heap_dst = self.heap_bump(256);
+                v.push(Instruction::I32Const(heap_dst as i32));
+                v.push(Instruction::LocalGet(jag_ptr));
+                v.push(Instruction::LocalGet(jag_len));
+                v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+                // Repack: (len << 32) | heap_dst
+                v.push(Instruction::LocalGet(jag_len)); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(heap_dst as i64));
+                v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
+                Ok(v)
+            }
             _ => Err("__not_handled__".into()),
         }
     }

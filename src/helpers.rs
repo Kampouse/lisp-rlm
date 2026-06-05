@@ -13,6 +13,8 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "to-float", "to-int", "to-num", "type?",
     "dict", "dict/get", "dict/set", "dict/has?", "dict/keys", "dict/vals",
     "dict/remove", "dict/merge",
+    "json-array-len", "json-array-get",
+    "json-parse", "json-get", "json-get-in", "json-build",
     "error", "empty?", "range", "reverse", "sort", "zip",
     "map", "filter", "reduce", "find", "some", "every",
     "print", "println",

@@ -5,107 +5,73 @@ impl WasmEmitter {
         match op {
             "http-get" => {
                 // (http-get "https://api.example.com/data") -> string or nil
+                // Always uses the combined P2 core __wasi_http_get (sentinel 103)
+                // with 5-param convention: (url_ptr, url_len, buf_ptr, buf_len, len_ptr)
                 if a.is_empty() { return Err("http-get requires a URL string argument".into()); }
                 if !self.wasi_mode { return Err("http-get is only available on OutLayer (WASI) target".into()); }
 
                 let url_expr = self.expr(&a[0])?;
                 let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
-                let ret_area: i32 = 163840; // RET_AREA offset
+                let ret_area: i32 = 163840;
                 let mut v = Vec::new();
 
                 // Register URL for data segment generation if it's a string literal
-                if self.need_wasi_http {
-                    if let crate::types::LispVal::Str(url) = &a[0] {
-                        if let Some((auth, path)) = Self::split_url(url) {
-                            // Only add if not already registered
-                            if !self.http_urls.iter().any(|(a, p)| a == &auth && p == &path) {
-                                self.http_urls.push((auth, path));
-                            }
+                // and determine per-call sentinel index
+                let mut url_idx: u32 = 0;
+                if let crate::types::LispVal::Str(url) = &a[0] {
+                    if let Some((auth, path)) = Self::split_url(url) {
+                        let existing = self.http_urls.iter().position(|(a, p)| a == &auth && p == &path);
+                        match existing {
+                            Some(idx) => url_idx = idx as u32,
+                            None => { url_idx = self.http_urls.len() as u32; self.http_urls.push((auth, path)); }
                         }
                     }
-                }
-
-                if self.need_wasi_http {
-                    // Direct wasi:http path — 5-param convention:
-                    // (url_ptr, url_len, buf_ptr, buf_len, len_ptr) -> i32
-                    // http_get ignores url_ptr/url_len (uses data segments) and
-                    // writes response bytes to buf_ptr, length to *len_ptr.
-                    // We use ret_area+8 as len_ptr, so len lands directly at ret_area+8.
-                    let buf_ptr: i32 = crate::wasi_http::SENTINEL_BUF;
-                    let buf_len: i32 = crate::wasi_http::SENTINEL_BUF_SIZE;
-
-                    // Push url_ptr, url_len (ignored by data-segment path)
-                    v.extend(url_expr.clone());
-                    v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
-                    v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
-                    v.push(Instruction::I32WrapI64); // url_ptr
-                    v.extend(url_expr);
-                    v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
-                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                    v.push(Instruction::I32WrapI64); // url_len
-                    // buf_ptr, buf_len
-                    v.push(Instruction::I32Const(buf_ptr));
-                    v.push(Instruction::I32Const(buf_len));
-                    // len_ptr = ret_area+8 (length will be written here directly)
-                    v.push(Instruction::I32Const(ret_area + 8));
-                    // Call http-get (sentinel 103) — returns i32 (status), drop it
-                    v.push(Instruction::Call(103));
-                    v.push(Instruction::Drop);
-                    // Write disc=0 (ok) at ret_area+0
-                    v.push(Instruction::I32Const(ret_area));
-                    v.push(Instruction::I32Const(0));
-                    v.push(Instruction::I32Store(ma4));
-                    // Write buf_ptr at ret_area+4
-                    v.push(Instruction::I32Const(ret_area + 4));
-                    v.push(Instruction::I32Const(buf_ptr));
-                    v.push(Instruction::I32Store(ma4));
-                    // len is already at ret_area+8 (written by http_get)
-                    // Read result: disc is 0 (ok), so just build tagged string
-                    // ptr from ret_area+4, len from ret_area+8
-                    v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4));
-                    v.push(Instruction::I64ExtendI32U);
-                    v.push(Instruction::I32Const(ret_area + 8)); v.push(Instruction::I32Load(ma4));
-                    v.push(Instruction::I64ExtendI32U);
-                    // Tag: ((ptr | (len << 32)) << 3) | TAG_STR
-                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
-                    v.push(Instruction::I64Or);
-                    v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl);
-                    v.push(Instruction::I64Const(TAG_STR)); v.push(Instruction::I64Or);
                 } else {
-                    // OutLayer host function path (sentinel 103, 3-param convention)
-                    self.need_outlayer = true;
-                    // Push url_ptr, url_len
-                    v.extend(url_expr.clone());
-                    v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
-                    v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
-                    v.push(Instruction::I32WrapI64); // url_ptr
-                    v.extend(url_expr);
-                    v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
-                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                    v.push(Instruction::I32WrapI64); // url_len
-                    // Push ret_area
-                    v.push(Instruction::I32Const(ret_area));
-                    // Call http-get (sentinel 103) — canonical ABI
-                    v.push(Instruction::Call(103));
-                    // Read discriminant: 0 = ok, 1 = err
-                    v.push(Instruction::I32Const(ret_area)); v.push(Instruction::I32Load(ma4));
-                    v.push(Instruction::I64ExtendI32U);
-                    v.push(Instruction::I64Const(0)); v.push(Instruction::I64Ne);
-                    v.push(Instruction::If(BlockType::Result(ValType::I64)));
-                    v.push(Instruction::I64Const(TAG_NIL)); // error → nil
-                    v.push(Instruction::Else);
-                    // ok: read ptr from ret_area+4, len from ret_area+8
-                    v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4));
-                    v.push(Instruction::I64ExtendI32U);
-                    v.push(Instruction::I32Const(ret_area + 8)); v.push(Instruction::I32Load(ma4));
-                    v.push(Instruction::I64ExtendI32U);
-                    // Tag: ((ptr | (len << 32)) << 3) | TAG_STR
-                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
-                    v.push(Instruction::I64Or);
-                    v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl);
-                    v.push(Instruction::I64Const(TAG_STR)); v.push(Instruction::I64Or);
-                    v.push(Instruction::End); // if
+                    // Non-literal URL — still register a sentinel entry
+                    url_idx = self.http_urls.len() as u32;
+                    self.http_urls.push(("dynamic".into(), "/".into()));
                 }
+
+                // 5-param convention for combined P2 core __wasi_http_get
+                let buf_ptr: i32 = crate::wasi_http::SENTINEL_BUF;
+                let buf_len: i32 = crate::wasi_http::SENTINEL_BUF_SIZE;
+
+                // Push url_ptr, url_len (ignored by data-segment path, but needed for param count)
+                v.extend(url_expr.clone());
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64); // url_ptr
+                v.extend(url_expr);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64); // url_len
+                // buf_ptr, buf_len
+                v.push(Instruction::I32Const(buf_ptr));
+                v.push(Instruction::I32Const(buf_len));
+                // len_ptr = ret_area+8
+                v.push(Instruction::I32Const(ret_area + 8));
+                // Call http-get (sentinel 103+url_idx) — returns i32 (status), drop it
+                v.push(Instruction::Call(103 + url_idx));
+                v.push(Instruction::Drop);
+                // Write disc=0 (ok) at ret_area+0
+                v.push(Instruction::I32Const(ret_area));
+                v.push(Instruction::I32Const(0));
+                v.push(Instruction::I32Store(ma4));
+                // Write buf_ptr at ret_area+4
+                v.push(Instruction::I32Const(ret_area + 4));
+                v.push(Instruction::I32Const(buf_ptr));
+                v.push(Instruction::I32Store(ma4));
+                // len is already at ret_area+8 (written by http_get)
+                // Read result: build tagged string from ptr + len
+                v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I32Const(ret_area + 8)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                // Tag: ((ptr | (len << 32)) << 3) | TAG_STR
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_STR)); v.push(Instruction::I64Or);
                 Ok(v)
             }
             "http-post" => {
@@ -122,18 +88,24 @@ impl WasmEmitter {
                 self.data_segments.push((content_type_area as u32, b"application/json".to_vec()));
                 let content_type_len: i32 = 16; // "application/json".len()
                 let mut v = Vec::new();
+                let mut sentinel_idx: u32 = 0; // index into http_post_urls for sentinel mapping
 
                 // Register URL for data segment generation if it's a string literal
                 if self.need_wasi_http {
                     if let crate::types::LispVal::Str(url) = &a[0] {
                         if let Some((auth, path)) = Self::split_url(url) {
-                            if !self.http_post_urls.iter().any(|(a, p)| a == &auth && p == &path) {
+                            if let Some(existing) = self.http_post_urls.iter().position(|(a, p)| a == &auth && p == &path) {
+                                // URL already registered — reuse its index
+                                sentinel_idx = existing as u32;
+                            } else {
+                                sentinel_idx = self.http_post_urls.len() as u32;
                                 self.http_post_urls.push((auth, path));
                             }
                         }
                     } else {
                         // Non-literal URL (variable) — still need a sentinel entry
                         // so build_combined_p2_core generates the shim function
+                        sentinel_idx = self.http_post_urls.len() as u32;
                         self.http_post_urls.push(("_dynamic".to_string(), "/".to_string()));
                     }
                 }
@@ -146,9 +118,8 @@ impl WasmEmitter {
                     // writes response to buf_ptr, length to *len_ptr.
                     let buf_ptr: i32 = crate::wasi_http::SENTINEL_BUF;
                     let buf_len: i32 = crate::wasi_http::SENTINEL_BUF_SIZE;
-                    // Compute per-call sentinel offset (200 + call_idx)
-                    let post_sentinel: u32 = 200 + self.http_post_call_count;
-                    self.http_post_call_count += 1;
+                    // Sentinel based on URL index, not call count
+                    let post_sentinel: u32 = 200 + sentinel_idx;
                     // url ptr/len (ignored by data-segment path)
                     v.extend(url_expr.clone());
                     v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
@@ -1096,6 +1067,7 @@ impl WasmEmitter {
                 if !self.wasi_mode { return Err("outlayer/http-post is only available on OutLayer (WASI) target".into()); }
 
                 // Register URL for wasi:http POST helper generation
+                // (Note: delegation to http-post below will also register, but dedup handles it)
                 if self.need_wasi_http {
                     if let crate::types::LispVal::Str(url) = &a[0] {
                         if let Some((auth, path)) = Self::split_url(url) {
