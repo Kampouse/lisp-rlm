@@ -415,6 +415,14 @@ impl TcEnv {
                 Box::new(TcType::Con(TcCon::Str)),
             ),
         );
+        // json-decode-bytes: (str) → str  — decodes "[123,34,...]" byte array to string
+        env.insert_mono(
+            "json-decode-bytes".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Str)],
+                Box::new(TcType::Con(TcCon::Str)),
+            ),
+        );
         // json-get-float: (str, str) → num  — extracts float as integer (price * 100)
         env.insert_mono(
             "json-get-float".to_string(),

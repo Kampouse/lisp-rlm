@@ -191,6 +191,26 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             }
             _ => Err("string->number: need string".into()),
         },
+        // JSON byte array decoder: "[123,34,97,...]" → "decoded string"
+        // Used for NEAR RPC result fields that return byte arrays
+        "json-decode-bytes" => {
+            let s = as_str(&args[0])?;
+            // Expect format: "[123,34,97,...]" or just "123,34,97,..."
+            let trimmed = s.trim();
+            let nums_str = if trimmed.starts_with('[') && trimmed.ends_with(']') {
+                &trimmed[1..trimmed.len()-1]
+            } else {
+                trimmed
+            };
+            let bytes: Vec<u8> = nums_str
+                .split(',')
+                .filter_map(|n| n.trim().parse::<u8>().ok())
+                .collect();
+            match String::from_utf8(bytes) {
+                Ok(decoded) => Ok(Some(LispVal::Str(decoded))),
+                Err(_) => Err("json-decode-bytes: invalid UTF-8".into()),
+            }
+        }
         // R7RS string aliases
         "string-length" => handle("str-length", args),
         "string-append" => handle("str-concat", args),

@@ -305,6 +305,7 @@ impl WasmEmitter {
             "near/log_num" => self.need_host(28),
             "print" | "println" => { if !self.wasi_mode { self.need_host(28); } }
             "near/json_get_int" | "near/json_get_str" | "near/json_get_u128" | "json-get" | "json-get-str" | "json-get-float" | "json/get" => { if !self.wasi_mode { self.need_host(7); self.need_host(0); self.need_host(1); } }
+            "json-bytes-to-str" | "json-decode-bytes" => { /* pure WASM, uses user func */ }
             "u128/store_storage" => { self.need_host(17); }
             "u128/load_storage" => { self.need_host(18); self.need_host(0); }
             "near/json_return_int" | "near/json_return_str" | "json-return" => { if !self.wasi_mode { self.need_host(25); } },

@@ -260,7 +260,7 @@ impl WasmEmitter {
                 // Result is already tagged as array (TAG_ARRAY)
                 Ok(v)
             }
-            "json-bytes-to-str" => {
+            "json-bytes-to-str" | "json-decode-bytes" => {
                 if a.len() != 1 { return Err("json-bytes-to-str: expected 1 arg".into()); }
                 let mut v = Vec::new();
                 v.extend(self.expr(&a[0])?);

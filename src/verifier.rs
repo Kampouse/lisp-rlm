@@ -40,6 +40,7 @@ const KNOWN_BUILTINS: &[&str] = &[
     // String
     "to-string", "str", "str-concat", "str-length", "str-split",
     "str-contains", "string-append", "substring",
+    "json-decode-bytes",
     // Type conversion
     "to-int", "to-float", "integer", "float", "boolean",
     // Dict

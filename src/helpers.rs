@@ -9,6 +9,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "str-substring", "str-split", "str-split-exact", "str-trim",
     "str-index-of", "str-upcase", "str-downcase",
     "str-starts-with", "str-ends-with", "str=", "str!=",
+    "json-decode-bytes",
     "nil?", "list?", "number?", "string?", "map?", "bool?",
     "to-float", "to-int", "to-num", "type?",
     "dict", "dict/get", "dict/set", "dict/has?", "dict/keys", "dict/vals",
