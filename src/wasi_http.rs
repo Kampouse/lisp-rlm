@@ -56,12 +56,27 @@ pub const HTTP_TYPE_COUNT: u32 = 10;
 // HTTP response buffer starts after fixed areas (100KB), 1MB max.
 // OutLayer return area comes after to avoid collision.
 
-/// HTTP response buffer - 1MB for large API responses.
-pub const SENTINEL_BUF: i32 = 35 * 65536 - 1_002_000; // End of memory minus 1MB buffer
-pub const SENTINEL_BUF_SIZE: i32 = 1_000_000; // 1MB for HTTP responses
+// ═══ Memory Architecture for OutLayer P2 ═══
+// All positions DERIVED from MAX_MEMORY_P2, not arbitrary numbers.
+// Memory: 64 pages = 4MB (standard WASM limit)
+// Layout: [DATA | HEAP → | HTTP_BUF | OL_RET]
 
-/// OutLayer return area - AFTER SENTINEL_BUF to avoid collision.
-pub const OL_RET_AREA_BASE: i32 = 35 * 65536 - 2000; // End of memory minus ret_area size
+/// Maximum memory for OutLayer P2 (wasm32-wasip2)
+pub const MAX_MEMORY_P2: i32 = 64 * 65536; // 4MB
+
+/// HTTP max response size (APIs return <100KB, allow headroom)
+pub const HTTP_MAX_RESPONSE: i32 = 1_048_576; // 1MB (power of 2)
+
+/// OutLayer return area size
+pub const OL_RET_AREA_SIZE: i32 = 4096; // 4KB
+
+/// HTTP buffer - at END of memory, grows DOWN from OL_RET_AREA
+/// SENTINEL_BUF is kept for backwards compatibility (HTTP buffer start)
+pub const SENTINEL_BUF: i32 = MAX_MEMORY_P2 - OL_RET_AREA_SIZE - HTTP_MAX_RESPONSE;
+pub const SENTINEL_BUF_SIZE: i32 = HTTP_MAX_RESPONSE;
+
+/// OutLayer return area - at very END of memory
+pub const OL_RET_AREA_BASE: i32 = MAX_MEMORY_P2 - OL_RET_AREA_SIZE;
 
 /// HTTP scratch area for poll results, future handles, etc.
 pub const SCRATCH: i32 = OL_RET_AREA_BASE;
