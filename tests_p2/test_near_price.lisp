@@ -1,0 +1,5 @@
+(define (run)
+  (let* ((resp (http-get "https://api.coingecko.com/api/v3/simple/price?ids=near&vs_currencies=usd"))
+         (near-data (json-get-str "near" resp))
+         (usd-str (json-get-str "usd" near-data)))
+    usd-str))

@@ -524,50 +524,88 @@ pub fn emit_http_post_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     func.instruction(&ld(SCRATCH_STREAM_RESULT + 4));
     func.instruction(&ls(14)); // input-stream handle
 
-    // Read → ptr at +4, len at +8
-    func.instruction(&lg(14));
-    func.instruction(&Instruction::I64Const(65536));
-    func.instruction(&cst(SCRATCH_READ_RESULT));
-    func.instruction(&cl(FN_INPUT_STREAM_BLOCKING_READ));
-    func.instruction(&cst(0));
-    func.instruction(&ld(SCRATCH_READ_RESULT + 4));
-    func.instruction(&ls(15)); // data ptr
-    func.instruction(&cst(0));
-    func.instruction(&ld(SCRATCH_READ_RESULT + 8));
-    func.instruction(&ls(16)); // data len
+    // Read loop - keep reading until EOF (len=0)
+    // Local 15 = total accumulated length
+    // Local 16 = chunk length from blocking-read
+    // Local 17 = copy counter
+    func.instruction(&Instruction::I32Const(0));
+    func.instruction(&ls(15)); // total_len = 0
 
-    // Copy response data to buf_ptr (byte-by-byte)
-    {
-        let copy_i = 17u32;
+    func.instruction(&Instruction::Block(BlockType::Empty)); // outer block - break here on EOF/error
+    func.instruction(&Instruction::Loop(BlockType::Empty)); // read loop
+
+        // blocking-read(stream, 65536, dst)
+        func.instruction(&lg(14)); // stream handle
+        func.instruction(&Instruction::I64Const(65536));
+        func.instruction(&cst(SCRATCH_READ_RESULT));
+        func.instruction(&cl(FN_INPUT_STREAM_BLOCKING_READ));
+
+        // Check result disc: (disc != 0) means error → break outer
         func.instruction(&Instruction::I32Const(0));
-        func.instruction(&Instruction::LocalSet(copy_i));
-        func.instruction(&Instruction::Block(BlockType::Empty));
-        func.instruction(&Instruction::Loop(BlockType::Empty));
-        func.instruction(&lg(copy_i));
-        func.instruction(&lg(16)); // data len
-        func.instruction(&Instruction::I32GeU);
-        func.instruction(&Instruction::BrIf(1));
-        // Push dest addr first (stays on stack), then load src byte (top)
-        // i32.store8 pops val(top), then addr — need [dest_addr, loaded_byte]
-        func.instruction(&lg(4)); // resp_buf base (param 4)
-        func.instruction(&lg(copy_i));
+        func.instruction(&ld(SCRATCH_READ_RESULT)); // disc at offset 0
+        func.instruction(&Instruction::I32Const(0));
+        func.instruction(&Instruction::I32Ne);
+        func.instruction(&Instruction::BrIf(1)); // break outer on error
+
+        // Check len (0=EOF) → break outer
+        func.instruction(&Instruction::I32Const(0));
+        func.instruction(&ld(SCRATCH_READ_RESULT + 8)); // len at offset 8
+        func.instruction(&Instruction::I32Eqz);
+        func.instruction(&Instruction::BrIf(1)); // break outer on EOF
+
+        // Store chunk_len
+        func.instruction(&cst(0));
+        func.instruction(&ld(SCRATCH_READ_RESULT + 8));
+        func.instruction(&ls(16)); // chunk_len
+
+        // Store chunk data ptr
+        func.instruction(&cst(0));
+        func.instruction(&ld(SCRATCH_READ_RESULT + 4));
+        func.instruction(&ls(17)); // chunk_data_ptr
+
+        // Copy chunk to buf_ptr at offset total_len
+        {
+            let copy_i = 18u32;
+            func.instruction(&Instruction::I32Const(0));
+            func.instruction(&Instruction::LocalSet(copy_i));
+            func.instruction(&Instruction::Block(BlockType::Empty));
+            func.instruction(&Instruction::Loop(BlockType::Empty));
+            func.instruction(&lg(copy_i));
+            func.instruction(&lg(16)); // chunk_len
+            func.instruction(&Instruction::I32GeU);
+            func.instruction(&Instruction::BrIf(1));
+            // buf_ptr[total_len + i] = chunk_data_ptr[i]
+            func.instruction(&lg(4)); // buf_ptr base (param 4)
+            func.instruction(&lg(15)); // total_len
+            func.instruction(&Instruction::I32Add);
+            func.instruction(&lg(copy_i));
+            func.instruction(&Instruction::I32Add);
+            func.instruction(&lg(17)); // chunk_data_ptr
+            func.instruction(&lg(copy_i));
+            func.instruction(&Instruction::I32Add);
+            func.instruction(&Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
+            func.instruction(&Instruction::I32Store8(MemArg { offset: 0, align: 0, memory_index: 0 }));
+            func.instruction(&lg(copy_i));
+            func.instruction(&Instruction::I32Const(1));
+            func.instruction(&Instruction::I32Add);
+            func.instruction(&Instruction::LocalSet(copy_i));
+            func.instruction(&Instruction::Br(0));
+            func.instruction(&Instruction::End); // loop
+            func.instruction(&Instruction::End); // block
+        }
+
+        // total_len += chunk_len
+        func.instruction(&lg(15));
+        func.instruction(&lg(16));
         func.instruction(&Instruction::I32Add);
-        func.instruction(&lg(15)); // data ptr
-        func.instruction(&lg(copy_i));
-        func.instruction(&Instruction::I32Add);
-        func.instruction(&Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
-        func.instruction(&Instruction::I32Store8(MemArg { offset: 0, align: 0, memory_index: 0 }));
-        func.instruction(&lg(copy_i));
-        func.instruction(&Instruction::I32Const(1));
-        func.instruction(&Instruction::I32Add);
-        func.instruction(&Instruction::LocalSet(copy_i));
-        func.instruction(&Instruction::Br(0));
-        func.instruction(&Instruction::End); // loop
-        func.instruction(&Instruction::End); // block
-    }
+        func.instruction(&ls(15)); // update total_len
+
+        func.instruction(&Instruction::Br(0)); // continue read loop
+    func.instruction(&Instruction::End); // loop
+    func.instruction(&Instruction::End); // block
 
     func.instruction(&lg(6)); // len_ptr (param 6)
-    func.instruction(&lg(16)); // data len
+    func.instruction(&lg(15)); // total_len
     func.instruction(&st(0));
     func.instruction(&Instruction::I32Const(0));
 }

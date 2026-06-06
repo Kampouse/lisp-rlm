@@ -59,7 +59,7 @@ impl WasmEmitter {
             return idx as u32;
         }
         let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
-        let stdout_buf: i32 = 65536;
+        let stdout_buf: i32 = 204800; // 200KB — must not collide with SENTINEL_BUF (65536)
         let json_ptr = 2u32; let json_len = 3u32;
         let pat_ptr = 4u32; let pat_len = 5u32;
         let scan_i = 6u32; let temp = 7u32;
@@ -307,8 +307,8 @@ impl WasmEmitter {
         let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
         let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
         let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
-        let stdout_buf: i32 = 65536;
-        let slot_size: i32 = 256; // bytes per result string area
+        let stdout_buf: i32 = 204800; // 200KB — must not collide with SENTINEL_BUF (65536)
+        let slot_size: i32 = 4096; // bytes per result string area (large JSON responses need room)
 
         // Locals (all i32 — params are i64 at indices 0..n_keys, rest are i32)
         let mut next_local = (n_keys + 1) as u32; // params: buf + N keys
@@ -2127,9 +2127,9 @@ pub(crate) fn json_get_int(&mut self, key: &str) -> Result<Vec<Instruction<'stat
         ins.push(Instruction::End); // L5
         ins.push(Instruction::End); // B4
 
-        // Copy val_start..val_end to stdout_buf via memory.copy (byte-by-byte loop
+        // Copy val_start..val_end to json_get output buf via memory.copy (byte-by-byte loop
         // writes null inside block+loop with WASI P1 runtimes — wasmtime bug)
-        let stdout_buf: i32 = 65536;
+        let stdout_buf: i32 = 204800; // 200KB — must not collide with SENTINEL_BUF (65536)
         ins.push(Instruction::LocalGet(10)); ins.push(Instruction::LocalGet(9));
         ins.push(Instruction::I32Sub); ins.push(Instruction::LocalSet(11)); // str_len
         ins.push(Instruction::I32Const(stdout_buf));

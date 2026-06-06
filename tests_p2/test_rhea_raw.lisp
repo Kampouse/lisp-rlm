@@ -1,0 +1,3 @@
+(define (run)
+  (let* ((resp (http-get "https://api.rhea.finance/v3/margin-trading/position/history?address=943addabde7913c6f58043d348ec763643689b68da2e7ab186b7d75e1d544ff2&page_num=0&page_size=5")))
+    resp))
