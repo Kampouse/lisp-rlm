@@ -57,11 +57,11 @@ pub const HTTP_TYPE_COUNT: u32 = 10;
 // OutLayer return area comes after to avoid collision.
 
 /// HTTP response buffer - 1MB for large API responses.
-pub const SENTINEL_BUF: i32 = 1_000_000; // HTTP buffer starts at 1MB (after heap)
+pub const SENTINEL_BUF: i32 = 35 * 65536 - 1_002_000; // End of memory minus 1MB buffer
 pub const SENTINEL_BUF_SIZE: i32 = 1_000_000; // 1MB for HTTP responses
 
 /// OutLayer return area - AFTER SENTINEL_BUF to avoid collision.
-pub const OL_RET_AREA_BASE: i32 = 2_100_000; // after SENTINEL_BUF (1MB + 1MB = 2MB)
+pub const OL_RET_AREA_BASE: i32 = 35 * 65536 - 2000; // End of memory minus ret_area size
 
 /// HTTP scratch area for poll results, future handles, etc.
 pub const SCRATCH: i32 = OL_RET_AREA_BASE;
