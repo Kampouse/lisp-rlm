@@ -20,9 +20,15 @@ const STDIN_BUF: i64 = 32768;   // 32KB for stdin data
 const STDOUT_BUF: i64 = 65536;  // 32KB for stdout data  
 const STDIN_LEN: i64 = 98304;   // i32: actual bytes read
 const RESULT_BUF: i64 = 65536;  // reuse STDOUT_BUF for result
-// OL_RET_AREA is now in wasi_http.rs
-// SENTINEL_BUF starts at 200000, 1MB max
-// cabi_realloc base moved to 1200004
+// OL_RET_AREA must be AFTER SENTINEL_BUF (65536 + 131008 = 196544)
+const OL_RET_AREA: i32 = 196608; // canonical ABI return area for outlayer host calls (after HTTP buffer)
+
+// ── Compile-time memory layout verification ──
+// These static assertions catch buffer collisions at build time.
+// SENTINEL_BUF: 65536 - 196544 (inclusive, 131008 bytes)
+// OL_RET_AREA must start AFTER SENTINEL_BUF to prevent http-get corrupting outlayer results.
+const _: () = assert!(65536 + 131008 <= OL_RET_AREA as i64, 
+    "OL_RET_AREA overlaps SENTINEL_BUF buffer (65536-196544)");
 
 /// WASI Preview 1 function descriptors (module, name, params, results)
 #[derive(Clone)]
@@ -603,7 +609,7 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
 
     // ═══ Memory Section ═══
     let mut memory = MemorySection::new();
-    let pages = em.memory_pages.max(32) as u64; // min 32 pages (2MB) for SENTINEL_BUF (1MB) + cabi_realloc
+    let pages = em.memory_pages.max(17) as u64; // min 17 pages (1.06MB) for P2 scratch + heap
     memory.memory(MemoryType { minimum: pages, maximum: None, memory64: false, shared: false, page_size_log2: None });
     module.section(&memory);
 
@@ -1367,7 +1373,7 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     // ── Memory ──
     let mut mems = MemorySection::new();
     // min 16 pages (1MB) for P2 scratch + heap
-    let pages = em.memory_pages.max(32) as u64;
+    let pages = em.memory_pages.max(16) as u64;
     mems.memory(MemoryType { minimum: pages, maximum: None, memory64: false, shared: false, page_size_log2: None });
     m.section(&mems);
 
@@ -1926,7 +1932,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
 
     // ═══ Memory ═══
     let mut memory = MemorySection::new();
-    let pages = em.memory_pages.max(32) as u64;
+    let pages = em.memory_pages.max(17) as u64;
     memory.memory(MemoryType { minimum: pages, maximum: None, memory64: false, shared: false, page_size_log2: None });
     module.section(&memory);
 
@@ -2265,18 +2271,18 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         let ma4 = MemArg { offset: 0, align: 2, memory_index: 0 };
         // cabi_realloc(old_ptr, old_size, align, new_size) -> ptr
         // If new_size == 0 → return 0 (null)
-        // Bump allocator: counter at memory[1200000], base 1200004
+        // Bump allocator: counter at memory[900000], base 900004
         realloc.instruction(&Instruction::LocalGet(3)); // new_len
         realloc.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
-        // Fresh allocation from bump counter at address 1200000, base 1200004
-        realloc.instruction(&Instruction::I32Const(1200000));
+        // Fresh allocation from bump counter at address 900000, base 900004
+        realloc.instruction(&Instruction::I32Const(900000));
         realloc.instruction(&Instruction::I32Load(ma4)); // load offset
         realloc.instruction(&Instruction::LocalTee(4));
-        realloc.instruction(&Instruction::I32Const(1200004));
-        realloc.instruction(&Instruction::I32Add); // abs addr = 1200004 + offset
+        realloc.instruction(&Instruction::I32Const(900004));
+        realloc.instruction(&Instruction::I32Add); // abs addr = 900004 + offset
         realloc.instruction(&Instruction::LocalSet(4)); // local 4 = abs addr
         // Advance offset by new_len aligned up to 4
-        realloc.instruction(&Instruction::I32Const(1200000));
+        realloc.instruction(&Instruction::I32Const(900000));
         realloc.instruction(&Instruction::I32Load(ma4)); // load old offset
         realloc.instruction(&Instruction::LocalGet(3)); // new_len
         realloc.instruction(&Instruction::I32Add);
@@ -2284,7 +2290,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         realloc.instruction(&Instruction::I32Add);
         realloc.instruction(&Instruction::I32Const(-4));
         realloc.instruction(&Instruction::I32And);
-        realloc.instruction(&Instruction::I32Const(1200000));
+        realloc.instruction(&Instruction::I32Const(900000));
         realloc.instruction(&Instruction::I32Store(ma4)); // store new offset
         // Return the allocated address
         realloc.instruction(&Instruction::LocalGet(4));

@@ -12,7 +12,7 @@ impl WasmEmitter {
 
                 let url_expr = self.expr(&a[0])?;
                 let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
-                let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE;
+                let ret_area: i32 = 196608;
                 let mut v = Vec::new();
 
                 // Register URL for data segment generation if it's a string literal
@@ -82,7 +82,7 @@ impl WasmEmitter {
                 let url_expr = self.expr(&a[0])?;
                 let body_expr = self.expr(&a[1])?;
                 let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
-                let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE;
+                let ret_area: i32 = 196608;
                 let content_type_area: i32 = 163900;
                 // Store default content-type "application/json" as data segment
                 self.data_segments.push((content_type_area as u32, b"application/json".to_vec()));
@@ -221,7 +221,7 @@ impl WasmEmitter {
                 if !self.wasi_mode { return Err("storage-set is only available on OutLayer".into()); }
                 let key_expr = self.expr(&a[0])?;
                 let val_expr = self.expr(&a[1])?;
-                let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 64;
+                let ret_area: i32 = 196608 + 64;
                 // Use locals to evaluate key/val ONCE — avoids double-execution of str-cat
                 let key_local = self.local_idx("__ss_key");
                 let val_local = self.local_idx("__ss_val");
@@ -271,7 +271,7 @@ impl WasmEmitter {
                 let call_idx = self.storage_get_count;
                 self.storage_get_count += 1;
                 // Each storage-get gets its own 16-byte ret_area: base=163968, stride=16
-                let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 128 + (call_idx as i32) * 16;
+                let ret_area: i32 = 196608 + 128 + (call_idx as i32) * 16;
                 // Use local to evaluate key ONCE — avoids double-execution of str-cat
                 let key_local = self.local_idx("__sg_key");
                 let mut v = Vec::new();
@@ -386,10 +386,10 @@ impl WasmEmitter {
                 v.extend(delta_expr);
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU); // untag → i64
                 // ret_area pointer (i32)
-                v.push(Instruction::I32Const(crate::wasi_http::OL_RET_AREA_BASE)); // OL_RET_AREA
+                v.push(Instruction::I32Const(196608)); // OL_RET_AREA
                 v.push(Instruction::Call(114));
                 // Read s64 result from ret_area + 0 (tuple<s64, string>: s64 @ 0, string @ +8)
-                v.push(Instruction::I32Const(crate::wasi_http::OL_RET_AREA_BASE));
+                v.push(Instruction::I32Const(196608));
                 v.push(Instruction::I64Load(ma8));
                 v.extend(self.emit_tag_num());
                 Ok(v)
@@ -400,7 +400,7 @@ impl WasmEmitter {
                 // Result: (ptr, len) written by host to ret_area
                 if !self.wasi_mode { return Err("env/signer is only available on OutLayer".into()); }
                 let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
-                let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 320;
+                let ret_area: i32 = 196608 + 320;
                 let mut v = Vec::new();
                 v.push(Instruction::I32Const(ret_area));
                 v.push(Instruction::Call(120));
@@ -421,7 +421,7 @@ impl WasmEmitter {
                 // Result: (ptr, len) written by host to ret_area
                 if !self.wasi_mode { return Err("env/predecessor is only available on OutLayer".into()); }
                 let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
-                let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 384;
+                let ret_area: i32 = 196608 + 384;
                 let mut v = Vec::new();
                 v.push(Instruction::I32Const(ret_area));
                 v.push(Instruction::Call(121));
@@ -459,10 +459,10 @@ impl WasmEmitter {
                 v.extend(delta_expr);
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU); // untag → i64
                 // ret_area pointer (i32)
-                v.push(Instruction::I32Const(crate::wasi_http::OL_RET_AREA_BASE + 384)); // separate from increment's crate::wasi_http::OL_RET_AREA_BASE
+                v.push(Instruction::I32Const(196608 + 384)); // separate from increment's 196608
                 v.push(Instruction::Call(130));
                 // Read s64 result from ret_area + 0 (tuple<s64, string>: s64 @ 0)
-                v.push(Instruction::I32Const(crate::wasi_http::OL_RET_AREA_BASE + 384));
+                v.push(Instruction::I32Const(196608 + 384));
                 v.push(Instruction::I64Load(ma8));
                 v.extend(self.emit_tag_num());
                 Ok(v)
@@ -527,9 +527,9 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I32WrapI64);
-                // old_buf at 98304, old_len_ptr at crate::wasi_http::OL_RET_AREA_BASE
+                // old_buf at 98304, old_len_ptr at 196608
                 v.push(Instruction::I32Const(98304));
-                v.push(Instruction::I32Const(crate::wasi_http::OL_RET_AREA_BASE));
+                v.push(Instruction::I32Const(196608));
                 v.push(Instruction::Call(132));
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(0)); v.push(Instruction::I64Eq);
@@ -558,14 +558,14 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I32Const(98304));
                 v.push(Instruction::I32Const(65536));
-                v.push(Instruction::I32Const(crate::wasi_http::OL_RET_AREA_BASE));
+                v.push(Instruction::I32Const(196608));
                 v.push(Instruction::Call(133));
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(0)); v.push(Instruction::I64Ne);
                 v.push(Instruction::If(BlockType::Result(ValType::I64)));
                 v.push(Instruction::I64Const(TAG_NIL));
                 v.push(Instruction::Else);
-                v.push(Instruction::I32Const(crate::wasi_http::OL_RET_AREA_BASE)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I32Const(196608)); v.push(Instruction::I32Load(ma4));
                 v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(len_l));
                 v.push(Instruction::I64Const(self.heap_ptr_i32() as i64)); v.push(Instruction::LocalSet(dst_l));
                 v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(i_l));
@@ -658,7 +658,7 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I32Const(98304));
                 v.push(Instruction::I32Const(65536));
-                v.push(Instruction::I32Const(crate::wasi_http::OL_RET_AREA_BASE));
+                v.push(Instruction::I32Const(196608));
                 v.push(Instruction::Call(136));
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(0)); v.push(Instruction::I64Ne);
@@ -670,7 +670,7 @@ impl WasmEmitter {
                 let len_l = self.local_idx("__sg_wlen");
                 let dst_l = self.local_idx("__sg_wdst");
                 let i_l = self.local_idx("__sg_wi");
-                v.push(Instruction::I32Const(crate::wasi_http::OL_RET_AREA_BASE)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I32Const(196608)); v.push(Instruction::I32Load(ma4));
                 v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(len_l));
                 v.push(Instruction::I64Const(self.heap_ptr_i32() as i64)); v.push(Instruction::LocalSet(dst_l));
                 v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(i_l));
@@ -761,7 +761,7 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I32Const(98304));
                 v.push(Instruction::I32Const(65536));
-                v.push(Instruction::I32Const(crate::wasi_http::OL_RET_AREA_BASE));
+                v.push(Instruction::I32Const(196608));
                 v.push(Instruction::Call(138));
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(0)); v.push(Instruction::I64Ne);
@@ -773,7 +773,7 @@ impl WasmEmitter {
                 let len_l = self.local_idx("__sg_cplen");
                 let dst_l = self.local_idx("__sg_cpdst");
                 let i_l = self.local_idx("__sg_cpi");
-                v.push(Instruction::I32Const(crate::wasi_http::OL_RET_AREA_BASE)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I32Const(196608)); v.push(Instruction::I32Load(ma4));
                 v.push(Instruction::I64ExtendI32U); v.push(Instruction::LocalSet(len_l));
                 v.push(Instruction::I64Const(self.heap_ptr_i32() as i64)); v.push(Instruction::LocalSet(dst_l));
                 v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(i_l));
@@ -812,7 +812,7 @@ impl WasmEmitter {
                 let method = self.expr(&a[1])?;
                 let args_val = self.expr(&a[2])?;
                 let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
-                let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 448; // separate from storage ret areas
+                let ret_area: i32 = 196608 + 448; // separate from storage ret areas
                 let mut v = Vec::new();
 
                 // Push 9 i32 params for near:rpc/api view
@@ -880,7 +880,7 @@ impl WasmEmitter {
                 let method = self.expr(&a[0])?;
                 let params = self.expr(&a[1])?;
                 let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
-                let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 512;
+                let ret_area: i32 = 196608 + 512;
                 let mut v = Vec::new();
 
                 // method ptr/len
@@ -930,7 +930,7 @@ impl WasmEmitter {
                 // Uses sentinel 100 (view) with split interface canonical ABI
                 let mut v = Vec::new();
                 let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
-                let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 448;
+                let ret_area: i32 = 196608 + 448;
                 // Store "status" at a known offset
                 let status_str = b"status";
                 let status_offset = self.heap_bump(64);
@@ -969,7 +969,7 @@ impl WasmEmitter {
                 if a.len() < 2 { return Err("outlayer/storage-set requires (key value)".into()); }
                 let key = self.expr(&a[0])?;
                 let val_expr = self.expr(&a[1])?;
-                let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 64;
+                let ret_area: i32 = 196608 + 64;
                 let mut v = Vec::new();
                 // key ptr/len
                 v.extend(key.clone());
@@ -1002,7 +1002,7 @@ impl WasmEmitter {
                 if a.is_empty() { return Err("outlayer/storage-get requires (key)".into()); }
                 let key = self.expr(&a[0])?;
                 let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
-                let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 128;
+                let ret_area: i32 = 196608 + 128;
                 let mut v = Vec::new();
                 // key ptr/len
                 v.extend(key.clone());
@@ -1043,7 +1043,7 @@ impl WasmEmitter {
                 if a.is_empty() { return Err("outlayer/context requires a key string".into()); }
                 let _key = self.expr(&a[0])?;
                 let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
-                let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 576;
+                let ret_area: i32 = 196608 + 576;
                 let mut v = Vec::new();
                 // env-signer() -> string: (ret_area) -> ()
                 v.push(Instruction::I32Const(ret_area));

@@ -173,7 +173,7 @@ const INPUT_BUF: i64 = 16384;  // 16KB for input JSON args
 const RETURN_BUF: i64 = 32768;
 const STORAGE_BUF: i64 = 8192;  // 8 bytes for storage read/write buffer
 const STORAGE_U128_BUF: i64 = 8208;  // 16 bytes for u128 storage ops
-pub(crate) const HEAP_START: i64 = 200_000; // heap starts above all data segments and buffers (STDOUT=65536, INPUT=16384, etc.)
+pub(crate) const HEAP_START: i64 = 1_204_096; // heap starts after SENTINEL_BUF (200KB + 1MB + 4KB gap)
 const BORSH_BUF: i64 = 36864; // 4KB scratch buffer for Borsh serialize (after RETURN_BUF)
 
 // ── Borsh schema types (compile-time only) ──
