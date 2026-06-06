@@ -20,15 +20,7 @@ const STDIN_BUF: i64 = 32768;   // 32KB for stdin data
 const STDOUT_BUF: i64 = 65536;  // 32KB for stdout data  
 const STDIN_LEN: i64 = 98304;   // i32: actual bytes read
 const RESULT_BUF: i64 = 65536;  // reuse STDOUT_BUF for result
-// OL_RET_AREA must be AFTER SENTINEL_BUF (65536 + 131008 = 196544)
-const OL_RET_AREA: i32 = 196608; // canonical ABI return area for outlayer host calls (after HTTP buffer)
-
-// ── Compile-time memory layout verification ──
-// These static assertions catch buffer collisions at build time.
-// SENTINEL_BUF: 65536 - 196544 (inclusive, 131008 bytes)
-// OL_RET_AREA must start AFTER SENTINEL_BUF to prevent http-get corrupting outlayer results.
-const _: () = assert!(65536 + 131008 <= OL_RET_AREA as i64, 
-    "OL_RET_AREA overlaps SENTINEL_BUF buffer (65536-196544)");
+// OL_RET_AREA moved to wasi_http.rs (OL_RET_AREA_BASE)
 
 /// WASI Preview 1 function descriptors (module, name, params, results)
 #[derive(Clone)]
@@ -609,7 +601,7 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
 
     // ═══ Memory Section ═══
     let mut memory = MemorySection::new();
-    let pages = em.memory_pages.max(32) as u64; // min 32 pages (2MB) for SENTINEL_BUF (1.06MB) for P2 scratch + heap
+    let pages = em.memory_pages.max(35) as u64; // min 35 pages (2.3MB) for 1MB SENTINEL_BUF + OL_RET_AREA (2MB) for SENTINEL_BUF (1.06MB) for P2 scratch + heap
     memory.memory(MemoryType { minimum: pages, maximum: None, memory64: false, shared: false, page_size_log2: None });
     module.section(&memory);
 
@@ -1373,7 +1365,7 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     // ── Memory ──
     let mut mems = MemorySection::new();
     // min 16 pages (1MB) for P2 scratch + heap
-    let pages = em.memory_pages.max(32) as u64; // min 32 pages (2MB)
+    let pages = em.memory_pages.max(35) as u64; // min 35 pages (2.3MB) for 1MB SENTINEL_BUF + OL_RET_AREA (2MB)
     mems.memory(MemoryType { minimum: pages, maximum: None, memory64: false, shared: false, page_size_log2: None });
     m.section(&mems);
 
@@ -1932,7 +1924,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
 
     // ═══ Memory ═══
     let mut memory = MemorySection::new();
-    let pages = em.memory_pages.max(32) as u64;
+    let pages = em.memory_pages.max(35) as u64; // min 35 pages (2.3MB)
     memory.memory(MemoryType { minimum: pages, maximum: None, memory64: false, shared: false, page_size_log2: None });
     module.section(&memory);
 

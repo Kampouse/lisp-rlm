@@ -52,9 +52,19 @@ pub const HTTP_IMPORT_COUNT: u32 = 28;
 /// Count the `types.ty().function(...)` calls in [`add_http_imports_to_sections`].
 pub const HTTP_TYPE_COUNT: u32 = 10;
 
-// ── Scratch memory layout (single source of truth) ──
-// Shared by both wasi_http.rs (runtime URL path) and wasi_http_buffer.rs (data-segment path).
-pub const SCRATCH: i32 = 196608; // 192KB offset
+// ── Memory layout for OutLayer (P2 WASI) ──
+// HTTP response buffer starts after fixed areas (100KB), 1MB max.
+// OutLayer return area comes after to avoid collision.
+
+/// HTTP response buffer - 1MB for large API responses.
+pub const SENTINEL_BUF: i32 = 1_000_000; // HTTP buffer starts at 1MB (after heap)
+pub const SENTINEL_BUF_SIZE: i32 = 1_000_000; // 1MB for HTTP responses
+
+/// OutLayer return area - AFTER SENTINEL_BUF to avoid collision.
+pub const OL_RET_AREA_BASE: i32 = 2_100_000; // after SENTINEL_BUF (1MB + 1MB = 2MB)
+
+/// HTTP scratch area for poll results, future handles, etc.
+pub const SCRATCH: i32 = OL_RET_AREA_BASE;
 pub const SCRATCH_BODY_RESULT: i32 = SCRATCH;
 pub const SCRATCH_STREAM_RESULT: i32 = SCRATCH + 4;
 pub const SCRATCH_FUTURE_RESULT: i32 = SCRATCH + 8;
@@ -62,20 +72,9 @@ pub const SCRATCH_GET_RESULT: i32 = SCRATCH + 16;
 pub const SCRATCH_CONSUME_RESULT: i32 = SCRATCH + 24;
 pub const SCRATCH_READ_RESULT: i32 = SCRATCH + 32;
 pub const SCRATCH_POLL_RESULT: i32 = SCRATCH + 48;
-pub const SCRATCH_WRITE_RESULT: i32 = SCRATCH + 64; // write result area (runtime path)
-
-/// Buffer for HTTP response body (used by data-segment path in call_outlayer.rs).
-/// Placed between STDOUT_BUF (65536) and SCRATCH (196608) — 128KB available.
-pub const SENTINEL_BUF: i32 = 65536; // right after STDOUT
-pub const SENTINEL_BUF_SIZE: i32 = 131008; // ~128KB response buffer (ends at 196544, 64 byte gap before SCRATCH)
-// Data-segment path uses different sub-offsets (see wasi_http_buffer.rs),
-// but all start from SCRATCH.
+pub const SCRATCH_WRITE_RESULT: i32 = SCRATCH + 64;
 
 /// Computed layout for the entire P2 WASM module.
-///
-/// Derives all type/import/function indices from the canonical constants,
-/// so adding a new import doesn't require touching hardcoded numbers elsewhere.
-#[derive(Debug, Clone)]
 pub struct WasiHttpLayout {
     /// Number of user function types (0..=16 params → 17 types).
     pub user_type_count: u32,
