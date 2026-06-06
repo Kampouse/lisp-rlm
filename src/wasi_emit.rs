@@ -23,6 +23,13 @@ const RESULT_BUF: i64 = 65536;  // reuse STDOUT_BUF for result
 // OL_RET_AREA must be AFTER SENTINEL_BUF (65536 + 131008 = 196544)
 const OL_RET_AREA: i32 = 196608; // canonical ABI return area for outlayer host calls (after HTTP buffer)
 
+// ── Compile-time memory layout verification ──
+// These static assertions catch buffer collisions at build time.
+// SENTINEL_BUF: 65536 - 196544 (inclusive, 131008 bytes)
+// OL_RET_AREA must start AFTER SENTINEL_BUF to prevent http-get corrupting outlayer results.
+const _: () = assert!(65536 + 131008 <= OL_RET_AREA as i64, 
+    "OL_RET_AREA overlaps SENTINEL_BUF buffer (65536-196544)");
+
 /// WASI Preview 1 function descriptors (module, name, params, results)
 #[derive(Clone)]
 struct WasiFunc {
