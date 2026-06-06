@@ -57,11 +57,15 @@ pub const HTTP_TYPE_COUNT: u32 = 10;
 // OutLayer return area comes after to avoid collision.
 
 // ═══ Memory Architecture for OutLayer P2 ═══
-// All positions DERIVED from MAX_MEMORY_P2, not arbitrary numbers.
-// Memory: 64 pages = 4MB (standard WASM limit)
-// Layout: [DATA | HEAP → | HTTP_BUF | OL_RET]
+// Memory layout derived from constants below.
+// NOTE: MAX_MEMORY_P2 is a SAFE DEFAULT, not the runtime limit.
+// OutLayer sets `maximum: None` in WASM (unbounded).
+// Actual limit depends on OutLayer's wasmtime config (UNKNOWN).
+// If OutLayer has smaller limit, reduce MAX_MEMORY_P2.
 
-/// Maximum memory for OutLayer P2 (wasm32-wasip2)
+/// Maximum memory for OutLayer P2 (SAFE DEFAULT).
+/// TODO: Find actual OutLayer runtime limit or make configurable.
+/// Current: 64 pages = 4MB (reasonable for blockchain WASM)
 pub const MAX_MEMORY_P2: i32 = 64 * 65536; // 4MB
 
 /// HTTP max response size (APIs return <100KB, allow headroom)
