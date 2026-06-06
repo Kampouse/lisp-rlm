@@ -609,7 +609,7 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
 
     // ═══ Memory Section ═══
     let mut memory = MemorySection::new();
-    let pages = em.memory_pages.max(17) as u64; // min 17 pages (1.06MB) for P2 scratch + heap
+    let pages = em.memory_pages.max(32) as u64; // min 32 pages (2MB) for SENTINEL_BUF (1.06MB) for P2 scratch + heap
     memory.memory(MemoryType { minimum: pages, maximum: None, memory64: false, shared: false, page_size_log2: None });
     module.section(&memory);
 
@@ -1373,7 +1373,7 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     // ── Memory ──
     let mut mems = MemorySection::new();
     // min 16 pages (1MB) for P2 scratch + heap
-    let pages = em.memory_pages.max(16) as u64;
+    let pages = em.memory_pages.max(32) as u64; // min 32 pages (2MB)
     mems.memory(MemoryType { minimum: pages, maximum: None, memory64: false, shared: false, page_size_log2: None });
     m.section(&mems);
 
@@ -1932,7 +1932,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
 
     // ═══ Memory ═══
     let mut memory = MemorySection::new();
-    let pages = em.memory_pages.max(17) as u64;
+    let pages = em.memory_pages.max(32) as u64;
     memory.memory(MemoryType { minimum: pages, maximum: None, memory64: false, shared: false, page_size_log2: None });
     module.section(&memory);
 
