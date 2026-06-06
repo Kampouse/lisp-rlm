@@ -20,7 +20,8 @@ const STDIN_BUF: i64 = 32768;   // 32KB for stdin data
 const STDOUT_BUF: i64 = 65536;  // 32KB for stdout data  
 const STDIN_LEN: i64 = 98304;   // i32: actual bytes read
 const RESULT_BUF: i64 = 65536;  // reuse STDOUT_BUF for result
-const OL_RET_AREA: i32 = 163840; // canonical ABI return area for outlayer host calls (20 bytes)
+// OL_RET_AREA must be AFTER SENTINEL_BUF (65536 + 131008 = 196544)
+const OL_RET_AREA: i32 = 196608; // canonical ABI return area for outlayer host calls (after HTTP buffer)
 
 /// WASI Preview 1 function descriptors (module, name, params, results)
 #[derive(Clone)]

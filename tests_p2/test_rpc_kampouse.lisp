@@ -1,0 +1,13 @@
+(define (run)
+  (let* (
+    (args-b64 "eyJhY2NvdW50X2lkIjoia2FtcG91c2UubmVhciJ9")
+    (rpc-body (str-cat "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"query\",\"params\":{\"request_type\":\"call_function\",\"finality\":\"final\",\"account_id\":\"contract.main.burrow.near\",\"method_name\":\"get_account\",\"args_base64\":\"" args-b64 "\"}"))
+    (rpc-result (http-post "https://rpc.mainnet.fastnear.com" rpc-body))
+    (outer (json-get-str "result" rpc-result))
+    (inner (json-get-str "result" outer))
+    (account (json-decode-bytes inner))
+    (supplied (json-get-str "supplied" account))
+    (collateral (json-get-str "collateral" account))
+    (borrowed (json-get-str "borrowed" account))
+    )
+    (str-cat "s:" (to-string (str-len supplied)) " c:" (to-string (str-len collateral)) " b:" (to-string (str-len borrowed)))))

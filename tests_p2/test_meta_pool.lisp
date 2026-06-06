@@ -1,0 +1,11 @@
+(define (run)
+  (let* (
+    (prices (http-get "https://api.rhea.finance/list-token-price"))
+    (meta-raw (json-get-str "meta-pool.near" prices))
+    (meta-price (json-get-str "price" meta-raw))
+    (usdt-raw (json-get-str "usdt.tether-token.near" prices))
+    (usdt-price (json-get-str "price" usdt-raw))
+    (lst-raw (json-get-str "lst.rhealab.near" prices))
+    (lst-price (json-get-str "price" lst-raw))
+    )
+    (str-cat "{\"meta_raw\":\"" meta-raw "\",\"meta_price\":\"" meta-price "\",\"usdt_raw\":\"" usdt-raw "\",\"usdt_price\":\"" usdt-price "\",\"lst_raw\":\"" lst-raw "\",\"lst_price\":\"" lst-price "\"}")))

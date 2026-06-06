@@ -1,0 +1,11 @@
+(define (run)
+  (let* (
+    (args "{\"account_id\":\"alice.near\"}")
+    (account-raw (outlayer/view "contract.main.burrow.near" "get_account" args))
+    (len (str-len account-raw))
+    )
+    (str-cat "{\"len\":")
+    (print (to-string len))
+    (str-cat ",\"is_null\":")
+    (print (if (= len 4) "true" "false"))
+    (str-cat "}")))

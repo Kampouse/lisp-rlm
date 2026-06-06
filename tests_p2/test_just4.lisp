@@ -1,0 +1,7 @@
+(define (run)
+  (let* ((prices (http-get "https://api.rhea.finance/list-token-price"))
+         (d1 (json-get-str "price" (json-get-str "nbtc.bridge.near" prices)))
+         (d2 (json-get-str "price" (json-get-str "nbtc.bridge.near" prices)))
+         (d3 (json-get-str "price" (json-get-str "nbtc.bridge.near" prices)))
+         (d4 (json-get-str "price" (json-get-str "nbtc.bridge.near" prices))))
+    (str-cat d1 "|" d2 "|" d3 "|" d4)))

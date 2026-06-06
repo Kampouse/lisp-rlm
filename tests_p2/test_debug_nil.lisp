@@ -1,0 +1,10 @@
+(define (run)
+  (let* (
+    (account-id (json-get-str "account_id"))
+    (acct (if (= (str-len account-id) 0) "kampouse.near" account-id))
+    (args (str-cat "{\"account_id\":\"" acct "\"}"))
+    (account-raw (outlayer/view "contract.main.burrow.near" "get_account" args))
+    (is-nil (nil? account-raw))
+    (is-empty (= (str-len account-raw) 0))
+    )
+    (str-cat "{\"acct\":\"" acct "\",\"is_nil\":" (if is-nil "true" "false") ",\"is_empty\":" (if is-empty "true" "false") "}")))

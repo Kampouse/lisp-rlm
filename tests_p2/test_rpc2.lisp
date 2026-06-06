@@ -1,0 +1,13 @@
+(define (run)
+  (let* (
+    (rpc-body (str-cat "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"query\",\"params\":{\"request_type\":\"call_function\",\"finality\":\"final\",\"account_id\":\"contract.main.burrow.near\",\"method_name\":\"get_account\",\"args_base64\":\"\"}}"))
+    (rpc-result (http-post "https://rpc.mainnet.near.org" rpc-body))
+    (r-len (str-len rpc-result))
+    (outer-result (json-get-str "result" rpc-result))
+    (or-len (str-len outer-result))
+    (inner-result (json-get-str "result" outer-result))
+    (ir-len (str-len inner-result))
+    (account-bytes (json-decode-bytes inner-result))
+    (ab-len (str-len account-bytes))
+    (out (str-cat "rpc:" (to-string r-len) " outer:" (to-string or-len) " inner:" (to-string ir-len) " decoded:" (to-string ab-len))))
+    out))

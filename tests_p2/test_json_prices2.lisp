@@ -1,0 +1,10 @@
+(define (run)
+  (let* (
+    (prices (http-get "https://api.rhea.finance/list-token-price"))
+    (nbtc-p (json-get-str "price" (json-get-str "nbtc.bridge.near" prices)))
+    (zec-p (json-get-str "price" (json-get-str "zec.omft.near" prices)))
+    (prices-0 (str-cat "{\"nbtc.bridge.near\":\"" nbtc-p "\""))
+    (prices-1 (str-cat prices-0 ",\"zec.omft.near\":\"" zec-p "\""))
+    (prices-obj (str-cat prices-1 "}"))
+    )
+    prices-obj))
