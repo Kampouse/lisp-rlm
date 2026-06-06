@@ -301,51 +301,14 @@ pub fn emit_http_get_to_buffer(func: &mut Function, data: &HttpDataSegments) {
         func.instruction(&ld(SCRATCH_READ_RESULT + 8));
         func.instruction(&ls(14)); // chunk_len
         
-        // Copy chunk to resp_buf at offset total_len
-        // First, load the chunk data pointer VALUE
-        func.instruction(&cst(0));
+        // Bulk copy chunk to resp_buf using memory.copy (dst, src, len)
+        func.instruction(&lg(2));     // dst = resp_buf base
+        func.instruction(&lg(13));   // + total_len offset
+        func.instruction(&Instruction::I32Add);
+        func.instruction(&cst(0));    // load chunk data ptr
         func.instruction(&ld(SCRATCH_READ_RESULT + 4));
-        func.instruction(&ls(15)); // chunk_data_ptr VALUE (store in local 15)
-        
-        // Copy loop
-        {
-            // local 16 = copy counter
-            let copy_i = 16u32;
-            func.instruction(&Instruction::I32Const(0));
-            func.instruction(&Instruction::LocalSet(copy_i));
-            func.instruction(&Instruction::Block(BlockType::Empty));
-            func.instruction(&Instruction::Loop(BlockType::Empty));
-            func.instruction(&lg(copy_i));
-            func.instruction(&lg(14)); // chunk_len
-            func.instruction(&Instruction::I32GeU);
-            func.instruction(&Instruction::BrIf(1));
-            // resp_buf[total_len + i] = chunk_data_ptr[i]
-            func.instruction(&lg(2)); // resp_buf base
-            func.instruction(&lg(13)); // total_len
-            func.instruction(&Instruction::I32Add);
-            func.instruction(&lg(copy_i));
-            func.instruction(&Instruction::I32Add);
-            func.instruction(&lg(15)); // chunk_data_ptr VALUE
-            func.instruction(&lg(copy_i));
-            func.instruction(&Instruction::I32Add);
-            func.instruction(&Instruction::I32Load8U(MemArg {
-                offset: 0,
-                align: 0,
-                memory_index: 0,
-            }));
-            func.instruction(&Instruction::I32Store8(MemArg {
-                offset: 0,
-                align: 0,
-                memory_index: 0,
-            }));
-            func.instruction(&lg(copy_i));
-            func.instruction(&Instruction::I32Const(1));
-            func.instruction(&Instruction::I32Add);
-            func.instruction(&Instruction::LocalSet(copy_i));
-            func.instruction(&Instruction::Br(0));
-            func.instruction(&Instruction::End); // loop
-            func.instruction(&Instruction::End); // block
-        }
+        func.instruction(&lg(14));   // len = chunk_len
+        func.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
 
         // total_len += chunk_len
         func.instruction(&lg(13));
@@ -563,36 +526,14 @@ pub fn emit_http_post_to_buffer(func: &mut Function, data: &HttpDataSegments) {
         func.instruction(&ld(SCRATCH_READ_RESULT + 4));
         func.instruction(&ls(17)); // chunk_data_ptr
 
-        // Copy chunk to buf_ptr at offset total_len
-        {
-            let copy_i = 18u32;
-            func.instruction(&Instruction::I32Const(0));
-            func.instruction(&Instruction::LocalSet(copy_i));
-            func.instruction(&Instruction::Block(BlockType::Empty));
-            func.instruction(&Instruction::Loop(BlockType::Empty));
-            func.instruction(&lg(copy_i));
-            func.instruction(&lg(16)); // chunk_len
-            func.instruction(&Instruction::I32GeU);
-            func.instruction(&Instruction::BrIf(1));
-            // buf_ptr[total_len + i] = chunk_data_ptr[i]
-            func.instruction(&lg(4)); // buf_ptr base (param 4)
-            func.instruction(&lg(15)); // total_len
-            func.instruction(&Instruction::I32Add);
-            func.instruction(&lg(copy_i));
-            func.instruction(&Instruction::I32Add);
-            func.instruction(&lg(17)); // chunk_data_ptr
-            func.instruction(&lg(copy_i));
-            func.instruction(&Instruction::I32Add);
-            func.instruction(&Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
-            func.instruction(&Instruction::I32Store8(MemArg { offset: 0, align: 0, memory_index: 0 }));
-            func.instruction(&lg(copy_i));
-            func.instruction(&Instruction::I32Const(1));
-            func.instruction(&Instruction::I32Add);
-            func.instruction(&Instruction::LocalSet(copy_i));
-            func.instruction(&Instruction::Br(0));
-            func.instruction(&Instruction::End); // loop
-            func.instruction(&Instruction::End); // block
-        }
+        // Bulk copy chunk to buf_ptr using memory.copy (dst, src, len)
+        func.instruction(&lg(4));     // dst = buf_ptr base (param 4)
+        func.instruction(&lg(15));   // + total_len offset
+        func.instruction(&Instruction::I32Add);
+        func.instruction(&cst(0));    // load chunk data ptr
+        func.instruction(&ld(SCRATCH_READ_RESULT + 4));
+        func.instruction(&lg(16));   // len = chunk_len
+        func.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
 
         // total_len += chunk_len
         func.instruction(&lg(15));
