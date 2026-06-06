@@ -879,35 +879,40 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
     }
 
     // ── cabi_realloc ──
-    // Bump allocator: stores bump offset at memory address 999996,
-    // base address 1000000. Offset starts at 0 (uninitialized memory = 0).
+    // Unified heap: uses RUNTIME_HEAP_PTR (address 56) shared with lisp heap.
+    // HEAP_START is 200000, heap grows toward SENTINEL_BUF at ~1.3MB.
     // Returns 0 (null) for new_size == 0, matching Rust SDK behavior.
     {
-        let mut realloc = Function::new([(1, ValType::I32)]); // extra local 4
-        let ma4 = MemArg { offset: 0, align: 2, memory_index: 0 };
+        let mut realloc = Function::new([]); // no extra locals needed
+        let ma8 = MemArg { offset: 0, align: 3, memory_index: 0 }; // 8-byte align
         // cabi_realloc(old_ptr, old_size, align, new_size) -> ptr
         // Always fresh allocate (bump allocator can't realloc in place)
         // If new_size == 0 → return 0 (null)
         realloc.instruction(&Instruction::LocalGet(3)); // new_len
         realloc.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
-        // new_size > 0 → fresh allocation
-        realloc.instruction(&Instruction::I32Const(999996));
-        realloc.instruction(&Instruction::I32Load(ma4));
-        realloc.instruction(&Instruction::LocalTee(4));
-        realloc.instruction(&Instruction::I32Const(1000000));
+        // new_size > 0 → fresh allocation from unified heap
+        // Load current heap ptr from RUNTIME_HEAP_PTR (address 56)
+        realloc.instruction(&Instruction::I32Const(56));
+        realloc.instruction(&Instruction::I64Load(ma8)); // load i64 heap ptr
+        realloc.instruction(&Instruction::I32WrapI64); // cast to i32 for return
+        // Bump RUNTIME_HEAP_PTR by new_len aligned up to 8
+        realloc.instruction(&Instruction::LocalGet(3)); // new_len
+        realloc.instruction(&Instruction::I32Const(7));
         realloc.instruction(&Instruction::I32Add);
-        realloc.instruction(&Instruction::LocalSet(4));
-        realloc.instruction(&Instruction::I32Const(999996));
-        realloc.instruction(&Instruction::I32Load(ma4));
-        realloc.instruction(&Instruction::LocalGet(3));
-        realloc.instruction(&Instruction::I32Add);
-        realloc.instruction(&Instruction::I32Const(3));
-        realloc.instruction(&Instruction::I32Add);
-        realloc.instruction(&Instruction::I32Const(-4));
-        realloc.instruction(&Instruction::I32And);
-        realloc.instruction(&Instruction::I32Const(999996));
-        realloc.instruction(&Instruction::I32Store(ma4));
-        realloc.instruction(&Instruction::LocalGet(4));
+        realloc.instruction(&Instruction::I32Const(-8));
+        realloc.instruction(&Instruction::I32And); // align up to 8
+        realloc.instruction(&Instruction::I64ExtendI32U);
+        // Stack: [current_ptr_i32, aligned_len_i64]
+        realloc.instruction(&Instruction::I32Const(56));
+        // Stack: [current_ptr_i32, aligned_len_i64, 56]
+        realloc.instruction(&Instruction::I64Load(ma8)); // load current heap ptr again
+        // Stack: [current_ptr_i32, aligned_len_i64, heap_i64]
+        realloc.instruction(&Instruction::I64Add); // new heap ptr
+        // Stack: [current_ptr_i32, new_heap_i64]
+        realloc.instruction(&Instruction::I32Const(56));
+        // Stack: [current_ptr_i32, new_heap_i64, 56]
+        realloc.instruction(&Instruction::I64Store(ma8)); // store new heap ptr
+        // Stack: [current_ptr_i32] (the returned pointer)
         realloc.instruction(&Instruction::Else);
         // new_size == 0 → return 0 (null)
         realloc.instruction(&Instruction::I32Const(0));
