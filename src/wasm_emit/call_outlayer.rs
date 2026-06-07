@@ -1146,6 +1146,78 @@ impl WasmEmitter {
                 if a.len() < 2 { return Err("outlayer/str-concat requires at least 2 args".into()); }
                 self.call_string("str-cat", a)
             }
+            "outlayer/call" => {
+                // (outlayer/call receiver method args deposit gas) -> string or nil
+                // Uses near:rpc/api call() — host signs+broadcasts transaction.
+                // signer_id/signer_key: empty — host fills from env vars / --signer flag.
+                if a.len() != 5 { return Err("outlayer/call requires 5 args: receiver method args deposit gas".into()); }
+                let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                let ret_area: i32 = 163840 + 512; // separate from view ret area
+                let mut v = Vec::new();
+                // Push 17 i32 params for near:rpc/api call:
+                // 8 strings × (ptr, len) + ret_area = 17
+                // signer_id: empty (host fills)
+                v.push(Instruction::I32Const(0)); v.push(Instruction::I32Const(0));
+                // signer_key: empty (host fills)
+                v.push(Instruction::I32Const(0)); v.push(Instruction::I32Const(0));
+                // receiver, method, args — evaluate as tagged strings
+                for i in 0..3 {
+                    let val = self.expr(&a[i])?;
+                    v.extend(val.clone());
+                    v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                    v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                    v.push(Instruction::I32WrapI64);
+                    v.extend(val);
+                    v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                    v.push(Instruction::I32WrapI64);
+                }
+                // deposit — evaluate as tagged string
+                let dep = self.expr(&a[3])?;
+                v.extend(dep.clone());
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64);
+                v.extend(dep);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                // gas — evaluate as tagged string
+                let gas = self.expr(&a[4])?;
+                v.extend(gas.clone());
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64);
+                v.extend(gas);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                // wait_until: empty (host default = FINAL)
+                v.push(Instruction::I32Const(0)); v.push(Instruction::I32Const(0));
+                // ret_area ptr
+                v.push(Instruction::I32Const(ret_area));
+                // call (sentinel 101) — void return
+                v.push(Instruction::Call(101));
+                // Read tuple<string, string> from ret_area:
+                // +0: tx_hash_ptr, +4: tx_hash_len, +8: error_ptr, +12: error_len
+                v.push(Instruction::I32Const(ret_area + 12)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Ne);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.push(Instruction::I64Const(TAG_NIL)); // error → nil
+                v.push(Instruction::Else);
+                // Read result: ptr from +0, len from +4
+                v.push(Instruction::I32Const(ret_area)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_STR)); v.push(Instruction::I64Or);
+                v.push(Instruction::End);
+                Ok(v)
+            }
             _ => Err("__not_handled__".into()),
         }
     }

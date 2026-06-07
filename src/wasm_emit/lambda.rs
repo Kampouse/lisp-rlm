@@ -358,7 +358,7 @@ impl WasmEmitter {
             "near/validator_stake" => self.need_host(84),
             "near/validator_total_stake" => self.need_host(85),
             // OutLayer RPC — uses "outlayer" module imports
-            "outlayer/view" | "outlayer/raw" | "outlayer/status" |
+            "outlayer/view" | "outlayer/raw" | "outlayer/call" | "outlayer/transfer" | "outlayer/status" |
             "outlayer/storage-set" | "outlayer/storage-get" | "outlayer/storage-has" | "outlayer/storage-delete" |
             "outlayer/context" |
             "storage-set" | "storage-get" | "storage-has" | "storage-delete" | "storage-increment" |
