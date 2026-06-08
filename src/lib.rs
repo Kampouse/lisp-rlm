@@ -47,7 +47,11 @@ pub mod clojure;
 
 pub use bytecode::{exec_compiled_loop, run_compiled_lambda, try_compile_lambda, try_compile_loop};
 pub use wasm_emit::{compile_near, compile_near_untyped, compile_near_from_exprs, compile_near_to_wat_from_exprs, compile_pure, compile_fuzz};
-pub use wasi_emit::{compile_outlayer_p2_browser, compile_outlayer_p2_from_exprs, compile_outlayer_p2_core_browser};
+pub use wasi_emit::{
+    compile_outlayer, compile_outlayer_p2,
+    compile_outlayer_p2_browser, compile_outlayer_p2_core_browser,
+    compile_outlayer_p2_from_exprs,
+};
 #[cfg(not(target_arch = "wasm32"))]
 pub use dispatch::llm_provider::{GenericProvider, LlmProvider, LlmResponse};
 #[cfg(not(target_arch = "wasm32"))]
