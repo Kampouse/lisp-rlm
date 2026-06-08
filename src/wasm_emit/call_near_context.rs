@@ -61,7 +61,9 @@ impl WasmEmitter {
                         v.push(Instruction::I64ExtendI32U); // i32 → i64
                     v.push(Instruction::End);
                 v.push(Instruction::End);
-                v.extend(self.emit_tag_num()); // tag as number
+                // Result is 0 (false) or 1 (true) on stack
+                // Tag as boolean: (payload << 3) | TAG_BOOL
+                v.extend(self.emit_tag_bool());
                 Ok(v)
             }
             "near/attached_deposit_u128" => {
