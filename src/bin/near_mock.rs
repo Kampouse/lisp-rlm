@@ -412,11 +412,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let attached_deposit_fn = Func::new(
         &mut store,
         FuncType::new(&engine, vec![ValType::I64], vec![]),
-        move |_, args, _| {
-            s_ad.lock()
-                .unwrap()
-                .registers
-                .insert(args[0].unwrap_i64() as u64, vec![0u8; 16]);
+        move |mut caller, args, _| {
+            let ptr = args[0].unwrap_i64() as usize;
+            // Write 16 zero bytes to memory (mock always has 0 deposit)
+            if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                let md = mem.data_mut(&mut caller);
+                if ptr + 16 <= md.len() {
+                    md[ptr..ptr + 16].copy_from_slice(&[0u8; 16]);
+                    eprintln!("  → attached_deposit(ptr={}) wrote 16b zeros", ptr);
+                }
+            }
             Ok(())
         },
     );

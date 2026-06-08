@@ -25,13 +25,9 @@ impl WasmEmitter {
                     }
                 } else { 0u64 };
                 let mut v = Vec::new();
-                // attached_deposit(register_id) writes 16 bytes to register
-                // read_register(register_id, dest_ptr) copies to memory
-                v.push(Instruction::I64Const(TEMP_MEM as i64)); // register_id
-                v.push(Self::host_call(14)); // attached_deposit -> register
-                v.push(Instruction::I64Const(TEMP_MEM as i64)); // register_id
-                v.push(Instruction::I64Const(TEMP_MEM as i64)); // dest ptr
-                v.push(Self::host_call(0)); // read_register(TEMP_MEM, TEMP_MEM) -> memory
+                // attached_deposit(balance_ptr) writes 16 bytes directly to memory
+                v.push(Instruction::I64Const(TEMP_MEM as i64)); // balance_ptr
+                v.push(Self::host_call(14)); // attached_deposit -> writes to memory at TEMP_MEM
                 // Compare: deposit >= threshold (u128 comparison)
                 // deposit at TEMP_MEM[0..16], threshold = (lo_val, hi_val)
                 // if dep_hi < threshold_hi → false (0)
@@ -67,15 +63,11 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/attached_deposit_u128" => {
-                // attached_deposit(register_id) writes 16 bytes to register
-                // read_register(register_id, dest_ptr) copies to memory
-                // Return TEMP_MEM address for u128 operations
+                // attached_deposit(balance_ptr) writes 16 bytes directly to memory
+                // No register involved - writes u128 directly to the pointer
                 let mut v = Vec::new();
-                v.push(Instruction::I64Const(TEMP_MEM as i64)); // register_id
-                v.push(Self::host_call(14)); // attached_deposit -> register
-                v.push(Instruction::I64Const(TEMP_MEM as i64)); // register_id
-                v.push(Instruction::I64Const(TEMP_MEM as i64)); // dest ptr
-                v.push(Self::host_call(0)); // read_register(TEMP_MEM, TEMP_MEM) -> memory
+                v.push(Instruction::I64Const(TEMP_MEM as i64)); // balance_ptr
+                v.push(Self::host_call(14)); // attached_deposit -> writes to memory at TEMP_MEM
                 v.push(Instruction::I64Const(TEMP_MEM));
                 v.extend(self.emit_tag_num());
                 Ok(v)
