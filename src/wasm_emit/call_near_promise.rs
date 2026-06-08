@@ -214,12 +214,13 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/promise_batch_action_transfer" => {
-                if a.len() != 3 { return Err("near/promise_batch_action_transfer: need 3 args (idx, amount_ptr, amount_len)".into()); }
+                // promise_batch_action_transfer(promise_idx: u64, amount_ptr: u64)
+                // NEAR reads 16 bytes (u128) from amount_ptr
+                if a.len() != 2 { return Err("near/promise_batch_action_transfer: need 2 args (idx, amount_ptr)".into()); }
                 let idx = self.expr(&a[0])?;
                 let amount_ptr = self.expr(&a[1])?;
-                let amount_len = self.expr(&a[2])?;
                 let mut v = Vec::new();
-                v.extend(idx); v.extend(amount_ptr); v.extend(amount_len);
+                v.extend(idx); v.extend(amount_ptr);
                 v.push(Self::host_call(44));
                 v.push(Instruction::I64Const(0));
                 Ok(v)
@@ -677,10 +678,10 @@ impl WasmEmitter {
                 v.extend(acct); v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
                 v.push(Self::host_call(39)); v.push(Instruction::Drop);
-                // promise_batch_action_transfer(promise_idx=0, amount_ptr=AMOUNT_MEM, amount_len=16)
+                // promise_batch_action_transfer(promise_idx=0, amount_ptr=AMOUNT_MEM)
+                // NEAR reads 16 bytes (u128) from amount_ptr
                 v.push(Instruction::I64Const(0)); // promise_idx (just created)
                 v.push(Instruction::I64Const(AMOUNT_MEM)); // amount_ptr as i64
-                v.push(Instruction::I64Const(16)); // amount_len
                 v.push(Self::host_call(44)); // returns void
                 v.push(Instruction::I64Const(TAG_NIL));
                 Ok(v)

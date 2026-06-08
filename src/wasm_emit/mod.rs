@@ -113,7 +113,7 @@ pub(crate) const HOST_FUNCS: &[(&str, &[ValType], &[ValType])] = &[
     ("promise_batch_action_create_account", &[ValType::I64], &[]),                                // 41
     ("promise_batch_action_deploy_contract", &[ValType::I64, ValType::I64, ValType::I64], &[]),    // 42
     ("promise_batch_action_function_call", &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[]), // 43
-    ("promise_batch_action_transfer", &[ValType::I64, ValType::I64, ValType::I64], &[]),            // 44
+    ("promise_batch_action_transfer", &[ValType::I64, ValType::I64], &[]),            // 44
     ("promise_batch_action_stake",  &[ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[]), // 45
     ("promise_batch_action_add_key_with_full_access", &[ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[]), // 46
     ("promise_batch_action_add_key_with_function_call", &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[]), // 47
