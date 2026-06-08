@@ -505,6 +505,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         },
     );
+    let noop_4i_1o = Func::new(
+        &mut store,
+        FuncType::new(&engine, vec![ValType::I64; 4], vec![ValType::I64]),
+        |_, _, r| {
+            r[0] = Val::I64(0);
+            Ok(())
+        },
+    );
+    let noop_8i_1o = Func::new(
+        &mut store,
+        FuncType::new(&engine, vec![ValType::I64; 8], vec![ValType::I64]),
+        |_, _, r| {
+            r[0] = Val::I64(0);
+            Ok(())
+        },
+    );
+    let noop_9i_1o = Func::new(
+        &mut store,
+        FuncType::new(&engine, vec![ValType::I64; 9], vec![ValType::I64]),
+        |_, _, r| {
+            r[0] = Val::I64(0);
+            Ok(())
+        },
+    );
 
     // === Link ===
     let mut linker = Linker::new(&engine);
@@ -540,19 +564,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     linker.define(&store, "env", "sha256", noop1.clone())?;
     linker.define(&store, "env", "keccak256", noop1.clone())?;
     linker.define(&store, "env", "log", noop1.clone())?;
-    linker.define(&store, "env", "validator_stake", noop_2i_1o.clone())?;
-    linker.define(&store, "env", "validator_total_stake", noop0r.clone())?;
+    linker.define(&store, "env", "validator_stake", noop_3i.clone())?;
+    linker.define(&store, "env", "validator_total_stake", noop1.clone())?;
     linker.define(&store, "env", "alt_bn128_g1_multiexp", noop1.clone())?;
     linker.define(&store, "env", "alt_bn128_g1_sum", noop1.clone())?;
     linker.define(&store, "env", "alt_bn128_pairing_check", noop1.clone())?;
     linker.define(&store, "env", "ed25519_verify", noop_6i_1o)?;
-    linker.define(&store, "env", "ecrecover", noop_2i_1o.clone())?;
+    linker.define(&store, "env", "ecrecover", noop_7i_1o.clone())?;
     linker.define(&store, "env", "epoch_height", noop0r.clone())?;
     linker.define(&store, "env", "storage_usage", noop0r.clone())?;
     linker.define(&store, "env", "log_s", noop1.clone())?;
     linker.define(&store, "env", "validator_account_id", noop1.clone())?;
-    linker.define(&store, "env", "promise_create", noop_3i_1o.clone())?;
-    linker.define(&store, "env", "promise_then", noop_3i_1o.clone())?;
+    linker.define(&store, "env", "promise_create", noop_8i_1o.clone())?;
+    linker.define(&store, "env", "promise_then", noop_9i_1o.clone())?;
     linker.define(&store, "env", "promise_and", noop_2i_1o.clone())?;
     linker.define(&store, "env", "promise_batch_create", noop_2i_1o.clone())?;
     linker.define(&store, "env", "promise_batch_then", noop_3i_1o)?;
@@ -561,7 +585,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     linker.define(&store, "env", "promise_result", noop_2i_1o.clone())?;
     linker.define(&store, "env", "promise_return", noop1.clone())?;
     linker.define(&store, "env", "promise_yield_create", noop_7i_1o)?;
-    linker.define(&store, "env", "promise_yield_resume", noop_4i_i32)?;
+    linker.define(&store, "env", "promise_yield_resume", noop_4i_1o.clone())?;
+    linker.define(&store, "env", "account_locked_balance", noop1.clone())?;
+    linker.define(&store, "env", "storage_iter_prefix", noop_2i_1o.clone())?;
+    linker.define(&store, "env", "storage_iter_range", noop_4i_1o.clone())?;
+    linker.define(&store, "env", "storage_iter_next", noop_3i_1o.clone())?;
+    linker.define(&store, "env", "write_register", noop_3i.clone())?;
     linker.define(
         &store,
         "env",
