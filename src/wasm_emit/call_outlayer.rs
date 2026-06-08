@@ -1218,6 +1218,53 @@ impl WasmEmitter {
                 v.push(Instruction::End);
                 Ok(v)
             }
+            "outlayer/transfer" => {
+                // (outlayer/transfer signer_id signer_key receiver amount_yocto) -> tx_hash string or nil
+                // signer_key comes from outlayer/storage-get (permissionless — WASM reads from storage).
+                // amount_yocto is a decimal string (e.g., "10000000000000000000" = 0.01 NEAR).
+                // Uses near:rpc/api transfer() — 11 i32 params (5 strings × ptr/len + ret_area).
+                if a.len() != 4 { return Err("outlayer/transfer requires 4 args: signer_id signer_key receiver amount_yocto".into()); }
+                let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                let ret_area: i32 = 163840 + 768; // separate from view (512) and call (512)
+                let mut v = Vec::new();
+                // signer_id, signer_key, receiver, amount_yocto — evaluate as tagged strings, untag to (ptr, len)
+                for i in 0..4 {
+                    let val = self.expr(&a[i])?;
+                    v.extend(val.clone());
+                    v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                    v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                    v.push(Instruction::I32WrapI64);
+                    v.extend(val);
+                    v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                    v.push(Instruction::I32WrapI64);
+                }
+                // wait_until: empty (host default = FINAL)
+                v.push(Instruction::I32Const(0)); v.push(Instruction::I32Const(0));
+                // ret_area ptr
+                v.push(Instruction::I32Const(ret_area));
+                // call (sentinel 102) — transfer
+                v.push(Instruction::Call(102));
+                // Read tuple<string, string> from ret_area:
+                // +0: tx_hash_ptr, +4: tx_hash_len, +8: error_ptr, +12: error_len
+                v.push(Instruction::I32Const(ret_area + 12)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Ne);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.push(Instruction::I64Const(TAG_NIL)); // error → nil
+                v.push(Instruction::Else);
+                // Read result: ptr from +0, len from +4
+                v.push(Instruction::I32Const(ret_area)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_STR)); v.push(Instruction::I64Or);
+                v.push(Instruction::End);
+                Ok(v)
+            }
             _ => Err("__not_handled__".into()),
         }
     }

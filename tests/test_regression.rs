@@ -178,6 +178,17 @@ mod compile {
   (outlayer/view "contract.near" "get_price" "{}"))
 "#, 25_000);
 
+    // --- outlayer/transfer ---
+
+    p2_test!(
+        p2_outlayer_transfer,
+        r#"
+(define (run)
+  (outlayer/transfer "signer.near" "ed25519:key" "receiver.near" "10000000000000000000"))
+"#,
+        30_000
+    );
+
     // --- outlayer/call ---
 
     // outlayer/call is P1 only — tested in P1 section
@@ -623,6 +634,15 @@ mod outlayer_e2e {
         let wasm = lisp_rlm_wasm::compile_outlayer_p2(src).expect("compile failed");
         std::fs::write("/tmp/test_combined_view.wasm", &wasm).expect("write failed");
         assert!(wasm.len() > 1000, "WASM too small: {} bytes", wasm.len());
+    }
+
+    /// Compile outlayer/transfer (P2 library path)
+    #[test]
+    fn compile_transfer_p2() {
+        let src = include_str!("../tests_p2/test_transfer.lisp");
+        let wasm = lisp_rlm_wasm::compile_outlayer_p2(src).expect("compile failed");
+        std::fs::write("/tmp/test_transfer.wasm", &wasm).expect("write failed");
+        assert!(wasm.len() > 500, "WASM too small: {} bytes", wasm.len());
     }
 
     // Near-mock tier
