@@ -668,8 +668,8 @@ impl TcEnv {
         env.insert_mono("near/attached_deposit".into(), TcType::Arrow(vec![], Box::new(int_ty.clone())));
         // near/attached_deposit_u128 : () → int (returns tagged pointer to TEMP_MEM with u128)
         env.insert_mono("near/attached_deposit_u128".into(), TcType::Arrow(vec![], Box::new(int_ty.clone())));
-        // near/deposit-gte : int → int → int (lo hi thresholds, returns 0/1)
-        env.insert_mono("near/deposit-gte".into(), TcType::Arrow(vec![int_ty.clone()], Box::new(TcType::Arrow(vec![int_ty.clone()], Box::new(int_ty.clone())))));
+        // near/deposit-gte : int → int (lo threshold, returns 0/1)
+        env.insert_mono("near/deposit-gte".into(), TcType::Arrow(vec![int_ty.clone()], Box::new(int_ty.clone())));
         // near/store_u128 : str → int → nil  (key, tagged pointer)
         env.insert_mono("near/store_u128".into(), TcType::Arrow(vec![str_ty.clone(), int_ty.clone()], Box::new(nil_ty.clone())));
         // near/load_u128 : str → int (key) → int (returns tagged pointer)
