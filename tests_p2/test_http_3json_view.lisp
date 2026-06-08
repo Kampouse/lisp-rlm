@@ -1,0 +1,10 @@
+(define (run)
+  (let* (
+    (prices (http-get "https://api.rhea.finance/list-token-price"))
+    (nbtc-p (json-get-str "price" (json-get-str "nbtc.bridge.near" prices)))
+    (zec-p (json-get-str "price" (json-get-str "zec.omft.near" prices)))
+    (usdt-p (json-get-str "price" (json-get-str "usdt.tether-token.near" prices)))
+    (prices-0 (str-cat "{\"nbtc\":\"" nbtc-p "\"}"))
+    (account (outlayer/view "contract.main.burrow.near" "get_account" "{\"account_id\":\"kampouse.near\"}"))
+    )
+    (str-cat prices-0 "," (json-get-str "supplied" account))))

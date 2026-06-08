@@ -1,0 +1,2 @@
+(define (run)
+  (env-signer))

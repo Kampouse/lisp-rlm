@@ -1,0 +1,7 @@
+(define (test-dg)
+  (let ((acct (near/signer_account_id)))
+    (let ((dep (near/attached_deposit_u128)))
+      (near/store_u128 (str-cat acct "/deposit") dep)
+      (near/store (str-cat acct "/credits") 1000)
+      (near/return_str (str-cat "ok:" acct)))))
+(export "test-dg" test-dg)

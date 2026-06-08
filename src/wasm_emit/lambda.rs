@@ -264,6 +264,7 @@ impl WasmEmitter {
             "near/block_timestamp" => self.need_host(9),
             "near/epoch_height" => self.need_host(10),
             "near/attached_deposit" => self.need_host(14),
+            "near/attached_deposit_u128" => self.need_host(14),
             "near/prepaid_gas" => self.need_host(15),
             "near/used_gas" => self.need_host(16),
             "near/sha256" => { self.need_host(21); self.need_host(0); self.need_host(1); }
@@ -292,6 +293,7 @@ impl WasmEmitter {
             "near/promise_batch_action_deploy_contract" => self.need_host(42),
             "near/promise_batch_action_function_call" => self.need_host(43),
             "near/promise_batch_action_transfer" => self.need_host(44),
+            "near/transfer" => { self.need_host(39); self.need_host(44); }
             "near/promise_batch_action_stake" => self.need_host(45),
             "near/promise_batch_action_add_key_with_full_access" => self.need_host(46),
             "near/promise_batch_action_add_key_with_function_call" => self.need_host(47),
@@ -307,6 +309,8 @@ impl WasmEmitter {
             "near/json_get_int" | "near/json_get_str" | "near/json_get_u128" | "json-get" | "json-get-str" | "json-get-float" | "json/get" => { if !self.wasi_mode { self.need_host(7); self.need_host(0); self.need_host(1); } }
             "json-bytes-to-str" | "json-decode-bytes" => { /* pure WASM, uses user func */ }
             "u128/store_storage" => { self.need_host(17); }
+            "near/store_u128" => { self.need_host(17); }
+            "near/load_u128" => { self.need_host(18); self.need_host(0); }
             "u128/load_storage" => { self.need_host(18); self.need_host(0); }
             "near/json_return_int" | "near/json_return_str" | "json-return" => { if !self.wasi_mode { self.need_host(25); } },
             "borsh-serialize" | "borsh-deserialize" | "array" => { /* pure WASM, no host fns needed */ },

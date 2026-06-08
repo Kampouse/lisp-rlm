@@ -645,6 +645,46 @@ impl WasmEmitter {
                 v.push(Self::host_call(83));
                 v.extend(self.emit_tag_num()); Ok(v)
             }
+            // near/transfer: (near/transfer account_id amount_yocto) -> nil
+            // High-level transfer: creates promise batch, adds transfer action
+            "near/transfer" => {
+                if a.len() != 2 { return Err("near/transfer: need 2 args (account_id, amount_yocto)".into()); }
+                let acct = self.expr(&a[0])?;
+                let amt = self.expr(&a[1])?;
+                let amt_local = self.local_idx("__xfr_amt");
+                let mut v = Vec::new();
+                // Save amount pointer to local
+                v.extend(amt);
+                v.push(Instruction::LocalSet(amt_local));
+                // Copy u128 from heap to AMOUNT_MEM
+                // I64Store: [dest:i32, value:i64] -> [] (value on TOP)
+                // Low 64 bits: load from ptr[0], store to AMOUNT_MEM[0]
+                v.push(Instruction::I32Const(AMOUNT_MEM as i32));  // dest addr (BOTTOM)
+                v.push(Instruction::LocalGet(amt_local)); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);  // src addr
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                // Stack: [dest, value]
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                // High 64 bits: load from ptr[8], store to AMOUNT_MEM[8]
+                v.push(Instruction::I32Const((AMOUNT_MEM + 8) as i32));  // dest addr
+                v.push(Instruction::LocalGet(amt_local)); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                // promise_batch_create(account_len, account_ptr) -> promise_idx
+                v.extend(acct.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(acct); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Self::host_call(39)); v.push(Instruction::Drop);
+                // promise_batch_action_transfer(promise_idx=0, amount_ptr=AMOUNT_MEM, amount_len=16)
+                v.push(Instruction::I64Const(0)); // promise_idx (just created)
+                v.push(Instruction::I64Const(AMOUNT_MEM)); // amount_ptr as i64
+                v.push(Instruction::I64Const(16)); // amount_len
+                v.push(Self::host_call(44)); // returns void
+                v.push(Instruction::I64Const(TAG_NIL));
+                Ok(v)
+            }
             _ => Err("__not_handled__".into()),
         }
     }

@@ -1,0 +1,5 @@
+;; Regression test: to-string with regular TAG_NUM (i64)
+(let* ((n 12345)
+      (s (to-string n)))
+  (near/log s)
+  s)

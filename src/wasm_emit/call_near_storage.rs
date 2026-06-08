@@ -235,7 +235,93 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/storage_usage" => { let mut v = vec![Self::host_call(11)]; v.extend(self.emit_tag_num()); Ok(v) },
-            _ => Err("__not_handled__".into()),
+            // near/store_u128: (near/store_u128 "key" tagged_ptr) -> nil
+            // High-level u128 storage - takes tagged pointer, stores 16 bytes to NEAR storage
+            "near/store_u128" => {
+                self.need_host(17);
+                if a.len() != 2 { return Err("near/store_u128: need 2 args (key, tagged_ptr)".into()); }
+                let key_expr = self.expr(&a[0])?;
+                let ptr_expr = self.expr(&a[1])?;
+                let ptr_local = self.local_idx("__u128_ptr");
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let mut v = Vec::new();
+                // Save ptr to local
+                v.extend(ptr_expr);
+                v.push(Instruction::LocalSet(ptr_local));
+                // Copy u128 from ptr to STORAGE_U128_BUF
+                // STORAGE_U128_BUF[0..8] = ptr[0..8] (low)
+                v.push(Instruction::I32Const(STORAGE_U128_BUF as i32));
+                v.push(Instruction::LocalGet(ptr_local)); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(ma.clone()));
+                v.push(Instruction::I64Store(ma.clone()));
+                // STORAGE_U128_BUF[8..16] = ptr[8..16] (high)
+                v.push(Instruction::I32Const((STORAGE_U128_BUF + 8) as i32));
+                v.push(Instruction::LocalGet(ptr_local)); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Store(ma));
+                // storage_write(key_len, key_ptr, 16, STORAGE_U128_BUF, register=0)
+                v.extend(key_expr.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(key_expr); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(16));
+                v.push(Instruction::I64Const(STORAGE_U128_BUF as i64));
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(17)); v.push(Instruction::Drop);
+                v.push(Instruction::I64Const(TAG_NIL));
+                Ok(v)
+            }
+            // near/load_u128: (near/load_u128 "key") -> tagged_ptr
+            // High-level u128 load - reads 16 bytes from storage, returns tagged pointer to TEMP_MEM
+            "near/load_u128" => {
+                self.need_host(18);
+                self.need_host(0);
+                if a.len() != 1 { return Err("near/load_u128: need 1 arg (key)".into()); }
+                let key_expr = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                let found = self.local_idx("__found");
+                // storage_read(key_len, key_ptr, register=1)
+                v.extend(key_expr.clone()); v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.extend(key_expr); v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(1));
+                v.push(Self::host_call(18));
+                v.push(Instruction::LocalSet(found));
+                // Check if found
+                v.push(Instruction::LocalGet(found));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                // Not found: return tagged 0
+                v.push(Instruction::I64Const(0));
+                v.extend(self.emit_tag_num());
+                v.push(Instruction::Else);
+                // Found: read_register(1, STORAGE_U128_BUF)
+                v.push(Instruction::I64Const(1)); v.push(Instruction::I64Const(STORAGE_U128_BUF as i64));
+                v.push(Self::host_call(0)); // read_register returns nothing
+                // Copy from STORAGE_U128_BUF to TEMP_MEM
+                // I64Store type: [i32 addr, i64 value] -> [] (value on TOP)
+                // TEMP_MEM[0..8] = STORAGE_U128_BUF[0..8]
+                v.push(Instruction::I32Const(TEMP_MEM as i32));  // dest addr (BOTTOM)
+                v.push(Instruction::I32Const(STORAGE_U128_BUF as i32));  // src addr
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                // Stack: [dest, value] - dest at bottom, value on top
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                // TEMP_MEM[8..16] = STORAGE_U128_BUF[8..16]
+                v.push(Instruction::I32Const((TEMP_MEM + 8) as i32));  // dest addr
+                v.push(Instruction::I32Const((STORAGE_U128_BUF + 8) as i32));  // src addr
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                // Return TEMP_MEM as tagged pointer
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.extend(self.emit_tag_num());
+                v.push(Instruction::End);
+                Ok(v)
+            }
+            _ => Err("__not_handled__".into())
         }
     }
 }

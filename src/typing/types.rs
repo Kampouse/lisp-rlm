@@ -666,6 +666,16 @@ impl TcEnv {
         env.insert_mono("near/signer_public_key".into(), TcType::Arrow(vec![], Box::new(str_ty.clone())));
         // near/attached_deposit : () → int
         env.insert_mono("near/attached_deposit".into(), TcType::Arrow(vec![], Box::new(int_ty.clone())));
+        // near/attached_deposit_u128 : () → int (returns tagged pointer to TEMP_MEM with u128)
+        env.insert_mono("near/attached_deposit_u128".into(), TcType::Arrow(vec![], Box::new(int_ty.clone())));
+        // near/deposit-gte : int → int → int (lo hi thresholds, returns 0/1)
+        env.insert_mono("near/deposit-gte".into(), TcType::Arrow(vec![int_ty.clone()], Box::new(TcType::Arrow(vec![int_ty.clone()], Box::new(int_ty.clone())))));
+        // near/store_u128 : str → int → nil  (key, tagged pointer)
+        env.insert_mono("near/store_u128".into(), TcType::Arrow(vec![str_ty.clone(), int_ty.clone()], Box::new(nil_ty.clone())));
+        // near/load_u128 : str → int (key) → int (returns tagged pointer)
+        env.insert_mono("near/load_u128".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(int_ty.clone())));
+        // near/transfer : str → int → nil  (account_id, amount_yocto)
+        env.insert_mono("near/transfer".into(), TcType::Arrow(vec![str_ty.clone(), int_ty.clone()], Box::new(nil_ty.clone())));
         // near/block_timestamp : () → int
         env.insert_mono("near/block_timestamp".into(), TcType::Arrow(vec![], Box::new(int_ty.clone())));
         // near/block_height : () → int

@@ -59,6 +59,19 @@ impl WasmEmitter {
                 v.extend(self.emit_tag_num());
                 Ok(v)
             }
+            "near/attached_deposit_u128" => {
+                // Write attached deposit (16 bytes) to TEMP_MEM via host call 14
+                // Then represent as 2-element array [lo, hi] on heap
+                let mut v = Vec::new();
+                v.push(Instruction::I64Const(TEMP_MEM as i64));
+                v.push(Self::host_call(14)); // writes 16 bytes to TEMP_MEM
+                // We return TEMP_MEM as a tagged Num - caller can pass to u128/store_storage
+                // TEMP_MEM now holds: [u128_lo @ offset 0, u128_hi @ offset 8]
+                // Alternatively, we could allocate on heap, but TEMP_MEM works for immediate use
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
             "near/account_balance" => self.read_u128_low(12),
             "near/account_balance_high" => self.read_u128_high(12),
             "near/account_locked_balance" => self.read_u128_low(13),

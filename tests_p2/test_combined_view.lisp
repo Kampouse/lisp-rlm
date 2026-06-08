@@ -1,6 +1,6 @@
 (define (run)
   (let* (
-    ;; Fetch all prices in one call
+    ;; Fetch all prices in one HTTP call
     (prices (http-get "https://api.rhea.finance/list-token-price"))
     (nbtc-p (json-get-str "price" (json-get-str "nbtc.bridge.near" prices)))
     (zec-p (json-get-str "price" (json-get-str "zec.omft.near" prices)))
@@ -23,7 +23,7 @@
     (prices-7 (str-cat prices-6 ",\"a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.factory.bridge.near\":\"" usdce-p "\""))
     (prices-obj (str-cat prices-7 ",\"2260fac5e5542a773aa44fbcfedf7c193bc2c599.factory.bridge.near\":\"" weth-p "\"}"))
     
-    ;; Fetch Burrow account positions via outlayer/view (240 instr vs 39K for http-post)
+    ;; Fetch Burrow positions via outlayer/view (native RPC, ~240 instr vs ~39K http-post)
     (account (outlayer/view "contract.main.burrow.near" "get_account" "{\"account_id\":\"kampouse.near\"}"))
     (supplied (json-get-str "supplied" account))
     (collateral (json-get-str "collateral" account))
