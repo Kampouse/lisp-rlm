@@ -25,49 +25,55 @@ impl WasmEmitter {
                     }
                 } else { 0u64 };
                 let mut v = Vec::new();
-                // Call attached_deposit host (writes 16 bytes to TEMP_MEM)
-                v.push(Instruction::I64Const(TEMP_MEM as i64));
-                v.push(Self::host_call(14));
-                // Compare: deposit >= threshold
-                // deposit_lo = I64Load(TEMP_MEM+0), deposit_hi = I64Load(TEMP_MEM+8)
-                // threshold_lo = lo_val, threshold_hi = hi_val
-                // if dep_hi < threshold_hi → false
-                // if dep_hi > threshold_hi → true
-                // else dep_lo >= threshold_lo
+                // attached_deposit(register_id) writes 16 bytes to register
+                // read_register(register_id, dest_ptr) copies to memory
+                v.push(Instruction::I64Const(TEMP_MEM as i64)); // register_id
+                v.push(Self::host_call(14)); // attached_deposit -> register
+                v.push(Instruction::I64Const(TEMP_MEM as i64)); // register_id
+                v.push(Instruction::I64Const(TEMP_MEM as i64)); // dest ptr
+                v.push(Self::host_call(0)); // read_register(TEMP_MEM, TEMP_MEM) -> memory
+                // Compare: deposit >= threshold (u128 comparison)
+                // deposit at TEMP_MEM[0..16], threshold = (lo_val, hi_val)
+                // if dep_hi < threshold_hi → false (0)
+                // if dep_hi > threshold_hi → true (1)
+                // else dep_lo >= threshold_lo → result
                 v.push(Instruction::I32Const(TEMP_MEM as i32));
                 v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 })); // dep_hi
                 v.push(Instruction::I64Const(hi_val as i64)); // threshold_hi
                 v.push(Instruction::I64LtU);
+                // Stack: [i32 condition] - If consumes i32
                 v.push(Instruction::If(BlockType::Result(ValType::I64)));
-                    v.push(Instruction::I64Const(0)); // dep < threshold → false
+                    v.push(Instruction::I64Const(0)); // dep_hi < threshold_hi → false
                 v.push(Instruction::Else);
                     v.push(Instruction::I32Const(TEMP_MEM as i32));
                     v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 })); // dep_hi
                     v.push(Instruction::I64Const(hi_val as i64));
                     v.push(Instruction::I64GtU);
+                    // Stack: [i32 condition] - If consumes i32
                     v.push(Instruction::If(BlockType::Result(ValType::I64)));
-                        v.push(Instruction::I64Const(1)); // dep > threshold → true
+                        v.push(Instruction::I64Const(1)); // dep_hi > threshold_hi → true
                     v.push(Instruction::Else);
-                        // Highs equal, compare low
+                        // Highs equal, compare low parts
                         v.push(Instruction::I32Const(TEMP_MEM as i32));
                         v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 })); // dep_lo
                         v.push(Instruction::I64Const(lo_val as i64));
                         v.push(Instruction::I64GeU);
-                        v.push(Instruction::I64ExtendI32U);
+                        v.push(Instruction::I64ExtendI32U); // i32 → i64
                     v.push(Instruction::End);
                 v.push(Instruction::End);
-                v.extend(self.emit_tag_num());
+                v.extend(self.emit_tag_num()); // tag as number
                 Ok(v)
             }
             "near/attached_deposit_u128" => {
-                // Write attached deposit (16 bytes) to TEMP_MEM via host call 14
-                // Then represent as 2-element array [lo, hi] on heap
+                // attached_deposit(register_id) writes 16 bytes to register
+                // read_register(register_id, dest_ptr) copies to memory
+                // Return TEMP_MEM address for u128 operations
                 let mut v = Vec::new();
-                v.push(Instruction::I64Const(TEMP_MEM as i64));
-                v.push(Self::host_call(14)); // writes 16 bytes to TEMP_MEM
-                // We return TEMP_MEM as a tagged Num - caller can pass to u128/store_storage
-                // TEMP_MEM now holds: [u128_lo @ offset 0, u128_hi @ offset 8]
-                // Alternatively, we could allocate on heap, but TEMP_MEM works for immediate use
+                v.push(Instruction::I64Const(TEMP_MEM as i64)); // register_id
+                v.push(Self::host_call(14)); // attached_deposit -> register
+                v.push(Instruction::I64Const(TEMP_MEM as i64)); // register_id
+                v.push(Instruction::I64Const(TEMP_MEM as i64)); // dest ptr
+                v.push(Self::host_call(0)); // read_register(TEMP_MEM, TEMP_MEM) -> memory
                 v.push(Instruction::I64Const(TEMP_MEM));
                 v.extend(self.emit_tag_num());
                 Ok(v)
