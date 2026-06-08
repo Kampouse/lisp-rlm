@@ -157,6 +157,39 @@ near-compile --repl                   Interactive REPL
 near-compile bench <file>             Benchmark with fuel metering
 ```
 
+### near-mock: Local NEAR Runtime
+
+Test contracts locally with a mock NEAR runtime (wasmtime + storage persistence):
+
+```
+near-mock <wasm> <method> [args.json]   Call a method
+near-mock <wasm> exports                List exported functions
+near-mock <wasm> imports                List required host functions
+near-mock <wasm> reset                  Clear storage
+```
+
+**Features:**
+- Storage persists to `<wasm>.storage` file between runs
+- `attached_deposit` always returns 0 (use `--deposit` on testnet)
+- `predecessor_account_id` returns `"owner.test.near"`
+- All NEAR host functions mocked (92 functions)
+
+**Example:**
+```bash
+$ near-mock contract.wasm get_balance '{}'
+📦 contract.wasm (767 bytes)
+✅ Instantiated
+✅ Success
+📄 0
+
+$ near-mock contract.wasm increment '{}'
+✅ Success
+📄 1
+
+$ near-mock contract.wasm reset
+🗑️ Storage cleared
+```
+
 ## Language Reference
 
 ### Types
