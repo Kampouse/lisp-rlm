@@ -19,12 +19,16 @@ impl WasmEmitter {
         let mut v = self.json_get_from_buf(key, value_type, 32768, &mut setup)?;
         // Heap copy for "str" results: __json_get writes to stdout_buf (65536),
         // which gets overwritten by subsequent __json_get calls.
+        // Uses runtime bump allocator (RUNTIME_HEAP_PTR at addr 56) — grows
+        // dynamically based on actual string length, not fixed 64KB slots.
         if value_type == "str" {
-            let rhp: i32 = 56; // RUNTIME_HEAP_PTR
             let jgs_tmp = self.local_idx("__jgw_tmp");
             let jgs_len = self.local_idx_i32("__jgw_len");
             let jgs_ptr = self.local_idx_i32("__jgw_ptr");
-            let jgs_heap = self.local_idx_i32("__jgw_heap");
+            let rha_old = self.local_idx("__jgw_rha_old");
+            let rha_new = self.local_idx("__jgw_rha_new");
+            let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+            let mem_limit = (self.memory_pages as i64) * 65536;
             v.push(Instruction::LocalSet(jgs_tmp));
             // Extract len and ptr from packed result
             v.push(Instruction::LocalGet(jgs_tmp));
@@ -32,19 +36,44 @@ impl WasmEmitter {
             v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(jgs_len));
             v.push(Instruction::LocalGet(jgs_tmp));
             v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(jgs_ptr));
-            // Use compile-time heap allocation (64KB) — large enough for any realistic JSON value
-            let heap_dst = self.heap_bump(65536);
-            v.push(Instruction::I32Const(heap_dst as i32));
+            // Runtime bump allocator: read RUNTIME_HEAP_PTR, advance by aligned len
+            v.push(Instruction::I64Const(56)); // RUNTIME_HEAP_PTR
+            v.push(Instruction::I32WrapI64);
+            v.push(Instruction::I64Load(ma8));
+            v.push(Instruction::LocalSet(rha_old));
+            // aligned_len = (len + 7) & ~7
+            v.push(Instruction::LocalGet(jgs_len));
+            v.push(Instruction::I64ExtendI32U);
+            v.push(Instruction::I64Const(7)); v.push(Instruction::I64Add);
+            v.push(Instruction::I64Const(-8)); v.push(Instruction::I64And);
+            v.push(Instruction::LocalGet(rha_old));
+            v.push(Instruction::I64Add);
+            v.push(Instruction::LocalSet(rha_new));
+            // Guard: new_ptr < mem_limit
+            v.push(Instruction::LocalGet(rha_new));
+            v.push(Instruction::I64Const(mem_limit));
+            v.push(Instruction::I64LtU);
+            v.push(Instruction::If(BlockType::Empty));
+            // OK: write back new ptr to RUNTIME_HEAP_PTR
+            v.push(Instruction::I64Const(56));
+            v.push(Instruction::I32WrapI64);
+            v.push(Instruction::LocalGet(rha_new));
+            v.push(Instruction::I64Store(ma8));
+            v.push(Instruction::Else);
+            v.push(Instruction::Unreachable);
+            v.push(Instruction::End);
+            // memory.copy dst=rha_old, src=jgs_ptr, len=jgs_len
+            v.push(Instruction::LocalGet(rha_old));
+            v.push(Instruction::I32WrapI64);
             v.push(Instruction::LocalGet(jgs_ptr));
             v.push(Instruction::LocalGet(jgs_len));
             v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
-            // Repack: (len << 32) | heap
+            // Repack: (len << 32) | rha_old
             v.push(Instruction::LocalGet(jgs_len));
             v.push(Instruction::I64ExtendI32U);
             v.push(Instruction::I64Const(32));
             v.push(Instruction::I64Shl);
-            v.push(Instruction::I32Const(heap_dst as i32));
-            v.push(Instruction::I64ExtendI32U);
+            v.push(Instruction::LocalGet(rha_old));
             v.push(Instruction::I64Or);
             v.push(Instruction::I64Const(3));
             v.push(Instruction::I64Shl);

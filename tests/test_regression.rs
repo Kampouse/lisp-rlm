@@ -616,8 +616,17 @@ mod outlayer_e2e {
 // TIER 2b: NEAR-mock execution (pure NEAR target, no WASI)
 // Uses the near-mock binary to execute WASM in a NEAR sandbox.
 // ============================================================================
-#[cfg(test)]
-mod near_mock {
+    /// Compile combined prices+positions pipeline using outlayer/view (P2 library path)
+    #[test]
+    fn compile_combined_view_p2() {
+        let src = include_str!("../tests_p2/test_combined_view.lisp");
+        let wasm = lisp_rlm_wasm::compile_outlayer_p2(src).expect("compile failed");
+        std::fs::write("/tmp/test_combined_view.wasm", &wasm).expect("write failed");
+        assert!(wasm.len() > 1000, "WASM too small: {} bytes", wasm.len());
+    }
+
+    // Near-mock tier
+    mod near_mock {
     use super::*;
     use std::process::Command;
 

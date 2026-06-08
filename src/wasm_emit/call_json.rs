@@ -165,12 +165,14 @@ impl WasmEmitter {
                             setup.push(Instruction::I64Const(pat_packed as i64));
                             let jg_idx = self.ensure_json_get_func();
                             setup.push(Instruction::Call(crate::wasm_emit::USER_BASE | jg_idx));
-                            // Runtime heap bump: copy jgs_len bytes (not fixed 256)
-                            let rhp: i32 = 56; // RUNTIME_HEAP_PTR (i64 at addr 56)
+                            // Runtime heap bump: copy jgs_len bytes using runtime allocator
                             let jgs_tmp = self.local_idx("jgs_packed");
                             let jgs_len = self.local_idx_i32("jgs_len");
                             let jgs_ptr = self.local_idx_i32("jgs_ptr");
-                            let jgs_heap = self.local_idx_i32("jgs_heap");
+                            let rha_old = self.local_idx("jgs_rha_old");
+                            let rha_new = self.local_idx("jgs_rha_new");
+                            let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                            let mem_limit = (self.memory_pages as i64) * 65536;
                             setup.push(Instruction::LocalSet(jgs_tmp));
                             // Extract len and ptr from packed result
                             setup.push(Instruction::LocalGet(jgs_tmp));
@@ -178,18 +180,43 @@ impl WasmEmitter {
                             setup.push(Instruction::I32WrapI64); setup.push(Instruction::LocalSet(jgs_len));
                             setup.push(Instruction::LocalGet(jgs_tmp));
                             setup.push(Instruction::I32WrapI64); setup.push(Instruction::LocalSet(jgs_ptr));
-                            // Use compile-time heap allocation (64KB) — large enough for any realistic JSON value
-                            let heap_dst = self.heap_bump(65536);
-                            setup.push(Instruction::I32Const(heap_dst as i32));
+                            // Runtime bump allocator: read RUNTIME_HEAP_PTR, advance by aligned len
+                            setup.push(Instruction::I64Const(56)); // RUNTIME_HEAP_PTR
+                            setup.push(Instruction::I32WrapI64);
+                            setup.push(Instruction::I64Load(ma8));
+                            setup.push(Instruction::LocalSet(rha_old));
+                            // aligned_len = (len + 7) & ~7
+                            setup.push(Instruction::LocalGet(jgs_len));
+                            setup.push(Instruction::I64ExtendI32U);
+                            setup.push(Instruction::I64Const(7)); setup.push(Instruction::I64Add);
+                            setup.push(Instruction::I64Const(-8)); setup.push(Instruction::I64And);
+                            setup.push(Instruction::LocalGet(rha_old));
+                            setup.push(Instruction::I64Add);
+                            setup.push(Instruction::LocalSet(rha_new));
+                            // Guard: new_ptr < mem_limit
+                            setup.push(Instruction::LocalGet(rha_new));
+                            setup.push(Instruction::I64Const(mem_limit));
+                            setup.push(Instruction::I64LtU);
+                            setup.push(Instruction::If(BlockType::Empty));
+                            // OK: write back new ptr to RUNTIME_HEAP_PTR
+                            setup.push(Instruction::I64Const(56));
+                            setup.push(Instruction::I32WrapI64);
+                            setup.push(Instruction::LocalGet(rha_new));
+                            setup.push(Instruction::I64Store(ma8));
+                            setup.push(Instruction::Else);
+                            setup.push(Instruction::Unreachable);
+                            setup.push(Instruction::End);
+                            // memory.copy dst=rha_old, src=jgs_ptr, len=jgs_len
+                            setup.push(Instruction::LocalGet(rha_old));
+                            setup.push(Instruction::I32WrapI64);
                             setup.push(Instruction::LocalGet(jgs_ptr));
                             setup.push(Instruction::LocalGet(jgs_len));
                             setup.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
-                            // Repack (untagged): (len << 32) | heap_dst
+                            // Repack (untagged): (len << 32) | rha_old
                             // emit_tag_str() at line 201 adds the tag for ALL paths
                             setup.push(Instruction::LocalGet(jgs_len)); setup.push(Instruction::I64ExtendI32U);
                             setup.push(Instruction::I64Const(32)); setup.push(Instruction::I64Shl);
-                            setup.push(Instruction::I32Const(heap_dst as i32));
-                            setup.push(Instruction::I64ExtendI32U);
+                            setup.push(Instruction::LocalGet(rha_old));
                             setup.push(Instruction::I64Or);
                             setup
                         } else if self.wasi_mode {
@@ -289,6 +316,10 @@ impl WasmEmitter {
                 let jag_ptr = self.local_idx_i32("jag_ptr");
                 let jag_heap = self.local_idx_i32("jag_heap");
                 let rhp: i32 = 56; // RUNTIME_HEAP_PTR
+                let jag_old = self.local_idx("jag_rha_old");
+                let jag_new = self.local_idx("jag_rha_new");
+                let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let mem_limit = (self.memory_pages as i64) * 65536;
                 v.push(Instruction::LocalSet(jag_tmp));
                 v.push(Instruction::LocalGet(jag_tmp));
                 v.extend(self.emit_untag()); // untag: >> 3
@@ -297,17 +328,41 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(jag_tmp));
                 v.extend(self.emit_untag()); // untag: >> 3
                 v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(jag_ptr));
-                // Use compile-time heap allocation (64KB)
-                let jag_heap_val = self.heap_bump(65536);
-                v.push(Instruction::I32Const(jag_heap_val as i32));
+                // Runtime bump allocator
+                v.push(Instruction::I64Const(56)); // RUNTIME_HEAP_PTR
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(ma8.clone()));
+                v.push(Instruction::LocalSet(jag_old));
+                // aligned_len = (len + 7) & ~7
+                v.push(Instruction::LocalGet(jag_len));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(7)); v.push(Instruction::I64Add);
+                v.push(Instruction::I64Const(-8)); v.push(Instruction::I64And);
+                v.push(Instruction::LocalGet(jag_old));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(jag_new));
+                // Guard
+                v.push(Instruction::LocalGet(jag_new));
+                v.push(Instruction::I64Const(mem_limit));
+                v.push(Instruction::I64LtU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::I64Const(56));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(jag_new));
+                v.push(Instruction::I64Store(ma8));
+                v.push(Instruction::Else);
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
+                // memory.copy dst=jag_old, src=jag_ptr, len=jag_len
+                v.push(Instruction::LocalGet(jag_old));
+                v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalGet(jag_ptr));
                 v.push(Instruction::LocalGet(jag_len));
                 v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
-                // Repack: (len << 32) | heap
+                // Repack: (len << 32) | jag_old
                 v.push(Instruction::LocalGet(jag_len)); v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
-                v.push(Instruction::I32Const(jag_heap_val as i32));
-                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalGet(jag_old));
                 v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 Ok(v)
