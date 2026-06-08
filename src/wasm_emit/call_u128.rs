@@ -36,7 +36,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 }));
                 Ok(v)
             }
-            "u128/add" => {
+            "u128/add" | "u128/checked_add" => {
                 if a.len() != 2 { return Err("u128/add: need 2 args (dst, src)".into()); }
                 let dst = self.expr(&a[0])?;
                 let src = self.expr(&a[1])?;
@@ -45,6 +45,7 @@ impl WasmEmitter {
                 let lo_i = self.local_idx("__u128lo");
                 let hi_i = self.local_idx("__u128hi");
                 let c_i = self.local_idx("__u128c");
+                let dst_hi_i = self.local_idx("__u128ahi");
                 let mut v = Vec::new();
                 // Save addresses
                 v.extend(dst); v.push(Instruction::LocalSet(dst_i));
@@ -65,11 +66,22 @@ impl WasmEmitter {
                 // hi = dst_high + src_high + carry
                 v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalSet(dst_hi_i)); // save original dst_hi for overflow check
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 }));
                 v.push(Instruction::LocalGet(src_i)); v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 }));
                 v.push(Instruction::I64Add);
                 v.push(Instruction::LocalGet(c_i)); v.push(Instruction::I64Add);
                 v.push(Instruction::LocalSet(hi_i));
+                // ── OVERFLOW CHECK: trap if result exceeded u128 ──
+                // Overflow when: result_hi < original_dst_hi (unsigned comparison)
+                v.push(Instruction::LocalGet(hi_i));
+                v.push(Instruction::LocalGet(dst_hi_i));
+                v.push(Instruction::I64LtU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
                 // Store back
                 v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalGet(lo_i));
@@ -80,7 +92,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
                 v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
-            "u128/sub" => {
+            "u128/sub" | "u128/checked_sub" => {
                 if a.len() != 2 { return Err("u128/sub: need 2 args (dst, src)".into()); }
                 let dst = self.expr(&a[0])?;
                 let src = self.expr(&a[1])?;
@@ -92,6 +104,34 @@ impl WasmEmitter {
                 let mut v = Vec::new();
                 v.extend(dst); v.push(Instruction::LocalSet(dst_i));
                 v.extend(src); v.push(Instruction::LocalSet(src_i));
+                // ── UNDERFLOW CHECK: trap if dst < src (unsigned u128 comparison) ──
+                // Compare high first: if dst_hi < src_hi → underflow
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalGet(src_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64LtU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
+                // if dst_hi == src_hi, check low part
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalGet(src_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Empty));
+                // dst_lo < src_lo → underflow
+                v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalGet(src_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64LtU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
+                v.push(Instruction::End);
+                // ── END UNDERFLOW CHECK ──
                 // Load dst_low into lo_i
                 v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
@@ -127,7 +167,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
                 v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
-            "u128/mul" => {
+            "u128/mul" | "u128/checked_mul" => {
                 if a.len() != 2 { return Err("u128/mul: need 2 args (dst, val)".into()); }
                 let dst = self.expr(&a[0])?;
                 let val = self.expr(&a[1])?;
@@ -142,6 +182,14 @@ impl WasmEmitter {
                 let mut v = Vec::new();
                 v.extend(dst); v.push(Instruction::LocalSet(dst_i));
                 v.extend(val); v.push(Instruction::LocalSet(val_i));
+                // ── OVERFLOW SAFETY CHECKS ──
+                // Trap on non-positive multiplier (money should never multiply by <= 0)
+                v.push(Instruction::LocalGet(val_i));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64LeS);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
                 // Load dst_lo, dst_hi
                 v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
@@ -404,6 +452,66 @@ impl WasmEmitter {
                 let mut v = self.expr(&a[0])?;
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                Ok(v)
+            }
+            "u128/fit_i64" => {
+                // Returns 1 if u128 fits in i64 (i.e., value < 2^63), else 0
+                // Does NOT trap - just returns boolean
+                if a.len() != 1 {
+                    return Err("u128/fit_i64: need 1 arg (addr)".into());
+                }
+                let mut v = self.expr(&a[0])?;
+                let addr_i = self.local_idx("__u128fit");
+                v.push(Instruction::LocalSet(addr_i));
+                // Check: hi == 0 AND lo < 2^63 (sign bit is 0)
+                // hi == 0?
+                v.push(Instruction::LocalGet(addr_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                // hi == 0, now check lo < 2^63 (i.e., lo >> 63 == 0)
+                v.push(Instruction::LocalGet(addr_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Const(63));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::Else);
+                // hi != 0, doesn't fit
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::End);
+                Ok(v)
+            }
+            "u128/checked_to_i64" => {
+                // Traps if u128 doesn't fit in i64, else returns the i64 value
+                if a.len() != 1 {
+                    return Err("u128/checked_to_i64: need 1 arg (addr)".into());
+                }
+                let mut v = self.expr(&a[0])?;
+                let addr_i = self.local_idx("__u128cti64");
+                v.push(Instruction::LocalSet(addr_i));
+                // Check: hi == 0
+                v.push(Instruction::LocalGet(addr_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::If(BlockType::Empty));
+                // hi == 0, check lo < 2^63
+                v.push(Instruction::LocalGet(addr_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Const(63));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::If(BlockType::Empty));
+                // Fits! Return lo
+                v.push(Instruction::LocalGet(addr_i)); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::Return);
+                v.push(Instruction::End);
+                // lo >= 2^63, trap
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
+                // hi != 0, trap
+                v.push(Instruction::Unreachable);
                 Ok(v)
             }
             "u128/store_storage" => {
