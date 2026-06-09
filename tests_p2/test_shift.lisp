@@ -1,0 +1,6 @@
+(define (test-shift)
+  (let ((x 1))
+    (let ((y (i64.shl x 3)))
+      (let ((z (i64.or y 5)))
+        z))))
+(export "test_shift" test-shift)

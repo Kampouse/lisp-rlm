@@ -302,7 +302,23 @@ impl WasmEmitter {
                             fb.instruction(&Instruction::I64Const(TEMP_MEM));
                             fb.instruction(&Instruction::Call(host_idx[&25])); // value_return
                             fb.instruction(&Instruction::Else);
-                            // TAG_STR/TAG_NUM/TAG_BOOL: untag, store, value_return
+                            // Check for TAG_STR — store tagged value for TS decoding
+                            fb.instruction(&Instruction::LocalGet(0));
+                            fb.instruction(&Instruction::I64Const(7)); // tag mask
+                            fb.instruction(&Instruction::I64And);
+                            fb.instruction(&Instruction::I64Const(TAG_STR));
+                            fb.instruction(&Instruction::I64Eq);
+                            fb.instruction(&Instruction::If(BlockType::Empty));
+                            // TAG_STR: store full tagged value at TEMP_MEM so TS can decode the string
+                            fb.instruction(&Instruction::I64Const(TEMP_MEM));
+                            fb.instruction(&Instruction::I32WrapI64);
+                            fb.instruction(&Instruction::LocalGet(0)); // full tagged string value
+                            fb.instruction(&Instruction::I64Store(ma));
+                            fb.instruction(&Instruction::I64Const(8));
+                            fb.instruction(&Instruction::I64Const(TEMP_MEM));
+                            fb.instruction(&Instruction::Call(host_idx[&25])); // value_return
+                            fb.instruction(&Instruction::Else);
+                            // TAG_NUM/TAG_BOOL: untag, store, value_return
                             fb.instruction(&Instruction::I64Const(TEMP_MEM));
                             fb.instruction(&Instruction::I32WrapI64);
                             fb.instruction(&Instruction::LocalGet(0)); // full tagged value
@@ -312,6 +328,7 @@ impl WasmEmitter {
                             fb.instruction(&Instruction::I64Const(8));
                             fb.instruction(&Instruction::I64Const(TEMP_MEM));
                             fb.instruction(&Instruction::Call(host_idx[&25])); // value_return
+                            fb.instruction(&Instruction::End); // if TAG_STR
                             fb.instruction(&Instruction::End); // if TAG_ARRAY
                             fb.instruction(&Instruction::End); // if TAG_NIL
                             fb.instruction(&Instruction::End); // if

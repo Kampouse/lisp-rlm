@@ -875,13 +875,14 @@ impl WasmEmitter {
                 v.push(Instruction::If(BlockType::Result(ValType::I64)));
                 v.push(Instruction::LocalGet(buf_i));
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Const(48));
+                v.push(Instruction::I32Const(48)); // '0'
                 v.push(Instruction::I32Store8(ma));
-                v.push(Instruction::LocalGet(buf_i));
-                v.push(Instruction::I64Const(1));
-                v.push(Instruction::I64Shl);
+                // Result: (len=1 << 32) | buf_i | TAG_STR
+                v.push(Instruction::I64Const(1));        // len = 1
                 v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Shl);             // len << 32
+                v.push(Instruction::LocalGet(buf_i));
+                v.push(Instruction::I64Or);               // (len << 32) | buf_i
                 v.extend(self.emit_tag_str());
                 v.push(Instruction::Else);
                 // Write from buf+39 backwards
@@ -995,16 +996,28 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(1));
                 v.push(Instruction::I64Add);
                 v.push(Instruction::LocalSet(pos_i));
+                // pos_i is now the absolute address of first digit
+                // Length = (buf_i + 40) - pos_i = buf_i + 40 - pos_i
+                // But simpler: length = 40 - (pos_i - buf_i) = 40 - offset
+                // Even simpler: since pos_i is absolute and we know len = last - first + 1
+                //               last = buf + 39, so len = 39 - (pos_i - buf) + 1 = 40 - pos_i + buf_i
+                // Compute: len = buf_i + 40 - pos_i (no, that needs buf_i on stack)
+                // Actually: len = 40 - (pos_i - buf_i), so:
+                //     len = 40 + buf_i - pos_i
+                //           [40] [buf_i] [+] [pos_i] [-]
+                // But stack order: push 40, push buf_i, add, push pos_i, sub
                 v.push(Instruction::I64Const(40));
                 v.push(Instruction::LocalGet(buf_i));
+                v.push(Instruction::I64Add);              // 40 + buf_i
                 v.push(Instruction::LocalGet(pos_i));
-                v.push(Instruction::I64Sub);
-                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Sub);               // (40 + buf_i) - pos_i
                 v.push(Instruction::LocalSet(len_i));
+                // Pointer = pos_i (already absolute address of first digit)
+                v.push(Instruction::LocalGet(pos_i));
+                // Result: (len << 32) | ptr
                 v.push(Instruction::LocalGet(len_i));
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64Shl);
-                v.push(Instruction::LocalGet(pos_i));
                 v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 v.push(Instruction::End);
