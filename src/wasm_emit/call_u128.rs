@@ -26,6 +26,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.extend(self.emit_tag_num()); // Tag the raw i64 for return
                 Ok(v)
             }
             "u128/load_high" => {
@@ -34,6 +35,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 }));
+                v.extend(self.emit_tag_num()); // Tag the raw i64 for return
                 Ok(v)
             }
             "u128/add" | "u128/checked_add" => {
@@ -47,9 +49,9 @@ impl WasmEmitter {
                 let c_i = self.local_idx("__u128c");
                 let dst_hi_i = self.local_idx("__u128ahi");
                 let mut v = Vec::new();
-                // Save addresses
-                v.extend(dst); v.push(Instruction::LocalSet(dst_i));
-                v.extend(src); v.push(Instruction::LocalSet(src_i));
+                // Save addresses (untagged)
+                v.extend(dst); v.extend(self.emit_untag()); v.push(Instruction::LocalSet(dst_i));
+                v.extend(src); v.extend(self.emit_untag()); v.push(Instruction::LocalSet(src_i));
                 // Load dst_low, src_low
                 v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
@@ -102,8 +104,9 @@ impl WasmEmitter {
                 let hi_i = self.local_idx("__u128shi");
                 let b_i = self.local_idx("__u128borrow");
                 let mut v = Vec::new();
-                v.extend(dst); v.push(Instruction::LocalSet(dst_i));
-                v.extend(src); v.push(Instruction::LocalSet(src_i));
+                // Save addresses (untagged)
+                v.extend(dst); v.extend(self.emit_untag()); v.push(Instruction::LocalSet(dst_i));
+                v.extend(src); v.extend(self.emit_untag()); v.push(Instruction::LocalSet(src_i));
                 // ── UNDERFLOW CHECK: trap if dst < src (unsigned u128 comparison) ──
                 // Compare high first: if dst_hi < src_hi → underflow
                 v.push(Instruction::LocalGet(dst_i)); v.push(Instruction::I32WrapI64);
@@ -180,7 +183,8 @@ impl WasmEmitter {
                 let t_i = self.local_idx("__u128mt");
                 let carry_i = self.local_idx("__u128mc");
                 let mut v = Vec::new();
-                v.extend(dst); v.push(Instruction::LocalSet(dst_i));
+                // Save addresses (dst untagged, val is raw i64 not address)
+                v.extend(dst); v.extend(self.emit_untag()); v.push(Instruction::LocalSet(dst_i));
                 v.extend(val); v.push(Instruction::LocalSet(val_i));
                 // ── OVERFLOW SAFETY CHECKS ──
                 // Trap on non-positive multiplier (money should never multiply by <= 0)
