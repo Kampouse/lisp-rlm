@@ -46,17 +46,17 @@ near-compile --repl
 (memory 4)
 
 (define (increment)
-  (let ((n (+ (near/storage_get "counter") 1)))
+  (let ((n (+ (near/load "counter") 1)))
     (begin
-      (near/storage_set "counter" n)
+      (near/store "counter" n)
       n)))
 
 (define (get_count)
-  (near/storage_get "counter"))
+  (near/load "counter"))
 
 (define (reset)
   (begin
-    (near/storage_remove "counter")
+    (near/remove "counter")
     0))
 
 (export "get_count" get_count true)
@@ -64,7 +64,7 @@ near-compile --repl
 (export "reset" reset false)
 ```
 
-**767 bytes.** Compiles, validates, deploys to NEAR testnet.
+**1146 bytes.** Compiles, validates, deploys to NEAR testnet.
 
 ## The REPL
 
@@ -80,13 +80,13 @@ The REPL compiles every expression through the **same WASM emitter** as `near-co
 15
 > (near/log "sum=" 15)
   LOG: sum=15
-> (near/storage_set "counter" 42)
-0
-> (near/storage_get "counter")
+> (near/store "counter" 42)
+nil
+> (near/load "counter")
 42
-> (near/storage_remove "counter")
-1
-> (near/storage_get "counter")
+> (near/remove "counter")
+nil
+> (near/load "counter")
 0
 ```
 
@@ -99,9 +99,9 @@ Write code, test locally, deploy, and interact with the live contract — all fr
 ✓ (383 bytes)
 > (define (get_count) ...)
 ✓ (383 bytes)
-> (near/storage_set "counter" 0)     ← test locally
-0
-> (near/storage_get "counter")
+> (near/store "counter" 0)     ← test locally
+nil
+> (near/load "counter")
 0
 > :push                               ← deploy to testnet
 ✅ https://explorer.testnet.near.org/transactions/...
@@ -219,10 +219,24 @@ Lambdas are inlined at compile time — no runtime closures, no function pointer
 
 ### Storage
 ```lisp
-(near/storage_set "key" value)    ; Store i64 under string key
-(near/storage_get "key")          ; Get i64 (0 if not found)
-(near/storage_has "key")          ; 1 if exists, 0 if not
-(near/storage_remove "key")       ; Remove, returns 1 if existed
+(near/store "key" value)           ; Store i64 under string key (preserves type tag)
+(near/load "key")                  ; Get i64 (0 if not found)
+(near/has_key "key")               ; 1 if exists, 0 if not
+(near/remove "key")                ; Remove, returns nil
+
+;; Numeric storage (8-byte LE key, gas-efficient)
+(near/store_num key_i64 val_i64)
+(near/load_num key_i64)
+
+;; u128 storage (16-byte LE key, tagged pointer)
+(near/store_u128 "key" tagged_ptr)
+(near/load_u128 "key")
+
+;; Low-level storage (byte storage)
+(near/storage_set "key" "value")   ; Store bytes under string key
+(near/storage_get "key")            ; Get bytes (nil if not found)
+(near/storage_has "key")            ; 1 if exists, 0 if not
+(near/storage_remove "key")         ; Remove, returns 1 if existed
 ```
 
 Storage persists between contract calls on-chain. In the REPL, storage persists within the session.
@@ -264,23 +278,21 @@ Q64.64 precision for fixed-point arithmetic.
 
 ### NEAR Host Functions
 
-92 host functions available, 20/20 verified on testnet:
-
 **Core:** `input`, `return`, `return_str`, `log`, `log_num`, `abort`, `panic`
 
-**Storage:** `storage_set`, `storage_get`, `storage_has`, `storage_remove`, `storage_usage`
+**Storage:** `store`, `load`, `store_num`, `load_num`, `remove`, `has_key`, `store_u128`, `load_u128`, `storage_set`, `storage_get`, `storage_has`, `storage_remove`, `storage_usage`
 
 **Account:** `current_account_id`, `signer_account_id`, `signer_account_pk`, `predecessor_account_id`
 
-**Balances:** `account_balance`, `account_balance_high`, `account_locked_balance`, `account_locked_balance_high`, `attached_deposit`, `attached_deposit_high`
+**Balances:** `account_balance`, `account_balance_high`, `account_locked_balance`, `account_locked_balance_high`, `attached_deposit`, `attached_deposit_high`, `attached_deposit_u128`
 
-**Crypto:** `keccak256`, `sha256`, `ripemd160`, `ecrecover`, `ed25519_verify`, `random_seed`
+**Crypto:** `keccak256`, `sha256`, `ripemd160`, `ecrecover`, `ed25519_verify`, `p256_verify`, `random_seed`
 
-**Promises:** `promise_create`, `promise_then`, `promise_and`, `promise_return`, `promise_result`, `promise_results_count`, `promise_batch_create`, `promise_batch_then`, `promise_batch_action_function_call`, `promise_batch_action_transfer`, `promise_batch_action_stake`, `promise_batch_action_add_key_with_full_access`, `promise_batch_action_delete_key`, `promise_batch_action_create_account`, `promise_batch_action_deploy_contract`, `promise_batch_action_delete_account`, `promise_yield_create`, `promise_yield_resume`, `promise_set_refund_to`
+**Promises:** `promise_create`, `promise_then`, `promise_and`, `promise_return`, `promise_result`, `promise_results_count`, `promise_batch_create`, `promise_batch_then`, `promise_batch_action_function_call`, `promise_batch_action_transfer`, `promise_batch_action_stake`, `promise_batch_action_add_key_with_full_access`, `promise_batch_action_delete_key`, `promise_batch_action_create_account`, `promise_batch_action_deploy_contract`, `promise_batch_action_delete_account`, `promise_yield_create`, `promise_yield_resume`, `promise_set_refund_to`, `batch`, `call`, `deploy_contract`, `transfer`
 
 **Iteration:** `iter_prefix`, `iter_range`, `iter_next`
 
-**JSON I/O:** `json_get_int`, `json_get_str`, `json_return_int`, `json_return_str`
+**JSON I/O:** `json_get_int`, `json_get_str`, `json_get_u128`, `json_return_int`, `json_return_str`
 
 **Blockchain:** `block_index`, `block_timestamp`, `epoch_height`, `prepaid_gas`, `used_gas`, `validator_stake`, `validator_total_stake`
 
