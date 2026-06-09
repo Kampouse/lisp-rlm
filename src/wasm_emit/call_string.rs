@@ -690,7 +690,10 @@ impl WasmEmitter {
                 // Variadic str-cat: (str-cat s1 s2 ... sN) — single alloc, N copies
                 if a.is_empty() { return Err("str-cat: need at least 1 arg".into()); }
                 if a.len() == 1 { return self.expr(&a[0]); }
-                if self.p2_mode || self.wasi_mode {
+                if a.len() == 2 && !self.p2_mode && !self.wasi_mode {
+                    // NEAR mode with exactly 2 args: use optimized frame-based allocation
+                    // (fall through to the 2-arg NEAR code below)
+                } else {
                     // P2/WASI: heap_ptr bump allocator, variadic
                     let d = self.str_cat_depth;
                     self.str_cat_depth += 1;
