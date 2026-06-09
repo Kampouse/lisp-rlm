@@ -1,7 +1,7 @@
 #!/bin/bash
 # Verify all F* modules for lisp-rlm in dependency order
 set -e
-FSTAR=/tmp/fstar-install/fstar/bin/fstar.exe
+FSTAR=/Users/asil/.opam/fstar/bin/fstar.exe
 FSTAR_FLAGS="-c --include semantics/lisp --include semantics/lisp_ir --include tests"
 
 PASS=0
