@@ -9,14 +9,14 @@ impl WasmEmitter {
                 let lo = self.expr(&a[1])?;
                 let hi = self.expr(&a[2])?;
                 let mut v = Vec::new();
-                // store low at addr (untag address first)
+                // store low at addr (untag address and value first)
                 v.extend(addr.clone()); v.extend(self.emit_untag()); v.push(Instruction::I32WrapI64);
-                v.extend(lo);
+                v.extend(lo); v.extend(self.emit_untag());
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
                 // store high at addr+8
                 v.extend(addr); v.extend(self.emit_untag()); v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I32Const(8)); v.push(Instruction::I32Add);
-                v.extend(hi);
+                v.extend(hi); v.extend(self.emit_untag());
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
                 v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
