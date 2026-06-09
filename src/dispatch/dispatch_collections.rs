@@ -160,8 +160,8 @@ pub fn handle(
         }
 
         // Higher-order collection operations
-       "map" => {
-           let func = args.first().ok_or("map: need (f list)")?;
+        "map" => {
+            let func = args.first().ok_or("map: need (f list)")?;
             let (lst, is_vec) = match args.get(1) {
                 Some(LispVal::List(l)) => (l.clone(), false),
                 Some(LispVal::Vec(v)) => (v.clone(), true),
@@ -169,40 +169,52 @@ pub fn handle(
                 Some(other) => return Err(format!("map: expected list or vec, got {}", other)),
                 None => return Err("map: need (f list)".into()),
             };
-           // Fast path: use pre-compiled bytecode (cached at define-time)
-           if let LispVal::Lambda {
-               rest_param: None,
-               compiled: Some(ref cl),
-               ..
-           } = func
-           {
-               if lst.is_empty() {
-                    return Ok(Some(if is_vec { LispVal::Vec(vec![]) } else { LispVal::List(vec![]) }));
-               }
-               if let Ok(first_result) =
-                   crate::bytecode::run_compiled_lambda(cl, &[lst[0].clone()], env, state)
-               {
-                   let mut result = Vec::with_capacity(lst.len());
-                   result.push(first_result);
-                   for elem in &lst[1..] {
-                       result.push(crate::bytecode::run_compiled_lambda(
-                           cl,
-                           &[elem.clone()],
-                           env,
-                           state,
-                       )?);
-                   }
-                    return Ok(Some(if is_vec { LispVal::Vec(result) } else { LispVal::List(result) }));
-               }
-           }
-           let mut result = Vec::with_capacity(lst.len());
-           for elem in &lst {
-               result.push(call_val(func, &[elem.clone()], env, state)?);
-           }
-            Ok(Some(if is_vec { LispVal::Vec(result) } else { LispVal::List(result) }))
-       }
-       "filter" => {
-           let func = args.first().ok_or("filter: need (pred list)")?;
+            // Fast path: use pre-compiled bytecode (cached at define-time)
+            if let LispVal::Lambda {
+                rest_param: None,
+                compiled: Some(ref cl),
+                ..
+            } = func
+            {
+                if lst.is_empty() {
+                    return Ok(Some(if is_vec {
+                        LispVal::Vec(vec![])
+                    } else {
+                        LispVal::List(vec![])
+                    }));
+                }
+                if let Ok(first_result) =
+                    crate::bytecode::run_compiled_lambda(cl, &[lst[0].clone()], env, state)
+                {
+                    let mut result = Vec::with_capacity(lst.len());
+                    result.push(first_result);
+                    for elem in &lst[1..] {
+                        result.push(crate::bytecode::run_compiled_lambda(
+                            cl,
+                            &[elem.clone()],
+                            env,
+                            state,
+                        )?);
+                    }
+                    return Ok(Some(if is_vec {
+                        LispVal::Vec(result)
+                    } else {
+                        LispVal::List(result)
+                    }));
+                }
+            }
+            let mut result = Vec::with_capacity(lst.len());
+            for elem in &lst {
+                result.push(call_val(func, &[elem.clone()], env, state)?);
+            }
+            Ok(Some(if is_vec {
+                LispVal::Vec(result)
+            } else {
+                LispVal::List(result)
+            }))
+        }
+        "filter" => {
+            let func = args.first().ok_or("filter: need (pred list)")?;
             let (lst, is_vec) = match args.get(1) {
                 Some(LispVal::List(l)) => (l.clone(), false),
                 Some(LispVal::Vec(v)) => (v.clone(), true),
@@ -210,47 +222,59 @@ pub fn handle(
                 Some(other) => return Err(format!("filter: expected list or vec, got {}", other)),
                 None => return Err("filter: need (pred list)".into()),
             };
-           if let LispVal::Lambda {
-               rest_param: None,
-               compiled: Some(ref cl),
-               ..
-           } = func
-           {
-               if lst.is_empty() {
-                    return Ok(Some(if is_vec { LispVal::Vec(vec![]) } else { LispVal::List(vec![]) }));
-               }
-               if let Ok(first_result) =
-                   crate::bytecode::run_compiled_lambda(cl, &[lst[0].clone()], env, state)
-               {
-                   let mut result = Vec::new();
-                   if is_truthy(&first_result) {
-                       result.push(lst[0].clone());
-                   }
-                   for elem in &lst[1..] {
-                       if is_truthy(&crate::bytecode::run_compiled_lambda(
-                           cl,
-                           &[elem.clone()],
-                           env,
-                           state,
-                       )?) {
-                           result.push(elem.clone());
-                       }
-                   }
-                    return Ok(Some(if is_vec { LispVal::Vec(result) } else { LispVal::List(result) }));
-               }
-           }
-           let mut result = Vec::new();
-           for elem in &lst {
-               let pred = call_val(func, &[elem.clone()], env, state)?;
-               if is_truthy(&pred) {
-                   result.push(elem.clone());
-               }
-           }
-            Ok(Some(if is_vec { LispVal::Vec(result) } else { LispVal::List(result) }))
-       }
-       "reduce" => {
-           let func = args.first().ok_or("reduce: need (f init list)")?;
-           let init_acc = args.get(1).ok_or("reduce: need (f init list)")?.clone();
+            if let LispVal::Lambda {
+                rest_param: None,
+                compiled: Some(ref cl),
+                ..
+            } = func
+            {
+                if lst.is_empty() {
+                    return Ok(Some(if is_vec {
+                        LispVal::Vec(vec![])
+                    } else {
+                        LispVal::List(vec![])
+                    }));
+                }
+                if let Ok(first_result) =
+                    crate::bytecode::run_compiled_lambda(cl, &[lst[0].clone()], env, state)
+                {
+                    let mut result = Vec::new();
+                    if is_truthy(&first_result) {
+                        result.push(lst[0].clone());
+                    }
+                    for elem in &lst[1..] {
+                        if is_truthy(&crate::bytecode::run_compiled_lambda(
+                            cl,
+                            &[elem.clone()],
+                            env,
+                            state,
+                        )?) {
+                            result.push(elem.clone());
+                        }
+                    }
+                    return Ok(Some(if is_vec {
+                        LispVal::Vec(result)
+                    } else {
+                        LispVal::List(result)
+                    }));
+                }
+            }
+            let mut result = Vec::new();
+            for elem in &lst {
+                let pred = call_val(func, &[elem.clone()], env, state)?;
+                if is_truthy(&pred) {
+                    result.push(elem.clone());
+                }
+            }
+            Ok(Some(if is_vec {
+                LispVal::Vec(result)
+            } else {
+                LispVal::List(result)
+            }))
+        }
+        "reduce" => {
+            let func = args.first().ok_or("reduce: need (f init list)")?;
+            let init_acc = args.get(1).ok_or("reduce: need (f init list)")?.clone();
             let lst = match args.get(2) {
                 Some(LispVal::List(l)) => l.clone(),
                 Some(LispVal::Vec(v)) => v.iter().cloned().collect(),
@@ -485,7 +509,10 @@ pub fn handle(
                     Some(other) => return Err(format!("par-map: expected list, got {}", other)),
                     None => return Err("par-map: need (f list)".into()),
                 };
-                let results: Result<Vec<LispVal>, String> = lst.iter().map(|elem| crate::dispatch::call_val(func, &[elem.clone()], env, state)).collect();
+                let results: Result<Vec<LispVal>, String> = lst
+                    .iter()
+                    .map(|elem| crate::dispatch::call_val(func, &[elem.clone()], env, state))
+                    .collect();
                 Ok(Some(LispVal::List(results?)))
             }
         }
@@ -520,7 +547,12 @@ pub fn handle(
                         let e = elem.clone();
                         tasks.push(tokio::spawn(async move {
                             tokio::task::yield_now().await;
-                            let result = crate::dispatch::call_val(&f, &[e], &mut task_env, &mut task_state)?;
+                            let result = crate::dispatch::call_val(
+                                &f,
+                                &[e],
+                                &mut task_env,
+                                &mut task_state,
+                            )?;
                             Ok::<bool, String>(crate::helpers::is_truthy(&result))
                         }));
                     }
@@ -549,7 +581,12 @@ pub fn handle(
                 };
                 let mut out = Vec::new();
                 for elem in lst {
-                    if crate::helpers::is_truthy(&crate::dispatch::call_val(func, &[elem.clone()], env, state)?) {
+                    if crate::helpers::is_truthy(&crate::dispatch::call_val(
+                        func,
+                        &[elem.clone()],
+                        env,
+                        state,
+                    )?) {
                         out.push(elem);
                     }
                 }

@@ -1,13 +1,18 @@
-
 use super::*;
 
 impl WasmEmitter {
     pub(crate) fn tree_shake(&mut self) {
-        if self.funcs.is_empty() { return; }
+        if self.funcs.is_empty() {
+            return;
+        }
 
         // Build call graph: for each func index, which other func indices does it call?
         let func_names: Vec<&str> = self.funcs.iter().map(|f| f.name.as_str()).collect();
-        let name_to_idx: HashMap<&str, usize> = func_names.iter().enumerate().map(|(i, &n)| (n, i)).collect();
+        let name_to_idx: HashMap<&str, usize> = func_names
+            .iter()
+            .enumerate()
+            .map(|(i, &n)| (n, i))
+            .collect();
 
         let mut calls: Vec<Vec<usize>> = vec![vec![]; self.funcs.len()];
         for (i, f) in self.funcs.iter().enumerate() {
@@ -30,7 +35,10 @@ impl WasmEmitter {
         // Seed with exported function names
         for (fn_name, _, _) in &self.exports {
             if let Some(&idx) = name_to_idx.get(fn_name.as_str()) {
-                if !reachable[idx] { reachable[idx] = true; queue.push_back(idx); }
+                if !reachable[idx] {
+                    reachable[idx] = true;
+                    queue.push_back(idx);
+                }
             }
         }
         // Also seed with lambda functions (called indirectly via CallIndirect)
@@ -42,13 +50,22 @@ impl WasmEmitter {
         }
         // If no exports, keep last user function (skip __ helpers)
         if self.exports.is_empty() && !self.funcs.is_empty() {
-            if let Some(idx) = (0..self.funcs.len()).rev().find(|&i| !self.funcs[i].name.starts_with("__")) {
-                if !reachable[idx] { reachable[idx] = true; queue.push_back(idx); }
+            if let Some(idx) = (0..self.funcs.len())
+                .rev()
+                .find(|&i| !self.funcs[i].name.starts_with("__"))
+            {
+                if !reachable[idx] {
+                    reachable[idx] = true;
+                    queue.push_back(idx);
+                }
             }
         }
         // Always keep "run" — it's the standard entry point
         if let Some(&idx) = name_to_idx.get("run") {
-            if !reachable[idx] { reachable[idx] = true; queue.push_back(idx); }
+            if !reachable[idx] {
+                reachable[idx] = true;
+                queue.push_back(idx);
+            }
         }
 
         while let Some(idx) = queue.pop_front() {
@@ -64,12 +81,17 @@ impl WasmEmitter {
         let mut old_to_new: Vec<Option<usize>> = vec![None; self.funcs.len()];
         let mut next = 0usize;
         for (i, r) in reachable.iter().enumerate() {
-            if *r { old_to_new[i] = Some(next); next += 1; }
+            if *r {
+                old_to_new[i] = Some(next);
+                next += 1;
+            }
         }
 
         // Remap Call instructions
         for (i, f) in self.funcs.iter_mut().enumerate() {
-            if !reachable[i] { continue; }
+            if !reachable[i] {
+                continue;
+            }
             for instr in &mut f.instrs {
                 if let Instruction::Call(idx) = instr {
                     if *idx >= USER_BASE {
@@ -86,13 +108,18 @@ impl WasmEmitter {
         let before = self.funcs.len();
         let mut new_funcs: Vec<FuncDef> = Vec::new();
         for (i, f) in std::mem::take(&mut self.funcs).into_iter().enumerate() {
-            if reachable[i] { new_funcs.push(f); }
+            if reachable[i] {
+                new_funcs.push(f);
+            }
         }
         self.funcs = new_funcs;
 
         let removed = before - self.funcs.len();
         if removed > 0 {
-            eprintln!("Tree-shake: removed {}/{} unused functions", removed, before);
+            eprintln!(
+                "Tree-shake: removed {}/{} unused functions",
+                removed, before
+            );
         }
         for (i, f) in self.funcs.iter().enumerate() {
             eprintln!("  KEEP {} {} ({} instrs)", i, f.name, f.instrs.len());
@@ -107,9 +134,11 @@ impl WasmEmitter {
                 let instr_count = func.instrs.len();
                 // Rough gas model: count host calls by checking Call instructions
                 // that reference imported functions (indices < host_count)
-                let host_calls = func.instrs.iter().filter(|i| {
-                    matches!(i, Instruction::Call(idx) if (*idx as usize) < host_count)
-                }).count();
+                let host_calls = func
+                    .instrs
+                    .iter()
+                    .filter(|i| matches!(i, Instruction::Call(idx) if (*idx as usize) < host_count))
+                    .count();
                 let regular = instr_count.saturating_sub(host_calls);
                 // NEAR charges ~1 gas for simple ops, ~10 for host calls
                 let estimated_gas = (regular + host_calls * 10) as f64;
@@ -125,13 +154,15 @@ impl WasmEmitter {
         self.tree_shake();
         // Ensure host functions needed by export wrappers are included
         if !self.exports.is_empty() {
-            self.need_host(7);  // input
-            self.need_host(1);  // register_len
-            self.need_host(0);  // read_register
+            self.need_host(7); // input
+            self.need_host(1); // register_len
+            self.need_host(0); // read_register
             self.need_host(25); // value_return
         }
         let mut m = Module::new();
-        let host_list: Vec<usize> = (0..HOST_FUNCS.len()).filter(|i| self.host_needed.contains(i)).collect();
+        let host_list: Vec<usize> = (0..HOST_FUNCS.len())
+            .filter(|i| self.host_needed.contains(i))
+            .collect();
         let host_count = host_list.len() as u32;
 
         // Type section
@@ -144,7 +175,10 @@ impl WasmEmitter {
         }
         let host_type_base = (max_p + 2) as u32;
         for &hi in &host_list {
-            types.ty().function(HOST_FUNCS[hi].1.iter().copied(), HOST_FUNCS[hi].2.iter().copied());
+            types.ty().function(
+                HOST_FUNCS[hi].1.iter().copied(),
+                HOST_FUNCS[hi].2.iter().copied(),
+            );
         }
         m.section(&types);
 
@@ -152,21 +186,30 @@ impl WasmEmitter {
         let mut imports = ImportSection::new();
         let mut host_idx: HashMap<usize, u32> = HashMap::new();
         for (i, &hi) in host_list.iter().enumerate() {
-            imports.import("env", HOST_FUNCS[hi].0, EntityType::Function(host_type_base + i as u32));
+            imports.import(
+                "env",
+                HOST_FUNCS[hi].0,
+                EntityType::Function(host_type_base + i as u32),
+            );
             host_idx.insert(hi, i as u32);
         }
         m.section(&imports);
 
         // Function section
         let mut funcs = FunctionSection::new();
-        for f in &self.funcs { funcs.function(f.param_count as u32 + 1); }
+        for f in &self.funcs {
+            funcs.function(f.param_count as u32 + 1);
+        }
         if self.exports.is_empty() {
             if !self.funcs.is_empty() {
                 funcs.function(0); // default wrapper: () -> ()
             }
         } else {
             for (fn_name, _, _) in &self.exports {
-                let func = self.funcs.iter().find(|f| f.name.as_str() == fn_name.as_str());
+                let func = self
+                    .funcs
+                    .iter()
+                    .find(|f| f.name.as_str() == fn_name.as_str());
                 let param_count = func.map(|f| f.param_count).unwrap_or(0);
                 // Wrapper type: (i64 × param_count) -> () — same as type param_count+1 but returns nothing
                 // For simplicity, use type 0 for now (NEAR passes args via input() anyway)
@@ -179,20 +222,34 @@ impl WasmEmitter {
 
         // Memory (internal, exported — same as near-sdk output)
         let mut mems = MemorySection::new();
-        mems.memory(MemoryType { minimum: self.memory_pages.max(1) as u64, maximum: None, memory64: false, shared: false, page_size_log2: None });
+        mems.memory(MemoryType {
+            minimum: self.memory_pages.max(1) as u64,
+            maximum: None,
+            memory64: false,
+            shared: false,
+            page_size_log2: None,
+        });
         m.section(&mems);
 
         // Global section: mutable i64 globals
         let mut globals = GlobalSection::new();
         // Global 0: return flag (set by near/return to skip export wrapper's value_return)
         globals.global(
-            GlobalType { val_type: ValType::I64, mutable: true, shared: false },
+            GlobalType {
+                val_type: ValType::I64,
+                mutable: true,
+                shared: false,
+            },
             &ConstExpr::i64_const(0),
         );
         // Global 1: frame pointer (bump allocator for string ops) — NEAR mode only
         if !self.wasi_mode && !self.p2_mode {
             globals.global(
-                GlobalType { val_type: ValType::I64, mutable: true, shared: false },
+                GlobalType {
+                    val_type: ValType::I64,
+                    mutable: true,
+                    shared: false,
+                },
                 &ConstExpr::i64_const(self.heap_ptr_i32() as i64),
             );
         }
@@ -204,7 +261,9 @@ impl WasmEmitter {
         let internal_base = host_count;
         let wrapper_base = internal_base + self.funcs.len() as u32;
         if self.exports.is_empty() {
-            if !self.funcs.is_empty() { exps.export(default_export, ExportKind::Func, wrapper_base); }
+            if !self.funcs.is_empty() {
+                exps.export(default_export, ExportKind::Func, wrapper_base);
+            }
         } else {
             for (i, (_, en, _)) in self.exports.iter().enumerate() {
                 exps.export(en, ExportKind::Func, wrapper_base + i as u32);
@@ -213,28 +272,38 @@ impl WasmEmitter {
         m.section(&exps);
 
         // Code
-        let name_map: HashMap<&str, u32> = self.funcs.iter().enumerate()
-            .map(|(i, f)| (f.name.as_str(), internal_base + i as u32)).collect();
+        let name_map: HashMap<&str, u32> = self
+            .funcs
+            .iter()
+            .enumerate()
+            .map(|(i, f)| (f.name.as_str(), internal_base + i as u32))
+            .collect();
         let mut code = wasm_encoder::CodeSection::new();
         for f in &self.funcs {
             let locals = if let Some(ref entries) = f.local_entries {
                 entries.clone()
             } else {
                 let extra = f.local_count.saturating_sub(f.param_count);
-                if extra > 0 { vec![(extra as u32, ValType::I64)] } else { vec![] }
+                if extra > 0 {
+                    vec![(extra as u32, ValType::I64)]
+                } else {
+                    vec![]
+                }
             };
             let resolved = Self::resolve_static_pub(&f.instrs, &host_idx, &name_map, &self.funcs);
             let mut fb = Function::new(locals);
-            for instr in &resolved { fb.instruction(instr); }
+            for instr in &resolved {
+                fb.instruction(instr);
+            }
             fb.instruction(&Instruction::End);
             code.function(&fb);
         }
         // Wrappers
         if self.exports.is_empty() {
             if let Some(f) = self.funcs.last() {
-                let idx = internal_base + (self.funcs.len()-1) as u32;
+                let idx = internal_base + (self.funcs.len() - 1) as u32;
                 let mut fb = Function::new(vec![(1u32, ValType::I64)]); // local 0 for result swapping
-                // Pass default args: for each param, push 100000 (for tight loop benchmarking)
+                                                                        // Pass default args: for each param, push 100000 (for tight loop benchmarking)
                 for _ in 0..f.param_count {
                     fb.instruction(&Instruction::I64Const(100000));
                 }
@@ -246,10 +315,17 @@ impl WasmEmitter {
         } else {
             for (fn_name, _, _) in &self.exports {
                 if let Some(&idx) = name_map.get(fn_name.as_str()) {
-                    let func = self.funcs.iter().find(|f| f.name.as_str() == fn_name.as_str());
+                    let func = self
+                        .funcs
+                        .iter()
+                        .find(|f| f.name.as_str() == fn_name.as_str());
                     let param_count = func.map(|f| f.param_count).unwrap_or(0);
                     let mut fb = Function::new(vec![(1u32, ValType::I64)]); // local 0 for result swapping
-                    let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                    let ma = wasm_encoder::MemArg {
+                        offset: 0,
+                        align: 3,
+                        memory_index: 0,
+                    };
                     if param_count == 0 {
                         // Reset return flag before call
                         fb.instruction(&Instruction::I64Const(0));
@@ -323,7 +399,7 @@ impl WasmEmitter {
                             fb.instruction(&Instruction::I32WrapI64);
                             fb.instruction(&Instruction::LocalGet(0)); // full tagged value
                             fb.instruction(&Instruction::I64Const(TAG_BITS));
-                            fb.instruction(&Instruction::I64ShrU);    // un-tag
+                            fb.instruction(&Instruction::I64ShrU); // un-tag
                             fb.instruction(&Instruction::I64Store(ma));
                             fb.instruction(&Instruction::I64Const(8));
                             fb.instruction(&Instruction::I64Const(TEMP_MEM));
@@ -361,7 +437,7 @@ impl WasmEmitter {
                         // Store result at TEMP_MEM: i64.store needs [i32 addr, i64 val]
                         // Stack: [i64 result]. Save to local 0, push addr, load local, store
                         fb.instruction(&Instruction::LocalSet(0)); // save result to local 0
-                        // Check return flag: if global[1] != 0, skip untag+store+value_return
+                                                                   // Check return flag: if global[1] != 0, skip untag+store+value_return
                         fb.instruction(&Instruction::GlobalGet(RETURN_FLAG));
                         fb.instruction(&Instruction::I64Const(0));
                         fb.instruction(&Instruction::I64Ne);
@@ -370,8 +446,8 @@ impl WasmEmitter {
                         fb.instruction(&Instruction::Else);
                         // Normal path: untag, store, value_return
                         fb.instruction(&Instruction::I64Const(TEMP_MEM));
-                        fb.instruction(&Instruction::I32WrapI64);   // addr as i32
-                        fb.instruction(&Instruction::LocalGet(0));  // restore result
+                        fb.instruction(&Instruction::I32WrapI64); // addr as i32
+                        fb.instruction(&Instruction::LocalGet(0)); // restore result
                         if !self.fuzz_mode {
                             // Untag the return value before storing for host
                             fb.instruction(&Instruction::I64Const(TAG_BITS));
@@ -399,7 +475,11 @@ impl WasmEmitter {
             let mut data = DataSection::new();
             // Initialize runtime heap ptr with final compile-time heap_ptr
             let hp_bytes = self.heap_ptr_i32().to_le_bytes();
-            data.active(0, &ConstExpr::i32_const(RUNTIME_HEAP_PTR as i32), hp_bytes.iter().copied());
+            data.active(
+                0,
+                &ConstExpr::i32_const(RUNTIME_HEAP_PTR as i32),
+                hp_bytes.iter().copied(),
+            );
             for (off, bytes) in &self.data_segments {
                 data.active(0, &ConstExpr::i32_const(*off as i32), bytes.iter().copied());
             }
@@ -425,42 +505,59 @@ impl WasmEmitter {
         funcs: &[FuncDef],
         outlayer_map: &HashMap<u32, u32>,
     ) -> Vec<Instruction<'static>> {
-        instrs.iter().map(|i| match i {
-            Instruction::Call(idx) if *idx >= HOST_BASE && *idx < USER_BASE => {
-                let sentinel = (*idx - HOST_BASE) as usize;
-                if let Some(&fn_idx) = host_map.get(&sentinel) {
-                    Instruction::Call(fn_idx)
-                } else {
-                    eprintln!("WARNING: unresolved HOST_BASE sentinel {} in resolve_static", sentinel);
-                    i.clone()
+        instrs
+            .iter()
+            .map(|i| match i {
+                Instruction::Call(idx) if *idx >= HOST_BASE && *idx < USER_BASE => {
+                    let sentinel = (*idx - HOST_BASE) as usize;
+                    if let Some(&fn_idx) = host_map.get(&sentinel) {
+                        Instruction::Call(fn_idx)
+                    } else {
+                        eprintln!(
+                            "WARNING: unresolved HOST_BASE sentinel {} in resolve_static",
+                            sentinel
+                        );
+                        i.clone()
+                    }
                 }
-            }
-            Instruction::Call(idx) if *idx >= USER_BASE => {
-                let pos = (*idx - USER_BASE) as usize;
-                if pos >= funcs.len() {
-                    eprintln!("PANIC: Call idx={} pos={} funcs.len()={}", idx, pos, funcs.len());
+                Instruction::Call(idx) if *idx >= USER_BASE => {
+                    let pos = (*idx - USER_BASE) as usize;
+                    if pos >= funcs.len() {
+                        eprintln!(
+                            "PANIC: Call idx={} pos={} funcs.len()={}",
+                            idx,
+                            pos,
+                            funcs.len()
+                        );
+                    }
+                    let fname = funcs[pos].name.as_str();
+                    if !name_map.contains_key(fname) {
+                        eprintln!(
+                            "PANIC: name_map missing key '{}' pos={} idx={}",
+                            fname, pos, idx
+                        );
+                        eprintln!("  name_map keys: {:?}", name_map.keys().collect::<Vec<_>>());
+                    }
+                    Instruction::Call(name_map[fname])
                 }
-                let fname = funcs[pos].name.as_str();
-                if !name_map.contains_key(fname) {
-                    eprintln!("PANIC: name_map missing key '{}' pos={} idx={}", fname, pos, idx);
-                    eprintln!("  name_map keys: {:?}", name_map.keys().collect::<Vec<_>>());
+                Instruction::Call(idx) if outlayer_map.contains_key(idx) => {
+                    Instruction::Call(outlayer_map[idx])
                 }
-                Instruction::Call(name_map[fname])
-            }
-            Instruction::Call(idx) if outlayer_map.contains_key(idx) => {
-                Instruction::Call(outlayer_map[idx])
-            }
-            other => other.clone(),
-        }).collect()
+                other => other.clone(),
+            })
+            .collect()
     }
-
 }
 
 fn parse_and_compile(source: &str, near: bool) -> Result<WasmEmitter, String> {
     parse_and_compile_opts(source, near, true)
 }
 
-fn parse_and_compile_opts(source: &str, near: bool, typecheck: bool) -> Result<WasmEmitter, String> {
+fn parse_and_compile_opts(
+    source: &str,
+    near: bool,
+    typecheck: bool,
+) -> Result<WasmEmitter, String> {
     let exprs = crate::parser::parse_all(source)?;
     let mut exprs = exprs;
     crate::clojure::desugar(&mut exprs);
@@ -489,7 +586,13 @@ fn parse_and_compile_opts(source: &str, near: bool, typecheck: bool) -> Result<W
                             if !sig.is_empty() {
                                 if let LispVal::Sym(name) = &sig[0] {
                                     if !em.funcs.iter().any(|f| &f.name == name) {
-                                        em.funcs.push(FuncDef { name: name.clone(), param_count: sig.len()-1, local_count: 0, instrs: Vec::new(), local_entries: None });
+                                        em.funcs.push(FuncDef {
+                                            name: name.clone(),
+                                            param_count: sig.len() - 1,
+                                            local_count: 0,
+                                            instrs: Vec::new(),
+                                            local_entries: None,
+                                        });
                                     }
                                 }
                             }
@@ -497,7 +600,13 @@ fn parse_and_compile_opts(source: &str, near: bool, typecheck: bool) -> Result<W
                         // Value define: (define name value)
                         if let LispVal::Sym(name) = &items[1] {
                             if !em.funcs.iter().any(|f| &f.name == name) {
-                                em.funcs.push(FuncDef { name: name.clone(), param_count: 0, local_count: 0, instrs: Vec::new(), local_entries: None });
+                                em.funcs.push(FuncDef {
+                                    name: name.clone(),
+                                    param_count: 0,
+                                    local_count: 0,
+                                    instrs: Vec::new(),
+                                    local_entries: None,
+                                });
                             }
                         }
                     }
@@ -510,7 +619,9 @@ fn parse_and_compile_opts(source: &str, near: bool, typecheck: bool) -> Result<W
     let mut bare_exprs: Vec<LispVal> = Vec::new();
     for e in &exprs {
         if let LispVal::List(items) = e {
-            if items.is_empty() { continue; }
+            if items.is_empty() {
+                continue;
+            }
             if let LispVal::Sym(s) = &items[0] {
                 match s.as_str() {
                     "define" | "export" | "borsh-schema" => {
@@ -522,12 +633,19 @@ fn parse_and_compile_opts(source: &str, near: bool, typecheck: bool) -> Result<W
                             if let (LispVal::Sym(s2), LispVal::List(sig)) = (&items[0], &items[1]) {
                                 if s2 == "define" && !sig.is_empty() {
                                     if let LispVal::Sym(name) = &sig[0] {
-                                        let params: Vec<String> = sig[1..].iter().map(|p| match p {
-                                            LispVal::Sym(ps) => Ok(ps.clone()), _ => Err("param must be symbol".into()),
-                                        }).collect::<Result<_, String>>()?;
+                                        let params: Vec<String> = sig[1..]
+                                            .iter()
+                                            .map(|p| match p {
+                                                LispVal::Sym(ps) => Ok(ps.clone()),
+                                                _ => Err("param must be symbol".into()),
+                                            })
+                                            .collect::<Result<_, String>>()?;
                                         let body = if items.len() > 3 {
-                                            LispVal::List(std::iter::once(LispVal::Sym("begin".into()))
-                                                .chain(items[2..].iter().cloned()).collect())
+                                            LispVal::List(
+                                                std::iter::once(LispVal::Sym("begin".into()))
+                                                    .chain(items[2..].iter().cloned())
+                                                    .collect(),
+                                            )
                                         } else {
                                             items[2].clone()
                                         };
@@ -543,19 +661,29 @@ fn parse_and_compile_opts(source: &str, near: bool, typecheck: bool) -> Result<W
                                 }
                             }
                             if let LispVal::Sym(s2) = &items[0] {
-                                if s2 == "export" { if let (LispVal::Str(en), LispVal::Sym(fn_)) = (&items[1], &items[2]) {
-                                    let view = items.len()>3 && matches!(&items[3], LispVal::Bool(true));
-                                    em.add_export(fn_, en, view);
-                                }}
+                                if s2 == "export" {
+                                    if let (LispVal::Str(en), LispVal::Sym(fn_)) =
+                                        (&items[1], &items[2])
+                                    {
+                                        let view = items.len() > 3
+                                            && matches!(&items[3], LispVal::Bool(true));
+                                        em.add_export(fn_, en, view);
+                                    }
+                                }
                             }
                         }
-                        if let (LispVal::Sym(s2), Some(LispVal::Num(n))) = (&items[0], items.get(1)) {
-                            if s2 == "memory" { em.set_memory(*n as u32); }
+                        if let (LispVal::Sym(s2), Some(LispVal::Num(n))) = (&items[0], items.get(1))
+                        {
+                            if s2 == "memory" {
+                                em.set_memory(*n as u32);
+                            }
                         }
                         continue;
                     }
                     "memory" => {
-                        if let Some(LispVal::Num(n)) = items.get(1) { em.set_memory(*n as u32); }
+                        if let Some(LispVal::Num(n)) = items.get(1) {
+                            em.set_memory(*n as u32);
+                        }
                         continue;
                     }
                     _ => {}
@@ -571,14 +699,16 @@ fn parse_and_compile_opts(source: &str, near: bool, typecheck: bool) -> Result<W
         let body = if bare_exprs.len() == 1 {
             bare_exprs.into_iter().next().unwrap()
         } else {
-            LispVal::List(std::iter::once(LispVal::Sym("begin".into()))
-                .chain(bare_exprs.into_iter()).collect())
+            LispVal::List(
+                std::iter::once(LispVal::Sym("begin".into()))
+                    .chain(bare_exprs.into_iter())
+                    .collect(),
+            )
         };
         em.emit_define("__toplevel", &[], &body)?;
     }
     Ok(em)
 }
-
 
 pub fn compile_pure(source: &str) -> Result<Vec<u8>, String> {
     let mut em = parse_and_compile(source, false)?;
@@ -614,7 +744,10 @@ pub fn compile_standalone_opts(source: &str, typecheck: bool) -> Result<Vec<u8>,
     // WASI proc_exit: (i32) -> ()
     types.ty().function([ValType::I32], []);
     // WASI fd_write: (i32 fd, i32 iov_ptr, i32 iov_count, i32 nwritten_ptr) -> i32
-    types.ty().function([ValType::I32, ValType::I32, ValType::I32, ValType::I32], [ValType::I32]);
+    types.ty().function(
+        [ValType::I32, ValType::I32, ValType::I32, ValType::I32],
+        [ValType::I32],
+    );
     m.section(&types);
 
     // WASI P1 imports (minimal — proc_exit, needed for inlayer validation)
@@ -631,29 +764,45 @@ pub fn compile_standalone_opts(source: &str, typecheck: bool) -> Result<Vec<u8>,
     );
     m.section(&imports);
     let wasi_proc_exit = 0u32; // import index
-    let wasi_fd_write = 1u32;  // import index
+    let wasi_fd_write = 1u32; // import index
 
     // Function section
     let mut funcs = FunctionSection::new();
-    for f in &em.funcs { funcs.function(f.param_count as u32 + 1); }
+    for f in &em.funcs {
+        funcs.function(f.param_count as u32 + 1);
+    }
     // _start wrapper
     funcs.function(0); // () -> ()
     m.section(&funcs);
 
     // Memory — 16 pages (1MB) for standalone (NEAR uses 1 page, but standalone needs depth counter at 999980)
     let mut mems = MemorySection::new();
-    mems.memory(MemoryType { minimum: 16, maximum: None, memory64: false, shared: false, page_size_log2: None });
+    mems.memory(MemoryType {
+        minimum: 16,
+        maximum: None,
+        memory64: false,
+        shared: false,
+        page_size_log2: None,
+    });
     m.section(&mems);
 
     // Globals
     let mut globals = GlobalSection::new();
     globals.global(
-        GlobalType { val_type: ValType::I64, mutable: true, shared: false },
+        GlobalType {
+            val_type: ValType::I64,
+            mutable: true,
+            shared: false,
+        },
         &ConstExpr::i64_const(0), // return flag
     );
     // Heap pointer
     globals.global(
-        GlobalType { val_type: ValType::I64, mutable: true, shared: false },
+        GlobalType {
+            val_type: ValType::I64,
+            mutable: true,
+            shared: false,
+        },
         &ConstExpr::i64_const(em.heap_ptr_i32() as i64),
     );
     m.section(&globals);
@@ -668,43 +817,62 @@ pub fn compile_standalone_opts(source: &str, typecheck: bool) -> Result<Vec<u8>,
     // Code section (id=10 — must come before data id=11)
     // WASM func indices: 0 = WASI proc_exit import, 1 = fd_write import, 2..N = user funcs, N+1 = _start wrapper
     let func_offset = 2u32; // +2 for WASI imports (proc_exit, fd_write)
-    // Pre-compute heap ptr before borrowing em.funcs for name_map
+                            // Pre-compute heap ptr before borrowing em.funcs for name_map
     let hp = em.heap_ptr_i32();
     let hp_bytes = hp.to_le_bytes();
     let hp_word = u32::from_le_bytes([hp_bytes[0], hp_bytes[1], hp_bytes[2], hp_bytes[3]]);
-    let name_map: HashMap<&str, u32> = em.funcs.iter().enumerate()
-        .map(|(i, f)| (f.name.as_str(), func_offset + i as u32)).collect();
+    let name_map: HashMap<&str, u32> = em
+        .funcs
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.name.as_str(), func_offset + i as u32))
+        .collect();
     let mut code = wasm_encoder::CodeSection::new();
     for f in &em.funcs {
         let locals = if let Some(ref entries) = f.local_entries {
             entries.clone()
         } else {
             let extra = f.local_count.saturating_sub(f.param_count);
-            if extra > 0 { vec![(extra as u32, ValType::I64)] } else { vec![] }
+            if extra > 0 {
+                vec![(extra as u32, ValType::I64)]
+            } else {
+                vec![]
+            }
         };
-        let resolved = WasmEmitter::resolve_static_pub(&f.instrs, &HashMap::new(), &name_map, &em.funcs);
+        let resolved =
+            WasmEmitter::resolve_static_pub(&f.instrs, &HashMap::new(), &name_map, &em.funcs);
         let mut fb = Function::new(locals);
-        for instr in &resolved { fb.instruction(instr); }
+        for instr in &resolved {
+            fb.instruction(instr);
+        }
         fb.instruction(&Instruction::End);
         code.function(&fb);
     }
 
     // _start wrapper: call last function, output string result via fd_write
     let mut fb = Function::new(vec![(1u32, ValType::I64)]); // local 0: result
-    // Re-initialize data segments programmatically (WASI P1 zeroes memory)
+                                                            // Re-initialize data segments programmatically (WASI P1 zeroes memory)
     for (off, bytes) in &em.data_segments {
         let mut i = 0usize;
         while i < bytes.len() {
             if i + 4 <= bytes.len() {
-                let word = u32::from_le_bytes([bytes[i], bytes[i+1], bytes[i+2], bytes[i+3]]);
+                let word = u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
                 fb.instruction(&Instruction::I32Const(*off as i32 + i as i32));
                 fb.instruction(&Instruction::I32Const(word as i32));
-                fb.instruction(&Instruction::I32Store(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+                fb.instruction(&Instruction::I32Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 2,
+                    memory_index: 0,
+                }));
                 i += 4;
             } else {
                 fb.instruction(&Instruction::I32Const(*off as i32 + i as i32));
                 fb.instruction(&Instruction::I32Const(bytes[i] as i32));
-                fb.instruction(&Instruction::I32Store8(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                fb.instruction(&Instruction::I32Store8(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }));
                 i += 1;
             }
         }
@@ -712,7 +880,11 @@ pub fn compile_standalone_opts(source: &str, typecheck: bool) -> Result<Vec<u8>,
     // Initialize RUNTIME_HEAP_PTR at memory[999980] (WASI zeroes memory)
     fb.instruction(&Instruction::I32Const(RUNTIME_HEAP_PTR as i32));
     fb.instruction(&Instruction::I32Const(hp_word as i32));
-    fb.instruction(&Instruction::I32Store(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+    fb.instruction(&Instruction::I32Store(wasm_encoder::MemArg {
+        offset: 0,
+        align: 2,
+        memory_index: 0,
+    }));
     if let Some(f) = em.funcs.iter().find(|f| f.name == "__toplevel") {
         let idx = name_map.get(f.name.as_str()).copied().unwrap_or(0);
         for _ in 0..f.param_count {
@@ -734,18 +906,26 @@ pub fn compile_standalone_opts(source: &str, typecheck: bool) -> Result<Vec<u8>,
         fb.instruction(&Instruction::I64Const(3));
         fb.instruction(&Instruction::I64ShrU);
         fb.instruction(&Instruction::I32WrapI64); // low 32 = ptr
-        fb.instruction(&Instruction::I32Store(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+        fb.instruction(&Instruction::I32Store(wasm_encoder::MemArg {
+            offset: 0,
+            align: 2,
+            memory_index: 0,
+        }));
         fb.instruction(&Instruction::I32Const(516));
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I64Const(35)); // 3 (untag) + 32 (extract high)
         fb.instruction(&Instruction::I64ShrU);
         fb.instruction(&Instruction::I32WrapI64); // high 32 = len
-        fb.instruction(&Instruction::I32Store(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+        fb.instruction(&Instruction::I32Store(wasm_encoder::MemArg {
+            offset: 0,
+            align: 2,
+            memory_index: 0,
+        }));
         // fd_write(fd=1, iov_ptr=512, iov_count=1, nwritten_ptr=508)
-        fb.instruction(&Instruction::I32Const(1));     // fd
-        fb.instruction(&Instruction::I32Const(512));   // iov_ptr
-        fb.instruction(&Instruction::I32Const(1));     // iov_count
-        fb.instruction(&Instruction::I32Const(508));   // nwritten_ptr
+        fb.instruction(&Instruction::I32Const(1)); // fd
+        fb.instruction(&Instruction::I32Const(512)); // iov_ptr
+        fb.instruction(&Instruction::I32Const(1)); // iov_count
+        fb.instruction(&Instruction::I32Const(508)); // nwritten_ptr
         fb.instruction(&Instruction::Call(wasi_fd_write));
         fb.instruction(&Instruction::Drop);
         fb.instruction(&Instruction::End);
@@ -753,7 +933,11 @@ pub fn compile_standalone_opts(source: &str, typecheck: bool) -> Result<Vec<u8>,
         fb.instruction(&Instruction::I64Const(1024));
         fb.instruction(&Instruction::I32WrapI64);
         fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+        fb.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 0,
+        }));
     }
     fb.instruction(&Instruction::End);
     code.function(&fb);
@@ -770,10 +954,12 @@ pub fn compile_standalone_opts(source: &str, typecheck: bool) -> Result<Vec<u8>,
     }
 
     let bytes = m.finish();
-    eprintln!("✅ standalone WASM ({} bytes) — _start, no host imports", bytes.len());
+    eprintln!(
+        "✅ standalone WASM ({} bytes) — _start, no host imports",
+        bytes.len()
+    );
     Ok(bytes.to_vec())
 }
-
 
 pub fn compile_fuzz(source: &str) -> Result<Vec<u8>, String> {
     let mut em = parse_and_compile(source, false)?;
@@ -787,7 +973,6 @@ pub fn compile_fuzz(source: &str) -> Result<Vec<u8>, String> {
     em.set_fuzz_mode(true);
     Ok(em.finish("run"))
 }
-
 
 pub fn compile_near(source: &str) -> Result<Vec<u8>, String> {
     let resolved = resolve_modules(source, std::path::Path::new("."))?;
@@ -812,27 +997,26 @@ pub fn compile_near(source: &str) -> Result<Vec<u8>, String> {
         }
         eprintln!("╚════════════════════════════════════════════════════╝");
     }
-    
-   let wasm = em.finish("_run");
-   Ok(wasm)
+
+    let wasm = em.finish("_run");
+    Ok(wasm)
 }
 
 /// Compile NEAR WASM from source, skipping type checking.
 /// Useful for dynamically-typed generated code (e.g. Solidity translation).
 pub fn compile_near_untyped(source: &str) -> Result<Vec<u8>, String> {
-   let resolved = resolve_modules(source, std::path::Path::new("."))?;
-   let mut em = parse_and_compile_opts(&resolved, true, false)?;
-   if em.exports.is_empty() {
-       if let Some(f) = em.funcs.iter().find(|f| f.name == "run") {
-           em.add_export(&f.name.clone(), "_run", false);
-       } else if let Some(f) = em.funcs.last() {
-           em.add_export(&f.name.clone(), "_run", false);
-       }
-   }
-   let wasm = em.finish("_run");
-   Ok(wasm)
+    let resolved = resolve_modules(source, std::path::Path::new("."))?;
+    let mut em = parse_and_compile_opts(&resolved, true, false)?;
+    if em.exports.is_empty() {
+        if let Some(f) = em.funcs.iter().find(|f| f.name == "run") {
+            em.add_export(&f.name.clone(), "_run", false);
+        } else if let Some(f) = em.funcs.last() {
+            em.add_export(&f.name.clone(), "_run", false);
+        }
+    }
+    let wasm = em.finish("_run");
+    Ok(wasm)
 }
-
 
 pub fn compile_near_from_exprs(exprs: &[LispVal]) -> Result<Vec<u8>, String> {
     // Type check pass
@@ -845,7 +1029,9 @@ pub fn compile_near_from_exprs(exprs: &[LispVal]) -> Result<Vec<u8>, String> {
     let mut em = WasmEmitter::new();
     for e in exprs {
         if let LispVal::List(items) = e {
-            if items.is_empty() { continue; }
+            if items.is_empty() {
+                continue;
+            }
             // Handle (borsh-schema ...) — can have any number of args
             if let LispVal::Sym(s) = &items[0] {
                 if s == "borsh-schema" {
@@ -856,9 +1042,13 @@ pub fn compile_near_from_exprs(exprs: &[LispVal]) -> Result<Vec<u8>, String> {
                 if let (LispVal::Sym(s), LispVal::List(sig)) = (&items[0], &items[1]) {
                     if s == "define" && !sig.is_empty() {
                         if let LispVal::Sym(name) = &sig[0] {
-                            let params: Vec<String> = sig[1..].iter().map(|p| match p {
-                                LispVal::Sym(s) => Ok(s.clone()), _ => Err("param must be symbol".into()),
-                            }).collect::<Result<_, String>>()?;
+                            let params: Vec<String> = sig[1..]
+                                .iter()
+                                .map(|p| match p {
+                                    LispVal::Sym(s) => Ok(s.clone()),
+                                    _ => Err("param must be symbol".into()),
+                                })
+                                .collect::<Result<_, String>>()?;
                             let body = if items.len() > 3 {
                                 let mut b = vec![LispVal::Sym("begin".into())];
                                 b.extend(items[2..].iter().cloned());
@@ -885,31 +1075,30 @@ pub fn compile_near_from_exprs(exprs: &[LispVal]) -> Result<Vec<u8>, String> {
     Ok(em.finish("_run"))
 }
 
-
 pub fn compile_near_to_wat_from_exprs(exprs: &[LispVal]) -> Result<String, String> {
     let b = compile_near_from_exprs(exprs)?;
     wasmprinter::print_bytes(&b).map_err(|e| e.to_string())
 }
-
 
 pub fn compile_pure_to_wat(source: &str) -> Result<String, String> {
     let b = compile_pure(source)?;
     wasmprinter::print_bytes(&b).map_err(|e| e.to_string())
 }
 
-
 pub fn compile_near_to_wat(source: &str) -> Result<String, String> {
     let b = compile_near(source)?;
     wasmprinter::print_bytes(&b).map_err(|e| e.to_string())
 }
 
-
 pub fn resolve_modules(source: &str, base_dir: &std::path::Path) -> Result<String, String> {
     resolve_modules_inner(source, base_dir, &mut Vec::new())
 }
 
-
-fn resolve_modules_inner(source: &str, base_dir: &std::path::Path, seen: &mut Vec<std::path::PathBuf>) -> Result<String, String> {
+fn resolve_modules_inner(
+    source: &str,
+    base_dir: &std::path::Path,
+    seen: &mut Vec<std::path::PathBuf>,
+) -> Result<String, String> {
     let mut resolved = String::new();
     for line in source.lines() {
         let trimmed = line.trim();
@@ -919,14 +1108,20 @@ fn resolve_modules_inner(source: &str, base_dir: &std::path::Path, seen: &mut Ve
                 let path_end = rest.rfind('"').unwrap_or(rest.len());
                 if path_start + 1 < path_end {
                     let path_str = &rest[path_start + 1..path_end];
-                    let module_path = base_dir.join(path_str).canonicalize()
+                    let module_path = base_dir
+                        .join(path_str)
+                        .canonicalize()
                         .map_err(|e| format!("module not found: {} — {}", path_str, e))?;
                     if seen.contains(&module_path) {
-                        return Err(format!("circular module dependency: {}", module_path.display()));
+                        return Err(format!(
+                            "circular module dependency: {}",
+                            module_path.display()
+                        ));
                     }
                     seen.push(module_path.clone());
-                    let module_source = std::fs::read_to_string(&module_path)
-                        .map_err(|e| format!("module not found: {} — {}", module_path.display(), e))?;
+                    let module_source = std::fs::read_to_string(&module_path).map_err(|e| {
+                        format!("module not found: {} — {}", module_path.display(), e)
+                    })?;
                     let module_dir = module_path.parent().unwrap_or(base_dir);
                     let resolved_module = resolve_modules_inner(&module_source, module_dir, seen)?;
                     resolved.push_str(&resolved_module);
@@ -940,4 +1135,3 @@ fn resolve_modules_inner(source: &str, base_dir: &std::path::Path, seen: &mut Ve
     }
     Ok(resolved)
 }
-

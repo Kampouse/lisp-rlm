@@ -1,16 +1,19 @@
-
 use super::*;
 
 impl WasmEmitter {
-    pub(crate) fn emit_borsh_serialize(&mut self, schema_name: &str, val_args: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
-        let schema = self.borsh_schemas.get(schema_name)
+    pub(crate) fn emit_borsh_serialize(
+        &mut self,
+        schema_name: &str,
+        val_args: &[LispVal],
+    ) -> Result<Vec<Instruction<'static>>, String> {
+        let schema = self
+            .borsh_schemas
+            .get(schema_name)
             .ok_or_else(|| format!("borsh-serialize: unknown schema '{}'", schema_name))?
             .clone();
         let pos = self.local_idx("__borsh_pos");
-        let mut v: Vec<Instruction<'static>> = vec![
-            Instruction::I64Const(BORSH_BUF),
-            Instruction::LocalSet(pos),
-        ];
+        let mut v: Vec<Instruction<'static>> =
+            vec![Instruction::I64Const(BORSH_BUF), Instruction::LocalSet(pos)];
         // Collect field types
         let field_types: Vec<&BorshType> = match &schema {
             BorshType::Struct { fields } => fields.iter().map(|(_, bt)| bt).collect(),
@@ -31,7 +34,11 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(disc_tmp));
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Store8(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                v.push(Instruction::I32Store8(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }));
                 // pos += 1
                 v.push(Instruction::LocalGet(pos));
                 v.push(Instruction::I64Const(1));
@@ -63,7 +70,9 @@ impl WasmEmitter {
                     }
                     // Write this variant's fields
                     for (fi, (_, ftype)) in vfields.iter().enumerate() {
-                        if 1 + fi >= val_args.len() { break; } // safety: skip if not enough args
+                        if 1 + fi >= val_args.len() {
+                            break;
+                        } // safety: skip if not enough args
                         v.extend(self.expr(&val_args[1 + fi])?);
                         let ftmp = self.local_idx("__borsh_ftmp");
                         v.push(Instruction::LocalSet(ftmp));
@@ -91,7 +100,11 @@ impl WasmEmitter {
             other => vec![other],
         };
         if val_args.len() != field_types.len() {
-            return Err(format!("borsh-serialize: expected {} fields, got {} values — struct field count mismatch", field_types.len(), val_args.len()));
+            return Err(format!(
+                "borsh-serialize: expected {} fields, got {} values — struct field count mismatch",
+                field_types.len(),
+                val_args.len()
+            ));
         }
         for (i, btype) in field_types.iter().enumerate() {
             v.extend(self.expr(&val_args[i])?);
@@ -115,7 +128,12 @@ impl WasmEmitter {
         Ok(v)
     }
 
-    pub(crate) fn borsh_write_field(&mut self, btype: &BorshType, tmp: u32, pos: u32) -> Result<Vec<Instruction<'static>>, String> {
+    pub(crate) fn borsh_write_field(
+        &mut self,
+        btype: &BorshType,
+        tmp: u32,
+        pos: u32,
+    ) -> Result<Vec<Instruction<'static>>, String> {
         let mut v: Vec<Instruction<'static>> = Vec::new();
         match btype {
             BorshType::I64 | BorshType::U64 => {
@@ -131,7 +149,11 @@ impl WasmEmitter {
                 } else {
                     v.extend(self.emit_untag());
                 }
-                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
                 // pos += 8
                 v.push(Instruction::LocalGet(pos));
                 v.push(Instruction::I64Const(8));
@@ -145,7 +167,11 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(tmp));
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Store(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+                v.push(Instruction::I32Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 2,
+                    memory_index: 0,
+                }));
                 // pos += 4
                 v.push(Instruction::LocalGet(pos));
                 v.push(Instruction::I64Const(4));
@@ -159,7 +185,11 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(tmp));
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Store8(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                v.push(Instruction::I32Store8(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }));
                 // pos += 1
                 v.push(Instruction::LocalGet(pos));
                 v.push(Instruction::I64Const(1));
@@ -172,7 +202,11 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalGet(tmp));
                 v.extend(self.emit_untag());
-                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
                 // Write 8 zero bytes at pos+8
                 v.push(Instruction::LocalGet(pos));
                 v.push(Instruction::I64Const(8));
@@ -180,56 +214,88 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Store8(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                v.push(Instruction::I32Store8(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }));
                 v.push(Instruction::LocalGet(pos));
                 v.push(Instruction::I64Const(9));
                 v.push(Instruction::I64Add);
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Store8(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                v.push(Instruction::I32Store8(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }));
                 v.push(Instruction::LocalGet(pos));
                 v.push(Instruction::I64Const(10));
                 v.push(Instruction::I64Add);
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Store8(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                v.push(Instruction::I32Store8(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }));
                 v.push(Instruction::LocalGet(pos));
                 v.push(Instruction::I64Const(11));
                 v.push(Instruction::I64Add);
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Store8(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                v.push(Instruction::I32Store8(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }));
                 v.push(Instruction::LocalGet(pos));
                 v.push(Instruction::I64Const(12));
                 v.push(Instruction::I64Add);
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Store8(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                v.push(Instruction::I32Store8(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }));
                 v.push(Instruction::LocalGet(pos));
                 v.push(Instruction::I64Const(13));
                 v.push(Instruction::I64Add);
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Store8(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                v.push(Instruction::I32Store8(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }));
                 v.push(Instruction::LocalGet(pos));
                 v.push(Instruction::I64Const(14));
                 v.push(Instruction::I64Add);
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Store8(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                v.push(Instruction::I32Store8(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }));
                 v.push(Instruction::LocalGet(pos));
                 v.push(Instruction::I64Const(15));
                 v.push(Instruction::I64Add);
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Store8(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                v.push(Instruction::I32Store8(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }));
                 // pos += 16
                 v.push(Instruction::LocalGet(pos));
                 v.push(Instruction::I64Const(16));
@@ -262,7 +328,11 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalGet(len));
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Store(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+                v.push(Instruction::I32Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 2,
+                    memory_index: 0,
+                }));
                 // pos += 4
                 v.push(Instruction::LocalGet(pos));
                 v.push(Instruction::I64Const(4));
@@ -290,9 +360,17 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(idx));
                 v.push(Instruction::I64Add);
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                v.push(Instruction::I32Load8U(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }));
                 // store byte
-                v.push(Instruction::I32Store8(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                v.push(Instruction::I32Store8(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }));
                 // idx += 1
                 v.push(Instruction::LocalGet(idx));
                 v.push(Instruction::I64Const(1));
@@ -303,7 +381,7 @@ impl WasmEmitter {
                 v.push(Instruction::End); // if
                 v.push(Instruction::End); // loop
                 v.push(Instruction::End); // block
-                // pos += len
+                                          // pos += len
                 v.push(Instruction::LocalGet(pos));
                 v.push(Instruction::LocalGet(len));
                 v.push(Instruction::I64Add);
@@ -323,7 +401,11 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Store8(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                v.push(Instruction::I32Store8(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }));
                 // pos += 1
                 v.push(Instruction::LocalGet(pos));
                 v.push(Instruction::I64Const(1));
@@ -335,7 +417,11 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Const(1));
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Store8(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                v.push(Instruction::I32Store8(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }));
                 // pos += 1
                 v.push(Instruction::LocalGet(pos));
                 v.push(Instruction::I64Const(1));
@@ -352,7 +438,11 @@ impl WasmEmitter {
                 let arr_count = self.local_idx("__borsh_arr_count");
                 let arr_idx = self.local_idx("__borsh_arr_idx");
                 let elem_tmp = self.local_idx("__borsh_elem_tmp");
-                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let ma = wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                };
 
                 // Untag tmp → raw heap ptr
                 v.push(Instruction::LocalGet(tmp));
@@ -370,7 +460,11 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalGet(arr_count));
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Store(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+                v.push(Instruction::I32Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 2,
+                    memory_index: 0,
+                }));
                 // pos += 4
                 v.push(Instruction::LocalGet(pos));
                 v.push(Instruction::I64Const(4));
@@ -422,8 +516,14 @@ impl WasmEmitter {
         Ok(v)
     }
 
-    pub(crate) fn emit_borsh_deserialize(&mut self, schema_name: &str, bytes_expr: Vec<Instruction<'static>>) -> Result<Vec<Instruction<'static>>, String> {
-        let schema = self.borsh_schemas.get(schema_name)
+    pub(crate) fn emit_borsh_deserialize(
+        &mut self,
+        schema_name: &str,
+        bytes_expr: Vec<Instruction<'static>>,
+    ) -> Result<Vec<Instruction<'static>>, String> {
+        let schema = self
+            .borsh_schemas
+            .get(schema_name)
             .ok_or_else(|| format!("borsh-deserialize: unknown schema '{}'", schema_name))?
             .clone();
         let src = self.local_idx("__borsh_src");
@@ -448,28 +548,32 @@ impl WasmEmitter {
                     let field_src = self.local_idx("__borsh_fsrc");
                     v.push(Instruction::LocalGet(src));
                     v.push(Instruction::LocalSet(field_src));
-                    
+
                     // Allocate runtime array: [count, field0, field1, ...]
                     let arr_slots = fields.len() as i64;
                     let arr_bytes = (1 + arr_slots) * 8; // count + elements
                     let arr_ptr = self.local_idx("__borsh_struct_arr");
                     v.extend(self.emit_runtime_alloc(arr_bytes));
                     v.push(Instruction::LocalSet(arr_ptr));
-                    
+
                     // Store count
                     v.push(Instruction::LocalGet(arr_ptr));
                     v.push(Instruction::I32WrapI64);
                     v.push(Instruction::I64Const(arr_slots));
-                    let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                    let ma = wasm_encoder::MemArg {
+                        offset: 0,
+                        align: 3,
+                        memory_index: 0,
+                    };
                     v.push(Instruction::I64Store(ma));
-                    
+
                     // Read each field and store into array
                     for (i, (_fname, ftype)) in fields.iter().enumerate() {
                         // Read field value → tagged i64 on stack
                         v.extend(self.borsh_read_field(ftype, field_src)?);
                         let val_tmp = self.local_idx("__borsh_struct_val");
                         v.push(Instruction::LocalSet(val_tmp)); // save value
-                        // Store at arr_ptr[1+i]
+                                                                // Store at arr_ptr[1+i]
                         let slot_off = (1 + i) as i64 * 8;
                         v.push(Instruction::LocalGet(arr_ptr));
                         v.push(Instruction::I64Const(slot_off));
@@ -510,38 +614,60 @@ impl WasmEmitter {
             BorshType::I64 | BorshType::U64 | BorshType::F64 => 8,
             BorshType::U128 => 16,
             BorshType::Option(inner) => 1 + Self::borsh_type_size(inner),
-            BorshType::Struct { fields } => fields.iter().map(|(_, ft)| Self::borsh_type_size(ft)).sum(),
+            BorshType::Struct { fields } => {
+                fields.iter().map(|(_, ft)| Self::borsh_type_size(ft)).sum()
+            }
             BorshType::String | BorshType::Bytes | BorshType::Vec(_) | BorshType::Enum { .. } => 0,
         }
     }
 
-    pub(crate) fn borsh_read_field(&mut self, btype: &BorshType, src: u32) -> Result<Vec<Instruction<'static>>, String> {
+    pub(crate) fn borsh_read_field(
+        &mut self,
+        btype: &BorshType,
+        src: u32,
+    ) -> Result<Vec<Instruction<'static>>, String> {
         let mut v: Vec<Instruction<'static>> = Vec::new();
         match btype {
             BorshType::I64 | BorshType::U64 => {
                 v.push(Instruction::LocalGet(src));
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Load(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
                 v.extend(self.emit_tag_num());
             }
             BorshType::U32 => {
                 v.push(Instruction::LocalGet(src));
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+                v.push(Instruction::I32Load(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 2,
+                    memory_index: 0,
+                }));
                 v.push(Instruction::I64ExtendI32U);
                 v.extend(self.emit_tag_num());
             }
             BorshType::U8 => {
                 v.push(Instruction::LocalGet(src));
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                v.push(Instruction::I32Load8U(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }));
                 v.push(Instruction::I64ExtendI32U);
                 v.extend(self.emit_tag_num());
             }
             BorshType::Bool => {
                 v.push(Instruction::LocalGet(src));
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                v.push(Instruction::I32Load8U(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }));
                 v.push(Instruction::I64ExtendI32U);
                 v.extend(self.emit_tag(TAG_BOOL));
             }
@@ -549,7 +675,11 @@ impl WasmEmitter {
                 // Read low 8 bytes only
                 v.push(Instruction::LocalGet(src));
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Load(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
                 v.extend(self.emit_tag_num());
             }
             BorshType::F64 => {
@@ -560,7 +690,11 @@ impl WasmEmitter {
                 // Read 4-byte LE length
                 v.push(Instruction::LocalGet(src));
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+                v.push(Instruction::I32Load(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 2,
+                    memory_index: 0,
+                }));
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::LocalSet(len));
                 // Build tagged Str pointing at src+4 with len
@@ -579,7 +713,11 @@ impl WasmEmitter {
                 // Read 1-byte discriminant from src
                 v.push(Instruction::LocalGet(src));
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                v.push(Instruction::I32Load8U(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }));
                 v.push(Instruction::I32Const(0));
                 v.push(Instruction::I32Eq);
                 v.push(Instruction::If(BlockType::Result(ValType::I64)));
@@ -598,18 +736,29 @@ impl WasmEmitter {
             BorshType::Vec(inner) => {
                 let elem_sz = Self::borsh_type_size(inner);
                 if elem_sz == 0 {
-                    return Err("borsh-deserialize: Vec of variable-length element types not yet supported".into());
+                    return Err(
+                        "borsh-deserialize: Vec of variable-length element types not yet supported"
+                            .into(),
+                    );
                 }
                 let count = self.local_idx("__borsh_vec_count");
                 let arr_ptr = self.local_idx("__borsh_vec_arr");
                 let elem_idx = self.local_idx("__borsh_vec_eidx");
                 let elem_src = self.local_idx("__borsh_vec_esrc");
-                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let ma = wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                };
 
                 // Read u32 LE count from src
                 v.push(Instruction::LocalGet(src));
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
+                v.push(Instruction::I32Load(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 2,
+                    memory_index: 0,
+                }));
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::LocalSet(count));
 
@@ -692,7 +841,7 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64); // addr as i32
                 v.push(Instruction::LocalGet(store_tmp)); // tagged value
                 v.push(Instruction::I64Store(ma)); // [i32 addr, i64 val]
-                // Advance elem_src by elem_sz
+                                                   // Advance elem_src by elem_sz
                 v.push(Instruction::LocalGet(elem_src));
                 v.push(Instruction::I64Const(elem_sz as i64));
                 v.push(Instruction::I64Add);
@@ -736,7 +885,11 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(arr_ptr));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Const(arr_slots));
-                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let ma = wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                };
                 v.push(Instruction::I64Store(ma));
                 // Read each field and store into array
                 let field_src = self.local_idx("__borch_nested_fsrc");
@@ -777,7 +930,11 @@ impl WasmEmitter {
                 // Read 1-byte discriminant
                 v.push(Instruction::LocalGet(src));
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+                v.push(Instruction::I32Load8U(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }));
                 v.push(Instruction::I64ExtendI32U);
                 let disc_local = self.local_idx("__borsh_enum_disc");
                 v.push(Instruction::LocalSet(disc_local));
@@ -801,7 +958,11 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalGet(disc_local));
                 v.extend(self.emit_tag_num());
-                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let ma = wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                };
                 v.push(Instruction::I64Store(ma));
                 // Switch on discriminant to read variant fields
                 for (vi, (_, vfields)) in variants.iter().enumerate() {
@@ -857,7 +1018,6 @@ impl WasmEmitter {
         }
         Ok(v)
     }
-
 }
 
 fn parse_borsh_type(val: &LispVal) -> Result<BorshType, String> {
@@ -877,12 +1037,16 @@ fn parse_borsh_type(val: &LispVal) -> Result<BorshType, String> {
         LispVal::List(items) if !items.is_empty() => {
             match &items[0] {
                 LispVal::Sym(s) if s == "Vec" => {
-                    if items.len() != 2 { return Err("borsh: Vec requires exactly one type arg".into()); }
+                    if items.len() != 2 {
+                        return Err("borsh: Vec requires exactly one type arg".into());
+                    }
                     let inner = parse_borsh_type(&items[1])?;
                     Ok(BorshType::Vec(Box::new(inner)))
                 }
                 LispVal::Sym(s) if s == "Option" => {
-                    if items.len() != 2 { return Err("borsh: Option requires exactly one type arg".into()); }
+                    if items.len() != 2 {
+                        return Err("borsh: Option requires exactly one type arg".into());
+                    }
                     let inner = parse_borsh_type(&items[1])?;
                     Ok(BorshType::Option(Box::new(inner)))
                 }
@@ -894,7 +1058,9 @@ fn parse_borsh_type(val: &LispVal) -> Result<BorshType, String> {
                             LispVal::List(var_items) if !var_items.is_empty() => {
                                 let var_name = match &var_items[0] {
                                     LispVal::Sym(n) => n.clone(),
-                                    _ => return Err("borsh Enum: variant name must be symbol".into()),
+                                    _ => {
+                                        return Err("borsh Enum: variant name must be symbol".into())
+                                    }
                                 };
                                 let fields = parse_borsh_fields(&var_items[1..])?;
                                 variants.push((var_name, fields));
@@ -919,8 +1085,9 @@ fn parse_borsh_type(val: &LispVal) -> Result<BorshType, String> {
     }
 }
 
-
-fn parse_borsh_enum_variants(items: &[LispVal]) -> Result<Vec<(String, Vec<(String, BorshType)>)>, String> {
+fn parse_borsh_enum_variants(
+    items: &[LispVal],
+) -> Result<Vec<(String, Vec<(String, BorshType)>)>, String> {
     let mut variants = Vec::new();
     for v in items {
         match v {
@@ -942,7 +1109,6 @@ fn parse_borsh_enum_variants(items: &[LispVal]) -> Result<Vec<(String, Vec<(Stri
     Ok(variants)
 }
 
-
 fn parse_borsh_fields(items: &[LispVal]) -> Result<Vec<(String, BorshType)>, String> {
     let mut fields = Vec::new();
     for item in items {
@@ -961,7 +1127,6 @@ fn parse_borsh_fields(items: &[LispVal]) -> Result<Vec<(String, BorshType)>, Str
     Ok(fields)
 }
 
-
 pub(crate) fn process_borsh_schema(em: &mut WasmEmitter, items: &[LispVal]) -> Result<(), String> {
     // items[0] = "borsh-schema", items[1..] = type definitions
     for def in &items[1..] {
@@ -979,10 +1144,16 @@ pub(crate) fn process_borsh_schema(em: &mut WasmEmitter, items: &[LispVal]) -> R
                 let any_list = rest.iter().any(|v| matches!(v, LispVal::List(_)));
                 let btype = if all_syms && !any_list && rest.len() > 1 {
                     // All bare symbols → unit enum variants
-                    let variants: Vec<(String, Vec<(String, BorshType)>)> = rest.iter().map(|v| {
-                        if let LispVal::Sym(n) = v { (n.clone(), Vec::new()) }
-                        else { unreachable!() }
-                    }).collect();
+                    let variants: Vec<(String, Vec<(String, BorshType)>)> = rest
+                        .iter()
+                        .map(|v| {
+                            if let LispVal::Sym(n) = v {
+                                (n.clone(), Vec::new())
+                            } else {
+                                unreachable!()
+                            }
+                        })
+                        .collect();
                     BorshType::Enum { variants }
                 } else if any_list && !all_syms {
                     // List items present: determine struct vs enum
@@ -1027,4 +1198,3 @@ pub(crate) fn process_borsh_schema(em: &mut WasmEmitter, items: &[LispVal]) -> R
     }
     Ok(())
 }
-

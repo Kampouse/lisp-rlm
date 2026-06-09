@@ -1,7 +1,11 @@
 use super::*;
 
 impl WasmEmitter {
-    pub(crate) fn call_bitwise(&mut self, op: &str, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
+    pub(crate) fn call_bitwise(
+        &mut self,
+        op: &str,
+        a: &[LispVal],
+    ) -> Result<Vec<Instruction<'static>>, String> {
         match op {
             "clz" => {
                 let mut v = self.expr(&a[0])?;

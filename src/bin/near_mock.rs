@@ -615,7 +615,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "promise_batch_action_function_call_weight",
         noop_8i,
     )?;
-    linker.define(&store, "env", "promise_batch_action_transfer", noop_2i.clone())?;
+    linker.define(
+        &store,
+        "env",
+        "promise_batch_action_transfer",
+        noop_2i.clone(),
+    )?;
     linker.define(&store, "env", "promise_batch_action_stake", noop_4i.clone())?;
     linker.define(
         &store,

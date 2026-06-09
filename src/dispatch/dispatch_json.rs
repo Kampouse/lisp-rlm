@@ -140,8 +140,8 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             // Accept either a JSON string or a pre-parsed LispVal list (from json-get)
             match &args[0] {
                 LispVal::Str(s) => {
-                    let v: serde_json::Value =
-                        serde_json::from_str(s).map_err(|e| format!("json-array-len: parse error: {}", e))?;
+                    let v: serde_json::Value = serde_json::from_str(s)
+                        .map_err(|e| format!("json-array-len: parse error: {}", e))?;
                     match v {
                         serde_json::Value::Array(arr) => Ok(Some(LispVal::Num(arr.len() as i64))),
                         _ => Err("json-array-len: expected JSON array".into()),
@@ -156,8 +156,8 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             let idx = as_num(&args[1])? as usize;
             match &args[0] {
                 LispVal::Str(s) => {
-                    let v: serde_json::Value =
-                        serde_json::from_str(s).map_err(|e| format!("json-array-get: parse error: {}", e))?;
+                    let v: serde_json::Value = serde_json::from_str(s)
+                        .map_err(|e| format!("json-array-get: parse error: {}", e))?;
                     match v {
                         serde_json::Value::Array(arr) => {
                             if idx >= arr.len() {
@@ -165,8 +165,9 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
                             } else {
                                 // Return the raw JSON string for the element.
                                 // This allows chaining with json-get on nested objects.
-                                let elem_str = serde_json::to_string(&arr[idx])
-                                    .map_err(|e| format!("json-array-get: serialize error: {}", e))?;
+                                let elem_str = serde_json::to_string(&arr[idx]).map_err(|e| {
+                                    format!("json-array-get: serialize error: {}", e)
+                                })?;
                                 Ok(Some(LispVal::Str(elem_str)))
                             }
                         }

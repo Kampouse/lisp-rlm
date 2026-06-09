@@ -363,7 +363,7 @@ pub struct PureCheckResult {
 /// Returns Ok with all results if every form type-checks, or the first error.
 pub fn check_pure_block(forms: &[&LispVal]) -> Result<Vec<PureCheckResult>, String> {
     let mut env = TcEnv::with_pure_builtins();
-    env.pure_mode = true;  // forbid effectful calls in pure blocks
+    env.pure_mode = true; // forbid effectful calls in pure blocks
     let mut supply = VarSupply::new();
     let mut results = Vec::new();
 
@@ -421,7 +421,12 @@ fn check_function_define_in_env(
 ) -> Result<PureCheckResult, String> {
     let name = match sig.first() {
         Some(LispVal::Sym(s)) => s.clone(),
-        other => return Err(format!("pure define: expected function name, got {:?}", other)),
+        other => {
+            return Err(format!(
+                "pure define: expected function name, got {:?}",
+                other
+            ))
+        }
     };
 
     let params: Vec<String> = sig[1..]
@@ -817,14 +822,19 @@ fn infer(
                     // Instantiate the scheme: replace quantified vars with fresh ones
                     Ok(instantiate(scheme, supply))
                 }
-                None => Err(format!("type error: undefined variable '{}' — not in scope", name)),
+                None => Err(format!(
+                    "type error: undefined variable '{}' — not in scope",
+                    name
+                )),
             }
         }
 
         // Lambda: (lambda (params...) body)
         LispVal::List(list) if !list.is_empty() => {
             match &list[0] {
-                LispVal::Sym(s) if s == "lambda" || s == "fn" => infer_lambda(&list[1..], env, supply, subst),
+                LispVal::Sym(s) if s == "lambda" || s == "fn" => {
+                    infer_lambda(&list[1..], env, supply, subst)
+                }
                 LispVal::Sym(s) if s == "if" => infer_if(&list[1..], env, supply, subst),
                 LispVal::Sym(s) if s == "let" => infer_let(&list[1..], env, supply, subst),
                 LispVal::Sym(s) if s == "let*" => infer_let_star(&list[1..], env, supply, subst),
@@ -852,10 +862,8 @@ fn infer(
                                         let _ = infer(&p[1], env, supply, subst)?;
                                         if let LispVal::Sym(name) = &p[0] {
                                             // Add loop var as monomorphic Any
-                                            loop_env.insert_mono(
-                                                name.clone(),
-                                                TcType::Con(TcCon::Any),
-                                            );
+                                            loop_env
+                                                .insert_mono(name.clone(), TcType::Con(TcCon::Any));
                                         }
                                     }
                                 }
@@ -1176,11 +1184,25 @@ fn infer_cond(
         return Ok(TcType::Con(TcCon::Nil));
     }
     // Check exhaustiveness: last clause should have "else" as condition
-    let has_else = parts.iter().last().and_then(|c| {
-        if let LispVal::List(l) = c { l.first() } else { None }
-    }).and_then(|v| if let LispVal::Sym(s) = v { Some(s.as_str()) } else { None })
-    .map(|s| s == "else" || s == "true" || s == "t")
-    .unwrap_or(false);
+    let has_else = parts
+        .iter()
+        .last()
+        .and_then(|c| {
+            if let LispVal::List(l) = c {
+                l.first()
+            } else {
+                None
+            }
+        })
+        .and_then(|v| {
+            if let LispVal::Sym(s) = v {
+                Some(s.as_str())
+            } else {
+                None
+            }
+        })
+        .map(|s| s == "else" || s == "true" || s == "t")
+        .unwrap_or(false);
     if !has_else {
         eprintln!("⚠ warning: cond without else — may return nil when no branch matches");
     }
@@ -1415,19 +1437,14 @@ pub fn type_check_program(exprs: &[LispVal], near: bool) -> Result<(), String> {
                             // param), the extra "me" param is excluded from the callable type.
                             if is_self_param && params.len() > 1 {
                                 // (fib me n) is callable as (fib n) — skip the me param
-                                let callable_params: Vec<TcType> =
-                                    param_types[1..].to_vec();
-                                let self_type = TcType::Arrow(
-                                    callable_params,
-                                    Box::new(ret_var.clone()),
-                                );
+                                let callable_params: Vec<TcType> = param_types[1..].to_vec();
+                                let self_type =
+                                    TcType::Arrow(callable_params, Box::new(ret_var.clone()));
                                 check_env.insert_mono(name.clone(), self_type);
                             } else if !is_self_param {
                                 // Normal direct recursion
-                                let self_type = TcType::Arrow(
-                                    param_types.clone(),
-                                    Box::new(ret_var.clone()),
-                                );
+                                let self_type =
+                                    TcType::Arrow(param_types.clone(), Box::new(ret_var.clone()));
                                 check_env.insert_mono(name.clone(), self_type);
                             } else {
                                 // Single-param ycomb: (f me) — unlikely but handle gracefully
@@ -1475,7 +1492,7 @@ pub fn type_check_program(exprs: &[LispVal], near: bool) -> Result<(), String> {
 /// build a schema, then warns if reads don't match writes.
 pub fn check_storage_schema(exprs: &[LispVal]) {
     let mut schema: HashMap<String, String> = HashMap::new(); // key → "written" | "read"
-    // t2: also track string keys used alongside numeric keys for collision detection
+                                                              // t2: also track string keys used alongside numeric keys for collision detection
     let mut string_keys: HashMap<String, ()> = HashMap::new(); // bare string keys seen
 
     fn extract_str_key(val: &LispVal) -> Option<String> {
@@ -1556,7 +1573,9 @@ pub fn check_storage_schema(exprs: &[LispVal]) {
                     // ── String-keyed storage ──
                     if op == "near/storage_write" && list.len() >= 3 {
                         if let Some(key) = extract_str_key(&list[1]) {
-                            schema.entry(key.clone()).or_insert_with(|| "written".into());
+                            schema
+                                .entry(key.clone())
+                                .or_insert_with(|| "written".into());
                             string_keys.insert(key, ());
                         }
                     } else if op == "near/storage_read" && list.len() >= 2 {
@@ -1573,7 +1592,9 @@ pub fn check_storage_schema(exprs: &[LispVal]) {
                     else if op == "near/store_num" && list.len() >= 3 {
                         if let Some(n) = resolve_num_key(&list[1]) {
                             let num_key = format!("num:{}", n);
-                            schema.entry(num_key.clone()).or_insert_with(|| "written".into());
+                            schema
+                                .entry(num_key.clone())
+                                .or_insert_with(|| "written".into());
                             // t2: detect collision with string key of same digits
                             let bare = format!("{}", n);
                             if string_keys.contains_key(&bare) {
@@ -1696,8 +1717,14 @@ fn walk_set_check(expr: &LispVal, ctx: ValueContext) {
         if let LispVal::Sym(s) = &list[0] {
             if s == "set!" {
                 // Warn if set! is in a value position
-                if ctx == ValueContext::DefineBody || ctx == ValueContext::BranchValue || ctx == ValueContext::BeginTail {
-                    let var_name = list.get(1).map(|v| v.to_string()).unwrap_or_else(|| "?".into());
+                if ctx == ValueContext::DefineBody
+                    || ctx == ValueContext::BranchValue
+                    || ctx == ValueContext::BeginTail
+                {
+                    let var_name = list
+                        .get(1)
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "?".into());
                     eprintln!(
                         "⚠ warning: set! returns nil — result used as value in {} position (var: {})",
                         match ctx {
@@ -1758,7 +1785,11 @@ fn walk_set_check(expr: &LispVal, ctx: ValueContext) {
                             // Multi-body: wrapped in begin
                             for (i, sub) in list[2..].iter().enumerate() {
                                 let is_last = i + 1 == list.len() - 2;
-                                let sub_ctx = if is_last { ValueContext::DefineBody } else { ValueContext::Other };
+                                let sub_ctx = if is_last {
+                                    ValueContext::DefineBody
+                                } else {
+                                    ValueContext::Other
+                                };
                                 walk_set_check(sub, sub_ctx);
                             }
                         } else {
@@ -1833,8 +1864,11 @@ mod tests {
         let result = crate::wasm_emit::compile_pure(src);
         assert!(result.is_err(), "expected overflow error, got success");
         let err = result.unwrap_err();
-        assert!(err.contains("overflow") || err.contains("Overflow"),
-            "expected overflow message, got: {}", err);
+        assert!(
+            err.contains("overflow") || err.contains("Overflow"),
+            "expected overflow message, got: {}",
+            err
+        );
     }
 
     #[test]
@@ -1857,7 +1891,11 @@ mod tests {
         // wrap-add should always succeed, even on overflow
         let src = "(define (run) (wrap-add 9223372036854775807 1))";
         let result = crate::wasm_emit::compile_pure(src);
-        assert!(result.is_ok(), "wrap-add should not error, got: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "wrap-add should not error, got: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -1872,30 +1910,32 @@ mod tests {
     #[test]
     fn test_pure_rejects_storage_write() {
         let src = r#"(pure (define (bad) (near/storage_write "k" "v")))"#;
-        let result = type_check_program(
-            &crate::parser::parse_all(src).unwrap(), true
-        );
+        let result = type_check_program(&crate::parser::parse_all(src).unwrap(), true);
         assert!(result.is_err(), "pure should reject near/storage_write");
         let err = result.unwrap_err();
-        assert!(err.contains("effect"), "expected effect error, got: {}", err);
+        assert!(
+            err.contains("effect"),
+            "expected effect error, got: {}",
+            err
+        );
     }
 
     #[test]
     fn test_pure_rejects_log() {
         let src = r#"(pure (define (bad) (near/log "hello")))"#;
-        let result = type_check_program(
-            &crate::parser::parse_all(src).unwrap(), true
-        );
+        let result = type_check_program(&crate::parser::parse_all(src).unwrap(), true);
         assert!(result.is_err(), "pure should reject near/log");
     }
 
     #[test]
     fn test_pure_allows_arithmetic() {
         let src = "(pure (define (good x) (+ x 1)))";
-        let result = type_check_program(
-            &crate::parser::parse_all(src).unwrap(), true
+        let result = type_check_program(&crate::parser::parse_all(src).unwrap(), true);
+        assert!(
+            result.is_ok(),
+            "pure should allow arithmetic, got: {:?}",
+            result
         );
-        assert!(result.is_ok(), "pure should allow arithmetic, got: {:?}", result);
     }
 
     // ── Storage schema tests ──
@@ -1918,21 +1958,33 @@ mod tests {
     fn test_assert_equal_compiles() {
         let src = "(define (run) (assert-equal 1 1))";
         let result = crate::wasm_emit::compile_pure(src);
-        assert!(result.is_ok(), "assert-equal should compile, got: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "assert-equal should compile, got: {:?}",
+            result
+        );
     }
 
     #[test]
     fn test_assert_true_compiles() {
         let src = "(define (run) (assert-true (> 5 3)))";
         let result = crate::wasm_emit::compile_pure(src);
-        assert!(result.is_ok(), "assert-true should compile, got: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "assert-true should compile, got: {:?}",
+            result
+        );
     }
 
     #[test]
     fn test_assert_raises_compiles() {
         let src = "(define (run) (assert-raises (/ 1 0)))";
         let result = crate::wasm_emit::compile_pure(src);
-        assert!(result.is_ok(), "assert-raises should compile, got: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "assert-raises should compile, got: {:?}",
+            result
+        );
     }
 
     // ── Cond exhaustiveness tests ──
@@ -1948,7 +2000,11 @@ mod tests {
                 (else "zero")))
         "#;
         let result = crate::wasm_emit::compile_pure(src);
-        assert!(result.is_ok(), "cond with else should compile, got: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "cond with else should compile, got: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -1960,7 +2016,10 @@ mod tests {
                 ((> x 0) "positive")))
         "#;
         let result = crate::wasm_emit::compile_pure(src);
-        assert!(result.is_ok(), "cond without else should still compile (just warn)");
+        assert!(
+            result.is_ok(),
+            "cond without else should still compile (just warn)"
+        );
     }
 
     // ── Type checker core tests ──
@@ -1971,8 +2030,11 @@ mod tests {
         let result = crate::wasm_emit::compile_pure(src);
         assert!(result.is_err(), "should catch undefined variable");
         let err = result.unwrap_err();
-        assert!(err.contains("undefined") || err.contains("Unbound"),
-            "expected undefined var error, got: {}", err);
+        assert!(
+            err.contains("undefined") || err.contains("Unbound"),
+            "expected undefined var error, got: {}",
+            err
+        );
     }
 
     #[test]
@@ -1986,6 +2048,10 @@ mod tests {
     fn test_near_builtin_accepted() {
         let src = r#"(define (hello) (near/return_str "hi"))"#;
         let result = crate::wasm_emit::compile_near(src);
-        assert!(result.is_ok(), "near builtins should be accepted, got: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "near builtins should be accepted, got: {:?}",
+            result
+        );
     }
 }

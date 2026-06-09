@@ -151,7 +151,10 @@ fn gap_b1_epoch_height_wrong_arity_accepted() {
         // The type checker let it through (wildcard) — that's the gap.
         // Verify emitter behavior:
         let wasm = result.unwrap();
-        assert!(!wasm.is_empty(), "WASM should be non-empty even with wrong arity");
+        assert!(
+            !wasm.is_empty(),
+            "WASM should be non-empty even with wrong arity"
+        );
     }
     // Either way, the type checker did NOT report an arity error — that's the bug.
 }
@@ -163,7 +166,8 @@ fn gap_b2_account_balance_wrong_arity_accepted() {
 (export "bad" bad true)"#;
     let result = compile_typed(src);
     // Type checker accepts this because near/account_balance is wildcard-only.
-    assert!(result.is_ok() || !result.unwrap_err().contains("arity"),
+    assert!(
+        result.is_ok() || !result.unwrap_err().contains("arity"),
         "type checker should NOT catch arity for wildcard-only near/account_balance"
     );
 }
@@ -207,7 +211,8 @@ fn gap_b5_deposit_gte_wrong_arity_accepted() {
     let src = r#"(define (bad) (near/deposit-gte))
 (export "bad" bad true)"#;
     let result = compile_typed(src);
-    assert!(result.is_ok() || !result.unwrap_err().contains("arity"),
+    assert!(
+        result.is_ok() || !result.unwrap_err().contains("arity"),
         "type checker should NOT catch arity for wildcard-only near/deposit-gte"
     );
 }
@@ -221,7 +226,8 @@ fn gap_b6_type_mismatch_accepted_for_wildcard() {
 (export "bad" bad true)"#;
     let result = compile_typed(src);
     // near/keccak512 is wildcard-only, so type mismatch is NOT caught.
-    assert!(result.is_ok(),
+    assert!(
+        result.is_ok(),
         "type checker should NOT catch type mismatch for wildcard-only near/keccak512: {:?}",
         result
     );
@@ -233,7 +239,8 @@ fn gap_b7_ecrecover_wrong_arity_accepted() {
     let src = r#"(define (bad) (near/ecrecover))
 (export "bad" bad true)"#;
     let result = compile_typed(src);
-    assert!(result.is_ok() || !result.unwrap_err().contains("arity"),
+    assert!(
+        result.is_ok() || !result.unwrap_err().contains("arity"),
         "type checker should NOT catch arity for wildcard-only near/ecrecover"
     );
 }
@@ -245,7 +252,7 @@ fn gap_b8_iter_prefix_wrong_arity_accepted() {
 (export "bad" bad true)"#;
     // Should be arity error (0 args, expects 2) — but wildcard accepts it.
     // The emitter will OOB at codegen.
-    let _ = compile_typed(src);  // Proves wildcard accepts any arity
+    let _ = compile_typed(src); // Proves wildcard accepts any arity
 }
 
 /// GAP-B9: near/iter_range takes 4 args (start_ptr, start_len, end_ptr, end_len).
@@ -253,7 +260,7 @@ fn gap_b8_iter_prefix_wrong_arity_accepted() {
 fn gap_b9_iter_range_wrong_arity_accepted() {
     let src = r#"(define (bad) (near/iter_range))
 (export "bad" bad true)"#;
-    let _ = compile_typed(src);  // Proves wildcard accepts any arity
+    let _ = compile_typed(src); // Proves wildcard accepts any arity
 }
 
 /// GAP-B10: near/iter_next takes 3 args (iter_id, key_ptr, val_ptr).
@@ -261,7 +268,7 @@ fn gap_b9_iter_range_wrong_arity_accepted() {
 fn gap_b10_iter_next_wrong_arity_accepted() {
     let src = r#"(define (bad) (near/iter_next))
 (export "bad" bad true)"#;
-    let _ = compile_typed(src);  // Proves wildcard accepts any arity
+    let _ = compile_typed(src); // Proves wildcard accepts any arity
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -299,7 +306,8 @@ fn gap_c1_storage_get_return_type_str_but_can_be_nil() {
 (export "owner-len" owner-len true)"#;
     // This passes type checking because TC says storage_get returns str.
     // But at runtime, it could be nil → str-len would crash.
-    assert!(compile_typed(src2).is_ok(),
+    assert!(
+        compile_typed(src2).is_ok(),
         "str-len(storage_get(...)) should type-check (and it does, which is the bug)"
     );
 }
@@ -319,10 +327,16 @@ fn gap_c2_storage_read_not_in_type_checker() {
 (export "read-val" read-val true)"#;
     let result = compile_typed(src);
     // Type checker rejects it as "unknown function"
-    assert!(result.is_err(), "storage_read should fail type check (not in type env)");
+    assert!(
+        result.is_err(),
+        "storage_read should fail type check (not in type env)"
+    );
     let err_msg = result.unwrap_err();
-    assert!(err_msg.contains("unknown function") || err_msg.contains("not in scope"),
-        "error should say unknown: {}", err_msg);
+    assert!(
+        err_msg.contains("unknown function") || err_msg.contains("not in scope"),
+        "error should say unknown: {}",
+        err_msg
+    );
 }
 
 /// GAP-C3: near/return typed as str → any but actually returns nil.
@@ -351,7 +365,10 @@ fn gap_d1_promise_and_variadic_emitter_strict_tc() {
     let src_2args = r#"(memory 1)
 (define (two-and) (near/promise_and 0 1))
 (export "two-and" two-and true)"#;
-    assert!(compile_typed(src_2args).is_ok(), "2-arg promise_and should type-check");
+    assert!(
+        compile_typed(src_2args).is_ok(),
+        "2-arg promise_and should type-check"
+    );
 
     // Now test 3 args — type checker should reject (arity mismatch)...
     let src_3args = r#"(memory 1)
@@ -361,8 +378,11 @@ fn gap_d1_promise_and_variadic_emitter_strict_tc() {
     // Type checker will reject this (arity mismatch: expects 2, got 3).
     assert!(result.is_err(), "3-arg promise_and should fail type check");
     let err_msg = result.unwrap_err();
-    assert!(err_msg.contains("arity") || err_msg.contains("mismatch"),
-        "error should mention arity mismatch: {}", err_msg);
+    assert!(
+        err_msg.contains("arity") || err_msg.contains("mismatch"),
+        "error should mention arity mismatch: {}",
+        err_msg
+    );
     // BUT the emitter accepts it! This is a gap — type checker is MORE strict
     // than the emitter, blocking valid code.
 }
@@ -378,7 +398,10 @@ fn gap_d2_promise_result_0arg_emitter_1arg_tc() {
     let result = compile_typed(src_0args);
     // Type checker expects 1 arg but emitter accepts 0.
     // This will fail type checking with arity error.
-    assert!(result.is_err(), "0-arg promise_result should fail type check");
+    assert!(
+        result.is_err(),
+        "0-arg promise_result should fail type check"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -396,7 +419,8 @@ fn control_sha256_catches_type_mismatch() {
 (define (bad) (near/sha256 42))
 (export "bad" bad true)"#;
     let result = compile_typed(src);
-    assert!(result.is_err(),
+    assert!(
+        result.is_err(),
         "near/sha256(42) should fail type check (expects str, got int)"
     );
 }
@@ -409,7 +433,8 @@ fn control_ed25519_catches_arity_mismatch() {
 (define (bad) (near/ed25519_verify "msg" "sig"))
 (export "bad" bad true)"#;
     let result = compile_typed(src);
-    assert!(result.is_err(),
+    assert!(
+        result.is_err(),
         "near/ed25519_verify with 2 args should fail (expects 3)"
     );
 }
@@ -422,7 +447,8 @@ fn control_storage_write_catches_type_mismatch() {
 (define (bad) (near/storage_write 42 "val"))
 (export "bad" bad true)"#;
     let result = compile_typed(src);
-    assert!(result.is_err(),
+    assert!(
+        result.is_err(),
         "near/storage_write(42, ...) should fail type check (expects str)"
     );
 }
@@ -434,12 +460,16 @@ fn control_undefined_variable_caught() {
 (define (bad) (near/nonexistent_function))
 (export "bad" bad true)"#;
     let result = compile_typed(src);
-    assert!(result.is_err(),
+    assert!(
+        result.is_err(),
         "near/nonexistent_function should fail type check"
     );
     let err_msg = result.unwrap_err();
-    assert!(err_msg.contains("not in scope") || err_msg.contains("undefined"),
-        "error should say 'undefined': {}", err_msg);
+    assert!(
+        err_msg.contains("not in scope") || err_msg.contains("undefined"),
+        "error should say 'undefined': {}",
+        err_msg
+    );
 }
 
 /// CONTROL: near/block_timestamp is explicitly typed as () → int. Passing args should fail.
@@ -449,7 +479,8 @@ fn control_block_timestamp_catches_arity() {
 (define (bad) (near/block_timestamp "extra"))
 (export "bad" bad true)"#;
     let result = compile_typed(src);
-    assert!(result.is_err(),
+    assert!(
+        result.is_err(),
         "near/block_timestamp(\"extra\") should fail (0 args expected)"
     );
 }
@@ -460,7 +491,8 @@ fn control_plus_catches_type_mismatch() {
     let src = r#"(define (bad) (+ "hello" "world"))
 (export "bad" bad true)"#;
     let result = compile_typed(src);
-    assert!(result.is_err(),
+    assert!(
+        result.is_err(),
         "+(\"hello\", \"world\") should fail type check (expects num)"
     );
 }
@@ -471,7 +503,8 @@ fn control_map_catches_wrong_arity() {
     let src = r#"(define (bad) (map 42))
 (export "bad" bad true)"#;
     let result = compile_typed(src);
-    assert!(result.is_err(),
+    assert!(
+        result.is_err(),
         "map(42) should fail type check (map expects a function)"
     );
 }
@@ -540,11 +573,13 @@ fn gap_g1_typed_catches_what_untyped_misses() {
 (define (bad) (near/sha256 42))
 (export "bad" bad true)"#;
     // Typed: should fail (int ≠ str)
-    assert!(compile_typed(src).is_err(),
+    assert!(
+        compile_typed(src).is_err(),
         "typed mode should catch type mismatch for near/sha256"
     );
     // Untyped: compiles fine (no type checking)
-    assert!(compile_untyped(src).is_ok(),
+    assert!(
+        compile_untyped(src).is_ok(),
         "untyped mode should accept near/sha256(42) without type checking"
     );
 }
@@ -555,7 +590,8 @@ fn gap_g2_typed_catches_arity_untyped_does_not() {
     let src = r#"(define (bad) (+ 1))
 (export "bad" bad true)"#;
     // Typed: + expects 2 args
-    assert!(compile_typed(src).is_err(),
+    assert!(
+        compile_typed(src).is_err(),
         "typed mode should catch arity for +"
     );
     // Untyped: compiles (emitter handles it via tag mechanics)
@@ -570,8 +606,14 @@ fn gap_g3_both_modes_catch_undefined() {
     let src = r#"(memory 1)
 (define (bad) (near/nonexistent_xyz))
 (export "bad" bad true)"#;
-    assert!(compile_typed(src).is_err(), "typed should catch undefined near/nonexistent_xyz");
-    assert!(compile_untyped(src).is_err(), "untyped should catch undefined near/nonexistent_xyz");
+    assert!(
+        compile_typed(src).is_err(),
+        "typed should catch undefined near/nonexistent_xyz"
+    );
+    assert!(
+        compile_untyped(src).is_err(),
+        "untyped should catch undefined near/nonexistent_xyz"
+    );
 }
 
 /// GAP-G4: Wildcard-only function with wrong arity — caught by NEITHER.
@@ -605,7 +647,7 @@ fn gap_h1_global_contract_set_no_emitter() {
 (define (set) (near/global_contract_set "code" 0))
 (export "set" set true)"#;
     // Type checker accepts it (wildcard). Emitter doesn't have it.
-    let _result = compile_typed(src);  // Wildcard accepts, but emitter lacks dispatch
+    let _result = compile_typed(src); // Wildcard accepts, but emitter lacks dispatch
 }
 
 /// GAP-H2: near/global_contract_status — same as above.

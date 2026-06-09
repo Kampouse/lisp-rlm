@@ -14,7 +14,7 @@
 //! 4. Instruction consistency (builtin names, closure indices, recur arity)
 //! 5. Stack depth (abstract interpretation — no underflow, consistent heights at joins)
 
-use crate::bytecode::{BinOp, Op, Ty, CompiledLambda};
+use crate::bytecode::{BinOp, CompiledLambda, Op, Ty};
 
 // ── Hard limits ──────────────────────────────────────────────────────────────
 
@@ -32,41 +32,98 @@ const MAX_CLOSURE_DEPTH: usize = 64;
 /// Known builtin function names that BuiltinCall can reference.
 const KNOWN_BUILTINS: &[&str] = &[
     // Arithmetic
-    "abs", "inc", "dec", "sqrt", "pow", "mod", "remainder",
+    "abs",
+    "inc",
+    "dec",
+    "sqrt",
+    "pow",
+    "mod",
+    "remainder",
     // List
-    "car", "cdr", "cons", "list", "length", "len", "append",
-    "reverse", "take", "drop", "last", "butlast", "range", "nth",
-    "first", "rest",
+    "car",
+    "cdr",
+    "cons",
+    "list",
+    "length",
+    "len",
+    "append",
+    "reverse",
+    "take",
+    "drop",
+    "last",
+    "butlast",
+    "range",
+    "nth",
+    "first",
+    "rest",
     // String
-    "to-string", "str", "str-concat", "str-length", "str-split",
-    "str-contains", "string-append", "substring",
+    "to-string",
+    "str",
+    "str-concat",
+    "str-length",
+    "str-split",
+    "str-contains",
+    "string-append",
+    "substring",
     "json-decode-bytes",
     // Type conversion
-    "to-int", "to-float", "integer", "float", "boolean",
+    "to-int",
+    "to-float",
+    "integer",
+    "float",
+    "boolean",
     // Dict
-    "dict/get", "dict-ref", "dict/set", "dict-set",
+    "dict/get",
+    "dict-ref",
+    "dict/set",
+    "dict-set",
     // Misc
-    "not", "error", "apply", "eval", "doc", "now", "elapsed",
+    "not",
+    "error",
+    "apply",
+    "eval",
+    "doc",
+    "now",
+    "elapsed",
     // NEAR builtins
-    "storage-write", "storage_write",
-    "storage-read", "storage_read",
-    "storage-remove", "storage_remove",
-    "storage-has-key", "storage_has_key",
-    "block-height", "block_height",
-    "block-timestamp", "block_timestamp",
-    "signer-account-id", "signer_account_id",
-    "predecessor-account-id", "predecessor_account_id",
-    "current-account-id", "current_account_id",
-    "attached-deposit", "attached_deposit",
-    "deposit-gte", "deposit_gte",
-    "store-u128", "store_u128",
-    "load-u128", "load_u128",
-    "attached-deposit-u128", "attached_deposit_u128",
+    "storage-write",
+    "storage_write",
+    "storage-read",
+    "storage_read",
+    "storage-remove",
+    "storage_remove",
+    "storage-has-key",
+    "storage_has_key",
+    "block-height",
+    "block_height",
+    "block-timestamp",
+    "block_timestamp",
+    "signer-account-id",
+    "signer_account_id",
+    "predecessor-account-id",
+    "predecessor_account_id",
+    "current-account-id",
+    "current_account_id",
+    "attached-deposit",
+    "attached_deposit",
+    "deposit-gte",
+    "deposit_gte",
+    "store-u128",
+    "store_u128",
+    "load-u128",
+    "load_u128",
+    "attached-deposit-u128",
+    "attached_deposit_u128",
     "transfer",
-    "account-balance", "account_balance",
-    "log-utf8", "log_utf8", "log",
-    "near-config", "near_config",
-    "near-reset", "near_reset",
+    "account-balance",
+    "account_balance",
+    "log-utf8",
+    "log_utf8",
+    "log",
+    "near-config",
+    "near_config",
+    "near-reset",
+    "near_reset",
 ];
 
 /// Check if a builtin name is known.
@@ -112,16 +169,33 @@ fn err(pass: &'static str, offset: Option<usize>, msg: impl Into<String>) -> Ver
 
 fn verify_limits(cl: &CompiledLambda) -> VResult<()> {
     if cl.code.len() > MAX_CODE_SIZE {
-        return Err(err("limits", None,
-            format!("code size {} exceeds limit {}", cl.code.len(), MAX_CODE_SIZE)));
+        return Err(err(
+            "limits",
+            None,
+            format!(
+                "code size {} exceeds limit {}",
+                cl.code.len(),
+                MAX_CODE_SIZE
+            ),
+        ));
     }
     if cl.total_slots > MAX_SLOTS {
-        return Err(err("limits", None,
-            format!("slot count {} exceeds limit {}", cl.total_slots, MAX_SLOTS)));
+        return Err(err(
+            "limits",
+            None,
+            format!("slot count {} exceeds limit {}", cl.total_slots, MAX_SLOTS),
+        ));
     }
     if cl.closures.len() > MAX_CLOSURES {
-        return Err(err("limits", None,
-            format!("closure count {} exceeds limit {}", cl.closures.len(), MAX_CLOSURES)));
+        return Err(err(
+            "limits",
+            None,
+            format!(
+                "closure count {} exceeds limit {}",
+                cl.closures.len(),
+                MAX_CLOSURES
+            ),
+        ));
     }
     Ok(())
 }
@@ -132,19 +206,25 @@ fn verify_control_flow(code: &[Op]) -> VResult<()> {
     let len = code.len();
     for (i, op) in code.iter().enumerate() {
         match op {
-            Op::Jump(target)
-            | Op::JumpIfTrue(target)
-            | Op::JumpIfFalse(target) => {
+            Op::Jump(target) | Op::JumpIfTrue(target) | Op::JumpIfFalse(target) => {
                 if *target >= len {
-                    return Err(err("control_flow", Some(i),
-                        format!("branch target {} out of bounds (code_len={})", target, len)));
+                    return Err(err(
+                        "control_flow",
+                        Some(i),
+                        format!("branch target {} out of bounds (code_len={})", target, len),
+                    ));
                 }
             }
             Op::RecurIncAccum(_, _, _, _, exit_addr) => {
                 if *exit_addr >= len {
-                    return Err(err("control_flow", Some(i),
-                        format!("RecurIncAccum exit target {} out of bounds (code_len={})",
-                            exit_addr, len)));
+                    return Err(err(
+                        "control_flow",
+                        Some(i),
+                        format!(
+                            "RecurIncAccum exit target {} out of bounds (code_len={})",
+                            exit_addr, len
+                        ),
+                    ));
                 }
                 // RecurIncAccum always jumps to pc=0, which is always valid
             }
@@ -154,9 +234,14 @@ fn verify_control_flow(code: &[Op]) -> VResult<()> {
             | Op::JumpIfSlotGeImm(_, _, target)
             | Op::JumpIfSlotEqImm(_, _, target) => {
                 if *target >= len {
-                    return Err(err("control_flow", Some(i),
-                        format!("JumpIfSlot*Imm target {} out of bounds (code_len={})",
-                            target, len)));
+                    return Err(err(
+                        "control_flow",
+                        Some(i),
+                        format!(
+                            "JumpIfSlot*Imm target {} out of bounds (code_len={})",
+                            target, len
+                        ),
+                    ));
                 }
             }
             _ => {}
@@ -177,8 +262,11 @@ fn verify_slot_indices(code: &[Op], slots_len: usize) -> VResult<()> {
             | Op::DictMutSet(s)
             | Op::RecurDirect(s) => {
                 if *s >= slots_len {
-                    return Err(err("slot_bounds", Some(i),
-                        format!("slot index {} out of bounds (slots_len={})", s, slots_len)));
+                    return Err(err(
+                        "slot_bounds",
+                        Some(i),
+                        format!("slot index {} out of bounds (slots_len={})", s, slots_len),
+                    ));
                 }
             }
             Op::SlotAddImm(s, _)
@@ -191,8 +279,11 @@ fn verify_slot_indices(code: &[Op], slots_len: usize) -> VResult<()> {
             | Op::SlotGtImm(s, _)
             | Op::SlotGeImm(s, _) => {
                 if *s >= slots_len {
-                    return Err(err("slot_bounds", Some(i),
-                        format!("slot index {} out of bounds (slots_len={})", s, slots_len)));
+                    return Err(err(
+                        "slot_bounds",
+                        Some(i),
+                        format!("slot index {} out of bounds (slots_len={})", s, slots_len),
+                    ));
                 }
             }
             Op::JumpIfSlotLtImm(s, _, _)
@@ -201,43 +292,71 @@ fn verify_slot_indices(code: &[Op], slots_len: usize) -> VResult<()> {
             | Op::JumpIfSlotGeImm(s, _, _)
             | Op::JumpIfSlotEqImm(s, _, _) => {
                 if *s >= slots_len {
-                    return Err(err("slot_bounds", Some(i),
-                        format!("slot index {} out of bounds (slots_len={})", s, slots_len)));
+                    return Err(err(
+                        "slot_bounds",
+                        Some(i),
+                        format!("slot index {} out of bounds (slots_len={})", s, slots_len),
+                    ));
                 }
             }
             Op::RecurIncAccum(counter, accum, _, _, _) => {
                 if *counter >= slots_len {
-                    return Err(err("slot_bounds", Some(i),
-                        format!("RecurIncAccum counter slot {} out of bounds (slots_len={})",
-                            counter, slots_len)));
+                    return Err(err(
+                        "slot_bounds",
+                        Some(i),
+                        format!(
+                            "RecurIncAccum counter slot {} out of bounds (slots_len={})",
+                            counter, slots_len
+                        ),
+                    ));
                 }
                 if *accum >= slots_len {
-                    return Err(err("slot_bounds", Some(i),
-                        format!("RecurIncAccum accum slot {} out of bounds (slots_len={})",
-                            accum, slots_len)));
+                    return Err(err(
+                        "slot_bounds",
+                        Some(i),
+                        format!(
+                            "RecurIncAccum accum slot {} out of bounds (slots_len={})",
+                            accum, slots_len
+                        ),
+                    ));
                 }
             }
             Op::GetDefaultSlot(a, b, c, d) => {
                 for &(name, idx) in &[("map", *a), ("key", *b), ("default", *c), ("result", *d)] {
                     if idx >= slots_len {
-                        return Err(err("slot_bounds", Some(i),
-                            format!("GetDefaultSlot {} slot {} out of bounds (slots_len={})",
-                                name, idx, slots_len)));
+                        return Err(err(
+                            "slot_bounds",
+                            Some(i),
+                            format!(
+                                "GetDefaultSlot {} slot {} out of bounds (slots_len={})",
+                                name, idx, slots_len
+                            ),
+                        ));
                     }
                 }
             }
             Op::MapOp(slot_idx) | Op::FilterOp(slot_idx) | Op::ReduceOp(slot_idx) => {
                 if *slot_idx >= slots_len {
-                    return Err(err("slot_bounds", Some(i),
-                        format!("fused HOF slot {} out of bounds (slots_len={})",
-                            slot_idx, slots_len)));
+                    return Err(err(
+                        "slot_bounds",
+                        Some(i),
+                        format!(
+                            "fused HOF slot {} out of bounds (slots_len={})",
+                            slot_idx, slots_len
+                        ),
+                    ));
                 }
             }
             Op::Recur(n) => {
                 if *n > slots_len {
-                    return Err(err("slot_bounds", Some(i),
-                        format!("Recur({}) requires {} slots but only {} available",
-                            n, n, slots_len)));
+                    return Err(err(
+                        "slot_bounds",
+                        Some(i),
+                        format!(
+                            "Recur({}) requires {} slots but only {} available",
+                            n, n, slots_len
+                        ),
+                    ));
                 }
             }
             _ => {}
@@ -262,22 +381,35 @@ fn verify_instruction_consistency(
             }
             Op::PushBuiltin(name) => {
                 if !is_known_builtin(name) {
-                    return Err(err("instruction_consistency", Some(i),
-                        format!("unknown builtin '{}'", name)));
+                    return Err(err(
+                        "instruction_consistency",
+                        Some(i),
+                        format!("unknown builtin '{}'", name),
+                    ));
                 }
             }
             Op::PushClosure(idx) => {
                 if *idx >= closures_len {
-                    return Err(err("instruction_consistency", Some(i),
-                        format!("PushClosure({}) out of bounds (closures_len={})",
-                            idx, closures_len)));
+                    return Err(err(
+                        "instruction_consistency",
+                        Some(i),
+                        format!(
+                            "PushClosure({}) out of bounds (closures_len={})",
+                            idx, closures_len
+                        ),
+                    ));
                 }
             }
             Op::CallCaptured(slot_idx, _nargs) => {
                 if *slot_idx >= slots_len {
-                    return Err(err("instruction_consistency", Some(i),
-                        format!("CallCaptured slot {} out of bounds (slots_len={})",
-                            slot_idx, slots_len)));
+                    return Err(err(
+                        "instruction_consistency",
+                        Some(i),
+                        format!(
+                            "CallCaptured slot {} out of bounds (slots_len={})",
+                            slot_idx, slots_len
+                        ),
+                    ));
                 }
             }
             Op::CallCapturedRef(cap_idx, _nargs) => {
@@ -285,8 +417,14 @@ fn verify_instruction_consistency(
                 // are populated at runtime. This is checked by slot_bounds if
                 // the capture was stored in a slot.
                 if *cap_idx > 10_000 {
-                    return Err(err("instruction_consistency", Some(i),
-                        format!("CallCapturedRef({}) suspiciously large capture index", cap_idx)));
+                    return Err(err(
+                        "instruction_consistency",
+                        Some(i),
+                        format!(
+                            "CallCapturedRef({}) suspiciously large capture index",
+                            cap_idx
+                        ),
+                    ));
                 }
             }
             Op::CallSelf(_nargs) => {
@@ -296,56 +434,84 @@ fn verify_instruction_consistency(
                 // Pops func + nargs args from stack. We verify stack depth in pass 5.
                 // Just check the arg count is reasonable.
                 if *nargs > MAX_STACK_DEPTH {
-                    return Err(err("instruction_consistency", Some(i),
-                        format!("CallDynamic({}) arg count exceeds limit", nargs)));
+                    return Err(err(
+                        "instruction_consistency",
+                        Some(i),
+                        format!("CallDynamic({}) arg count exceeds limit", nargs),
+                    ));
                 }
             }
             Op::MakeList(n) => {
                 if *n > MAX_STACK_DEPTH {
-                    return Err(err("instruction_consistency", Some(i),
-                        format!("MakeList({}) count exceeds limit", n)));
+                    return Err(err(
+                        "instruction_consistency",
+                        Some(i),
+                        format!("MakeList({}) count exceeds limit", n),
+                    ));
                 }
             }
             Op::ConstructTag(_, _, n_fields) => {
                 if *n_fields as usize > MAX_STACK_DEPTH {
-                    return Err(err("instruction_consistency", Some(i),
-                        format!("ConstructTag fields={} exceeds limit", n_fields)));
+                    return Err(err(
+                        "instruction_consistency",
+                        Some(i),
+                        format!("ConstructTag fields={} exceeds limit", n_fields),
+                    ));
                 }
             }
             Op::LoadCaptured(idx) => {
                 if *idx > 10_000 {
-                    return Err(err("instruction_consistency", Some(i),
-                        format!("LoadCaptured({}) suspiciously large capture index", idx)));
+                    return Err(err(
+                        "instruction_consistency",
+                        Some(i),
+                        format!("LoadCaptured({}) suspiciously large capture index", idx),
+                    ));
                 }
             }
             Op::StoreCaptured(idx) => {
                 if *idx > 10_000 {
-                    return Err(err("instruction_consistency", Some(i),
-                        format!("StoreCaptured({}) suspiciously large capture index", idx)));
+                    return Err(err(
+                        "instruction_consistency",
+                        Some(i),
+                        format!("StoreCaptured({}) suspiciously large capture index", idx),
+                    ));
                 }
             }
-            Op::GetField(idx) => {
+            Op::GetField(idx) =>
+            {
                 #[allow(unused_comparisons)]
                 if *idx > 255 {
-                    return Err(err("instruction_consistency", Some(i),
-                        format!("GetField({}) field index out of range", idx)));
+                    return Err(err(
+                        "instruction_consistency",
+                        Some(i),
+                        format!("GetField({}) field index out of range", idx),
+                    ));
                 }
             }
             Op::TypedBinOp(binop, ty) => {
                 // Validate the typed op combination makes sense
                 match ty {
-                    Ty::I64 | Ty::F64 => {
-                        match binop {
-                            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod
-                            | BinOp::Eq | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {}
-                        }
-                    }
+                    Ty::I64 | Ty::F64 => match binop {
+                        BinOp::Add
+                        | BinOp::Sub
+                        | BinOp::Mul
+                        | BinOp::Div
+                        | BinOp::Mod
+                        | BinOp::Eq
+                        | BinOp::Lt
+                        | BinOp::Le
+                        | BinOp::Gt
+                        | BinOp::Ge => {}
+                    },
                 }
             }
             Op::RecurIncAccum(_, _, step, _limit, _) => {
                 if *step == 0 {
-                    return Err(err("instruction_consistency", Some(i),
-                        "RecurIncAccum step_imm is 0 (infinite loop)"));
+                    return Err(err(
+                        "instruction_consistency",
+                        Some(i),
+                        "RecurIncAccum step_imm is 0 (infinite loop)",
+                    ));
                 }
             }
             _ => {}
@@ -361,10 +527,19 @@ fn verify_instruction_consistency(
 fn stack_effect(op: &Op) -> (usize, usize) {
     match op {
         // Push 0, pop 0
-        Op::PushI64(_) | Op::PushFloat(_) | Op::PushBool(_) | Op::PushStr(_)
-        | Op::PushNil | Op::PushSelf | Op::LoadSlot(_) | Op::LoadCaptured(_)
-        | Op::LoadGlobal(_) | Op::PushClosure(_) | Op::PushBuiltin(_)
-        | Op::PushLiteral(_) | Op::TracePush(_) => (0, 1),
+        Op::PushI64(_)
+        | Op::PushFloat(_)
+        | Op::PushBool(_)
+        | Op::PushStr(_)
+        | Op::PushNil
+        | Op::PushSelf
+        | Op::LoadSlot(_)
+        | Op::LoadCaptured(_)
+        | Op::LoadGlobal(_)
+        | Op::PushClosure(_)
+        | Op::PushBuiltin(_)
+        | Op::PushLiteral(_)
+        | Op::TracePush(_) => (0, 1),
 
         // Pop 1, push 0
         Op::Pop | Op::TracePop => (1, 0),
@@ -378,8 +553,16 @@ fn stack_effect(op: &Op) -> (usize, usize) {
         Op::StoreCaptured(_) | Op::StoreGlobal(_) => (1, 1),
 
         // Pop 2, push 1 (arithmetic/comparison)
-        Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Mod
-        | Op::Eq | Op::Lt | Op::Le | Op::Gt | Op::Ge => (2, 1),
+        Op::Add
+        | Op::Sub
+        | Op::Mul
+        | Op::Div
+        | Op::Mod
+        | Op::Eq
+        | Op::Lt
+        | Op::Le
+        | Op::Gt
+        | Op::Ge => (2, 1),
 
         // Pop 1, push 1
         Op::Not => (1, 1),
@@ -400,13 +583,21 @@ fn stack_effect(op: &Op) -> (usize, usize) {
         Op::BuiltinCall(_, nargs) => (*nargs, 1),
 
         // Slot-immediate ops: read slot, push result (no stack pop)
-        Op::SlotAddImm(_, _) | Op::SlotSubImm(_, _) | Op::SlotMulImm(_, _)
-        | Op::SlotDivImm(_, _) | Op::SlotEqImm(_, _) | Op::SlotLtImm(_, _)
-        | Op::SlotLeImm(_, _) | Op::SlotGtImm(_, _) | Op::SlotGeImm(_, _) => (0, 1),
+        Op::SlotAddImm(_, _)
+        | Op::SlotSubImm(_, _)
+        | Op::SlotMulImm(_, _)
+        | Op::SlotDivImm(_, _)
+        | Op::SlotEqImm(_, _)
+        | Op::SlotLtImm(_, _)
+        | Op::SlotLeImm(_, _)
+        | Op::SlotGtImm(_, _)
+        | Op::SlotGeImm(_, _) => (0, 1),
 
         // JumpIfSlot*Imm: no stack effect (reads slots directly)
-        Op::JumpIfSlotLtImm(_, _, _) | Op::JumpIfSlotLeImm(_, _, _)
-        | Op::JumpIfSlotGtImm(_, _, _) | Op::JumpIfSlotGeImm(_, _, _)
+        Op::JumpIfSlotLtImm(_, _, _)
+        | Op::JumpIfSlotLeImm(_, _, _)
+        | Op::JumpIfSlotGtImm(_, _, _)
+        | Op::JumpIfSlotGeImm(_, _, _)
         | Op::JumpIfSlotEqImm(_, _, _) => (0, 0),
 
         // RecurIncAccum: no stack effect (reads/writes slots directly)
@@ -551,8 +742,11 @@ fn verify_stack_depth(code: &[Op]) -> VResult<()> {
     while let Some(pc) = worklist.pop() {
         iterations += 1;
         if iterations > max_iterations {
-            return Err(err("stack_depth", Some(pc),
-                "verifier exceeded iteration limit (possible pathological control flow)"));
+            return Err(err(
+                "stack_depth",
+                Some(pc),
+                "verifier exceeded iteration limit (possible pathological control flow)",
+            ));
         }
 
         let height = match heights[pc] {
@@ -578,8 +772,14 @@ fn verify_stack_depth(code: &[Op]) -> VResult<()> {
 
         // Check overflow
         if new_height > MAX_STACK_DEPTH as i32 {
-            return Err(err("stack_depth", Some(pc),
-                format!("stack depth {} exceeds limit {}", new_height, MAX_STACK_DEPTH)));
+            return Err(err(
+                "stack_depth",
+                Some(pc),
+                format!(
+                    "stack depth {} exceeds limit {}",
+                    new_height, MAX_STACK_DEPTH
+                ),
+            ));
         }
 
         // Propagate to successors
@@ -612,13 +812,20 @@ fn verify_stack_depth(code: &[Op]) -> VResult<()> {
     if len > 0 {
         let last_op = &code[len - 1];
         match last_op {
-            Op::Return | Op::ReturnSlot(_) | Op::Recur(_) | Op::RecurDirect(_)
-            | Op::RecurIncAccum(_, _, _, _, _) | Op::Jump(_) => {
+            Op::Return
+            | Op::ReturnSlot(_)
+            | Op::Recur(_)
+            | Op::RecurDirect(_)
+            | Op::RecurIncAccum(_, _, _, _, _)
+            | Op::Jump(_) => {
                 // Explicit terminator — OK
             }
-            Op::JumpIfTrue(_) | Op::JumpIfFalse(_)
-            | Op::JumpIfSlotLtImm(_, _, _) | Op::JumpIfSlotLeImm(_, _, _)
-            | Op::JumpIfSlotGtImm(_, _, _) | Op::JumpIfSlotGeImm(_, _, _)
+            Op::JumpIfTrue(_)
+            | Op::JumpIfFalse(_)
+            | Op::JumpIfSlotLtImm(_, _, _)
+            | Op::JumpIfSlotLeImm(_, _, _)
+            | Op::JumpIfSlotGtImm(_, _, _)
+            | Op::JumpIfSlotGeImm(_, _, _)
             | Op::JumpIfSlotEqImm(_, _, _) => {
                 // Conditional branch at end — one path might fall off.
                 // Check if the fall-through path (pc=len, implicit return) has height 0.
@@ -637,8 +844,14 @@ fn verify_stack_depth(code: &[Op]) -> VResult<()> {
                 // Falls off end. Stack height should be 0 or 1 (implicit return of TOS).
                 if let Some(h) = heights.get(len - 1).copied().flatten() {
                     if h > 1 {
-                        return Err(err("stack_depth", Some(len - 1),
-                            format!("function falls off end with stack height {} (expected 0 or 1)", h)));
+                        return Err(err(
+                            "stack_depth",
+                            Some(len - 1),
+                            format!(
+                                "function falls off end with stack height {} (expected 0 or 1)",
+                                h
+                            ),
+                        ));
                     }
                 }
             }
@@ -666,8 +879,14 @@ pub fn verify_bytecode(cl: &CompiledLambda) -> Result<(), Vec<VerificationError>
 
 fn verify_bytecode_inner(cl: &CompiledLambda, depth: usize) -> Result<(), Vec<VerificationError>> {
     if depth > MAX_CLOSURE_DEPTH {
-        return Err(vec![err("limits", None,
-            format!("closure nesting depth {} exceeds limit {}", depth, MAX_CLOSURE_DEPTH))]);
+        return Err(vec![err(
+            "limits",
+            None,
+            format!(
+                "closure nesting depth {} exceeds limit {}",
+                depth, MAX_CLOSURE_DEPTH
+            ),
+        )]);
     }
 
     let mut errors = Vec::new();
@@ -718,7 +937,7 @@ fn verify_bytecode_inner(cl: &CompiledLambda, depth: usize) -> Result<(), Vec<Ve
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bytecode::{make_test_compiled_lambda};
+    use crate::bytecode::make_test_compiled_lambda;
 
     #[test]
     fn test_verify_empty_code() {
@@ -749,10 +968,7 @@ mod tests {
 
     #[test]
     fn test_branch_target_out_of_bounds() {
-        let code = vec![
-            Op::PushI64(1),
-            Op::Jump(999),
-        ];
+        let code = vec![Op::PushI64(1), Op::Jump(999)];
         let result = verify_control_flow(&code);
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -761,10 +977,7 @@ mod tests {
 
     #[test]
     fn test_slot_out_of_bounds() {
-        let code = vec![
-            Op::LoadSlot(999),
-            Op::Return,
-        ];
+        let code = vec![Op::LoadSlot(999), Op::Return];
         let result = verify_slot_indices(&code, 2);
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -774,10 +987,7 @@ mod tests {
     #[test]
     fn test_unknown_builtin_detected() {
         // PushBuiltin requires a known builtin name (it constructs a BuiltinFn value).
-        let code = vec![
-            Op::PushBuiltin("nonexistent-builtin".into()),
-            Op::Return,
-        ];
+        let code = vec![Op::PushBuiltin("nonexistent-builtin".into()), Op::Return];
         let result = verify_instruction_consistency(&code, 1, 0);
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -787,10 +997,7 @@ mod tests {
     #[test]
     fn test_builtin_call_accepts_unknown_names() {
         // BuiltinCall is runtime dispatch — unknown names are handled gracefully at runtime.
-        let code = vec![
-            Op::BuiltinCall("nonexistent-builtin".into(), 0),
-            Op::Return,
-        ];
+        let code = vec![Op::BuiltinCall("nonexistent-builtin".into(), 0), Op::Return];
         let result = verify_instruction_consistency(&code, 1, 0);
         assert!(result.is_ok(), "BuiltinCall should accept any name");
     }
@@ -804,11 +1011,11 @@ mod tests {
             Op::PushI64(1),     // 0: height=0 → 1
             Op::JumpIfFalse(3), // 1: pop cond → height=0
             // true-branch (fall-through): height=0
-            Op::PushI64(2),     // 2: height=0 → 1
+            Op::PushI64(2), // 2: height=0 → 1
             // false-branch jumps to 3: height=0
             // pc=3: from fall height=1, from jump height=0 → mismatch
-            Op::PushI64(3),     // 3: mismatch detected on second arrival
-            Op::Return,         // 4
+            Op::PushI64(3), // 3: mismatch detected on second arrival
+            Op::Return,     // 4
         ];
         let result = verify_stack_depth(&code);
         assert!(result.is_err());
@@ -825,15 +1032,15 @@ mod tests {
         // A valid counting loop using stack-based counter.
         // Dup preserves counter across iterations; both arrivals at pc=1 have height=1.
         let code = vec![
-            Op::PushI64(0),          // 0: height=0 → 1
-            Op::Dup,                 // 1: height=1 → 2
-            Op::PushI64(10),         // 2: height=2 → 3
-            Op::Ge,                  // 3: height=3 → 2
-            Op::JumpIfTrue(6),       // 4: pop cond → height=1
+            Op::PushI64(0),    // 0: height=0 → 1
+            Op::Dup,           // 1: height=1 → 2
+            Op::PushI64(10),   // 2: height=2 → 3
+            Op::Ge,            // 3: height=3 → 2
+            Op::JumpIfTrue(6), // 4: pop cond → height=1
             // false branch (counter < 10): height=1 (counter on stack)
-            Op::Jump(1),             // 5: height=1 → back to pc=1 (Dup)
+            Op::Jump(1), // 5: height=1 → back to pc=1 (Dup)
             // true branch (counter >= 10): jump to 6, height=1
-            Op::Return,              // 6: height=1 → return counter
+            Op::Return, // 6: height=1 → return counter
         ];
         let result = verify_stack_depth(&code);
         assert!(result.is_ok(), "valid loop should pass: {:?}", result);
@@ -842,11 +1049,11 @@ mod tests {
     #[test]
     fn test_make_list_effect() {
         let code = vec![
-            Op::PushI64(1),          // stack=[1]
-            Op::PushI64(2),          // stack=[1,2]
-            Op::PushI64(3),          // stack=[1,2,3]
-            Op::MakeList(3),         // stack=[[1,2,3]]
-            Op::Return,              // return [1,2,3]
+            Op::PushI64(1),  // stack=[1]
+            Op::PushI64(2),  // stack=[1,2]
+            Op::PushI64(3),  // stack=[1,2,3]
+            Op::MakeList(3), // stack=[[1,2,3]]
+            Op::Return,      // return [1,2,3]
         ];
         assert!(verify_stack_depth(&code).is_ok());
     }
@@ -854,10 +1061,10 @@ mod tests {
     #[test]
     fn test_dict_operations() {
         let code = vec![
-            Op::PushNil,             // stack=[{}]
-            Op::PushI64(1),          // stack=[{},1]
-            Op::PushI64(42),         // stack=[{},1,42]
-            Op::DictSet,             // stack=[{1:42}]
+            Op::PushNil,     // stack=[{}]
+            Op::PushI64(1),  // stack=[{},1]
+            Op::PushI64(42), // stack=[{},1,42]
+            Op::DictSet,     // stack=[{1:42}]
             Op::Return,
         ];
         assert!(verify_stack_depth(&code).is_ok());
@@ -867,7 +1074,7 @@ mod tests {
     fn test_recurincaccum_no_stack_effect() {
         let code = vec![
             Op::RecurIncAccum(0, 1, 1, 10, 5), // no stack effect
-            Op::Return,                           // needs 0 or 1 on stack
+            Op::Return,                        // needs 0 or 1 on stack
         ];
         assert!(verify_stack_depth(&code).is_ok());
     }
@@ -886,15 +1093,24 @@ mod tests {
 
     #[test]
     fn test_known_builtins_accepted() {
-        for &name in &["car", "cdr", "cons", "abs", "sqrt", "mod", "dict/get", "str-concat"] {
-            let code = vec![
-                Op::BuiltinCall(name.into(), 1),
-                Op::Return,
-            ];
+        for &name in &[
+            "car",
+            "cdr",
+            "cons",
+            "abs",
+            "sqrt",
+            "mod",
+            "dict/get",
+            "str-concat",
+        ] {
+            let code = vec![Op::BuiltinCall(name.into(), 1), Op::Return];
             // Stack depth will fail (empty stack for a 1-arg builtin + return),
             // but instruction consistency should pass
-            assert!(verify_instruction_consistency(&code, 1, 0).is_ok(),
-                "builtin '{}' should be known", name);
+            assert!(
+                verify_instruction_consistency(&code, 1, 0).is_ok(),
+                "builtin '{}' should be known",
+                name
+            );
         }
     }
 
@@ -915,6 +1131,10 @@ mod tests {
         // Build a valid lambda manually: 1 param, 1 slot, push param and return
         let cl = make_test_compiled_lambda(1, 1, vec![Op::LoadSlot(0), Op::Return]);
         let result = verify_bytecode(&cl);
-        assert!(result.is_ok(), "valid compiled lambda should pass: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "valid compiled lambda should pass: {:?}",
+            result
+        );
     }
 }

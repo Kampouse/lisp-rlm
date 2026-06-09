@@ -95,7 +95,11 @@ pub fn run_program(
                         }
                         let names = match &list[1] {
                             LispVal::List(ns) => ns,
-                            _ => return Err("define-values: first arg must be a list of names".into()),
+                            _ => {
+                                return Err(
+                                    "define-values: first arg must be a list of names".into()
+                                )
+                            }
                         };
                         let value = run_program(&[list[2].clone()], env, state)?;
                         match &value {
@@ -128,7 +132,12 @@ pub fn run_program(
                                     preprocessed_owned.push(expansion);
                                     continue;
                                 }
-                                Err(e) => return Err(format!("macro expansion error for '{}': {}", name, e)),
+                                Err(e) => {
+                                    return Err(format!(
+                                        "macro expansion error for '{}': {}",
+                                        name, e
+                                    ))
+                                }
                             }
                         }
                     }
@@ -169,7 +178,7 @@ pub fn run_program(
     let mut exprs: Vec<&LispVal> = Vec::new();
     let mut in_defines = true;
 
-     for form in &preprocessed {
+    for form in &preprocessed {
         if in_defines {
             let bindings = desugar_define_to_pairs(form)?;
             if !bindings.is_empty() {
@@ -196,8 +205,7 @@ pub fn run_program(
             None
         };
 
-        let closed_env =
-            std::sync::Arc::new(std::sync::RwLock::new(env.snapshot()));
+        let closed_env = std::sync::Arc::new(std::sync::RwLock::new(env.snapshot()));
         let cl = try_compile_lambda(
             &[],
             val_expr,
@@ -218,21 +226,24 @@ pub fn run_program(
             )
         })?;
 
-    verify_bytecode(&cl)
-        .map_err(|errs| errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; "))?;
+        verify_bytecode(&cl).map_err(|errs| {
+            errs.iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("; ")
+        })?;
 
-    let value = run_compiled_lambda(&cl, &[], env, state)?;
-    env.insert_mut(name.clone(), value);
-    if let Some(ref pt) = pure_type {
-        state.pure_types.insert(name.clone(), pt.clone());
-    }
+        let value = run_compiled_lambda(&cl, &[], env, state)?;
+        env.insert_mut(name.clone(), value);
+        if let Some(ref pt) = pure_type {
+            state.pure_types.insert(name.clone(), pt.clone());
+        }
     }
 
     // ── Phase 5: Evaluate remaining expressions ──
     if exprs.is_empty() {
         return Ok(LispVal::Nil);
     }
-
 
     // Build body: single expr or (begin expr1 expr2 ...)
     let body = if exprs.len() == 1 {
@@ -287,8 +298,7 @@ fn process_defmacro(list: &[LispVal], env: &mut Env) -> Result<(), String> {
         Some(LispVal::Sym(s)) => s.clone(),
         _ => return Err("defmacro: first arg must be symbol".into()),
     };
-    let (params, rest_param) =
-        parse_params(list.get(2).ok_or("defmacro: need params")?)?;
+    let (params, rest_param) = parse_params(list.get(2).ok_or("defmacro: need params")?)?;
     let body = list.get(3).ok_or("defmacro: need body")?.clone();
     let snap = env.get_or_create_scope_snapshot();
     env.push(
@@ -366,11 +376,7 @@ fn process_deftype(list: &[LispVal]) -> Result<(), String> {
 }
 
 /// Process a `(require module-name [prefix])` form imperatively.
-fn process_require(
-    list: &[LispVal],
-    env: &mut Env,
-    state: &mut EvalState,
-) -> Result<(), String> {
+fn process_require(list: &[LispVal], env: &mut Env, state: &mut EvalState) -> Result<(), String> {
     let module_name = match list.get(1) {
         Some(LispVal::Str(s)) => s.as_str().to_string(),
         _ => return Err("require: need string module name".into()),
@@ -451,17 +457,15 @@ fn collect_define_names(forms: &[&LispVal]) -> Vec<String> {
         if let LispVal::List(list) = form {
             if let Some(LispVal::Sym(name)) = list.first() {
                 match name.as_str() {
-                    "define" if list.len() >= 2 => {
-                        match &list[1] {
-                            LispVal::Sym(s) => names.push(s.clone()),
-                            LispVal::List(inner) if !inner.is_empty() => {
-                                if let LispVal::Sym(s) = &inner[0] {
-                                    names.push(s.clone());
-                                }
+                    "define" if list.len() >= 2 => match &list[1] {
+                        LispVal::Sym(s) => names.push(s.clone()),
+                        LispVal::List(inner) if !inner.is_empty() => {
+                            if let LispVal::Sym(s) = &inner[0] {
+                                names.push(s.clone());
                             }
-                            _ => {}
                         }
-                    }
+                        _ => {}
+                    },
                     "progn" | "begin" => {
                         // Recurse into progn/begin to find nested defines
                         let inner_refs: Vec<&LispVal> = list[1..].iter().collect();
@@ -530,9 +534,10 @@ fn desugar_program(forms: &[&LispVal]) -> LispVal {
 /// Finds `::` in the list and removes it plus all type tokens between it and the body.
 fn strip_type_annotation(list: &[LispVal]) -> Vec<LispVal> {
     // Find the position of `::` (the type annotation marker)
-    let Some(arrow_pos) = list.iter().position(|v| {
-        matches!(v, LispVal::Sym(s) if s == "::")
-    }) else {
+    let Some(arrow_pos) = list
+        .iter()
+        .position(|v| matches!(v, LispVal::Sym(s) if s == "::"))
+    else {
         // No type annotation — return as-is
         return list.to_vec();
     };
@@ -553,7 +558,9 @@ fn strip_type_annotation(list: &[LispVal]) -> Vec<LispVal> {
 /// For `(pure (define f ...) (define g ...))`: type-checks all defines with a shared
 /// environment, strips annotations, returns bindings with their inferred pure types.
 /// For regular `(define f ...)`: returns a single binding with no pure type.
-fn desugar_define_to_pairs(form: &LispVal) -> Result<Vec<((String, LispVal), Option<String>)>, String> {
+fn desugar_define_to_pairs(
+    form: &LispVal,
+) -> Result<Vec<((String, LispVal), Option<String>)>, String> {
     if let LispVal::List(list) = form {
         if let Some(LispVal::Sym(s)) = list.first() {
             if s == "pure" && list.len() >= 2 {
@@ -575,7 +582,8 @@ fn desugar_define_to_pairs(form: &LispVal) -> Result<Vec<((String, LispVal), Opt
                     let check_results = crate::typing::check_pure_block(&define_forms)?;
 
                     // Build a name→type map from check results
-                    let mut type_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+                    let mut type_map: std::collections::HashMap<String, String> =
+                        std::collections::HashMap::new();
                     for r in &check_results {
                         type_map.insert(r.name.clone(), r.inferred_type.to_string());
                     }
@@ -599,7 +607,10 @@ fn desugar_define_to_pairs(form: &LispVal) -> Result<Vec<((String, LispVal), Opt
             }
         }
         // Regular define (non-pure)
-        Ok(desugar_define(list).into_iter().map(|p| (p, None)).collect())
+        Ok(desugar_define(list)
+            .into_iter()
+            .map(|p| (p, None))
+            .collect())
     } else {
         Ok(Vec::new())
     }
@@ -701,11 +712,7 @@ fn desugar_define(list: &[LispVal]) -> Option<(String, LispVal)> {
                     )
                 };
 
-                let lambda = LispVal::List(vec![
-                    LispVal::Sym("lambda".into()),
-                    param_list,
-                    body,
-                ]);
+                let lambda = LispVal::List(vec![LispVal::Sym("lambda".into()), param_list, body]);
 
                 Some((name.clone(), lambda))
             } else {
@@ -722,27 +729,18 @@ fn desugar_define(list: &[LispVal]) -> Option<(String, LispVal)> {
 }
 
 /// Wrap a body expression in nested let bindings.
-fn wrap_in_lets(
-    bindings: Vec<(String, LispVal)>,
-    body: LispVal,
-) -> LispVal {
-    bindings
-        .into_iter()
-        .rev()
-        .fold(body, |inner, (name, val)| {
-            if name.is_empty() {
-                inner
-            } else {
-                LispVal::List(vec![
-                    LispVal::Sym("let".into()),
-                    LispVal::List(vec![LispVal::List(vec![
-                        LispVal::Sym(name),
-                        val,
-                    ])]),
-                    inner,
-                ])
-            }
-        })
+fn wrap_in_lets(bindings: Vec<(String, LispVal)>, body: LispVal) -> LispVal {
+    bindings.into_iter().rev().fold(body, |inner, (name, val)| {
+        if name.is_empty() {
+            inner
+        } else {
+            LispVal::List(vec![
+                LispVal::Sym("let".into()),
+                LispVal::List(vec![LispVal::List(vec![LispVal::Sym(name), val])]),
+                inner,
+            ])
+        }
+    })
 }
 
 #[cfg(test)]

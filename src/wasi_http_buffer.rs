@@ -138,16 +138,20 @@ pub fn emit_http_get_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     let lg = |i: u32| Instruction::LocalGet(i);
     let ls = |i: u32| Instruction::LocalSet(i);
     let cl = |i: u32| Instruction::Call(i);
-    let st = |off: i32| Instruction::I32Store(MemArg {
-        offset: off as u64,
-        align: 2,
-        memory_index: 0,
-    });
-    let ld = |off: i32| Instruction::I32Load(MemArg {
-        offset: off as u64,
-        align: 2,
-        memory_index: 0,
-    });
+    let st = |off: i32| {
+        Instruction::I32Store(MemArg {
+            offset: off as u64,
+            align: 2,
+            memory_index: 0,
+        })
+    };
+    let ld = |off: i32| {
+        Instruction::I32Load(MemArg {
+            offset: off as u64,
+            align: 2,
+            memory_index: 0,
+        })
+    };
 
     // Fields → Request
     func.instruction(&cl(FN_CONSTRUCTOR_FIELDS));
@@ -272,51 +276,54 @@ pub fn emit_http_get_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     // Local 15 = copy counter
     func.instruction(&Instruction::I32Const(0));
     func.instruction(&ls(13)); // total_len = 0
-    
+
     func.instruction(&Instruction::Block(BlockType::Empty)); // outer block - break here on EOF/error
     func.instruction(&Instruction::Loop(BlockType::Empty)); // read loop
-        
-        // blocking-read(stream, 65536, dst)
-        func.instruction(&lg(12)); // stream handle
-        func.instruction(&Instruction::I64Const(65536));
-        func.instruction(&cst(SCRATCH_READ_RESULT));
-        func.instruction(&cl(FN_INPUT_STREAM_BLOCKING_READ));
-        
-        // Check result disc: (disc != 0) means error → break outer
-        // Stack: push constant 0, load disc, compare for inequality
-        func.instruction(&Instruction::I32Const(0));
-        func.instruction(&ld(SCRATCH_READ_RESULT)); // disc at offset 0
-        func.instruction(&Instruction::I32Const(0));
-        func.instruction(&Instruction::I32Ne);
-        func.instruction(&Instruction::BrIf(1)); // break outer on error
-        
-        // Check len (0=EOF) → break outer
-        func.instruction(&Instruction::I32Const(0));
-        func.instruction(&ld(SCRATCH_READ_RESULT + 8)); // len at offset 8
-        func.instruction(&Instruction::I32Eqz);
-        func.instruction(&Instruction::BrIf(1)); // break outer on EOF
-        
-        // Store chunk_len from result
-        func.instruction(&cst(0));
-        func.instruction(&ld(SCRATCH_READ_RESULT + 8));
-        func.instruction(&ls(14)); // chunk_len
-        
-        // Bulk copy chunk to resp_buf using memory.copy (dst, src, len)
-        func.instruction(&lg(2));     // dst = resp_buf base
-        func.instruction(&lg(13));   // + total_len offset
-        func.instruction(&Instruction::I32Add);
-        func.instruction(&cst(0));    // load chunk data ptr
-        func.instruction(&ld(SCRATCH_READ_RESULT + 4));
-        func.instruction(&lg(14));   // len = chunk_len
-        func.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
 
-        // total_len += chunk_len
-        func.instruction(&lg(13));
-        func.instruction(&lg(14));
-        func.instruction(&Instruction::I32Add);
-        func.instruction(&ls(13));
+    // blocking-read(stream, 65536, dst)
+    func.instruction(&lg(12)); // stream handle
+    func.instruction(&Instruction::I64Const(65536));
+    func.instruction(&cst(SCRATCH_READ_RESULT));
+    func.instruction(&cl(FN_INPUT_STREAM_BLOCKING_READ));
 
-        func.instruction(&Instruction::Br(0)); // loop back for more chunks
+    // Check result disc: (disc != 0) means error → break outer
+    // Stack: push constant 0, load disc, compare for inequality
+    func.instruction(&Instruction::I32Const(0));
+    func.instruction(&ld(SCRATCH_READ_RESULT)); // disc at offset 0
+    func.instruction(&Instruction::I32Const(0));
+    func.instruction(&Instruction::I32Ne);
+    func.instruction(&Instruction::BrIf(1)); // break outer on error
+
+    // Check len (0=EOF) → break outer
+    func.instruction(&Instruction::I32Const(0));
+    func.instruction(&ld(SCRATCH_READ_RESULT + 8)); // len at offset 8
+    func.instruction(&Instruction::I32Eqz);
+    func.instruction(&Instruction::BrIf(1)); // break outer on EOF
+
+    // Store chunk_len from result
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_READ_RESULT + 8));
+    func.instruction(&ls(14)); // chunk_len
+
+    // Bulk copy chunk to resp_buf using memory.copy (dst, src, len)
+    func.instruction(&lg(2)); // dst = resp_buf base
+    func.instruction(&lg(13)); // + total_len offset
+    func.instruction(&Instruction::I32Add);
+    func.instruction(&cst(0)); // load chunk data ptr
+    func.instruction(&ld(SCRATCH_READ_RESULT + 4));
+    func.instruction(&lg(14)); // len = chunk_len
+    func.instruction(&Instruction::MemoryCopy {
+        src_mem: 0,
+        dst_mem: 0,
+    });
+
+    // total_len += chunk_len
+    func.instruction(&lg(13));
+    func.instruction(&lg(14));
+    func.instruction(&Instruction::I32Add);
+    func.instruction(&ls(13));
+
+    func.instruction(&Instruction::Br(0)); // loop back for more chunks
     func.instruction(&Instruction::End); // loop ends
     func.instruction(&Instruction::End); // block ends
 
@@ -332,16 +339,20 @@ pub fn emit_http_post_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     let lg = |i: u32| Instruction::LocalGet(i);
     let ls = |i: u32| Instruction::LocalSet(i);
     let cl = |i: u32| Instruction::Call(i);
-    let st = |off: i32| Instruction::I32Store(MemArg {
-        offset: off as u64,
-        align: 2,
-        memory_index: 0,
-    });
-    let ld = |off: i32| Instruction::I32Load(MemArg {
-        offset: off as u64,
-        align: 2,
-        memory_index: 0,
-    });
+    let st = |off: i32| {
+        Instruction::I32Store(MemArg {
+            offset: off as u64,
+            align: 2,
+            memory_index: 0,
+        })
+    };
+    let ld = |off: i32| {
+        Instruction::I32Load(MemArg {
+            offset: off as u64,
+            align: 2,
+            memory_index: 0,
+        })
+    };
 
     // Params: 0=url_ptr, 1=url_len, 2=body_ptr, 3=body_len, 4=buf_ptr, 5=buf_len, 6=len_ptr
     // Extra locals: 7=fields, 8=req, 9=body, 10=future, 11=pollable,
@@ -421,8 +432,8 @@ pub fn emit_http_post_to_buffer(func: &mut Function, data: &HttpDataSegments) {
 
     // blocking-write-and-flush(stream, body_ptr, body_len, result_ptr)
     func.instruction(&lg(19)); // output-stream handle
-    func.instruction(&lg(2));  // body_ptr (param 2)
-    func.instruction(&lg(3));  // body_len (param 3)
+    func.instruction(&lg(2)); // body_ptr (param 2)
+    func.instruction(&lg(3)); // body_len (param 3)
     func.instruction(&cst(SCRATCH_WRITE_RESULT));
     func.instruction(&cl(FN_OUTPUT_STREAM_WRITE));
 
@@ -497,51 +508,54 @@ pub fn emit_http_post_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     func.instruction(&Instruction::Block(BlockType::Empty)); // outer block - break here on EOF/error
     func.instruction(&Instruction::Loop(BlockType::Empty)); // read loop
 
-        // blocking-read(stream, 65536, dst)
-        func.instruction(&lg(14)); // stream handle
-        func.instruction(&Instruction::I64Const(65536));
-        func.instruction(&cst(SCRATCH_READ_RESULT));
-        func.instruction(&cl(FN_INPUT_STREAM_BLOCKING_READ));
+    // blocking-read(stream, 65536, dst)
+    func.instruction(&lg(14)); // stream handle
+    func.instruction(&Instruction::I64Const(65536));
+    func.instruction(&cst(SCRATCH_READ_RESULT));
+    func.instruction(&cl(FN_INPUT_STREAM_BLOCKING_READ));
 
-        // Check result disc: (disc != 0) means error → break outer
-        func.instruction(&Instruction::I32Const(0));
-        func.instruction(&ld(SCRATCH_READ_RESULT)); // disc at offset 0
-        func.instruction(&Instruction::I32Const(0));
-        func.instruction(&Instruction::I32Ne);
-        func.instruction(&Instruction::BrIf(1)); // break outer on error
+    // Check result disc: (disc != 0) means error → break outer
+    func.instruction(&Instruction::I32Const(0));
+    func.instruction(&ld(SCRATCH_READ_RESULT)); // disc at offset 0
+    func.instruction(&Instruction::I32Const(0));
+    func.instruction(&Instruction::I32Ne);
+    func.instruction(&Instruction::BrIf(1)); // break outer on error
 
-        // Check len (0=EOF) → break outer
-        func.instruction(&Instruction::I32Const(0));
-        func.instruction(&ld(SCRATCH_READ_RESULT + 8)); // len at offset 8
-        func.instruction(&Instruction::I32Eqz);
-        func.instruction(&Instruction::BrIf(1)); // break outer on EOF
+    // Check len (0=EOF) → break outer
+    func.instruction(&Instruction::I32Const(0));
+    func.instruction(&ld(SCRATCH_READ_RESULT + 8)); // len at offset 8
+    func.instruction(&Instruction::I32Eqz);
+    func.instruction(&Instruction::BrIf(1)); // break outer on EOF
 
-        // Store chunk_len
-        func.instruction(&cst(0));
-        func.instruction(&ld(SCRATCH_READ_RESULT + 8));
-        func.instruction(&ls(16)); // chunk_len
+    // Store chunk_len
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_READ_RESULT + 8));
+    func.instruction(&ls(16)); // chunk_len
 
-        // Store chunk data ptr
-        func.instruction(&cst(0));
-        func.instruction(&ld(SCRATCH_READ_RESULT + 4));
-        func.instruction(&ls(17)); // chunk_data_ptr
+    // Store chunk data ptr
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_READ_RESULT + 4));
+    func.instruction(&ls(17)); // chunk_data_ptr
 
-        // Bulk copy chunk to buf_ptr using memory.copy (dst, src, len)
-        func.instruction(&lg(4));     // dst = buf_ptr base (param 4)
-        func.instruction(&lg(15));   // + total_len offset
-        func.instruction(&Instruction::I32Add);
-        func.instruction(&cst(0));    // load chunk data ptr
-        func.instruction(&ld(SCRATCH_READ_RESULT + 4));
-        func.instruction(&lg(16));   // len = chunk_len
-        func.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+    // Bulk copy chunk to buf_ptr using memory.copy (dst, src, len)
+    func.instruction(&lg(4)); // dst = buf_ptr base (param 4)
+    func.instruction(&lg(15)); // + total_len offset
+    func.instruction(&Instruction::I32Add);
+    func.instruction(&cst(0)); // load chunk data ptr
+    func.instruction(&ld(SCRATCH_READ_RESULT + 4));
+    func.instruction(&lg(16)); // len = chunk_len
+    func.instruction(&Instruction::MemoryCopy {
+        src_mem: 0,
+        dst_mem: 0,
+    });
 
-        // total_len += chunk_len
-        func.instruction(&lg(15));
-        func.instruction(&lg(16));
-        func.instruction(&Instruction::I32Add);
-        func.instruction(&ls(15)); // update total_len
+    // total_len += chunk_len
+    func.instruction(&lg(15));
+    func.instruction(&lg(16));
+    func.instruction(&Instruction::I32Add);
+    func.instruction(&ls(15)); // update total_len
 
-        func.instruction(&Instruction::Br(0)); // continue read loop
+    func.instruction(&Instruction::Br(0)); // continue read loop
     func.instruction(&Instruction::End); // loop
     func.instruction(&Instruction::End); // block
 
@@ -572,11 +586,7 @@ mod tests {
 
     #[test]
     fn test_build_segments_no_headers() {
-        let data = build_url_data_segments(
-            b"example.com",
-            b"/api/test",
-            &[],
-        );
+        let data = build_url_data_segments(b"example.com", b"/api/test", &[]);
         assert_eq!(data.auth_len, 11);
         assert_eq!(data.path_len, 9);
         assert!(data.headers.is_empty());
@@ -611,18 +621,19 @@ mod tests {
         sorted.sort_by_key(|(off, _)| *off);
         let mut end = 0u32;
         for (off, bytes) in &sorted {
-            assert!(*off >= end, "segment at {} overlaps with previous ending at {}", off, end);
+            assert!(
+                *off >= end,
+                "segment at {} overlaps with previous ending at {}",
+                off,
+                end
+            );
             end = off + bytes.len() as u32;
         }
     }
 
     #[test]
     fn test_header_value_list_encoding() {
-        let data = build_url_data_segments(
-            b"host",
-            b"/",
-            &[(b"K", b"V")],
-        );
+        let data = build_url_data_segments(b"host", b"/", &[(b"K", b"V")]);
         // The value list entry should be 8 bytes: [val_ptr (i32 LE), val_len (i32 LE)]
         let val_list_seg = &data.segments[4]; // auth(0), path(1), name(2), value(3), val_list(4)
         assert_eq!(val_list_seg.1.len(), 8);

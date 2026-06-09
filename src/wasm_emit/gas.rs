@@ -1,4 +1,3 @@
-
 use super::*;
 
 impl WasmEmitter {
@@ -17,14 +16,21 @@ impl WasmEmitter {
         ]
     }
 
-    pub(crate) fn inject_gas_checks(instrs: Vec<Instruction<'static>>, gas_local: u32) -> Vec<Instruction<'static>> {
+    pub(crate) fn inject_gas_checks(
+        instrs: Vec<Instruction<'static>>,
+        gas_local: u32,
+    ) -> Vec<Instruction<'static>> {
         let check = Self::gas_check_instrs(gas_local);
         let mut out = Vec::with_capacity(instrs.len() * 2);
         for i in &instrs {
             match i {
-                Instruction::Br(_) => { out.extend(check.iter().cloned()); out.push(i.clone()); }
+                Instruction::Br(_) => {
+                    out.extend(check.iter().cloned());
+                    out.push(i.clone());
+                }
                 Instruction::Call(idx) if *idx >= HOST_BASE && *idx < USER_BASE => {
-                    out.extend(check.iter().cloned()); out.push(i.clone());
+                    out.extend(check.iter().cloned());
+                    out.push(i.clone());
                 }
                 _ => out.push(i.clone()),
             }
@@ -41,12 +47,22 @@ impl WasmEmitter {
             if i + 3 < instrs.len() {
                 match (&instrs[i], &instrs[i + 1], &instrs[i + 2], &instrs[i + 3]) {
                     // untag(3) then tag(3): I64Const(3), I64ShrU, I64Const(3), I64Shl → noop
-                    (Instruction::I64Const(3), Instruction::I64ShrU, Instruction::I64Const(3), Instruction::I64Shl) => {
+                    (
+                        Instruction::I64Const(3),
+                        Instruction::I64ShrU,
+                        Instruction::I64Const(3),
+                        Instruction::I64Shl,
+                    ) => {
                         i += 4;
                         continue;
                     }
                     // tag(3) then untag(3): I64Const(3), I64Shl, I64Const(3), I64ShrU → noop
-                    (Instruction::I64Const(3), Instruction::I64Shl, Instruction::I64Const(3), Instruction::I64ShrU) => {
+                    (
+                        Instruction::I64Const(3),
+                        Instruction::I64Shl,
+                        Instruction::I64Const(3),
+                        Instruction::I64ShrU,
+                    ) => {
                         i += 4;
                         continue;
                     }
@@ -90,5 +106,4 @@ impl WasmEmitter {
         }
         out
     }
-
 }

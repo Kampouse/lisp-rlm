@@ -17,9 +17,13 @@ impl std::fmt::Display for NearValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidWasm(e) => write!(f, "invalid WASM: {}", e),
-            Self::MemoryPagesOutOfRange(pages) => write!(f, "memory pages {} out of range (1-2048)", pages),
+            Self::MemoryPagesOutOfRange(pages) => {
+                write!(f, "memory pages {} out of range (1-2048)", pages)
+            }
             Self::TooManyFunctions(n) => write!(f, "too many functions: {} (max 10000)", n),
-            Self::FunctionBodyTooLarge { size, max } => write!(f, "function body {} bytes (max {})", size, max),
+            Self::FunctionBodyTooLarge { size, max } => {
+                write!(f, "function body {} bytes (max {})", size, max)
+            }
             Self::InvalidImport(s) => write!(f, "invalid import: {}", s),
             Self::TooManyTables => write!(f, "too many tables"),
         }
@@ -39,11 +43,12 @@ pub fn validate_near_wasm(wasm: &[u8]) -> Result<(), NearValidationError> {
         if trimmed.starts_with("(import \"") {
             if let Some(_end) = trimmed.find('"') {
                 if let Some(start) = trimmed[9..].find('"') {
-                    let module = &trimmed[9..9+start];
+                    let module = &trimmed[9..9 + start];
                     if module != "env" {
-                        return Err(NearValidationError::InvalidImport(
-                            format!("import from \"{}\" (must be \"env\")", module)
-                        ));
+                        return Err(NearValidationError::InvalidImport(format!(
+                            "import from \"{}\" (must be \"env\")",
+                            module
+                        )));
                     }
                 }
             }
@@ -79,7 +84,8 @@ mod tests {
 
     #[test]
     fn test_non_env_import_rejected() {
-        let wasm = wat::parse_str("(module (import \"other\" \"gas\" (func (param i32))))").unwrap();
+        let wasm =
+            wat::parse_str("(module (import \"other\" \"gas\" (func (param i32))))").unwrap();
         let err = validate_near_wasm(&wasm).unwrap_err();
         assert!(matches!(err, NearValidationError::InvalidImport(_)));
     }

@@ -1,7 +1,11 @@
 use super::*;
 
 impl WasmEmitter {
-    pub(crate) fn call(&mut self, op: &str, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
+    pub(crate) fn call(
+        &mut self,
+        op: &str,
+        a: &[LispVal],
+    ) -> Result<Vec<Instruction<'static>>, String> {
         // ── Domain dispatch (each returns Err("__not_handled__") if op doesn't match) ──
         macro_rules! try_domain {
             ($method:expr) => {
@@ -33,25 +37,56 @@ impl WasmEmitter {
         try_domain!(self.call_dict(op, a));
 
         // ── Self-passing call: Y-combinator pattern ──
-        if self.locals.contains_key(op) && !a.is_empty() && matches!(&a[0], LispVal::Sym(s) if s == op) {
-            let pos = self.funcs.iter().position(|f| Some(f.name.as_str()) == self.current_func.as_deref())
+        if self.locals.contains_key(op)
+            && !a.is_empty()
+            && matches!(&a[0], LispVal::Sym(s) if s == op)
+        {
+            let pos = self
+                .funcs
+                .iter()
+                .position(|f| Some(f.name.as_str()) == self.current_func.as_deref())
                 .ok_or_else(|| "self-passing call outside of function".to_string())?;
             let mut v = Vec::new();
-            for x in a { v.extend(self.expr(x)?); }
+            for x in a {
+                v.extend(self.expr(x)?);
+            }
             v.push(Instruction::Call(USER_BASE | pos as u32));
             return Ok(v);
         }
 
         // ── Named function call / dynamic dispatch ──
-        let pos = self.funcs.iter().position(|f| f.name == op)
-            .ok_or_else(|| format!("in {}: unknown function '{}'", self.current_func.as_deref().unwrap_or("top"), op))?;
+        let pos = self
+            .funcs
+            .iter()
+            .position(|f| f.name == op)
+            .ok_or_else(|| {
+                format!(
+                    "in {}: unknown function '{}'",
+                    self.current_func.as_deref().unwrap_or("top"),
+                    op
+                )
+            })?;
         let func = &self.funcs[pos];
         if func.param_count == 0 && !a.is_empty() {
-            let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
-            let temp_callee = self.next_local; self.next_local += 1;
-            let temp_closure_ptr = self.next_local; self.next_local += 1;
-            let lambda_id_local = self.next_local; self.next_local += 1;
-            let arg_locals: Vec<u32> = a.iter().map(|_| { let l = self.next_local; self.next_local += 1; l }).collect();
+            let ma = wasm_encoder::MemArg {
+                offset: 0,
+                align: 3,
+                memory_index: 0,
+            };
+            let temp_callee = self.next_local;
+            self.next_local += 1;
+            let temp_closure_ptr = self.next_local;
+            self.next_local += 1;
+            let lambda_id_local = self.next_local;
+            self.next_local += 1;
+            let arg_locals: Vec<u32> = a
+                .iter()
+                .map(|_| {
+                    let l = self.next_local;
+                    self.next_local += 1;
+                    l
+                })
+                .collect();
             let mut v = Vec::new();
             v.push(Instruction::Call(USER_BASE | pos as u32));
             v.push(Instruction::LocalSet(temp_callee));
@@ -61,7 +96,10 @@ impl WasmEmitter {
             }
             let n_lambdas = self.lambda_info.len();
             if n_lambdas == 0 {
-                return Err(format!("compile error: dynamic call to '{}' but no functions defined yet", op));
+                return Err(format!(
+                    "compile error: dynamic call to '{}' but no functions defined yet",
+                    op
+                ));
             }
             v.push(Instruction::LocalGet(temp_callee));
             v.push(Instruction::I64Const(3));
@@ -91,17 +129,23 @@ impl WasmEmitter {
                 v.push(Instruction::I64Eq);
                 v.push(Instruction::If(BlockType::Result(ValType::I64)));
                 v.push(Instruction::LocalGet(temp_closure_ptr));
-                for &al in &arg_locals { v.push(Instruction::LocalGet(al)); }
+                for &al in &arg_locals {
+                    v.push(Instruction::LocalGet(al));
+                }
                 v.push(Instruction::Call(USER_BASE | func_idx as u32));
                 v.push(Instruction::Return);
                 v.push(Instruction::Else);
             }
             v.push(Instruction::I64Const(-1));
-            for _ in 0..n_lambdas { v.push(Instruction::End); }
+            for _ in 0..n_lambdas {
+                v.push(Instruction::End);
+            }
             Ok(v)
         } else {
             let mut v = Vec::new();
-            for x in a { v.extend(self.expr(x)?); }
+            for x in a {
+                v.extend(self.expr(x)?);
+            }
             v.push(Instruction::Call(USER_BASE | pos as u32));
             Ok(v)
         }

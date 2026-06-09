@@ -12,7 +12,11 @@ fn test_json_get_compiles() {
 "#;
     let wasm = compile_pure(src).expect("json-get should compile");
     let wat = to_wat(&wasm);
-    assert!(wat.contains("call"), "should emit function calls: {}", &wat[..200.min(wat.len())]);
+    assert!(
+        wat.contains("call"),
+        "should emit function calls: {}",
+        &wat[..200.min(wat.len())]
+    );
 }
 
 #[test]
@@ -23,7 +27,11 @@ fn test_json_get_str_compiles() {
 "#;
     let wasm = compile_pure(src).expect("json-get-str should compile");
     let wat = to_wat(&wasm);
-    assert!(wat.contains("call"), "should emit function calls: {}", &wat[..200.min(wat.len())]);
+    assert!(
+        wat.contains("call"),
+        "should emit function calls: {}",
+        &wat[..200.min(wat.len())]
+    );
 }
 
 #[test]
@@ -34,7 +42,11 @@ fn test_json_get_float_compiles() {
 "#;
     let wasm = compile_pure(src).expect("json-get-float should compile");
     let wat = to_wat(&wasm);
-    assert!(wat.contains("call"), "should emit function calls: {}", &wat[..200.min(wat.len())]);
+    assert!(
+        wat.contains("call"),
+        "should emit function calls: {}",
+        &wat[..200.min(wat.len())]
+    );
 }
 
 #[test]
@@ -45,5 +57,9 @@ fn test_json_extract_compiles() {
 "#;
     let wasm = compile_pure(src).expect("json-extract should compile");
     let wat = to_wat(&wasm);
-    assert!(wat.contains("call"), "should emit function calls: {}", &wat[..200.min(wat.len())]);
+    assert!(
+        wat.contains("call"),
+        "should emit function calls: {}",
+        &wat[..200.min(wat.len())]
+    );
 }

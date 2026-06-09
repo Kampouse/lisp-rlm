@@ -6,8 +6,12 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let standalone = args.iter().any(|a| a == "--standalone" || a == "-s");
     let no_typecheck = args.iter().any(|a| a == "--no-typecheck");
-    let clean_args: Vec<String> = args.iter().filter(|a| *a != "--standalone" && *a != "-s" && *a != "--no-typecheck").cloned().collect();
-    
+    let clean_args: Vec<String> = args
+        .iter()
+        .filter(|a| *a != "--standalone" && *a != "-s" && *a != "--no-typecheck")
+        .cloned()
+        .collect();
+
     if clean_args.len() < 2 {
         eprintln!("Usage: emit_wasm [--standalone|-s] <source.lisp> [output.wasm]");
         eprintln!("  --standalone  Emit _start entry point, no host imports (for inlayer/wasip1)");
@@ -19,7 +23,11 @@ fn main() {
         std::process::exit(1);
     });
 
-    let output = if clean_args.len() > 2 { clean_args[2].clone() } else { "/tmp/emitted.wasm".into() };
+    let output = if clean_args.len() > 2 {
+        clean_args[2].clone()
+    } else {
+        "/tmp/emitted.wasm".into()
+    };
 
     if standalone {
         let result = if no_typecheck {
@@ -30,7 +38,11 @@ fn main() {
         match result {
             Ok(wasm_bytes) => {
                 fs::write(&output, &wasm_bytes).unwrap();
-                println!("✅ Standalone WASM written to: {} ({} bytes)", output, wasm_bytes.len());
+                println!(
+                    "✅ Standalone WASM written to: {} ({} bytes)",
+                    output,
+                    wasm_bytes.len()
+                );
             }
             Err(e) => {
                 eprintln!("Compile error: {}", e);
@@ -41,7 +53,11 @@ fn main() {
         match compile_pure(&source) {
             Ok(wasm_bytes) => {
                 fs::write(&output, &wasm_bytes).unwrap();
-                println!("✅ WASM written to: {} ({} bytes)", output, wasm_bytes.len());
+                println!(
+                    "✅ WASM written to: {} ({} bytes)",
+                    output,
+                    wasm_bytes.len()
+                );
             }
             Err(e) => {
                 eprintln!("Compile error: {}", e);

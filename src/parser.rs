@@ -77,7 +77,13 @@ fn tokenize(input: &str) -> Vec<(String, usize)> {
             i += 2;
             if i < len {
                 let mut char_name = String::new();
-                while i < len && !chars[i].is_whitespace() && chars[i] != '(' && chars[i] != ')' && chars[i] != '[' && chars[i] != ']' {
+                while i < len
+                    && !chars[i].is_whitespace()
+                    && chars[i] != '('
+                    && chars[i] != ')'
+                    && chars[i] != '['
+                    && chars[i] != ']'
+                {
                     char_name.push(chars[i]);
                     i += 1;
                     if char_name.len() == 1 && (i >= len || !chars[i].is_ascii_alphabetic()) {
@@ -140,7 +146,9 @@ fn offset_to_line_col(input: &str, offset: usize) -> (usize, usize) {
     let mut line = 1;
     let mut col = 1;
     for (i, ch) in input.char_indices() {
-        if i >= offset { break; }
+        if i >= offset {
+            break;
+        }
         if ch == '\n' {
             line += 1;
             col = 1;

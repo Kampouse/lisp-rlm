@@ -90,8 +90,7 @@ impl WasmRunner {
 
     /// Pre-write bytes at `offset` in WASM memory.
     pub fn write_bytes(&mut self, offset: usize, bytes: &[u8]) {
-        self.memory.data_mut(&mut self.store)[offset..offset + bytes.len()]
-            .copy_from_slice(bytes);
+        self.memory.data_mut(&mut self.store)[offset..offset + bytes.len()].copy_from_slice(bytes);
     }
 
     /// Write a Borsh-encoded i64 at `offset` (8 bytes LE).
@@ -115,7 +114,8 @@ impl WasmRunner {
         let run_fn = inst
             .get_typed_func::<(), ()>(&mut self.store, "run")
             .map_err(|e| format!("no 'run' export: {}", e))?;
-        run_fn.call(&mut self.store, ())
+        run_fn
+            .call(&mut self.store, ())
             .map_err(|e| format!("trap: {}", e))?;
         Ok(())
     }

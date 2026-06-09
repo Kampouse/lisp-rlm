@@ -13,21 +13,36 @@ pub fn build_p2_wasi_bridge() -> Vec<u8> {
     // ── Type section ──
     let mut types = TypeSection::new();
     types.ty().function([], [ValType::I32]); // 0: () -> i32 (get_stdin, get_stdout)
-    types.ty().function([ValType::I32, ValType::I64, ValType::I32], []); // 1: blocking_read(handle, len, ret_area)
+    types
+        .ty()
+        .function([ValType::I32, ValType::I64, ValType::I32], []); // 1: blocking_read(handle, len, ret_area)
     types.ty().function([ValType::I32], []); // 2: (i32) -> () (drop stream)
-    types.ty().function([ValType::I32, ValType::I32, ValType::I32, ValType::I32], []); // 3: blocking_write_and_flush(handle, ptr, len, ret_ptr) -> () (result via ret_ptr)
+    types
+        .ty()
+        .function([ValType::I32, ValType::I32, ValType::I32, ValType::I32], []); // 3: blocking_write_and_flush(handle, ptr, len, ret_ptr) -> () (result via ret_ptr)
     types.ty().function([ValType::I32; 4], [ValType::I32]); // 4: fd_read, fd_write signature
     types.ty().function([ValType::I32], []); // 5: proc_exit
     types.ty().function([ValType::I32; 2], [ValType::I32]); // 6: random_get, environ_sizes_get, environ_get
-    types.ty().function([ValType::I32, ValType::I64, ValType::I32, ValType::I32], [ValType::I32]); // 7: fd_seek
+    types.ty().function(
+        [ValType::I32, ValType::I64, ValType::I32, ValType::I32],
+        [ValType::I32],
+    ); // 7: fd_seek
     m.section(&types);
 
     // ── Import section ──
     let mut imports = ImportSection::new();
     // Import shared memory
-    imports.import("env", "memory", EntityType::Memory(MemoryType {
-        minimum: 0, maximum: None, memory64: false, shared: false, page_size_log2: None,
-    }));
+    imports.import(
+        "env",
+        "memory",
+        EntityType::Memory(MemoryType {
+            minimum: 0,
+            maximum: None,
+            memory64: false,
+            shared: false,
+            page_size_log2: None,
+        }),
+    );
     // P2 stream functions (import indices 0-6 after memory doesn't get an index)
     // Actually, memory import doesn't create a function index. Function imports are:
     imports.import("p2", "get_stdin", EntityType::Function(0)); // func 0
@@ -63,9 +78,21 @@ pub fn build_p2_wasi_bridge() -> Vec<u8> {
 
     // ── Code section ──
     let mut code = CodeSection::new();
-    let ma4 = MemArg { offset: 0, align: 2, memory_index: 0 };
-    let ma4_4 = MemArg { offset: 4, align: 2, memory_index: 0 };
-    let ma1 = MemArg { offset: 0, align: 0, memory_index: 0 };
+    let ma4 = MemArg {
+        offset: 0,
+        align: 2,
+        memory_index: 0,
+    };
+    let ma4_4 = MemArg {
+        offset: 4,
+        align: 2,
+        memory_index: 0,
+    };
+    let ma1 = MemArg {
+        offset: 0,
+        align: 0,
+        memory_index: 0,
+    };
 
     // ── fd_read(fd=0, iovs_ptr, iovs_len, nread_ptr) -> errno ──
     // params: 0=fd, 1=iovs_ptr, 2=iovs_len, 3=nread_ptr

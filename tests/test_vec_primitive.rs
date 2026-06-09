@@ -246,16 +246,16 @@ fn vec_borsh_serialize_i64() {
 "#;
     let wasm = lisp_rlm_wasm::wasm_emit::compile_pure(src).expect("compile failed");
     eprintln!("WASM size: {} bytes", wasm.len());
-    
+
     // Also dump WAT for debugging
     match lisp_rlm_wasm::wasm_emit::compile_pure_to_wat(src) {
         Ok(wat) => eprintln!("WAT:\n{}", wat),
         Err(e) => eprintln!("WAT error: {}", e),
     }
-    
+
     // Also write the raw binary to inspect
     std::fs::write("/tmp/vec_test.wasm", &wasm).unwrap();
-    
+
     // Validate WASM by feeding to wasmtime or wasmparser
     use wasmparser::Validator;
     let mut validator = Validator::new();
@@ -282,7 +282,10 @@ fn vec_borsh_deserialize_i64_validate() {
     std::fs::write("/tmp/vec_deser_test.wasm", &wasm).unwrap();
 
     match lisp_rlm_wasm::wasm_emit::compile_pure_to_wat(src) {
-        Ok(wat) => { /* Too verbose, write to file */ std::fs::write("/tmp/vec_deser_test.wat", &wat).unwrap(); },
+        Ok(wat) => {
+            /* Too verbose, write to file */
+            std::fs::write("/tmp/vec_deser_test.wat", &wat).unwrap();
+        }
         Err(e) => eprintln!("WAT error: {}", e),
     }
 

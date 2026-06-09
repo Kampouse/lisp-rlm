@@ -25,7 +25,9 @@ pub fn desugar(exprs: &mut [LispVal]) {
 fn desugar_expr(expr: &mut LispVal) {
     match expr {
         LispVal::List(items) => {
-            if items.is_empty() { return; }
+            if items.is_empty() {
+                return;
+            }
 
             // Check head symbol
             if let LispVal::Sym(head) = items[0].clone() {
@@ -72,13 +74,17 @@ fn desugar_expr(expr: &mut LispVal) {
 /// Also handles: (defn [params...] name body...)  — swapped form
 fn desugar_defn(items: &mut Vec<LispVal>, _private: bool) {
     // items[0] = "defn", items[1..] = rest
-    if items.len() < 3 { return; }
+    if items.len() < 3 {
+        return;
+    }
 
     let mut name_idx = 1;
     let mut param_idx = 2;
 
     // Handle swapped form: (defn [params] name body...)
-    if matches!(&items[1], LispVal::Vec(v) if !v.is_empty()) || matches!(&items[1], LispVal::List(v) if !v.is_empty()) {
+    if matches!(&items[1], LispVal::Vec(v) if !v.is_empty())
+        || matches!(&items[1], LispVal::List(v) if !v.is_empty())
+    {
         // items[1] looks like a param vector, check if items[2] is a symbol (the name)
         if let LispVal::Sym(_) = &items[2] {
             param_idx = 1;
@@ -95,7 +101,9 @@ fn desugar_defn(items: &mut Vec<LispVal>, _private: bool) {
         }
     }
 
-    if param_idx >= items.len() { return; }
+    if param_idx >= items.len() {
+        return;
+    }
 
     // Convert [params] to (params)
     let params = vec_to_list(&items[param_idx]);
@@ -141,12 +149,18 @@ fn desugar_defn(items: &mut Vec<LispVal>, _private: bool) {
     // Desugar body recursively
     let mut result = LispVal::List(define_list);
     desugar_expr(&mut result);
-    *items = if let LispVal::List(r) = result { r } else { vec![result] };
+    *items = if let LispVal::List(r) = result {
+        r
+    } else {
+        vec![result]
+    };
 }
 
 /// (def name expr) → (define name expr)
 fn desugar_def(items: &mut Vec<LispVal>) {
-    if items.len() < 3 { return; }
+    if items.len() < 3 {
+        return;
+    }
     items[0] = LispVal::Sym("define".into());
     // Recurse into the value expression
     for item in items.iter_mut() {
@@ -158,14 +172,16 @@ fn desugar_def(items: &mut Vec<LispVal>) {
 /// Also accepts already-paired form: (let ((x 1) (y 2)) body...)
 fn desugar_let(items: &mut Vec<LispVal>) {
     // items[0] = "let", items[1] = [bindings...], items[2..] = body
-    if items.len() < 3 { return; }
+    if items.len() < 3 {
+        return;
+    }
 
     // Check if bindings are already in paired form ((x 1) (y 2))
     // Each element should be a 2-element list — if so, skip conversion
     let already_paired = match &items[1] {
-        LispVal::List(bs) | LispVal::Vec(bs) => {
-            bs.iter().all(|b| matches!(b, LispVal::List(p) if p.len() == 2))
-        }
+        LispVal::List(bs) | LispVal::Vec(bs) => bs
+            .iter()
+            .all(|b| matches!(b, LispVal::List(p) if p.len() == 2)),
         _ => false,
     };
 
@@ -194,7 +210,9 @@ fn desugar_let(items: &mut Vec<LispVal>) {
 /// (fn [params...] body...) → (fn (params...) body...)
 /// (lambda [params...] body...) → (lambda (params...) body...)
 fn desugar_fn_params(items: &mut Vec<LispVal>) {
-    if items.len() < 3 { return; }
+    if items.len() < 3 {
+        return;
+    }
     // Convert [params] to (params)
     items[1] = vec_to_list(&items[1]);
     // Recurse into body
@@ -207,9 +225,8 @@ fn desugar_fn_params(items: &mut Vec<LispVal>) {
 fn vec_to_list(val: &LispVal) -> LispVal {
     match val {
         LispVal::Vec(items) => {
-            let list_items: Vec<LispVal> = items.iter().map(|item| {
-                vec_to_list_inner(item)
-            }).collect();
+            let list_items: Vec<LispVal> =
+                items.iter().map(|item| vec_to_list_inner(item)).collect();
             LispVal::List(list_items)
         }
         LispVal::List(items) => LispVal::List(items.clone()),
@@ -219,9 +236,7 @@ fn vec_to_list(val: &LispVal) -> LispVal {
 
 fn vec_to_list_inner(val: &LispVal) -> LispVal {
     match val {
-        LispVal::Vec(items) => {
-            LispVal::List(items.iter().map(vec_to_list_inner).collect())
-        }
+        LispVal::Vec(items) => LispVal::List(items.iter().map(vec_to_list_inner).collect()),
         other => other.clone(),
     }
 }
@@ -273,7 +288,8 @@ mod tests {
               (if (<= n 1) n
                 (+ (fib (- n 1)) (fib (- n 2)))))
             (fib 10)
-        "#).unwrap();
+        "#)
+        .unwrap();
         assert_eq!(r, "55");
     }
 
@@ -302,7 +318,8 @@ mod tests {
               (println "hello")
               (+ 1 2))
             (greet "world")
-        "#).unwrap();
+        "#)
+        .unwrap();
         assert_eq!(r, "3");
     }
 
@@ -320,7 +337,8 @@ mod tests {
             (let [x (add 3 4)
                   y (mul 2 3)]
               (+ x y))
-        "#).unwrap();
+        "#)
+        .unwrap();
         assert_eq!(r, "13");
     }
 
@@ -330,7 +348,8 @@ mod tests {
             (loop [i 0 acc 0]
               (if (>= i 10) acc
                 (recur (+ i 1) (+ acc i))))
-        "#).unwrap();
+        "#)
+        .unwrap();
         assert_eq!(r, "45");
     }
 
@@ -342,7 +361,8 @@ mod tests {
                 (if (>= i n) acc
                   (recur (+ i 1) (+ acc i)))))
             (count-to 10)
-        "#).unwrap();
+        "#)
+        .unwrap();
         assert_eq!(r, "45");
     }
 
@@ -353,7 +373,8 @@ mod tests {
             (defn fib[]
               (if true 42 0))
             (fib)
-        "#).unwrap();
+        "#)
+        .unwrap();
         assert_eq!(r, "42");
     }
 
@@ -364,7 +385,8 @@ mod tests {
             (defn [x y] my-add
               (+ x y))
             (my-add 3 4)
-        "#).unwrap();
+        "#)
+        .unwrap();
         assert_eq!(r, "7");
     }
 }

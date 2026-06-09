@@ -58,7 +58,9 @@ macro_rules! near_host_test {
         fn $name() {
             let src = concat!(
                 "(memory 1)\n",
-                "(define (test) ", $code, ")\n",
+                "(define (test) ",
+                $code,
+                ")\n",
                 r#"(export "test" test true)"#
             );
             let (wasm, wat) =
@@ -70,7 +72,11 @@ macro_rules! near_host_test {
                 wat.len()
             );
             // Sanity: WASM should be under 100KB for single-function tests
-            assert!(wasm.len() < 100_000, "WASM suspiciously large: {} bytes", wasm.len());
+            assert!(
+                wasm.len() < 100_000,
+                "WASM suspiciously large: {} bytes",
+                wasm.len()
+            );
         }
     };
 }
@@ -120,11 +126,17 @@ near_host_test!(near_storage_remove, r#"(near/storage_remove "key")"#);
 near_host_test!(near_sha256, r#"(near/sha256 "hello")"#);
 near_host_test!(near_keccak256, r#"(near/keccak256 "hello")"#);
 near_host_test!(near_random_seed, "(near/random_seed)");
-near_host_test!(near_ed25519_verify, r#"(near/ed25519_verify "sig" "msg" "pk")"#);
+near_host_test!(
+    near_ed25519_verify,
+    r#"(near/ed25519_verify "sig" "msg" "pk")"#
+);
 near_host_test!(near_p256_verify, r#"(near/p256_verify "sig" "msg" "pk")"#);
 near_host_test!(near_keccak512, r#"(near/keccak512 "hello")"#);
 near_host_test!(near_ripemd160, r#"(near/ripemd160 "hello")"#);
-near_host_test!(near_ecrecover, r#"(near/ecrecover "hash" "sig" "v" "r" "s")"#);
+near_host_test!(
+    near_ecrecover,
+    r#"(near/ecrecover "hash" "sig" "v" "r" "s")"#
+);
 
 // A7. Value return: value_return(25), panic(26), panic_utf8(27)
 near_host_test!(near_return_str, r#"(near/return_str "hello")"#);
@@ -136,40 +148,85 @@ near_host_test!(near_log_utf16, r#"(near/log_utf16 "hello")"#);
 
 // A9. Promises: promise_create(30), promise_then(31), promise_and(32),
 //             promise_results_count(33), promise_result(34), promise_return(35)
-near_host_test!(near_promise_create, r#"(near/promise_create "wrap.near" "ft_balance_of" (near/input) 0 0)"#);
-near_host_test!(near_promise_then, r#"(let ((p (near/promise_create "wrap.near" "ft_balance_of" (near/input) 0 0)))
-       (near/promise_then p "callback.contract" "on_result" (near/input) 0 0))"#);
-near_host_test!(near_promise_and, r#"(let ((p1 (near/promise_create "a.near" "method1" (near/input) 0 0))
+near_host_test!(
+    near_promise_create,
+    r#"(near/promise_create "wrap.near" "ft_balance_of" (near/input) 0 0)"#
+);
+near_host_test!(
+    near_promise_then,
+    r#"(let ((p (near/promise_create "wrap.near" "ft_balance_of" (near/input) 0 0)))
+       (near/promise_then p "callback.contract" "on_result" (near/input) 0 0))"#
+);
+near_host_test!(
+    near_promise_and,
+    r#"(let ((p1 (near/promise_create "a.near" "method1" (near/input) 0 0))
                (p2 (near/promise_create "b.near" "method2" (near/input) 0 0)))
-       (near/promise_and p1 p2))"#);
+       (near/promise_and p1 p2))"#
+);
 near_host_test!(near_promise_results_count, "(near/promise_results_count)");
 near_host_test!(near_promise_result, "(near/promise_result 0)");
-near_host_test!(near_promise_return, r#"(let ((p (near/promise_create "wrap.near" "ft_balance_of" (near/input) 0 0)))
+near_host_test!(
+    near_promise_return,
+    r#"(let ((p (near/promise_create "wrap.near" "ft_balance_of" (near/input) 0 0)))
         (near/promise_result 0)
-       (near/promise_return p))"#);
+       (near/promise_return p))"#
+);
 
 // A10. Combined: cross-contract call with result
-near_host_test!(near_cc_full_flow, r#"(let ((p (near/promise_create "wrap.near" "ft_balance_of" (near/input) 0 0)))
-       (near/promise_result 0))"#);
+near_host_test!(
+    near_cc_full_flow,
+    r#"(let ((p (near/promise_create "wrap.near" "ft_balance_of" (near/input) 0 0)))
+       (near/promise_result 0))"#
+);
 
 // A11. Alt BN128: 56–58
-near_host_test!(near_alt_bn128_g1_multiexp, r#"(near/alt_bn128_g1_multiexp "data")"#);
+near_host_test!(
+    near_alt_bn128_g1_multiexp,
+    r#"(near/alt_bn128_g1_multiexp "data")"#
+);
 near_host_test!(near_alt_bn128_g1_sum, r#"(near/alt_bn128_g1_sum "data")"#);
-near_host_test!(near_alt_bn128_pairing_check, r#"(near/alt_bn128_pairing_check "data")"#);
+near_host_test!(
+    near_alt_bn128_pairing_check,
+    r#"(near/alt_bn128_pairing_check "data")"#
+);
 
 // A12. BLS12-381: 59–67
 near_host_test!(near_bls12381_p1_sum, r#"(near/bls12381_p1_sum "data")"#);
 near_host_test!(near_bls12381_p2_sum, r#"(near/bls12381_p2_sum "data")"#);
-near_host_test!(near_bls12381_g1_multiexp, r#"(near/bls12381_g1_multiexp "data")"#);
-near_host_test!(near_bls12381_g2_multiexp, r#"(near/bls12381_g2_multiexp "data")"#);
-near_host_test!(near_bls12381_map_fp_to_g1, r#"(near/bls12381_map_fp_to_g1 "data")"#);
-near_host_test!(near_bls12381_map_fp2_to_g2, r#"(near/bls12381_map_fp2_to_g2 "data")"#);
-near_host_test!(near_bls12381_pairing_check, r#"(near/bls12381_pairing_check "data")"#);
-near_host_test!(near_bls12381_p1_decompress, r#"(near/bls12381_p1_decompress "data")"#);
-near_host_test!(near_bls12381_p2_decompress, r#"(near/bls12381_p2_decompress "data")"#);
+near_host_test!(
+    near_bls12381_g1_multiexp,
+    r#"(near/bls12381_g1_multiexp "data")"#
+);
+near_host_test!(
+    near_bls12381_g2_multiexp,
+    r#"(near/bls12381_g2_multiexp "data")"#
+);
+near_host_test!(
+    near_bls12381_map_fp_to_g1,
+    r#"(near/bls12381_map_fp_to_g1 "data")"#
+);
+near_host_test!(
+    near_bls12381_map_fp2_to_g2,
+    r#"(near/bls12381_map_fp2_to_g2 "data")"#
+);
+near_host_test!(
+    near_bls12381_pairing_check,
+    r#"(near/bls12381_pairing_check "data")"#
+);
+near_host_test!(
+    near_bls12381_p1_decompress,
+    r#"(near/bls12381_p1_decompress "data")"#
+);
+near_host_test!(
+    near_bls12381_p2_decompress,
+    r#"(near/bls12381_p2_decompress "data")"#
+);
 
 // A13. JSON builtins
-near_host_test!(near_json_get_str, r#"(json-get-str "{\"key\": \"val\"}" "key")"#);
+near_host_test!(
+    near_json_get_str,
+    r#"(json-get-str "{\"key\": \"val\"}" "key")"#
+);
 near_host_test!(near_json_get_int, r#"(json-get "{\"key\": 42}" "key")"#);
 
 // A14. Misc: near/abort, near/current_code_hash, near/deposit-gte
@@ -277,7 +334,10 @@ fn bug_account_balance_high_unknown() {
 (define (test) (near/account_balance_high))
 (export "test" test true)"#;
     let result = compile_near_untyped(src);
-    assert!(result.is_err(), "Expected compile error for unknown near/account_balance_high");
+    assert!(
+        result.is_err(),
+        "Expected compile error for unknown near/account_balance_high"
+    );
     assert!(
         result.unwrap_err().contains("unknown function"),
         "Expected 'unknown function' error"
@@ -291,7 +351,10 @@ fn bug_register_len_unknown() {
 (define (test) (register_len 0))
 (export "test" test true)"#;
     let result = compile_near_untyped(src);
-    assert!(result.is_err(), "Expected compile error for unknown register_len");
+    assert!(
+        result.is_err(),
+        "Expected compile error for unknown register_len"
+    );
 }
 
 /// [BUG] near/log_num: actually compiles fine — just a numeric log variant.
@@ -402,7 +465,10 @@ fn control_flow_cond_host_calls() {
         (near/store "status" "old"))))
 (export "test" test true)"#;
     let (wasm, _) = validate_wasm(src).unwrap_or_else(|e| panic!("{}", e));
-    eprintln!("  [PASS] control_flow_cond_host_calls — {} bytes", wasm.len());
+    eprintln!(
+        "  [PASS] control_flow_cond_host_calls — {} bytes",
+        wasm.len()
+    );
 }
 
 /// Loop with host call inside — tests stack balance after iteration.
@@ -417,7 +483,10 @@ fn control_flow_loop_host_call() {
       (set! x (+ x 1)))))
 (export "test" test true)"#;
     let (wasm, _) = validate_wasm(src).unwrap_or_else(|e| panic!("{}", e));
-    eprintln!("  [PASS] control_flow_loop_host_call — {} bytes", wasm.len());
+    eprintln!(
+        "  [PASS] control_flow_loop_host_call — {} bytes",
+        wasm.len()
+    );
 }
 
 /// Function calling another function with host result.
@@ -430,10 +499,7 @@ fn control_flow_fn_chain() {
     (near/return_str (greet account))))
 (export "test" test true)"#;
     let (wasm, _) = validate_wasm(src).unwrap_or_else(|e| panic!("{}", e));
-    eprintln!(
-        "  [PASS] control_flow_fn_chain — {} bytes",
-        wasm.len()
-    );
+    eprintln!("  [PASS] control_flow_fn_chain — {} bytes", wasm.len());
 }
 // ════════════════════════════════════════════════════════════════
 
@@ -487,7 +553,10 @@ fn promise_chain_create_result_return() {
     (near/promise_return p)))
 (export "test" test true)"#;
     let (wasm, _) = validate_wasm(src).unwrap_or_else(|e| panic!("{}", e));
-    eprintln!("  [PASS] promise_chain_create_result_return — {} bytes", wasm.len());
+    eprintln!(
+        "  [PASS] promise_chain_create_result_return — {} bytes",
+        wasm.len()
+    );
 }
 
 /// Promise and — two parallel creates.

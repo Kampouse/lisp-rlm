@@ -353,17 +353,19 @@ pub fn handle(
 
         // --- LLM / RLM builtins ---
         "llm" | "llm-code" => {
-            let prompt = args.first()
-                .ok_or("llm: need prompt string")?
-                .to_string();
+            let prompt = args.first().ok_or("llm: need prompt string")?.to_string();
             let provider = crate::dispatch::llm_provider::GenericProvider::from_env()
                 .map_err(|e| format!("llm: {}", e))?;
             let messages = vec![
-                ("system".to_string(), "You are a helpful assistant. Respond concisely.".to_string()),
+                (
+                    "system".to_string(),
+                    "You are a helpful assistant. Respond concisely.".to_string(),
+                ),
                 ("user".to_string(), prompt),
             ];
             use crate::dispatch::llm_provider::LlmProvider;
-            let response = provider.complete(&messages, Some(1024))
+            let response = provider
+                .complete(&messages, Some(1024))
                 .map_err(|e| format!("llm: {}", e))?;
             Ok(Some(LispVal::Str(response.content)))
         }

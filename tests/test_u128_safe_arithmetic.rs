@@ -50,29 +50,33 @@ fn u128_mul_normal_interp() {
 fn run_near_mock(lisp: &str) -> (i32, String, String) {
     use std::io::Write;
     use std::process::{Command, Stdio};
-    
+
     // Use unique temp file per test to avoid parallel race
     let id = TEST_ID.fetch_add(1, Ordering::SeqCst);
     let tmp_path = format!("/tmp/u128_test_{}.lisp", id);
     let wasm_path = format!("/tmp/u128_test_{}.wasm", id);
     std::fs::write(&tmp_path, lisp).unwrap();
-    
+
     // Compile
     let compile_out = Command::new("cargo")
         .args(["run", "--bin", "near-compile", "--", &tmp_path, &wasm_path])
         .output()
         .expect("near-compile failed");
-    
+
     if !compile_out.status.success() {
-        return (1, String::new(), String::from_utf8_lossy(&compile_out.stderr).to_string());
+        return (
+            1,
+            String::new(),
+            String::from_utf8_lossy(&compile_out.stderr).to_string(),
+        );
     }
-    
+
     // Run via near-mock (pass method name "check")
     let run_out = Command::new("cargo")
         .args(["run", "--bin", "near-mock", "--", &wasm_path, "check"])
         .output()
         .expect("near-mock failed");
-    
+
     let code = run_out.status.code().unwrap_or(-1);
     let stdout = String::from_utf8_lossy(&run_out.stdout).to_string();
     let stderr = String::from_utf8_lossy(&run_out.stderr).to_string();
@@ -92,8 +96,11 @@ fn u128_add_overflow_traps_wasm() {
 "#;
     let (_code, stdout, stderr) = run_near_mock(lisp);
     // Should fail with trap message
-    assert!(stderr.contains("trap") || stderr.contains("error") || stderr.contains("❌"),
-        "overflow should trap: stderr={}", stderr);
+    assert!(
+        stderr.contains("trap") || stderr.contains("error") || stderr.contains("❌"),
+        "overflow should trap: stderr={}",
+        stderr
+    );
 }
 
 #[test]
@@ -108,8 +115,11 @@ fn u128_sub_underflow_traps_wasm() {
 (export "check" check)
 "#;
     let (_code, stdout, stderr) = run_near_mock(lisp);
-    assert!(stderr.contains("trap") || stderr.contains("error") || stderr.contains("❌"),
-        "underflow should trap: stderr={}", stderr);
+    assert!(
+        stderr.contains("trap") || stderr.contains("error") || stderr.contains("❌"),
+        "underflow should trap: stderr={}",
+        stderr
+    );
 }
 
 #[test]
@@ -122,8 +132,11 @@ fn u128_mul_by_zero_traps_wasm() {
 (export "check" check)
 "#;
     let (_code, stdout, stderr) = run_near_mock(lisp);
-    assert!(stderr.contains("trap") || stderr.contains("error") || stderr.contains("❌"),
-        "mul by zero should trap: stderr={}", stderr);
+    assert!(
+        stderr.contains("trap") || stderr.contains("error") || stderr.contains("❌"),
+        "mul by zero should trap: stderr={}",
+        stderr
+    );
 }
 
 #[test]
@@ -136,8 +149,11 @@ fn u128_mul_by_negative_traps_wasm() {
 (export "check" check)
 "#;
     let (_code, stdout, stderr) = run_near_mock(lisp);
-    assert!(stderr.contains("trap") || stderr.contains("error") || stderr.contains("❌"),
-        "mul by negative should trap: stderr={}", stderr);
+    assert!(
+        stderr.contains("trap") || stderr.contains("error") || stderr.contains("❌"),
+        "mul by negative should trap: stderr={}",
+        stderr
+    );
 }
 
 #[test]
@@ -151,8 +167,11 @@ fn u128_checked_to_i64_overflow_traps_wasm() {
 (export "check" check)
 "#;
     let (_code, stdout, stderr) = run_near_mock(lisp);
-    assert!(stderr.contains("trap") || stderr.contains("error") || stderr.contains("❌"),
-        "checked_to_i64 overflow should trap: stderr={}", stderr);
+    assert!(
+        stderr.contains("trap") || stderr.contains("error") || stderr.contains("❌"),
+        "checked_to_i64 overflow should trap: stderr={}",
+        stderr
+    );
 }
 
 #[test]
@@ -169,7 +188,12 @@ fn u128_add_normal_wasm() {
 "#;
     let (_code, stdout, stderr) = run_near_mock(lisp);
     // Should succeed (exit 0, "Success" in stdout)
-    assert!(stdout.contains("Success"), "normal add should succeed: stdout={}, stderr={}", stdout, stderr);
+    assert!(
+        stdout.contains("Success"),
+        "normal add should succeed: stdout={}, stderr={}",
+        stdout,
+        stderr
+    );
 }
 
 #[test]
@@ -185,7 +209,12 @@ fn u128_sub_normal_wasm() {
 (export "check" check)
 "#;
     let (_code, stdout, stderr) = run_near_mock(lisp);
-    assert!(stdout.contains("Success"), "normal sub should succeed: stdout={}, stderr={}", stdout, stderr);
+    assert!(
+        stdout.contains("Success"),
+        "normal sub should succeed: stdout={}, stderr={}",
+        stdout,
+        stderr
+    );
 }
 
 #[test]
@@ -200,7 +229,12 @@ fn u128_mul_normal_wasm() {
 (export "check" check)
 "#;
     let (_code, stdout, stderr) = run_near_mock(lisp);
-    assert!(stdout.contains("Success"), "normal mul should succeed: stdout={}, stderr={}", stdout, stderr);
+    assert!(
+        stdout.contains("Success"),
+        "normal mul should succeed: stdout={}, stderr={}",
+        stdout,
+        stderr
+    );
 }
 
 #[test]
@@ -213,7 +247,12 @@ fn u128_fit_i64_small_wasm() {
 (export "check" check)
 "#;
     let (_code, stdout, stderr) = run_near_mock(lisp);
-    assert!(stdout.contains("Success"), "fit_i64 small should succeed: stdout={}, stderr={}", stdout, stderr);
+    assert!(
+        stdout.contains("Success"),
+        "fit_i64 small should succeed: stdout={}, stderr={}",
+        stdout,
+        stderr
+    );
 }
 
 #[test]
@@ -226,5 +265,10 @@ fn u128_checked_to_i64_small_wasm() {
 (export "check" check)
 "#;
     let (_code, stdout, stderr) = run_near_mock(lisp);
-    assert!(stdout.contains("Success"), "checked_to_i64 small should succeed: stdout={}, stderr={}", stdout, stderr);
+    assert!(
+        stdout.contains("Success"),
+        "checked_to_i64 small should succeed: stdout={}, stderr={}",
+        stdout,
+        stderr
+    );
 }

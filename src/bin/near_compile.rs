@@ -1,7 +1,7 @@
+use sha2::Digest;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use sha2::Digest;
 
 // ── PROJECT CONFIG ──
 
@@ -184,7 +184,11 @@ fn do_build(project_dir: &str) -> Result<(ProjectConfig, Vec<u8>), String> {
     let effective_source = if config.src.ends_with(".sol") {
         let lisp_vals = lisp_rlm_wasm::solidity::translate_solidity(&source)
             .map_err(|e| format!("Solidity translation: {}", e))?;
-        lisp_vals.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("\n")
+        lisp_vals
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
     } else {
         source.clone()
     };
@@ -242,7 +246,11 @@ fn do_build_target(project_dir: &str, target: &str) -> Result<(String, Vec<u8>),
     let effective_source = if config.src.ends_with(".sol") {
         let lisp_vals = lisp_rlm_wasm::solidity::translate_solidity(&source)
             .map_err(|e| format!("Solidity translation: {}", e))?;
-        lisp_vals.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("\n")
+        lisp_vals
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
     } else {
         source.clone()
     };
@@ -280,7 +288,6 @@ fn do_build_target(project_dir: &str, target: &str) -> Result<(String, Vec<u8>),
 
     Ok((config.output.clone(), wasm_bytes))
 }
-
 
 // ── NEAR CLI INFRASTRUCTURE ──
 
@@ -627,9 +634,13 @@ async fn prepare_tx(
         .ok_or("nonce overflow")?;
 
     // Fetch latest block hash
-    let block: serde_json::Value =
-        rpc_call(&client, &ctx.rpc_url, "block", serde_json::json!({"finality": "final"}))
-            .await?;
+    let block: serde_json::Value = rpc_call(
+        &client,
+        &ctx.rpc_url,
+        "block",
+        serde_json::json!({"finality": "final"}),
+    )
+    .await?;
 
     let block_hash_b58 = block["result"]["header"]["hash"]
         .as_str()
@@ -638,7 +649,10 @@ async fn prepare_tx(
         .into_vec()
         .map_err(|e| format!("decode block hash: {}", e))?;
     if block_hash.len() != 32 {
-        return Err(format!("block hash is {} bytes, expected 32", block_hash.len()));
+        return Err(format!(
+            "block hash is {} bytes, expected 32",
+            block_hash.len()
+        ));
     }
 
     // Build borsh-encoded transaction (actions added by caller)
@@ -737,7 +751,12 @@ async fn run_deploy_async(args: &[String]) {
         }
     };
 
-    println!("🚀 Deploying {} bytes to {} ({})...", wasm.len(), ctx.account, ctx.network);
+    println!(
+        "🚀 Deploying {} bytes to {} ({})...",
+        wasm.len(),
+        ctx.account,
+        ctx.network
+    );
 
     let (mut tx_body, client) = match prepare_tx(&ctx, &ctx.account).await {
         Ok(r) => r,
@@ -808,7 +827,10 @@ async fn run_call_async(args: &[String]) {
             let bytes = serde_json::to_vec(&val).unwrap();
             (bytes, positional.get(1).map(|s| s.as_str()).unwrap_or("."))
         } else {
-            (Vec::new(), positional.first().map(|s| s.as_str()).unwrap_or("."))
+            (
+                Vec::new(),
+                positional.first().map(|s| s.as_str()).unwrap_or("."),
+            )
         }
     } else {
         (Vec::new(), ".")
@@ -867,7 +889,10 @@ fn parse_deposit(deposit: &Option<String>) -> u128 {
     match deposit {
         Some(d) => {
             let parts: Vec<&str> = d.split('.').collect();
-            let whole = parts.first().and_then(|s| s.parse::<u128>().ok()).unwrap_or(0);
+            let whole = parts
+                .first()
+                .and_then(|s| s.parse::<u128>().ok())
+                .unwrap_or(0);
             let frac = if parts.len() > 1 {
                 let f = parts[1];
                 let f_padded = format!("{:0<24}", &f[..f.len().min(24)]);
@@ -916,7 +941,11 @@ async fn run_create_async(args: &[String]) {
         positional.remove(0)
     };
     let funder_overrides = NearCliOverrides {
-        account: if funder.is_empty() { None } else { Some(funder) },
+        account: if funder.is_empty() {
+            None
+        } else {
+            Some(funder)
+        },
         network: Some(network.clone()),
         key_path: overrides.key_path.clone(),
         seed_phrase: overrides.seed_phrase,
@@ -943,7 +972,10 @@ async fn run_create_async(args: &[String]) {
         format!("{}.{}", new_account, ctx.account)
     };
 
-    println!("👤 Creating account {} (funded by {})...", new_account_id, ctx.account);
+    println!(
+        "👤 Creating account {} (funded by {})...",
+        new_account_id, ctx.account
+    );
 
     // Generate a new keypair for the new account
     let mut rng = rand::rngs::OsRng;
@@ -964,7 +996,7 @@ async fn run_create_async(args: &[String]) {
     tx_body.extend_from_slice(&2u32.to_le_bytes()); // action count
     tx_body.push(0x00); // CreateAccount
     tx_body.push(0x05); // AddKey
-    // PublicKey: ED25519 tag + 32 bytes
+                        // PublicKey: ED25519 tag + 32 bytes
     tx_body.push(0x00);
     tx_body.extend_from_slice(&new_pk_bytes);
     // AccessKey: nonce(u64) + permission(FullAccess = variant 1)
@@ -973,7 +1005,10 @@ async fn run_create_async(args: &[String]) {
 
     match sign_and_broadcast(tx_body, &ctx, &client).await {
         Ok(tx_hash) => {
-            println!("✅ Account created: {}", explorer_url(&ctx.network, &tx_hash));
+            println!(
+                "✅ Account created: {}",
+                explorer_url(&ctx.network, &tx_hash)
+            );
 
             // Save credentials for the new account
             let home = std::env::var("HOME").unwrap_or_default();
@@ -991,8 +1026,11 @@ async fn run_create_async(args: &[String]) {
                 "public_key": format!("ed25519:{}", new_pk_b58),
                 "secret_key": format!("ed25519:{}", sk_b58)
             });
-            fs::write(&cred_path, serde_json::to_string_pretty(&cred_json).unwrap())
-                .unwrap_or_else(|e| eprintln!("⚠️  Save credentials: {}", e));
+            fs::write(
+                &cred_path,
+                serde_json::to_string_pretty(&cred_json).unwrap(),
+            )
+            .unwrap_or_else(|e| eprintln!("⚠️  Save credentials: {}", e));
 
             println!("🔑 Credentials saved to {}", cred_path);
             println!("   Account: {}", new_account_id);
@@ -1031,7 +1069,11 @@ async fn fund_from_faucet(account_id: &str, pk_b58: &str) -> Result<(), String> 
 
     if !resp.status().is_success() {
         let text = resp.text().await.unwrap_or_default();
-        return Err(format!("faucet returned {}: {}", text.len(), &text[..text.len().min(200)]));
+        return Err(format!(
+            "faucet returned {}: {}",
+            text.len(),
+            &text[..text.len().min(200)]
+        ));
     }
 
     Ok(())
@@ -1248,14 +1290,16 @@ fn run_tests_target(base_src: &str, tests: &[TestCase], target: &str) -> (usize,
                     continue;
                 }
             },
-            "outlayer" | "wasi" | "wasi-p1" => match lisp_rlm_wasm::wasi_emit::compile_outlayer(&test_src) {
-                Ok(w) => w,
-                Err(e) => {
-                    println!("  ❌ {}: compile error: {}", tc.name, e);
-                    failed += 1;
-                    continue;
+            "outlayer" | "wasi" | "wasi-p1" => {
+                match lisp_rlm_wasm::wasi_emit::compile_outlayer(&test_src) {
+                    Ok(w) => w,
+                    Err(e) => {
+                        println!("  ❌ {}: compile error: {}", tc.name, e);
+                        failed += 1;
+                        continue;
+                    }
                 }
-            },
+            }
             _ => {
                 println!("  ❌ {}: unknown target '{}'", tc.name, target);
                 failed += 1;
@@ -1328,36 +1372,93 @@ fn run_outlayer_test_fn(wasm: &[u8], fn_name: &str) -> Result<i64, String> {
 
     let fd_read_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
     let fd_write_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
-    let proc_exit_fn = Func::new(&mut store, FuncType::new(&engine, [ValType::I32], []),
-        |_, _, _| Err(wasmtime::Error::msg("proc_exit")));
+    let proc_exit_fn = Func::new(
+        &mut store,
+        FuncType::new(&engine, [ValType::I32], []),
+        |_, _, _| Err(wasmtime::Error::msg("proc_exit")),
+    );
     let random_fn = Func::wrap(&mut store, |_: i32, _: i32| -> i32 { 0 });
     let env_sizes_fn = Func::wrap(&mut store, |_: i32, _: i32| -> i32 { 0 });
     let env_get_fn = Func::wrap(&mut store, |_: i32, _: i32| -> i32 { 0 });
     let fd_seek_fn = Func::wrap(&mut store, |_: i32, _: i64, _: i32, _: i32| -> i32 { 0 });
-    let ol_view = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
-    let ol_call = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
-    let ol_transfer = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
+    let ol_view = Func::wrap(
+        &mut store,
+        |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 },
+    );
+    let ol_call = Func::wrap(
+        &mut store,
+        |_: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32|
+         -> i32 { 0 },
+    );
+    let ol_transfer = Func::wrap(
+        &mut store,
+        |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 {
+            0
+        },
+    );
     let read_reg = Func::wrap(&mut store, |_: i64, _: i64| {});
     let reg_len = Func::wrap(&mut store, |_: i64| -> i64 { 0 });
 
     let mut linker = Linker::new(&engine);
-    linker.define(&store, "wasi_snapshot_preview1", "fd_read", fd_read_fn).unwrap();
-    linker.define(&store, "wasi_snapshot_preview1", "fd_write", fd_write_fn).unwrap();
-    linker.define(&store, "wasi_snapshot_preview1", "proc_exit", proc_exit_fn).unwrap();
-    linker.define(&store, "wasi_snapshot_preview1", "random_get", random_fn).unwrap();
-    linker.define(&store, "wasi_snapshot_preview1", "environ_sizes_get", env_sizes_fn).unwrap();
-    linker.define(&store, "wasi_snapshot_preview1", "environ_get", env_get_fn).unwrap();
-    linker.define(&store, "wasi_snapshot_preview1", "fd_seek", fd_seek_fn).unwrap();
+    linker
+        .define(&store, "wasi_snapshot_preview1", "fd_read", fd_read_fn)
+        .unwrap();
+    linker
+        .define(&store, "wasi_snapshot_preview1", "fd_write", fd_write_fn)
+        .unwrap();
+    linker
+        .define(&store, "wasi_snapshot_preview1", "proc_exit", proc_exit_fn)
+        .unwrap();
+    linker
+        .define(&store, "wasi_snapshot_preview1", "random_get", random_fn)
+        .unwrap();
+    linker
+        .define(
+            &store,
+            "wasi_snapshot_preview1",
+            "environ_sizes_get",
+            env_sizes_fn,
+        )
+        .unwrap();
+    linker
+        .define(&store, "wasi_snapshot_preview1", "environ_get", env_get_fn)
+        .unwrap();
+    linker
+        .define(&store, "wasi_snapshot_preview1", "fd_seek", fd_seek_fn)
+        .unwrap();
     linker.define(&store, "outlayer", "view", ol_view).unwrap();
     linker.define(&store, "outlayer", "call", ol_call).unwrap();
-    linker.define(&store, "outlayer", "transfer", ol_transfer).unwrap();
-    linker.define(&store, "env", "read_register", read_reg).unwrap();
-    linker.define(&store, "env", "register_len", reg_len).unwrap();
+    linker
+        .define(&store, "outlayer", "transfer", ol_transfer)
+        .unwrap();
+    linker
+        .define(&store, "env", "read_register", read_reg)
+        .unwrap();
+    linker
+        .define(&store, "env", "register_len", reg_len)
+        .unwrap();
 
-    let instance = linker.instantiate(&mut store, &module).map_err(|e| format!("instantiate: {}", e))?;
-    let func = instance.get_typed_func::<(), i64>(&mut store, fn_name)
+    let instance = linker
+        .instantiate(&mut store, &module)
+        .map_err(|e| format!("instantiate: {}", e))?;
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, fn_name)
         .map_err(|e| format!("get func {}: {}", fn_name, e))?;
-    func.call(&mut store, ()).map_err(|e| format!("call: {}", e))
+    func.call(&mut store, ())
+        .map_err(|e| format!("call: {}", e))
 }
 
 fn run_test(args: &[String]) {
@@ -1444,7 +1545,8 @@ fn run_compile(args: &[String]) {
             let func_name_map = extract_func_names(&src).unwrap_or_default();
             let err_str = e.to_string();
             let offset = extract_offset(&err_str);
-            let func_name = offset.and_then(|off| find_function_at_offset(&wasm_bytes, off, &func_name_map));
+            let func_name =
+                offset.and_then(|off| find_function_at_offset(&wasm_bytes, off, &func_name_map));
             match func_name {
                 Some(name) => eprintln!("❌ WASM error in `{}`: {}", name, err_str),
                 None => eprintln!("❌ WASM validation: {}", err_str),

@@ -1,21 +1,32 @@
 use super::*;
 
 impl WasmEmitter {
-    pub(crate) fn call_near_io(&mut self, op: &str, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
+    pub(crate) fn call_near_io(
+        &mut self,
+        op: &str,
+        a: &[LispVal],
+    ) -> Result<Vec<Instruction<'static>>, String> {
         match op {
             "near/return" => {
                 let val = self.expr(&a[0])?;
                 let mut v = Vec::new();
-                v.push(Instruction::I32Const(TEMP_MEM as i32)); v.extend(val);
+                v.push(Instruction::I32Const(TEMP_MEM as i32));
+                v.extend(val);
                 v.extend(self.emit_untag());
-                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
                 // value_return(len=8, ptr=TEMP_MEM) — idx 25
-                v.push(Instruction::I64Const(8)); v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I64Const(8));
+                v.push(Instruction::I64Const(TEMP_MEM));
                 v.push(Self::host_call(25));
                 // Set return flag so export wrapper skips its value_return
                 v.push(Instruction::I64Const(1));
                 v.push(Instruction::GlobalSet(RETURN_FLAG));
-                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
+                v.push(Instruction::I64Const(TAG_NIL));
+                Ok(v)
             }
             "near/log" => {
                 // (near/log "string") — log string
@@ -26,17 +37,24 @@ impl WasmEmitter {
                     // Untag string to get encoded (ptr | (len << 32))
                     v.extend(msg.clone());
                     v.extend(self.emit_untag());
-                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // len
+                    v.push(Instruction::I64Const(32));
+                    v.push(Instruction::I64ShrU); // len
                     v.extend(msg);
                     v.extend(self.emit_untag());
-                    v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // ptr
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::I64ExtendI32U); // ptr
                     v.push(Self::host_call(28));
-                    v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
+                    v.push(Instruction::I64Const(TAG_NIL));
+                    Ok(v)
                 } else {
                     // Two separate log calls: first the string, then the number
                     let msg = self.expr(&a[0])?;
                     let num_expr = self.expr(&a[1])?;
-                    let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+                    let ma8 = wasm_encoder::MemArg {
+                        offset: 0,
+                        align: 0,
+                        memory_index: 0,
+                    };
                     let abs_val = self.local_idx("__logn_abs");
                     let digit_count = self.local_idx("__logn_digits");
                     let is_neg = self.local_idx("__logn_neg");
@@ -46,10 +64,12 @@ impl WasmEmitter {
                     // First: log the string
                     v.extend(msg.clone());
                     v.extend(self.emit_untag());
-                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // len
+                    v.push(Instruction::I64Const(32));
+                    v.push(Instruction::I64ShrU); // len
                     v.extend(msg);
                     v.extend(self.emit_untag());
-                    v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // ptr
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::I64ExtendI32U); // ptr
                     v.push(Self::host_call(28));
                     // Second: log the number (same technique as near/log_num)
                     v.extend(num_expr);
@@ -138,7 +158,8 @@ impl WasmEmitter {
                     v.push(Instruction::LocalGet(digit_count));
                     v.push(Instruction::LocalGet(ptr));
                     v.push(Self::host_call(28));
-                    v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
+                    v.push(Instruction::I64Const(TAG_NIL));
+                    Ok(v)
                 }
             }
             "near/panic" => {
@@ -146,12 +167,15 @@ impl WasmEmitter {
                 let mut v = Vec::new();
                 v.extend(msg.clone());
                 v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // len
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU); // len
                 v.extend(msg);
                 v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // ptr
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U); // ptr
                 v.push(Self::host_call(27)); // panic_utf8(len, ptr)
-                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
+                v.push(Instruction::I64Const(TAG_NIL));
+                Ok(v)
             }
             "near/abort" => {
                 // panic() — idx 26, traps unconditionally
@@ -173,8 +197,16 @@ impl WasmEmitter {
                     // Check tag: if string (TAG_STR=5), extract ptr/len and fd_write
                     // If number, convert to decimal at STDOUT_BUF and fd_write
                     let tagged = self.local_idx("__print_val");
-                    let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
-                    let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+                    let ma4 = wasm_encoder::MemArg {
+                        offset: 0,
+                        align: 2,
+                        memory_index: 0,
+                    };
+                    let ma8 = wasm_encoder::MemArg {
+                        offset: 0,
+                        align: 0,
+                        memory_index: 0,
+                    };
                     // Store tagged value
                     v.extend(val);
                     v.push(Instruction::LocalSet(tagged));
@@ -204,7 +236,7 @@ impl WasmEmitter {
                     v.push(Instruction::I64ShrU); // len
                     v.push(Instruction::I32WrapI64);
                     v.push(Instruction::I32Store(ma4.clone())); // iov[0].len
-                    // fd_write(1, 64, 1, nwritten=98308) — use 98308 NOT 98304 (STDIN_LEN)
+                                                                // fd_write(1, 64, 1, nwritten=98308) — use 98308 NOT 98304 (STDIN_LEN)
                     v.push(Instruction::I32Const(1));
                     v.push(Instruction::I32Const(64));
                     v.push(Instruction::I32Const(1));
@@ -230,7 +262,7 @@ impl WasmEmitter {
                     let is_neg = self.local_idx("__print_neg");
                     let wptr = self.local_idx("__print_wp");
                     let sb: i64 = 65536; // STDOUT_BUF
-                    // Untag: >> 3 (logical shift for correct unsigned values)
+                                         // Untag: >> 3 (logical shift for correct unsigned values)
                     v.push(Instruction::LocalGet(tagged));
                     v.push(Instruction::I64Const(3));
                     v.push(Instruction::I64ShrU);
@@ -295,7 +327,7 @@ impl WasmEmitter {
                     v.push(Instruction::Br(0));
                     v.push(Instruction::End); // loop
                     v.push(Instruction::End); // block
-                    // ptr+1 = start
+                                              // ptr+1 = start
                     v.push(Instruction::LocalGet(wptr));
                     v.push(Instruction::I64Const(1));
                     v.push(Instruction::I64Add);
@@ -319,7 +351,7 @@ impl WasmEmitter {
                     v.push(Instruction::LocalSet(digit_count));
                     v.push(Instruction::End);
                     v.push(Instruction::End); // else (zero)
-                    // fd_write: iov at TEMP+64
+                                              // fd_write: iov at TEMP+64
                     v.push(Instruction::I32Const(64));
                     v.push(Instruction::LocalGet(wptr));
                     v.push(Instruction::I32WrapI64);

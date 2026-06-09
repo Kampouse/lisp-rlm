@@ -10,7 +10,10 @@ fn test_str_length_compiles() {
     assert!(!wasm.is_empty(), "WASM should not be empty");
     let wat = wasmprinter::print_bytes(&wasm).expect("WASM should be valid");
     // Verify it compiles to a shr_u instruction (extract length from tagged string)
-    assert!(wat.contains("i64.shr_u"), "str-length should emit shr_u to extract length");
+    assert!(
+        wat.contains("i64.shr_u"),
+        "str-length should emit shr_u to extract length"
+    );
 }
 
 #[test]

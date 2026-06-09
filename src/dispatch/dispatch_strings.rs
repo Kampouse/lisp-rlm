@@ -198,7 +198,7 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             // Expect format: "[123,34,97,...]" or just "123,34,97,..."
             let trimmed = s.trim();
             let nums_str = if trimmed.starts_with('[') && trimmed.ends_with(']') {
-                &trimmed[1..trimmed.len()-1]
+                &trimmed[1..trimmed.len() - 1]
             } else {
                 trimmed
             };

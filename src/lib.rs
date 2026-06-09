@@ -28,30 +28,28 @@
 //! - [`typing`] — type inference and checking
 
 pub mod bytecode;
+pub mod clojure;
 mod dispatch;
+pub mod gas_estimate;
 pub mod helpers;
-pub mod parser;
-pub mod types;
-mod typing;
-pub mod program;
-pub mod wasm_emit;
+pub mod near_validate;
 pub mod outlayer_adapter;
-pub mod wasi_emit;
 pub mod p2_native;
 pub mod p2_wasi_bridge;
-pub mod near_validate;
-pub mod gas_estimate;
+pub mod parser;
+pub mod program;
 pub mod tagged_value;
+pub mod types;
+mod typing;
 pub mod verifier;
-pub mod clojure;
+pub mod wasi_emit;
+pub mod wasm_emit;
 
 pub use bytecode::{exec_compiled_loop, run_compiled_lambda, try_compile_lambda, try_compile_loop};
-pub use wasm_emit::{compile_near, compile_near_untyped, compile_near_from_exprs, compile_near_to_wat_from_exprs, compile_pure, compile_fuzz};
-pub use wasi_emit::{compile_outlayer_p2_browser, compile_outlayer_p2_from_exprs, compile_outlayer_p2_core_browser};
-#[cfg(not(target_arch = "wasm32"))]
-pub use dispatch::llm_provider::{GenericProvider, LlmProvider, LlmResponse};
 #[cfg(not(target_arch = "wasm32"))]
 pub use dispatch::lisp_eval;
+#[cfg(not(target_arch = "wasm32"))]
+pub use dispatch::llm_provider::{GenericProvider, LlmProvider, LlmResponse};
 pub use helpers::{is_builtin_name, is_truthy};
 pub use parser::parse_all;
 pub use parser::parse_all_spanned;
@@ -59,6 +57,13 @@ pub use parser::Spanned;
 pub use program::run_program;
 pub use types::DEFAULT_EVAL_BUDGET;
 pub use types::{get_stdlib_code, Env, EvalState, LispVal};
+pub use wasi_emit::{
+    compile_outlayer_p2_browser, compile_outlayer_p2_core_browser, compile_outlayer_p2_from_exprs,
+};
+pub use wasm_emit::{
+    compile_fuzz, compile_near, compile_near_from_exprs, compile_near_to_wat_from_exprs,
+    compile_near_untyped, compile_pure,
+};
 
 /// WASM-friendly: eval a Lisp string, returns ptr to UTF-8 result + writes length to out_len.
 /// Caller reads `out_len` bytes from returned ptr. Result is valid until next call.
@@ -67,7 +72,11 @@ static mut WASM_RESULT_BUF: Vec<u8> = Vec::new();
 
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
-pub extern "C" fn eval_lisp(input_ptr: *const u8, input_len: usize, out_len: *mut usize) -> *const u8 {
+pub extern "C" fn eval_lisp(
+    input_ptr: *const u8,
+    input_len: usize,
+    out_len: *mut usize,
+) -> *const u8 {
     // SAFETY: called from JS with valid pointer/length
     let input: &[u8] = unsafe { std::slice::from_raw_parts(input_ptr, input_len) };
     let source = match std::str::from_utf8(input) {

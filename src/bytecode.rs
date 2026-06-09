@@ -7,7 +7,10 @@ use crate::types::{Env, EvalState, LispVal};
 fn replace_sym_call(expr: &LispVal, old_name: &str, new_name: &str) -> LispVal {
     match expr {
         LispVal::List(list) => {
-            let replaced: Vec<LispVal> = list.iter().map(|e| replace_sym_call(e, old_name, new_name)).collect();
+            let replaced: Vec<LispVal> = list
+                .iter()
+                .map(|e| replace_sym_call(e, old_name, new_name))
+                .collect();
             // Check if this is a call to old_name
             if let Some(LispVal::Sym(s)) = replaced.first() {
                 if s == old_name {
@@ -45,10 +48,7 @@ pub fn expand_macro_call(
                 if let Some(arg) = unevaluated_args.get(i) {
                     macro_env.insert_mut(param.clone(), arg.clone());
                 } else {
-                    return Err(format!(
-                        "macro: not enough args, expected {}",
-                        params.len()
-                    ));
+                    return Err(format!("macro: not enough args, expected {}", params.len()));
                 }
             }
             // Bind rest param
@@ -745,7 +745,9 @@ impl LoopCompiler {
                         // (contract (x :int y :str -> :str) body)
                         // (contract (x :int) body)
                         "contract" => {
-                            if list.len() < 3 { return false; }
+                            if list.len() < 3 {
+                                return false;
+                            }
                             // Parse the contract spec (list[1]) and body (list[2..])
                             let spec = &list[1];
                             // Contract only uses the first body expression (multi-body not supported)
@@ -764,9 +766,9 @@ impl LoopCompiler {
                             };
 
                             // Find -> or → separator
-                            let arrow_idx = spec_list.iter().position(|v| {
-                                matches!(v, LispVal::Sym(s) if s == "->" || s == "→")
-                            });
+                            let arrow_idx = spec_list.iter().position(
+                                |v| matches!(v, LispVal::Sym(s) if s == "->" || s == "→"),
+                            );
 
                             let param_specs: &[LispVal] = if let Some(ai) = arrow_idx {
                                 // Return type is after arrow
@@ -806,7 +808,8 @@ impl LoopCompiler {
                                 }
                             } else {
                                 // Check if grouped (all elements are lists) or flat
-                                let all_grouped = param_specs.iter().all(|v| matches!(v, LispVal::List(_)));
+                                let all_grouped =
+                                    param_specs.iter().all(|v| matches!(v, LispVal::List(_)));
                                 if all_grouped {
                                     for item in param_specs {
                                         if let LispVal::List(inner) = item {
@@ -835,7 +838,9 @@ impl LoopCompiler {
                             let mut body_forms: Vec<LispVal> = Vec::new();
 
                             // Insert param type checks: (contract-check-param "x" x :int)
-                            for (_idx, (name, ty)) in param_names.iter().zip(param_types.iter()).enumerate() {
+                            for (_idx, (name, ty)) in
+                                param_names.iter().zip(param_types.iter()).enumerate()
+                            {
                                 body_forms.push(LispVal::List(vec![
                                     LispVal::Sym("contract-check-param".into()),
                                     LispVal::Str(name.clone()),
@@ -849,9 +854,10 @@ impl LoopCompiler {
 
                             // Return type check: wrap in let to capture result
                             if let Some(ref ret) = return_type {
-                                let result_name = format!("__contract_result_{}", param_names.len());
+                                let result_name =
+                                    format!("__contract_result_{}", param_names.len());
                                 body_forms.pop(); // remove body
-                                // Wrap let body in begin so both check-return and result-name execute
+                                                  // Wrap let body in begin so both check-return and result-name execute
                                 let let_body = LispVal::List(vec![
                                     LispVal::Sym("begin".into()),
                                     LispVal::List(vec![
@@ -863,9 +869,10 @@ impl LoopCompiler {
                                 ]);
                                 body_forms.push(LispVal::List(vec![
                                     LispVal::Sym("let".into()),
-                                    LispVal::List(vec![
-                                        LispVal::List(vec![LispVal::Sym(result_name), body.clone()]),
-                                    ]),
+                                    LispVal::List(vec![LispVal::List(vec![
+                                        LispVal::Sym(result_name),
+                                        body.clone(),
+                                    ])]),
                                     let_body,
                                 ]));
                             }
@@ -873,8 +880,15 @@ impl LoopCompiler {
                             let desugared = LispVal::List(vec![
                                 LispVal::Sym("lambda".into()),
                                 LispVal::List(param_names.into_iter().map(LispVal::Sym).collect()),
-                                if body_forms.len() == 1 { body_forms.into_iter().next().unwrap() } else {
-                                    LispVal::List(vec![LispVal::Sym("begin".into())].into_iter().chain(body_forms.into_iter()).collect())
+                                if body_forms.len() == 1 {
+                                    body_forms.into_iter().next().unwrap()
+                                } else {
+                                    LispVal::List(
+                                        vec![LispVal::Sym("begin".into())]
+                                            .into_iter()
+                                            .chain(body_forms.into_iter())
+                                            .collect(),
+                                    )
                                 },
                             ]);
 
@@ -909,13 +923,16 @@ impl LoopCompiler {
                         }
                         // macroexpand: expand a macro call and return the expansion as data
                         "macroexpand" => {
-                            if list.len() != 2 { return false; }
+                            if list.len() != 2 {
+                                return false;
+                            }
                             match &list[1] {
                                 LispVal::List(ref form_list) if !form_list.is_empty() => {
                                     if let LispVal::Sym(ref name) = form_list[0] {
                                         if let Some(macro_val) = outer_env.get(name) {
                                             if matches!(macro_val, LispVal::Macro { .. }) {
-                                                match expand_macro_call(&macro_val, &form_list[1..]) {
+                                                match expand_macro_call(&macro_val, &form_list[1..])
+                                                {
                                                     Ok(expansion) => {
                                                         self.code.push(Op::PushLiteral(expansion));
                                                         self.last_result_i64 = false;
@@ -1325,8 +1342,11 @@ impl LoopCompiler {
                                 let body = if body_forms.len() == 1 {
                                     body_forms[0].clone()
                                 } else {
-                                    LispVal::List(std::iter::once(LispVal::Sym("begin".into()))
-                                        .chain(body_forms.iter().cloned()).collect())
+                                    LispVal::List(
+                                        std::iter::once(LispVal::Sym("begin".into()))
+                                            .chain(body_forms.iter().cloned())
+                                            .collect(),
+                                    )
                                 };
                                 // Replace (loop_name args...) with (recur args...) in body
                                 let body = replace_sym_call(&body, loop_name, "recur");
@@ -1343,8 +1363,11 @@ impl LoopCompiler {
                             };
                             // Body: all remaining forms after bindings (implicit begin)
                             let body = if list.len() > 3 {
-                                LispVal::List(std::iter::once(LispVal::Sym("begin".into()))
-                                    .chain(list[2..].iter().cloned()).collect())
+                                LispVal::List(
+                                    std::iter::once(LispVal::Sym("begin".into()))
+                                        .chain(list[2..].iter().cloned())
+                                        .collect(),
+                                )
                             } else {
                                 match list.get(2) {
                                     Some(b) => b.clone(),
@@ -1388,7 +1411,7 @@ impl LoopCompiler {
                                                 let save_slot = save_base + shadow_idx;
                                                 self.code.push(Op::LoadSlot(existing)); // push old value
                                                 self.code.push(Op::StoreSlot(save_slot)); // save it
-                                                // Now store the new value
+                                                                                          // Now store the new value
                                                 self.code.push(Op::StoreSlot(existing));
                                                 shadowed.push(existing);
                                                 shadow_idx += 1;
@@ -1422,8 +1445,7 @@ impl LoopCompiler {
                             }
                             if all_ok {
                                 all_ok = self.compile_expr(&body, outer_env);
-                                if !all_ok {
-                                }
+                                if !all_ok {}
                             }
                             // Restore shadowed slots (reverse order)
                             for (i, &original_slot) in shadowed.iter().enumerate().rev() {
@@ -1491,7 +1513,8 @@ impl LoopCompiler {
                                         break;
                                     }
                                     self.pending_lambda_name = None;
-                                    let slot = self.slot_map.iter().position(|s| s == sym_name).unwrap();
+                                    let slot =
+                                        self.slot_map.iter().position(|s| s == sym_name).unwrap();
                                     self.code.push(Op::StoreSlot(slot));
                                 }
                             }
@@ -1511,7 +1534,9 @@ impl LoopCompiler {
                         }
                         // pure: (pure (define (name ...) body)) → compile define, then annotate
                         "pure" => {
-                            if list.len() != 2 { return false; }
+                            if list.len() != 2 {
+                                return false;
+                            }
                             let inner = &list[1];
                             // Compile the inner expression normally (e.g., a define)
                             if !self.compile_expr(inner, outer_env) {
@@ -1528,8 +1553,10 @@ impl LoopCompiler {
                                     } else if let LispVal::List(ref sig) = def_form[1] {
                                         // (define (name params...) body...) — extract name from sig
                                         if let Some(LispVal::Sym(ref name)) = sig.first() {
-                                            self.code.push(Op::PushLiteral(LispVal::Str(name.clone())));
-                                            self.code.push(Op::BuiltinCall("mark-pure".to_string(), 1));
+                                            self.code
+                                                .push(Op::PushLiteral(LispVal::Str(name.clone())));
+                                            self.code
+                                                .push(Op::BuiltinCall("mark-pure".to_string(), 1));
                                             self.last_result_i64 = false;
                                         }
                                     }
@@ -1540,7 +1567,9 @@ impl LoopCompiler {
                         // pure-type: (pure-type name) → look up pure type annotation by name
                         // Compiler special form so the arg is NOT evaluated — we need the symbol name.
                         "pure-type" => {
-                            if list.len() != 2 { return false; }
+                            if list.len() != 2 {
+                                return false;
+                            }
                             // Push the arg as a literal symbol (not evaluated)
                             self.code.push(Op::PushLiteral(list[1].clone()));
                             self.code.push(Op::BuiltinCall("pure-type".to_string(), 1));
@@ -1549,7 +1578,9 @@ impl LoopCompiler {
                         }
                         // fork: (fork expr) → evaluate expr in isolated env, return result, discard changes
                         "fork" => {
-                            if list.len() != 2 { return false; }
+                            if list.len() != 2 {
+                                return false;
+                            }
                             // Wrap body in a thunk (like delay)
                             let thunk_form = LispVal::List(vec![
                                 LispVal::Sym("lambda".into()),
@@ -1566,34 +1597,37 @@ impl LoopCompiler {
                         }
                         // delay: (delay expr) → creates a promise (lazy evaluation)
                         "delay" => {
-                            if list.len() != 2 { return false; }
+                            if list.len() != 2 {
+                                return false;
+                            }
                             // Compile the expression as a 0-param lambda (thunk)
                             let thunk_form = LispVal::List(vec![
                                 LispVal::Sym("lambda".into()),
-                                LispVal::List(vec![]),  // 0 params
-                                list[1].clone(),         // body expression
+                                LispVal::List(vec![]), // 0 params
+                                list[1].clone(),       // body expression
                             ]);
                             if !self.compile_expr(&thunk_form, outer_env) {
                                 return false;
                             }
                             // Wrap in Delay at runtime via builtin
-                            self.code.push(Op::BuiltinCall("make-promise".to_string(), 1));
+                            self.code
+                                .push(Op::BuiltinCall("make-promise".to_string(), 1));
                             self.last_result_i64 = false;
                             true
                         }
                         // try: (try expr (catch var handler...))
                         "try" => {
                             // Parse: (try expr (catch var handler-body...))
-                            if list.len() < 3 { return false; }
+                            if list.len() < 3 {
+                                return false;
+                            }
                             let try_expr = &list[1];
                             // Parse catch clause: (catch var handler...)
                             let catch_clause = match &list[2] {
-                                LispVal::List(clause) if clause.len() >= 3 => {
-                                    match &clause[0] {
-                                        LispVal::Sym(s) if s == "catch" => &clause[1..],
-                                        _ => return false,
-                                    }
-                                }
+                                LispVal::List(clause) if clause.len() >= 3 => match &clause[0] {
+                                    LispVal::Sym(s) if s == "catch" => &clause[1..],
+                                    _ => return false,
+                                },
                                 _ => return false,
                             };
                             let catch_var = match catch_clause.get(0) {
@@ -1633,7 +1667,9 @@ impl LoopCompiler {
                         }
                         // case-lambda: (case-lambda (params body...) ... rest-catch-clause)
                         "case-lambda" => {
-                            if list.len() < 2 { return false; }
+                            if list.len() < 2 {
+                                return false;
+                            }
                             let n_clauses = list.len() - 1;
                             // Compile each clause as a separate lambda closure
                             // Each clause: (params body...) → (lambda (params) body...)
@@ -1647,9 +1683,11 @@ impl LoopCompiler {
                                                     clause_parts[1].clone()
                                                 } else {
                                                     LispVal::List(
-                                                        std::iter::once(LispVal::Sym("begin".into()))
-                                                            .chain(clause_parts[1..].iter().cloned())
-                                                            .collect(),
+                                                        std::iter::once(LispVal::Sym(
+                                                            "begin".into(),
+                                                        ))
+                                                        .chain(clause_parts[1..].iter().cloned())
+                                                        .collect(),
                                                     )
                                                 };
                                                 // Compile as (lambda (&rest rest_name) body)
@@ -1671,9 +1709,11 @@ impl LoopCompiler {
                                                     clause_parts[1].clone()
                                                 } else {
                                                     LispVal::List(
-                                                        std::iter::once(LispVal::Sym("begin".into()))
-                                                            .chain(clause_parts[1..].iter().cloned())
-                                                            .collect(),
+                                                        std::iter::once(LispVal::Sym(
+                                                            "begin".into(),
+                                                        ))
+                                                        .chain(clause_parts[1..].iter().cloned())
+                                                        .collect(),
                                                     )
                                                 };
                                                 let lambda_form = LispVal::List(vec![
@@ -1693,7 +1733,8 @@ impl LoopCompiler {
                             }
                             // Now n_clauses compiled lambdas are on the stack.
                             // make-case-lambda builtin pops them and creates a CaseLambda.
-                            self.code.push(Op::BuiltinCall("make-case-lambda".to_string(), n_clauses));
+                            self.code
+                                .push(Op::BuiltinCall("make-case-lambda".to_string(), n_clauses));
                             self.last_result_i64 = false;
                             true
                         }
@@ -1766,7 +1807,9 @@ impl LoopCompiler {
                             // Parse bindings: ((var1 init1) (var2 init2) ...) or flat (var1 init1 var2 init2 ...)
                             let mut var_slots: Vec<usize> = Vec::new();
                             // Check if this is flat syntax: first element is a Sym, not a List
-                            let is_flat = bindings.first().map_or(false, |b| matches!(b, LispVal::Sym(_)));
+                            let is_flat = bindings
+                                .first()
+                                .map_or(false, |b| matches!(b, LispVal::Sym(_)));
                             if is_flat {
                                 // Flat: (var1 init1 var2 init2 ...)
                                 if bindings.len() % 2 != 0 {
@@ -1946,8 +1989,7 @@ impl LoopCompiler {
                                     break;
                                 }
                             }
-                            if ok {
-                            }
+                            if ok {}
                             if !ok {
                                 return false;
                             }
@@ -1964,7 +2006,9 @@ impl LoopCompiler {
                             let mut max_slot = base;
                             for op in &inner.code {
                                 match op {
-                                    Op::LoadSlot(s) | Op::StoreSlot(s) | Op::StoreAndLoadSlot(s) => {
+                                    Op::LoadSlot(s)
+                                    | Op::StoreSlot(s)
+                                    | Op::StoreAndLoadSlot(s) => {
                                         if *s >= max_slot {
                                             max_slot = *s + 1;
                                         }
@@ -2028,13 +2072,15 @@ impl LoopCompiler {
                                 for elem in list.iter() {
                                     match elem {
                                         LispVal::Sym(s) => {
-                                            self.code.push(Op::PushLiteral(LispVal::Sym(s.clone())));
+                                            self.code
+                                                .push(Op::PushLiteral(LispVal::Sym(s.clone())));
                                         }
                                         LispVal::Num(n) => {
                                             self.code.push(Op::PushI64(*n));
                                         }
                                         LispVal::Str(s) => {
-                                            self.code.push(Op::PushLiteral(LispVal::Str(s.clone())));
+                                            self.code
+                                                .push(Op::PushLiteral(LispVal::Str(s.clone())));
                                         }
                                         LispVal::Bool(b) => {
                                             self.code.push(Op::PushLiteral(LispVal::Bool(*b)));
@@ -2045,7 +2091,8 @@ impl LoopCompiler {
                                         }
                                     }
                                 }
-                                self.code.push(Op::BuiltinCall("list".to_string(), list.len()));
+                                self.code
+                                    .push(Op::BuiltinCall("list".to_string(), list.len()));
                                 return true;
                             }
                             // Check for inline dict ops first
@@ -2118,7 +2165,8 @@ impl LoopCompiler {
                             if n_args > 0 {
                                 if let Some(LispVal::Sym(first_arg)) = list.get(1) {
                                     if first_arg == op && self.slot_of(op).is_some() {
-                                        let has_self_name = self.self_name.as_deref() == Some(op.as_str());
+                                        let has_self_name =
+                                            self.self_name.as_deref() == Some(op.as_str());
                                         if !has_self_name {
                                             // Push self as first arg (the "me" parameter)
                                             self.code.push(Op::PushSelf);
@@ -2194,7 +2242,9 @@ impl LoopCompiler {
                                 if op == "map" && n_args == 2 {
                                     if let Some(LispVal::Sym(func_name)) = list.get(1) {
                                         if let Some(slot) = self.slot_of(func_name) {
-                                            if !self.compile_expr(&list[2], outer_env) { return false; }
+                                            if !self.compile_expr(&list[2], outer_env) {
+                                                return false;
+                                            }
                                             self.code.push(Op::MapOp(slot));
                                             return true;
                                         }
@@ -2202,7 +2252,9 @@ impl LoopCompiler {
                                 } else if op == "filter" && n_args == 2 {
                                     if let Some(LispVal::Sym(func_name)) = list.get(1) {
                                         if let Some(slot) = self.slot_of(func_name) {
-                                            if !self.compile_expr(&list[2], outer_env) { return false; }
+                                            if !self.compile_expr(&list[2], outer_env) {
+                                                return false;
+                                            }
                                             self.code.push(Op::FilterOp(slot));
                                             return true;
                                         }
@@ -2210,9 +2262,15 @@ impl LoopCompiler {
                                 } else if op == "reduce" && n_args == 3 {
                                     if let Some(LispVal::Sym(func_name)) = list.get(1) {
                                         if let Some(slot) = self.slot_of(func_name) {
-                                            if !self.compile_expr(&list[2], outer_env) { return false; }
-                                            if !self.compile_expr(&list[3], outer_env) { return false; }
-                                            if !self.compile_expr(&list[3], outer_env) { return false; }
+                                            if !self.compile_expr(&list[2], outer_env) {
+                                                return false;
+                                            }
+                                            if !self.compile_expr(&list[3], outer_env) {
+                                                return false;
+                                            }
+                                            if !self.compile_expr(&list[3], outer_env) {
+                                                return false;
+                                            }
                                             self.code.push(Op::ReduceOp(slot));
                                             return true;
                                         }
@@ -3360,33 +3418,63 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
             Op::Add => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                stack.push(num_arith_checked(&a, &b, "add", i64::checked_add, |x, y| x + y)?);
+                stack.push(num_arith_checked(
+                    &a,
+                    &b,
+                    "add",
+                    i64::checked_add,
+                    |x, y| x + y,
+                )?);
                 pc += 1;
             }
             Op::Sub => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                stack.push(num_arith_checked(&a, &b, "sub", i64::checked_sub, |x, y| x - y)?);
+                stack.push(num_arith_checked(
+                    &a,
+                    &b,
+                    "sub",
+                    i64::checked_sub,
+                    |x, y| x - y,
+                )?);
                 pc += 1;
             }
             Op::Mul => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                stack.push(num_arith_checked(&a, &b, "mul", i64::checked_mul, |x, y| x * y)?);
+                stack.push(num_arith_checked(
+                    &a,
+                    &b,
+                    "mul",
+                    i64::checked_mul,
+                    |x, y| x * y,
+                )?);
                 pc += 1;
             }
             Op::Div => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
                 check_float_zero(&a, &b, "division")?;
-                stack.push(num_arith_checked(&a, &b, "div", i64::checked_div, |x, y| x / y)?);
+                stack.push(num_arith_checked(
+                    &a,
+                    &b,
+                    "div",
+                    i64::checked_div,
+                    |x, y| x / y,
+                )?);
                 pc += 1;
             }
             Op::Mod => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
                 check_float_zero(&a, &b, "modulo")?;
-                stack.push(num_arith_checked(&a, &b, "mod", i64::checked_rem, |x, y| x % y)?);
+                stack.push(num_arith_checked(
+                    &a,
+                    &b,
+                    "mod",
+                    i64::checked_rem,
+                    |x, y| x % y,
+                )?);
                 pc += 1;
             }
             Op::Eq => {
@@ -3439,26 +3527,21 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
                             _ => 0,
                         };
                         stack.push(match op {
-                            BinOp::Add => {
-                                LispVal::Num(i64::checked_add(av, bv)
-                                    .ok_or("integer overflow in add")?)
-                            }
-                            BinOp::Sub => {
-                                LispVal::Num(i64::checked_sub(av, bv)
-                                    .ok_or("integer overflow in sub")?)
-                            }
-                            BinOp::Mul => {
-                                LispVal::Num(i64::checked_mul(av, bv)
-                                    .ok_or("integer overflow in mul")?)
-                            }
-                            BinOp::Div => {
-                                LispVal::Num(i64::checked_div(av, bv)
-                                    .ok_or("integer overflow in div")?)
-                            }
-                            BinOp::Mod => {
-                                LispVal::Num(i64::checked_rem(av, bv)
-                                    .ok_or("integer overflow in mod")?)
-                            }
+                            BinOp::Add => LispVal::Num(
+                                i64::checked_add(av, bv).ok_or("integer overflow in add")?,
+                            ),
+                            BinOp::Sub => LispVal::Num(
+                                i64::checked_sub(av, bv).ok_or("integer overflow in sub")?,
+                            ),
+                            BinOp::Mul => LispVal::Num(
+                                i64::checked_mul(av, bv).ok_or("integer overflow in mul")?,
+                            ),
+                            BinOp::Div => LispVal::Num(
+                                i64::checked_div(av, bv).ok_or("integer overflow in div")?,
+                            ),
+                            BinOp::Mod => LispVal::Num(
+                                i64::checked_rem(av, bv).ok_or("integer overflow in mod")?,
+                            ),
                             BinOp::Lt => LispVal::Bool(av < bv),
                             BinOp::Le => LispVal::Bool(av <= bv),
                             BinOp::Gt => LispVal::Bool(av > bv),
@@ -3690,7 +3773,8 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
                 pc += 1;
             }
             Op::CallCaptured(_, _)
-            | Op::CallCapturedRef(_, _) | Op::PushSelf
+            | Op::CallCapturedRef(_, _)
+            | Op::PushSelf
             | Op::PushClosure(_)
             | Op::PushBuiltin(_)
             | Op::PushLiteral(_)
@@ -3752,7 +3836,9 @@ fn check_type(val: &LispVal, ty: &LispVal) -> Result<bool, String> {
                     if elems.is_empty() {
                         return Ok(true); // empty list always matches
                     }
-                    let elem_type = if list.len() > 1 { &list[1] } else {
+                    let elem_type = if list.len() > 1 {
+                        &list[1]
+                    } else {
                         return Ok(true); // (:list) with no elem type = any list
                     };
                     for elem in elems {
@@ -3768,10 +3854,14 @@ fn check_type(val: &LispVal, ty: &LispVal) -> Result<bool, String> {
             // (:map K V) — map where all keys match K and values match V
             ":map" => {
                 if let LispVal::Map(m) = val {
-                    let key_type = if list.len() > 1 { &list[1] } else {
+                    let key_type = if list.len() > 1 {
+                        &list[1]
+                    } else {
                         return Ok(true); // (:map) with no types = any map
                     };
-                    let val_type = if list.len() > 2 { &list[2] } else {
+                    let val_type = if list.len() > 2 {
+                        &list[2]
+                    } else {
                         return Ok(true); // (:map K) = map with key type K
                     };
                     for (k, v) in m.iter() {
@@ -3808,8 +3898,12 @@ fn check_type(val: &LispVal, ty: &LispVal) -> Result<bool, String> {
             // (:fn T1 ... -> R) or (:fn T1 ... → R) — arrow type: matches any fn
             ":fn" | ":function" => {
                 // :fn as a compound spec just checks that the value is callable
-                Ok(matches!(val,
-                    LispVal::Lambda { .. } | LispVal::BuiltinFn(_) | LispVal::CaseLambda { .. } | LispVal::Memoized { .. }
+                Ok(matches!(
+                    val,
+                    LispVal::Lambda { .. }
+                        | LispVal::BuiltinFn(_)
+                        | LispVal::CaseLambda { .. }
+                        | LispVal::Memoized { .. }
                 ))
             }
             _ => Ok(false),
@@ -3830,8 +3924,12 @@ fn check_type(val: &LispVal, ty: &LispVal) -> Result<bool, String> {
             ":list" => Ok(matches!(val, LispVal::List(_))),
             ":vec" => Ok(matches!(val, LispVal::Vec(_))),
             ":map" | ":dict" => Ok(matches!(val, LispVal::Map(_))),
-            ":fn" | ":function" => Ok(matches!(val,
-                LispVal::Lambda { .. } | LispVal::BuiltinFn(_) | LispVal::CaseLambda { .. } | LispVal::Memoized { .. }
+            ":fn" | ":function" => Ok(matches!(
+                val,
+                LispVal::Lambda { .. }
+                    | LispVal::BuiltinFn(_)
+                    | LispVal::CaseLambda { .. }
+                    | LispVal::Memoized { .. }
             )),
             ":any" => Ok(true),
             ":nil" => Ok(matches!(val, LispVal::Nil)),
@@ -3876,15 +3974,39 @@ fn val_type_name(val: &LispVal) -> String {
 /// Returns a string like "(:int -> :int)" or "(:any -> :str)".
 fn infer_type_from_val(val: &LispVal) -> String {
     let (n_params, has_rest, code): (usize, bool, &[Op]) = match val {
-        LispVal::Lambda { params, rest_param, compiled, .. } => {
-            let n = if rest_param.is_some() { params.len().saturating_sub(1) } else { params.len() };
-            let bc = compiled.as_ref().map(|cl| cl.code.as_slice()).unwrap_or(&[]);
+        LispVal::Lambda {
+            params,
+            rest_param,
+            compiled,
+            ..
+        } => {
+            let n = if rest_param.is_some() {
+                params.len().saturating_sub(1)
+            } else {
+                params.len()
+            };
+            let bc = compiled
+                .as_ref()
+                .map(|cl| cl.code.as_slice())
+                .unwrap_or(&[]);
             (n, rest_param.is_some(), bc)
         }
         LispVal::Memoized { func, .. } => match func.as_ref() {
-            LispVal::Lambda { params, rest_param, compiled, .. } => {
-                let n = if rest_param.is_some() { params.len().saturating_sub(1) } else { params.len() };
-                let bc = compiled.as_ref().map(|cl| cl.code.as_slice()).unwrap_or(&[]);
+            LispVal::Lambda {
+                params,
+                rest_param,
+                compiled,
+                ..
+            } => {
+                let n = if rest_param.is_some() {
+                    params.len().saturating_sub(1)
+                } else {
+                    params.len()
+                };
+                let bc = compiled
+                    .as_ref()
+                    .map(|cl| cl.code.as_slice())
+                    .unwrap_or(&[]);
                 (n, true, bc) // memoized always has rest
             }
             _ => return "(:any -> :any)".into(),
@@ -3900,7 +4022,13 @@ fn infer_type_from_val(val: &LispVal) -> String {
         ":any".to_string()
     };
     let rest_str = if has_rest { "*" } else { "" };
-    format!("({}{}{} -> {})", param_str, if n_params > 0 && has_rest { " " } else { "" }, rest_str, ret_type)
+    format!(
+        "({}{}{} -> {})",
+        param_str,
+        if n_params > 0 && has_rest { " " } else { "" },
+        rest_str,
+        ret_type
+    )
 }
 
 /// Scan bytecode ops to guess the return type of a function.
@@ -3915,63 +4043,118 @@ fn guess_return_type_from_ops(code: &[Op]) -> &'static str {
 
     for op in code.iter().rev().take(20) {
         match op {
-            Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Mod | Op::PushI64(_)
-            | Op::SlotAddImm(_, _) | Op::SlotSubImm(_, _) | Op::SlotMulImm(_, _) => has_arith = true,
+            Op::Add
+            | Op::Sub
+            | Op::Mul
+            | Op::Div
+            | Op::Mod
+            | Op::PushI64(_)
+            | Op::SlotAddImm(_, _)
+            | Op::SlotSubImm(_, _)
+            | Op::SlotMulImm(_, _) => has_arith = true,
             Op::TypedBinOp(_, Ty::F64) => has_float_arith = true,
             Op::TypedBinOp(_, Ty::I64) => has_arith = true,
-            Op::BuiltinCall(name, _) | Op::PushBuiltin(name) | Op::LoadGlobal(name) => match name.as_str() {
-                "str-concat" | "str-replace" | "string->number" | "number->string"
-                | "substring" | "string-length" | "string-contains?" | "string-split"
-                | "str-upcase" | "str-downcase" | "str-trim" | "symbol->string"
-                | "string-append" | "string-prefix?" | "string-suffix?" => has_str_op = true,
-                "list" | "cons" | "append" | "reverse" | "take" | "drop" | "range" | "list-ref"
-                | "list-tail" | "sort" | "zip" | "list?" => has_list_op = true,
-                "num->str" | "to-json" | "fmt" => has_str_op = true,
-                _ => {}
-            },
+            Op::BuiltinCall(name, _) | Op::PushBuiltin(name) | Op::LoadGlobal(name) => {
+                match name.as_str() {
+                    "str-concat" | "str-replace" | "string->number" | "number->string"
+                    | "substring" | "string-length" | "string-contains?" | "string-split"
+                    | "str-upcase" | "str-downcase" | "str-trim" | "symbol->string"
+                    | "string-append" | "string-prefix?" | "string-suffix?" => has_str_op = true,
+                    "list" | "cons" | "append" | "reverse" | "take" | "drop" | "range"
+                    | "list-ref" | "list-tail" | "sort" | "zip" | "list?" => has_list_op = true,
+                    "num->str" | "to-json" | "fmt" => has_str_op = true,
+                    _ => {}
+                }
+            }
             Op::Eq => has_cmp = true,
             Op::TypedBinOp(_, Ty::I64) | Op::TypedBinOp(_, Ty::F64) => has_cmp = true,
             Op::PushLiteral(LispVal::Str(_)) | Op::PushLiteral(LispVal::Sym(_)) => {
                 has_str_op = true
             }
             Op::PushLiteral(LispVal::Num(_)) => has_arith = true,
-            Op::MakeVec(_) | Op::VecNth | Op::VecAssoc | Op::VecLen | Op::VecConj | Op::VecContains | Op::VecSlice => has_vec_op = true,
+            Op::MakeVec(_)
+            | Op::VecNth
+            | Op::VecAssoc
+            | Op::VecLen
+            | Op::VecConj
+            | Op::VecContains
+            | Op::VecSlice => has_vec_op = true,
             Op::PushLiteral(LispVal::Float(_)) => has_float_arith = true,
             Op::PushLiteral(LispVal::List(_)) => has_list_op = true,
             _ => {}
         }
     }
 
-    if has_float_arith { ":float" }
-    else if has_str_op && !has_arith { ":str" }
-    else if has_list_op && !has_arith { ":list" }
-    else if has_vec_op && !has_arith { ":vec" }
-    else if has_cmp && !has_arith { ":bool" }
-    else if has_arith { ":int" }
-    else { ":any" }
+    if has_float_arith {
+        ":float"
+    } else if has_str_op && !has_arith {
+        ":str"
+    } else if has_list_op && !has_arith {
+        ":list"
+    } else if has_vec_op && !has_arith {
+        ":vec"
+    } else if has_cmp && !has_arith {
+        ":bool"
+    } else if has_arith {
+        ":int"
+    } else {
+        ":any"
+    }
 }
 
 /// Check if a type spec is valid (recognized).
 fn is_valid_type_spec(ty: &LispVal) -> bool {
     match ty {
-        LispVal::Sym(s) => matches!(s.as_str(),
-            ":int" | ":str" | ":string" | ":float" | ":num" | ":number"
-            | ":bool" | ":list" | ":vec" | ":map" | ":dict" | ":fn" | ":function"
-            | ":any" | ":nil" | ":sym"
+        LispVal::Sym(s) => matches!(
+            s.as_str(),
+            ":int"
+                | ":str"
+                | ":string"
+                | ":float"
+                | ":num"
+                | ":number"
+                | ":bool"
+                | ":list"
+                | ":vec"
+                | ":map"
+                | ":dict"
+                | ":fn"
+                | ":function"
+                | ":any"
+                | ":nil"
+                | ":sym"
         ),
-        LispVal::Str(s) => matches!(s.as_str(),
-            ":int" | ":str" | ":string" | ":float" | ":num" | ":number"
-            | ":bool" | ":list" | ":vec" | ":map" | ":dict" | ":fn" | ":function"
-            | ":any" | ":nil" | ":sym"
+        LispVal::Str(s) => matches!(
+            s.as_str(),
+            ":int"
+                | ":str"
+                | ":string"
+                | ":float"
+                | ":num"
+                | ":number"
+                | ":bool"
+                | ":list"
+                | ":vec"
+                | ":map"
+                | ":dict"
+                | ":fn"
+                | ":function"
+                | ":any"
+                | ":nil"
+                | ":sym"
         ),
         // Compound type specs: (:or ...), (:list ...), (:map ...), (:tuple ...), (:fn ...)
-        LispVal::List(list) if !list.is_empty() => {
-            match &list[0] {
-                LispVal::Sym(s) => matches!(s.as_str(), ":or" | ":list" | ":map" | ":tuple" | ":fn" | ":function"),
-                LispVal::Str(s) => matches!(s.as_str(), ":or" | ":list" | ":map" | ":tuple" | ":fn" | ":function"),
-                _ => false,
-            }
-        }
+        LispVal::List(list) if !list.is_empty() => match &list[0] {
+            LispVal::Sym(s) => matches!(
+                s.as_str(),
+                ":or" | ":list" | ":map" | ":tuple" | ":fn" | ":function"
+            ),
+            LispVal::Str(s) => matches!(
+                s.as_str(),
+                ":or" | ":list" | ":map" | ":tuple" | ":fn" | ":function"
+            ),
+            _ => false,
+        },
         _ => false,
     }
 }
@@ -4049,7 +4232,10 @@ fn num_arith_checked(
         // Non-numeric: coerce to 0 (matches spec VM num_val_ref).
         _ => {
             if matches!(a, LispVal::Float(_)) || matches!(b, LispVal::Float(_)) {
-                Ok(LispVal::Float(float_op(num_val_ref_f64(a), num_val_ref_f64(b))))
+                Ok(LispVal::Float(float_op(
+                    num_val_ref_f64(a),
+                    num_val_ref_f64(b),
+                )))
             } else {
                 let av = num_val_ref(a);
                 let bv = num_val_ref(b);
@@ -4081,7 +4267,12 @@ fn check_float_zero(a: &LispVal, b: &LispVal, op_name: &str) -> Result<(), Strin
 
 /// Polymorphic numeric comparison: returns bool, float-aware.
 /// Non-numeric operands return false (matches spec VM behavior).
-fn num_cmp(a: &LispVal, b: &LispVal, op: impl Fn(f64, f64) -> bool, int_op: impl Fn(i64, i64) -> bool) -> bool {
+fn num_cmp(
+    a: &LispVal,
+    b: &LispVal,
+    op: impl Fn(f64, f64) -> bool,
+    int_op: impl Fn(i64, i64) -> bool,
+) -> bool {
     match (a, b) {
         (LispVal::Float(x), LispVal::Float(y)) => op(*x, *y),
         (LispVal::Float(x), LispVal::Num(y)) => op(*x, *y as f64),
@@ -4103,10 +4294,18 @@ pub fn lisp_eq(a: &LispVal, b: &LispVal) -> bool {
         (LispVal::Nil, LispVal::Nil) => true,
         // Structural equality for complex types
         (LispVal::List(a), LispVal::List(b)) => a == b,
-        (LispVal::Tagged { type_name: ta, variant_id: va, fields: fa },
-         LispVal::Tagged { type_name: tb, variant_id: vb, fields: fb }) => {
-            ta == tb && va == vb && fa == fb
-        }
+        (
+            LispVal::Tagged {
+                type_name: ta,
+                variant_id: va,
+                fields: fa,
+            },
+            LispVal::Tagged {
+                type_name: tb,
+                variant_id: vb,
+                fields: fb,
+            },
+        ) => ta == tb && va == vb && fa == fb,
         _ => false,
     }
 }
@@ -4114,21 +4313,37 @@ pub fn lisp_eq(a: &LispVal, b: &LispVal) -> bool {
 /// Evaluate a builtin by name (for Op::BuiltinCall)
 /// Check if a name is a NEAR builtin
 fn eval_near_builtin_match(name: &str) -> bool {
-    matches!(name,
-        "storage-write" | "storage_write"
-        | "storage-read" | "storage_read"
-        | "storage-remove" | "storage_remove"
-        | "storage-has-key" | "storage_has_key"
-        | "block-height" | "block_height"
-        | "block-timestamp" | "block_timestamp"
-        | "signer-account-id" | "signer_account_id"
-        | "predecessor-account-id" | "predecessor_account_id"
-        | "current-account-id" | "current_account_id"
-        | "attached-deposit" | "attached_deposit"
-        | "account-balance" | "account_balance"
-        | "log-utf8" | "log_utf8" | "log"
-        | "near-config" | "near_config"
-        | "near-reset" | "near_reset"
+    matches!(
+        name,
+        "storage-write"
+            | "storage_write"
+            | "storage-read"
+            | "storage_read"
+            | "storage-remove"
+            | "storage_remove"
+            | "storage-has-key"
+            | "storage_has_key"
+            | "block-height"
+            | "block_height"
+            | "block-timestamp"
+            | "block_timestamp"
+            | "signer-account-id"
+            | "signer_account_id"
+            | "predecessor-account-id"
+            | "predecessor_account_id"
+            | "current-account-id"
+            | "current_account_id"
+            | "attached-deposit"
+            | "attached_deposit"
+            | "account-balance"
+            | "account_balance"
+            | "log-utf8"
+            | "log_utf8"
+            | "log"
+            | "near-config"
+            | "near_config"
+            | "near-reset"
+            | "near_reset"
     )
 }
 
@@ -4155,7 +4370,11 @@ fn eval_near_builtin(
                 Some(v) => v.to_string(),
                 None => return Some(Err("storage-read: need key".into())),
             };
-            Some(Ok(state.near_storage.get(&key).cloned().unwrap_or(LispVal::Nil)))
+            Some(Ok(state
+                .near_storage
+                .get(&key)
+                .cloned()
+                .unwrap_or(LispVal::Nil)))
         }
         "storage-remove" | "storage_remove" => {
             let key = match args.get(0) {
@@ -4174,33 +4393,44 @@ fn eval_near_builtin(
             };
             Some(Ok(LispVal::Bool(state.near_storage.contains_key(&key))))
         }
-        "block-height" | "block_height" => {
-            Some(Ok(state.near_context.get("block_height").cloned()
-                .unwrap_or(LispVal::Num(42_000_000))))
-        }
-        "block-timestamp" | "block_timestamp" => {
-            Some(Ok(state.near_context.get("block_timestamp").cloned()
-                .unwrap_or(LispVal::Num(1_714_000_000_000_000_000))))
-        }
-        "signer-account-id" | "signer_account_id" => {
-            Some(Ok(state.near_context.get("signer_account_id").cloned()
-                .unwrap_or(LispVal::Str("alice.near".into()))))
-        }
-        "predecessor-account-id" | "predecessor_account_id" => {
-            Some(Ok(state.near_context.get("predecessor_account_id").cloned()
-                .unwrap_or(LispVal::Str("bob.near".into()))))
-        }
-        "current-account-id" | "current_account_id" => {
-            Some(Ok(state.near_context.get("current_account_id").cloned()
-                .unwrap_or(LispVal::Str("contract.near".into()))))
-        }
-        "attached-deposit" | "attached_deposit" => {
-            Some(Ok(state.near_context.get("attached_deposit").cloned()
-                .unwrap_or(LispVal::Num(0))))
-        }
+        "block-height" | "block_height" => Some(Ok(state
+            .near_context
+            .get("block_height")
+            .cloned()
+            .unwrap_or(LispVal::Num(42_000_000)))),
+        "block-timestamp" | "block_timestamp" => Some(Ok(state
+            .near_context
+            .get("block_timestamp")
+            .cloned()
+            .unwrap_or(LispVal::Num(1_714_000_000_000_000_000)))),
+        "signer-account-id" | "signer_account_id" => Some(Ok(state
+            .near_context
+            .get("signer_account_id")
+            .cloned()
+            .unwrap_or(LispVal::Str("alice.near".into())))),
+        "predecessor-account-id" | "predecessor_account_id" => Some(Ok(state
+            .near_context
+            .get("predecessor_account_id")
+            .cloned()
+            .unwrap_or(LispVal::Str("bob.near".into())))),
+        "current-account-id" | "current_account_id" => Some(Ok(state
+            .near_context
+            .get("current_account_id")
+            .cloned()
+            .unwrap_or(LispVal::Str("contract.near".into())))),
+        "attached-deposit" | "attached_deposit" => Some(Ok(state
+            .near_context
+            .get("attached_deposit")
+            .cloned()
+            .unwrap_or(LispVal::Num(0)))),
         "account-balance" | "account_balance" => {
-            Some(Ok(state.near_context.get("account_balance").cloned()
-                .unwrap_or(LispVal::Str("10000000000000000000000000".into()))))  // 10 NEAR (yocto)
+            Some(Ok(state
+                .near_context
+                .get("account_balance")
+                .cloned()
+                .unwrap_or(LispVal::Str(
+                    "10000000000000000000000000".into(),
+                )))) // 10 NEAR (yocto)
         }
         "log-utf8" | "log_utf8" | "log" => {
             let msg = match args.get(0) {
@@ -4408,7 +4638,8 @@ pub fn eval_builtin(
                 Some(LispVal::Map(map)) => map,
                 _ => return Err("fmt: expected dict as second argument".into()),
             };
-            let re = regex::Regex::new(r"\{(\w+)\}").map_err(|e| format!("fmt: regex error: {}", e))?;
+            let re =
+                regex::Regex::new(r"\{(\w+)\}").map_err(|e| format!("fmt: regex error: {}", e))?;
             let result = re.replace_all(&template, |caps: &regex::Captures| {
                 let key = &caps[1];
                 match dict.get(key) {
@@ -4430,7 +4661,9 @@ pub fn eval_builtin(
                 LispVal::Nil => "<nil>".to_string(),
                 LispVal::List(l) => format!("<list len={}>", l.len()),
                 LispVal::Map(d) => format!("<dict len={}>", d.len()),
-                LispVal::Lambda { params, rest_param, .. } => {
+                LispVal::Lambda {
+                    params, rest_param, ..
+                } => {
                     let n = params.len();
                     let rest = if rest_param.is_some() { n - 1 } else { n };
                     format!("<lambda params={}>", rest)
@@ -4438,7 +4671,11 @@ pub fn eval_builtin(
                 LispVal::BuiltinFn(name) => format!("<builtin {}>", name),
                 LispVal::Sym(s) => format!("<symbol {}>", s),
                 LispVal::Macro { params, .. } => format!("<macro params={}>", params.len()),
-                LispVal::Tagged { type_name, variant_id, .. } => {
+                LispVal::Tagged {
+                    type_name,
+                    variant_id,
+                    ..
+                } => {
                     format!("<tagged {}::{}>", type_name, variant_id)
                 }
                 LispVal::Delay { .. } => "<promise>".to_string(),
@@ -4464,7 +4701,8 @@ pub fn eval_builtin(
                         format!("[{}]", items.join(","))
                     }
                     LispVal::Map(d) => {
-                        let pairs: Vec<String> = d.iter()
+                        let pairs: Vec<String> = d
+                            .iter()
                             .map(|(k, v)| format!("\"{}\":{}", k, to_json(v)))
                             .collect();
                         format!("{{{}}}", pairs.join(","))
@@ -4491,18 +4729,22 @@ pub fn eval_builtin(
             };
             Ok(LispVal::Str(haystack.replace(&needle, &replacement)))
         }
-        "promise?" => {
-            Ok(LispVal::Bool(matches!(args.get(0), Some(LispVal::Delay { .. }))))
-        }
-        "macro?" => {
-            Ok(LispVal::Bool(matches!(args.get(0), Some(LispVal::Macro { .. }))))
-        }
+        "promise?" => Ok(LispVal::Bool(matches!(
+            args.get(0),
+            Some(LispVal::Delay { .. })
+        ))),
+        "macro?" => Ok(LispVal::Bool(matches!(
+            args.get(0),
+            Some(LispVal::Macro { .. })
+        ))),
         "make-case-lambda" => {
             // args are compiled lambda closures, one per clause
             let mut clauses = Vec::new();
             for lambda_val in args.iter() {
                 let (n_fixed, has_rest) = match lambda_val {
-                    LispVal::Lambda { params, rest_param, .. } => {
+                    LispVal::Lambda {
+                        params, rest_param, ..
+                    } => {
                         let n = params.len();
                         let has = rest_param.is_some();
                         (n.saturating_sub(if has { 1 } else { 0 }), has)
@@ -4519,7 +4761,9 @@ pub fn eval_builtin(
             _ => Ok(LispVal::Num(0)),
         },
         "min" => {
-            if args.is_empty() { return Ok(LispVal::Num(0)); }
+            if args.is_empty() {
+                return Ok(LispVal::Num(0));
+            }
             let has_float = args.iter().any(|a| matches!(a, LispVal::Float(_)));
             if has_float {
                 let mut best = match args.get(0) {
@@ -4533,20 +4777,26 @@ pub fn eval_builtin(
                         LispVal::Num(n) => *n as f64,
                         _ => f64::INFINITY,
                     };
-                    if v < best { best = v; }
+                    if v < best {
+                        best = v;
+                    }
                 }
                 Ok(LispVal::Float(best))
             } else {
                 let mut best = num_val(args.get(0).cloned().unwrap_or(LispVal::Nil));
                 for a in &args[1..] {
                     let v = num_val(a.clone());
-                    if v < best { best = v; }
+                    if v < best {
+                        best = v;
+                    }
                 }
                 Ok(LispVal::Num(best))
             }
         }
         "max" => {
-            if args.is_empty() { return Ok(LispVal::Num(0)); }
+            if args.is_empty() {
+                return Ok(LispVal::Num(0));
+            }
             let has_float = args.iter().any(|a| matches!(a, LispVal::Float(_)));
             if has_float {
                 let mut best = match args.get(0) {
@@ -4560,14 +4810,18 @@ pub fn eval_builtin(
                         LispVal::Num(n) => *n as f64,
                         _ => f64::NEG_INFINITY,
                     };
-                    if v > best { best = v; }
+                    if v > best {
+                        best = v;
+                    }
                 }
                 Ok(LispVal::Float(best))
             } else {
                 let mut best = num_val(args.get(0).cloned().unwrap_or(LispVal::Nil));
                 for a in &args[1..] {
                     let v = num_val(a.clone());
-                    if v > best { best = v; }
+                    if v > best {
+                        best = v;
+                    }
                 }
                 Ok(LispVal::Num(best))
             }
@@ -4605,57 +4859,54 @@ pub fn eval_builtin(
         "list" => Ok(LispVal::List(args.to_vec())),
         "vec" => Ok(LispVal::Vec(args.to_vec())),
         "vec?" => Ok(LispVal::Bool(matches!(args.get(0), Some(LispVal::Vec(_))))),
-        "vec-nth" => {
-            match (args.get(0), args.get(1)) {
-                (Some(LispVal::Vec(v)), Some(LispVal::Num(i))) if *i >= 0 && (*i as usize) < v.len() => {
-                    Ok(v[*i as usize].clone())
-                }
-                _ => Ok(LispVal::Nil),
+        "vec-nth" => match (args.get(0), args.get(1)) {
+            (Some(LispVal::Vec(v)), Some(LispVal::Num(i)))
+                if *i >= 0 && (*i as usize) < v.len() =>
+            {
+                Ok(v[*i as usize].clone())
             }
-        }
-        "vec-assoc" => {
-            match (args.get(0), args.get(1), args.get(2)) {
-                (Some(LispVal::Vec(v)), Some(LispVal::Num(i)), Some(val)) if *i >= 0 && (*i as usize) < v.len() => {
-                    let mut new_v = v.clone();
-                    new_v[*i as usize] = val.clone();
-                    Ok(LispVal::Vec(new_v))
-                }
-                _ => Ok(LispVal::Nil),
+            _ => Ok(LispVal::Nil),
+        },
+        "vec-assoc" => match (args.get(0), args.get(1), args.get(2)) {
+            (Some(LispVal::Vec(v)), Some(LispVal::Num(i)), Some(val))
+                if *i >= 0 && (*i as usize) < v.len() =>
+            {
+                let mut new_v = v.clone();
+                new_v[*i as usize] = val.clone();
+                Ok(LispVal::Vec(new_v))
             }
-        }
-        "vec-len" => {
-            match args.get(0) {
-                Some(LispVal::Vec(v)) => Ok(LispVal::Num(v.len() as i64)),
-                _ => Ok(LispVal::Num(0)),
+            _ => Ok(LispVal::Nil),
+        },
+        "vec-len" => match args.get(0) {
+            Some(LispVal::Vec(v)) => Ok(LispVal::Num(v.len() as i64)),
+            _ => Ok(LispVal::Num(0)),
+        },
+        "vec-conj" => match args.get(0) {
+            Some(LispVal::Vec(v)) => {
+                let mut new_v = v.clone();
+                new_v.push(args.get(1).cloned().unwrap_or(LispVal::Nil));
+                Ok(LispVal::Vec(new_v))
             }
-        }
-        "vec-conj" => {
-            match args.get(0) {
-                Some(LispVal::Vec(v)) => {
-                    let mut new_v = v.clone();
-                    new_v.push(args.get(1).cloned().unwrap_or(LispVal::Nil));
-                    Ok(LispVal::Vec(new_v))
-                }
-                Some(LispVal::Nil) => Ok(LispVal::Vec(vec![args.get(1).cloned().unwrap_or(LispVal::Nil)])),
-                _ => Ok(LispVal::Nil),
+            Some(LispVal::Nil) => Ok(LispVal::Vec(vec![args
+                .get(1)
+                .cloned()
+                .unwrap_or(LispVal::Nil)])),
+            _ => Ok(LispVal::Nil),
+        },
+        "vec-contains?" => match args.get(0) {
+            Some(LispVal::Vec(v)) => Ok(LispVal::Bool(
+                v.contains(args.get(1).unwrap_or(&LispVal::Nil)),
+            )),
+            _ => Ok(LispVal::Bool(false)),
+        },
+        "vec-slice" => match (args.get(0), args.get(1), args.get(2)) {
+            (Some(LispVal::Vec(v)), Some(LispVal::Num(s)), Some(LispVal::Num(e))) => {
+                let si = (*s as usize).max(0).min(v.len());
+                let ei = (*e as usize).max(si).min(v.len());
+                Ok(LispVal::Vec(v[si..ei].to_vec()))
             }
-        }
-        "vec-contains?" => {
-            match args.get(0) {
-                Some(LispVal::Vec(v)) => Ok(LispVal::Bool(v.contains(args.get(1).unwrap_or(&LispVal::Nil)))),
-                _ => Ok(LispVal::Bool(false)),
-            }
-        }
-        "vec-slice" => {
-            match (args.get(0), args.get(1), args.get(2)) {
-                (Some(LispVal::Vec(v)), Some(LispVal::Num(s)), Some(LispVal::Num(e))) => {
-                    let si = (*s as usize).max(0).min(v.len());
-                    let ei = (*e as usize).max(si).min(v.len());
-                    Ok(LispVal::Vec(v[si..ei].to_vec()))
-                }
-                _ => Ok(LispVal::Nil),
-            }
-        }
+            _ => Ok(LispVal::Nil),
+        },
         "length" => match args.get(0) {
             Some(LispVal::List(l)) => Ok(LispVal::Num(l.len() as i64)),
             Some(LispVal::Str(s)) => Ok(LispVal::Num(s.len() as i64)),
@@ -5087,11 +5338,7 @@ pub fn eval_builtin(
                         .map_err(|e| format!("load-file: parse error: {}", e))?;
                     let mut result = LispVal::Nil;
                     for form in &forms {
-                        result = crate::program::run_program(
-                            &[form.clone()],
-                            e,
-                            s,
-                        )?;
+                        result = crate::program::run_program(&[form.clone()], e, s)?;
                     }
                     return Ok(result);
                 }
@@ -5155,9 +5402,16 @@ pub fn eval_builtin(
                     let field_name = match &args[i] {
                         LispVal::Str(s) => s.clone(),
                         LispVal::Sym(s) => s.clone(),
-                        _ => { i += 1; continue; }
+                        _ => {
+                            i += 1;
+                            continue;
+                        }
                     };
-                    if field_name == ":strict" { strict = true; i += 1; continue; }
+                    if field_name == ":strict" {
+                        strict = true;
+                        i += 1;
+                        continue;
+                    }
                     if i + 1 < args.len() {
                         fields.push((field_name, args[i + 1].clone()));
                         i += 2;
@@ -5165,7 +5419,8 @@ pub fn eval_builtin(
                         i += 1;
                     }
                 }
-                let field_list: Vec<LispVal> = fields.iter()
+                let field_list: Vec<LispVal> = fields
+                    .iter()
                     .map(|(n, t)| LispVal::List(vec![LispVal::Str(n.clone()), t.clone()]))
                     .collect();
                 // Store internally as Map with name, fields, and strict flag
@@ -5174,7 +5429,9 @@ pub fn eval_builtin(
                     "fields".to_string() => LispVal::List(field_list),
                     "strict".to_string() => LispVal::Bool(strict),
                 ]);
-                if let Some(e) = env { e.insert_mut(schema_name, schema_val); }
+                if let Some(e) = env {
+                    e.insert_mut(schema_name, schema_val);
+                }
                 return Ok(LispVal::Nil);
             }
             if name == "validate" {
@@ -5185,19 +5442,19 @@ pub fn eval_builtin(
                 let schema_val = match args.get(1) {
                     // Direct schema map (e.g. when schema name resolved from env)
                     Some(LispVal::Map(m)) if m.contains_key("fields") => LispVal::Map(m.clone()),
-                    Some(LispVal::Sym(s)) => {
-                        match env.and_then(|e| e.get(s.as_str())) {
-                            Some(v) => v.clone(),
-                            None => return Err(format!("validate: unknown schema '{}'", s)),
-                        }
+                    Some(LispVal::Sym(s)) => match env.and_then(|e| e.get(s.as_str())) {
+                        Some(v) => v.clone(),
+                        None => return Err(format!("validate: unknown schema '{}'", s)),
+                    },
+                    Some(LispVal::Str(s)) => match env.and_then(|e| e.get(s.as_str())) {
+                        Some(v) => v.clone(),
+                        None => return Err(format!("validate: unknown schema '{}'", s)),
+                    },
+                    _ => {
+                        return Err(
+                            "validate: expected schema name or schema map as second arg".into()
+                        )
                     }
-                    Some(LispVal::Str(s)) => {
-                        match env.and_then(|e| e.get(s.as_str())) {
-                            Some(v) => v.clone(),
-                            None => return Err(format!("validate: unknown schema '{}'", s)),
-                        }
-                    }
-                    _ => return Err("validate: expected schema name or schema map as second arg".into()),
                 };
                 let schema_name_str = match &schema_val {
                     LispVal::Map(m) => m.get("name").and_then(|v| match v {
@@ -5219,70 +5476,129 @@ pub fn eval_builtin(
                     Some(LispVal::List(fields)) => {
                         for field in &fields {
                             let (fname, ftype) = match field {
-                                LispVal::List(l) if l.len() >= 2 => {
-                                    match (&l[0], &l[1]) {
-                                        (LispVal::Str(n), t) => (n.as_str(), t),
-                                        _ => continue,
-                                    }
-                                }
+                                LispVal::List(l) if l.len() >= 2 => match (&l[0], &l[1]) {
+                                    (LispVal::Str(n), t) => (n.as_str(), t),
+                                    _ => continue,
+                                },
                                 _ => continue,
                             };
                             match data.get(fname) {
-                                None => return Err(format!("missing field '{}' in schema '{}'", fname, schema_name_str.as_deref().unwrap_or("?"))),
+                                None => {
+                                    return Err(format!(
+                                        "missing field '{}' in schema '{}'",
+                                        fname,
+                                        schema_name_str.as_deref().unwrap_or("?")
+                                    ))
+                                }
                                 Some(v) => {
                                     if !check_type(v, ftype).unwrap_or(false) {
-                                        return Err(format!("unexpected type for field '{}': expected {}, got {}", fname, type_spec_name(ftype), val_type_name(v)));
+                                        return Err(format!(
+                                            "unexpected type for field '{}': expected {}, got {}",
+                                            fname,
+                                            type_spec_name(ftype),
+                                            val_type_name(v)
+                                        ));
                                     }
                                 }
                             }
                         }
                         if is_strict {
-                            let required: std::collections::HashSet<String> = fields.iter()
-                                .filter_map(|f| if let LispVal::List(l) = f {
-                                    if let LispVal::Str(n) = &l[0] { Some(n.clone()) } else { None }
-                                } else { None })
+                            let required: std::collections::HashSet<String> = fields
+                                .iter()
+                                .filter_map(|f| {
+                                    if let LispVal::List(l) = f {
+                                        if let LispVal::Str(n) = &l[0] {
+                                            Some(n.clone())
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                })
                                 .collect();
                             for key in data.keys() {
                                 if !required.contains(key) {
-                                    return Err(format!("unexpected field '{}' in strict schema '{}'", key, schema_name_str.as_deref().unwrap_or("?")));
+                                    return Err(format!(
+                                        "unexpected field '{}' in strict schema '{}'",
+                                        key,
+                                        schema_name_str.as_deref().unwrap_or("?")
+                                    ));
                                 }
                             }
                         }
                         return Ok(LispVal::Map(data));
                     }
-                    _ => return Err(format!("validate: invalid schema '{}'", schema_name_str.as_deref().unwrap_or("?"))),
+                    _ => {
+                        return Err(format!(
+                            "validate: invalid schema '{}'",
+                            schema_name_str.as_deref().unwrap_or("?")
+                        ))
+                    }
                 }
             }
             if name == "check" {
-                let val = match args.get(0) { Some(v) => v, None => return Err("check: expected value".into()) };
-                let ty = match args.get(1) { Some(t) => t, None => return Err("check: expected type spec".into()) };
+                let val = match args.get(0) {
+                    Some(v) => v,
+                    None => return Err("check: expected value".into()),
+                };
+                let ty = match args.get(1) {
+                    Some(t) => t,
+                    None => return Err("check: expected type spec".into()),
+                };
                 if !check_type(val, ty)? {
-                    return Err(format!("type mismatch: expected {}, got {}", type_spec_name(ty), val_type_name(val)));
+                    return Err(format!(
+                        "type mismatch: expected {}, got {}",
+                        type_spec_name(ty),
+                        val_type_name(val)
+                    ));
                 }
                 return Ok(val.clone());
             }
             if name == "check!" {
-                let val = match args.get(0) { Some(v) => v, None => return Err("check!: expected value".into()) };
-                let ty = match args.get(1) { Some(t) => t, None => return Err("check!: expected type spec".into()) };
+                let val = match args.get(0) {
+                    Some(v) => v,
+                    None => return Err("check!: expected value".into()),
+                };
+                let ty = match args.get(1) {
+                    Some(t) => t,
+                    None => return Err("check!: expected type spec".into()),
+                };
                 if !check_type(val, ty)? {
-                    return Err(format!("type mismatch: expected {}, got {}", type_spec_name(ty), val_type_name(val)));
+                    return Err(format!(
+                        "type mismatch: expected {}, got {}",
+                        type_spec_name(ty),
+                        val_type_name(val)
+                    ));
                 }
                 return Ok(val.clone());
             }
             if name == "matches?" {
-                let val = match args.get(0) { Some(v) => v, None => return Ok(LispVal::Bool(false)) };
-                let ty = match args.get(1) { Some(t) => t, None => return Ok(LispVal::Bool(false)) };
+                let val = match args.get(0) {
+                    Some(v) => v,
+                    None => return Ok(LispVal::Bool(false)),
+                };
+                let ty = match args.get(1) {
+                    Some(t) => t,
+                    None => return Ok(LispVal::Bool(false)),
+                };
                 return Ok(LispVal::Bool(check_type(val, ty).unwrap_or(false)));
             }
             if name == "valid-type?" {
-                let ty = match args.get(0) { Some(t) => t, None => return Ok(LispVal::Bool(false)) };
+                let ty = match args.get(0) {
+                    Some(t) => t,
+                    None => return Ok(LispVal::Bool(false)),
+                };
                 if is_valid_type_spec(ty) {
                     return Ok(LispVal::Str(type_spec_name(ty)));
                 }
                 return Ok(LispVal::Bool(false));
             }
             if name == "type-of" {
-                let val = match args.get(0) { Some(v) => v, None => return Ok(LispVal::Sym(":any".into())) };
+                let val = match args.get(0) {
+                    Some(v) => v,
+                    None => return Ok(LispVal::Sym(":any".into())),
+                };
                 return Ok(LispVal::Sym(val_type_name(val)));
             }
             if name == "schema" {
@@ -5314,10 +5630,17 @@ pub fn eval_builtin(
                     }
                     _ => return Err("schema: expected schema name or schema map".into()),
                 };
-                let name_val = schema_map.get("name").cloned()
-                    .unwrap_or_else(|| LispVal::Sym(schema_name_hint.unwrap_or_else(|| "?".into())));
-                let fields_val = schema_map.get("fields").cloned().unwrap_or(LispVal::List(vec![]));
-                let strict_val = schema_map.get("strict").cloned().unwrap_or(LispVal::Bool(false));
+                let name_val = schema_map.get("name").cloned().unwrap_or_else(|| {
+                    LispVal::Sym(schema_name_hint.unwrap_or_else(|| "?".into()))
+                });
+                let fields_val = schema_map
+                    .get("fields")
+                    .cloned()
+                    .unwrap_or(LispVal::List(vec![]));
+                let strict_val = schema_map
+                    .get("strict")
+                    .cloned()
+                    .unwrap_or(LispVal::Bool(false));
                 return Ok(LispVal::List(vec![name_val, fields_val, strict_val]));
             }
             if name == "mark-pure" {
@@ -5358,7 +5681,15 @@ pub fn eval_builtin(
             }
             if name == "infer-type" {
                 let val = match args.get(0) {
-                    Some(v) if matches!(v, LispVal::Lambda { .. } | LispVal::BuiltinFn(_) | LispVal::CaseLambda { .. } | LispVal::Memoized { .. }) => {
+                    Some(v)
+                        if matches!(
+                            v,
+                            LispVal::Lambda { .. }
+                                | LispVal::BuiltinFn(_)
+                                | LispVal::CaseLambda { .. }
+                                | LispVal::Memoized { .. }
+                        ) =>
+                    {
                         infer_type_from_val(v)
                     }
                     _ => return Err("infer-type: expected a function".into()),
@@ -5406,11 +5737,22 @@ pub fn eval_builtin(
                 return Ok(result);
             }
 
-            let args_str: Vec<String> = args.iter().map(|a| {
-                let s = a.to_string();
-                if s.len() > 40 { format!("{}...", &s[..37]) } else { s }
-            }).collect();
-            Err(format!("unknown builtin '{}' with args: ({})", name, args_str.join(" ")))
+            let args_str: Vec<String> = args
+                .iter()
+                .map(|a| {
+                    let s = a.to_string();
+                    if s.len() > 40 {
+                        format!("{}...", &s[..37])
+                    } else {
+                        s
+                    }
+                })
+                .collect();
+            Err(format!(
+                "unknown builtin '{}' with args: ({})",
+                name,
+                args_str.join(" ")
+            ))
         }
     }
 }
@@ -5517,7 +5859,9 @@ pub fn try_compile_lambda(
     let mut max_slot = base_slots;
     for op in &code {
         match op {
-            Op::StoreSlot(s) | Op::LoadSlot(s) | Op::StoreAndLoadSlot(s) => max_slot = max_slot.max(*s + 1),
+            Op::StoreSlot(s) | Op::LoadSlot(s) | Op::StoreAndLoadSlot(s) => {
+                max_slot = max_slot.max(*s + 1)
+            }
             Op::SlotAddImm(s, _)
             | Op::SlotSubImm(s, _)
             | Op::SlotMulImm(s, _)
@@ -5618,21 +5962,33 @@ fn summarize_compiled_lambda(cl: &CompiledLambda) -> String {
     let n_params = cl.num_fixed_params;
     let mut ops_summary = String::new();
     for op in cl.code.iter().take(3) {
-        if !ops_summary.is_empty() { ops_summary.push(' '); }
+        if !ops_summary.is_empty() {
+            ops_summary.push(' ');
+        }
         match op {
             Op::BuiltinCall(name, _) => ops_summary.push_str(name),
             Op::Add => ops_summary.push('+'),
             Op::Sub => ops_summary.push('-'),
             Op::Mul => ops_summary.push('*'),
             Op::Div => ops_summary.push('/'),
-            Op::PushI64(n) => { ops_summary.push_str(&n.to_string()); }
+            Op::PushI64(n) => {
+                ops_summary.push_str(&n.to_string());
+            }
             Op::LoadSlot(_) => ops_summary.push('_'),
             _ => ops_summary.push('.'),
         }
     }
-    format!("(fn [{}] {})", 
-        (0..n_params).map(|i| format!("p{}", i)).collect::<Vec<_>>().join(" "),
-        if ops_summary.is_empty() { "..." } else { &ops_summary }
+    format!(
+        "(fn [{}] {})",
+        (0..n_params)
+            .map(|i| format!("p{}", i))
+            .collect::<Vec<_>>()
+            .join(" "),
+        if ops_summary.is_empty() {
+            "..."
+        } else {
+            &ops_summary
+        }
     )
 }
 
@@ -5679,7 +6035,12 @@ pub fn run_compiled_loop_test(cl: &CompiledLoop) -> Result<LispVal, String> {
 }
 
 pub fn run_lambda_test(cl: &CompiledLambda, args: &[LispVal]) -> Result<LispVal, String> {
-    run_compiled_lambda(cl, args, &mut crate::types::Env::new(), &mut crate::types::EvalState::new())
+    run_compiled_lambda(
+        cl,
+        args,
+        &mut crate::types::Env::new(),
+        &mut crate::types::EvalState::new(),
+    )
 }
 
 /// Validate that all slot indices in the bytecode are within bounds.
@@ -5834,7 +6195,11 @@ fn run_compiled_lambda_inner(
     let mut pc: usize = 0;
     let mut ops: u32 = 0;
     // Use eval_budget from state (0 = unlimited), fallback to 10M
-    let lambda_budget = if state.eval_budget > 0 { state.eval_budget as u32 } else { 10_000_000 };
+    let lambda_budget = if state.eval_budget > 0 {
+        state.eval_budget as u32
+    } else {
+        10_000_000
+    };
 
     loop {
         ops += 1;
@@ -5963,7 +6328,10 @@ fn run_compiled_lambda_inner(
                 let val = stack.pop().unwrap_or(LispVal::Nil);
                 let vec = stack.pop().unwrap_or(LispVal::Nil);
                 match vec {
-                    LispVal::Vec(mut v) => { v.push(val); stack.push(LispVal::Vec(v)); }
+                    LispVal::Vec(mut v) => {
+                        v.push(val);
+                        stack.push(LispVal::Vec(v));
+                    }
                     LispVal::Nil => stack.push(LispVal::Vec(vec![val])),
                     _ => stack.push(LispVal::Nil),
                 }
@@ -5995,33 +6363,63 @@ fn run_compiled_lambda_inner(
             Op::Add => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                stack.push(num_arith_checked(&a, &b, "add", i64::checked_add, |x, y| x + y)?);
+                stack.push(num_arith_checked(
+                    &a,
+                    &b,
+                    "add",
+                    i64::checked_add,
+                    |x, y| x + y,
+                )?);
                 pc += 1;
             }
             Op::Sub => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                stack.push(num_arith_checked(&a, &b, "sub", i64::checked_sub, |x, y| x - y)?);
+                stack.push(num_arith_checked(
+                    &a,
+                    &b,
+                    "sub",
+                    i64::checked_sub,
+                    |x, y| x - y,
+                )?);
                 pc += 1;
             }
             Op::Mul => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                stack.push(num_arith_checked(&a, &b, "mul", i64::checked_mul, |x, y| x * y)?);
+                stack.push(num_arith_checked(
+                    &a,
+                    &b,
+                    "mul",
+                    i64::checked_mul,
+                    |x, y| x * y,
+                )?);
                 pc += 1;
             }
             Op::Div => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
                 check_float_zero(&a, &b, "division")?;
-                stack.push(num_arith_checked(&a, &b, "div", i64::checked_div, |x, y| x / y)?);
+                stack.push(num_arith_checked(
+                    &a,
+                    &b,
+                    "div",
+                    i64::checked_div,
+                    |x, y| x / y,
+                )?);
                 pc += 1;
             }
             Op::Mod => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
                 check_float_zero(&a, &b, "modulo")?;
-                stack.push(num_arith_checked(&a, &b, "mod", i64::checked_rem, |x, y| x % y)?);
+                stack.push(num_arith_checked(
+                    &a,
+                    &b,
+                    "mod",
+                    i64::checked_rem,
+                    |x, y| x % y,
+                )?);
                 pc += 1;
             }
             Op::Eq => {
@@ -6074,26 +6472,21 @@ fn run_compiled_lambda_inner(
                             _ => 0,
                         };
                         stack.push(match op {
-                            BinOp::Add => {
-                                LispVal::Num(i64::checked_add(av, bv)
-                                    .ok_or("integer overflow in add")?)
-                            }
-                            BinOp::Sub => {
-                                LispVal::Num(i64::checked_sub(av, bv)
-                                    .ok_or("integer overflow in sub")?)
-                            }
-                            BinOp::Mul => {
-                                LispVal::Num(i64::checked_mul(av, bv)
-                                    .ok_or("integer overflow in mul")?)
-                            }
-                            BinOp::Div => {
-                                LispVal::Num(i64::checked_div(av, bv)
-                                    .ok_or("integer overflow in div")?)
-                            }
-                            BinOp::Mod => {
-                                LispVal::Num(i64::checked_rem(av, bv)
-                                    .ok_or("integer overflow in mod")?)
-                            }
+                            BinOp::Add => LispVal::Num(
+                                i64::checked_add(av, bv).ok_or("integer overflow in add")?,
+                            ),
+                            BinOp::Sub => LispVal::Num(
+                                i64::checked_sub(av, bv).ok_or("integer overflow in sub")?,
+                            ),
+                            BinOp::Mul => LispVal::Num(
+                                i64::checked_mul(av, bv).ok_or("integer overflow in mul")?,
+                            ),
+                            BinOp::Div => LispVal::Num(
+                                i64::checked_div(av, bv).ok_or("integer overflow in div")?,
+                            ),
+                            BinOp::Mod => LispVal::Num(
+                                i64::checked_rem(av, bv).ok_or("integer overflow in mod")?,
+                            ),
                             BinOp::Lt => LispVal::Bool(av < bv),
                             BinOp::Le => LispVal::Bool(av <= bv),
                             BinOp::Gt => LispVal::Bool(av > bv),
@@ -6282,7 +6675,11 @@ fn run_compiled_lambda_inner(
                         for v in vals.iter() {
                             result.push(vm_call_lambda(func, &[v.clone()], outer_env, state)?);
                         }
-                        stack.push(if is_vec { LispVal::Vec(result) } else { LispVal::List(result) });
+                        stack.push(if is_vec {
+                            LispVal::Vec(result)
+                        } else {
+                            LispVal::List(result)
+                        });
                     }
                     "filter" if bargs.len() == 2 => {
                         let func = &bargs[0];
@@ -6307,7 +6704,11 @@ fn run_compiled_lambda_inner(
                                 result.push(v.clone());
                             }
                         }
-                        stack.push(if is_vec { LispVal::Vec(result) } else { LispVal::List(result) });
+                        stack.push(if is_vec {
+                            LispVal::Vec(result)
+                        } else {
+                            LispVal::List(result)
+                        });
                     }
                     "for-each" if bargs.len() == 2 => {
                         let func = &bargs[0];
@@ -6338,12 +6739,7 @@ fn run_compiled_lambda_inner(
                         };
                         let func = comparator.clone();
                         vals.sort_by(|a, b| {
-                            match vm_call_lambda(
-                                &func,
-                                &[a.clone(), b.clone()],
-                                outer_env,
-                                state,
-                            ) {
+                            match vm_call_lambda(&func, &[a.clone(), b.clone()], outer_env, state) {
                                 Ok(LispVal::Bool(true)) => std::cmp::Ordering::Less,
                                 Ok(LispVal::Bool(false)) => std::cmp::Ordering::Greater,
                                 _ => std::cmp::Ordering::Equal,
@@ -6366,7 +6762,12 @@ fn run_compiled_lambda_inner(
                         };
                         let mut acc = init;
                         for v in vals.iter() {
-                            acc = match vm_call_lambda(func, &[acc.clone(), v.clone()], outer_env, state) {
+                            acc = match vm_call_lambda(
+                                func,
+                                &[acc.clone(), v.clone()],
+                                outer_env,
+                                state,
+                            ) {
                                 Ok(r) => r,
                                 Err(_) => acc,
                             };
@@ -6435,12 +6836,26 @@ fn run_compiled_lambda_inner(
                     } else {
                         LispVal::Nil
                     };
-                    if inner_cloned.captured.read().unwrap().iter().all(|(n, _)| n != name) {
-                        inner_cloned.captured.write().unwrap().push((name.clone(), val));
+                    if inner_cloned
+                        .captured
+                        .read()
+                        .unwrap()
+                        .iter()
+                        .all(|(n, _)| n != name)
+                    {
+                        inner_cloned
+                            .captured
+                            .write()
+                            .unwrap()
+                            .push((name.clone(), val));
                     } else {
                         // Update existing captured value with runtime value
-                        if let Some(entry) =
-                            inner_cloned.captured.write().unwrap().iter_mut().find(|(n, _)| n == name)
+                        if let Some(entry) = inner_cloned
+                            .captured
+                            .write()
+                            .unwrap()
+                            .iter_mut()
+                            .find(|(n, _)| n == name)
                         {
                             entry.1 = val;
                         }
@@ -6509,9 +6924,11 @@ fn run_compiled_lambda_inner(
             }
             Op::TagTest(ref type_name, variant_id) => {
                 let matches = match stack.last() {
-                    Some(LispVal::Tagged { type_name: tn, variant_id: vid, .. }) => {
-                        tn == type_name && *vid == *variant_id
-                    }
+                    Some(LispVal::Tagged {
+                        type_name: tn,
+                        variant_id: vid,
+                        ..
+                    }) => tn == type_name && *vid == *variant_id,
                     _ => false,
                 };
                 stack.push(LispVal::Bool(matches));
@@ -6555,7 +6972,11 @@ fn run_compiled_lambda_inner(
                 for v in vals.iter() {
                     result.push(vm_call_lambda(&func, &[v.clone()], outer_env, state)?);
                 }
-                stack.push(if is_vec { LispVal::Vec(result) } else { LispVal::List(result) });
+                stack.push(if is_vec {
+                    LispVal::Vec(result)
+                } else {
+                    LispVal::List(result)
+                });
                 pc += 1;
             }
             Op::FilterOp(slot_idx) => {
@@ -6589,7 +7010,11 @@ fn run_compiled_lambda_inner(
                         result.push(v.clone());
                     }
                 }
-                stack.push(if is_vec { LispVal::Vec(result) } else { LispVal::List(result) });
+                stack.push(if is_vec {
+                    LispVal::Vec(result)
+                } else {
+                    LispVal::List(result)
+                });
                 pc += 1;
             }
             Op::ReduceOp(slot_idx) => {
@@ -6729,7 +7154,11 @@ fn run_compiled_lambda_inner(
                 let val = stack.pop().unwrap_or(LispVal::Nil);
                 let key = stack.pop().unwrap_or(LispVal::Nil);
                 if *slot_idx >= slots.len() {
-                    return Err(format!("slot index {} out of bounds (slots_len={})", slot_idx, slots.len()));
+                    return Err(format!(
+                        "slot index {} out of bounds (slots_len={})",
+                        slot_idx,
+                        slots.len()
+                    ));
                 }
                 // Mutate the dict in the slot directly — no clone
                 match &mut slots[*slot_idx] {

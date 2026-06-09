@@ -19,27 +19,90 @@ struct FuncDef {
 }
 
 const ADAPTER_FUNCS: &[FuncDef] = &[
-    FuncDef { name: "view", params: &[W, W, W, W, W, W, W] },
-    FuncDef { name: "call", params: &[W, W, W, W, W, W, W, W, W, W, W, W, W] },
-    FuncDef { name: "transfer", params: &[W, W, W, W, W, W, W] },
-    FuncDef { name: "http-get", params: &[W, W, W] },
-    FuncDef { name: "http-post", params: &[W, W, W, W, W, W, W] },
-    FuncDef { name: "storage-set", params: &[W, W, W, W, W] },
-    FuncDef { name: "storage-get", params: &[W, W, W] },
-    FuncDef { name: "storage-has", params: &[W, W, W] },
-    FuncDef { name: "storage-delete", params: &[W, W, W] },
-    FuncDef { name: "storage-increment", params: &[W, W, I64, W] },
-    FuncDef { name: "storage-decrement", params: &[W, W, I64, W] },
-    FuncDef { name: "storage-set-if-absent", params: &[W, W, W, W, W] },
-    FuncDef { name: "storage-set-if-equals", params: &[W, W, W, W, W, W, W] },
-    FuncDef { name: "storage-list-keys", params: &[W, W, W] },
-    FuncDef { name: "storage-clear-all", params: &[W] },
-    FuncDef { name: "storage-set-worker", params: &[W, W, W, W, W] },
-    FuncDef { name: "storage-get-worker", params: &[W, W, W] },
-    FuncDef { name: "storage-set-worker-public", params: &[W, W, W, W, W] },
-    FuncDef { name: "storage-get-worker-from-project", params: &[W, W, W, W, W] },
-    FuncDef { name: "env-signer", params: &[W] },
-    FuncDef { name: "env-predecessor", params: &[W] },
+    FuncDef {
+        name: "view",
+        params: &[W, W, W, W, W, W, W],
+    },
+    FuncDef {
+        name: "call",
+        params: &[W, W, W, W, W, W, W, W, W, W, W, W, W],
+    },
+    FuncDef {
+        name: "transfer",
+        params: &[W, W, W, W, W, W, W],
+    },
+    FuncDef {
+        name: "http-get",
+        params: &[W, W, W],
+    },
+    FuncDef {
+        name: "http-post",
+        params: &[W, W, W, W, W, W, W],
+    },
+    FuncDef {
+        name: "storage-set",
+        params: &[W, W, W, W, W],
+    },
+    FuncDef {
+        name: "storage-get",
+        params: &[W, W, W],
+    },
+    FuncDef {
+        name: "storage-has",
+        params: &[W, W, W],
+    },
+    FuncDef {
+        name: "storage-delete",
+        params: &[W, W, W],
+    },
+    FuncDef {
+        name: "storage-increment",
+        params: &[W, W, I64, W],
+    },
+    FuncDef {
+        name: "storage-decrement",
+        params: &[W, W, I64, W],
+    },
+    FuncDef {
+        name: "storage-set-if-absent",
+        params: &[W, W, W, W, W],
+    },
+    FuncDef {
+        name: "storage-set-if-equals",
+        params: &[W, W, W, W, W, W, W],
+    },
+    FuncDef {
+        name: "storage-list-keys",
+        params: &[W, W, W],
+    },
+    FuncDef {
+        name: "storage-clear-all",
+        params: &[W],
+    },
+    FuncDef {
+        name: "storage-set-worker",
+        params: &[W, W, W, W, W],
+    },
+    FuncDef {
+        name: "storage-get-worker",
+        params: &[W, W, W],
+    },
+    FuncDef {
+        name: "storage-set-worker-public",
+        params: &[W, W, W, W, W],
+    },
+    FuncDef {
+        name: "storage-get-worker-from-project",
+        params: &[W, W, W, W, W],
+    },
+    FuncDef {
+        name: "env-signer",
+        params: &[W],
+    },
+    FuncDef {
+        name: "env-predecessor",
+        params: &[W],
+    },
 ];
 
 const ADAPTER_IMPORT_NS: &str = "outlayer-impl:api/host";
@@ -83,11 +146,14 @@ pub fn build_outlayer_adapter() -> Vec<u8> {
 
     // ═══ Type section ═══
     let mut types = TypeSection::new();
-    let mut sig_to_type: std::collections::HashMap<Vec<ValType>, u32> = std::collections::HashMap::new();
+    let mut sig_to_type: std::collections::HashMap<Vec<ValType>, u32> =
+        std::collections::HashMap::new();
     for desc in ADAPTER_FUNCS.iter() {
         if !sig_to_type.contains_key(desc.params) {
             let idx = sig_to_type.len() as u32;
-            types.ty().function(desc.params.iter().copied(), std::iter::empty::<ValType>());
+            types
+                .ty()
+                .function(desc.params.iter().copied(), std::iter::empty::<ValType>());
             sig_to_type.insert(desc.params.to_vec(), idx);
         }
     }
@@ -155,8 +221,9 @@ pub fn build_outlayer_adapter() -> Vec<u8> {
 
     // Embed WIT metadata
     let mut resolve = wit_parser::Resolve::new();
-    let ast = wit_parser::UnresolvedPackageGroup::parse("wit/outlayer-impl/api/host.wit", ADAPTER_WIT)
-        .expect("failed to parse adapter WIT");
+    let ast =
+        wit_parser::UnresolvedPackageGroup::parse("wit/outlayer-impl/api/host.wit", ADAPTER_WIT)
+            .expect("failed to parse adapter WIT");
     let pkg_id = resolve.push_group(ast).expect("failed to push WIT package");
     let world_id = resolve.packages[pkg_id]
         .worlds
