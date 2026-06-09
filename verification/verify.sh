@@ -3,6 +3,7 @@
 set -e
 FSTAR=/Users/asil/.opam/fstar/bin/fstar.exe
 FSTAR_FLAGS="-c --include semantics/lisp --include semantics/lisp_ir --include tests"
+FSTAR_FLAGS_SPLIT="-c --include semantics/lisp --include semantics/lisp_ir --include tests --fuel 16 --ifuel 4 --split_queries always"
 
 PASS=0
 FAIL=0
@@ -13,6 +14,22 @@ verify() {
     local name=$(basename $f .fst)
     printf "  [%02d] %-40s ... " "$((PASS+FAIL+1))" "$name"
     OUTPUT=$($FSTAR $FSTAR_FLAGS $f 2>&1)
+    if echo "$OUTPUT" | grep -q "All verification conditions discharged successfully"; then
+        echo "OK"
+        PASS=$((PASS+1))
+    else
+        echo "FAILED"
+        echo "$OUTPUT" | grep -E "^\\* (Error|Warning)" | head -5
+        FAIL=$((FAIL+1))
+        ERRORS="$ERRORS\n  $name"
+    fi
+}
+
+verify_split() {
+    local f=$1
+    local name=$(basename $f .fst)
+    printf "  [%02d] %-40s ... " "$((PASS+FAIL+1))" "$name"
+    OUTPUT=$($FSTAR $FSTAR_FLAGS_SPLIT $f 2>&1)
     if echo "$OUTPUT" | grep -q "All verification conditions discharged successfully"; then
         echo "OK"
         PASS=$((PASS+1))
@@ -55,7 +72,7 @@ verify semantics/lisp_ir/LispIR.CompilerSpec.fst
 verify semantics/lisp_ir/LispIR.CompilerSpec3.fst
 verify semantics/lisp_ir/LispIR.CompilerSpec4.fst
 verify semantics/lisp_ir/LispIR.CompilerCorrectness.fst
-verify semantics/lisp_ir/LispIR.PerExpr3.fst
+verify_split semantics/lisp_ir/LispIR.PerExpr3.fst
 
 # Layer 5: Tests
 echo "--- Layer 5: Tests ---"

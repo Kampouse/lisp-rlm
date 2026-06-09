@@ -82,9 +82,9 @@ val gt_correct : a:int -> b:int -> Lemma
   (match compile_lambda 100 [] (List [Sym ">"; Num a; Num b]) with
    | None -> false
    | Some code -> match eval_steps 1000 (fresh_vm code) with
-     | LispIR.Semantics.Ok s' -> (match s'.stack with Bool r :: _ -> r = (a > b) | _ -> false)
+     | LispIR.Semantics.Ok s' -> (match s'.stack with Bool r :: _ -> r = (b < a) | _ -> false)
      | _ -> false)
-let gt_correct a b = num_cmp_int_sound a b ff_gt op_int_gt
+let gt_correct a b = ()
 
 val lt_correct : a:int -> b:int -> Lemma
   (match compile_lambda 100 [] (List [Sym "<"; Num a; Num b]) with
@@ -100,7 +100,7 @@ val eq_correct : a:int -> b:int -> Lemma
    | Some code -> match eval_steps 1000 (fresh_vm code) with
      | LispIR.Semantics.Ok s' -> (match s'.stack with Bool r :: _ -> r = (a = b) | _ -> false)
      | _ -> false)
-let eq_correct a b = lisp_eq_num_sound a b
+let eq_correct a b = ()
 
 val le_correct : a:int -> b:int -> Lemma
   (match compile_lambda 100 [] (List [Sym "<="; Num a; Num b]) with
