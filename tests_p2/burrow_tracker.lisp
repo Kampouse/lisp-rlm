@@ -36,11 +36,16 @@
     (near/panic "only owner can poll")))
 
 (define (get_balance)
-  (let ((acct (near/predecessor_account_id)))
-    (near/return_str (str-concat
-      (to-string (near/load_u128 (str-cat acct "/deposit"))) 
-      ","
-      (to-string (near/load (str-cat acct "/credits")))))))
+  (let ((account-id (json-get-str "account_id" (near/input))))
+    (let ((key (str-cat account-id "/deposit")))
+      (if (near/has_key key)
+        (let ((dep-ptr (near/load_u128 key)))
+          (let ((dep-addr (>> dep-ptr 3)))
+            (near/return_str (str-concat
+              (u128/to_str dep-addr 64) 
+              ","
+              (to-string (near/load (str-cat account-id "/credits")))))))
+        (near/return_str "0,0")))))
 
 (define (get_info)
   (near/return_str (near/load-bytes "owner")))

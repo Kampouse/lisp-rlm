@@ -872,7 +872,7 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(hi_i));
                 v.push(Instruction::I64Or);
                 v.push(Instruction::I64Eqz);
-                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
                 v.push(Instruction::LocalGet(buf_i));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I32Const(48));

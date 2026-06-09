@@ -1,0 +1,5 @@
+{
+  "name": "test_outlayer_simple",
+  "src": "test_outlayer_simple.lisp",
+  "target": "outlayer"
+}
