@@ -40,12 +40,11 @@
     (let ((key (str-cat account-id "/deposit")))
       (if (near/has_key key)
         (let ((dep-ptr (near/load_u128 key)))
-          (let ((dep-addr (shr dep-ptr 3)))
-            (let ((buf-addr (+ dep-addr 16)))
-              (near/return_str (str-concat
-                (u128/to_str dep-addr buf-addr) 
-                ","
-                (to-string (near/load (str-cat account-id "/credits"))))))))
+          (let ((buf-ptr (+ dep-ptr 128)))
+            (near/return_str (str-concat
+              (u128/to_str dep-ptr buf-ptr)
+              ","
+              (to-string (near/load (str-cat account-id "/credits")))))))
         (near/return_str "0,0")))))
 
 (define (get_info)
