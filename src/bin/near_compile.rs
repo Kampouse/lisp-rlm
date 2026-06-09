@@ -265,11 +265,11 @@ fn do_build_target(project_dir: &str, target: &str) -> Result<(String, Vec<u8>),
             wasm
         }
         "outlayer" | "wasi" | "wasi-p1" => {
-            let wasm = lisp_rlm_wasm::wasi_emit::compile_outlayer(&effective_source)?;
+            let wasm = lisp_rlm_wasm::wasi::compile_outlayer(&effective_source)?;
             wasm
         }
         "outlayer-p2" | "wasi-p2" | "component" => {
-            let wasm = lisp_rlm_wasm::wasi_emit::compile_outlayer_p2(&effective_source)?;
+            let wasm = lisp_rlm_wasm::wasi::compile_outlayer_p2(&effective_source)?;
             wasm
         }
         _ => {
@@ -1291,7 +1291,7 @@ fn run_tests_target(base_src: &str, tests: &[TestCase], target: &str) -> (usize,
                 }
             },
             "outlayer" | "wasi" | "wasi-p1" => {
-                match lisp_rlm_wasm::wasi_emit::compile_outlayer(&test_src) {
+                match lisp_rlm_wasm::wasi::compile_outlayer(&test_src) {
                     Ok(w) => w,
                     Err(e) => {
                         println!("  ❌ {}: compile error: {}", tc.name, e);
@@ -1513,7 +1513,7 @@ fn run_compile(args: &[String]) {
                 std::process::exit(1);
             }
         },
-        "outlayer" | "wasi" | "wasi-p1" => match lisp_rlm_wasm::wasi_emit::compile_outlayer(&src) {
+        "outlayer" | "wasi" | "wasi-p1" => match lisp_rlm_wasm::wasi::compile_outlayer(&src) {
             Ok(w) => w,
             Err(e) => {
                 eprintln!("❌ Compile error: {}", e);
@@ -1521,7 +1521,7 @@ fn run_compile(args: &[String]) {
             }
         },
         "outlayer-p2" | "wasi-p2" | "component" => {
-            match lisp_rlm_wasm::wasi_emit::compile_outlayer_p2(&src) {
+            match lisp_rlm_wasm::wasi::compile_outlayer_p2(&src) {
                 Ok(w) => w,
                 Err(e) => {
                     eprintln!("❌ Compile error: {}", e);

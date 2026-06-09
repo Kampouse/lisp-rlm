@@ -42,7 +42,7 @@ pub mod tagged_value;
 pub mod types;
 mod typing;
 pub mod verifier;
-pub mod wasi_emit;
+pub mod wasi;
 pub mod wasm_emit;
 
 pub use bytecode::{exec_compiled_loop, run_compiled_lambda, try_compile_lambda, try_compile_loop};
@@ -57,7 +57,7 @@ pub use parser::Spanned;
 pub use program::run_program;
 pub use types::DEFAULT_EVAL_BUDGET;
 pub use types::{get_stdlib_code, Env, EvalState, LispVal};
-pub use wasi_emit::{
+pub use wasi::{
     compile_outlayer_p2_browser, compile_outlayer_p2_core_browser, compile_outlayer_p2_from_exprs,
 };
 pub use wasm_emit::{

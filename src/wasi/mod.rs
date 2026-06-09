@@ -1256,7 +1256,7 @@ fn build_p2_with_adapter(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
 fn inject_outlayer_wit(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
     // Uses the combined WIT (outlayer-http world) for upstream split interfaces
     // NOTE: This function is currently dead code - P2 uses build_combined_wit_metadata instead
-    const COMBINED_WIT: &str = include_str!("../wit/deps/combined.wit");
+    const COMBINED_WIT: &str = include_str!("../../wit/deps/combined.wit");
     let mut resolve = wit_parser::Resolve::new();
     let ast = wit_parser::UnresolvedPackageGroup::parse("wit/deps/combined.wit", COMBINED_WIT)
         .map_err(|e| format!("WIT parse error: {}", e))?;
