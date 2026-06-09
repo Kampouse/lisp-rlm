@@ -9,12 +9,12 @@ impl WasmEmitter {
                 let lo = self.expr(&a[1])?;
                 let hi = self.expr(&a[2])?;
                 let mut v = Vec::new();
-                // store low at addr
-                v.extend(addr.clone()); v.push(Instruction::I32WrapI64);
+                // store low at addr (untag address first)
+                v.extend(addr.clone()); v.extend(self.emit_untag()); v.push(Instruction::I32WrapI64);
                 v.extend(lo);
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
                 // store high at addr+8
-                v.extend(addr); v.push(Instruction::I32WrapI64);
+                v.extend(addr); v.extend(self.emit_untag()); v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I32Const(8)); v.push(Instruction::I32Add);
                 v.extend(hi);
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
@@ -23,15 +23,15 @@ impl WasmEmitter {
             "u128/load" => {
                 if a.len() != 1 { return Err("u128/load: need 1 arg (addr)".into()); }
                 let mut v = self.expr(&a[0])?;
+                v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
                 Ok(v)
             }
             "u128/load_high" => {
-                if a.len() != 1 {
-                    return Err("u128/load_high: need 1 arg (addr)".into());
-                }
+                if a.len() != 1 { return Err("u128/load_high: need 1 arg (addr)".into()); }
                 let mut v = self.expr(&a[0])?;
+                v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 8, align: 3, memory_index: 0 }));
                 Ok(v)
@@ -847,6 +847,7 @@ impl WasmEmitter {
                 let pos_i = self.local_idx("__bts_pos");
                 let digit_i = self.local_idx("__bts_digit");
                 let tmp_i = self.local_idx("__bts_tmp");
+                let tmp_hi_i = self.local_idx("__bts_tmp_hi");
                 let qlo_i = self.local_idx("__bts_qlo");
                 let qhi_i = self.local_idx("__bts_qhi");
                 let rem_i = self.local_idx("__bts_rem");
@@ -855,8 +856,8 @@ impl WasmEmitter {
                 let ma = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
                 let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
                 let mut v = Vec::new();
-                v.extend(addr); v.push(Instruction::LocalSet(addr_i));
-                v.extend(buf); v.push(Instruction::LocalSet(buf_i));
+                v.extend(addr); v.extend(self.emit_untag()); v.push(Instruction::LocalSet(addr_i));
+                v.extend(buf); v.extend(self.emit_untag()); v.push(Instruction::LocalSet(buf_i));
                 v.push(Instruction::LocalGet(addr_i));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(ma8));
@@ -893,12 +894,12 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(lo_i));
                 v.push(Instruction::LocalSet(tmp_i));
                 v.push(Instruction::LocalGet(hi_i));
-                v.push(Instruction::LocalSet(qhi_i)); // reuse qhi as tmp_hi
+                v.push(Instruction::LocalSet(tmp_hi_i));
                 // Main loop
                 v.push(Instruction::Block(BlockType::Empty));
                 v.push(Instruction::Loop(BlockType::Empty));
                 v.push(Instruction::LocalGet(tmp_i));
-                v.push(Instruction::LocalGet(qhi_i)); // tmp_hi
+                v.push(Instruction::LocalGet(tmp_hi_i));
                 v.push(Instruction::I64Or);
                 v.push(Instruction::I64Eqz);
                 v.push(Instruction::BrIf(1));
@@ -930,7 +931,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(1));
                 v.push(Instruction::I64And);
                 v.push(Instruction::Else);
-                v.push(Instruction::LocalGet(qhi_i));
+                v.push(Instruction::LocalGet(tmp_hi_i));
                 v.push(Instruction::LocalGet(bit_i));
                 v.push(Instruction::I64Const(64));
                 v.push(Instruction::I64Sub);
@@ -988,7 +989,8 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(pos_i));
                 v.push(Instruction::LocalGet(qlo_i));
                 v.push(Instruction::LocalSet(tmp_i));
-                // tmp_hi = qhi (already set)
+                v.push(Instruction::LocalGet(qhi_i));
+                v.push(Instruction::LocalSet(tmp_hi_i));
                 v.push(Instruction::Br(0));
                 v.push(Instruction::End);
                 v.push(Instruction::End);
