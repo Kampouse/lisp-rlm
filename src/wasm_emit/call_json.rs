@@ -213,11 +213,11 @@ impl WasmEmitter {
                             let jg_idx = self.ensure_json_get_func();
                             setup.push(Instruction::Call(crate::wasm_emit::USER_BASE | jg_idx));
                             // Runtime heap bump: copy jgs_len bytes (not fixed 256)
-                            let rhp: i32 = 56; // RUNTIME_HEAP_PTR (i64 at addr 56)
+                            let _rhp: i32 = 56; // RUNTIME_HEAP_PTR (i64 at addr 56)
                             let jgs_tmp = self.local_idx("jgs_packed");
                             let jgs_len = self.local_idx_i32("jgs_len");
                             let jgs_ptr = self.local_idx_i32("jgs_ptr");
-                            let jgs_heap = self.local_idx_i32("jgs_heap");
+                            let _jgs_heap = self.local_idx_i32("jgs_heap");
                             setup.push(Instruction::LocalSet(jgs_tmp));
                             // Extract len and ptr from packed result
                             setup.push(Instruction::LocalGet(jgs_tmp));
@@ -364,8 +364,8 @@ impl WasmEmitter {
                 let jag_tmp = self.local_idx("jag_packed");
                 let jag_len = self.local_idx_i32("jag_len");
                 let jag_ptr = self.local_idx_i32("jag_ptr");
-                let jag_heap = self.local_idx_i32("jag_heap");
-                let rhp: i32 = 56; // RUNTIME_HEAP_PTR
+                let _jag_heap = self.local_idx_i32("jag_heap");
+                let _rhp: i32 = 56; // RUNTIME_HEAP_PTR
                 v.push(Instruction::LocalSet(jag_tmp));
                 v.push(Instruction::LocalGet(jag_tmp));
                 v.extend(self.emit_untag()); // untag: >> 3

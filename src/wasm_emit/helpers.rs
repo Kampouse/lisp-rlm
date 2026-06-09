@@ -503,7 +503,7 @@ impl WasmEmitter {
         src_local: u32,
         dst_local: u32,
     ) -> Vec<Instruction<'static>> {
-        let ma8 = wasm_encoder::MemArg {
+        let _ma8 = wasm_encoder::MemArg {
             offset: 0,
             align: 3,
             memory_index: 0,
@@ -1083,7 +1083,7 @@ impl WasmEmitter {
 
     /// Decrement recursion depth counter on function return.
     pub(crate) fn emit_depth_dec(&mut self) -> Vec<Instruction<'static>> {
-        let tmp = self.local_idx("__dd_tmp");
+        let _tmp = self.local_idx("__dd_tmp");
         let ma = wasm_encoder::MemArg {
             offset: 0,
             align: 3,
@@ -1109,7 +1109,7 @@ impl WasmEmitter {
     pub(crate) fn emit_raw_write_bounds_check(&mut self) -> Vec<Instruction<'static>> {
         let addr = self.local_idx("__bc_addr");
         let mut v = vec![Instruction::LocalSet(addr)];
-        let ma = wasm_encoder::MemArg {
+        let _ma = wasm_encoder::MemArg {
             offset: 0,
             align: 3,
             memory_index: 0,

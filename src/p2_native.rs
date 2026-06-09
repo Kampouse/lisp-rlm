@@ -119,11 +119,11 @@ fn wit_func_signature(
     // Legacy result types (for trap stubs matching core module's old canonical ABI)
     result_string_string: ComponentValType,
     result_list_u8_string: ComponentValType,
-    result_void_string: ComponentValType,
-    result_bool_string: ComponentValType,
-    result_s64_string: ComponentValType,
-    result_option_list_u8_string: ComponentValType,
-    result_list_string_string: ComponentValType,
+    _result_void_string: ComponentValType,
+    _result_bool_string: ComponentValType,
+    _result_s64_string: ComponentValType,
+    _result_option_list_u8_string: ComponentValType,
+    _result_list_string_string: ComponentValType,
     // Production tuple types (for near:storage/api functions where ABI matches)
     _tuple_list_u8_string: ComponentValType,
     _tuple_string_string: ComponentValType,
@@ -270,7 +270,7 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
     }
 
     // Set of core module import names (kebab-case from WASM binary)
-    let core_names_set: std::collections::HashSet<String> = info.names.iter().cloned().collect();
+    let _core_names_set: std::collections::HashSet<String> = info.names.iter().cloned().collect();
 
     // Set of functions actually called (has Call instruction in code section)
     let called_names: std::collections::HashSet<String> = info
@@ -538,7 +538,7 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
     ];
     let mut trap_stubs: std::collections::HashMap<Vec<wasm_encoder::ValType>, u32> =
         std::collections::HashMap::new();
-    for (sig, &export_name) in &trap_func_map {
+    for (sig, &_export_name) in &trap_func_map {
         let name = format!("trap_{}i32", sig.len());
         let core_func = b.core_alias_export(None, mem_inst, &name, ExportKind::Func);
         trap_stubs.insert(sig.clone(), core_func);
@@ -792,7 +792,7 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
     let mut lowered_names: Vec<String> = Vec::new();
     let mut outlayer_inst_idx: u32 = 0;
     if has_outlayer {
-        let (ref iface_imports, ref wit_names, _ref_types) =
+        let (ref iface_imports, _wit_names, _ref_types) =
             used_interface_imports.as_ref().unwrap();
 
         // Lower ALL outlayer functions that the core module imports
@@ -1102,7 +1102,7 @@ fn extract_memory_pages(wasm: &[u8]) -> u64 {
             let (_cnt, cl) = rleb(wasm, pos);
             let p = pos + cl;
             let (flags, fl) = rleb(wasm, p);
-            let (min, ml) = rleb(wasm, p + fl);
+            let (min, _ml) = rleb(wasm, p + fl);
             let _ = flags;
             return min as u64;
         }
@@ -1118,7 +1118,7 @@ fn make_memory_import(wasm: &[u8]) -> Vec<u8> {
 
     let mut pos = 8usize;
     let mut mem_limits: Option<(u64, Option<u64>)> = None;
-    let mut import_count_delta: i32 = 0;
+    let _import_count_delta: i32 = 0;
 
     // First pass: find memory section to extract limits
     let mut scan = 8usize;
@@ -1203,10 +1203,10 @@ fn make_memory_import(wasm: &[u8]) -> Vec<u8> {
 
         if sid == 7 {
             // Export section — remove the "memory" export
-            let section_start = pos;
+            let _section_start = pos;
             let (cnt, cl) = rleb(wasm, pos);
             let header_end = pos + cl;
-            let section_end = pos + sz;
+            let _section_end = pos + sz;
             let mut new_exports = Vec::new();
             new_exports.extend_from_slice(&wasm[pos..header_end]); // original count placeholder
 
@@ -1455,7 +1455,7 @@ fn analyze_outlayer(wasm: &[u8]) -> OutlayerInfo {
         let (sz, lb) = rleb(wasm, pos);
         pos += lb;
         if sid == 2 {
-            let section_end = pos + sz;
+            let _section_end = pos + sz;
             let (cnt, cl) = rleb(wasm, pos);
             pos += cl;
             let mut found_outlayer = false;
@@ -1509,7 +1509,6 @@ fn analyze_outlayer(wasm: &[u8]) -> OutlayerInfo {
                     _ => {}
                 }
             }
-            pos = section_end;
             break;
         }
         pos += sz;
@@ -1525,11 +1524,11 @@ fn analyze_outlayer(wasm: &[u8]) -> OutlayerInfo {
         pos += lb;
         if sid == 10 {
             // Code section
-            let section_end = pos + sz;
+            let _section_end = pos + sz;
             let (_cnt, cl) = rleb(wasm, pos);
             pos += cl;
             // Scan raw bytes for Call opcodes (0x10) followed by function index
-            while pos < section_end {
+            while pos < _section_end {
                 // Skip function body header (local count + locals)
                 let (_body_size, bsl) = rleb(wasm, pos);
                 pos += bsl;

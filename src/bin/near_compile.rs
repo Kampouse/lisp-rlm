@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 // ── PROJECT CONFIG ──
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct ProjectConfig {
     name: String,
     src: String,
@@ -1231,6 +1232,7 @@ fn run_test_from_source_target(src: &str, target: &str) {
     }
 }
 
+#[allow(dead_code)]
 struct TestCase {
     name: String,
     expr: lisp_rlm_wasm::types::LispVal,
@@ -1537,7 +1539,7 @@ fn run_compile(args: &[String]) {
             std::process::exit(1);
         }
     };
-    let func_names: Vec<String> = extract_func_names(&src).unwrap_or_default();
+    let _func_names: Vec<String> = extract_func_names(&src).unwrap_or_default();
 
     // Validate only for NEAR target (component model has different format)
     if target == "near" {
@@ -3265,7 +3267,7 @@ fn run_wasmtime(
         Err(wasmtime::Error::msg("NEAR panic"))
     });
     let noop0 = Func::new(&mut store, FuncType::new(&engine, [], []), |_, _, _| Ok(()));
-    let noop1 = Func::new(
+    let _noop1 = Func::new(
         &mut store,
         FuncType::new(&engine, [ValType::I64], []),
         |_, _, _| Ok(()),
@@ -3421,7 +3423,7 @@ fn deploy(wasm: &[u8]) -> Result<String, String> {
 }
 
 fn call_testnet_view(method: &str) -> Result<String, String> {
-    let args_base64 = base64::encode("{}");
+    let args_base64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, "{}");
     let rpc_payload = format!(
         r#"{{"jsonrpc":"2.0","id":1,"method":"query","params":{{"request_type":"call_function","finality":"optimistic","account_id":"kampy.testnet","method_name":"{}","args_base64":"{}"}}}}"#,
         method, args_base64

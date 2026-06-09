@@ -38,11 +38,11 @@ impl WasmEmitter {
         // Heap copy for "str" results: __json_get writes to stdout_buf (65536),
         // which gets overwritten by subsequent __json_get calls.
         if value_type == "str" {
-            let rhp: i32 = 56; // RUNTIME_HEAP_PTR
+            let _rhp: i32 = 56; // RUNTIME_HEAP_PTR
             let jgs_tmp = self.local_idx("__jgw_tmp");
             let jgs_len = self.local_idx_i32("__jgw_len");
             let jgs_ptr = self.local_idx_i32("__jgw_ptr");
-            let jgs_heap = self.local_idx_i32("__jgw_heap");
+            let _jgs_heap = self.local_idx_i32("__jgw_heap");
             v.push(Instruction::LocalSet(jgs_tmp));
             // Extract len and ptr from packed result
             v.push(Instruction::LocalGet(jgs_tmp));
@@ -104,27 +104,27 @@ impl WasmEmitter {
         let memchr_tmp = 15u32; // i64 for memchr/fast copy
 
         let mut ins: Vec<Instruction<'static>> = Vec::new();
-        let mut d: u32 = 0;
+        let mut _d: u32 = 0;
         let mut ls: Vec<u32> = Vec::new();
         macro_rules! open_block {
             () => {
-                ls.push(d);
+                ls.push(_d);
                 ins.push(Instruction::Block(BlockType::Empty));
-                d += 1;
+                _d += 1;
             };
         }
         macro_rules! open_loop {
             () => {
-                ls.push(d);
+                ls.push(_d);
                 ins.push(Instruction::Loop(BlockType::Empty));
-                d += 1;
+                _d += 1;
             };
         }
         macro_rules! open_if {
             () => {
-                ls.push(d);
+                ls.push(_d);
                 ins.push(Instruction::If(BlockType::Empty));
-                d += 1;
+                _d += 1;
             };
         }
         macro_rules! open_else {
@@ -136,13 +136,13 @@ impl WasmEmitter {
             () => {
                 ins.push(Instruction::End);
                 ls.pop();
-                d -= 1;
+                _d -= 1;
             };
         }
         macro_rules! br_to {
             ($idx:expr) => {
                 let t = ls[$idx];
-                ins.push(Instruction::Br(d - t - 1));
+                ins.push(Instruction::Br(_d - t - 1));
             };
         }
 
@@ -749,7 +749,7 @@ impl WasmEmitter {
         next_local += 1;
         let cur_key = next_local;
         next_local += 1;
-        let val_type = next_local;
+        let _val_type = next_local;
         next_local += 1; // 0=string, 1=object/array, 2=raw
                          // memchr_tmp is i64 — index = all i32 locals (including any added below) + params
                          // We know exactly 1 extra i32 local (arr_ptr_local) is added later in the body
@@ -757,27 +757,27 @@ impl WasmEmitter {
         let n_i32_locals = next_local - (n_keys as u32 + 1);
 
         let mut ins: Vec<Instruction<'static>> = Vec::new();
-        let mut d: u32 = 0;
+        let mut _d: u32 = 0;
         let mut ls: Vec<u32> = Vec::new();
         macro_rules! open_block {
             () => {
-                ls.push(d);
+                ls.push(_d);
                 ins.push(Instruction::Block(BlockType::Empty));
-                d += 1;
+                _d += 1;
             };
         }
         macro_rules! open_loop {
             () => {
-                ls.push(d);
+                ls.push(_d);
                 ins.push(Instruction::Loop(BlockType::Empty));
-                d += 1;
+                _d += 1;
             };
         }
         macro_rules! open_if {
             () => {
-                ls.push(d);
+                ls.push(_d);
                 ins.push(Instruction::If(BlockType::Empty));
-                d += 1;
+                _d += 1;
             };
         }
         macro_rules! open_else {
@@ -789,13 +789,13 @@ impl WasmEmitter {
             () => {
                 ins.push(Instruction::End);
                 ls.pop();
-                d -= 1;
+                _d -= 1;
             };
         }
         macro_rules! br_to {
             ($idx:expr) => {
                 let t = ls[$idx];
-                ins.push(Instruction::Br(d - t - 1));
+                ins.push(Instruction::Br(_d - t - 1));
             };
         }
 
@@ -900,7 +900,7 @@ impl WasmEmitter {
         open_if!();
         {
             open_block!();
-            let memchr_block = ls.len() - 1;
+            let _memchr_block = ls.len() - 1;
             open_loop!();
             let memchr_loop = ls.len() - 1;
 

@@ -72,7 +72,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // === Host functions (all created before linking) ===
 
-    let s1 = state.clone();
+    let _s1 = state.clone();
     let log_fn = Func::new(
         &mut store,
         FuncType::new(&engine, vec![ValType::I64; 2], vec![]),
@@ -408,7 +408,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     );
 
-    let s_ad = state.clone();
+    let _s_ad = state.clone();
     let attached_deposit_fn = Func::new(
         &mut store,
         FuncType::new(&engine, vec![ValType::I64], vec![]),
@@ -502,7 +502,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         FuncType::new(&engine, vec![ValType::I64; 9], vec![]),
         |_, _, _| Ok(()),
     );
-    let noop_4i_i32 = Func::new(
+    let _noop_4i_i32 = Func::new(
         &mut store,
         FuncType::new(&engine, vec![ValType::I64; 4], vec![ValType::I32]),
         |_, _, r| {
@@ -678,7 +678,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         method,
         if args_json == "{}" { "" } else { &args_json }
     );
-    let result = func.call(&mut store, &[], &mut []);
+    let _result = func.call(&mut store, &[], &mut []);
 
     // Check memory before call
     if let Some(real_mem) = instance.get_memory(&mut store, "memory") {

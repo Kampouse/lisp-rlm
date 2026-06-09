@@ -1186,7 +1186,7 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
     // ═══ Data Section (string literals + URL data segments) ═══
     {
         let mut data = DataSection::new();
-        let mut has_data = false;
+        let mut _has_data = false;
         // Initialize RUNTIME_HEAP_PTR (addr 56) to HEAP_START (4096)
         {
             let heap_start_bytes: [u8; 8] = (HEAP_START as u64).to_le_bytes();
@@ -1195,19 +1195,19 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
                 &ConstExpr::i32_const(56),
                 heap_start_bytes.iter().copied(),
             );
-            has_data = true;
+            _has_data = true;
         }
         // String literals from lisp emitter
         for (off, bytes) in &em.data_segments {
             data.active(0, &ConstExpr::i32_const(*off as i32), bytes.iter().copied());
-            has_data = true;
+            _has_data = true;
         }
         // URL data segments (authority + path pre-loaded at instantiation)
         for (off, bytes) in &all_http_data_segments {
             data.active(0, &ConstExpr::i32_const(*off as i32), bytes.iter().copied());
-            has_data = true;
+            _has_data = true;
         }
-        if has_data {
+        if _has_data {
             module.section(&data);
         }
     }
@@ -1412,7 +1412,7 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
         wasi_p1_imports()
     };
     // Tree-shake: only import outlayer functions that are actually used
-    let (ol, ol_sentinel_map_p1, ol_count) = if skip_outlayer {
+    let (_ol, ol_sentinel_map_p1, ol_count) = if skip_outlayer {
         (vec![], std::collections::HashMap::new(), 0u32)
     } else {
         let used_ol_indices = scan_used_outlayer_indices(em);
@@ -1662,22 +1662,13 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     // cabi_realloc: (i32, i32, i32, i32) -> i32 — type 1
     funcs.function(1);
     // memcpy helper: (i32, i32, i32) -> () — needs a new type
-    let mut memcpy_type_idx: u32 = 0;
     {
         // Check if str-cat was used (generates Call(91) = MEMCPY_SENTINEL)
         let uses_memcpy = em.funcs.iter().any(|f| f.instrs.iter().any(|i| matches!(i, Instruction::Call(idx) if *idx == crate::wasm_emit::MEMCPY_SENTINEL)));
         if uses_memcpy {
-            memcpy_type_idx = user_type_base
-                + em.funcs.iter().map(|f| f.param_count).max().unwrap_or(0) as u32
-                + 1; // one past user types
-                     // Already in type section? No — need to add it dynamically
-                     // Actually we need to append to types. Since types are already emitted,
-                     // we'll use an existing 3-i32-param type if available, or piggyback on type 8 (3 i32 -> ())
-                     // type 8 = (i32, i32, i32) -> () in finish_outlayer_inner
-            memcpy_type_idx = 8; // (i32, i32, i32) -> ()
-            funcs.function(memcpy_type_idx);
-        } else {
-            memcpy_type_idx = 0; // unused
+            // type 8 = (i32, i32, i32) -> () in finish_outlayer_inner
+            let _memcpy_type_idx = 8; // (i32, i32, i32) -> ()
+            funcs.function(_memcpy_type_idx);
         }
     }
     m.section(&funcs);
@@ -2249,7 +2240,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     // Tree-shake: only import outlayer functions that are actually used
     let used_ol_indices = scan_used_outlayer_indices(em);
     let ol_import_base = HTTP_IMPORT_COUNT + 1; // 29
-    let (ol, ol_sentinel_map, ol_count) = build_filtered_outlayer(&used_ol_indices, ol_import_base);
+    let (_ol, ol_sentinel_map, ol_count) = build_filtered_outlayer(&used_ol_indices, ol_import_base);
 
     // Import layout: HTTP 0..27, get-stdin 28, outlayer 29..29+ol_count
     let get_stdin_import_idx = HTTP_IMPORT_COUNT; // 28
@@ -2270,7 +2261,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     let ol_type_7 = ol_type_base + 3;
     let ol_type_9 = ol_type_base + 4;
     let ol_type_11 = ol_type_base + 5;
-    let ol_type_13 = ol_type_base + 6;
+    let _ol_type_13 = ol_type_base + 6;
     let ol_type_17 = ol_type_base + 7;
     let ol_type_6 = ol_type_base + 8;
     let ol_type_s64 = ol_type_base + 9;
@@ -2342,7 +2333,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     imports.import("wasi:cli/stdin@0.2.2", "get-stdin", EntityType::Function(0));
 
     // Emit only filtered outlayer imports
-    for &(sentinel, ol_idx) in OUTLAYER_SENTINELS {
+    for &(_sentinel, ol_idx) in OUTLAYER_SENTINELS {
         if used_ol_indices.contains(&ol_idx) {
             let all_ol = outlayer_imports();
             let f = &all_ol[ol_idx];
@@ -2437,7 +2428,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     ];
 
     // ── HTTP GET internal functions ──
-    for (idx, (authority, path)) in http_urls.iter().enumerate() {
+    for (_idx, (authority, path)) in http_urls.iter().enumerate() {
         let http_data = crate::wasi_http_buffer::build_url_data_segments_with_base(
             authority.as_bytes(),
             path.as_bytes(),
@@ -2489,7 +2480,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     }
 
     // ── HTTP POST internal functions ──
-    for (idx, (authority, path)) in em.http_post_urls.iter().enumerate() {
+    for (_idx, (authority, path)) in em.http_post_urls.iter().enumerate() {
         let http_data = crate::wasi_http_buffer::build_url_data_segments_with_base(
             authority.as_bytes(),
             path.as_bytes(),

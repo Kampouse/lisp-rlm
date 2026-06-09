@@ -772,7 +772,7 @@ impl WasmEmitter {
             "near/log_num" => {
                 self.need_host(28);
                 let num_expr = self.expr(&a[0])?;
-                let ma8 = wasm_encoder::MemArg {
+                let _ma8 = wasm_encoder::MemArg {
                     offset: 0,
                     align: 0,
                     memory_index: 0,

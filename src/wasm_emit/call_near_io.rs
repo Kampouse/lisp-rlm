@@ -50,7 +50,7 @@ impl WasmEmitter {
                     // Two separate log calls: first the string, then the number
                     let msg = self.expr(&a[0])?;
                     let num_expr = self.expr(&a[1])?;
-                    let ma8 = wasm_encoder::MemArg {
+                    let _ma8 = wasm_encoder::MemArg {
                         offset: 0,
                         align: 0,
                         memory_index: 0,

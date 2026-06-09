@@ -763,7 +763,7 @@ pub fn compile_standalone_opts(source: &str, typecheck: bool) -> Result<Vec<u8>,
         EntityType::Function(max_p as u32 + 3), // type N+3: (i32 x4) -> i32
     );
     m.section(&imports);
-    let wasi_proc_exit = 0u32; // import index
+    let _wasi_proc_exit = 0u32; // import index
     let wasi_fd_write = 1u32; // import index
 
     // Function section
