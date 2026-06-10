@@ -6,8 +6,10 @@ SEMANTICS_LISP = semantics/lisp/Lisp.Types.fst \
                  semantics/lisp/Lisp.Values.fst
 
 SEMANTICS_LISP_IR = semantics/lisp_ir/LispIR.Memory.fst \
-                    semantics/lisp_ir/LispIR.Semantics.fst \
-                    semantics/lisp_ir/LispIR.Correctness.fst
+                   semantics/lisp_ir/LispIR.MemorySafety.fst \
+                   semantics/lisp_ir/LispIR.Semantics.fst \
+                   semantics/lisp_ir/LispIR.Correctness.fst \
+                   semantics/lisp_ir/LispIR.StringOps.fst
 
 TESTS = tests/CompareSpec.fst
 

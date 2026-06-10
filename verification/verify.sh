@@ -58,6 +58,13 @@ verify semantics/lisp/Lisp.Closure.fst
 # Layer 3: VM semantics
 echo "--- Layer 3: VM semantics ---"
 verify semantics/lisp_ir/LispIR.Memory.fst
+verify semantics/lisp_ir/LispIR.NearContext.fst
+verify semantics/lisp_ir/LispIR.NearStorage.fst
+verify semantics/lisp_ir/LispIR.StringOps.fst
+verify semantics/lisp_ir/LispIR.WasiP2.fst
+verify semantics/lisp_ir/LispIR.WasiP2.Refinement.fst
+verify semantics/lisp_ir/LispIR.MemorySafety.fst
+verify semantics/lisp_ir/LispIR.Borsh.fst
 verify semantics/lisp_ir/LispIR.Semantics.fst
 verify semantics/lisp_ir/LispIR.Correctness.fst
 verify semantics/lisp_ir/LispIR.Determinism.fst

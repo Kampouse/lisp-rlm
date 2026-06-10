@@ -13,6 +13,12 @@
        - u128_add_safe returns None on overflow
        - u128_sub_safe returns None on underflow
        - u128_mul_safe returns None on overflow or non-positive scalar
+
+    3. i64 checked arithmetic (proved in Memory.fst, tested in I64CheckedTests.fst)
+       - i64_add_safe returns None on overflow (same-sign inputs, result flips)
+       - i64_sub_safe returns None on underflow (different-sign inputs, result flips)
+       - i64_mul_safe returns None on overflow (r/b != a) or MIN*-1
+       - Matches Rust checked_add/checked_sub/checked_mul behavior
 *)
 module MemoryBugs
 
