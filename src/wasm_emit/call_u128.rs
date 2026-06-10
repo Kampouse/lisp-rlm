@@ -489,6 +489,20 @@ impl WasmEmitter {
                 v.push(Instruction::I64Add);
                 v.push(Instruction::LocalSet(rh_i));
 
+                // ── OVERFLOW CHECK: trap if result would exceed u128 ──
+                // Conservative check: if dst.hi != 0 and val > 1, result likely overflows
+                // This matches F* model: if dst.hi > 0 && scalar > 1, then None (trap)
+                v.push(Instruction::LocalGet(dh_i));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64GtU);  // dst.hi > 0?
+                v.push(Instruction::LocalGet(val_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64GtU);  // val > 1?
+                v.push(Instruction::I64And);  // both true?
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
+
                 // Store results
                 v.push(Instruction::LocalGet(dst_i));
                 v.push(Instruction::I32WrapI64);
