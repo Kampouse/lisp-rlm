@@ -65,6 +65,7 @@ verify semantics/lisp_ir/LispIR.WasiP2.fst
 verify semantics/lisp_ir/LispIR.WasiP2.Refinement.fst
 verify semantics/lisp_ir/LispIR.MemorySafety.fst
 verify semantics/lisp_ir/LispIR.Borsh.fst
+verify semantics/lisp_ir/LispIR.Contradictions.fst
 verify semantics/lisp_ir/LispIR.Semantics.fst
 verify semantics/lisp_ir/LispIR.Correctness.fst
 verify semantics/lisp_ir/LispIR.Determinism.fst
