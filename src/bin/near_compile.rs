@@ -288,7 +288,68 @@ fn do_build_target(project_dir: &str, target: &str) -> Result<(String, Vec<u8>),
     }
     fs::write(&out_path, &wasm_bytes).map_err(|e| format!("write {}: {}", config.output, e))?;
 
+    // Post-build WAT check (only for NEAR target)
+    if target == "near" {
+        run_wat_check(&out_path);
+    }
+
     Ok((config.output.clone(), wasm_bytes))
+}
+
+/// Post-build WAT static analysis.
+/// Runs wasm2wat + wat_check.py if available, printing any warnings.
+fn run_wat_check(wasm_path: &Path) {
+    // Check if wasm2wat is available
+    if which("wasm2wat").is_none() {
+        return;
+    }
+    // Check if wat_check.py is available
+    let script_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/wat_check.py");
+    if !script_path.exists() {
+        return;
+    }
+    let wat_path = wasm_path.with_extension("wat");
+    let output = std::process::Command::new("wasm2wat")
+        .arg(wasm_path)
+        .arg("-o")
+        .arg(&wat_path)
+        .output();
+    let output = match output {
+        Ok(o) if o.status.success() => o,
+        _ => return, // wasm2wat failed, skip silently
+    };
+    let result = std::process::Command::new("python3")
+        .arg(&script_path)
+        .arg(&wat_path)
+        .output();
+    match result {
+        Ok(o) => {
+            if !o.stdout.is_empty() {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                for line in stdout.lines() {
+                    eprintln!("  {}", line);
+                }
+            }
+        }
+        Err(_) => {} // python3 not found, skip
+    }
+    // Clean up wat file
+    let _ = std::fs::remove_file(&wat_path);
+}
+
+/// Simple `which` check for a binary.
+fn which(name: &str) -> Option<std::path::PathBuf> {
+    std::process::Command::new("which")
+        .arg(name)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .next()
+                .map(|l| std::path::PathBuf::from(l.trim()))
+        })
 }
 
 // ── NEAR CLI INFRASTRUCTURE ──
