@@ -489,6 +489,7 @@ pub const WASI_FD_WRITE: u32 = 90; // sentinel for WASI fd_write in outlayer mod
 pub const MEMCPY_SENTINEL: u32 = 91; // sentinel for shared memcpy helper
 const TEMP_MEM: i64 = 64;
 const AMOUNT_MEM: i64 = 256; // u128 deposit buffer (16 bytes at 256..272)
+const KEY_BUF: i64 = 512;    // 256-byte scratch for near/kstore and near/kload key concatenation
 const INPUT_BUF: i64 = 16384; // 16KB for input JSON args
 const RETURN_BUF: i64 = 32768;
 const STORAGE_BUF: i64 = 8192; // 8 bytes for storage read/write buffer
@@ -605,6 +606,7 @@ pub struct WasmEmitter {
     pub(crate) heap_ptr: u32, // bump allocator; 0 = not yet initialized (lazy snap to data section end)
     pub(crate) lambda_counter: u32, // unique lambda id
     pub(crate) str_cat_depth: u32, // nesting depth for str-cat local isolation
+    pub(crate) str_slice_depth: u32, // nesting depth for str-slice local isolation
     pub(crate) fuzz_mode: bool, // if true, export wrappers store tagged values (no untag, no value_return)
     pub(crate) need_outlayer: bool, // true if outlayer/* dispatch forms are used
     pub(crate) need_wasi_http: bool, // true if http-get is used (for P2 wasi:http path)
@@ -649,6 +651,7 @@ impl WasmEmitter {
             heap_ptr: 0,
             lambda_counter: 0,
             str_cat_depth: 0,
+            str_slice_depth: 0,
             fuzz_mode: false,
             lambda_info: Vec::new(),
             captured_map: HashMap::new(),

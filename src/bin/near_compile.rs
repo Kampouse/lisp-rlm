@@ -69,6 +69,7 @@ fn main() {
         "build" => run_build(args.get(2).map(|s| s.as_str())),
         "deploy" => run_deploy(&args[2..]),
         "call" => run_call(&args[2..]),
+        "view" => run_view(&args[2..]),
         "create" => run_create(&args[2..]),
         "test" => run_project_test(args.get(2).map(|s| s.as_str())),
         "--repl" | "-r" => run_repl(),
@@ -301,6 +302,7 @@ struct NearCliOverrides {
     gas: Option<u64>,
     deposit: Option<String>,
     fund: bool,
+    borsh_args: Option<(String, u64)>, // (account_id, amount) for borsh-encoded input
 }
 
 /// Resolved NEAR connection details.
@@ -321,6 +323,7 @@ fn parse_overrides(args: &[String]) -> (NearCliOverrides, Vec<String>) {
         gas: None,
         deposit: None,
         fund: false,
+        borsh_args: None,
     };
     let mut positional = Vec::new();
     let mut i = 0;
@@ -353,6 +356,13 @@ fn parse_overrides(args: &[String]) -> (NearCliOverrides, Vec<String>) {
             "--fund" => {
                 overrides.fund = true;
                 i += 1;
+            }
+            "--borsh" => {
+                // --borsh <account_id> <amount>
+                let acct = args.get(i + 1).cloned().unwrap_or_default();
+                let amt = args.get(i + 2).and_then(|a| a.parse::<u64>().ok()).unwrap_or(0);
+                overrides.borsh_args = Some((acct, amt));
+                i += 3;
             }
             _ => {
                 positional.push(args[i].clone());
@@ -387,10 +397,11 @@ fn resolve_near_ctx(
         return Err("No account specified. Use --account or set account in near.json".into());
     }
 
-    let rpc_url = match network.as_str() {
-        "mainnet" => "https://rpc.mainnet.near.org",
-        _ => "https://rpc.testnet.near.org",
-    };
+    let rpc_url = std::env::var("NEAR_RPC_URL")
+        .unwrap_or_else(|_| match network.as_str() {
+            "mainnet" => "https://rpc.mainnet.near.org".into(),
+            _ => "https://rpc.testnet.fastnear.com".into(),
+        });
 
     // Load signing key
     let signing_key = if overrides.seed_phrase {
@@ -614,22 +625,28 @@ async fn prepare_tx(
     let client = reqwest::Client::new();
     let pk_display = format!("ed25519:{}", ctx.pk_b58);
 
-    // Fetch access key nonce
-    let access_key: serde_json::Value = rpc_call(
+    // Fetch access key nonce — use view_access_key_list (view_access_key fails on fastnear)
+    let access_keys: serde_json::Value = rpc_call(
         &client,
         &ctx.rpc_url,
         "query",
         serde_json::json!({
-            "request_type": "view_access_key",
+            "request_type": "view_access_key_list",
             "finality": "final",
-            "account_id": ctx.account,
-            "public_key": &pk_display
+            "account_id": ctx.account
         }),
     )
     .await?;
 
-    let nonce: u64 = access_key["result"]["nonce"]
-        .as_u64()
+    // Find our key in the list; fall back to first key if ours not found
+    let nonce: u64 = access_keys["result"]["keys"]
+        .as_array()
+        .and_then(|keys| {
+            keys.iter()
+                .find(|k| k["public_key"] == pk_display)
+                .or_else(|| keys.first())
+        })
+        .and_then(|k| k["access_key"]["nonce"].as_u64())
         .unwrap_or(0)
         .checked_add(1)
         .ok_or("nonce overflow")?;
@@ -784,6 +801,105 @@ async fn run_deploy_async(args: &[String]) {
 
 // ── CALL ──
 
+fn run_view(args: &[String]) {
+    let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
+    rt.block_on(async { run_view_async(args).await });
+}
+
+async fn run_view_async(args: &[String]) {
+    let (overrides, mut positional) = parse_overrides(args);
+
+    let contract = positional.first().cloned().unwrap_or_else(|| {
+        eprintln!("Usage: near-compile view <contract> <method> [args.json] [dir]");
+        std::process::exit(1);
+    });
+    positional.remove(0);
+
+    let method = positional.first().cloned().unwrap_or_else(|| {
+        eprintln!("Usage: near-compile view <contract> <method> [args.json] [dir]");
+        std::process::exit(1);
+    });
+    positional.remove(0);
+
+    let project_dir = positional.first().map(|s| s.as_str()).unwrap_or(".");
+
+    // Build args bytes — --borsh or JSON
+    let args_bytes = if let Some((acct, amt)) = &overrides.borsh_args {
+        let acct_bytes = acct.as_bytes();
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&(acct_bytes.len() as u32).to_le_bytes());
+        buf.extend_from_slice(acct_bytes);
+        buf.extend_from_slice(&(amt.to_le_bytes()));
+        buf
+    } else if !positional.is_empty() {
+        let candidate = &positional[0];
+        if candidate.ends_with(".json") && Path::new(candidate).exists() {
+            let content = fs::read_to_string(candidate).unwrap_or_else(|e| {
+                eprintln!("❌ Read {}: {}", candidate, e);
+                std::process::exit(1);
+            });
+            serde_json::from_str::<serde_json::Value>(&content).unwrap().to_string().into_bytes()
+        } else if candidate.starts_with('{') || candidate.starts_with('[') {
+            serde_json::from_str::<serde_json::Value>(candidate).unwrap().to_string().into_bytes()
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
+    let ctx = match resolve_near_ctx(project_dir, &overrides) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("❌ {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    use base64::Engine;
+    let args_b64 = base64::engine::general_purpose::STANDARD.encode(&args_bytes);
+
+    let client = reqwest::Client::new();
+    let payload = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "query",
+        "params": {
+            "request_type": "call_function",
+            "account_id": contract,
+            "method_name": method,
+            "args_base64": args_b64,
+            "finality": "final"
+        }
+    });
+
+    let resp = client
+        .post(&ctx.rpc_url)
+        .header("Content-Type", "application/json")
+        .json(&payload)
+        .send()
+        .await
+        .expect("RPC request failed")
+        .json::<serde_json::Value>()
+        .await
+        .expect("parse RPC response");
+
+    if let Some(err) = resp.get("error") {
+        eprintln!("❌ RPC error: {}", err["message"]);
+        std::process::exit(1);
+    }
+
+    if let Some(result) = resp.get("result").and_then(|r| r.get("result")) {
+        if let Some(arr) = result.as_array() {
+            let bytes: Vec<u8> = arr.iter().map(|v| v.as_u64().unwrap_or(0) as u8).collect();
+            let output = String::from_utf8_lossy(&bytes);
+            println!("→ {}", output);
+        }
+    } else {
+        println!("→ (empty)");
+    }
+}
+
 fn run_call(args: &[String]) {
     let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
     rt.block_on(async { run_call_async(args).await });
@@ -804,8 +920,16 @@ async fn run_call_async(args: &[String]) {
     });
     positional.remove(0);
 
-    // Optional args — inline JSON string or .json file
-    let (args_json, project_dir) = if !positional.is_empty() {
+    // Optional args — inline JSON string, .json file, or --borsh encoded input
+    let (args_json, project_dir) = if let Some((acct, amt)) = &overrides.borsh_args {
+        // Borsh-encoded: 4-byte LE len + account_id bytes + 4-byte LE amount
+        let acct_bytes = acct.as_bytes();
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&(acct_bytes.len() as u32).to_le_bytes());
+        buf.extend_from_slice(acct_bytes);
+        buf.extend_from_slice(&(amt.to_le_bytes()));
+        (buf, positional.first().map(|s| s.as_str()).unwrap_or("."))
+    } else if !positional.is_empty() {
         let candidate = &positional[0];
         if candidate.ends_with(".json") && Path::new(candidate).exists() {
             // It's a .json file path
@@ -953,6 +1077,7 @@ async fn run_create_async(args: &[String]) {
         gas: None,
         deposit: None,
         fund: false,
+        borsh_args: None,
     };
 
     // Resolve funder context (uses "." as project dir — no near.json needed)
@@ -993,9 +1118,11 @@ async fn run_create_async(args: &[String]) {
         }
     };
 
-    // CreateAccount action (variant 0) + AddKey action (variant 5)
-    tx_body.extend_from_slice(&2u32.to_le_bytes()); // action count
+    // CreateAccount (0) + Transfer (3) + AddKey (5) = 3 actions
+    tx_body.extend_from_slice(&3u32.to_le_bytes()); // action count
     tx_body.push(0x00); // CreateAccount
+    tx_body.push(0x03); // Transfer (5 NEAR = 5_000_000_000_000_000_000_000_000 yocto)
+    tx_body.extend_from_slice(&5_000_000_000_000_000_000_000_000u128.to_le_bytes());
     tx_body.push(0x05); // AddKey
                         // PublicKey: ED25519 tag + 32 bytes
     tx_body.push(0x00);

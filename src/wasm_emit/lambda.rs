@@ -364,6 +364,17 @@ impl WasmEmitter {
             "near/has_key" => {
                 self.need_host(20);
             }
+            "near/kstore" => {
+                self.need_host(17); // storage_write
+                self.need_host(0);  // read_register (not used but kept for consistency)
+            }
+            "near/kload" => {
+                self.need_host(18); // storage_read
+                self.need_host(0);  // read_register
+            }
+            "near/kremove" => {
+                self.need_host(19); // storage_remove
+            }
             "near/return" => self.need_host(25),
             "near/log" => self.need_host(28),
             "near/panic" => self.need_host(27),

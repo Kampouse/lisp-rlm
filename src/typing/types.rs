@@ -33,6 +33,8 @@ fn is_builtin_wildcard(name: &str) -> bool {
                 | "module"
                 | "borsh-schema"
                 | "extend-runtime"
+                | "vec-nth"
+                | "list"
                 // P1/OutLayer HTTP functions (emitter guards with wasi_mode)
                 | "http-get"
                 | "http-post"
@@ -375,6 +377,12 @@ impl TcEnv {
             );
         }
 
+        // Borsh serialization (also works in fuzz mode)
+        for name in &["borsh-serialize", "borsh-deserialize", "array"] {
+            // These take variable args, so use Any
+            env.insert_mono(name.to_string(), TcType::Con(TcCon::Any));
+        }
+
         // String ops
         for name in &["str-concat", "string-append"] {
             env.insert_mono(
@@ -439,6 +447,16 @@ impl TcEnv {
                 Box::new(TcType::Con(TcCon::Str)),
             ),
         );
+        // string->number : str → num  (aliases: str->num, str-to-num)
+        for name in &["string->number", "str->num", "str-to-num"] {
+            env.insert_mono(
+                name.to_string(),
+                TcType::Arrow(
+                    vec![TcType::Con(TcCon::Str)],
+                    Box::new(TcType::Con(TcCon::Num)),
+                ),
+            );
+        }
 
         // JSON path accessors
         // json-get: (str, str) → num  — extracts numeric value at dot-path
@@ -680,6 +698,7 @@ impl TcEnv {
         let mut env = Self::with_pure_builtins();
         let str_ty = TcType::Con(TcCon::Str);
         let int_ty = TcType::Con(TcCon::Int);
+        let num_ty = TcType::Con(TcCon::Num);
         let bool_ty = TcType::Con(TcCon::Bool);
         let nil_ty = TcType::Con(TcCon::Nil);
         let any_ty = TcType::Con(TcCon::Any);
@@ -746,6 +765,16 @@ impl TcEnv {
         env.insert_mono(
             "near/signer_account_id".into(),
             TcType::Arrow(vec![], Box::new(str_ty.clone())),
+        );
+        // near/load : str → num  (reads tagged i64 from storage)
+        env.insert_mono(
+            "near/load".into(),
+            TcType::Arrow(vec![str_ty.clone()], Box::new(num_ty.clone())),
+        );
+        // near/store : str → num → nil  (writes tagged i64 to storage)
+        env.insert_mono(
+            "near/store".into(),
+            TcType::Arrow(vec![str_ty.clone(), num_ty.clone()], Box::new(TcType::Con(TcCon::Nil))),
         );
         // near/signer_public_key : () → str
         env.insert_mono(
@@ -908,7 +937,120 @@ impl TcEnv {
         );
         env.insert_mono(
             "bytes-to-u32".into(),
-            TcType::Arrow(vec![str_ty.clone()], Box::new(int_ty.clone())),
+            TcType::Arrow(vec![str_ty.clone()], Box::new(num_ty.clone())),
+        );
+
+        // ── String aliases ──
+        env.insert_mono(
+            "str-to-num".into(),
+            TcType::Arrow(vec![str_ty.clone()], Box::new(num_ty.clone())),
+        );
+        env.insert_mono(
+            "str_cat".into(),
+            TcType::Arrow(vec![str_ty.clone(), str_ty.clone()], Box::new(str_ty.clone())),
+        );
+        env.insert_mono(
+            "str_eq".into(),
+            TcType::Arrow(vec![str_ty.clone(), str_ty.clone()], Box::new(bool_ty.clone())),
+        );
+        env.insert_mono(
+            "str_len".into(),
+            TcType::Arrow(vec![str_ty.clone()], Box::new(num_ty.clone())),
+        );
+        env.insert_mono(
+            "int_to_str".into(),
+            TcType::Arrow(vec![num_ty.clone()], Box::new(str_ty.clone())),
+        );
+
+        // ── Arithmetic ──
+        env.insert_mono(
+            "max".into(),
+            TcType::Arrow(vec![num_ty.clone(), num_ty.clone()], Box::new(num_ty.clone())),
+        );
+        env.insert_mono(
+            "min".into(),
+            TcType::Arrow(vec![num_ty.clone(), num_ty.clone()], Box::new(num_ty.clone())),
+        );
+        env.insert_mono(
+            "mod".into(),
+            TcType::Arrow(vec![num_ty.clone(), num_ty.clone()], Box::new(num_ty.clone())),
+        );
+
+        // ── Wrapping arithmetic ──
+        env.insert_mono(
+            "wrap-add".into(),
+            TcType::Arrow(vec![num_ty.clone(), num_ty.clone()], Box::new(num_ty.clone())),
+        );
+        env.insert_mono(
+            "wrap-sub".into(),
+            TcType::Arrow(vec![num_ty.clone(), num_ty.clone()], Box::new(num_ty.clone())),
+        );
+        env.insert_mono(
+            "wrap-mul".into(),
+            TcType::Arrow(vec![num_ty.clone(), num_ty.clone()], Box::new(num_ty.clone())),
+        );
+
+        // ── Bitwise ──
+        env.insert_mono(
+            "band".into(),
+            TcType::Arrow(vec![num_ty.clone(), num_ty.clone()], Box::new(num_ty.clone())),
+        );
+        env.insert_mono(
+            "bor".into(),
+            TcType::Arrow(vec![num_ty.clone(), num_ty.clone()], Box::new(num_ty.clone())),
+        );
+        env.insert_mono(
+            "shl".into(),
+            TcType::Arrow(vec![num_ty.clone(), num_ty.clone()], Box::new(num_ty.clone())),
+        );
+        env.insert_mono(
+            "shr".into(),
+            TcType::Arrow(vec![num_ty.clone(), num_ty.clone()], Box::new(num_ty.clone())),
+        );
+
+        // ── Memory ──
+        env.insert_mono(
+            "mem-get8".into(),
+            TcType::Arrow(vec![num_ty.clone()], Box::new(num_ty.clone())),
+        );
+
+        // ── NEAR host fns (missing) ──
+        env.insert_mono(
+            "near/signer_account_pk".into(),
+            TcType::Arrow(vec![], Box::new(int_ty.clone())),
+        );
+        env.insert_mono(
+            "near/log_num".into(),
+            TcType::Arrow(vec![num_ty.clone()], Box::new(nil_ty.clone())),
+        );
+        env.insert_mono(
+            "near/log_utf16".into(),
+            TcType::Arrow(vec![str_ty.clone()], Box::new(nil_ty.clone())),
+        );
+
+        // ── Test helpers ──
+        env.insert_mono(
+            "assert-equal".into(),
+            TcType::Arrow(vec![any_ty.clone(), any_ty.clone()], Box::new(nil_ty.clone())),
+        );
+        env.insert_mono(
+            "assert-true".into(),
+            TcType::Arrow(vec![any_ty.clone()], Box::new(nil_ty.clone())),
+        );
+        env.insert_mono(
+            "assert-raises".into(),
+            TcType::Arrow(vec![any_ty.clone()], Box::new(nil_ty.clone())),
+        );
+
+        // ── Coercion ──
+        env.insert_mono(
+            "str".into(),
+            TcType::Arrow(vec![num_ty.clone()], Box::new(str_ty.clone())),
+        );
+        // ── Logical ──
+        env.insert_mono(
+            "not".into(),
+            TcType::Arrow(vec![any_ty.clone()], Box::new(bool_ty.clone())),
         );
 
         // NEAR storage (emitter names)

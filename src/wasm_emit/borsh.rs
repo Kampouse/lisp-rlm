@@ -197,103 +197,52 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(pos));
             }
             BorshType::U128 => {
-                // Write low 8 bytes (same as I64)
+                // U128 is represented as array [lo, hi] with count=2
+                // Write 16 bytes: lo at pos, hi at pos+8
+                let arr_lo = self.local_idx("__arr_lo");
+                let arr_hi = self.local_idx("__arr_hi");
+                // Load arr[1] (lo) - count is at arr[0], so lo is at arr+8
+                v.push(Instruction::LocalGet(tmp));
+                v.push(Instruction::I64Const(8));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(arr_lo));
+                // Load arr[2] (hi) - at arr+16
+                v.push(Instruction::LocalGet(tmp));
+                v.push(Instruction::I64Const(16));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(arr_hi));
+                // Write lo at pos
                 v.push(Instruction::LocalGet(pos));
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::LocalGet(tmp));
-                v.extend(self.emit_untag());
+                v.push(Instruction::LocalGet(arr_lo));
                 v.push(Instruction::I64Store(wasm_encoder::MemArg {
                     offset: 0,
                     align: 3,
                     memory_index: 0,
                 }));
-                // Write 8 zero bytes at pos+8
+                // Write hi at pos+8
                 v.push(Instruction::LocalGet(pos));
                 v.push(Instruction::I64Const(8));
                 v.push(Instruction::I64Add);
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Const(0));
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Store8(wasm_encoder::MemArg {
+                v.push(Instruction::LocalGet(arr_hi));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
                     offset: 0,
-                    align: 0,
-                    memory_index: 0,
-                }));
-                v.push(Instruction::LocalGet(pos));
-                v.push(Instruction::I64Const(9));
-                v.push(Instruction::I64Add);
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Const(0));
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Store8(wasm_encoder::MemArg {
-                    offset: 0,
-                    align: 0,
-                    memory_index: 0,
-                }));
-                v.push(Instruction::LocalGet(pos));
-                v.push(Instruction::I64Const(10));
-                v.push(Instruction::I64Add);
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Const(0));
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Store8(wasm_encoder::MemArg {
-                    offset: 0,
-                    align: 0,
-                    memory_index: 0,
-                }));
-                v.push(Instruction::LocalGet(pos));
-                v.push(Instruction::I64Const(11));
-                v.push(Instruction::I64Add);
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Const(0));
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Store8(wasm_encoder::MemArg {
-                    offset: 0,
-                    align: 0,
-                    memory_index: 0,
-                }));
-                v.push(Instruction::LocalGet(pos));
-                v.push(Instruction::I64Const(12));
-                v.push(Instruction::I64Add);
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Const(0));
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Store8(wasm_encoder::MemArg {
-                    offset: 0,
-                    align: 0,
-                    memory_index: 0,
-                }));
-                v.push(Instruction::LocalGet(pos));
-                v.push(Instruction::I64Const(13));
-                v.push(Instruction::I64Add);
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Const(0));
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Store8(wasm_encoder::MemArg {
-                    offset: 0,
-                    align: 0,
-                    memory_index: 0,
-                }));
-                v.push(Instruction::LocalGet(pos));
-                v.push(Instruction::I64Const(14));
-                v.push(Instruction::I64Add);
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Const(0));
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Store8(wasm_encoder::MemArg {
-                    offset: 0,
-                    align: 0,
-                    memory_index: 0,
-                }));
-                v.push(Instruction::LocalGet(pos));
-                v.push(Instruction::I64Const(15));
-                v.push(Instruction::I64Add);
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Const(0));
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Store8(wasm_encoder::MemArg {
-                    offset: 0,
-                    align: 0,
+                    align: 3,
                     memory_index: 0,
                 }));
                 // pos += 16
@@ -672,7 +621,25 @@ impl WasmEmitter {
                 v.extend(self.emit_tag(TAG_BOOL));
             }
             BorshType::U128 => {
-                // Read low 8 bytes only
+                // U128 is 16 bytes. Return array [lo, hi] (count=2 at arr[0])
+                // Allocate runtime array: [count=2, lo, hi]
+                let arr_ptr = self.local_idx("__u128_arr");
+                v.extend(self.emit_runtime_alloc(24)); // 3 slots * 8 bytes
+                v.push(Instruction::LocalSet(arr_ptr));
+                // Store count=2 at arr[0]
+                v.push(Instruction::LocalGet(arr_ptr));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(2));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                // Store lo at arr[1] (arr+8)
+                v.push(Instruction::LocalGet(arr_ptr));
+                v.push(Instruction::I64Const(8));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalGet(src));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(wasm_encoder::MemArg {
@@ -681,6 +648,34 @@ impl WasmEmitter {
                     memory_index: 0,
                 }));
                 v.extend(self.emit_tag_num());
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                // Store hi at arr[2] (arr+16)
+                v.push(Instruction::LocalGet(arr_ptr));
+                v.push(Instruction::I64Const(16));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(src));
+                v.push(Instruction::I64Const(8));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                v.extend(self.emit_tag_num());
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                // Return tagged array
+                v.push(Instruction::LocalGet(arr_ptr));
+                v.extend(self.emit_tag(TAG_ARRAY));
             }
             BorshType::F64 => {
                 return Err("borsh-deserialize: F64 not yet supported".into());

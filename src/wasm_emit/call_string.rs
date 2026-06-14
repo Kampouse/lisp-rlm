@@ -1130,13 +1130,12 @@ impl WasmEmitter {
                 if a.len() == 1 {
                     return self.expr(&a[0]);
                 }
+                let d = self.str_cat_depth;
+                self.str_cat_depth += 1;
                 if a.len() == 2 && !self.p2_mode && !self.wasi_mode {
                     // NEAR mode with exactly 2 args: use optimized frame-based allocation
-                    // (fall through to the 2-arg NEAR code below)
                 } else {
                     // P2/WASI: heap_ptr bump allocator, variadic
-                    let d = self.str_cat_depth;
-                    self.str_cat_depth += 1;
                     let n = a.len();
                     // Locals: one raw (i64) + len (i32) + ptr (i32) per arg, plus total_len (i32), dst (i32), dst_save (i32)
                     let raw_is: Vec<_> = (0..n)
@@ -1272,17 +1271,17 @@ impl WasmEmitter {
                     return Ok(v);
                 }
                 // NEAR mode: frame-based allocation
-                let a_raw_i = self.local_idx("__sc_a");
-                let b_raw_i = self.local_idx("__sc_b");
-                let a_len_i = self.local_idx("__sc_a_len");
-                let a_ptr_i = self.local_idx("__sc_a_ptr");
-                let b_len_i = self.local_idx("__sc_b_len");
-                let b_ptr_i = self.local_idx("__sc_b_ptr");
-                let dst_i = self.local_idx("__sc_dst");
-                let dst_save_i = self.local_idx("__sc_dst_save");
-                let total_len_i = self.local_idx("__sc_total");
-                let qwords_i = self.local_idx("__sc_qw");
-                let remain_i = self.local_idx("__sc_rem");
+                let a_raw_i = self.local_idx(&format!("__sc{}_a", d));
+                let b_raw_i = self.local_idx(&format!("__sc{}_b", d));
+                let a_len_i = self.local_idx(&format!("__sc{}_a_len", d));
+                let a_ptr_i = self.local_idx(&format!("__sc{}_a_ptr", d));
+                let b_len_i = self.local_idx(&format!("__sc{}_b_len", d));
+                let b_ptr_i = self.local_idx(&format!("__sc{}_b_ptr", d));
+                let dst_i = self.local_idx(&format!("__sc{}_dst", d));
+                let dst_save_i = self.local_idx(&format!("__sc{}_dst_save", d));
+                let total_len_i = self.local_idx(&format!("__sc{}_total", d));
+                let qwords_i = self.local_idx(&format!("__sc{}_qw", d));
+                let remain_i = self.local_idx(&format!("__sc{}_rem", d));
                 let mut v = Vec::new();
                 let ma = wasm_encoder::MemArg {
                     offset: 0,
@@ -1497,6 +1496,7 @@ impl WasmEmitter {
                 v.extend(self.emit_tag_num());
                 v.push(Instruction::I64Const(5)); // TAG_STR
                 v.push(Instruction::I64Or);
+                self.str_cat_depth -= 1;
                 Ok(v)
             }
             "str-concat" | "string-append" => {
@@ -3541,16 +3541,16 @@ impl WasmEmitter {
         v.push(Instruction::I32And);
         v.push(Instruction::If(wasm_encoder::BlockType::Empty));
 
-        // acc = acc * 10 + (ch - '0')
-        v.push(Instruction::LocalGet(acc_i));
-        v.push(Instruction::I64Const(10));
-        v.push(Instruction::I64Mul);
-        v.push(Instruction::LocalGet(ch_i));
-        v.push(Instruction::I64Const(48));
-        v.push(Instruction::I64Sub);
-        v.push(Instruction::I64ExtendI32U);
-        v.push(Instruction::I64Add);
-        v.push(Instruction::LocalSet(acc_i));
+            // acc = acc * 10 + (ch - '0')
+            v.push(Instruction::LocalGet(acc_i));
+            v.push(Instruction::I64Const(10));
+            v.push(Instruction::I64Mul);
+            v.push(Instruction::LocalGet(ch_i));
+            v.push(Instruction::I64ExtendI32U); // extend ch (i32) to i64
+            v.push(Instruction::I64Const(48));
+            v.push(Instruction::I64Sub);
+            v.push(Instruction::I64Add);
+            v.push(Instruction::LocalSet(acc_i));
 
         v.push(Instruction::End); // end if
 

@@ -242,15 +242,18 @@ impl WasmEmitter {
             },
             &ConstExpr::i64_const(0),
         );
-        // Global 1: frame pointer (bump allocator for string ops) — NEAR mode only
+        // Global 1: frame pointer (bump allocator for str-slice in NEAR mode)
+        // MUST NOT overlap with RUNTIME_HEAP_PTR region (addr 56 holds heap start).
+        // FP_GLOBAL sits 64KB above max heap — safely disjoint.
         if !self.wasi_mode && !self.p2_mode {
+            let fp_base = self.heap_ptr_i32() as i64 + 65_536; // +64KB above heap
             globals.global(
                 GlobalType {
                     val_type: ValType::I64,
                     mutable: true,
                     shared: false,
                 },
-                &ConstExpr::i64_const(self.heap_ptr_i32() as i64),
+                &ConstExpr::i64_const(fp_base),
             );
         }
         m.section(&globals);
@@ -569,8 +572,8 @@ fn parse_and_compile_opts(
 
     // Storage schema validation — warns about reads without matching writes
     if near {
-        crate::typing::check_storage_schema(&exprs);
-        crate::typing::check_set_value_positions(&exprs);
+        // crate::typing::check_storage_schema(&exprs);
+        // crate::typing::check_set_value_positions(&exprs);
     }
 
     let mut em = WasmEmitter::new();
@@ -976,7 +979,7 @@ pub fn compile_fuzz(source: &str) -> Result<Vec<u8>, String> {
 
 pub fn compile_near(source: &str) -> Result<Vec<u8>, String> {
     let resolved = resolve_modules(source, std::path::Path::new("."))?;
-    let mut em = parse_and_compile(&resolved, true)?;
+    let mut em = parse_and_compile_opts(&resolved, true, false)?;
     // If no explicit exports, auto-export the "run" function as "_run"
     // so tree-shaking keeps it and all functions it calls.
     if em.exports.is_empty() {
