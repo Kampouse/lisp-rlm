@@ -1,8 +1,1 @@
-{
-  "name": "test_ret_debug",
-  "src": "test_ret_debug.lisp",
-  "account": "test.kampy.testnet",
-  "network": "testnet",
-  "output": "test_ret_debug.wasm",
-  "tests": ""
-}
+{"name":"test_signed_tx","src":"test_signed_tx.lisp","output":"test_signed_tx.wasm","account":"test.testnet","network":"testnet","target":"outlayer-p2"}

@@ -15,6 +15,7 @@ struct ProjectConfig {
     key_path: String,
     output: String,
     tests: String,
+    target: String,
 }
 
 fn load_project_config(dir: &str) -> Result<ProjectConfig, String> {
@@ -35,6 +36,7 @@ fn load_project_config(dir: &str) -> Result<ProjectConfig, String> {
         .unwrap_or(&format!("target/{}.wasm", name))
         .to_string();
     let tests = json["tests"].as_str().unwrap_or("tests/").to_string();
+    let target = json["target"].as_str().unwrap_or("near").to_string();
     Ok(ProjectConfig {
         name,
         src,
@@ -43,6 +45,7 @@ fn load_project_config(dir: &str) -> Result<ProjectConfig, String> {
         key_path,
         output,
         tests,
+        target,
     })
 }
 
@@ -216,12 +219,25 @@ fn do_build(project_dir: &str) -> Result<(ProjectConfig, Vec<u8>), String> {
 
 fn run_build(dir: Option<&str>) {
     let args: Vec<String> = std::env::args().collect();
+    let project_dir = dir.unwrap_or(".");
+    
+    // Load config first to get default target
+    let config = match load_project_config(project_dir) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("❌ Build failed: {}", e);
+            std::process::exit(1);
+        }
+    };
+    
+    // CLI --target overrides config target
     let target = args
         .iter()
         .find_map(|a| a.strip_prefix("--target="))
-        .unwrap_or("near");
-    let project_dir = dir.unwrap_or(".");
-    match do_build_target(project_dir, target) {
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| config.target.clone());
+    
+    match do_build_target_with_config(project_dir, &target, config) {
         Ok((output, wasm)) => {
             println!(
                 "✅ {} ({} bytes) — validated [target={}]",
@@ -237,9 +253,7 @@ fn run_build(dir: Option<&str>) {
     }
 }
 
-fn do_build_target(project_dir: &str, target: &str) -> Result<(String, Vec<u8>), String> {
-    let config = load_project_config(project_dir)?;
-
+fn do_build_target_with_config(project_dir: &str, target: &str, config: ProjectConfig) -> Result<(String, Vec<u8>), String> {
     let src_path = Path::new(project_dir).join(&config.src);
     let source =
         fs::read_to_string(&src_path).map_err(|e| format!("read {}: {}", config.src, e))?;

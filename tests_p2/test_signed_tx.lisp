@@ -1,6 +1,4 @@
 ;; Test signed transaction with explicit key
-;; Uses near/call-signed to sign transactions with WASM-provided key
-
 (define (run input)
   (let* (
     (signer-id (env/get "NEAR_ACCOUNT_ID"))
@@ -15,6 +13,5 @@
         "0"
         "30000000000000"
         "FINAL")
-      "missing credentials"))
-    (out (str-cat "{\"result\":\"" (if result result "nil") "\"}")))
-    out))
+      "missing")))
+    result))

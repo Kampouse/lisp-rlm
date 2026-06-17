@@ -441,47 +441,70 @@ impl WasmEmitter {
                 // (env/get "VAR_NAME") -> string or nil
                 // Canonical ABI: (name_ptr: i32, name_len: i32, ret_area: i32) -> ()
                 // Result: host writes (ptr, len) to ret_area
+                // CRITICAL: Host returns a pointer to its internal buffer which gets overwritten
+                // on each call. We must copy the string to WASM heap immediately.
                 if a.is_empty() { return Err("env/get requires a variable name string".into()); }
                 if !self.wasi_mode { return Err("env/get is only available on OutLayer".into()); }
                 self.need_outlayer = true;
                 let key_expr = self.expr(&a[0])?;
                 let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
                 let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 448;
+                
+                // Allocate unique heap buffer per call to avoid overwriting
+                let call_idx = self.env_get_count;
+                self.env_get_count += 1;
+                let heap_buf: i32 = 131072 + (call_idx as i32) * 512; // 128KB base + 512 per call
+                
+                // Use a named local for the length
+                let len_local = self.local_idx_i32("env_get_len");
+                
                 let mut v = Vec::new();
-                // String tagged value: ((len << 32) | ptr) << 3 | TAG_STR
-                // Canonical ABI params: (name_ptr: i32, name_len: i32, ret_area: i32)
-                // Stack order: push in reverse order (top-to-bottom) so function receives correctly
-                // Push ret_area LAST (top of stack = param2)
                 
-                // Extract and push ptr (param0 - FIRST push)
+                // Push params: (name_ptr, name_len, ret_area)
                 v.extend(key_expr.clone());
-                v.extend(self.emit_untag());  // >> 3 to get encoded: (len << 32) | ptr
+                v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(0xFFFFFFFF));
-                v.push(Instruction::I64And);  // ptr = encoded & 0xFFFFFFFF
-                v.push(Instruction::I32WrapI64); // ptr as i32
+                v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64); // name_ptr
                 
-                // Extract and push len (param1 - SECOND push)
                 v.extend(key_expr);
-                v.extend(self.emit_untag());  // >> 3 to get encoded
+                v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64ShrU);  // len = encoded >> 32
-                v.push(Instruction::I32WrapI64); // len as i32
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64); // name_len
                 
-                // Push ret_area (param2 - LAST push)
                 v.push(Instruction::I32Const(ret_area));
                 
-                // Call env-var
+                // Call env-var (function 122)
                 v.push(Instruction::Call(122));
                 
-                // Read return value from ret_area: host wrote (ptr, len)
-                v.push(Instruction::I32Const(ret_area)); v.push(Instruction::I32Load(ma4));
+                // Host wrote (ptr, len) to ret_area. Copy string to heap.
+                // 1. Read len from ret_area+4 and store to local
+                v.push(Instruction::I32Const(ret_area + 4));
+                v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::LocalSet(len_local));
+                
+                // 2. memory.copy(dst=heap_buf, src=ret_area[0], len)
+                // Stack order for memory.copy: dst, src, len (dst at bottom, len on top)
+                v.push(Instruction::I32Const(heap_buf)); // dst
+                v.push(Instruction::I32Const(ret_area));
+                v.push(Instruction::I32Load(ma4)); // src = ret_area[0]
+                v.push(Instruction::LocalGet(len_local)); // len
+                v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+                
+                // 3. Build tagged value: ((len << 32) | heap_buf) << 3 | TAG_STR
+                v.push(Instruction::I32Const(heap_buf));  // heap_buf is i32
                 v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::LocalGet(len_local));
                 v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl); // len << 32
+                v.push(Instruction::I64Or);  // (len << 32) | heap_buf
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_STR));
                 v.push(Instruction::I64Or);
-                v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TAG_STR)); v.push(Instruction::I64Or);
+                
                 Ok(v)
             }
             "storage-decrement" => {
@@ -1278,10 +1301,11 @@ impl WasmEmitter {
                 let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 576;
                 let mut v = Vec::new();
                 // Push 17 i32 params for near:rpc/api call:
-                // signer_id, signer_key, receiver_id, method_name, args_json, deposit_yocto, gas, wait_until
-                // Each string is (ptr, len) pair, plus ret_area = 17 params
+                // WIT: call(signer-id, signer-key, receiver-id, method-name, args-json, deposit-yocto, gas, wait-until) -> tuple<string, string>
+                // Canonical ABI: 8 strings × (ptr, len) + ret_area = 17 i32 params
+                // Push params in forward order (like env/get)
                 
-                // signer_id (first string arg)
+                // signer_id (param0: ptr, param1: len)
                 let signer_id = self.expr(&a[0])?;
                 v.extend(signer_id.clone());
                 v.extend(self.emit_untag());
@@ -1292,7 +1316,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I32WrapI64); // len
                 
-                // signer_key (private key in NEAR format: ed25519:base58...)
+                // signer_key (param2: ptr, param3: len)
                 let signer_key = self.expr(&a[1])?;
                 v.extend(signer_key.clone());
                 v.extend(self.emit_untag());
@@ -1303,7 +1327,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I32WrapI64);
                 
-                // receiver_id, method_name, args_json
+                // receiver_id, method_name, args_json (params 4-9)
                 for i in 2..5 {
                     let val = self.expr(&a[i])?;
                     v.extend(val.clone());
@@ -1316,7 +1340,7 @@ impl WasmEmitter {
                     v.push(Instruction::I32WrapI64);
                 }
                 
-                // deposit_yocto, gas
+                // deposit_yocto, gas (params 10-13)
                 for i in 5..7 {
                     let val = self.expr(&a[i])?;
                     v.extend(val.clone());
@@ -1329,7 +1353,7 @@ impl WasmEmitter {
                     v.push(Instruction::I32WrapI64);
                 }
                 
-                // wait_until (optional, default empty = FINAL)
+                // wait_until (params 14-15, optional, default empty = FINAL)
                 if a.len() > 7 {
                     let wait = self.expr(&a[7])?;
                     v.extend(wait.clone());
@@ -1341,11 +1365,12 @@ impl WasmEmitter {
                     v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
                     v.push(Instruction::I32WrapI64);
                 } else {
-                    v.push(Instruction::I32Const(0)); v.push(Instruction::I32Const(0)); // empty string
+                    v.push(Instruction::I32Const(0)); v.push(Instruction::I32Const(0));
                 }
                 
-                // ret_area
+                // ret_area (param 16 - LAST)
                 v.push(Instruction::I32Const(ret_area));
+                
                 // call (sentinel 101)
                 v.push(Instruction::Call(101));
                 
@@ -1378,10 +1403,11 @@ impl WasmEmitter {
                 let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 608;
                 let mut v = Vec::new();
                 // Push 11 i32 params for near:rpc/api transfer:
-                // signer_id, signer_key, receiver_id, amount_yocto, wait_until
-                // Each string is (ptr, len) pair, plus ret_area = 11 params
+                // WIT: transfer(signer-id, signer-key, receiver-id, amount-yocto, wait-until) -> tuple<string, string>
+                // Canonical ABI: 5 strings × (ptr, len) + ret_area = 11 i32 params
+                // Push params in forward order (like env/get)
                 
-                // signer_id
+                // signer_id (param0: ptr, param1: len)
                 let signer_id = self.expr(&a[0])?;
                 v.extend(signer_id.clone());
                 v.extend(self.emit_untag());
@@ -1392,7 +1418,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I32WrapI64);
                 
-                // signer_key (private key)
+                // signer_key (param2: ptr, param3: len)
                 let signer_key = self.expr(&a[1])?;
                 v.extend(signer_key.clone());
                 v.extend(self.emit_untag());
@@ -1403,7 +1429,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I32WrapI64);
                 
-                // receiver_id, amount_yocto
+                // receiver_id, amount_yocto (params 4-7)
                 for i in 2..4 {
                     let val = self.expr(&a[i])?;
                     v.extend(val.clone());
@@ -1416,7 +1442,7 @@ impl WasmEmitter {
                     v.push(Instruction::I32WrapI64);
                 }
                 
-                // wait_until (optional)
+                // wait_until (params 8-9, optional)
                 if a.len() > 4 {
                     let wait = self.expr(&a[4])?;
                     v.extend(wait.clone());
@@ -1431,8 +1457,9 @@ impl WasmEmitter {
                     v.push(Instruction::I32Const(0)); v.push(Instruction::I32Const(0));
                 }
                 
-                // ret_area
+                // ret_area (param 10 - LAST)
                 v.push(Instruction::I32Const(ret_area));
+                
                 // transfer (sentinel 102)
                 v.push(Instruction::Call(102));
                 
