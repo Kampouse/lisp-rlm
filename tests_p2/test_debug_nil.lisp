@@ -1,6 +1,6 @@
-(define (run)
+(define (run input)
   (let* (
-    (account-id (json-get-str "account_id"))
+    (account-id (json-get-str "account_id" input))
     (acct (if (= (str-len account-id) 0) "kampouse.near" account-id))
     (args (str-cat "{\"account_id\":\"" acct "\"}"))
     (account-raw (outlayer/view "contract.main.burrow.near" "get_account" args))

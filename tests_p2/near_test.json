@@ -1,0 +1,8 @@
+{
+  "name": "test_account2",
+  "src": "test_account2.lisp",
+  "account": "test.kampy.testnet",
+  "network": "testnet",
+  "output": "test_account2.wasm",
+  "tests": ""
+}

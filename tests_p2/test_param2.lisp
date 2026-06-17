@@ -1,7 +1,7 @@
 (define (run)
   (let* (
     ;; Extract account_id from stdin JSON (implicit)
-    (account-id (json-get-str "account_id"))
+    (account-id (json-get-str "account_id" input))
     
     ;; Handle empty/nil account_id
     (acct (if (= (str-len account-id) 0)

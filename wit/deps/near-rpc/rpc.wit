@@ -93,6 +93,10 @@ interface api {
 
     /// Raw JSON-RPC call (for any method not covered above)
     raw: func(method: string, params-json: string) -> tuple<string, string>;
+
+    /// Read an environment variable value
+    /// Returns the value string, or empty string if not found
+    env-var: func(name: string) -> string;
 }
 
 world rpc-host {

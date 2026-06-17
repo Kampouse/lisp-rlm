@@ -14,6 +14,10 @@ impl WasmEmitter {
         vec![Instruction::I64Const(TAG_BITS), Instruction::I64ShrU]
     }
 
+    pub(crate) fn emit_i32_to_i64(&self) -> Vec<Instruction<'static>> {
+        vec![Instruction::I64ExtendI32U]
+    }
+
     pub(crate) fn emit_num_coerce(&mut self) -> Vec<Instruction<'static>> {
         let tmp = self.local_idx("__coerce_tmp");
         let result = self.local_idx("__coerce_result");

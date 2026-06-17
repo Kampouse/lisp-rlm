@@ -1,0 +1,5 @@
+(define (get_credits)
+  (let ((inp (near/input)))
+    (let ((acct-len (bytes-to-u32 (str-slice inp 0 4))))
+      (let ((acct (str-slice inp 4 (+ 4 acct-len))))
+        (near/return_str acct)))))

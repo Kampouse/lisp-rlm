@@ -1,0 +1,7 @@
+{
+  "contract": "lending.kampy.testnet",
+  "source": "burrow-mini.lisp",
+  "account": "burrow-tracker.kampy.testnet",
+  "network": "testnet",
+  "dir": "/Users/asil"
+}

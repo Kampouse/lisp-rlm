@@ -1,0 +1,12 @@
+{
+  "planId": "",
+  "goal": "Improve code quality",
+  "risk": "low",
+  "target": "/Users/asil/lisp-rlm/crates/browser-compiler/web-app/src",
+  "language": "typescript",
+  "tokenEstimate": 0,
+  "fileCount": 11,
+  "diagnostics": [],
+  "steps": [],
+  "verification": []
+}

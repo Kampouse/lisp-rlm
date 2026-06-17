@@ -1,11 +1,7 @@
 use super::*;
 
 impl WasmEmitter {
-    pub(crate) fn call_near_storage(
-        &mut self,
-        op: &str,
-        a: &[LispVal],
-    ) -> Result<Vec<Instruction<'static>>, String> {
+    pub(crate) fn call_near_storage(&mut self, op: &str, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
         match op {
             "near/store" => {
                 let key_expr = self.expr(&a[0])?;
@@ -16,29 +12,19 @@ impl WasmEmitter {
                 v.extend(key_expr);
                 v.push(Instruction::LocalSet(key_local));
                 // Store tagged val at mem[STORAGE_BUF] — preserves type through storage round-trip
-                v.push(Instruction::I32Const(STORAGE_BUF as i32));
-                v.extend(val);
-                v.push(Instruction::I64Store(wasm_encoder::MemArg {
-                    offset: 0,
-                    align: 3,
-                    memory_index: 0,
-                }));
+                v.push(Instruction::I32Const(STORAGE_BUF as i32)); v.extend(val);
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
                 // storage_write(key_len, key_ptr, val_len=8, val_ptr=STORAGE_BUF, register_id=0) — idx 17
                 v.push(Instruction::LocalGet(key_local));
                 v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64ShrU); // raw >> 32 = key_len
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // raw >> 32 = key_len
                 v.push(Instruction::LocalGet(key_local));
                 v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64ExtendI32U); // raw & 0xFFFF_FFFF = key_ptr
-                v.push(Instruction::I64Const(8));
-                v.push(Instruction::I64Const(STORAGE_BUF));
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // raw & 0xFFFF_FFFF = key_ptr
+                v.push(Instruction::I64Const(8)); v.push(Instruction::I64Const(STORAGE_BUF));
                 v.push(Instruction::I64Const(0));
-                v.push(Self::host_call(17));
-                v.push(Instruction::Drop);
-                v.push(Instruction::I64Const(TAG_NIL));
-                Ok(v)
+                v.push(Self::host_call(17)); v.push(Instruction::Drop);
+                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
             "near/load" => {
                 let key_expr = self.expr(&a[0])?;
@@ -52,12 +38,10 @@ impl WasmEmitter {
                 // because register_len doesn't clear stale data from previous reads.
                 v.push(Instruction::LocalGet(key_local));
                 v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::LocalGet(key_local));
                 v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(1)); // register 1
                 v.push(Self::host_call(18));
                 // Check return value: 0 = not found, nonzero = found
@@ -69,16 +53,11 @@ impl WasmEmitter {
                 v.extend(self.emit_tag_num());
                 v.push(Instruction::Else);
                 // Key found: read_register(1, STORAGE_BUF) — idx 0
-                v.push(Instruction::I64Const(1));
-                v.push(Instruction::I64Const(STORAGE_BUF));
+                v.push(Instruction::I64Const(1)); v.push(Instruction::I64Const(STORAGE_BUF));
                 v.push(Self::host_call(0));
                 // Load the tagged value directly — tag preserved from store
                 v.push(Instruction::I32Const(STORAGE_BUF as i32));
-                v.push(Instruction::I64Load(wasm_encoder::MemArg {
-                    offset: 0,
-                    align: 3,
-                    memory_index: 0,
-                }));
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
                 v.push(Instruction::End);
                 Ok(v)
             }
@@ -89,223 +68,10 @@ impl WasmEmitter {
                 // Untag key first
                 v.extend(key.clone());
                 v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
                 v.extend(key);
                 v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::I64Const(0));
-                v.push(Self::host_call(19));
-                Ok(v)
-            }
-            // ── near/kstore: (near/kstore "prefix" suffix value) ──
-            // Concatenates prefix + suffix into fixed KEY_BUF (no FP_GLOBAL bump),
-            // then calls storage_write. Safe to mix with literal near/store calls.
-            "near/kstore" => {
-                if a.len() != 3 {
-                    return Err("near/kstore: need 3 args (prefix, suffix, value)".into());
-                }
-                let prefix = self.expr(&a[0])?;
-                let suffix = self.expr(&a[1])?;
-                let val = self.expr(&a[2])?;
-                let pfx_raw = self.local_idx("__ks_pfx");
-                let pfx_len = self.local_idx_i32("__ks_pl");
-                let pfx_ptr = self.local_idx_i32("__ks_pp");
-                let sfx_raw = self.local_idx("__ks_sfx");
-                let sfx_len = self.local_idx_i32("__ks_sl");
-                let sfx_ptr = self.local_idx_i32("__ks_sp");
-                let mut v = Vec::new();
-                // Eval prefix → save raw tagged string
-                v.extend(prefix);
-                v.push(Instruction::LocalSet(pfx_raw));
-                // Eval suffix → save raw tagged string
-                v.extend(suffix);
-                v.push(Instruction::LocalSet(sfx_raw));
-                // Extract prefix len/ptr
-                v.push(Instruction::LocalGet(pfx_raw));
-                v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(pfx_len));
-                v.push(Instruction::LocalGet(pfx_raw));
-                v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(pfx_ptr));
-                // Extract suffix len/ptr
-                v.push(Instruction::LocalGet(sfx_raw));
-                v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(sfx_len));
-                v.push(Instruction::LocalGet(sfx_raw));
-                v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(sfx_ptr));
-                // memcpy prefix into KEY_BUF
-                let ma8 = wasm_encoder::MemArg {
-                    offset: 0,
-                    align: 3,
-                    memory_index: 0,
-                };
-                // memory.copy expects: dest, src, len on stack
-                v.push(Instruction::I32Const(KEY_BUF as i32)); // dest
-                v.push(Instruction::LocalGet(pfx_ptr)); // src
-                v.push(Instruction::LocalGet(pfx_len)); // len
-                v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
-                // memcpy suffix into KEY_BUF + prefix_len
-                v.push(Instruction::I32Const(KEY_BUF as i32)); // dest base
-                v.push(Instruction::LocalGet(pfx_len));
-                v.push(Instruction::I32Add); // dest = KEY_BUF + pfx_len
-                v.push(Instruction::LocalGet(sfx_ptr)); // src
-                v.push(Instruction::LocalGet(sfx_len)); // len
-                v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
-                // total key len = pfx_len + sfx_len
-                let total_len = self.local_idx_i32("__ks_tl");
-                v.push(Instruction::LocalGet(pfx_len));
-                v.push(Instruction::LocalGet(sfx_len));
-                v.push(Instruction::I32Add);
-                v.push(Instruction::LocalSet(total_len));
-                // Store tagged val at STORAGE_BUF
-                v.push(Instruction::I32Const(STORAGE_BUF as i32));
-                v.extend(val);
-                v.push(Instruction::I64Store(ma8));
-                // storage_write(total_len, KEY_BUF, 8, STORAGE_BUF, 0) — idx 17
-                v.push(Instruction::LocalGet(total_len));
-                v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::I64Const(KEY_BUF));
-                v.push(Instruction::I64Const(8));
-                v.push(Instruction::I64Const(STORAGE_BUF));
-                v.push(Instruction::I64Const(0));
-                v.push(Self::host_call(17));
-                v.push(Instruction::Drop);
-                v.push(Instruction::I64Const(TAG_NIL));
-                Ok(v)
-            }
-            // ── near/kload: (near/kload "prefix" suffix) ──
-            // Same KEY_BUF concatenation as kstore, but reads.
-            "near/kload" => {
-                if a.len() != 2 {
-                    return Err("near/kload: need 2 args (prefix, suffix)".into());
-                }
-                let prefix = self.expr(&a[0])?;
-                let suffix = self.expr(&a[1])?;
-                let pfx_raw = self.local_idx("__kl_pfx");
-                let pfx_len = self.local_idx_i32("__kl_pl");
-                let pfx_ptr = self.local_idx_i32("__kl_pp");
-                let sfx_raw = self.local_idx("__kl_sfx");
-                let sfx_len = self.local_idx_i32("__kl_sl");
-                let sfx_ptr = self.local_idx_i32("__kl_sp");
-                let mut v = Vec::new();
-                v.extend(prefix);
-                v.push(Instruction::LocalSet(pfx_raw));
-                v.extend(suffix);
-                v.push(Instruction::LocalSet(sfx_raw));
-                // Extract prefix len/ptr
-                v.push(Instruction::LocalGet(pfx_raw));
-                v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(pfx_len));
-                v.push(Instruction::LocalGet(pfx_raw));
-                v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(pfx_ptr));
-                // Extract suffix len/ptr
-                v.push(Instruction::LocalGet(sfx_raw));
-                v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(sfx_len));
-                v.push(Instruction::LocalGet(sfx_raw));
-                v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(sfx_ptr));
-                // memcpy prefix into KEY_BUF
-                v.push(Instruction::I32Const(KEY_BUF as i32)); // dest
-                v.push(Instruction::LocalGet(pfx_ptr)); // src
-                v.push(Instruction::LocalGet(pfx_len)); // len
-                v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
-                // memcpy suffix into KEY_BUF + prefix_len
-                v.push(Instruction::I32Const(KEY_BUF as i32)); // dest base
-                v.push(Instruction::LocalGet(pfx_len));
-                v.push(Instruction::I32Add); // dest = KEY_BUF + pfx_len
-                v.push(Instruction::LocalGet(sfx_ptr)); // src
-                v.push(Instruction::LocalGet(sfx_len)); // len
-                v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
-                // total key len
-                let total_len = self.local_idx_i32("__kl_tl");
-                v.push(Instruction::LocalGet(pfx_len));
-                v.push(Instruction::LocalGet(sfx_len));
-                v.push(Instruction::I32Add);
-                v.push(Instruction::LocalSet(total_len));
-                // storage_read(total_len, KEY_BUF, register_id=1) — idx 18
-                v.push(Instruction::LocalGet(total_len));
-                v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::I64Const(KEY_BUF));
-                v.push(Instruction::I64Const(1));
-                v.push(Self::host_call(18));
-                // Check return: 0 = not found
-                v.push(Instruction::I64Const(0));
-                v.push(Instruction::I64Eq);
-                v.push(Instruction::If(BlockType::Result(ValType::I64)));
-                v.push(Instruction::I64Const(0));
-                v.extend(self.emit_tag_num());
-                v.push(Instruction::Else);
-                // Found: read_register(1, STORAGE_BUF)
-                v.push(Instruction::I64Const(1));
-                v.push(Instruction::I64Const(STORAGE_BUF));
-                v.push(Self::host_call(0));
-                let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
-                v.push(Instruction::I32Const(STORAGE_BUF as i32));
-                v.push(Instruction::I64Load(ma8));
-                v.push(Instruction::End);
-                Ok(v)
-            }
-            // ── near/kremove: (near/kremove "prefix" suffix) ──
-            // Concatenates prefix + suffix into KEY_BUF, then calls storage_remove.
-            "near/kremove" => {
-                if a.len() != 2 {
-                    return Err("near/kremove: need 2 args (prefix, suffix)".into());
-                }
-                let prefix = self.expr(&a[0])?;
-                let suffix = self.expr(&a[1])?;
-                let pfx_raw = self.local_idx("__kr_pfx");
-                let pfx_len = self.local_idx_i32("__kr_pl");
-                let pfx_ptr = self.local_idx_i32("__kr_pp");
-                let sfx_raw = self.local_idx("__kr_sfx");
-                let sfx_len = self.local_idx_i32("__kr_sl");
-                let sfx_ptr = self.local_idx_i32("__kr_sp");
-                let mut v = Vec::new();
-                v.extend(prefix);
-                v.push(Instruction::LocalSet(pfx_raw));
-                v.extend(suffix);
-                v.push(Instruction::LocalSet(sfx_raw));
-                v.push(Instruction::LocalGet(pfx_raw));
-                v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(pfx_len));
-                v.push(Instruction::LocalGet(pfx_raw));
-                v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(pfx_ptr));
-                v.push(Instruction::LocalGet(sfx_raw));
-                v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(sfx_len));
-                v.push(Instruction::LocalGet(sfx_raw));
-                v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(sfx_ptr));
-                v.push(Instruction::I32Const(KEY_BUF as i32));
-                v.push(Instruction::LocalGet(pfx_ptr));
-                v.push(Instruction::LocalGet(pfx_len));
-                v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
-                v.push(Instruction::I32Const(KEY_BUF as i32));
-                v.push(Instruction::LocalGet(pfx_len));
-                v.push(Instruction::I32Add);
-                v.push(Instruction::LocalGet(sfx_ptr));
-                v.push(Instruction::LocalGet(sfx_len));
-                v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
-                let total_len = self.local_idx_i32("__kr_tl");
-                v.push(Instruction::LocalGet(pfx_len));
-                v.push(Instruction::LocalGet(sfx_len));
-                v.push(Instruction::I32Add);
-                v.push(Instruction::LocalSet(total_len));
-                // storage_remove(total_len, KEY_BUF, register_id=0) — idx 19
-                v.push(Instruction::LocalGet(total_len));
-                v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::I64Const(KEY_BUF));
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(19));
                 Ok(v)
@@ -317,12 +83,10 @@ impl WasmEmitter {
                 // Untag key first
                 v.extend(key.clone());
                 v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
                 v.extend(key);
                 v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
                 v.push(Self::host_call(20));
                 // Host returns 0/1 as u64 — tag as Bool
                 v.extend(self.emit_tag_bool());
@@ -331,11 +95,7 @@ impl WasmEmitter {
             "near/storage_set" => {
                 let key_expr = self.expr(&a[0])?;
                 let val_expr = self.expr(&a[1])?;
-                let ma = wasm_encoder::MemArg {
-                    offset: 0,
-                    align: 3,
-                    memory_index: 0,
-                };
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
                 let mut v = Vec::new();
                 // Store untagged value at STORAGE_BUF
                 v.push(Instruction::I32Const(STORAGE_BUF as i32));
@@ -345,53 +105,42 @@ impl WasmEmitter {
                 // Untag key: extract len and ptr
                 v.extend(key_expr.clone());
                 v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64ShrU); // key_len
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // key_len
                 v.extend(key_expr);
                 v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64ExtendI32U); // key_ptr
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // key_ptr
                 v.push(Instruction::I64Const(8));
                 v.push(Instruction::I64Const(STORAGE_BUF));
                 v.push(Instruction::I64Const(0));
-                v.push(Self::host_call(17));
-                v.push(Instruction::Drop); // storage_write
+                v.push(Self::host_call(17)); v.push(Instruction::Drop); // storage_write
 
                 v.push(Instruction::I64Const(0));
                 Ok(v)
             }
             "near/storage_get" => {
                 let key_expr = self.expr(&a[0])?;
-                let ma = wasm_encoder::MemArg {
-                    offset: 0,
-                    align: 3,
-                    memory_index: 0,
-                };
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
                 let mut v = Vec::new();
                 // Untag key: extract len and ptr
                 v.extend(key_expr.clone());
                 v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64ShrU); // key_len
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // key_len
                 v.extend(key_expr);
                 v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64ExtendI32U); // key_ptr
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // key_ptr
                 v.push(Instruction::I64Const(1)); // register 1 (not 0, to avoid stale data)
                 v.push(Self::host_call(18));
                 // Check return value: 0 = not found, 1 = found
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::I64Eq);
-                v.push(Instruction::If(wasm_encoder::BlockType::Result(
-                    ValType::I64,
-                )));
-                v.push(Instruction::I64Const(0));
+                v.push(Instruction::If(wasm_encoder::BlockType::Result(ValType::I64)));
+                    v.push(Instruction::I64Const(0));
                 v.push(Instruction::Else);
-                v.push(Instruction::I64Const(1));
-                v.push(Instruction::I64Const(STORAGE_BUF));
-                v.push(Self::host_call(0)); // read_register
-                v.push(Instruction::I32Const(STORAGE_BUF as i32));
-                v.push(Instruction::I64Load(ma));
+                    v.push(Instruction::I64Const(1));
+                    v.push(Instruction::I64Const(STORAGE_BUF));
+                    v.push(Self::host_call(0)); // read_register
+                    v.push(Instruction::I32Const(STORAGE_BUF as i32));
+                    v.push(Instruction::I64Load(ma));
                 v.push(Instruction::End);
                 Ok(v)
             }
@@ -400,12 +149,10 @@ impl WasmEmitter {
                 let mut v = Vec::new();
                 v.extend(key_expr.clone());
                 v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64ShrU); // key_len
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // key_len
                 v.extend(key_expr);
                 v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64ExtendI32U); // key_ptr
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // key_ptr
                 v.push(Self::host_call(20)); // storage_has_key
                 Ok(v)
             }
@@ -414,12 +161,10 @@ impl WasmEmitter {
                 let mut v = Vec::new();
                 v.extend(key_expr.clone());
                 v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64ShrU); // key_len
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // key_len
                 v.extend(key_expr);
                 v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64ExtendI32U); // key_ptr
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // key_ptr
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(19)); // storage_remove
                 Ok(v)
@@ -427,22 +172,16 @@ impl WasmEmitter {
             // near/store_num: (near/store_num key_i64 val_i64) — key is raw i64, 8 LE bytes
             // Stores TAGGED val under 8-byte LE key. Gas-efficient numeric keys.
             "near/store_num" => {
-                self.need_host(17);
-                self.need_host(0);
+                self.need_host(17); self.need_host(0);
                 let key_expr = self.expr(&a[0])?;
                 let val = self.expr(&a[1])?;
                 let key_local = self.local_idx("__sn_key");
-                let ma = wasm_encoder::MemArg {
-                    offset: 0,
-                    align: 3,
-                    memory_index: 0,
-                };
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
                 let mut v = Vec::new();
                 v.extend(key_expr);
                 v.push(Instruction::LocalSet(key_local));
                 // Store tagged val at STORAGE_BUF
-                v.push(Instruction::I32Const(STORAGE_BUF as i32));
-                v.extend(val);
+                v.push(Instruction::I32Const(STORAGE_BUF as i32)); v.extend(val);
                 v.push(Instruction::I64Store(ma));
                 // Write un-tagged key as 8 LE bytes at TEMP_MEM
                 v.push(Instruction::I32Const(TEMP_MEM as i32));
@@ -455,22 +194,15 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(8)); // val_len
                 v.push(Instruction::I64Const(STORAGE_BUF)); // val_ptr
                 v.push(Instruction::I64Const(0)); // register_id
-                v.push(Self::host_call(17));
-                v.push(Instruction::Drop);
-                v.push(Instruction::I64Const(TAG_NIL));
-                Ok(v)
+                v.push(Self::host_call(17)); v.push(Instruction::Drop);
+                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
             }
             // near/load_num: (near/load_num key_i64) — key is raw i64, returns tagged value or 0
             "near/load_num" => {
-                self.need_host(18);
-                self.need_host(0);
+                self.need_host(18); self.need_host(0);
                 let key_expr = self.expr(&a[0])?;
                 let key_local = self.local_idx("__ln_key");
-                let ma = wasm_encoder::MemArg {
-                    offset: 0,
-                    align: 3,
-                    memory_index: 0,
-                };
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
                 let mut v = Vec::new();
                 v.extend(key_expr);
                 v.push(Instruction::LocalSet(key_local));
@@ -493,8 +225,7 @@ impl WasmEmitter {
                 v.extend(self.emit_tag_num());
                 v.push(Instruction::Else);
                 // Key found: read_register(1, STORAGE_BUF)
-                v.push(Instruction::I64Const(1));
-                v.push(Instruction::I64Const(STORAGE_BUF));
+                v.push(Instruction::I64Const(1)); v.push(Instruction::I64Const(STORAGE_BUF));
                 v.push(Self::host_call(0));
                 v.push(Instruction::I32Const(STORAGE_BUF as i32));
                 v.push(Instruction::I64Load(ma));
@@ -503,91 +234,143 @@ impl WasmEmitter {
                 v.push(Instruction::End);
                 Ok(v)
             }
-            "near/storage_usage" => {
-                let mut v = vec![Self::host_call(11)];
-                v.extend(self.emit_tag_num());
-                Ok(v)
-            }
-            // near/store_u128: (near/store_u128 "key" tagged_ptr) -> nil
-            // High-level u128 storage - takes tagged pointer, stores 16 bytes to NEAR storage
-            "near/store_u128" => {
-                self.need_host(17);
-                if a.len() != 2 {
-                    return Err("near/store_u128: need 2 args (key, tagged_ptr)".into());
-                }
-                let key_expr = self.expr(&a[0])?;
-                let ptr_expr = self.expr(&a[1])?;
-                let ptr_local = self.local_idx("__u128_ptr");
-                let ma = wasm_encoder::MemArg {
-                    offset: 0,
-                    align: 3,
-                    memory_index: 0,
-                };
+            "near/storage_usage" => { let mut v = vec![Self::host_call(11)]; v.extend(self.emit_tag_num()); Ok(v) },
+            // near/kstore: (near/kstore prefix account val) — FP_GLOBAL-safe storage via KEY_BUF
+            // Concatenates prefix + account as key, stores value (tagged i64).
+            "near/kstore" => {
+                if a.len() != 3 { return Err("near/kstore requires 3 args: prefix account value".into()); }
+                self.need_host(17); self.need_host(0); self.need_host(1);
+                let prefix_expr = self.expr(&a[0])?;
+                let acct_expr = self.expr(&a[1])?;
+                let val_expr = self.expr(&a[2])?;
+                let prefix_local = self.local_idx("__kstore_prefix");
+                let acct_local = self.local_idx("__kstore_acct");
+                let key_len_local = self.local_idx_i32("__kstore_keylen");
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
                 let mut v = Vec::new();
-                // Save ptr to local
-                v.extend(ptr_expr);
-                v.push(Instruction::LocalSet(ptr_local));
-                // Copy u128 from ptr to STORAGE_U128_BUF
-                // STORAGE_U128_BUF[0..8] = ptr[0..8] (low)
-                v.push(Instruction::I32Const(STORAGE_U128_BUF as i32));
-                v.push(Instruction::LocalGet(ptr_local));
-                v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Load(ma.clone()));
-                v.push(Instruction::I64Store(ma.clone()));
-                // STORAGE_U128_BUF[8..16] = ptr[8..16] (high)
-                v.push(Instruction::I32Const((STORAGE_U128_BUF + 8) as i32));
-                v.push(Instruction::LocalGet(ptr_local));
-                v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Load(wasm_encoder::MemArg {
-                    offset: 8,
-                    align: 3,
-                    memory_index: 0,
-                }));
+                // Evaluate prefix, account, value and save to locals
+                v.extend(prefix_expr);
+                v.push(Instruction::LocalSet(prefix_local));
+                v.extend(acct_expr);
+                v.push(Instruction::LocalSet(acct_local));
+                // Store tagged val at STORAGE_BUF
+                // I64Store: [addr (i32), value (i64)] - push addr FIRST, then value
+                v.push(Instruction::I32Const(STORAGE_BUF as i32)); // addr (i32) - pushed FIRST
+                v.extend(val_expr); // value (i64) - pushed SECOND
                 v.push(Instruction::I64Store(ma));
-                // storage_write(key_len, key_ptr, 16, STORAGE_U128_BUF, register=0)
-                v.extend(key_expr.clone());
+                
+                // Copy prefix to KEY_BUF
+                // MemoryCopy: dst (i32), src (i32), len (i32)
+                v.push(Instruction::I32Const(KEY_BUF as i32)); // dst
+                v.push(Instruction::LocalGet(prefix_local));
                 v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64ShrU);
-                v.extend(key_expr);
+                v.push(Instruction::I32WrapI64); // src = prefix ptr
+                v.push(Instruction::LocalGet(prefix_local));
                 v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // prefix_len (i64)
+                v.push(Instruction::I32WrapI64); // len = prefix_len (i32)
+                v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+                
+                // key_len = prefix_len (save for later)
+                v.push(Instruction::LocalGet(prefix_local));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::I64Const(16));
-                v.push(Instruction::I64Const(STORAGE_U128_BUF as i64));
+                v.push(Instruction::LocalSet(key_len_local));
+                
+                // Copy account to KEY_BUF + prefix_len
+                v.push(Instruction::I32Const(KEY_BUF as i32));
+                v.push(Instruction::LocalGet(key_len_local));
+                v.push(Instruction::I32Add); // dst = KEY_BUF + prefix_len
+                v.push(Instruction::LocalGet(acct_local));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); // src = account ptr
+                v.push(Instruction::LocalGet(acct_local));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // account_len (i64)
+                v.push(Instruction::I32WrapI64); // len = account_len (i32)
+                v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+                
+                // key_len = prefix_len + account_len
+                v.push(Instruction::LocalGet(key_len_local));
+                v.push(Instruction::LocalGet(acct_local));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::LocalSet(key_len_local));
+                
+                // storage_write(key_len, KEY_BUF, val_len=8, STORAGE_BUF, register=0)
+                v.push(Instruction::LocalGet(key_len_local));
+                v.extend(self.emit_i32_to_i64());
+                v.push(Instruction::I64Const(KEY_BUF as i64));
+                v.push(Instruction::I64Const(8));
+                v.push(Instruction::I64Const(STORAGE_BUF));
                 v.push(Instruction::I64Const(0));
-                v.push(Self::host_call(17));
-                v.push(Instruction::Drop);
+                v.push(Self::host_call(17)); v.push(Instruction::Drop);
                 v.push(Instruction::I64Const(TAG_NIL));
                 Ok(v)
             }
-            // near/load_u128: (near/load_u128 "key") -> tagged_ptr
-            // High-level u128 load - reads 16 bytes from storage, returns tagged pointer to TEMP_MEM
-            "near/load_u128" => {
-                self.need_host(18);
-                self.need_host(0);
-                if a.len() != 1 {
-                    return Err("near/load_u128: need 1 arg (key)".into());
-                }
-                let key_expr = self.expr(&a[0])?;
+            // near/kload: (near/kload prefix account) — FP_GLOBAL-safe storage load
+            // Returns tagged value or 0 (tagged as Num) if not found.
+            "near/kload" => {
+                if a.len() != 2 { return Err("near/kload requires 2 args: prefix account".into()); }
+                let prefix_expr = self.expr(&a[0])?;
+                let acct_expr = self.expr(&a[1])?;
+                let prefix_local = self.local_idx("__kload_prefix");
+                let acct_local = self.local_idx("__kload_acct");
+                let key_len_local = self.local_idx_i32("__kload_keylen");
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
                 let mut v = Vec::new();
-                let found = self.local_idx("__found");
-                // storage_read(key_len, key_ptr, register=1)
-                v.extend(key_expr.clone());
+                // Evaluate prefix and account, save to locals
+                v.extend(prefix_expr);
+                v.push(Instruction::LocalSet(prefix_local));
+                v.extend(acct_expr);
+                v.push(Instruction::LocalSet(acct_local));
+                
+                // Copy prefix to KEY_BUF
+                // MemoryCopy: dst (i32), src (i32), len (i32)
+                v.push(Instruction::I32Const(KEY_BUF as i32)); // dst
+                v.push(Instruction::LocalGet(prefix_local));
                 v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64ShrU);
-                v.extend(key_expr);
+                v.push(Instruction::I32WrapI64); // src = prefix ptr
+                v.push(Instruction::LocalGet(prefix_local));
                 v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // prefix_len (i64)
+                v.push(Instruction::I32WrapI64); // len = prefix_len (i32)
+                v.push(Instruction::LocalTee(key_len_local)); // save for later AND keep on stack
+                v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+                
+                // Copy account to KEY_BUF + prefix_len
+                v.push(Instruction::I32Const(KEY_BUF as i32));
+                v.push(Instruction::LocalGet(key_len_local));
+                v.push(Instruction::I32Add); // dst = KEY_BUF + prefix_len
+                v.push(Instruction::LocalGet(acct_local));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); // src = account ptr
+                v.push(Instruction::LocalGet(acct_local));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // account_len (i64)
+                v.push(Instruction::I32WrapI64); // len = account_len (i32)
+                v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+                
+                // Compute total key_len = prefix_len + account_len
+                v.push(Instruction::LocalGet(key_len_local)); // prefix_len (i32)
+                v.push(Instruction::LocalGet(acct_local));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // account_len (i64)
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::I64Const(1));
-                v.push(Self::host_call(18));
-                v.push(Instruction::LocalSet(found));
-                // Check if found
-                v.push(Instruction::LocalGet(found));
+                v.push(Instruction::I32Add);
+                v.push(Instruction::LocalSet(key_len_local)); // key_len = prefix_len + account_len
+                
+                // storage_read(key_len, KEY_BUF, register=1) → returns 0 if not found, 1 if found
+                v.push(Instruction::LocalGet(key_len_local));
+                v.extend(self.emit_i32_to_i64()); // host expects i64
+                v.push(Instruction::I64Const(KEY_BUF as i64));
+                v.push(Instruction::I64Const(1)); // register 1
+                v.push(Self::host_call(18)); // storage_read
+                
+                // Check return value: 0 = not found, 1 = found
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::I64Eq);
                 v.push(Instruction::If(BlockType::Result(ValType::I64)));
@@ -595,42 +378,13 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0));
                 v.extend(self.emit_tag_num());
                 v.push(Instruction::Else);
-                // Found: read_register(1, STORAGE_U128_BUF)
+                // Found: read_register(1, STORAGE_BUF)
                 v.push(Instruction::I64Const(1));
-                v.push(Instruction::I64Const(STORAGE_U128_BUF as i64));
-                v.push(Self::host_call(0)); // read_register returns nothing
-                                            // Copy from STORAGE_U128_BUF to TEMP_MEM
-                                            // I64Store type: [i32 addr, i64 value] -> [] (value on TOP)
-                                            // TEMP_MEM[0..8] = STORAGE_U128_BUF[0..8]
-                v.push(Instruction::I32Const(TEMP_MEM as i32)); // dest addr (BOTTOM)
-                v.push(Instruction::I32Const(STORAGE_U128_BUF as i32)); // src addr
-                v.push(Instruction::I64Load(wasm_encoder::MemArg {
-                    offset: 0,
-                    align: 3,
-                    memory_index: 0,
-                }));
-                // Stack: [dest, value] - dest at bottom, value on top
-                v.push(Instruction::I64Store(wasm_encoder::MemArg {
-                    offset: 0,
-                    align: 3,
-                    memory_index: 0,
-                }));
-                // TEMP_MEM[8..16] = STORAGE_U128_BUF[8..16]
-                v.push(Instruction::I32Const((TEMP_MEM + 8) as i32)); // dest addr
-                v.push(Instruction::I32Const((STORAGE_U128_BUF + 8) as i32)); // src addr
-                v.push(Instruction::I64Load(wasm_encoder::MemArg {
-                    offset: 0,
-                    align: 3,
-                    memory_index: 0,
-                }));
-                v.push(Instruction::I64Store(wasm_encoder::MemArg {
-                    offset: 0,
-                    align: 3,
-                    memory_index: 0,
-                }));
-                // Return TEMP_MEM as tagged pointer
-                v.push(Instruction::I64Const(TEMP_MEM));
-                v.extend(self.emit_tag_num());
+                v.push(Instruction::I64Const(STORAGE_BUF));
+                v.push(Self::host_call(0)); // read_register
+                v.push(Instruction::I32Const(STORAGE_BUF as i32));
+                v.push(Instruction::I64Load(ma));
+                v.extend(self.emit_tag_validate());
                 v.push(Instruction::End);
                 Ok(v)
             }
