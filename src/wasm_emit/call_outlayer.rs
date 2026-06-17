@@ -436,6 +436,39 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(TAG_STR)); v.push(Instruction::I64Or);
                 Ok(v)
             }
+            "env/get" => {
+                // WIT: env-var(name: string) -> string
+                // (env/get "VAR_NAME") -> string or nil
+                // Canonical ABI: (name_ptr, name_len, ret_ptr) -> ()
+                // Result: (ptr, len) written by host to ret_area
+                if a.is_empty() { return Err("env/get requires a variable name string".into()); }
+                if !self.wasi_mode { return Err("env/get is only available on OutLayer".into()); }
+                let key_expr = self.expr(&a[0])?;
+                let key_expr2 = key_expr.clone();
+                let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 448;
+                let mut v = Vec::new();
+                // key ptr/len (2 × i32) — extract from tagged string
+                v.extend(key_expr);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64); // len
+                v.extend(key_expr2);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); // ptr
+                v.push(Instruction::I32Const(ret_area)); // ret_area
+                v.push(Instruction::Call(122));
+                // Read ptr/len from ret_area
+                v.push(Instruction::I32Const(ret_area)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_STR)); v.push(Instruction::I64Or);
+                Ok(v)
+            }
             "storage-decrement" => {
                 // (storage-decrement "key" delta) -> i64 (new value)
                 // Canonical ABI: (i32 key_ptr, i32 key_len, i64 delta, i32 ret_area) -> ()

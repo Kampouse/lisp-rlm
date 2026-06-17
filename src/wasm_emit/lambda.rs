@@ -251,6 +251,8 @@ impl WasmEmitter {
         match op.as_str() {
             "near/store" => { self.need_host(17); self.need_host(18); self.need_host(0); self.need_host(1); }
             "near/load" => { self.need_host(18); self.need_host(0); self.need_host(1); }
+            "near/kstore" => { self.need_host(17); self.need_host(0); self.need_host(1); }
+            "near/kload" => { self.need_host(18); self.need_host(0); self.need_host(1); }
             "near/remove" => { self.need_host(19); }
             "near/has_key" => { self.need_host(20); }
             "near/return" => self.need_host(25),
@@ -362,7 +364,7 @@ impl WasmEmitter {
             "outlayer/storage-set" | "outlayer/storage-get" | "outlayer/storage-has" | "outlayer/storage-delete" |
             "outlayer/context" |
             "storage-set" | "storage-get" | "storage-has" | "storage-delete" | "storage-increment" |
-            "env/signer" | "env/predecessor" |
+            "env/signer" | "env/predecessor" | "env/get" |
             "storage-decrement" | "storage-set-if-absent" | "storage-set-if-equals" |
             "storage-list-keys" | "storage-clear-all" |
             "storage-set-worker" | "storage-get-worker" | "storage-set-worker-public" | "storage-get-worker-from-project" => {
