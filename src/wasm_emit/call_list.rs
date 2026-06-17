@@ -828,6 +828,7 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(n_tmp));
                 // Alloc new array
                 let new_heap = self.heap_bump((1 + 64) * 8);
+                v.push(Instruction::I64Const(new_heap as i64));
                 v.push(Instruction::LocalSet(new_ptr));
                 // Store initial count 0
                 v.push(Instruction::LocalGet(new_ptr));
@@ -935,6 +936,7 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(n_tmp));
                 // Alloc new
                 let new_heap = self.heap_bump((1 + 64) * 8);
+                v.push(Instruction::I64Const(new_heap as i64));
                 v.push(Instruction::LocalSet(new_ptr));
                 // Store new_count
                 v.push(Instruction::LocalGet(new_ptr));
@@ -1022,6 +1024,7 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(n_tmp));
                 // Alloc new: count + 1 elements
                 let new_heap = self.heap_bump((1 + 64) * 8);
+                v.push(Instruction::I64Const(new_heap as i64));
                 v.push(Instruction::LocalSet(new_ptr));
                 // Store new_count = old_count + 1
                 v.push(Instruction::LocalGet(new_ptr));
@@ -1183,6 +1186,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(end_tmp));
                 let new_heap = self.heap_bump((1 + 64) * 8);
+                v.push(Instruction::I64Const(new_heap as i64));
                 v.push(Instruction::LocalSet(new_ptr));
                 // count = 0
                 v.push(Instruction::LocalGet(new_ptr));
@@ -1261,6 +1265,7 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(n_tmp));
                 // Alloc new
                 let new_heap = self.heap_bump((1 + 64) * 8);
+                v.push(Instruction::I64Const(new_heap as i64));
                 v.push(Instruction::LocalSet(new_ptr));
                 // Store count
                 v.push(Instruction::LocalGet(new_ptr));
@@ -1409,6 +1414,7 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(n2_tmp));
                 // Alloc new
                 let new_heap = self.heap_bump((1 + 64) * 8);
+                v.push(Instruction::I64Const(new_heap as i64));
                 v.push(Instruction::LocalSet(new_ptr));
                 // Store total count
                 v.push(Instruction::LocalGet(new_ptr));
