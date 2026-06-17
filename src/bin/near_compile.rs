@@ -1705,11 +1705,35 @@ fn run_compile(args: &[String]) {
 
     let src = strip_test_forms(&src);
 
-    let target = args
-        .iter()
-        .find_map(|a| a.strip_prefix("--target="))
-        .unwrap_or("near");
-    let wasm_bytes = match target {
+    // CLI --target overrides config
+    let cli_target = args.iter().find_map(|a| a.strip_prefix("--target="));
+    
+    // Try to load project config if no explicit target
+    let target = if let Some(t) = cli_target {
+        t.to_string()
+    } else {
+        // Look for near.json in the source file's directory
+        let src_dir = Path::new(src_path).parent().unwrap_or(Path::new("."));
+        let config_path = src_dir.join("near.json");
+        if config_path.exists() {
+            if let Ok(content) = fs::read_to_string(&config_path) {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(t) = json["target"].as_str() {
+                        t.to_string()
+                    } else {
+                        "near".to_string()
+                    }
+                } else {
+                    "near".to_string()
+                }
+            } else {
+                "near".to_string()
+            }
+        } else {
+            "near".to_string()
+        }
+    };
+    let wasm_bytes = match target.as_str() {
         "near" => match lisp_rlm_wasm::wasm_emit::compile_near(&src) {
             Ok(w) => w,
             Err(e) => {
