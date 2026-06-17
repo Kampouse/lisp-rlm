@@ -254,10 +254,83 @@ impl WasmEmitter {
     }
 
     pub(crate) fn eq(&mut self, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
-        let mut v = self.expr(&a[0])?;
-        v.extend(self.expr(&a[1])?);
-        v.push(Instruction::I64Eq);
-        v.push(Instruction::I64ExtendI32U);
+        // For TAG_STR: compare content. Others: raw i64.
+        let ma = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+        let al = self.local_idx("__eq_a");
+        let bl = self.local_idx("__eq_b");
+        let at = self.local_idx("__eq_at");
+        let bt = self.local_idx("__eq_bt");
+        let mut v = Vec::new();
+
+        v.extend(self.expr(&a[0])?); v.push(Instruction::LocalSet(al));
+        v.extend(self.expr(&a[1])?); v.push(Instruction::LocalSet(bl));
+
+        // Tags
+        v.push(Instruction::LocalGet(al)); v.push(Instruction::I64Const(7)); v.push(Instruction::I64And); v.push(Instruction::LocalSet(at));
+        v.push(Instruction::LocalGet(bl)); v.push(Instruction::I64Const(7)); v.push(Instruction::I64And); v.push(Instruction::LocalSet(bt));
+
+        // Both TAG_STR?
+        v.push(Instruction::LocalGet(at)); v.push(Instruction::I64Const(crate::wasm_emit::TAG_STR)); v.push(Instruction::I64Eq); v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::LocalGet(bt)); v.push(Instruction::I64Const(crate::wasm_emit::TAG_STR)); v.push(Instruction::I64Eq); v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::I64And);
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::If(BlockType::Result(ValType::I64)));
+
+        // TAG_STR branch: compare content byte-by-byte
+        let ap = self.local_idx("__eq_ap");
+        let al2 = self.local_idx("__eq_al");
+        let bp = self.local_idx("__eq_bp");
+        let bl2 = self.local_idx("__eq_bl");
+        let idx = self.local_idx("__eq_i");
+        let res = self.local_idx("__eq_r");
+
+        // Extract ptr/len for a
+        v.push(Instruction::LocalGet(al)); v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrS); v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And); v.push(Instruction::LocalSet(ap));
+        v.push(Instruction::LocalGet(al)); v.push(Instruction::I64Const(35)); v.push(Instruction::I64ShrU); v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And); v.push(Instruction::LocalSet(al2));
+        // Extract ptr/len for b
+        v.push(Instruction::LocalGet(bl)); v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrS); v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And); v.push(Instruction::LocalSet(bp));
+        v.push(Instruction::LocalGet(bl)); v.push(Instruction::I64Const(35)); v.push(Instruction::I64ShrU); v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And); v.push(Instruction::LocalSet(bl2));
+
+        // Same length? (I64Eq → i32, need I32WrapI64... no, I64Eq produces i32 already)
+        v.push(Instruction::LocalGet(al2)); v.push(Instruction::LocalGet(bl2)); v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Result(ValType::I64)));
+
+        // Same length — byte comparison
+        v.push(Instruction::I64Const(1)); v.push(Instruction::LocalSet(res));
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(idx));
+        v.push(Instruction::Block(BlockType::Empty));
+        v.push(Instruction::Loop(BlockType::Empty));
+
+        // idx < len? (I64LtU → i32)
+        v.push(Instruction::LocalGet(idx)); v.push(Instruction::LocalGet(al2)); v.push(Instruction::I64LtU);
+        v.push(Instruction::If(BlockType::Empty));
+
+        // Load bytes as i32
+        v.push(Instruction::LocalGet(ap)); v.push(Instruction::I32WrapI64); v.push(Instruction::LocalGet(idx)); v.push(Instruction::I32WrapI64); v.push(Instruction::I32Add); v.push(Instruction::I32Load8U(ma));
+        v.push(Instruction::LocalGet(bp)); v.push(Instruction::I32WrapI64); v.push(Instruction::LocalGet(idx)); v.push(Instruction::I32WrapI64); v.push(Instruction::I32Add); v.push(Instruction::I32Load8U(ma));
+        v.push(Instruction::I32Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        // Match — increment
+        v.push(Instruction::LocalGet(idx)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(idx));
+        v.push(Instruction::Br(2)); // continue Loop (depth 2 from here: Loop)
+        v.push(Instruction::Else);
+        // Mismatch
+        v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(res));
+        v.push(Instruction::Br(3)); // break Block (depth 3 from here: Block)
+        v.push(Instruction::End);
+
+        v.push(Instruction::End); v.push(Instruction::End); v.push(Instruction::End);
+        v.push(Instruction::LocalGet(res));
+
+        v.push(Instruction::Else);
+        // Different lengths
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::End);
+
+        v.push(Instruction::Else);
+        v.push(Instruction::LocalGet(al)); v.push(Instruction::LocalGet(bl)); v.push(Instruction::I64Eq); v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::End);
+
         v.extend(self.emit_tag_bool());
         Ok(v)
     }

@@ -292,9 +292,11 @@ impl WasmEmitter {
                 // ret_ptr
                 v.push(Instruction::I32Const(ret_area));
                 v.push(Instruction::Call(111));
-                // IMMEDIATELY copy list data to safe buffer to prevent corruption
-                // Safe buffer starts at 163968 + 4096 = 168064, each get gets 256 bytes
-                let safe_buf: i32 = 168064 + (call_idx as i32) * 256;
+                // IMMEDIATELY copy list data to runtime heap for unique allocation per invocation
+                // This prevents overwriting when the same call site is invoked multiple times
+                let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let buf_local = self.local_idx_i32("__sg_buf");
+                let len_local = self.local_idx_i32("__sg_len");
                 // Read list_ptr and list_len from ret_area
                 v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4));
                 v.push(Instruction::I64ExtendI32U);
@@ -303,16 +305,36 @@ impl WasmEmitter {
                 // list_len == 0 → not found → TAG_NIL
                 v.push(Instruction::I64Const(TAG_NIL));
                 v.push(Instruction::Else);
-                // list_len > 0 → copy data to safe buffer, then construct tagged string
-                // memory.copy(dst=safe_buf, src=list_ptr, len=list_len)
-                v.push(Instruction::I32Const(safe_buf));      // dst
-                v.push(Instruction::I32Const(ret_area)); v.push(Instruction::I32Load(ma4)); // src = list_ptr
-                v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4)); // len = list_len
-                v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
-                // Construct tagged string pointing to safe buffer
-                v.push(Instruction::I32Const(safe_buf));
-                v.push(Instruction::I64ExtendI32U);
+                // list_len > 0 → allocate from runtime heap, copy, construct tagged string
+                // Step 1: Save list_len
                 v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::LocalSet(len_local));
+                // Step 2: Read heap_ptr from addr 56 (i64), trunc to i32 as safe_buf
+                // Use LocalTee to save AND keep on stack for memory.copy dst
+                v.push(Instruction::I32Const(56));
+                v.push(Instruction::I64Load(ma8));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalTee(buf_local)); // store AND keep on stack
+                v.push(Instruction::I32Const(ret_area)); v.push(Instruction::I32Load(ma4)); // src = list_ptr
+                v.push(Instruction::LocalGet(len_local)); // len
+                v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+                // Step 4: Bump heap_ptr at addr 56 by aligned len
+                // buf_local already has old heap_ptr, no need to re-read from memory
+                v.push(Instruction::I32Const(56)); // addr for i64.store
+                v.push(Instruction::LocalGet(buf_local)); // old heap_ptr
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalGet(len_local));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(7));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Const(-8));
+                v.push(Instruction::I64And);
+                v.push(Instruction::I64Add); // old + aligned_len
+                v.push(Instruction::I64Store(ma8)); // store new heap_ptr
+                // Step 5: Construct tagged string: ((safe_buf | (len << 32)) << 3) | TAG_STR
+                v.push(Instruction::LocalGet(buf_local));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalGet(len_local));
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
                 v.push(Instruction::I64Or);
