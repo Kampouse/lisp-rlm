@@ -6,7 +6,12 @@
 ;;; State keys in storage:
 ;;;   "harness:intentions" - JSON array of intentions
 ;;;   "harness:budget"     - Budget state
-;;;   "harness:inbox"       - Inbox state
+;;;   "harness:inbox"      - Inbox state
+;;;
+;;; Actions are identified by string type, not lambdas:
+;;;   "near-view" - call near/view
+;;;   "http-get"  - HTTP GET request
+;;;   "http-post" - HTTP POST request
 
 ;; === Helpers ===
 
@@ -15,7 +20,6 @@
     (if (nil? v) default v)))
 
 ;; === Time ===
-;; Worker provides NEAR_BLOCK_TIMESTAMP env var
 
 (define (now-ms)
   (let ((ts (env/get "NEAR_BLOCK_TIMESTAMP")))
@@ -23,7 +27,6 @@
       (string->number ts))))
 
 ;; === State Management ===
-;; All state lives in OutLayer storage
 
 (define (load-intentions)
   (let ((data (storage-get "harness:intentions")))
@@ -40,7 +43,6 @@
   (storage-set "harness:budget" budget))
 
 ;; === Priority Scoring ===
-;; Scores are integers (0-100), scaled by 100 from real values
 
 (define (urgency intent now)
   (let ((deadline (dict/get intent "deadline"))
@@ -63,12 +65,8 @@
 (define (score-intention intent now)
   (let ((u (urgency intent now))
         (e (cost-efficiency intent)))
-    ;; Combined score: 70% urgency + 30% efficiency
-    ;; Both u and e are 0-100, so score is 0-10000
-    ;; We compare scores directly (higher is better)
     (dict/set intent "score" (+ (* 70 u) (* 30 e)))))
 
-;; Find best intention (no full sort needed)
 (define (find-best intentions now)
   (if (nil? intentions) nil
     (if (nil? (cdr intentions))
@@ -90,15 +88,26 @@
 (define (budget-spend budget amount)
   (dict/set budget "used" (+ (if (nil? (dict/get budget "used")) 0 (dict/get budget "used")) amount)))
 
-;; === Execution ===
+;; === Action Dispatch ===
+;;; Actions are identified by "action-type" string in intention
+;;; Supported types: "near-view", "http-get", "http-post"
 
 (define (execute-action intent)
-  (let ((action (get-default intent "action" nil)))
-    (if action
-      (begin
-        (println (str-concat "Executing: " (get-default intent "id" "?")))
-        (action))
-      (println (str-concat "No action for: " (get-default intent "id" "?"))))))
+  (let ((action-type (get-default intent "action-type" nil))
+        (params (get-default intent "params" (dict))))
+    (if action-type
+      (cond
+        ((= action-type "near-view")
+         (outlayer/view (get-default params "account" "dontcare")
+                        (get-default params "method" "dontcare")
+                        (get-default params "args" "")))
+        ((= action-type "http-get")
+         (http-get (get-default params "url" "https://example.com")))
+        ((= action-type "http-post")
+         (http-post (get-default params "url" "https://example.com")
+                    (get-default params "body" "")))
+        (else (str-concat "Unknown action-type: " action-type)))
+      "No action-type specified")))
 
 ;; === Intention Lifecycle ===
 
@@ -111,7 +120,7 @@
 
 (define (update-intention intentions intent-id updates)
   (map (lambda (i)
-         (if (equal? (dict/get i "id") intent-id)
+         (if (= (dict/get i "id") intent-id)
            (apply-updates i updates)
            i))
        intentions))
@@ -120,18 +129,17 @@
   (let ((itype (get-default intent "type" "one-shot"))
         (intent-id (get-default intent "id" nil)))
     (cond
-      ((equal? itype "perpetual")
+      ((= itype "perpetual")
        (update-intention intentions intent-id (list (list "last-acted" now))))
-      ((equal? itype "completable")
+      ((= itype "completable")
        (update-intention intentions intent-id (list (list "last-acted" now))))
-      ((equal? itype "one-shot")
-       (filter (lambda (i) (not (equal? (dict/get i "id") intent-id))) intentions))
-      ((equal? itype "recurring")
+      ((= itype "one-shot")
+       (filter (lambda (i) (not (= (dict/get i "id") intent-id))) intentions))
+      ((= itype "recurring")
        (update-intention intentions intent-id (list (list "last-run" now))))
       (else intentions))))
 
 ;; === Main Entry Point ===
-;; Returns the intention that was executed, or nil if none
 
 (define (tick)
   (let ((now (now-ms))
@@ -155,7 +163,6 @@
             nil))))))
 
 ;; === Register Intention ===
-;; Call this to add a new intention
 
 (define (register-intention intent)
   (let ((intentions (load-intentions)))
@@ -164,7 +171,6 @@
       intent)))
 
 ;; === Boot ===
-;; Call once at startup to initialize state
 
 (define (boot)
   (begin
@@ -172,4 +178,9 @@
     (let ((intentions (load-intentions)))
       (println (str-concat "Intentions loaded: " (to-string (len intentions)))))
     (println "=== Boot Complete ===")
-    (quote booted)))
+    "booted"))
+
+;; === Run entry point ===
+
+(define (run input)
+  (boot))

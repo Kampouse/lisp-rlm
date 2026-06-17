@@ -219,6 +219,7 @@ impl WasmEmitter {
                 // ret_ptr layout: +0: str_ptr, +4: str_len (success response string)
                 if a.len() < 2 { return Err("storage-set requires (key value)".into()); }
                 if !self.wasi_mode { return Err("storage-set is only available on OutLayer".into()); }
+                self.need_outlayer = true;
                 let key_expr = self.expr(&a[0])?;
                 let val_expr = self.expr(&a[1])?;
                 let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 64;
@@ -266,6 +267,7 @@ impl WasmEmitter {
                 // Each call gets a unique ret_area to avoid overwriting previous results
                 if a.is_empty() { return Err("storage-get requires a key".into()); }
                 if !self.wasi_mode { return Err("storage-get is only available on OutLayer".into()); }
+                self.need_outlayer = true;
                 let key_expr = self.expr(&a[0])?;
                 let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
                 let call_idx = self.storage_get_count;
@@ -347,6 +349,7 @@ impl WasmEmitter {
                 // Canonical ABI: (kp, kl) -> i32 — 2 params, direct i32 return (NO ret_ptr)
                 if a.is_empty() { return Err("storage-delete requires a key".into()); }
                 if !self.wasi_mode { return Err("storage-delete is only available on OutLayer".into()); }
+                self.need_outlayer = true;
                 let key_expr = self.expr(&a[0])?;
                 let mut v = Vec::new();
                 v.extend(key_expr.clone());
@@ -879,6 +882,8 @@ impl WasmEmitter {
                 // Canonical ABI: 8 i32 (4 strings) + ret_area = 9 params, void return
                 // ret_area layout: +0: result_ptr, +4: result_len, +8: error_ptr, +12: error_len
                 if a.len() < 3 { return Err("outlayer/view requires (contract method args)".into()); }
+                if !self.wasi_mode { return Err("outlayer/view is only available on OutLayer".into()); }
+                self.need_outlayer = true;
                 let contract = self.expr(&a[0])?;
                 let method = self.expr(&a[1])?;
                 let args_val = self.expr(&a[2])?;
