@@ -443,6 +443,7 @@ impl WasmEmitter {
                 // Result: host writes (ptr, len) to ret_area
                 if a.is_empty() { return Err("env/get requires a variable name string".into()); }
                 if !self.wasi_mode { return Err("env/get is only available on OutLayer".into()); }
+                self.need_outlayer = true;
                 let key_expr = self.expr(&a[0])?;
                 let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
                 let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 448;
