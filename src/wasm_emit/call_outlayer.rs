@@ -1202,6 +1202,7 @@ impl WasmEmitter {
                 let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
                 let ret_area: i32 = 163840 + 512; // separate from view ret area
                 let mut v = Vec::new();
+                self.need_outlayer = true;
                 // Push 17 i32 params for near:rpc/api call:
                 // 8 strings × (ptr, len) + ret_area = 17
                 // signer_id: empty (host fills)
@@ -1255,6 +1256,193 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(TAG_NIL)); // error → nil
                 v.push(Instruction::Else);
                 // Read result: ptr from +0, len from +4
+                v.push(Instruction::I32Const(ret_area)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_STR)); v.push(Instruction::I64Or);
+                v.push(Instruction::End);
+                Ok(v)
+            }
+            "near/call-signed" => {
+                // (near/call-signed signer-id signer-key receiver method args deposit gas [wait-until]) -> tx-hash or nil
+                // WASM provides signing key explicitly — worker NEVER signs with its own key.
+                // Returns tx_hash on success, nil on error.
+                if a.len() < 7 { return Err("near/call-signed requires 7-8 args: signer-id signer-key receiver method args deposit gas [wait-until]".into()); }
+                if !self.wasi_mode { return Err("near/call-signed is only available on OutLayer".into()); }
+                self.need_outlayer = true;
+                let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 576;
+                let mut v = Vec::new();
+                // Push 17 i32 params for near:rpc/api call:
+                // signer_id, signer_key, receiver_id, method_name, args_json, deposit_yocto, gas, wait_until
+                // Each string is (ptr, len) pair, plus ret_area = 17 params
+                
+                // signer_id (first string arg)
+                let signer_id = self.expr(&a[0])?;
+                v.extend(signer_id.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64); // ptr
+                v.extend(signer_id);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64); // len
+                
+                // signer_key (private key in NEAR format: ed25519:base58...)
+                let signer_key = self.expr(&a[1])?;
+                v.extend(signer_key.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64);
+                v.extend(signer_key);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                
+                // receiver_id, method_name, args_json
+                for i in 2..5 {
+                    let val = self.expr(&a[i])?;
+                    v.extend(val.clone());
+                    v.extend(self.emit_untag());
+                    v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                    v.push(Instruction::I32WrapI64);
+                    v.extend(val);
+                    v.extend(self.emit_untag());
+                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                    v.push(Instruction::I32WrapI64);
+                }
+                
+                // deposit_yocto, gas
+                for i in 5..7 {
+                    let val = self.expr(&a[i])?;
+                    v.extend(val.clone());
+                    v.extend(self.emit_untag());
+                    v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                    v.push(Instruction::I32WrapI64);
+                    v.extend(val);
+                    v.extend(self.emit_untag());
+                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                    v.push(Instruction::I32WrapI64);
+                }
+                
+                // wait_until (optional, default empty = FINAL)
+                if a.len() > 7 {
+                    let wait = self.expr(&a[7])?;
+                    v.extend(wait.clone());
+                    v.extend(self.emit_untag());
+                    v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                    v.push(Instruction::I32WrapI64);
+                    v.extend(wait);
+                    v.extend(self.emit_untag());
+                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                    v.push(Instruction::I32WrapI64);
+                } else {
+                    v.push(Instruction::I32Const(0)); v.push(Instruction::I32Const(0)); // empty string
+                }
+                
+                // ret_area
+                v.push(Instruction::I32Const(ret_area));
+                // call (sentinel 101)
+                v.push(Instruction::Call(101));
+                
+                // Read tuple<string, string> from ret_area: (tx_hash, error)
+                v.push(Instruction::I32Const(ret_area + 12)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Ne);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.push(Instruction::I64Const(TAG_NIL)); // error → nil
+                v.push(Instruction::Else);
+                v.push(Instruction::I32Const(ret_area)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_STR)); v.push(Instruction::I64Or);
+                v.push(Instruction::End);
+                Ok(v)
+            }
+            "near/transfer-signed" => {
+                // (near/transfer-signed signer-id signer-key receiver amount-yocto [wait-until]) -> tx-hash or nil
+                // WASM provides signing key explicitly — worker NEVER signs with its own key.
+                // Returns tx_hash on success, nil on error.
+                if a.len() < 4 { return Err("near/transfer-signed requires 4-5 args: signer-id signer-key receiver amount-yocto [wait-until]".into()); }
+                if !self.wasi_mode { return Err("near/transfer-signed is only available on OutLayer".into()); }
+                self.need_outlayer = true;
+                let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 608;
+                let mut v = Vec::new();
+                // Push 11 i32 params for near:rpc/api transfer:
+                // signer_id, signer_key, receiver_id, amount_yocto, wait_until
+                // Each string is (ptr, len) pair, plus ret_area = 11 params
+                
+                // signer_id
+                let signer_id = self.expr(&a[0])?;
+                v.extend(signer_id.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64);
+                v.extend(signer_id);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                
+                // signer_key (private key)
+                let signer_key = self.expr(&a[1])?;
+                v.extend(signer_key.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64);
+                v.extend(signer_key);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                
+                // receiver_id, amount_yocto
+                for i in 2..4 {
+                    let val = self.expr(&a[i])?;
+                    v.extend(val.clone());
+                    v.extend(self.emit_untag());
+                    v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                    v.push(Instruction::I32WrapI64);
+                    v.extend(val);
+                    v.extend(self.emit_untag());
+                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                    v.push(Instruction::I32WrapI64);
+                }
+                
+                // wait_until (optional)
+                if a.len() > 4 {
+                    let wait = self.expr(&a[4])?;
+                    v.extend(wait.clone());
+                    v.extend(self.emit_untag());
+                    v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                    v.push(Instruction::I32WrapI64);
+                    v.extend(wait);
+                    v.extend(self.emit_untag());
+                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                    v.push(Instruction::I32WrapI64);
+                } else {
+                    v.push(Instruction::I32Const(0)); v.push(Instruction::I32Const(0));
+                }
+                
+                // ret_area
+                v.push(Instruction::I32Const(ret_area));
+                // transfer (sentinel 102)
+                v.push(Instruction::Call(102));
+                
+                // Read tuple<string, string> from ret_area
+                v.push(Instruction::I32Const(ret_area + 12)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Ne);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.push(Instruction::I64Const(TAG_NIL));
+                v.push(Instruction::Else);
                 v.push(Instruction::I32Const(ret_area)); v.push(Instruction::I32Load(ma4));
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4));

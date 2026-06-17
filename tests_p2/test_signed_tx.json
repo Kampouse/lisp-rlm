@@ -1,0 +1,1 @@
+{"name":"test_signed_tx","src":"test_signed_tx.lisp","output":"test_signed_tx.wasm","account":"test.testnet","network":"testnet","target":"outlayer-p2"}
