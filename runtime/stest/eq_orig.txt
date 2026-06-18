@@ -1,0 +1,8 @@
+    pub(crate) fn eq(&mut self, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
+        let mut v = self.expr(&a[0])?;
+        v.extend(self.expr(&a[1])?);
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::I64ExtendI32U);
+        v.extend(self.emit_tag_bool());
+        Ok(v)
+    }

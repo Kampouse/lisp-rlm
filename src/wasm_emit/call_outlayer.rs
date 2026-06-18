@@ -1605,6 +1605,49 @@ impl WasmEmitter {
                 v.push(Instruction::End);
                 Ok(v)
             }
+            "json-sanitize" => {
+                // (json-sanitize "input") -> string
+                // WIT: json-sanitize(input: string) -> string
+                // Canonical ABI: (ptr, len, ret_area) -> ()
+                // Return: ret_area[0..4]=ptr, ret_area[4..8]=len (no discriminant for plain string)
+                // Sentinel 143 → outlayer_imports index 19
+                if a.len() < 1 { return Err("json-sanitize requires (input)".into()); }
+                if !self.wasi_mode { return Err("json-sanitize is only available on OutLayer".into()); }
+                self.need_outlayer = true;
+                let input_expr = self.expr(&a[0])?;
+                let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 2048;
+                let mut v = Vec::new();
+                // Push input string (ptr, len)
+                v.extend(input_expr.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64); // ptr
+                v.extend(input_expr);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64); // len
+                // Push ret_area
+                v.push(Instruction::I32Const(ret_area));
+                // Call json-sanitize sentinel
+                v.push(Instruction::Call(143));
+                // Host writes return string to ret_area: [ptr: i32][len: i32]
+                // Read result
+                v.push(Instruction::I32Const(ret_area));
+                v.push(Instruction::I32Load(ma4)); // result_ptr
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I32Const(ret_area + 4));
+                v.push(Instruction::I32Load(ma4)); // result_len
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Or);       // (ptr | len<<32)
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64Shl);      // << 3
+                v.push(Instruction::I64Const(TAG_STR));
+                v.push(Instruction::I64Or);       // tag
+                Ok(v)
+            }
             _ => Err("__not_handled__".into()),
         }
     }

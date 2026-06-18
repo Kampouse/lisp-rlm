@@ -1,24 +1,9 @@
 ;;; multi-phase-agent.lisp — Complex Multi-Step Standing Intent Agent
 ;;;
-;;; Demonstrates a complex task spanning multiple ticks:
-;;;   Phase 1 (fetch-1):  Fetch first data source via HTTP
-;;;   Phase 2 (fetch-2):  Fetch second data source via HTTP
-;;;   Phase 3 (analyze):  AI analyzes both data sources
-;;;   Phase 4 (deliver):  Send analysis to Telegram
+;;; Multi-tick state machine: idle → fetch-1 → fetch-2 → analyze → deliver → idle
 ;;;
-;;; The host loop (inlayer serve) keeps ticking forever.
-;;; Each tick does ONE phase, stores progress in SQLite, exits.
-;;; Complex task spans multiple ticks automatically.
-;;;
-;;; Storage keys:
-;;;   "task:phase"     - state machine: idle|fetch-1|fetch-2|analyze|deliver
-;;;   "task:prompt"     - original user request
-;;;   "task:data-1"     - fetch step 1 result
-;;;   "task:data-2"     - fetch step 2 result
-;;;   "task:analysis"   - AI analysis result
-;;;   "inbox:latest"    - user message (external input from Hermes)
-;;;   "inbox:pending"   - "1"=new message, "0"=idle
-;;;   "agent:intent"    - standing intent type
+;;; Uses NEAR RPC for data fetching (clean JSON, no control chars).
+;;; json-sanitize applied when building AI prompt from stored data.
 
 ;; === Helpers ===
 
@@ -36,7 +21,7 @@
   (let ((body (str-concat
     "{\"model\":\"glm-5-turbo\",\"max_tokens\":4096,\"thinking\":{\"type\":\"enabled\"},"
     "\"messages\":[{\"role\":\"user\",\"content\":\""
-    prompt
+    (json-sanitize prompt)
     "\"}]}")))
     (http-post "https://api.z.ai/api/coding/paas/v4/chat/completions" body)))
 
@@ -54,52 +39,48 @@
         "idle"))))
 
 (define (handle-fetch-1)
-  ;; Step 1: Fetch first data source
-  (let ((r (http-post "https://httpbin.org/post"
-    "{\"data\":\"NEAR DeFi protocol data source 1\"}")))
+  ;; Fetch NEAR gas price via RPC
+  (let ((r (http-post "https://rpc.testnet.near.org"
+    "{\"jsonrpc\":\"2.0\",\"id\":\"fetch1\",\"method\":\"gas_price\",\"params\":[]}")))
     (storage-set "task:data-1" r)
     (storage-set "task:phase" "fetch-2")
     "fetch-1-done"))
 
 (define (handle-fetch-2)
-  ;; Step 2: Fetch second data source
-  (let ((r (http-post "https://httpbin.org/post"
-    "{\"data\":\"NEAR DeFi protocol data source 2\"}")))
+  ;; Fetch NEAR status via RPC
+  (let ((r (http-post "https://rpc.testnet.near.org"
+    "{\"jsonrpc\":\"2.0\",\"id\":\"fetch2\",\"method\":\"status\",\"params\":[]}")))
     (storage-set "task:data-2" r)
     (storage-set "task:phase" "analyze")
     "fetch-2-done"))
 
 (define (handle-analyze)
-  ;; Step 3: AI analyzes collected data from both sources
-  (let ((data (str-concat
-    "Data source 1: " (storage-get "task:data-1")
-    " | Data source 2: " (storage-get "task:data-2"))))
-    (let ((prompt (str-concat
-      "You are a NEAR Protocol analyst. Analyze this data in 2-3 sentences: "
-      data)))
-      (let ((analysis (call-ai prompt)))
-        (storage-set "task:analysis" analysis)
-        (storage-set "task:phase" "deliver")
-        "analyzed"))))
+  (let ((d1 (storage-get "task:data-1")))
+    (let ((d2 (storage-get "task:data-2")))
+      (let ((data (str-concat "Gas price data: " (json-sanitize d1) " | Network status: " (json-sanitize d2))))
+        (let ((prompt (str-concat
+          "You are a NEAR Protocol analyst. Analyze this data in 2-3 sentences: "
+          data)))
+          (let ((analysis (call-ai prompt)))
+            (storage-set "task:analysis" analysis)
+            (storage-set "task:phase" "deliver")
+            "analyzed"))))))
 
 (define (handle-deliver)
-  ;; Step 4: Send AI analysis to Telegram, return to idle
   (let ((analysis (storage-get "task:analysis")))
     (outlayer/send-telegram "5125145880" analysis)
     (storage-set "task:phase" "idle")
     "delivered"))
 
-;; === Tick Dispatch (state machine) ===
+;; === Tick Dispatch ===
 
 (define (tick)
   (let ((phase (storage-get "task:phase")))
     (if (nil? phase)
-      ;; First boot — register standing intent
       (begin
         (storage-set "agent:intent" "multi-phase-agent")
         (storage-set "task:phase" "idle")
         "booted")
-      ;; Dispatch to current phase handler
       (if (= phase "idle") (handle-idle)
         (if (= phase "fetch-1") (handle-fetch-1)
           (if (= phase "fetch-2") (handle-fetch-2)
@@ -107,7 +88,7 @@
               (if (= phase "deliver") (handle-deliver)
                 "unknown-phase"))))))))
 
-;; === Run Entry Point ===
+;; === Entry Point ===
 
 (define (run input)
   (tick))
