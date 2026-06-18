@@ -468,6 +468,10 @@ pub fn compile_outlayer_p2_from_exprs(exprs: &[crate::types::LispVal]) -> Result
         }
     }
 
+    eprintln!("[DEBUG] need_outlayer={}, need_wasi_http={}, funcs={}", em.need_outlayer, em.need_wasi_http, em.funcs.len());
+    for f in &em.funcs {
+        eprintln!("[DEBUG] func {}: {} instrs", f.name, f.instrs.len());
+    }
     let bytes = if em.need_outlayer {
         // Always use combined P2 path for outlayer programs — produces valid WASI P2
         // (no wasi_snapshot_preview1 imports). Works with or without HTTP.
@@ -519,6 +523,10 @@ pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
         }
     }
 
+    eprintln!("[DEBUG] compile_outlayer_p2: need_outlayer={}, need_wasi_http={}, funcs={}", em.need_outlayer, em.need_wasi_http, em.funcs.len());
+    for f in &em.funcs {
+        eprintln!("[DEBUG] func {}: {} instrs", f.name, f.instrs.len());
+    }
     let bytes = if em.need_outlayer {
         // Always use combined P2 path for outlayer programs — produces valid WASI P2
         // (no wasi_snapshot_preview1 imports). Works with or without HTTP.
@@ -947,10 +955,16 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
     {
         let mut data = DataSection::new();
         let mut has_data = false;
-        // Initialize RUNTIME_HEAP_PTR (addr 56) to HEAP_START (4096)
+        // Initialize RUNTIME_HEAP_PTR (addr 56) to HEAP_START (200000)
         {
             let heap_start_bytes: [u8; 8] = (HEAP_START as u64).to_le_bytes();
             data.active(0, &ConstExpr::i32_const(56), heap_start_bytes.iter().copied());
+            has_data = true;
+        }
+        // Initialize DEPTH_COUNTER (addr 999980) to 0
+        {
+            let depth_zero: [u8; 8] = 0u64.to_le_bytes();
+            data.active(0, &ConstExpr::i32_const(999980), depth_zero.iter().copied());
             has_data = true;
         }
         // String literals from lisp emitter
@@ -1839,6 +1853,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
 
     // Tree-shake: only import outlayer functions that are actually used
     let used_ol_indices = scan_used_outlayer_indices(em);
+    eprintln!("[DEBUG] used_ol_indices: {:?}", used_ol_indices);
     let ol_import_base = HTTP_IMPORT_COUNT + 1; // 29
     let (ol, ol_sentinel_map, ol_count) = build_filtered_outlayer(&used_ol_indices, ol_import_base);
 
@@ -2333,9 +2348,12 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     // ── Emit data segments ──
     {
         let mut data = DataSection::new();
-        // Initialize RUNTIME_HEAP_PTR (addr 56) to HEAP_START (4096)
+        // Initialize RUNTIME_HEAP_PTR (addr 56) to HEAP_START (200000)
         let heap_start_bytes: [u8; 8] = (HEAP_START as u64).to_le_bytes();
         data.active(0, &ConstExpr::i32_const(56), heap_start_bytes.iter().copied());
+        // Initialize DEPTH_COUNTER (addr 999980) to 0
+        let depth_zero: [u8; 8] = 0u64.to_le_bytes();
+        data.active(0, &ConstExpr::i32_const(999980), depth_zero.iter().copied());
         // String literals from lisp emitter
         for (off, bytes) in &em.data_segments {
             data.active(0, &ConstExpr::i32_const(*off as i32), bytes.iter().copied());
@@ -2344,7 +2362,6 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         for (offset, bytes) in &all_http_data_segments {
             data.active(0, &ConstExpr::i32_const(*offset), bytes.iter().copied());
         }
-        // Note: cabi_realloc counter at addr 900000 is implicitly zero (uninitialized memory in WASM)
         module.section(&data);
     }
 
