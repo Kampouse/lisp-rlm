@@ -1088,6 +1088,8 @@ impl WasmEmitter {
                 if a.len() != 1 {
                     return Err("len: expected 1 arg".into());
                 }
+                // len handles both TAG_STR (length from tagged value) and TAG_ARRAY (count from memory)
+                let val_tmp = self.local_idx("__len_val");
                 let arr_tmp = self.local_idx("__len_arr");
                 let ma = wasm_encoder::MemArg {
                     offset: 0,
@@ -1095,11 +1097,30 @@ impl WasmEmitter {
                     memory_index: 0,
                 };
                 let mut v = self.expr(&a[0])?;
+                // Save tagged value in local (evaluate ONCE)
+                v.push(Instruction::LocalSet(val_tmp));
+                // Check tag: TAG_STR=5 → extract len from value, TAG_ARRAY=6 → load count from memory
+                v.push(Instruction::LocalGet(val_tmp));
+                v.push(Instruction::I64Const(7));
+                v.push(Instruction::I64And);
+                // TAG_STR? (val & 7 == 5)
+                v.push(Instruction::I64Const(5));
+                v.push(Instruction::I64Eq); // i32
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                // TAG_STR: untag then extract len (upper 32 bits)
+                v.push(Instruction::LocalGet(val_tmp));
+                v.extend(self.emit_untag()); // (len << 32 | ptr)
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU); // len
+                v.push(Instruction::Else);
+                // TAG_ARRAY: untag → ptr, load count from arr[0]
+                v.push(Instruction::LocalGet(val_tmp));
                 v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(arr_tmp));
                 v.push(Instruction::LocalGet(arr_tmp));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(ma));
+                v.push(Instruction::End);
                 v.extend(self.emit_tag_num());
                 Ok(v)
             }
