@@ -12,6 +12,7 @@ world outlayer-http {
     import near:payment/api@0.1.0;
     import near:vrf/api@0.1.0;
     import outlayer:wallet/api@0.1.0;
+    import outlayer:api/host@0.1.0;
     import wasi:http/types@0.2.2;
     import wasi:http/outgoing-handler@0.2.2;
     import wasi:io/streams@0.2.2;

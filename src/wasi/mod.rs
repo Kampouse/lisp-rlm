@@ -157,6 +157,14 @@ fn outlayer_imports() -> Vec<WasiFunc> {
         // near:rpc/api canonical: 2 i32 + ret_area = 3 params
         WasiFunc { module: "near:rpc/api@0.1.0", name: "env-var",
             params: vec![W; 3], results: vec![] },
+        // 17: sleep-ms(ms: u32) -> result<(), string>
+        // outlayer:api/host canonical: 1 i32 + ret_area = 2 params
+        WasiFunc { module: "outlayer:api/host@0.1.0", name: "sleep-ms",
+            params: vec![W; 2], results: vec![] },
+        // 18: send-telegram(chat_id: string, text: string) -> result<string, string>
+        // outlayer:api/host canonical: 2 i32 + ret_area = 3 params
+        WasiFunc { module: "outlayer:api/host@0.1.0", name: "send-telegram",
+            params: vec![W; 3], results: vec![] },
     ]
 }
 
@@ -182,6 +190,8 @@ const OUTLAYER_SENTINELS: &[(u32, usize)] = &[
     (136, 14),  // storage-get-worker
     (140, 15),  // raw
     (122, 16),   // env-var (index 16 in outlayer_imports())
+    (141, 17),   // sleep-ms (index 17 in outlayer_imports())
+    (142, 18),   // send-telegram (index 18 in outlayer_imports())
 ];
 
 /// Scan emitted instructions for sentinel Call(N) values and return
@@ -1313,6 +1323,8 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
         9,  // 14: get-worker — 5 i32 -> ()
         10, // 15: raw — 4 i32 -> i32 (canonical: ret_area)
         8,  // 16: env-var — 3 i32 -> ()
+        7,  // 17: sleep-ms — 2 i32 -> ()
+        9,  // 18: send-telegram — 5 i32 -> ()
     ];
     // Emit only filtered outlayer imports
     for &(sentinel, ol_idx) in OUTLAYER_SENTINELS {
@@ -1837,18 +1849,19 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     let http_post_type = http_get_type + 1; // 30
 
     let ol_type_base = http_post_type + 1; // 31
-    let ol_type_1 = ol_type_base;
-    let ol_type_3 = ol_type_base + 1;
-    let ol_type_5 = ol_type_base + 2;
-    let ol_type_7 = ol_type_base + 3;
-    let ol_type_9 = ol_type_base + 4;
-    let ol_type_11 = ol_type_base + 5;
-    let ol_type_13 = ol_type_base + 6;
-    let ol_type_17 = ol_type_base + 7;
-    let ol_type_6 = ol_type_base + 8;
-    let ol_type_s64 = ol_type_base + 9;
-    let ol_type_2ret = ol_type_base + 10;
-    let memcpy_type = ol_type_base + 11; // (i64, i64, i64) -> ()
+    let ol_type_1 = ol_type_base;           // (i32) -> ()
+    let ol_type_2 = ol_type_base + 1;       // (i32, i32) -> ()
+    let ol_type_3 = ol_type_base + 2;       // (i32*3) -> ()
+    let ol_type_5 = ol_type_base + 3;       // (i32*5) -> ()
+    let ol_type_7 = ol_type_base + 4;       // (i32*7) -> ()
+    let ol_type_9 = ol_type_base + 5;       // (i32*9) -> ()
+    let ol_type_11 = ol_type_base + 6;      // (i32*11) -> ()
+    let ol_type_13 = ol_type_base + 7;      // (i32*13) -> ()
+    let ol_type_17 = ol_type_base + 8;      // (i32*17) -> ()
+    let ol_type_6 = ol_type_base + 9;       // (i32*6) -> ()
+    let ol_type_s64 = ol_type_base + 10;    // (i32,i32,i64,i32) -> ()
+    let ol_type_2ret = ol_type_base + 11;    // (i32*2) -> (i32)
+    let memcpy_type = ol_type_base + 12;     // (i64, i64, i64) -> ()
 
     // Function indices
     let get_fn_count = http_get_count * 2;
@@ -1875,6 +1888,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     types.ty().function([ValType::I32; 7], [ValType::I32]);
 
     types.ty().function(vec![W; 1], []);
+    types.ty().function(vec![W; 2], []); // ol_type_2: 2 i32 -> () (for sleep-ms)
     types.ty().function(vec![W; 3], []);
     types.ty().function(vec![W; 5], []);
     types.ty().function(vec![W; 7], []);
@@ -1891,7 +1905,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
 
     // Full type map: outlayer_imports index → type index (for filtered lookup)
     let ol_type_map_full: Vec<u32> = vec![
-        // Upstream split interfaces only (17 entries)
+        // Upstream split interfaces only (19 entries)
         ol_type_9,   ol_type_17,  ol_type_11,   // 0: view, 1: call, 2: transfer
         ol_type_5,   ol_type_3,                  // 3: set, 4: get
         ol_type_2ret, ol_type_2ret,              // 5: has, 6: delete (bool return)
@@ -1901,6 +1915,8 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         ol_type_7,    ol_type_6,                 // 13: set-worker, 14: get-worker
         ol_type_5,                                // 15: raw
         ol_type_3,                                // 16: env-var
+        ol_type_2,                                // 17: sleep-ms (ms, ret_area)
+        ol_type_5,                                // 18: send-telegram (chat_ptr, chat_len, text_ptr, text_len, ret_area)
     ];
 
     imports.import("wasi:cli/stdin@0.2.2", "get-stdin", EntityType::Function(0));

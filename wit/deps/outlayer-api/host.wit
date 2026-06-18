@@ -1,0 +1,10 @@
+package outlayer:api@0.1.0;
+
+interface host {
+    /// Sleep for the given number of milliseconds
+    sleep-ms: func(ms: u32) -> result<_, string>;
+
+    /// Send a Telegram message via bot API
+    /// Reads TELEGRAM_BOT_TOKEN from environment
+    send-telegram: func(chat-id: string, text: string) -> result<string, string>;
+}
