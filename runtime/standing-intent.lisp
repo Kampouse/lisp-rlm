@@ -1,20 +1,16 @@
 ;;; standing-intent.lisp — Persistent AI Agent with Standing Intent
 ;;;
-;;; Standing intent: "telegram-ai-assistant"
-;;;   Perpetual agent: reads user message from storage, calls AI,
-;;;   sends response to Telegram. Idles when no work pending.
+;;; Telegram-accessible: bot sends {"text":"msg"} via stdin,
+;;; agent calls AI and replies via send-telegram.
 ;;;
-;;; Storage keys:
-;;;   "inbox:latest"   - user message (set externally by Hermes/SQLite)
+;;; Storage keys (for serve/tick mode):
+;;;   "inbox:latest"   - user message
 ;;;   "inbox:pending"  - "1" = unprocessed, "0" = idle
-;;;   "agent:intent"   - standing intent type (set once at boot)
+;;;   "agent:intent"   - standing intent type
 ;;;
-;;; Flow:
-;;;   1. Hermes injects message + sets pending=1 in SQLite
-;;;   2. inlayer serve ticks WASM -> tick()
-;;;   3. tick() reads message -> str-concat into JSON body -> AI call
-;;;   4. AI response -> send-telegram -> clear inbox -> "responded"
-;;;   5. Next tick -> idle (14ms)
+;;; Two modes:
+;;;   run(input) — bot mode: input from stdin, reply via send-telegram
+;;;   tick()      — serve mode: inbox from storage, reply via send-telegram
 
 ;; === Storage Helpers ===
 
@@ -31,34 +27,43 @@
 
 (define (call-ai user-msg)
   (let ((body (str-concat
-    "{\"model\":\"glm-5-turbo\",\"max_tokens\":4096,\"thinking\":{\"type\":\"enabled\"},"
+    "{\"model\":\"glm-5-turbo\",\"max_tokens\":500,"
     "\"messages\":[{\"role\":\"user\",\"content\":\""
     user-msg
-    "\"}]}\"")))
+    "\"}]}")))
     (http-post "https://api.z.ai/api/coding/paas/v4/chat/completions" body)))
+
+;; === Extract content from ZAI response ===
+
+(define (extract-content resp)
+  (let ((choices (json-get "choices" resp)))
+    (if (nil? choices) resp
+      (let ((msg (json-get "message" choices)))
+        (if (nil? msg) resp
+          (let ((content (json-get "content" msg)))
+            (if (nil? content) resp content)))))))
 
 ;; === Dispatch ===
 
 (define (tick)
   (let ((pending (has-pending?)))
     (if (= pending 1)
-      ;; Work to do — read message, call AI, respond via Telegram
       (let ((msg (storage-get "inbox:latest")))
         (if (= msg "")
-          ;; Race: flag set but message cleared
           (begin (clear-inbox) "no-message")
           (begin
-            (outlayer/send-telegram "5125145880" (call-ai msg))
+            (send-telegram "5125145880" (extract-content (call-ai msg)))
             (clear-inbox)
             "responded")))
-      ;; Idle or first boot — check if intent registered
       (if (= (storage-get "agent:intent") "")
         (begin
           (storage-set "agent:intent" "telegram-ai-assistant")
           "booted")
         "idle"))))
 
-;; === Run Entry Point ===
+;; === Run Entry Point (bot mode: input from stdin) ===
 
 (define (run input)
-  (tick))
+  (let ((text (json-get "text" input)))
+    (if (nil? text) "idle"
+      (send-telegram "5125145880" (extract-content (call-ai text))))))
