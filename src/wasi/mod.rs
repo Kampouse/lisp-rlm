@@ -170,9 +170,13 @@ fn outlayer_imports() -> Vec<WasiFunc> {
         WasiFunc { module: "outlayer:api/host@0.1.0", name: "http-post",
             params: vec![W; 7], results: vec![] },
         // 20: web-search(query: string) -> result<string, string>
-        // outlayer:api/host canonical: 1 i32 + ret_area = 2 params
+        // outlayer:api/host canonical: 2 i32 + ret_area = 3 params
         WasiFunc { module: "outlayer:api/host@0.1.0", name: "web-search",
-            params: vec![W; 2], results: vec![] },
+            params: vec![W; 3], results: vec![] },
+        // 21: ai-chat(prompt: string) -> result<string, string>
+        // outlayer:api/host canonical: 2 i32 + ret_area = 3 params
+        WasiFunc { module: "outlayer:api/host@0.1.0", name: "ai-chat",
+            params: vec![W; 3], results: vec![] },
     ]
 }
 
@@ -202,6 +206,7 @@ const OUTLAYER_SENTINELS: &[(u32, usize)] = &[
     (142, 18),   // send-telegram (index 18 in outlayer_imports())
     (143, 19),   // http-post-dynamic (index 19 in outlayer_imports())
     (144, 20),   // web-search (index 20 in outlayer_imports())
+    (145, 21),   // ai-chat (index 21 in outlayer_imports())
 ];
 
 /// Scan emitted instructions for sentinel Call(N) values and return
@@ -1350,6 +1355,8 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
         7,  // 17: sleep-ms — 2 i32 -> ()
         9,  // 18: send-telegram — 5 i32 -> ()
         10, // 19: http-post-dynamic — 7 i32 -> ()
+        8,  // 20: web-search — 3 i32 -> ()
+        8,  // 21: ai-chat — 3 i32 -> ()
     ];
     // Emit only filtered outlayer imports
     for &(sentinel, ol_idx) in OUTLAYER_SENTINELS {
@@ -1945,6 +1952,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         ol_type_5,                                // 18: send-telegram (chat_ptr, chat_len, text_ptr, text_len, ret_area)
         ol_type_7,                                // 19: http-post-dynamic (url_ptr, url_len, body_ptr, body_len, ct_ptr, ct_len, ret_area)
         ol_type_3,                                // 20: web-search (query_ptr, query_len, ret_area)
+        ol_type_3,                                // 21: ai-chat (prompt_ptr, prompt_len, ret_area)
     ];
 
     imports.import("wasi:cli/stdin@0.2.2", "get-stdin", EntityType::Function(0));

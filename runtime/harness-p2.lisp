@@ -91,7 +91,7 @@
 
 ;; === Action Dispatch ===
 ;;; Actions are identified by "action-type" string in intention
-;;; Supported types: "near-view", "http-get", "http-post", "web-search"
+;;; Supported types: "near-view", "http-get", "http-post", "web-search", "ai-chat", "send-telegram"
 
 (define (execute-action intent)
   (let ((action-type (get-default intent "action-type" nil))
@@ -109,6 +109,11 @@
                     (get-default params "body" "")))
         ((= action-type "web-search")
          (web-search (get-default params "query" "")))
+        ((= action-type "ai-chat")
+         (ai-chat (get-default params "prompt" "")))
+        ((= action-type "send-telegram")
+         (send-telegram (get-default params "chat-id" "5125145880")
+                        (get-default params "text" "")))
         (else (str-concat "Unknown action-type: " action-type)))
       "No action-type specified")))
 
@@ -183,8 +188,24 @@
         true)
       false)))
 
+;; === AI Agent Tick ===
+
+(define (ai-tick)
+  (let ((inbox (storage-get "harness:inbox")))
+    (if (nil? inbox)
+      (begin
+        (println "AI tick: no inbox, checking intentions")
+        (tick))
+      (let* ((p1 "You are an autonomous NEAR blockchain agent with tools: web-search, send-telegram, http-get, http-post, near-view. When asked a question, first search for info, then respond concisely.")
+             (p2 "Message: ")
+             (prompt (str-concat p1 " " p2 inbox)))
+        (let ((ai-response (ai-chat prompt)))
+          ai-response)))))
+
 ;; === Run entry point ===
 
 (define (run input)
   (boot-once)
-  (tick))
+  (if (nil? input)
+    (tick)
+    (ai-tick)))

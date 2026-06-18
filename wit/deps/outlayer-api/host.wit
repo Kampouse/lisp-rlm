@@ -16,4 +16,7 @@ interface host {
     /// Reads AI_API_KEY from environment
     /// Returns JSON array of search results: [{title, content, url, siteName}]
     web-search: func(query: string) -> result<string, string>;
+
+    /// AI chat via ZAI glm-5-turbo — returns content text
+    ai-chat: func(prompt: string) -> result<string, string>;
 }
