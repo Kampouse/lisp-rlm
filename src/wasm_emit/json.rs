@@ -185,7 +185,7 @@ impl WasmEmitter {
         ins.push(Instruction::I32Load8U(ma8.clone()));
         ins.push(Instruction::LocalSet(temp));
         ins.push(Instruction::LocalGet(temp));
-        ins.push(Instruction::I32Const(0x7B));
+        ins.push(Instruction::I32Const(0x7B)); // '{'
         ins.push(Instruction::I32Eq);
         open_if!();
         ins.push(Instruction::LocalGet(depth));
@@ -194,7 +194,7 @@ impl WasmEmitter {
         ins.push(Instruction::LocalSet(depth));
         close!();
         ins.push(Instruction::LocalGet(temp));
-        ins.push(Instruction::I32Const(0x7D));
+        ins.push(Instruction::I32Const(0x7D)); // '}'
         ins.push(Instruction::I32Eq);
         open_if!();
         ins.push(Instruction::LocalGet(depth));
@@ -1628,6 +1628,8 @@ impl WasmEmitter {
         let keys: Vec<&str> = key.split('.').collect();
         let mut v: Vec<Instruction<'static>> = Vec::new();
         let tmp = self.local_idx("__jg_buf_tmp");
+        let len_local = self.local_idx_i32("__jg_repack_len");
+        let ptr_local = self.local_idx_i32("__jg_repack_ptr");
 
         // First iteration: use provided buf and buf_len_setup
         // Stack after each __json_get call: (len << 32 | ptr) as i64
@@ -1661,6 +1663,35 @@ impl WasmEmitter {
             }
             v.push(Instruction::I64Const(pat_packed as i64));
             v.push(Instruction::Call(crate::wasm_emit::USER_BASE | func_idx));
+            // __json_get writes result to stdout_buf (204800).
+            // For multi-step dot-paths, the next iteration would read from
+            // stdout_buf (the result ptr) AND write to stdout_buf — clobbering
+            // its own input. Fix: copy result back to buf (32768) so the next
+            // __json_get reads from 32768 and writes to 204800 safely.
+            if ki < keys.len() - 1 {
+                v.push(Instruction::LocalSet(tmp));
+                v.push(Instruction::LocalGet(tmp));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalSet(len_local));
+                v.push(Instruction::LocalGet(tmp));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalSet(ptr_local));
+                // Copy from stdout_buf (204800) to buf (32768)
+                v.push(Instruction::I32Const(buf as i32));
+                v.push(Instruction::LocalGet(ptr_local));
+                v.push(Instruction::LocalGet(len_local));
+                v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+                // Repack: (len << 32 | buf)
+                v.push(Instruction::LocalGet(len_local));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I32Const(buf as i32));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Or);
+            }
         }
 
         // Result on stack: (len << 32 | ptr) as i64

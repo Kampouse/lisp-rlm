@@ -1,9 +1,7 @@
-;;; multi-phase-agent.lisp — Complex Multi-Step Standing Intent Agent
+;;; multi-phase-agent.lisp — Multi-Step Standing Intent Agent
 ;;;
-;;; Multi-tick state machine: idle → fetch-1 → fetch-2 → analyze → deliver → idle
-;;;
-;;; Stores only extracted field names (not raw JSON) to avoid control chars.
-;;; json-sanitize applied to final AI prompt body.
+;;; idle → fetch-1 → fetch-2 → analyze → deliver → idle
+;;; Uses json-get-str to extract AI content from response.
 
 ;; === Helpers ===
 
@@ -56,10 +54,18 @@
     (let ((blk (storage-get "task:latest-block")))
       (let ((prompt (str-concat
         "NEAR Protocol: chain=" cid " latest_block=" blk ". Analyze in 2 sentences.")))
-        (let ((analysis (call-ai prompt)))
-          (storage-set "task:analysis" analysis)
-          (storage-set "task:phase" "deliver")
-          "analyzed")))))
+        (let ((raw (call-ai prompt)))
+          ;; http-post returns TAG_STR — json-get-str extracts content directly
+          (let ((content (json-get-str "choices.message.content" raw)))
+            (if (nil? content)
+              (begin
+                (storage-set "task:analysis" raw)
+                (storage-set "task:phase" "deliver")
+                "analyzed-fallback")
+              (begin
+                (storage-set "task:analysis" content)
+                (storage-set "task:phase" "deliver")
+                "analyzed"))))))))
 
 (define (handle-deliver)
   (let ((analysis (storage-get "task:analysis")))

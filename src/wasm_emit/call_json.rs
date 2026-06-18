@@ -143,57 +143,76 @@ impl WasmEmitter {
                 }
             }
             "json-get-str" => {
-                // REQUIRE input buffer parameter — stdin path has canonical ABI bug
-                // See tests_p2/STDIN_BUG.md for details
                 if a.len() < 2 { return Err("json-get-str requires two arguments: (json-get-str \"key\" input-buffer)".into()); }
                 match &a[0] {
                     LispVal::Str(key) => {
-                        // (json-get-str "key" buffer) — scan directly from buffer, zero-copy
-                        // The tagged string payload IS the packed (len<<32|ptr) that __json_get expects
+                        // (json-get-str "key" buffer) — supports dot-path notation
+                        let buf_expr = self.expr(&a[1])?;
+                        let tmp = self.local_idx("__jgs_tmp");
                         let mut setup = Vec::new();
-                        setup.extend(self.expr(&a[1])?);
+                        // Untag buffer to get payload (len<<32|ptr)
+                        setup.extend(buf_expr.clone());
                         setup.push(Instruction::I64Const(3)); setup.push(Instruction::I64ShrU);
-                        // Stack: payload = (len << 32) | ptr — pass directly to __json_get
-                        let pat = {
-                            let mut p = vec![b'"'];
-                            p.extend(key.as_bytes());
-                            p.extend_from_slice(b"\":");
-                            p
-                        };
-                        let pat_off = self.alloc_data(&pat) as i64;
-                        let pat_len = pat.len() as i64;
-                        let pat_packed = (pat_off as u64) | ((pat_len as u64) << 32);
-                        setup.push(Instruction::I64Const(pat_packed as i64));
-                        let jg_idx = self.ensure_json_get_func();
-                        setup.push(Instruction::Call(crate::wasm_emit::USER_BASE | jg_idx));
-                        // Runtime heap bump: copy jgs_len bytes (not fixed 256)
-                        let rhp: i32 = 56; // RUNTIME_HEAP_PTR (i64 at addr 56)
-                        let jgs_tmp = self.local_idx("jgs_packed");
-                        let jgs_len = self.local_idx_i32("jgs_len");
-                        let jgs_ptr = self.local_idx_i32("jgs_ptr");
-                        let jgs_heap = self.local_idx_i32("jgs_heap");
-                        setup.push(Instruction::LocalSet(jgs_tmp));
-                        // Extract len and ptr from packed result
-                        setup.push(Instruction::LocalGet(jgs_tmp));
-                        setup.push(Instruction::I64Const(32)); setup.push(Instruction::I64ShrU);
-                        setup.push(Instruction::I32WrapI64); setup.push(Instruction::LocalSet(jgs_len));
-                        setup.push(Instruction::LocalGet(jgs_tmp));
-                        setup.push(Instruction::I32WrapI64); setup.push(Instruction::LocalSet(jgs_ptr));
-                        // Use compile-time heap allocation (64KB) — large enough for any realistic JSON value
+                        setup.push(Instruction::LocalSet(tmp));
+                        // Copy string to fixed buffer at 32768 (same as json_get_wasi)
+                        let target_buf = if self.wasi_mode { 32768i64 } else { INPUT_BUF };
+                        let src_ptr_l = self.local_idx("__jgs_sp");
+                        let copy_i = self.local_idx("__jgs_ci");
+                        let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+                        // src_ptr = tmp & 0xFFFFFFFF
+                        setup.push(Instruction::LocalGet(tmp));
+                        setup.push(Instruction::I64Const(0xFFFFFFFF)); setup.push(Instruction::I64And);
+                        setup.push(Instruction::LocalSet(src_ptr_l));
+                        // len = tmp >> 32
+                        let mut len_setup = Vec::new();
+                        len_setup.push(Instruction::LocalGet(tmp));
+                        len_setup.push(Instruction::I64Const(32)); len_setup.push(Instruction::I64ShrU);
+                        // Copy loop
+                        setup.push(Instruction::I64Const(0)); setup.push(Instruction::LocalSet(copy_i));
+                        setup.push(Instruction::Block(BlockType::Empty));
+                        setup.push(Instruction::Loop(BlockType::Empty));
+                        setup.push(Instruction::LocalGet(copy_i)); len_setup.iter().for_each(|i| setup.push(i.clone()));
+                        setup.push(Instruction::I64GeU); setup.push(Instruction::BrIf(1));
+                        setup.push(Instruction::I64Const(target_buf));
+                        setup.push(Instruction::LocalGet(copy_i)); setup.push(Instruction::I64Add);
+                        setup.push(Instruction::I32WrapI64);
+                        setup.push(Instruction::LocalGet(src_ptr_l));
+                        setup.push(Instruction::LocalGet(copy_i)); setup.push(Instruction::I64Add);
+                        setup.push(Instruction::I32WrapI64);
+                        setup.push(Instruction::I32Load8U(ma8.clone()));
+                        setup.push(Instruction::I32Store8(ma8.clone()));
+                        setup.push(Instruction::LocalGet(copy_i)); setup.push(Instruction::I64Const(1));
+                        setup.push(Instruction::I64Add); setup.push(Instruction::LocalSet(copy_i));
+                        setup.push(Instruction::Br(0));
+                        setup.push(Instruction::End); setup.push(Instruction::End);
+                        // Now use json_get_from_buf with "str" value type (supports dot-path)
+                        let mut len_for_jg = Vec::new();
+                        len_for_jg.push(Instruction::LocalGet(tmp));
+                        len_for_jg.push(Instruction::I64Const(32)); len_for_jg.push(Instruction::I64ShrU);
+                        let mut v = self.json_get_from_buf(key, "str", target_buf, &mut len_for_jg)?;
+                        // Copy result from stdout_buf (204800) to heap for persistence
+                        let jgs_tmp2 = self.local_idx("jgs_packed2");
+                        let jgs_len = self.local_idx_i32("jgs_len2");
+                        let jgs_ptr = self.local_idx_i32("jgs_ptr2");
+                        v.push(Instruction::LocalSet(jgs_tmp2));
+                        v.push(Instruction::LocalGet(jgs_tmp2));
+                        v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                        v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(jgs_len));
+                        v.push(Instruction::LocalGet(jgs_tmp2));
+                        v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(jgs_ptr));
                         let heap_dst = self.heap_bump(65536);
-                        setup.push(Instruction::I32Const(heap_dst as i32));
-                        setup.push(Instruction::LocalGet(jgs_ptr));
-                        setup.push(Instruction::LocalGet(jgs_len));
-                        setup.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
-                        // Repack (untagged): (len << 32) | heap_dst
-                        // emit_tag_str() adds the tag for ALL paths
-                        setup.push(Instruction::LocalGet(jgs_len)); setup.push(Instruction::I64ExtendI32U);
-                        setup.push(Instruction::I64Const(32)); setup.push(Instruction::I64Shl);
-                        setup.push(Instruction::I32Const(heap_dst as i32));
-                        setup.push(Instruction::I64ExtendI32U);
-                        setup.push(Instruction::I64Or);
-                        setup.extend(self.emit_tag_str());
-                        Ok(setup)
+                        v.push(Instruction::I32Const(heap_dst as i32));
+                        v.push(Instruction::LocalGet(jgs_ptr));
+                        v.push(Instruction::LocalGet(jgs_len));
+                        v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+                        v.push(Instruction::LocalGet(jgs_len)); v.push(Instruction::I64ExtendI32U);
+                        v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                        v.push(Instruction::I32Const(heap_dst as i32));
+                        v.push(Instruction::I64ExtendI32U);
+                        v.push(Instruction::I64Or);
+                        v.extend(self.emit_tag_str());
+                        v.splice(0..0, setup.iter().cloned());
+                        Ok(v)
                     }
                     _ => Err("json-get-str key must be a string literal".into()),
                 }
