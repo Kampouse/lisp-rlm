@@ -76,8 +76,14 @@ impl WasmEmitter {
             }
             "http-post" => {
                 // (http-post "https://api.example.com/data" "body") -> string or nil
+                // Dynamic URLs (non-literal) automatically use outlayer http-post-dynamic
                 if a.len() < 2 { return Err("http-post requires (url body)".into()); }
                 if !self.wasi_mode { return Err("http-post is only available on OutLayer (WASI) target".into()); }
+
+                // Dynamic URL detection: if URL is not a string literal, delegate to http-post-dynamic
+                if !matches!(&a[0], crate::types::LispVal::Str(_)) {
+                    return self.call_outlayer("http-post-dynamic", a);
+                }
 
                 let url_expr = self.expr(&a[0])?;
                 let body_expr = self.expr(&a[1])?;
@@ -1550,6 +1556,100 @@ impl WasmEmitter {
                 v.push(Instruction::I64Eq);         // i32 (disc == 0 ?)
                 v.push(Instruction::I64ExtendI32U);  // i64
                 v.extend(self.emit_tag_num());       // i64 tagged
+                Ok(v)
+            }
+            "http-post-dynamic" => {
+                // (http-post-dynamic "url" "body" ["content-type"]) -> string or nil
+                // WIT: http-post-dynamic(url: string, body: list<u8>, content-type: string) -> result<list<u8>, string>
+                // OutLayer host function — takes dynamic URL at runtime
+                // Sentinel 143 → outlayer_imports index 19
+                if a.len() < 2 { return Err("http-post-dynamic requires (url body) or (url body content-type)".into()); }
+                if !self.wasi_mode { return Err("http-post-dynamic is only available on OutLayer (WASI) target".into()); }
+                self.need_outlayer = true;
+
+                // Use locals for url/body/ct to avoid double-evaluation
+                let url_local = self.local_idx("__hpd_url");
+                let body_local = self.local_idx("__hpd_body");
+                let ct_local = self.local_idx("__hpd_ct");
+                let url_expr = self.expr(&a[0])?;
+                let body_expr = self.expr(&a[1])?;
+                // content-type defaults to "application/json"
+                let ct_expr = if a.len() > 2 {
+                    self.expr(&a[2])?
+                } else {
+                    vec![Instruction::I64Const(0)] // TAG_STR empty → will use default in host
+                };
+                let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE;
+                // Store content-type "application/json" as data segment
+                let content_type_area: i32 = 163900;
+                self.data_segments.push((content_type_area as u32, b"application/json".to_vec()));
+                let content_type_len: i32 = 16;
+
+                let mut v = Vec::new();
+                // Evaluate url → local
+                v.extend(url_expr);
+                v.push(Instruction::LocalSet(url_local));
+                // Evaluate body → local
+                v.extend(body_expr);
+                v.push(Instruction::LocalSet(body_local));
+                // url ptr/len from local
+                v.push(Instruction::LocalGet(url_local));
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(url_local));
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                // body ptr/len from local
+                v.push(Instruction::LocalGet(body_local));
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(body_local));
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                // content-type: check if 3rd arg was provided
+                if a.len() > 2 {
+                    v.extend(ct_expr.clone());
+                    v.push(Instruction::LocalSet(ct_local));
+                    v.push(Instruction::LocalGet(ct_local));
+                    v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                    v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::LocalGet(ct_local));
+                    v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                    v.push(Instruction::I32WrapI64);
+                } else {
+                    // No custom content-type — use default data segment
+                    v.push(Instruction::I32Const(content_type_area));
+                    v.push(Instruction::I32Const(content_type_len));
+                }
+                // ret_area
+                v.push(Instruction::I32Const(ret_area));
+                // Call http-post-dynamic (sentinel 143)
+                v.push(Instruction::Call(143));
+                // Read result from ret_area
+                // disc at +0: 0=ok, nonzero=err
+                v.push(Instruction::I32Const(ret_area)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Ne);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.push(Instruction::I64Const(4)); // TAG_NIL on error
+                v.push(Instruction::Else);
+                // ptr at +4, len at +8
+                v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I32Const(ret_area + 8)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(5)); v.push(Instruction::I64Or); // TAG_STR
+                v.push(Instruction::End);
                 Ok(v)
             }
             "send-telegram" => {
