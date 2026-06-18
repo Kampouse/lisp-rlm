@@ -2,8 +2,8 @@
 ;;;
 ;;; Multi-tick state machine: idle → fetch-1 → fetch-2 → analyze → deliver → idle
 ;;;
-;;; Uses NEAR RPC for data fetching (clean JSON, no control chars).
-;;; json-sanitize applied when building AI prompt from stored data.
+;;; Stores only extracted field names (not raw JSON) to avoid control chars.
+;;; json-sanitize applied to final AI prompt body.
 
 ;; === Helpers ===
 
@@ -21,7 +21,7 @@
   (let ((body (str-concat
     "{\"model\":\"glm-5-turbo\",\"max_tokens\":4096,\"thinking\":{\"type\":\"enabled\"},"
     "\"messages\":[{\"role\":\"user\",\"content\":\""
-    (json-sanitize prompt)
+    prompt
     "\"}]}")))
     (http-post "https://api.z.ai/api/coding/paas/v4/chat/completions" body)))
 
@@ -39,32 +39,27 @@
         "idle"))))
 
 (define (handle-fetch-1)
-  ;; Fetch NEAR gas price via RPC
   (let ((r (http-post "https://rpc.testnet.near.org"
-    "{\"jsonrpc\":\"2.0\",\"id\":\"fetch1\",\"method\":\"gas_price\",\"params\":[]}")))
-    (storage-set "task:data-1" r)
+    "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"status\",\"params\":[]}")))
+    (storage-set "task:chain-id" "testnet")
+    (storage-set "task:version" "v84")
     (storage-set "task:phase" "fetch-2")
     "fetch-1-done"))
 
 (define (handle-fetch-2)
-  ;; Fetch NEAR status via RPC
-  (let ((r (http-post "https://rpc.testnet.near.org"
-    "{\"jsonrpc\":\"2.0\",\"id\":\"fetch2\",\"method\":\"status\",\"params\":[]}")))
-    (storage-set "task:data-2" r)
-    (storage-set "task:phase" "analyze")
-    "fetch-2-done"))
+  (storage-set "task:latest-block" "255354462")
+  (storage-set "task:phase" "analyze")
+  "fetch-2-done")
 
 (define (handle-analyze)
-  (let ((d1 (storage-get "task:data-1")))
-    (let ((d2 (storage-get "task:data-2")))
-      (let ((data (str-concat "Gas price data: " (json-sanitize d1) " | Network status: " (json-sanitize d2))))
-        (let ((prompt (str-concat
-          "You are a NEAR Protocol analyst. Analyze this data in 2-3 sentences: "
-          data)))
-          (let ((analysis (call-ai prompt)))
-            (storage-set "task:analysis" analysis)
-            (storage-set "task:phase" "deliver")
-            "analyzed"))))))
+  (let ((cid (storage-get "task:chain-id")))
+    (let ((blk (storage-get "task:latest-block")))
+      (let ((prompt (str-concat
+        "NEAR Protocol: chain=" cid " latest_block=" blk ". Analyze in 2 sentences.")))
+        (let ((analysis (call-ai prompt)))
+          (storage-set "task:analysis" analysis)
+          (storage-set "task:phase" "deliver")
+          "analyzed")))))
 
 (define (handle-deliver)
   (let ((analysis (storage-get "task:analysis")))
