@@ -1635,6 +1635,58 @@ impl WasmEmitter {
                 v.push(Instruction::End);
                 Ok(v)
             }
+            "web-search" => {
+                // (web-search "query") -> string or nil
+                // WIT: web-search(query: string) -> result<string, string>
+                // Canonical ABI: (query_ptr, query_len, ret_area) -> ()
+                // ret_area layout: [i32 disc][4 pad][ptr result_str][len result_str]
+                // Sentinel 144 → outlayer_imports index 20 (web-search)
+                if a.is_empty() { return Err("web-search requires (query)".into()); }
+                if !self.wasi_mode { return Err("web-search is only available on OutLayer".into()); }
+                self.need_outlayer = true;
+                let query_expr = self.expr(&a[0])?;
+                let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 2048;
+                let mut v = Vec::new();
+                // Push query string (ptr, len)
+                v.extend(query_expr.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64); // query_ptr
+                v.extend(query_expr);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64); // query_len
+                // Push ret_area
+                v.push(Instruction::I32Const(ret_area));
+                // Call web-search sentinel
+                v.push(Instruction::Call(144));
+                // Read discriminant from ret_area (0 = Ok, 1 = Err)
+                v.push(Instruction::I32Const(ret_area));
+                v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.push(Instruction::I64Const(0)); // TAG_NIL on error
+                v.push(Instruction::Else);
+                // Ok path: read result string (ptr @ ret_area+8, len @ ret_area+12)
+                v.push(Instruction::I32Const(ret_area + 8));
+                v.push(Instruction::I32Load(ma4)); // result_ptr
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I32Const(ret_area + 12));
+                v.push(Instruction::I32Load(ma4)); // result_len
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Or);       // (ptr | len<<32)
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64Shl);      // << 3
+                v.push(Instruction::I64Const(TAG_STR));
+                v.push(Instruction::I64Or);       // tag
+                v.push(Instruction::End);
+                Ok(v)
+            }
+            "outlayer/web-search" => {
+                return self.call_outlayer("web-search", a);
+            }
             _ => Err("__not_handled__".into()),
         }
     }

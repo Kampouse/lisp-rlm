@@ -11,4 +11,9 @@ interface host {
     /// HTTP POST with dynamic URL
     /// Returns response body as list<u8>
     http-post: func(url: string, body: list<u8>, content-type: string) -> result<list<u8>, string>;
+
+    /// Web search via ZAI MCP web_search_prime
+    /// Reads AI_API_KEY from environment
+    /// Returns JSON array of search results: [{title, content, url, siteName}]
+    web-search: func(query: string) -> result<string, string>;
 }

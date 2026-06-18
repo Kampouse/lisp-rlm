@@ -12,6 +12,7 @@
 ;;;   "near-view" - call near/view
 ;;;   "http-get"  - HTTP GET request
 ;;;   "http-post" - HTTP POST request
+;;;   "web-search" - web search via ZAI MCP
 
 ;; === Helpers ===
 
@@ -90,7 +91,7 @@
 
 ;; === Action Dispatch ===
 ;;; Actions are identified by "action-type" string in intention
-;;; Supported types: "near-view", "http-get", "http-post"
+;;; Supported types: "near-view", "http-get", "http-post", "web-search"
 
 (define (execute-action intent)
   (let ((action-type (get-default intent "action-type" nil))
@@ -106,6 +107,8 @@
         ((= action-type "http-post")
          (http-post (get-default params "url" "https://example.com")
                     (get-default params "body" "")))
+        ((= action-type "web-search")
+         (web-search (get-default params "query" "")))
         (else (str-concat "Unknown action-type: " action-type)))
       "No action-type specified")))
 
@@ -170,17 +173,18 @@
       (save-intentions (append intentions (list intent)))
       intent)))
 
-;; === Boot ===
+;; === Boot (first call only) — uses storage to track ===
 
-(define (boot)
-  (begin
-    (println "=== Agent Booting (P2) ===")
-    (let ((intentions (load-intentions)))
-      (println (str-concat "Intentions loaded: " (to-string (len intentions)))))
-    (println "=== Boot Complete ===")
-    "booted"))
+(define (boot-once)
+  (let ((was-booted (storage-get "harness:booted")))
+    (if (nil? was-booted)
+      (begin
+        (storage-set "harness:booted" "true")
+        true)
+      false)))
 
 ;; === Run entry point ===
 
 (define (run input)
-  (boot))
+  (boot-once)
+  (tick))

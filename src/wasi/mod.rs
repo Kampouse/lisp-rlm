@@ -169,6 +169,10 @@ fn outlayer_imports() -> Vec<WasiFunc> {
         // outlayer:api/host canonical: 6 i32 + ret_area = 7 params
         WasiFunc { module: "outlayer:api/host@0.1.0", name: "http-post",
             params: vec![W; 7], results: vec![] },
+        // 20: web-search(query: string) -> result<string, string>
+        // outlayer:api/host canonical: 1 i32 + ret_area = 2 params
+        WasiFunc { module: "outlayer:api/host@0.1.0", name: "web-search",
+            params: vec![W; 2], results: vec![] },
     ]
 }
 
@@ -197,6 +201,7 @@ const OUTLAYER_SENTINELS: &[(u32, usize)] = &[
     (141, 17),   // sleep-ms (index 17 in outlayer_imports())
     (142, 18),   // send-telegram (index 18 in outlayer_imports())
     (143, 19),   // http-post-dynamic (index 19 in outlayer_imports())
+    (144, 20),   // web-search (index 20 in outlayer_imports())
 ];
 
 /// Scan emitted instructions for sentinel Call(N) values and return
@@ -1939,6 +1944,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         ol_type_2,                                // 17: sleep-ms (ms, ret_area)
         ol_type_5,                                // 18: send-telegram (chat_ptr, chat_len, text_ptr, text_len, ret_area)
         ol_type_7,                                // 19: http-post-dynamic (url_ptr, url_len, body_ptr, body_len, ct_ptr, ct_len, ret_area)
+        ol_type_3,                                // 20: web-search (query_ptr, query_len, ret_area)
     ];
 
     imports.import("wasi:cli/stdin@0.2.2", "get-stdin", EntityType::Function(0));
