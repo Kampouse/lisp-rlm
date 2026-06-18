@@ -165,10 +165,6 @@ fn outlayer_imports() -> Vec<WasiFunc> {
         // outlayer:api/host canonical: 2 i32 + ret_area = 3 params
         WasiFunc { module: "outlayer:api/host@0.1.0", name: "send-telegram",
             params: vec![W; 3], results: vec![] },
-        // 19: json-sanitize(input: string) -> string
-        // canonical: 1 i32 + ret_area = 2 params
-        WasiFunc { module: "outlayer:api/host@0.1.0", name: "json-sanitize",
-            params: vec![W; 2], results: vec![] },
     ]
 }
 
@@ -196,7 +192,6 @@ const OUTLAYER_SENTINELS: &[(u32, usize)] = &[
     (122, 16),   // env-var (index 16 in outlayer_imports())
     (141, 17),   // sleep-ms (index 17 in outlayer_imports())
     (142, 18),   // send-telegram (index 18 in outlayer_imports())
-    (143, 19),   // json-sanitize (index 19 in outlayer_imports())
 ];
 
 /// Scan emitted instructions for sentinel Call(N) values and return
@@ -1330,7 +1325,6 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
         8,  // 16: env-var — 3 i32 -> ()
         7,  // 17: sleep-ms — 2 i32 -> ()
         9,  // 18: send-telegram — 5 i32 -> ()
-        8,  // 19: json-sanitize — 3 i32 -> ()
     ];
     // Emit only filtered outlayer imports
     for &(sentinel, ol_idx) in OUTLAYER_SENTINELS {
@@ -1923,7 +1917,6 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         ol_type_3,                                // 16: env-var
         ol_type_2,                                // 17: sleep-ms (ms, ret_area)
         ol_type_5,                                // 18: send-telegram (chat_ptr, chat_len, text_ptr, text_len, ret_area)
-        ol_type_3,                                // 19: json-sanitize (ptr, len, ret_area)
     ];
 
     imports.import("wasi:cli/stdin@0.2.2", "get-stdin", EntityType::Function(0));

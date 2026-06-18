@@ -7,8 +7,4 @@ interface host {
     /// Send a Telegram message via bot API
     /// Reads TELEGRAM_BOT_TOKEN from environment
     send-telegram: func(chat-id: string, text: string) -> result<string, string>;
-
-    /// Sanitize bytes/string for safe embedding in JSON
-    /// Strips control chars (0x00-0x1F except tab/newline) and backslashes
-    json-sanitize: func(input: list<u8>) -> string;
 }
