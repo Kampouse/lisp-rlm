@@ -1520,10 +1520,11 @@ impl WasmEmitter {
                 Ok(v)
             }
             "sleep-ms" => {
-                // (sleep-ms ms) -> number (ms slept on success)
-                // WIT: sleep-ms(ms: u32) -> result<u32, string>
+                // (sleep-ms ms) -> 1 on success, 0 on error
+                // WIT: sleep-ms(ms: u32) -> result<_, string>
                 // Canonical ABI: (ms: i32, ret_area: i32) -> ()
-                // ret_area layout: [i32 disc][4 pad][i32 u32_val @ +8]
+                // ret_area layout: [i32 disc @ 0][...]
+                // disc=0 means ok, disc=1 means err
                 // Sentinel 141 → outlayer_imports index 17 (sleep-ms)
                 if a.is_empty() { return Err("sleep-ms requires a duration in milliseconds (number)".into()); }
                 if !self.wasi_mode { return Err("sleep-ms is only available on OutLayer".into()); }
@@ -1540,11 +1541,15 @@ impl WasmEmitter {
                 v.push(Instruction::I32Const(ret_area));
                 // Call sleep-ms sentinel
                 v.push(Instruction::Call(141));
-                // Read u32 result from ret_area + 8 (result<u32, string>: disc @ 0, u32 @ 8)
-                v.push(Instruction::I32Const(ret_area + 8));
+                // Read discriminant: 0 = ok → return 1, nonzero = err → return 0
+                v.push(Instruction::I32Const(ret_area));
                 v.push(Instruction::I32Load(ma4));
                 v.push(Instruction::I64ExtendI32U);
-                v.extend(self.emit_tag_num());
+                // If disc == 0, push 1; else push 0
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Eq);         // i32 (disc == 0 ?)
+                v.push(Instruction::I64ExtendI32U);  // i64
+                v.extend(self.emit_tag_num());       // i64 tagged
                 Ok(v)
             }
             "send-telegram" => {
