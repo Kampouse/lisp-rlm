@@ -73,23 +73,13 @@ impl WasmEmitter {
                             // We'll make buf_setup push the length, and pass buf=0 as sentinel
                             // Actually let's do it differently: extract ptr and len at runtime
                             let mut setup = Vec::new();
-                            setup.extend(buf_expr.clone());
                             // Untag: >> 3 to get payload
-                            setup.push(Instruction::I64Const(3)); setup.push(Instruction::I64ShrU);
-                            // Now payload = (len << 32) | ptr
-                            // Extract len: payload >> 32
-                            setup.push(Instruction::I64Const(32)); setup.push(Instruction::I64ShrU);
-                            // len is now on stack — but json_get_from_buf expects (ilen) as setup
-                            // We also need the ptr. Store payload in a temp, compute both.
                             let tmp = self.local_idx("__jgs_tmp");
                             let _buf_ptr = self.local_idx("__jgs_bptr");
-                            setup.extend(buf_expr);
+                            setup.extend(buf_expr.clone());
                             setup.push(Instruction::I64Const(3)); setup.push(Instruction::I64ShrU);
                             setup.push(Instruction::LocalSet(tmp));
-                            // len = tmp >> 32
-                            setup.push(Instruction::LocalGet(tmp));
-                            setup.push(Instruction::I64Const(32)); setup.push(Instruction::I64ShrU);
-                            // buf_ptr = tmp & 0xFFFFFFFF (but we need a fixed buf value for json_get_from_buf)
+                            // Copy string to STDIN_BUF, then scan — len comes from copy_setup
                             // Problem: json_get_from_buf takes a fixed buf address. The ptr is runtime.
                             // We need a version that takes buf from a local, not a constant.
                             // Quick fix: copy the string to a fixed buffer first, then scan it.
@@ -130,13 +120,37 @@ impl WasmEmitter {
                             copy_setup.push(Instruction::Br(0));
                             copy_setup.push(Instruction::End); copy_setup.push(Instruction::End);
                             // Now scan from target_buf with the length
-                            self.json_get_from_buf(key, "int", target_buf, &mut copy_setup)?
+                            let mut v = self.json_get_from_buf(key, "str", target_buf, &mut copy_setup)?;
+                            // Prepend setup (tmp extraction + copy loop) before the json_get_from_buf instructions
+                            v.splice(0..0, setup.iter().cloned());
+                            // json_get_from_buf("str") returns raw (len << 32 | ptr) — copy to heap and tag as TAG_STR
+                            let jgs_tmp2 = self.local_idx("jgs_packed2");
+                            let jgs_len = self.local_idx_i32("jgs_len2");
+                            let jgs_ptr = self.local_idx_i32("jgs_ptr2");
+                            v.push(Instruction::LocalSet(jgs_tmp2));
+                            v.push(Instruction::LocalGet(jgs_tmp2));
+                            v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                            v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(jgs_len));
+                            v.push(Instruction::LocalGet(jgs_tmp2));
+                            v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(jgs_ptr));
+                            let heap_dst = self.heap_bump(65536);
+                            let ma = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+                            v.push(Instruction::I32Const(heap_dst as i32));
+                            v.push(Instruction::LocalGet(jgs_ptr));
+                            v.push(Instruction::LocalGet(jgs_len));
+                            v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+                            v.push(Instruction::LocalGet(jgs_len)); v.push(Instruction::I64ExtendI32U);
+                            v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                            v.push(Instruction::I32Const(heap_dst as i32)); v.push(Instruction::I64ExtendI32U);
+                            v.push(Instruction::I64Or);
+                            v.extend(self.emit_tag_str());
+                            v
                         } else if self.wasi_mode {
-                            self.json_get_wasi(key, "int")?
+                            self.json_get_wasi(key, "str")?
                         } else {
-                            self.json_get_with_scanner(key, "int")?
+                            self.json_get_with_scanner(key, "auto")?
                         };
-                        v.extend(self.emit_tag_num());
+                        // json_get_from_buf("auto") returns tagged value directly (TAG_STR or TAG_NUM)
                         Ok(v)
                     }
                     _ => Err("json-get key must be a string literal".into()),

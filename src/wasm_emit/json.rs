@@ -1695,7 +1695,113 @@ impl WasmEmitter {
         }
 
         // Result on stack: (len << 32 | ptr) as i64
-        if value_type == "int" {
+        if value_type == "auto" {
+            // Auto-detect: numeric if first byte is digit/minus, else string
+            let first_byte_l = self.local_idx_i32("__jg_auto_fb");
+            let ptr_l = self.local_idx_i32("__jg_auto_ptr");
+            let len_l = self.local_idx_i32("__jg_auto_len");
+            let result_l = self.local_idx("__jg_auto_result");
+            let ma1 = wasm_encoder::MemArg {
+                offset: 0,
+                align: 0,
+                memory_index: 0,
+            };
+            v.push(Instruction::LocalSet(tmp)); // save packed result
+            // Check if result is 0 (not found) → return TAG_NIL
+            v.push(Instruction::LocalGet(tmp));
+            v.push(Instruction::I64Const(0));
+            v.push(Instruction::I64Eq);
+            v.push(Instruction::If(BlockType::Empty));
+            v.push(Instruction::I64Const(0)); // TAG_NIL
+            v.push(Instruction::LocalSet(result_l));
+            v.push(Instruction::Else);
+            // Extract ptr and len
+            v.push(Instruction::LocalGet(tmp));
+            v.push(Instruction::I64Const(32));
+            v.push(Instruction::I64ShrU);
+            v.push(Instruction::I32WrapI64);
+            v.push(Instruction::LocalSet(len_l));
+            v.push(Instruction::LocalGet(tmp));
+            v.push(Instruction::I32WrapI64);
+            v.push(Instruction::LocalSet(ptr_l));
+            // Load first byte
+            v.push(Instruction::LocalGet(ptr_l));
+            v.push(Instruction::I32Load8U(ma1.clone()));
+            v.push(Instruction::LocalSet(first_byte_l));
+            // Check if digit (0x30-0x39) or minus (0x2D)
+            v.push(Instruction::LocalGet(first_byte_l));
+            v.push(Instruction::I32Const(0x30)); // '0'
+            v.push(Instruction::I32GeS);
+            v.push(Instruction::LocalGet(first_byte_l));
+            v.push(Instruction::I32Const(0x39)); // '9'
+            v.push(Instruction::I32LeS);
+            v.push(Instruction::I32And);
+            v.push(Instruction::LocalGet(first_byte_l));
+            v.push(Instruction::I32Const(0x2D)); // '-'
+            v.push(Instruction::I32Eq);
+            v.push(Instruction::I32Or);
+            v.push(Instruction::If(BlockType::Empty));
+            // Numeric → parse as i64, return TAG_NUM
+            {
+                let i_local = self.local_idx("__jg_int_i");
+                let int_result = self.local_idx("__jg_int_result");
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalSet(int_result));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalSet(i_local));
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(i_local));
+                v.push(Instruction::LocalGet(len_l));
+                v.push(Instruction::I64ExtendI32S);
+                v.push(Instruction::I64GeS);
+                v.push(Instruction::BrIf(1));
+                v.push(Instruction::LocalGet(ptr_l));
+                v.push(Instruction::LocalGet(i_local));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma1.clone()));
+                v.push(Instruction::I32Const(48)); // '0'
+                v.push(Instruction::I32Sub);
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalGet(int_result));
+                v.push(Instruction::I64Const(10));
+                v.push(Instruction::I64Mul);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(int_result));
+                v.push(Instruction::LocalGet(i_local));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(i_local));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); // loop
+                v.push(Instruction::End); // block
+                v.push(Instruction::LocalGet(int_result));
+                v.extend(self.emit_tag_num());
+                v.push(Instruction::LocalSet(result_l));
+            }
+            v.push(Instruction::Else);
+            // String → copy to heap, return TAG_STR
+            {
+                let heap_dst = self.heap_bump(65536);
+                v.push(Instruction::I32Const(heap_dst as i32));
+                v.push(Instruction::LocalGet(ptr_l));
+                v.push(Instruction::LocalGet(len_l));
+                v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+                v.push(Instruction::LocalGet(len_l));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I32Const(heap_dst as i32));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
+                v.push(Instruction::LocalSet(result_l));
+            }
+            v.push(Instruction::End); // if/else numeric
+            v.push(Instruction::End); // if/else not-found
+            v.push(Instruction::LocalGet(result_l));
+        } else if value_type == "int" {
             // Parse ASCII digits at ptr into i64
             let i_local = self.local_idx("__jg_int_i");
             let result_local = self.local_idx("__jg_int_result");
