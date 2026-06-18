@@ -122,8 +122,10 @@ impl WasmEmitter {
         let mut v = Vec::new();
         v.extend(n);
         // Untag the number before converting: val >> TAG_BITS
+        // TAG_NUM uses signed values — must use arithmetic (signed) right shift
+        // to preserve negative numbers. I64ShrU would mangle negatives.
         v.push(Instruction::I64Const(TAG_BITS));
-        v.push(Instruction::I64ShrU);
+        v.push(Instruction::I64ShrS);
         v.push(Instruction::LocalSet(n_i));
         v.push(Instruction::I64Const(0));
         v.push(Instruction::LocalSet(neg_i));
@@ -247,46 +249,10 @@ impl WasmEmitter {
         v.push(Instruction::LocalGet(neg_i));
         v.push(Instruction::I32WrapI64);
         v.push(Instruction::If(BlockType::Empty));
-        // Shift digits right by 1, write '-' at dst[0]
-        v.push(Instruction::LocalGet(len_i));
+        // Simpler: write '-' at dst-1, adjust dst and len
+        v.push(Instruction::LocalGet(dst_i));
         v.push(Instruction::I64Const(1));
         v.push(Instruction::I64Sub);
-        v.push(Instruction::LocalSet(i_i));
-        v.push(Instruction::Block(BlockType::Empty));
-        v.push(Instruction::Loop(BlockType::Empty));
-        v.push(Instruction::LocalGet(i_i));
-        v.push(Instruction::I64Const(0));
-        v.push(Instruction::I64LtS);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::Br(2));
-        v.push(Instruction::End);
-        v.push(Instruction::LocalGet(dst_i));
-        v.push(Instruction::LocalGet(i_i));
-        v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Add);
-        v.push(Instruction::I32WrapI64);
-        v.push(Instruction::LocalGet(dst_i));
-        v.push(Instruction::LocalGet(i_i));
-        v.push(Instruction::I64Add);
-        v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I32Load8U(wasm_encoder::MemArg {
-            offset: 0,
-            align: 0,
-            memory_index: 0,
-        }));
-        v.push(Instruction::I32Store8(wasm_encoder::MemArg {
-            offset: 0,
-            align: 0,
-            memory_index: 0,
-        }));
-        v.push(Instruction::LocalGet(i_i));
-        v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Sub);
-        v.push(Instruction::LocalSet(i_i));
-        v.push(Instruction::Br(0));
-        v.push(Instruction::End); // loop
-        v.push(Instruction::End); // block
-        v.push(Instruction::LocalGet(dst_i));
         v.push(Instruction::I32WrapI64);
         v.push(Instruction::I32Const(45)); // '-'
         v.push(Instruction::I32Store8(wasm_encoder::MemArg {
@@ -294,10 +260,14 @@ impl WasmEmitter {
             align: 0,
             memory_index: 0,
         }));
+        v.push(Instruction::LocalGet(dst_i));
+        v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Sub);
+        v.push(Instruction::LocalSet(dst_i)); // dst -= 1
         v.push(Instruction::LocalGet(len_i));
         v.push(Instruction::I64Const(1));
         v.push(Instruction::I64Add);
-        v.push(Instruction::LocalSet(len_i));
+        v.push(Instruction::LocalSet(len_i)); // len += 1
         v.push(Instruction::End);
         // Return packed: (len << 32) | dst, tagged as string
         v.push(Instruction::LocalGet(len_i));
