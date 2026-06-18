@@ -302,8 +302,9 @@ impl WasmEmitter {
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(0)); v.push(Instruction::I64Eq);
                 v.push(Instruction::If(BlockType::Result(ValType::I64)));
-                // list_len == 0 → not found → TAG_NIL
-                v.push(Instruction::I64Const(TAG_NIL));
+                // list_len == 0 → not found → empty string (TAG_STR with len=0)
+                // Value = 5 = TAG_STR (ptr=0, len=0 → payload=0, tagged as TAG_STR)
+                v.push(Instruction::I64Const(crate::wasm_emit::TAG_STR));
                 v.push(Instruction::Else);
                 // list_len > 0 → allocate from runtime heap, copy, construct tagged string
                 // Step 1: Save list_len

@@ -1,14 +1,6 @@
-;;; multi-phase-agent.lisp — Multi-Step Standing Intent Agent
-;;;
-;;; idle → fetch-1 → fetch-2 → analyze → deliver → idle
-;;; Uses json-get-str to extract AI content from response.
-
-;; === Helpers ===
-
 (define (has-pending?)
   (let ((p (storage-get "inbox:pending")))
-    (if (nil? p) nil
-      (if (= p "1") 1 0))))
+    (if (= p "1") 1 0)))
 
 (define (clear-inbox)
   (begin
@@ -20,21 +12,18 @@
     "{\"model\":\"glm-5-turbo\",\"max_tokens\":4096,\"thinking\":{\"type\":\"enabled\"},"
     "\"messages\":[{\"role\":\"user\",\"content\":\""
     prompt
-    "\"}]}")))
+    "\"}]}\"")))
     (http-post "https://api.z.ai/api/coding/paas/v4/chat/completions" body)))
-
-;; === Phase Handlers ===
 
 (define (handle-idle)
   (let ((pending (has-pending?)))
-    (if (nil? pending) "idle"
-      (if (= pending 1)
-        (begin
-          (storage-set "task:prompt" (storage-get "inbox:latest"))
-          (clear-inbox)
-          (storage-set "task:phase" "fetch-1")
-          "task-started")
-        "idle"))))
+    (if (= pending 1)
+      (begin
+        (storage-set "task:prompt" (storage-get "inbox:latest"))
+        (clear-inbox)
+        (storage-set "task:phase" "fetch-1")
+        "task-started")
+      "idle")))
 
 (define (handle-fetch-1)
   (let ((r (http-post "https://rpc.testnet.near.org"
@@ -55,9 +44,8 @@
       (let ((prompt (str-concat
         "NEAR Protocol: chain=" cid " latest_block=" blk ". Analyze in 2 sentences.")))
         (let ((raw (call-ai prompt)))
-          ;; http-post returns TAG_STR — json-get-str extracts content directly
           (let ((content (json-get-str "choices.message.content" raw)))
-            (if (nil? content)
+            (if (= content "")
               (begin
                 (storage-set "task:analysis" raw)
                 (storage-set "task:phase" "deliver")
@@ -73,11 +61,9 @@
     (storage-set "task:phase" "idle")
     "delivered"))
 
-;; === Tick Dispatch ===
-
 (define (tick)
   (let ((phase (storage-get "task:phase")))
-    (if (nil? phase)
+    (if (= phase "")
       (begin
         (storage-set "agent:intent" "multi-phase-agent")
         (storage-set "task:phase" "idle")
@@ -88,8 +74,6 @@
             (if (= phase "analyze") (handle-analyze)
               (if (= phase "deliver") (handle-deliver)
                 "unknown-phase"))))))))
-
-;; === Entry Point ===
 
 (define (run input)
   (tick))

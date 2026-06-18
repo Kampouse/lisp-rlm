@@ -727,6 +727,8 @@ impl WasmEmitter {
 
     pub(crate) fn emit_is_truthy(&mut self) -> Vec<Instruction<'static>> {
         let tmp = self.local_idx("__truthy_tmp");
+        let tag = self.local_idx("__truthy_tag");
+        let len = self.local_idx("__truthy_len");
         vec![
             Instruction::LocalSet(tmp), // save tagged val
             // Check val == 1 (Bool false)
@@ -738,6 +740,24 @@ impl WasmEmitter {
             Instruction::I64Const(TAGGED_NIL),
             Instruction::I64Eq, // → i32
             Instruction::I32Or, // → i32
+            // Check empty TAG_STR (tag==5 && len==0)
+            Instruction::LocalGet(tmp),
+            Instruction::I64Const(7),
+            Instruction::I64And,
+            Instruction::LocalSet(tag),
+            Instruction::LocalGet(tag),
+            Instruction::I64Const(TAG_STR),
+            Instruction::I64Eq, // → i32
+            Instruction::LocalGet(tmp),
+            Instruction::I64Const(35), // >> 3 + >> 32 equivalent: bits 35+
+            Instruction::I64ShrU,
+            Instruction::I64Const(0xFFFFFFFF),
+            Instruction::I64And,
+            Instruction::LocalSet(len),
+            Instruction::LocalGet(len),
+            Instruction::I64Eqz, // len == 0 → i32
+            Instruction::I32And, // tag==5 AND len==0
+            Instruction::I32Or, // falsy if nil OR empty-str
             // invert: 0 → truthy, 1 → falsy
             Instruction::I32Eqz,        // → i32
             Instruction::I64ExtendI32U, // → i64 for callers
