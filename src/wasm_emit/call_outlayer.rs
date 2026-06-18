@@ -76,7 +76,7 @@ impl WasmEmitter {
             }
             "http-post" => {
                 // (http-post "https://api.example.com/data" "body") -> string or nil
-                // Dynamic URLs (non-literal) automatically use outlayer http-post-dynamic
+                // Always uses outlayer host function path (has auth injection)
                 if a.len() < 2 { return Err("http-post requires (url body)".into()); }
                 if !self.wasi_mode { return Err("http-post is only available on OutLayer (WASI) target".into()); }
 
@@ -94,128 +94,52 @@ impl WasmEmitter {
                 self.data_segments.push((content_type_area as u32, b"application/json".to_vec()));
                 let content_type_len: i32 = 16; // "application/json".len()
                 let mut v = Vec::new();
-                let mut sentinel_idx: u32 = 0; // index into http_post_urls for sentinel mapping
 
-                // Register URL for data segment generation if it's a string literal
-                if self.need_wasi_http {
-                    if let crate::types::LispVal::Str(url) = &a[0] {
-                        if let Some((auth, path)) = Self::split_url(url) {
-                            if let Some(existing) = self.http_post_urls.iter().position(|(a, p)| a == &auth && p == &path) {
-                                // URL already registered — reuse its index
-                                sentinel_idx = existing as u32;
-                            } else {
-                                sentinel_idx = self.http_post_urls.len() as u32;
-                                self.http_post_urls.push((auth, path));
-                            }
-                        }
-                    } else {
-                        // Non-literal URL (variable) — still need a sentinel entry
-                        // so build_combined_p2_core generates the shim function
-                        sentinel_idx = self.http_post_urls.len() as u32;
-                        self.http_post_urls.push(("_dynamic".to_string(), "/".to_string()));
-                    }
-                }
+                // Always use outlayer host function path (has auth injection via env vars)
+                self.need_outlayer = true;
 
-                if self.need_wasi_http {
-                    // Direct wasi:http POST path — 7-param convention:
-                    // (url_ptr, url_len, body_ptr, body_len, buf_ptr, buf_len, len_ptr) -> i32
-                    // http_post ignores url_ptr/url_len (uses data segments),
-                    // reads body from body_ptr/body_len,
-                    // writes response to buf_ptr, length to *len_ptr.
-                    let buf_ptr: i32 = crate::wasi_http::SENTINEL_BUF;
-                    let buf_len: i32 = crate::wasi_http::SENTINEL_BUF_SIZE;
-                    // Sentinel based on URL index, not call count
-                    let post_sentinel: u32 = 200 + sentinel_idx;
-                    // url ptr/len (ignored by data-segment path)
-                    v.extend(url_expr.clone());
-                    v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
-                    v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
-                    v.push(Instruction::I32WrapI64);
-                    v.extend(url_expr);
-                    v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
-                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                    v.push(Instruction::I32WrapI64);
-                    // body ptr/len
-                    v.extend(body_expr.clone());
-                    v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
-                    v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
-                    v.push(Instruction::I32WrapI64);
-                    v.extend(body_expr);
-                    v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
-                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                    v.push(Instruction::I32WrapI64);
-                    // response buffer: buf_ptr, buf_len
-                    v.push(Instruction::I32Const(buf_ptr));
-                    v.push(Instruction::I32Const(buf_len));
-                    // len_ptr = ret_area+8 (length will be written here directly)
-                    v.push(Instruction::I32Const(ret_area + 8));
-                    // Call http-post (sentinel 200+call_idx for wasi:http path) — returns i32 (status), drop it
-                    v.push(Instruction::Call(post_sentinel));
-                    v.push(Instruction::Drop);
-                    // Write disc=0 (ok) at ret_area+0
-                    v.push(Instruction::I32Const(ret_area));
-                    v.push(Instruction::I32Const(0));
-                    v.push(Instruction::I32Store(ma4));
-                    // Write buf_ptr at ret_area+4
-                    v.push(Instruction::I32Const(ret_area + 4));
-                    v.push(Instruction::I32Const(buf_ptr));
-                    v.push(Instruction::I32Store(ma4));
-                    // len is already at ret_area+8 (written by http_post)
-                    // Read result: ptr from ret_area+4, len from ret_area+8
-                    v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4));
-                    v.push(Instruction::I64ExtendI32U);
-                    v.push(Instruction::I32Const(ret_area + 8)); v.push(Instruction::I32Load(ma4));
-                    v.push(Instruction::I64ExtendI32U);
-                    // Tag: ((ptr | (len << 32)) << 3) | TAG_STR
-                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
-                    v.push(Instruction::I64Or);
-                    v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl);
-                    v.push(Instruction::I64Const(TAG_STR)); v.push(Instruction::I64Or);
-                } else {
-                    // OutLayer host function path
-                    self.need_outlayer = true;
-                    // url ptr/len
-                    v.extend(url_expr.clone());
-                    v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
-                    v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
-                    v.push(Instruction::I32WrapI64);
-                    v.extend(url_expr);
-                    v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
-                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                    v.push(Instruction::I32WrapI64);
-                    // body ptr/len
-                    v.extend(body_expr.clone());
-                    v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
-                    v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
-                    v.push(Instruction::I32WrapI64);
-                    v.extend(body_expr);
-                    v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
-                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                    v.push(Instruction::I32WrapI64);
-                    // content_type ptr/len
-                    v.push(Instruction::I32Const(content_type_area));
-                    v.push(Instruction::I32Const(content_type_len));
-                    // ret_area
-                    v.push(Instruction::I32Const(ret_area));
-                    // Call http-post (sentinel 104) — canonical ABI with 7 params
-                    v.push(Instruction::Call(104));
-                    // Read result (same pattern as http-get)
-                    v.push(Instruction::I32Const(ret_area)); v.push(Instruction::I32Load(ma4));
-                    v.push(Instruction::I64ExtendI32U);
-                    v.push(Instruction::I64Const(0)); v.push(Instruction::I64Ne);
-                    v.push(Instruction::If(BlockType::Result(ValType::I64)));
-                    v.push(Instruction::I64Const(TAG_NIL));
-                    v.push(Instruction::Else);
-                    v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4));
-                    v.push(Instruction::I64ExtendI32U);
-                    v.push(Instruction::I32Const(ret_area + 8)); v.push(Instruction::I32Load(ma4));
-                    v.push(Instruction::I64ExtendI32U);
-                    v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
-                    v.push(Instruction::I64Or);
-                    v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl);
-                    v.push(Instruction::I64Const(TAG_STR)); v.push(Instruction::I64Or);
-                    v.push(Instruction::End);
-                }
+                // OutLayer host function path
+                // url ptr/len
+                v.extend(url_expr.clone());
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64);
+                v.extend(url_expr);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                // body ptr/len
+                v.extend(body_expr.clone());
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(0xFFFFFFFF)); v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64);
+                v.extend(body_expr);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                // content_type ptr/len
+                v.push(Instruction::I32Const(content_type_area));
+                v.push(Instruction::I32Const(content_type_len));
+                // ret_area
+                v.push(Instruction::I32Const(ret_area));
+                // Call http-post-dynamic (sentinel 143) — outlayer host path with auth injection
+                v.push(Instruction::Call(143));
+                // Read result (same pattern as http-get)
+                v.push(Instruction::I32Const(ret_area)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Ne);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.push(Instruction::I64Const(TAG_NIL));
+                v.push(Instruction::Else);
+                v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I32Const(ret_area + 8)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_STR)); v.push(Instruction::I64Or);
+                v.push(Instruction::End);
                 Ok(v)
             }
             "storage-set" => {
