@@ -1181,7 +1181,7 @@ impl WasmEmitter {
         ins.push(Instruction::LocalGet(2));
         ins.push(Instruction::I32Const(5));
         ins.push(Instruction::I32Eq);
-        ins.push(Instruction::If(BlockType::Result(ValType::I64)));
+        ins.push(Instruction::If(BlockType::Empty));
         ins.push(Instruction::LocalGet(1));
         ins.push(Instruction::Return);
         ins.push(Instruction::End);
@@ -1458,7 +1458,7 @@ impl WasmEmitter {
             param_count: 1,
             local_count: 10,
             instrs: ins,
-            local_entries: Some(vec![(1u32, ValType::I64), (6u32, ValType::I32)]),
+            local_entries: Some(vec![(1u32, ValType::I64), (1u32, ValType::I32), (2u32, ValType::I64), (5u32, ValType::I32), (1u32, ValType::I64)]),
         });
         (self.funcs.len() - 1) as u32
     }
