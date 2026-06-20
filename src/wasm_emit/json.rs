@@ -691,6 +691,523 @@ impl WasmEmitter {
     /// Generate a `__json_extract_N` function that scans a JSON buffer once and
     /// extracts N key values. Returns a tagged array pointer.
     /// Signature: (buf_packed: i64, key0_packed: i64, ..., keyN-1_packed: i64) -> i64
+
+    /// Generate a `__json_array_index` function that extracts the Nth element from a JSON array.
+    /// Signature: (buf_packed: i64, index: i64) -> i64 (packed len<<32|ptr)
+    /// Both params are i64 (matches the standard user function type scheme).
+    pub(crate) fn ensure_json_array_index_func(&mut self) -> u32 {
+        if let Some(idx) = self
+            .funcs
+            .iter()
+            .position(|f| f.name == "__json_array_index")
+        {
+            return idx as u32;
+        }
+        let ma8 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 0,
+            memory_index: 0,
+        };
+        let stdout_buf: i32 = 204800;
+
+        // Params: 0=buf_packed(i64), 1=index(i64)
+        // i32 locals: 2=buf_ptr, 3=buf_len, 4=scan_i, 5=depth, 6=ch,
+        //   7=in_string, 8=esc, 9=cur_start, 10=elem_count, 11=str_len
+        // i64 local: 12=index(i32 extracted from i64 param)
+        let mut ins: Vec<Instruction<'static>> = Vec::new();
+        let mut _d: u32 = 0;
+        let mut ls: Vec<u32> = Vec::new();
+        macro_rules! open_block {
+            () => {
+                ls.push(_d);
+                ins.push(Instruction::Block(BlockType::Empty));
+                _d += 1;
+            };
+        }
+        macro_rules! open_loop {
+            () => {
+                ls.push(_d);
+                ins.push(Instruction::Loop(BlockType::Empty));
+                _d += 1;
+            };
+        }
+        macro_rules! open_if {
+            () => {
+                ls.push(_d);
+                ins.push(Instruction::If(BlockType::Empty));
+                _d += 1;
+            };
+        }
+        macro_rules! open_else {
+            () => {
+                ins.push(Instruction::Else);
+            };
+        }
+        macro_rules! close {
+            () => {
+                ins.push(Instruction::End);
+                ls.pop();
+                _d -= 1;
+            };
+        }
+        macro_rules! br_to {
+            ($idx:expr) => {
+                let t = ls[$idx];
+                ins.push(Instruction::Br(_d - t - 1));
+            };
+        }
+
+        // Unpack buf_packed -> buf_ptr(i32) and buf_len(i32)
+        ins.push(Instruction::LocalGet(0));
+        ins.push(Instruction::I64Const(32));
+        ins.push(Instruction::I64ShrU);
+        ins.push(Instruction::I32WrapI64);
+        ins.push(Instruction::LocalSet(3)); // buf_len
+        ins.push(Instruction::LocalGet(0));
+        ins.push(Instruction::I32WrapI64);
+        ins.push(Instruction::LocalSet(2)); // buf_ptr
+
+        // Extract index from i64 to i32
+        ins.push(Instruction::LocalGet(1));
+        ins.push(Instruction::I32WrapI64);
+        ins.push(Instruction::LocalSet(4)); // index as i32, reuse scan_i temporarily
+
+        // Check index >= 0
+        ins.push(Instruction::LocalGet(4));
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::I32LtS);
+        open_if!();
+        ins.push(Instruction::I64Const(0));
+        ins.push(Instruction::Return);
+        close!();
+
+        // Now scan_i starts after '['
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::LocalSet(10)); // elem_count=0
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::LocalSet(5)); // depth=0
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::LocalSet(7)); // in_string=0
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::LocalSet(8)); // esc=0
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::LocalSet(9)); // scan_i = 0 (reuse cur_start for scan pos)
+
+        // Skip to opening '['
+        open_block!();
+        let skip_block = ls.len() - 1;
+        open_loop!();
+        let skip_loop = ls.len() - 1;
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::I32GeS);
+        open_if!();
+        br_to!(skip_block);
+        close!();
+        ins.push(Instruction::LocalGet(2));
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::I32Load8U(ma8.clone()));
+        ins.push(Instruction::LocalSet(6));
+        // Skip whitespace
+        ins.push(Instruction::LocalGet(6));
+        ins.push(Instruction::I32Const(0x20));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::LocalGet(6));
+        ins.push(Instruction::I32Const(0x09));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::I32Or);
+        ins.push(Instruction::LocalGet(6));
+        ins.push(Instruction::I32Const(0x0A));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::I32Or);
+        open_if!();
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(9));
+        br_to!(skip_loop);
+        close!();
+        ins.push(Instruction::LocalGet(6));
+        ins.push(Instruction::I32Const(0x5B));
+        ins.push(Instruction::I32Eq);
+        open_if!();
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(9));
+        br_to!(skip_block);
+        close!();
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(9));
+        br_to!(skip_loop);
+        close!();
+        close!();
+
+        // If didn't find '[', return 0
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::I32GeS);
+        open_if!();
+        ins.push(Instruction::I64Const(0));
+        ins.push(Instruction::Return);
+        close!();
+
+        // Main element scan
+        open_block!();
+        let scan_block = ls.len() - 1;
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::LocalSet(11)); // cur_start = scan_i
+
+        open_loop!();
+        let scan_loop = ls.len() - 1;
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::I32GeS);
+        open_if!();
+        br_to!(scan_block);
+        close!();
+        ins.push(Instruction::LocalGet(2));
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::I32Load8U(ma8.clone()));
+        ins.push(Instruction::LocalSet(6));
+
+        // In string mode
+        ins.push(Instruction::LocalGet(7));
+        open_if!();
+        ins.push(Instruction::LocalGet(8));
+        open_if!();
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::LocalSet(8));
+        open_else!();
+        ins.push(Instruction::LocalGet(6));
+        ins.push(Instruction::I32Const(0x5C));
+        ins.push(Instruction::I32Eq);
+        open_if!();
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::LocalSet(8));
+        open_else!();
+        ins.push(Instruction::LocalGet(6));
+        ins.push(Instruction::I32Const(0x22));
+        ins.push(Instruction::I32Eq);
+        open_if!();
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::LocalSet(7));
+        close!();
+        close!();
+        close!();
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(9));
+        br_to!(scan_loop);
+        close!();
+
+        // '{' or '[' -> depth++
+        ins.push(Instruction::LocalGet(6));
+        ins.push(Instruction::I32Const(0x7B));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::LocalGet(6));
+        ins.push(Instruction::I32Const(0x5B));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::I32Or);
+        open_if!();
+        ins.push(Instruction::LocalGet(5));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(5));
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(9));
+        br_to!(scan_loop);
+        close!();
+
+        // '}' or ']' -> depth--
+        ins.push(Instruction::LocalGet(6));
+        ins.push(Instruction::I32Const(0x7D));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::LocalGet(6));
+        ins.push(Instruction::I32Const(0x5D));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::I32Or);
+        open_if!();
+        ins.push(Instruction::LocalGet(5));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Sub);
+        ins.push(Instruction::LocalSet(5));
+        ins.push(Instruction::LocalGet(5));
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::I32Eq);
+        open_if!();
+        // Back to depth 0 — check if our element
+        ins.push(Instruction::LocalGet(10));
+        ins.push(Instruction::LocalGet(4)); // elem_count vs index
+        ins.push(Instruction::I32Eq);
+        open_if!();
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(9));
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::LocalGet(11));
+        ins.push(Instruction::I32Sub);
+        ins.push(Instruction::LocalSet(6)); // len (reuse ch)
+        ins.push(Instruction::I32Const(stdout_buf));
+        ins.push(Instruction::LocalGet(2));
+        ins.push(Instruction::LocalGet(11));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalGet(6));
+        ins.push(Instruction::MemoryCopy {
+            src_mem: 0,
+            dst_mem: 0,
+        });
+        ins.push(Instruction::LocalGet(6));
+        ins.push(Instruction::I64ExtendI32U);
+        ins.push(Instruction::I64Const(32));
+        ins.push(Instruction::I64Shl);
+        ins.push(Instruction::I64Const(stdout_buf as i64));
+        ins.push(Instruction::I64Or);
+        ins.push(Instruction::Return);
+        close!();
+        ins.push(Instruction::LocalGet(10));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(10));
+        // Skip comma/ws
+        open_block!();
+        let trail_block = ls.len() - 1;
+        open_loop!();
+        let trail_loop = ls.len() - 1;
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::I32GeS);
+        open_if!();
+        br_to!(trail_block);
+        close!();
+        ins.push(Instruction::LocalGet(2));
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::I32Load8U(ma8.clone()));
+        ins.push(Instruction::LocalSet(6));
+        ins.push(Instruction::LocalGet(6));
+        ins.push(Instruction::I32Const(0x20));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::LocalGet(6));
+        ins.push(Instruction::I32Const(0x09));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::I32Or);
+        ins.push(Instruction::LocalGet(6));
+        ins.push(Instruction::I32Const(0x0A));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::I32Or);
+        open_if!();
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(9));
+        br_to!(trail_loop);
+        close!();
+        ins.push(Instruction::LocalGet(6));
+        ins.push(Instruction::I32Const(0x2C));
+        ins.push(Instruction::I32Eq);
+        open_if!();
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(9));
+        close!();
+        br_to!(trail_block);
+        close!();
+        close!();
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::LocalSet(11));
+        br_to!(scan_loop);
+        close!();
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(9));
+        br_to!(scan_loop);
+        close!();
+
+        // '"' -> enter string
+        ins.push(Instruction::LocalGet(6));
+        ins.push(Instruction::I32Const(0x22));
+        ins.push(Instruction::I32Eq);
+        open_if!();
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::LocalSet(7));
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(9));
+        br_to!(scan_loop);
+        close!();
+
+        // Whitespace/comma at top level
+        ins.push(Instruction::LocalGet(6));
+        ins.push(Instruction::I32Const(0x20));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::LocalGet(6));
+        ins.push(Instruction::I32Const(0x09));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::I32Or);
+        ins.push(Instruction::LocalGet(6));
+        ins.push(Instruction::I32Const(0x0A));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::I32Or);
+        ins.push(Instruction::LocalGet(6));
+        ins.push(Instruction::I32Const(0x2C));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::I32Or);
+        open_if!();
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(9));
+        open_block!();
+        let ws_block = ls.len() - 1;
+        open_loop!();
+        let ws_loop = ls.len() - 1;
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::I32GeS);
+        open_if!();
+        br_to!(ws_block);
+        close!();
+        ins.push(Instruction::LocalGet(2));
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::I32Load8U(ma8.clone()));
+        ins.push(Instruction::LocalSet(6));
+        ins.push(Instruction::LocalGet(6));
+        ins.push(Instruction::I32Const(0x20));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::LocalGet(6));
+        ins.push(Instruction::I32Const(0x09));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::I32Or);
+        ins.push(Instruction::LocalGet(6));
+        ins.push(Instruction::I32Const(0x0A));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::I32Or);
+        open_if!();
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(9));
+        br_to!(ws_loop);
+        close!();
+        br_to!(ws_block);
+        close!();
+        close!();
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::LocalSet(11));
+        br_to!(scan_loop);
+        close!();
+
+        // Primitive value (number, true, false, null) at depth 0
+        open_block!();
+        let prim_block = ls.len() - 1;
+        open_loop!();
+        let prim_loop = ls.len() - 1;
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::I32GeS);
+        open_if!();
+        br_to!(prim_block);
+        close!();
+        ins.push(Instruction::LocalGet(2));
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::I32Load8U(ma8.clone()));
+        ins.push(Instruction::LocalSet(6));
+        ins.push(Instruction::LocalGet(6));
+        ins.push(Instruction::I32Const(0x2C));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::LocalGet(6));
+        ins.push(Instruction::I32Const(0x5D));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::I32Or);
+        open_if!();
+        br_to!(prim_block);
+        close!();
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(9));
+        br_to!(prim_loop);
+        close!();
+        close!();
+
+        // Check if primitive is our element
+        ins.push(Instruction::LocalGet(10));
+        ins.push(Instruction::LocalGet(4));
+        ins.push(Instruction::I32Eq);
+        open_if!();
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::LocalGet(11));
+        ins.push(Instruction::I32Sub);
+        ins.push(Instruction::LocalSet(6));
+        ins.push(Instruction::I32Const(stdout_buf));
+        ins.push(Instruction::LocalGet(2));
+        ins.push(Instruction::LocalGet(11));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalGet(6));
+        ins.push(Instruction::MemoryCopy {
+            src_mem: 0,
+            dst_mem: 0,
+        });
+        ins.push(Instruction::LocalGet(6));
+        ins.push(Instruction::I64ExtendI32U);
+        ins.push(Instruction::I64Const(32));
+        ins.push(Instruction::I64Shl);
+        ins.push(Instruction::I64Const(stdout_buf as i64));
+        ins.push(Instruction::I64Or);
+        ins.push(Instruction::Return);
+        close!();
+        ins.push(Instruction::LocalGet(10));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(10));
+        ins.push(Instruction::LocalGet(2));
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::I32Load8U(ma8.clone()));
+        ins.push(Instruction::LocalSet(6));
+        ins.push(Instruction::LocalGet(6));
+        ins.push(Instruction::I32Const(0x2C));
+        ins.push(Instruction::I32Eq);
+        open_if!();
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(9));
+        close!();
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::LocalSet(11));
+        br_to!(scan_loop);
+
+        close!();
+        close!();
+
+        ins.push(Instruction::I64Const(0));
+        ins.push(Instruction::Return);
+
+        self.funcs.push(FuncDef {
+            name: "__json_array_index".to_string(),
+            param_count: 2,
+            local_count: 11, // locals 2..12, but param 0 and 1 are i64
+            instrs: ins,
+            local_entries: Some(vec![(11u32, ValType::I32), (1u32, ValType::I64)]),
+        });
+        (self.funcs.len() - 1) as u32
+    }
+
     pub(crate) fn ensure_json_extract_func(&mut self, n_keys: usize) -> u32 {
         let fname = format!("__json_extract_{}", n_keys);
         if let Some(idx) = self.funcs.iter().position(|f| f.name == fname) {
@@ -1625,50 +2142,99 @@ impl WasmEmitter {
         buf_len_setup: &mut Vec<Instruction<'static>>,
     ) -> Result<Vec<Instruction<'static>>, String> {
         let func_idx = self.ensure_json_get_func();
-        let keys: Vec<&str> = key.split('.').collect();
+        // Parse path: "choices[0].message.content" -> segments
+        // Each segment is either Key("name") or Index(N)
+        let arr_func_idx = self.ensure_json_array_index_func();
+        let mut segs: Vec<(String, Option<i32>)> = Vec::new();
+        for raw in key.split('.') {
+            if let Some(bp) = raw.find('[') {
+                let key_part = &raw[..bp];
+                if !key_part.is_empty() {
+                    segs.push((key_part.to_string(), None));
+                }
+                let rest = &raw[bp..];
+                let mut cur = rest;
+                while let Some(idx_str) = cur.strip_prefix('[') {
+                    if let Some(after) = idx_str.strip_suffix(']') {
+                        if let Ok(idx) = after.parse::<i32>() {
+                            segs.push(("".to_string(), Some(idx)));
+                            cur = "";
+                        } else {
+                            return Err(format!("invalid array index in key: {key}"));
+                        }
+                    } else {
+                        return Err(format!("unterminated [ in key: {key}"));
+                    }
+                }
+            } else {
+                segs.push((raw.to_string(), None));
+            }
+        }
+
         let mut v: Vec<Instruction<'static>> = Vec::new();
         let tmp = self.local_idx("__jg_buf_tmp");
         let len_local = self.local_idx_i32("__jg_repack_len");
         let ptr_local = self.local_idx_i32("__jg_repack_ptr");
 
-        // First iteration: use provided buf and buf_len_setup
-        // Stack after each __json_get call: (len << 32 | ptr) as i64
-        for (ki, subkey) in keys.iter().enumerate() {
-            let mut pattern = vec![b'"'];
-            pattern.extend(subkey.as_bytes());
-            pattern.extend_from_slice(b"\":");
-            let pat_off = self.alloc_data(&pattern) as i64;
-            let pat_len = pattern.len() as i64;
-            let pat_packed = (pat_off as u64) | ((pat_len as u64) << 32);
+        let total = segs.len();
+        for (ki, (seg_name, seg_idx)) in segs.iter().enumerate() {
+            if let Some(arr_idx) = seg_idx {
+                // Array index segment - use __json_array_index
 
-            if ki == 0 {
-                v.extend(buf_len_setup.iter().cloned());
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(buf));
-                v.push(Instruction::I64Or);
+                if ki == 0 {
+                    v.extend(buf_len_setup.iter().cloned());
+                    v.push(Instruction::I64Const(32));
+                    v.push(Instruction::I64Shl);
+                    v.push(Instruction::I64Const(buf));
+                    v.push(Instruction::I64Or);
+                } else {
+                    // Previous result on stack - check for 0
+                    v.push(Instruction::LocalSet(tmp));
+                    v.push(Instruction::LocalGet(tmp));
+                    v.push(Instruction::I64Const(0));
+                    v.push(Instruction::I64Eq);
+                    v.push(Instruction::If(BlockType::Empty));
+                    v.push(Instruction::I64Const(0));
+                    v.push(Instruction::Return);
+                    v.push(Instruction::End);
+                    v.push(Instruction::LocalGet(tmp));
+                }
+                // Push array index as i64
+                v.push(Instruction::I64Const(*arr_idx as i64));
+                v.push(Instruction::Call(
+                    crate::wasm_emit::USER_BASE | arr_func_idx,
+                ));
             } else {
-                // Use previous result as new buffer
-                // Stack has (len << 32 | ptr) from previous call
-                // Check for 0 first
-                v.push(Instruction::LocalSet(tmp));
-                v.push(Instruction::LocalGet(tmp));
-                v.push(Instruction::I64Const(0));
-                v.push(Instruction::I64Eq);
-                v.push(Instruction::If(BlockType::Empty));
-                v.push(Instruction::I64Const(0));
-                v.push(Instruction::Return);
-                v.push(Instruction::End);
-                v.push(Instruction::LocalGet(tmp));
+                // Key segment - use __json_get
+                let mut pattern = vec![b'"'];
+                pattern.extend(seg_name.as_bytes());
+                pattern.extend_from_slice(b"\":");
+                let pat_off = self.alloc_data(&pattern) as i64;
+                let pat_len = pattern.len() as i64;
+                let pat_packed = (pat_off as u64) | ((pat_len as u64) << 32);
+
+                if ki == 0 {
+                    v.extend(buf_len_setup.iter().cloned());
+                    v.push(Instruction::I64Const(32));
+                    v.push(Instruction::I64Shl);
+                    v.push(Instruction::I64Const(buf));
+                    v.push(Instruction::I64Or);
+                } else {
+                    v.push(Instruction::LocalSet(tmp));
+                    v.push(Instruction::LocalGet(tmp));
+                    v.push(Instruction::I64Const(0));
+                    v.push(Instruction::I64Eq);
+                    v.push(Instruction::If(BlockType::Empty));
+                    v.push(Instruction::I64Const(0));
+                    v.push(Instruction::Return);
+                    v.push(Instruction::End);
+                    v.push(Instruction::LocalGet(tmp));
+                }
+                v.push(Instruction::I64Const(pat_packed as i64));
+                v.push(Instruction::Call(crate::wasm_emit::USER_BASE | func_idx));
             }
-            v.push(Instruction::I64Const(pat_packed as i64));
-            v.push(Instruction::Call(crate::wasm_emit::USER_BASE | func_idx));
-            // __json_get writes result to stdout_buf (204800).
-            // For multi-step dot-paths, the next iteration would read from
-            // stdout_buf (the result ptr) AND write to stdout_buf — clobbering
-            // its own input. Fix: copy result back to buf (32768) so the next
-            // __json_get reads from 32768 and writes to 204800 safely.
-            if ki < keys.len() - 1 {
+            // Copy result back to buf if more segments follow
+            if ki < total - 1 {
                 v.push(Instruction::LocalSet(tmp));
                 v.push(Instruction::LocalGet(tmp));
                 v.push(Instruction::I64Const(32));
@@ -1678,12 +2244,13 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(tmp));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalSet(ptr_local));
-                // Copy from stdout_buf (204800) to buf (32768)
                 v.push(Instruction::I32Const(buf as i32));
                 v.push(Instruction::LocalGet(ptr_local));
                 v.push(Instruction::LocalGet(len_local));
-                v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
-                // Repack: (len << 32 | buf)
+                v.push(Instruction::MemoryCopy {
+                    src_mem: 0,
+                    dst_mem: 0,
+                });
                 v.push(Instruction::LocalGet(len_local));
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(32));
@@ -1707,7 +2274,7 @@ impl WasmEmitter {
                 memory_index: 0,
             };
             v.push(Instruction::LocalSet(tmp)); // save packed result
-            // Check if result is 0 (not found) → return TAG_NIL
+                                                // Check if result is 0 (not found) → return TAG_NIL
             v.push(Instruction::LocalGet(tmp));
             v.push(Instruction::I64Const(0));
             v.push(Instruction::I64Eq);
@@ -1787,7 +2354,10 @@ impl WasmEmitter {
                 v.push(Instruction::I32Const(heap_dst as i32));
                 v.push(Instruction::LocalGet(ptr_l));
                 v.push(Instruction::LocalGet(len_l));
-                v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+                v.push(Instruction::MemoryCopy {
+                    src_mem: 0,
+                    dst_mem: 0,
+                });
                 v.push(Instruction::LocalGet(len_l));
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(32));
