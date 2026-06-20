@@ -19,4 +19,9 @@ interface host {
 
     /// AI chat via ZAI glm-5-turbo — returns content text
     ai-chat: func(prompt: string) -> result<string, string>;
+
+    /// Raw NEAR JSON-RPC call: method name + params JSON array
+    /// Reads NEAR_RPC_URL from env (defaults to https://rpc.mainnet.near.org)
+    /// Returns JSON response string
+    rpc-call: func(method: string, params-json: string) -> result<string, string>;
 }

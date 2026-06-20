@@ -1,18 +1,7 @@
 ;;; harness-p2.lisp — Minimal Agent Scheduler for WASI Preview 2
 ;;;
-;;; Stateless design: All state stored in OutLayer storage
+;;; Stateless design: All state stored in OutLayer storage as JSON strings
 ;;; No mutable globals - functions are pure transforms
-;;;
-;;; State keys in storage:
-;;;   "harness:intentions" - JSON array of intentions
-;;;   "harness:budget"     - Budget state
-;;;   "harness:inbox"      - Inbox state
-;;;
-;;; Actions are identified by string type, not lambdas:
-;;;   "near-view" - call near/view
-;;;   "http-get"  - HTTP GET request
-;;;   "http-post" - HTTP POST request
-;;;   "web-search" - web search via ZAI MCP
 
 ;; === Helpers ===
 
@@ -23,36 +12,128 @@
 ;; === Time ===
 
 (define (now-ms)
-  (let ((ts (env/get "NEAR_BLOCK_TIMESTAMP")))
-    (if (or (nil? ts) (= ts "")) 0
-      (string->number ts))))
+  0)
+
+;; === JSON round-trip helpers ===
+
+(define (parse-intention json-str)
+  (let ((id (json-get "id" json-str))
+        (type (json-get "type" json-str))
+        (action-type (json-get "action-type" json-str))
+        (params-raw (json-get "params" json-str))
+        (interval-ms-str (json-get "interval-ms" json-str))
+        (priority-str (json-get "priority" json-str))
+        (cost-str (json-get "cost" json-str))
+        (deadline-str (json-get "deadline" json-str))
+        (last-acted-str (json-get "last-acted" json-str)))
+    (let ((interval-ms (if (nil? interval-ms-str) nil (string->number interval-ms-str)))
+          (priority (if (nil? priority-str) 50 (string->number priority-str)))
+          (cost (if (nil? cost-str) 1 (string->number cost-str)))
+          (deadline (if (nil? deadline-str) nil (string->number deadline-str)))
+          (last-acted (if (nil? last-acted-str) nil (string->number last-acted-str)))
+          (query (if (nil? params-raw) "" (json-get "query" params-raw)))
+          (account (if (nil? params-raw) "" (json-get "account" params-raw)))
+          (method (if (nil? params-raw) "" (json-get "method" params-raw)))
+          (args (if (nil? params-raw) "" (json-get "args" params-raw)))
+          (prompt (if (nil? params-raw) "" (json-get "prompt" params-raw)))
+          (chat-id (if (nil? params-raw) "" (json-get "chat-id" params-raw)))
+          (text (if (nil? params-raw) "" (json-get "text" params-raw))))
+      (dict "id" id
+            "type" type
+            "action-type" action-type
+            "params" (dict "query" query "account" account "method" method
+                           "args" args "prompt" prompt "chat-id" chat-id "text" text)
+            "interval-ms" interval-ms
+            "priority" priority
+            "cost" cost
+            "deadline" deadline
+            "last-acted" last-acted))))
+
+(define (load-intent-list json-str idx)
+  (let ((elem (json-array-get json-str idx)))
+    (if (nil? elem) (list)
+      (cons (parse-intention elem)
+            (load-intent-list json-str (+ idx 1))))))
+
+(define (intent-to-json intent)
+  (let ((params (get-default intent "params" (dict)))
+        (interval-ms (dict/get intent "interval-ms"))
+        (priority (dict/get intent "priority"))
+        (cost (dict/get intent "cost"))
+        (deadline (dict/get intent "deadline"))
+        (last-acted (dict/get intent "last-acted")))
+    (str-concat
+      "{\"id\":\"" (get-default intent "id" "") "\","
+      "\"type\":\"" (get-default intent "type" "one-shot") "\","
+      "\"action-type\":\"" (get-default intent "action-type" "") "\","
+      "\"params\":{"
+        "\"query\":\"" (get-default params "query" "") "\","
+        "\"account\":\"" (get-default params "account" "") "\","
+        "\"method\":\"" (get-default params "method" "") "\","
+        "\"args\":\"" (get-default params "args" "") "\","
+        "\"prompt\":\"" (get-default params "prompt" "") "\","
+        "\"chat-id\":\"" (get-default params "chat-id" "") "\","
+        "\"text\":\"" (get-default params "text" "") "\""
+      "},"
+      "\"interval-ms\":" (to-string (if (nil? interval-ms) 0 interval-ms)) ","
+      "\"priority\":" (to-string (if (nil? priority) 50 priority)) ","
+      "\"cost\":" (to-string (if (nil? cost) 1 cost)) ","
+      "\"deadline\":" (to-string (if (nil? deadline) 0 deadline)) ","
+      "\"last-acted\":" (to-string (if (nil? last-acted) 0 last-acted))
+      "}")))
+
+(define (intentions-to-json intentions acc sep)
+  (if (nil? intentions)
+    (str-concat acc "]")
+    (intentions-to-json (cdr intentions)
+      (str-concat acc sep (intent-to-json (car intentions)))
+      ",")))
 
 ;; === State Management ===
 
 (define (load-intentions)
   (let ((data (storage-get "harness:intentions")))
-    (if (nil? data) (list) data)))
+    (if (nil? data) (list)
+      (load-intent-list data 0))))
 
 (define (save-intentions intentions)
-  (storage-set "harness:intentions" intentions))
+  (storage-set "harness:intentions" (intentions-to-json intentions "[" "")))
 
 (define (load-budget)
   (let ((data (storage-get "harness:budget")))
-    (if (nil? data) (dict "daily-limit" 1000 "used" 0) data)))
+    (if (nil? data)
+      (dict "daily-limit" 1000 "used" 0)
+      (let ((limit-str (json-get "daily-limit" data))
+            (used-str (json-get "used" data)))
+        (dict "daily-limit"
+              (if (nil? limit-str) 1000 (string->number limit-str))
+              "used"
+              (if (nil? used-str) 0 (string->number used-str)))))))
 
 (define (save-budget budget)
-  (storage-set "harness:budget" budget))
+  (let ((limit (dict/get budget "daily-limit"))
+        (used (dict/get budget "used")))
+    (storage-set "harness:budget"
+      (str-concat "{\"daily-limit\":"
+        (to-string (if (nil? limit) 1000 limit))
+        ",\"used\":"
+        (to-string (if (nil? used) 0 used))
+        "}"))))
 
 ;; === Priority Scoring ===
 
 (define (urgency intent now)
   (let ((deadline (dict/get intent "deadline"))
-        (last (dict/get intent "last-acted")))
-    (cond
-      ((and deadline (> now deadline)) 100)
-      ((and deadline (< (- deadline now) 3600000)) 90)
-      ((and last (> (- now last) 3600000)) 70)
-      (else 30))))
+        (last (dict/get intent "last-acted"))
+        (interval (dict/get intent "interval-ms")))
+    (let ((effective-interval (if (nil? interval) 3600000 interval)))
+      (cond
+        ((and deadline (> now deadline)) 100)
+        ((and deadline (< (- deadline now) 3600000)) 90)
+        ((and last (> (- now last) effective-interval)) 80)
+        ((and last (> (- now last) 600000)) 50)
+        ((and last (> (- now last) 60000)) 30)
+        (else 10)))))
 
 (define (cost-efficiency intent)
   (let ((cost-raw (dict/get intent "cost"))
@@ -90,8 +171,6 @@
   (dict/set budget "used" (+ (if (nil? (dict/get budget "used")) 0 (dict/get budget "used")) amount)))
 
 ;; === Action Dispatch ===
-;;; Actions are identified by "action-type" string in intention
-;;; Supported types: "near-view", "http-get", "http-post", "web-search", "ai-chat", "send-telegram"
 
 (define (execute-action intent)
   (let ((action-type (get-default intent "action-type" nil))
@@ -102,11 +181,6 @@
          (outlayer/view (get-default params "account" "dontcare")
                         (get-default params "method" "dontcare")
                         (get-default params "args" "")))
-        ((= action-type "http-get")
-         (http-get (get-default params "url" "https://example.com")))
-        ((= action-type "http-post")
-         (http-post (get-default params "url" "https://example.com")
-                    (get-default params "body" "")))
         ((= action-type "web-search")
          (web-search (get-default params "query" "")))
         ((= action-type "ai-chat")
@@ -144,7 +218,7 @@
       ((= itype "one-shot")
        (filter (lambda (i) (not (= (dict/get i "id") intent-id))) intentions))
       ((= itype "recurring")
-       (update-intention intentions intent-id (list (list "last-run" now))))
+       (update-intention intentions intent-id (list (list "last-acted" now))))
       (else intentions))))
 
 ;; === Main Entry Point ===
@@ -178,34 +252,32 @@
       (save-intentions (append intentions (list intent)))
       intent)))
 
-;; === Boot (first call only) — uses storage to track ===
+;; === Boot (first call only) ===
 
 (define (boot-once)
   (let ((was-booted (storage-get "harness:booted")))
     (if (nil? was-booted)
       (begin
         (storage-set "harness:booted" "true")
+        (register-intention (dict
+          "id" "near-price-check"
+          "type" "recurring"
+          "action-type" "web-search"
+          "params" (dict "query" "NEAR Protocol price USD today")
+          "interval-ms" 600000
+          "priority" 50
+          "cost" 2))
         true)
       false)))
-
-;; === AI Agent Tick ===
-
-(define (ai-tick)
-  (let ((inbox (storage-get "harness:inbox")))
-    (if (nil? inbox)
-      (begin
-        (println "AI tick: no inbox, checking intentions")
-        (tick))
-      (let* ((p1 "You are an autonomous NEAR blockchain agent with tools: web-search, send-telegram, http-get, http-post, near-view. When asked a question, first search for info, then respond concisely.")
-             (p2 "Message: ")
-             (prompt (str-concat p1 " " p2 inbox)))
-        (let ((ai-response (ai-chat prompt)))
-          ai-response)))))
 
 ;; === Run entry point ===
 
 (define (run input)
+  (println "=== RUN START ===")
   (boot-once)
-  (if (nil? input)
-    (tick)
-    (ai-tick)))
+  (println "=== AFTER BOOT ===")
+  (let ((intentions (load-intentions)))
+    (if (nil? intentions)
+      (begin (println "No intentions") nil)
+      (let ((best (find-best intentions 0)))
+        (execute-action best)))))
