@@ -1161,6 +1161,10 @@ impl WasmEmitter {
     /// Ensure __to_string helper exists. Takes tagged i64, returns TAG_STR.
     /// Converts TAG_NUM->decimal, TAG_BOOL->"true"/"false", TAG_NIL->"nil".
     /// TAG_STR passes through unchanged.
+    /// Ensure __to_string helper exists. Takes tagged i64, returns TAG_STR.
+    /// Converts TAG_NUM->decimal, TAG_BOOL->"true"/"false", TAG_NIL->"nil".
+    /// TAG_STR passes through unchanged.
+    /// All locals are i64 to avoid type mismatches. I32WrapI64 at memory boundaries.
     pub(crate) fn ensure_to_string_func(&mut self) -> u32 {
         if let Some(idx) = self.funcs.iter().position(|f| f.name == "__to_string") {
             return idx as u32;
@@ -1168,111 +1172,126 @@ impl WasmEmitter {
         let ma0 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
         let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
         let mut ins: Vec<Instruction<'static>> = Vec::new();
-        // Locals: 1=tagged(i64), 2=tag(i32), 3=raw(i64), 4=heap(i64),
-        //         5=buf(i32), 6=len(i32), 7=neg(i32), 8=digits(i32),
-        //         9=widx(i32), 10=val(i64)
-        ins.push(Instruction::LocalSet(1));
+        // All locals i64: 0=param, 1=tagged, 2=tag, 3=raw, 4=heap,
+        //                 5=buf, 6=len, 7=offset, 8=digits, 9=widx, 10=val
+        ins.push(Instruction::LocalGet(0));
+        ins.push(Instruction::LocalSet(1)); // tagged = param
         ins.push(Instruction::LocalGet(1));
         ins.push(Instruction::I64Const(7));
         ins.push(Instruction::I64And);
-        ins.push(Instruction::I32WrapI64);
-        ins.push(Instruction::LocalSet(2));
+        ins.push(Instruction::LocalSet(2)); // tag = tagged & 7
+
         // TAG_STR(5) -> pass through
         ins.push(Instruction::LocalGet(2));
-        ins.push(Instruction::I32Const(5));
-        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::I64Const(5));
+        ins.push(Instruction::I64Eq);
         ins.push(Instruction::If(BlockType::Empty));
-        ins.push(Instruction::LocalGet(1));
+        ins.push(Instruction::LocalGet(0)); // return original param
         ins.push(Instruction::Return);
         ins.push(Instruction::End);
+
         ins.push(Instruction::LocalGet(1));
         ins.push(Instruction::I64Const(3));
         ins.push(Instruction::I64ShrU);
-        ins.push(Instruction::LocalSet(3));
+        ins.push(Instruction::LocalSet(3)); // raw = tagged >> 3
+
+        // TAG_NIL(4) -> "nil"
         ins.push(Instruction::LocalGet(2));
-        ins.push(Instruction::I32Const(4));
-        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::I64Const(4));
+        ins.push(Instruction::I64Eq);
         ins.push(Instruction::If(BlockType::Empty));
-        // "nil"
+        // heap = mem[56]
         ins.push(Instruction::I64Const(56));
         ins.push(Instruction::I32WrapI64);
         ins.push(Instruction::I64Load(ma8));
-        ins.push(Instruction::LocalTee(4));
-        ins.push(Instruction::I32WrapI64);
-        ins.push(Instruction::LocalTee(5));
+        ins.push(Instruction::LocalTee(4)); // heap
+        ins.push(Instruction::LocalTee(5)); // buf = heap
         ins.push(Instruction::I64Const(3));
-        ins.push(Instruction::I64Add);
+        ins.push(Instruction::I64Add); // heap + 3
+        ins.push(Instruction::LocalSet(4)); // save new heap ptr
         ins.push(Instruction::I64Const(56));
-        ins.push(Instruction::I32WrapI64);
-        ins.push(Instruction::I64Store(ma8));
+        ins.push(Instruction::I32WrapI64); // addr (i32)
+        ins.push(Instruction::LocalGet(4)); // value (i64)
+        ins.push(Instruction::I64Store(ma8)); // mem[56] = heap + 3
+        // Write 'n','i','l'
         ins.push(Instruction::LocalGet(5));
+        ins.push(Instruction::I32WrapI64); // addr
         ins.push(Instruction::I32Const(110));
-        ins.push(Instruction::I32Store8(ma0));
+        ins.push(Instruction::I32Store8(ma0)); // 'n'
         ins.push(Instruction::LocalGet(5));
-        ins.push(Instruction::I32Const(1));
-        ins.push(Instruction::I32Add);
+        ins.push(Instruction::I64Const(1));
+        ins.push(Instruction::I64Add);
+        ins.push(Instruction::I32WrapI64); // addr
         ins.push(Instruction::I32Const(105));
-        ins.push(Instruction::I32Store8(ma0));
+        ins.push(Instruction::I32Store8(ma0)); // 'i'
         ins.push(Instruction::LocalGet(5));
-        ins.push(Instruction::I32Const(2));
-        ins.push(Instruction::I32Add);
+        ins.push(Instruction::I64Const(2));
+        ins.push(Instruction::I64Add);
+        ins.push(Instruction::I32WrapI64); // addr
         ins.push(Instruction::I32Const(108));
-        ins.push(Instruction::I32Store8(ma0));
+        ins.push(Instruction::I32Store8(ma0)); // 'l'
+        // TAG_STR: ((len<<32)|buf)<<3 | 5, len=3
         ins.push(Instruction::I64Const(3));
         ins.push(Instruction::I64Const(32));
-        ins.push(Instruction::I64Shl);
+        ins.push(Instruction::I64Shl); // 3 << 32
         ins.push(Instruction::LocalGet(5));
-        ins.push(Instruction::I64ExtendI32U);
-        ins.push(Instruction::I64Or);
+        ins.push(Instruction::I64Or); // (3<<32) | buf
         ins.push(Instruction::I64Const(3));
-        ins.push(Instruction::I64Shl);
+        ins.push(Instruction::I64Shl); // << 3
         ins.push(Instruction::I64Const(5));
-        ins.push(Instruction::I64Or);
+        ins.push(Instruction::I64Or); // | 5 = TAG_STR
         ins.push(Instruction::Return);
         ins.push(Instruction::End);
+
+        // TAG_BOOL(1) -> "true" or "false"
         ins.push(Instruction::LocalGet(2));
-        ins.push(Instruction::I32Const(1));
-        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::I64Const(1));
+        ins.push(Instruction::I64Eq);
         ins.push(Instruction::If(BlockType::Empty));
         ins.push(Instruction::LocalGet(3));
         ins.push(Instruction::I64Const(1));
         ins.push(Instruction::I64Eq);
         ins.push(Instruction::If(BlockType::Empty));
-        // "true"
+        // "true" (4 chars)
         ins.push(Instruction::I64Const(56));
         ins.push(Instruction::I32WrapI64);
         ins.push(Instruction::I64Load(ma8));
         ins.push(Instruction::LocalTee(4));
-        ins.push(Instruction::I32WrapI64);
         ins.push(Instruction::LocalTee(5));
         ins.push(Instruction::I64Const(4));
         ins.push(Instruction::I64Add);
+        ins.push(Instruction::LocalSet(4)); // save new heap ptr
         ins.push(Instruction::I64Const(56));
-        ins.push(Instruction::I32WrapI64);
-        ins.push(Instruction::I64Store(ma8));
+        ins.push(Instruction::I32WrapI64); // addr (i32)
+        ins.push(Instruction::LocalGet(4)); // value (i64)
+        ins.push(Instruction::I64Store(ma8)); // mem[56] = heap+4
         ins.push(Instruction::LocalGet(5));
+        ins.push(Instruction::I32WrapI64);
         ins.push(Instruction::I32Const(116));
-        ins.push(Instruction::I32Store8(ma0));
+        ins.push(Instruction::I32Store8(ma0)); // 't'
         ins.push(Instruction::LocalGet(5));
-        ins.push(Instruction::I32Const(1));
-        ins.push(Instruction::I32Add);
+        ins.push(Instruction::I64Const(1));
+        ins.push(Instruction::I64Add);
+        ins.push(Instruction::I32WrapI64);
         ins.push(Instruction::I32Const(114));
-        ins.push(Instruction::I32Store8(ma0));
+        ins.push(Instruction::I32Store8(ma0)); // 'r'
         ins.push(Instruction::LocalGet(5));
-        ins.push(Instruction::I32Const(2));
-        ins.push(Instruction::I32Add);
+        ins.push(Instruction::I64Const(2));
+        ins.push(Instruction::I64Add);
+        ins.push(Instruction::I32WrapI64);
         ins.push(Instruction::I32Const(117));
-        ins.push(Instruction::I32Store8(ma0));
+        ins.push(Instruction::I32Store8(ma0)); // 'u'
         ins.push(Instruction::LocalGet(5));
-        ins.push(Instruction::I32Const(3));
-        ins.push(Instruction::I32Add);
+        ins.push(Instruction::I64Const(3));
+        ins.push(Instruction::I64Add);
+        ins.push(Instruction::I32WrapI64);
         ins.push(Instruction::I32Const(101));
-        ins.push(Instruction::I32Store8(ma0));
+        ins.push(Instruction::I32Store8(ma0)); // 'e'
+        // TAG_STR len=4
         ins.push(Instruction::I64Const(4));
         ins.push(Instruction::I64Const(32));
         ins.push(Instruction::I64Shl);
         ins.push(Instruction::LocalGet(5));
-        ins.push(Instruction::I64ExtendI32U);
         ins.push(Instruction::I64Or);
         ins.push(Instruction::I64Const(3));
         ins.push(Instruction::I64Shl);
@@ -1280,46 +1299,52 @@ impl WasmEmitter {
         ins.push(Instruction::I64Or);
         ins.push(Instruction::Return);
         ins.push(Instruction::End);
-        // "false"
+        // "false" (5 chars)
         ins.push(Instruction::I64Const(56));
         ins.push(Instruction::I32WrapI64);
         ins.push(Instruction::I64Load(ma8));
         ins.push(Instruction::LocalTee(4));
-        ins.push(Instruction::I32WrapI64);
         ins.push(Instruction::LocalTee(5));
         ins.push(Instruction::I64Const(5));
         ins.push(Instruction::I64Add);
+        ins.push(Instruction::LocalSet(4)); // save new heap ptr
         ins.push(Instruction::I64Const(56));
+        ins.push(Instruction::I32WrapI64); // addr (i32)
+        ins.push(Instruction::LocalGet(4)); // value (i64)
+        ins.push(Instruction::I64Store(ma8)); // mem[56] = heap+5
+        ins.push(Instruction::LocalGet(5));
         ins.push(Instruction::I32WrapI64);
-        ins.push(Instruction::I64Store(ma8));
-        ins.push(Instruction::LocalGet(5));
         ins.push(Instruction::I32Const(102));
-        ins.push(Instruction::I32Store8(ma0));
+        ins.push(Instruction::I32Store8(ma0)); // 'f'
         ins.push(Instruction::LocalGet(5));
-        ins.push(Instruction::I32Const(1));
-        ins.push(Instruction::I32Add);
+        ins.push(Instruction::I64Const(1));
+        ins.push(Instruction::I64Add);
+        ins.push(Instruction::I32WrapI64);
         ins.push(Instruction::I32Const(97));
-        ins.push(Instruction::I32Store8(ma0));
+        ins.push(Instruction::I32Store8(ma0)); // 'a'
         ins.push(Instruction::LocalGet(5));
-        ins.push(Instruction::I32Const(2));
-        ins.push(Instruction::I32Add);
+        ins.push(Instruction::I64Const(2));
+        ins.push(Instruction::I64Add);
+        ins.push(Instruction::I32WrapI64);
         ins.push(Instruction::I32Const(108));
-        ins.push(Instruction::I32Store8(ma0));
+        ins.push(Instruction::I32Store8(ma0)); // 'l'
         ins.push(Instruction::LocalGet(5));
-        ins.push(Instruction::I32Const(3));
-        ins.push(Instruction::I32Add);
+        ins.push(Instruction::I64Const(3));
+        ins.push(Instruction::I64Add);
+        ins.push(Instruction::I32WrapI64);
         ins.push(Instruction::I32Const(115));
-        ins.push(Instruction::I32Store8(ma0));
+        ins.push(Instruction::I32Store8(ma0)); // 's'
         ins.push(Instruction::LocalGet(5));
-        ins.push(Instruction::I32Const(4));
-        ins.push(Instruction::I32Add);
+        ins.push(Instruction::I64Const(4));
+        ins.push(Instruction::I64Add);
+        ins.push(Instruction::I32WrapI64);
         ins.push(Instruction::I32Const(101));
-        ins.push(Instruction::I32Store8(ma0));
+        ins.push(Instruction::I32Store8(ma0)); // 'e'
+        // TAG_STR len=5
         ins.push(Instruction::I64Const(5));
         ins.push(Instruction::I64Const(32));
         ins.push(Instruction::I64Shl);
         ins.push(Instruction::LocalGet(5));
-        ins.push(Instruction::I64ExtendI32U);
         ins.push(Instruction::I64Or);
         ins.push(Instruction::I64Const(3));
         ins.push(Instruction::I64Shl);
@@ -1327,138 +1352,154 @@ impl WasmEmitter {
         ins.push(Instruction::I64Or);
         ins.push(Instruction::Return);
         ins.push(Instruction::End);
+
+        // TAG_NUM(0) -> number conversion
+        // Heap bump: reserve 21 bytes for max digits (i64 max = 20 digits)
         ins.push(Instruction::I64Const(56));
         ins.push(Instruction::I32WrapI64);
-        ins.push(Instruction::I64Load(ma8));
+        ins.push(Instruction::I64Load(ma8)); // heap
         ins.push(Instruction::LocalTee(4));
-        ins.push(Instruction::I32WrapI64);
-        ins.push(Instruction::LocalTee(5));
+        ins.push(Instruction::LocalTee(5)); // buf = heap
         ins.push(Instruction::I64Const(21));
-        ins.push(Instruction::I64Add);
+        ins.push(Instruction::I64Add); // heap + 21
+        ins.push(Instruction::LocalSet(4)); // save new heap ptr
         ins.push(Instruction::I64Const(56));
-        ins.push(Instruction::I32WrapI64);
-        ins.push(Instruction::I64Store(ma8));
-        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::I32WrapI64); // addr (i32)
+        ins.push(Instruction::LocalGet(4)); // value (i64)
+        ins.push(Instruction::I64Store(ma8)); // mem[56] = heap + 21
+
+        // Negative check
+        ins.push(Instruction::LocalGet(3)); // raw
         ins.push(Instruction::I64Const(0));
-        ins.push(Instruction::I64LtS);
+        ins.push(Instruction::I64LtS); // val < 0?
         ins.push(Instruction::If(BlockType::Empty));
         ins.push(Instruction::I64Const(0));
-        ins.push(Instruction::I64Const(0));
         ins.push(Instruction::LocalGet(3));
-        ins.push(Instruction::I64Sub);
-        ins.push(Instruction::LocalSet(10));
+        ins.push(Instruction::I64Sub); // -val
+        ins.push(Instruction::LocalSet(10)); // val = abs(raw)
         ins.push(Instruction::LocalGet(5));
+        ins.push(Instruction::I32WrapI64); // addr
         ins.push(Instruction::I32Const(45));
-        ins.push(Instruction::I32Store8(ma0));
-        ins.push(Instruction::I32Const(1));
-        ins.push(Instruction::LocalSet(8));
-        ins.push(Instruction::I32Const(1));
-        ins.push(Instruction::LocalSet(7));
+        ins.push(Instruction::I32Store8(ma0)); // '-'
+        ins.push(Instruction::I64Const(1));
+        ins.push(Instruction::LocalSet(8)); // digits = 1
+        ins.push(Instruction::I64Const(1));
+        ins.push(Instruction::LocalSet(7)); // offset = 1
         ins.push(Instruction::Else);
         ins.push(Instruction::LocalGet(3));
-        ins.push(Instruction::LocalSet(10));
-        ins.push(Instruction::I32Const(0));
-        ins.push(Instruction::LocalSet(8));
-        ins.push(Instruction::I32Const(0));
-        ins.push(Instruction::LocalSet(7));
+        ins.push(Instruction::LocalSet(10)); // val = raw
+        ins.push(Instruction::I64Const(0));
+        ins.push(Instruction::LocalSet(8)); // digits = 0
+        ins.push(Instruction::I64Const(0));
+        ins.push(Instruction::LocalSet(7)); // offset = 0
         ins.push(Instruction::End);
-        ins.push(Instruction::LocalGet(10));
+
+        // val == 0: write "0" and return
+        ins.push(Instruction::LocalGet(10)); // val
         ins.push(Instruction::I64Const(0));
         ins.push(Instruction::I64Eq);
         ins.push(Instruction::If(BlockType::Empty));
         ins.push(Instruction::LocalGet(5));
-        ins.push(Instruction::LocalGet(8));
-        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalGet(8)); // buf + digits
+        ins.push(Instruction::I64Add);
+        ins.push(Instruction::I32WrapI64); // addr
         ins.push(Instruction::I32Const(48));
-        ins.push(Instruction::I32Store8(ma0));
+        ins.push(Instruction::I32Store8(ma0)); // '0'
         ins.push(Instruction::LocalGet(8));
-        ins.push(Instruction::I32Const(1));
-        ins.push(Instruction::I32Add);
-        ins.push(Instruction::LocalSet(6));
-        ins.push(Instruction::I64Const(3));
-        ins.push(Instruction::I64Shl);
-        ins.push(Instruction::I64Const(5));
-        ins.push(Instruction::I64Or);
-        ins.push(Instruction::LocalGet(5));
-        ins.push(Instruction::I64ExtendI32U);
+        ins.push(Instruction::I64Const(1));
+        ins.push(Instruction::I64Add);
+        ins.push(Instruction::LocalSet(6)); // len = digits + 1
+        // TAG_STR return
         ins.push(Instruction::LocalGet(6));
-        ins.push(Instruction::I64ExtendI32U);
         ins.push(Instruction::I64Const(32));
-        ins.push(Instruction::I64Shl);
-        ins.push(Instruction::I64Or);
+        ins.push(Instruction::I64Shl); // len << 32
+        ins.push(Instruction::LocalGet(5));
+        ins.push(Instruction::I64Or); // (len<<32)|buf
+        ins.push(Instruction::I64Const(3));
+        ins.push(Instruction::I64Shl); // << 3
+        ins.push(Instruction::I64Const(5));
+        ins.push(Instruction::I64Or); // TAG_STR
         ins.push(Instruction::Return);
         ins.push(Instruction::End);
+
+        // Count digits: divide val by 10 until 0
         ins.push(Instruction::LocalGet(10));
-        ins.push(Instruction::LocalSet(3));
+        ins.push(Instruction::LocalSet(3)); // save val for digit extraction
         ins.push(Instruction::Block(BlockType::Empty));
         ins.push(Instruction::Loop(BlockType::Empty));
+        // Check if val > 0 (need another digit)
+        ins.push(Instruction::LocalGet(10));
+        ins.push(Instruction::I64Eqz);
+        ins.push(Instruction::BrIf(1)); // break if val==0
+        ins.push(Instruction::LocalGet(8));
+        ins.push(Instruction::I64Const(1));
+        ins.push(Instruction::I64Add);
+        ins.push(Instruction::LocalSet(8)); // digits++
         ins.push(Instruction::LocalGet(10));
         ins.push(Instruction::I64Const(10));
         ins.push(Instruction::I64DivU);
         ins.push(Instruction::LocalSet(10));
-        ins.push(Instruction::LocalGet(10));
-        ins.push(Instruction::I64Const(0));
-        ins.push(Instruction::I64Eq);
-        ins.push(Instruction::BrIf(1));
-        ins.push(Instruction::LocalGet(8));
-        ins.push(Instruction::I32Const(1));
-        ins.push(Instruction::I32Add);
-        ins.push(Instruction::LocalSet(8));
-        ins.push(Instruction::Br(0));
+        ins.push(Instruction::Br(0)); // continue
         ins.push(Instruction::End);
         ins.push(Instruction::End);
+
         ins.push(Instruction::LocalGet(8));
-        ins.push(Instruction::LocalSet(6));
+        ins.push(Instruction::LocalSet(6)); // len = digits
         ins.push(Instruction::LocalGet(5));
         ins.push(Instruction::LocalGet(6));
-        ins.push(Instruction::I32Add);
-        ins.push(Instruction::I32Const(1));
-        ins.push(Instruction::I32Sub);
-        ins.push(Instruction::LocalSet(9));
+        ins.push(Instruction::I64Add);
+        ins.push(Instruction::I64Const(1));
+        ins.push(Instruction::I64Sub);
+        ins.push(Instruction::LocalSet(9)); // widx = buf + len - 1
+
+        // Write digits in reverse order
         ins.push(Instruction::Block(BlockType::Empty));
         ins.push(Instruction::Loop(BlockType::Empty));
         ins.push(Instruction::LocalGet(9));
         ins.push(Instruction::LocalGet(5));
         ins.push(Instruction::LocalGet(7));
-        ins.push(Instruction::I32Add);
-        ins.push(Instruction::I32LtS);
-        ins.push(Instruction::BrIf(1));
+        ins.push(Instruction::I64Add);
+        ins.push(Instruction::I64LtS); // widx < buf+offset?
+        ins.push(Instruction::BrIf(1)); // break if done
+        // Write digit: mem[widx] = '0' + (raw % 10)
         ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::I32WrapI64); // addr
         ins.push(Instruction::LocalGet(3));
         ins.push(Instruction::I64Const(10));
-        ins.push(Instruction::I64RemU);
+        ins.push(Instruction::I64RemU); // raw % 10
         ins.push(Instruction::I32WrapI64);
         ins.push(Instruction::I32Const(48));
-        ins.push(Instruction::I32Add);
-        ins.push(Instruction::I32Store8(ma0));
+        ins.push(Instruction::I32Add); // '0' + digit
+        ins.push(Instruction::I32Store8(ma0)); // store
         ins.push(Instruction::LocalGet(3));
         ins.push(Instruction::I64Const(10));
         ins.push(Instruction::I64DivU);
-        ins.push(Instruction::LocalSet(3));
+        ins.push(Instruction::LocalSet(3)); // raw /= 10
         ins.push(Instruction::LocalGet(9));
-        ins.push(Instruction::I32Const(1));
-        ins.push(Instruction::I32Sub);
-        ins.push(Instruction::LocalSet(9));
-        ins.push(Instruction::Br(0));
+        ins.push(Instruction::I64Const(1));
+        ins.push(Instruction::I64Sub);
+        ins.push(Instruction::LocalSet(9)); // widx--
+        ins.push(Instruction::Br(0)); // continue
         ins.push(Instruction::End);
         ins.push(Instruction::End);
-        ins.push(Instruction::I64Const(3));
-        ins.push(Instruction::I64Shl);
-        ins.push(Instruction::I64Const(5));
-        ins.push(Instruction::I64Or);
-        ins.push(Instruction::LocalGet(5));
-        ins.push(Instruction::I64ExtendI32U);
+
+        // TAG_STR return: ((len<<32)|buf)<<3 | 5
         ins.push(Instruction::LocalGet(6));
-        ins.push(Instruction::I64ExtendI32U);
         ins.push(Instruction::I64Const(32));
-        ins.push(Instruction::I64Shl);
-        ins.push(Instruction::I64Or);
+        ins.push(Instruction::I64Shl); // len << 32
+        ins.push(Instruction::LocalGet(5));
+        ins.push(Instruction::I64Or); // (len<<32)|buf
+        ins.push(Instruction::I64Const(3));
+        ins.push(Instruction::I64Shl); // << 3
+        ins.push(Instruction::I64Const(5));
+        ins.push(Instruction::I64Or); // TAG_STR
+
         self.funcs.push(FuncDef {
             name: "__to_string".to_string(),
             param_count: 1,
             local_count: 10,
             instrs: ins,
-            local_entries: Some(vec![(1u32, ValType::I64), (1u32, ValType::I32), (2u32, ValType::I64), (5u32, ValType::I32), (1u32, ValType::I64)]),
+            local_entries: Some(vec![(11u32, ValType::I64)]),
         });
         (self.funcs.len() - 1) as u32
     }
