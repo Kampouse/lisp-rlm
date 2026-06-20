@@ -1698,7 +1698,7 @@ impl WasmEmitter {
                 self.need_outlayer = true;
                 let prompt_expr = self.expr(&a[0])?;
                 let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
-                let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 2048;
+                let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 2112;
                 let mut v = Vec::new();
                 // Push prompt string (ptr, len)
                 v.extend(prompt_expr.clone());
@@ -1753,7 +1753,7 @@ impl WasmEmitter {
                 let method_expr = self.expr(&a[0])?;
                 let params_expr = self.expr(&a[1])?;
                 let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
-                let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 2048;
+                let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 2176;
                 let mut v = Vec::new();
                 // Push method string (ptr, len)
                 v.extend(method_expr.clone());

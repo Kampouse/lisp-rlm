@@ -1152,8 +1152,10 @@ impl WasmEmitter {
                     let dst_save_i = self.local_idx_i32(&format!("__sc{}_dsav", d));
                     let mut v = Vec::new();
                     // Phase 1: eval all args, extract len/ptr, sum lengths
+                    let ts_idx = self.ensure_to_string_func();
                     for i in 0..n {
                         v.extend(self.expr(&a[i])?);
+                        v.push(Instruction::Call(crate::wasm_emit::USER_BASE | ts_idx));
                         v.extend(self.emit_untag());
                         v.push(Instruction::LocalSet(raw_is[i]));
                         // len = raw >> 32 → i32 via wrap_i64
