@@ -476,18 +476,32 @@ impl WasmEmitter {
             open_if!();
             br_to!(str_block);
             close!();
-            ins.push(Instruction::LocalGet(ch));
-            ins.push(Instruction::I32Const(0x5C));
-            ins.push(Instruction::I32Eq);
-            open_if!();
+            // esc==0 && ch==backslash -> start escape, skip the backslash
             ins.push(Instruction::LocalGet(esc));
+            ins.push(Instruction::I32Const(0));
+            ins.push(Instruction::I32Eq);
+            ins.push(Instruction::LocalGet(ch));
+            ins.push(Instruction::I32Const(0x5C)); // backslash
+            ins.push(Instruction::I32Eq);
+            ins.push(Instruction::I32And);
+            open_if!();
             ins.push(Instruction::I32Const(1));
-            ins.push(Instruction::I32Xor);
             ins.push(Instruction::LocalSet(esc));
-            open_else!();
+            ins.push(Instruction::LocalGet(scan_i));
+            ins.push(Instruction::I32Const(1));
+            ins.push(Instruction::I32Add);
+            ins.push(Instruction::LocalSet(scan_i));
+            br_to!(str_loop); // skip backslash, don't copy
+            close!();
+            // esc==1 -> copy escaped char, clear esc
+            ins.push(Instruction::LocalGet(esc));
+            ins.push(Instruction::I32Const(0));
+            ins.push(Instruction::I32Ne);
+            open_if!();
             ins.push(Instruction::I32Const(0));
             ins.push(Instruction::LocalSet(esc));
             close!();
+            // Copy character (normal or escaped)
             ins.push(Instruction::LocalGet(dst));
             ins.push(Instruction::LocalGet(ch));
             ins.push(Instruction::I32Store8(ma8.clone()));
