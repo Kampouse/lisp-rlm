@@ -14,28 +14,29 @@ const S64_FUNCS: &[&str] = &["storage-increment", "storage-decrement"];
 
 /// Ordered list of all WIT function names (kebab-case) — core module import names.
 /// Used to iterate in a consistent order for both type definition and canon lower.
+/// Includes both short names (set, get) and prefixed names (storage-set, storage-get)
+/// because finish_outlayer_inner uses the prefixed forms.
 const WIT_FUNC_NAMES: &[&str] = &[
     "view",
     "call",
     "transfer",
     "http-get",
     "http-post",
-    "set",
-    "get",
-    "has",
-    "delete",
-    "increment",
-    "decrement",
-    "set-if-absent",
-    "set-if-equals",
-    "list-keys",
-    "clear-all",
-    "set-worker",
-    "get-worker",
-    "set-worker-public",
-    "get-worker-from-project",
-    "env-signer",
-    "env-predecessor",
+    "set", "storage-set",
+    "get", "storage-get",
+    "has", "storage-has",
+    "delete", "storage-delete",
+    "increment", "storage-increment",
+    "decrement", "storage-decrement",
+    "set-if-absent", "storage-set-if-absent",
+    "set-if-equals", "storage-set-if-equals",
+    "list-keys", "storage-list-keys",
+    "clear-all", "storage-clear-all",
+    "set-worker", "storage-set-worker",
+    "get-worker", "storage-get-worker",
+    "set-worker-public", "storage-set-worker-public",
+    "get-worker-from-project", "storage-get-worker-from-project",
+    "env-signer", "env-predecessor",
     "raw",
 ];
 
@@ -51,23 +52,25 @@ fn core_import_sig(kebab: &str) -> Vec<wasm_encoder::ValType> {
         // 11 i32 params: 5 strings (signer-id, signer-key, receiver, amount, wait-until) + ret_area
         "transfer" => vec![ValType::I32; 11],
         // 7 i32 params
-        "http-post" | "set-if-equals" => vec![ValType::I32; 7],
+        "http-post" | "set-if-equals" | "storage-set-if-equals" => vec![ValType::I32; 7],
         // 6 i32 params: key + value + option<bool> + ret_area
-        "set-worker" | "get-worker" | "set-worker-public" | "get-worker-from-project" => {
+        "set-worker" | "get-worker" | "set-worker-public" | "get-worker-from-project"
+        | "storage-set-worker" | "storage-get-worker"
+        | "storage-set-worker-public" | "storage-get-worker-from-project" => {
             vec![ValType::I32; 6]
         }
         // 5 i32 params: key + value + ret_area
-        "set" | "set-if-absent" => vec![ValType::I32; 5],
+        "set" | "set-if-absent" | "storage-set" | "storage-set-if-absent" => vec![ValType::I32; 5],
         // 5 i32 params: 2 strings + ret_area
         "raw" => vec![ValType::I32; 5],
         // 3 i32 params
-        "http-get" | "get" | "list-keys" => vec![ValType::I32; 3],
+        "http-get" | "get" | "list-keys" | "storage-get" | "storage-list-keys" => vec![ValType::I32; 3],
         // 2 i32 params (returns i32 directly, no ret_area)
-        "has" | "delete" => vec![ValType::I32; 2],
+        "has" | "delete" | "storage-has" | "storage-delete" => vec![ValType::I32; 2],
         // s64 signature: 2 i32 + i64 + i32
-        "increment" | "decrement" => vec![ValType::I32, ValType::I32, ValType::I64, ValType::I32],
+        "increment" | "decrement" | "storage-increment" | "storage-decrement" => vec![ValType::I32, ValType::I32, ValType::I64, ValType::I32],
         // 1 i32 param
-        "clear-all" | "env-signer" | "env-predecessor" => vec![ValType::I32; 1],
+        "clear-all" | "env-signer" | "env-predecessor" | "storage-clear-all" => vec![ValType::I32; 1],
         // Fallback
         _ => vec![ValType::I32; 1],
     }
@@ -75,20 +78,20 @@ fn core_import_sig(kebab: &str) -> Vec<wasm_encoder::ValType> {
 
 fn func_interface(kebab: &str) -> &'static str {
     match kebab {
-        "set"
-        | "get"
-        | "has"
-        | "delete"
-        | "increment"
-        | "decrement"
-        | "set-if-absent"
-        | "set-if-equals"
-        | "list-keys"
-        | "clear-all"
-        | "set-worker"
-        | "get-worker"
-        | "set-worker-public"
-        | "get-worker-from-project" => "near:storage/api@0.1.0",
+        "set" | "storage-set"
+        | "get" | "storage-get"
+        | "has" | "storage-has"
+        | "delete" | "storage-delete"
+        | "increment" | "storage-increment"
+        | "decrement" | "storage-decrement"
+        | "set-if-absent" | "storage-set-if-absent"
+        | "set-if-equals" | "storage-set-if-equals"
+        | "list-keys" | "storage-list-keys"
+        | "clear-all" | "storage-clear-all"
+        | "set-worker" | "storage-set-worker"
+        | "get-worker" | "storage-get-worker"
+        | "set-worker-public" | "storage-set-worker-public"
+        | "get-worker-from-project" | "storage-get-worker-from-project" => "outlayer:api/host@0.1.0",
         "view" | "call" | "transfer" | "raw" => "near:rpc/api@0.1.0",
         "http-get" | "http-post" => "lisp:http-adapter/api@0.1.0",
         "env-signer" | "env-predecessor" => "trap",
@@ -136,7 +139,10 @@ fn wit_func_signature(
     Vec<(&'static str, ComponentValType)>,
     Option<ComponentValType>,
 ) {
-    match name {
+    // Strip "storage-" prefix if present (finish_outlayer_inner uses "storage-set",
+    // but the WIT definitions use "set").
+    let kebab = name.strip_prefix("storage-").unwrap_or(name);
+    match kebab {
         // ── near:storage/api@0.1.0 (production WIT: bare returns, not result<>) ──
         "set" => (
             vec![("key", string_ty), ("value", list_u8_ty)],
@@ -434,7 +440,7 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
         let mut http_names: Vec<&str> = Vec::new();
         for &name in &used_wit_names {
             match func_interface(name) {
-                "near:storage/api@0.1.0" => storage_names.push(name),
+                "outlayer:api/host@0.1.0" => storage_names.push(name),
                 "near:rpc/api@0.1.0" => rpc_names.push(name),
                 "lisp:http-adapter/api@0.1.0" => http_names.push(name),
                 _ => {} // "trap" — no component-level import needed
@@ -493,7 +499,7 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
         let mut interface_import_idx: std::collections::HashMap<&str, u32> =
             std::collections::HashMap::new();
         if let Some(st) = storage_type_idx {
-            let idx = b.import("near:storage/api@0.1.0", ComponentTypeRef::Instance(st));
+            let idx = b.import("outlayer:api/host@0.1.0", ComponentTypeRef::Instance(st));
             interface_import_idx.insert("storage", idx);
         }
         if let Some(rt) = rpc_type_idx {
@@ -838,7 +844,7 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
                 continue;
             }
             let iface_key = match iface {
-                "near:storage/api@0.1.0" => "storage",
+                "outlayer:api/host@0.1.0" => "storage",
                 "near:rpc/api@0.1.0" => "rpc",
                 "lisp:http-adapter/api@0.1.0" => "http",
                 _ => unreachable!(),
@@ -1479,6 +1485,7 @@ fn analyze_outlayer(wasm: &[u8]) -> OutlayerInfo {
                         if module == "outlayer"
                             || module == "outlayer:api/host"
                             || module == "near:storage/api"
+                            || module == "outlayer:api/host@0.1.0"
                             || module == "near:rpc/api"
                         {
                             if !found_outlayer {

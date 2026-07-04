@@ -3,16 +3,15 @@ package near:outlayer-combined@0.1.0;
 // Combined world for P2 components: upstream outlayer-host + wasi:http
 // Component EXPORTS wasi:cli/run (entry point)
 // Component IMPORTS wasi:http (for outgoing HTTP via HTTPLIB)
-// Component IMPORTS near:rpc/api, near:storage/api, etc. (host functions)
+// Component IMPORTS near:rpc/api, outlayer:api/host, etc. (host functions)
 world outlayer-http {
     export wasi:cli/run@0.2.2;
 
     import near:rpc/api@0.1.0;
-    import near:storage/api@0.1.0;
+    import outlayer:api/host@0.1.0;
     import near:payment/api@0.1.0;
     import near:vrf/api@0.1.0;
     import outlayer:wallet/api@0.1.0;
-    import outlayer:api/host@0.1.0;
     import wasi:http/types@0.2.2;
     import wasi:http/outgoing-handler@0.2.2;
     import wasi:io/streams@0.2.2;

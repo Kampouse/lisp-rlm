@@ -12,30 +12,57 @@ impl WasmEmitter {
                 // Allocate on compile-time heap: [count, elem0, elem1, ...]
                 let count = a.len() as u32;
                 let slots_needed = 1 + count; // count + elements
-                let ptr = self.heap_bump(slots_needed * 8);
+                let alloc_size = slots_needed * 8;
                 let ma = wasm_encoder::MemArg {
                     offset: 0,
                     align: 3,
                     memory_index: 0,
                 };
                 let mut v = Vec::new();
-                // Store count at ptr[0]
-                v.push(Instruction::I64Const(ptr as i64));
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Const(count as i64));
-                v.push(Instruction::I64Store(ma));
-                // Evaluate and store each element
-                for (i, elem) in a.iter().enumerate() {
-                    // I64Store expects [i32 addr, i64 val] — push address first
-                    v.push(Instruction::I64Const((ptr + ((i as u32 + 1) * 8)) as i64));
+                if self.p2_mode || self.wasi_mode {
+                    let alloc_local = self.local_idx("__arr_alloc");
+                    v.extend(self.heap_bump_runtime(alloc_size, "__arr_alloc"));
+                    // Store count at ptr[0]
+                    v.push(Instruction::LocalGet(alloc_local));
                     v.push(Instruction::I32WrapI64);
-                    v.extend(self.expr(elem)?);
+                    v.push(Instruction::I64Const(count as i64));
                     v.push(Instruction::I64Store(ma));
+                    // Evaluate and store each element
+                    for (i, elem) in a.iter().enumerate() {
+                        // I64Store expects [i32 addr, i64 val] — push address first
+                        v.push(Instruction::LocalGet(alloc_local));
+                        v.push(Instruction::I64Const(((i as u32 + 1) * 8) as i64));
+                        v.push(Instruction::I64Add);
+                        v.push(Instruction::I32WrapI64);
+                        v.extend(self.expr(elem)?);
+                        v.push(Instruction::I64Store(ma));
+                    }
+                    // Return tagged array ptr
+                    v.push(Instruction::LocalGet(alloc_local));
+                    v.push(Instruction::I64Const(TAG_BITS as i64));
+                    v.push(Instruction::I64Shl);
+                    v.push(Instruction::I64Const(TAG_ARRAY));
+                    v.push(Instruction::I64Or);
+                } else {
+                    let ptr = self.heap_bump(alloc_size);
+                    // Store count at ptr[0]
+                    v.push(Instruction::I64Const(ptr as i64));
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::I64Const(count as i64));
+                    v.push(Instruction::I64Store(ma));
+                    // Evaluate and store each element
+                    for (i, elem) in a.iter().enumerate() {
+                        // I64Store expects [i32 addr, i64 val] — push address first
+                        v.push(Instruction::I64Const((ptr + ((i as u32 + 1) * 8)) as i64));
+                        v.push(Instruction::I32WrapI64);
+                        v.extend(self.expr(elem)?);
+                        v.push(Instruction::I64Store(ma));
+                    }
+                    // Return tagged array ptr
+                    v.push(Instruction::I64Const(
+                        ((ptr as i64) << TAG_BITS) | TAG_ARRAY,
+                    ));
                 }
-                // Return tagged array ptr
-                v.push(Instruction::I64Const(
-                    ((ptr as i64) << TAG_BITS) | TAG_ARRAY,
-                ));
                 Ok(v)
             }
             "vec-length" => {
@@ -669,26 +696,49 @@ impl WasmEmitter {
             "list" => {
                 let count = a.len() as u32;
                 let slots_needed = 1 + count;
-                let ptr = self.heap_bump(slots_needed * 8);
+                let alloc_size = slots_needed * 8;
                 let ma = wasm_encoder::MemArg {
                     offset: 0,
                     align: 3,
                     memory_index: 0,
                 };
                 let mut v = Vec::new();
-                v.push(Instruction::I64Const(ptr as i64));
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Const(count as i64));
-                v.push(Instruction::I64Store(ma));
-                for (i, elem) in a.iter().enumerate() {
-                    v.push(Instruction::I64Const((ptr + ((i as u32 + 1) * 8)) as i64));
+                if self.p2_mode || self.wasi_mode {
+                    let alloc_local = self.local_idx("__list_alloc");
+                    v.extend(self.heap_bump_runtime(alloc_size, "__list_alloc"));
+                    v.push(Instruction::LocalGet(alloc_local));
                     v.push(Instruction::I32WrapI64);
-                    v.extend(self.expr(elem)?);
+                    v.push(Instruction::I64Const(count as i64));
                     v.push(Instruction::I64Store(ma));
+                    for (i, elem) in a.iter().enumerate() {
+                        v.push(Instruction::LocalGet(alloc_local));
+                        v.push(Instruction::I64Const(((i as u32 + 1) * 8) as i64));
+                        v.push(Instruction::I64Add);
+                        v.push(Instruction::I32WrapI64);
+                        v.extend(self.expr(elem)?);
+                        v.push(Instruction::I64Store(ma));
+                    }
+                    v.push(Instruction::LocalGet(alloc_local));
+                    v.push(Instruction::I64Const(TAG_BITS as i64));
+                    v.push(Instruction::I64Shl);
+                    v.push(Instruction::I64Const(TAG_ARRAY));
+                    v.push(Instruction::I64Or);
+                } else {
+                    let ptr = self.heap_bump(alloc_size);
+                    v.push(Instruction::I64Const(ptr as i64));
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::I64Const(count as i64));
+                    v.push(Instruction::I64Store(ma));
+                    for (i, elem) in a.iter().enumerate() {
+                        v.push(Instruction::I64Const((ptr + ((i as u32 + 1) * 8)) as i64));
+                        v.push(Instruction::I32WrapI64);
+                        v.extend(self.expr(elem)?);
+                        v.push(Instruction::I64Store(ma));
+                    }
+                    v.push(Instruction::I64Const(
+                        ((ptr as i64) << TAG_BITS) | TAG_ARRAY,
+                    ));
                 }
-                v.push(Instruction::I64Const(
-                    ((ptr as i64) << TAG_BITS) | TAG_ARRAY,
-                ));
                 Ok(v)
             }
             "car" | "first" => {
@@ -701,15 +751,27 @@ impl WasmEmitter {
                     align: 3,
                     memory_index: 0,
                 };
+                let result_tmp = self.local_idx("__car_res");
                 let mut v = self.expr(&a[0])?;
                 v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(arr_tmp));
+                // Default result: nil
+                v.push(Instruction::I64Const(4)); // TAG_NIL
+                v.push(Instruction::LocalSet(result_tmp));
+                // Only load if arr_tmp != 0
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::LocalGet(arr_tmp));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::BrIf(0)); // skip if nil
                 // ptr + 8 (skip count word) → first element
                 v.push(Instruction::LocalGet(arr_tmp));
                 v.push(Instruction::I64Const(8));
                 v.push(Instruction::I64Add);
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(ma));
+                v.push(Instruction::LocalSet(result_tmp));
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(result_tmp));
                 Ok(v)
             }
             "map" => {
@@ -739,8 +801,14 @@ impl WasmEmitter {
                 v.push(Instruction::I64Load(ma));
                 v.push(Instruction::LocalSet(n_tmp));
                 // Alloc new array at heap (fixed max allocation since count is runtime)
-                let new_heap = self.heap_bump(64 * 8);
-                v.push(Instruction::I64Const(new_heap as i64));
+                let alloc_size = 64 * 8;
+                if self.p2_mode || self.wasi_mode {
+                    v.extend(self.heap_bump_runtime(alloc_size, "__map_alloc"));
+                    v.push(Instruction::LocalGet(self.local_idx("__map_alloc")));
+                } else {
+                    let new_heap = self.heap_bump(alloc_size);
+                    v.push(Instruction::I64Const(new_heap as i64));
+                }
                 v.push(Instruction::LocalSet(new_ptr));
                 // Store count at new[0]
                 v.push(Instruction::LocalGet(new_ptr));
@@ -793,9 +861,11 @@ impl WasmEmitter {
                 v.push(Instruction::End); // loop
                 v.push(Instruction::End); // block
                                           // Return tagged new array
-                v.push(Instruction::I64Const(
-                    ((new_heap as i64) << TAG_BITS) | TAG_ARRAY,
-                ));
+                v.push(Instruction::LocalGet(new_ptr));
+                v.push(Instruction::I64Const(TAG_BITS as i64));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_ARRAY));
+                v.push(Instruction::I64Or);
                 Ok(v)
             }
             "filter" => {
@@ -827,8 +897,14 @@ impl WasmEmitter {
                 v.push(Instruction::I64Load(ma));
                 v.push(Instruction::LocalSet(n_tmp));
                 // Alloc new array
-                let new_heap = self.heap_bump((1 + 64) * 8);
-                v.push(Instruction::I64Const(new_heap as i64));
+                let alloc_size = (1 + 64) * 8;
+                if self.p2_mode || self.wasi_mode {
+                    v.extend(self.heap_bump_runtime(alloc_size, "__fil_alloc"));
+                    v.push(Instruction::LocalGet(self.local_idx("__fil_alloc")));
+                } else {
+                    let new_heap = self.heap_bump(alloc_size);
+                    v.push(Instruction::I64Const(new_heap as i64));
+                }
                 v.push(Instruction::LocalSet(new_ptr));
                 // Store initial count 0
                 v.push(Instruction::LocalGet(new_ptr));
@@ -902,9 +978,11 @@ impl WasmEmitter {
                 v.push(Instruction::End); // loop
                 v.push(Instruction::End); // block
                                           // Return tagged new array
-                v.push(Instruction::I64Const(
-                    ((new_heap as i64) << TAG_BITS) | TAG_ARRAY,
-                ));
+                v.push(Instruction::LocalGet(new_ptr));
+                v.push(Instruction::I64Const(TAG_BITS as i64));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_ARRAY));
+                v.push(Instruction::I64Or);
                 Ok(v)
             }
             "cdr" | "rest" => {
@@ -924,6 +1002,14 @@ impl WasmEmitter {
                 let mut v = self.expr(&a[0])?;
                 v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(arr_tmp));
+                // Guard: if arr_tmp == 0 (nil), return nil
+                let cdr_res = self.local_idx("__cdr_res");
+                v.push(Instruction::I64Const(4)); // TAG_NIL
+                v.push(Instruction::LocalSet(cdr_res));
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::LocalGet(arr_tmp));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::BrIf(0)); // skip if nil
                 // Load count
                 v.push(Instruction::LocalGet(arr_tmp));
                 v.push(Instruction::I32WrapI64);
@@ -935,8 +1021,14 @@ impl WasmEmitter {
                 v.push(Instruction::I64Sub);
                 v.push(Instruction::LocalSet(n_tmp));
                 // Alloc new
-                let new_heap = self.heap_bump((1 + 64) * 8);
-                v.push(Instruction::I64Const(new_heap as i64));
+                let alloc_size = (1 + 64) * 8;
+                if self.p2_mode || self.wasi_mode {
+                    v.extend(self.heap_bump_runtime(alloc_size, "__cdr_alloc"));
+                    v.push(Instruction::LocalGet(self.local_idx("__cdr_alloc")));
+                } else {
+                    let new_heap = self.heap_bump(alloc_size);
+                    v.push(Instruction::I64Const(new_heap as i64));
+                }
                 v.push(Instruction::LocalSet(new_ptr));
                 // Store new_count
                 v.push(Instruction::LocalGet(new_ptr));
@@ -988,10 +1080,15 @@ impl WasmEmitter {
                 v.push(Instruction::If(BlockType::Result(ValType::I64)));
                 v.push(Instruction::I64Const(TAG_NIL));
                 v.push(Instruction::Else);
-                v.push(Instruction::I64Const(
-                    ((new_heap as i64) << TAG_BITS) | TAG_ARRAY,
-                ));
+                v.push(Instruction::LocalGet(new_ptr));
+                v.push(Instruction::I64Const(TAG_BITS as i64));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_ARRAY));
+                v.push(Instruction::I64Or);
                 v.push(Instruction::End);
+                v.push(Instruction::LocalSet(cdr_res));
+                v.push(Instruction::End); // end nil-guard block
+                v.push(Instruction::LocalGet(cdr_res));
                 Ok(v)
             }
             "cons" => {
@@ -1017,14 +1114,27 @@ impl WasmEmitter {
                 // Eval item
                 v.extend(self.expr(&a[0])?);
                 v.push(Instruction::LocalSet(item_tmp));
-                // Load count
+                // Load count (nil = 0 elements, not a heap pointer)
+                v.push(Instruction::LocalGet(arr_tmp));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.push(Instruction::I64Const(0)); // nil → count 0
+                v.push(Instruction::Else);
                 v.push(Instruction::LocalGet(arr_tmp));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(ma));
+                v.push(Instruction::End);
                 v.push(Instruction::LocalSet(n_tmp));
                 // Alloc new: count + 1 elements
-                let new_heap = self.heap_bump((1 + 64) * 8);
-                v.push(Instruction::I64Const(new_heap as i64));
+                let alloc_size = (1 + 64) * 8;
+                if self.p2_mode || self.wasi_mode {
+                    v.extend(self.heap_bump_runtime(alloc_size, "__cons_alloc"));
+                    v.push(Instruction::LocalGet(self.local_idx("__cons_alloc")));
+                } else {
+                    let new_heap = self.heap_bump(alloc_size);
+                    v.push(Instruction::I64Const(new_heap as i64));
+                }
                 v.push(Instruction::LocalSet(new_ptr));
                 // Store new_count = old_count + 1
                 v.push(Instruction::LocalGet(new_ptr));
@@ -1079,9 +1189,11 @@ impl WasmEmitter {
                 v.push(Instruction::Br(0));
                 v.push(Instruction::End); // loop
                 v.push(Instruction::End); // block
-                v.push(Instruction::I64Const(
-                    ((new_heap as i64) << TAG_BITS) | TAG_ARRAY,
-                ));
+                v.push(Instruction::LocalGet(new_ptr));
+                v.push(Instruction::I64Const(TAG_BITS as i64));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_ARRAY));
+                v.push(Instruction::I64Or);
                 Ok(v)
             }
             "len" => {
@@ -1137,9 +1249,20 @@ impl WasmEmitter {
                 let mut v = self.expr(&a[0])?;
                 v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(arr_tmp));
+                // Guard: if arr_tmp == 0 (nil/empty), return count 0
+                let len_res = self.local_idx("__len_res");
+                v.push(Instruction::I64Const(0)); // count = 0
+                v.push(Instruction::LocalSet(len_res));
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::LocalGet(arr_tmp));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::BrIf(0)); // skip if nil
                 v.push(Instruction::LocalGet(arr_tmp));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(ma));
+                v.push(Instruction::LocalSet(len_res));
+                v.push(Instruction::End); // end nil-guard block
+                v.push(Instruction::LocalGet(len_res));
                 v.extend(self.emit_tag_num());
                 Ok(v)
             }
@@ -1161,6 +1284,14 @@ impl WasmEmitter {
                 v.extend(self.expr(&a[1])?);
                 v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(idx_tmp));
+                // Guard: if arr_tmp == 0 (nil), return nil
+                let nth_res = self.local_idx("__nth_res");
+                v.push(Instruction::I64Const(4)); // TAG_NIL
+                v.push(Instruction::LocalSet(nth_res));
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::LocalGet(arr_tmp));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::BrIf(0)); // skip if nil
                 // Load list length (ptr[0])
                 v.push(Instruction::LocalGet(arr_tmp));
                 v.push(Instruction::I32WrapI64);
@@ -1183,6 +1314,9 @@ impl WasmEmitter {
                 v.push(Instruction::I64Add);
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(ma));
+                v.push(Instruction::LocalSet(nth_res));
+                v.push(Instruction::End); // end nil-guard block
+                v.push(Instruction::LocalGet(nth_res));
                 Ok(v)
             }
             "range" => {
@@ -1206,8 +1340,14 @@ impl WasmEmitter {
                 v.extend(self.expr(&a[1])?);
                 v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(end_tmp));
-                let new_heap = self.heap_bump((1 + 64) * 8);
-                v.push(Instruction::I64Const(new_heap as i64));
+                let alloc_size = (1 + 64) * 8;
+                if self.p2_mode || self.wasi_mode {
+                    v.extend(self.heap_bump_runtime(alloc_size, "__rng_alloc"));
+                    v.push(Instruction::LocalGet(self.local_idx("__rng_alloc")));
+                } else {
+                    let new_heap = self.heap_bump(alloc_size);
+                    v.push(Instruction::I64Const(new_heap as i64));
+                }
                 v.push(Instruction::LocalSet(new_ptr));
                 // count = 0
                 v.push(Instruction::LocalGet(new_ptr));
@@ -1257,9 +1397,11 @@ impl WasmEmitter {
                 v.push(Instruction::Br(0));
                 v.push(Instruction::End); // loop
                 v.push(Instruction::End); // block
-                v.push(Instruction::I64Const(
-                    ((new_heap as i64) << TAG_BITS) | TAG_ARRAY,
-                ));
+                v.push(Instruction::LocalGet(new_ptr));
+                v.push(Instruction::I64Const(TAG_BITS as i64));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_ARRAY));
+                v.push(Instruction::I64Or);
                 Ok(v)
             }
             "reverse" => {
@@ -1285,8 +1427,14 @@ impl WasmEmitter {
                 v.push(Instruction::I64Load(ma));
                 v.push(Instruction::LocalSet(n_tmp));
                 // Alloc new
-                let new_heap = self.heap_bump((1 + 64) * 8);
-                v.push(Instruction::I64Const(new_heap as i64));
+                let alloc_size = (1 + 64) * 8;
+                if self.p2_mode || self.wasi_mode {
+                    v.extend(self.heap_bump_runtime(alloc_size, "__rev_alloc"));
+                    v.push(Instruction::LocalGet(self.local_idx("__rev_alloc")));
+                } else {
+                    let new_heap = self.heap_bump(alloc_size);
+                    v.push(Instruction::I64Const(new_heap as i64));
+                }
                 v.push(Instruction::LocalSet(new_ptr));
                 // Store count
                 v.push(Instruction::LocalGet(new_ptr));
@@ -1332,9 +1480,11 @@ impl WasmEmitter {
                 v.push(Instruction::Br(0));
                 v.push(Instruction::End); // loop
                 v.push(Instruction::End); // block
-                v.push(Instruction::I64Const(
-                    ((new_heap as i64) << TAG_BITS) | TAG_ARRAY,
-                ));
+                v.push(Instruction::LocalGet(new_ptr));
+                v.push(Instruction::I64Const(TAG_BITS as i64));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_ARRAY));
+                v.push(Instruction::I64Or);
                 Ok(v)
             }
             "reduce" => {
@@ -1424,7 +1574,38 @@ impl WasmEmitter {
                 v.extend(self.expr(&a[1])?);
                 v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(a2_tmp));
-                // Load counts
+                // Guard: if either arg is nil (ptr==0), return the other re-tagged
+                let ap_res = self.local_idx("__ap_res");
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::LocalGet(a1_tmp));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::LocalGet(a2_tmp));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::I32Or);
+                v.push(Instruction::If(BlockType::Empty));
+                // Either is nil — store the non-nil one
+                v.push(Instruction::LocalGet(a1_tmp));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::If(BlockType::Empty));
+                // a1 is nil → a2 re-tagged
+                v.push(Instruction::LocalGet(a2_tmp));
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(6));
+                v.push(Instruction::I64Or);
+                v.push(Instruction::LocalSet(ap_res));
+                v.push(Instruction::Else);
+                // a2 is nil → a1 re-tagged
+                v.push(Instruction::LocalGet(a1_tmp));
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(6));
+                v.push(Instruction::I64Or);
+                v.push(Instruction::LocalSet(ap_res));
+                v.push(Instruction::End);
+                v.push(Instruction::Br(1)); // skip main body
+                v.push(Instruction::End); // end nil guard
+                // Load counts (main body: both non-nil)
                 v.push(Instruction::LocalGet(a1_tmp));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(ma));
@@ -1434,8 +1615,14 @@ impl WasmEmitter {
                 v.push(Instruction::I64Load(ma));
                 v.push(Instruction::LocalSet(n2_tmp));
                 // Alloc new
-                let new_heap = self.heap_bump((1 + 64) * 8);
-                v.push(Instruction::I64Const(new_heap as i64));
+                let alloc_size = (1 + 64) * 8;
+                if self.p2_mode || self.wasi_mode {
+                    v.extend(self.heap_bump_runtime(alloc_size, "__ap_alloc"));
+                    v.push(Instruction::LocalGet(self.local_idx("__ap_alloc")));
+                } else {
+                    let new_heap = self.heap_bump(alloc_size);
+                    v.push(Instruction::I64Const(new_heap as i64));
+                }
                 v.push(Instruction::LocalSet(new_ptr));
                 // Store total count
                 v.push(Instruction::LocalGet(new_ptr));
@@ -1518,9 +1705,14 @@ impl WasmEmitter {
                 v.push(Instruction::Br(0));
                 v.push(Instruction::End);
                 v.push(Instruction::End);
-                v.push(Instruction::I64Const(
-                    ((new_heap as i64) << TAG_BITS) | TAG_ARRAY,
-                ));
+                v.push(Instruction::LocalGet(new_ptr));
+                v.push(Instruction::I64Const(TAG_BITS as i64));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_ARRAY));
+                v.push(Instruction::I64Or);
+                v.push(Instruction::LocalSet(ap_res));
+                v.push(Instruction::End); // end outer block
+                v.push(Instruction::LocalGet(ap_res));
                 Ok(v)
             }
             _ => Err("__not_handled__".into()),

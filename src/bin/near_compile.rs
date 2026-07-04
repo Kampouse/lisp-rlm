@@ -286,6 +286,25 @@ fn do_build_target_with_config(project_dir: &str, target: &str, config: ProjectC
         }
         "outlayer-p2" | "wasi-p2" | "component" => {
             let wasm = lisp_rlm_wasm::wasi::compile_outlayer_p2(&effective_source)?;
+            // Validate with wasmtime to catch codegen bugs that the encoder misses.
+            // NOTE: wasmtime's component parser may reject valid components built by
+            // wasm-encoder's ComponentBuilder. wasm-tools validate is the authoritative
+            // check — wasmtime validation is a secondary sanity check.
+            if std::env::var("HERMES_STRICT_WASM_VALIDATION").is_ok() {
+                let engine = wasmtime::Engine::default();
+                match wasmtime::component::Component::new(&engine, &wasm) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        let msg = e.to_string();
+                        for line in msg.lines() {
+                            if line.contains("failed to compile") || line.contains("type mismatch") || line.contains("values remaining") {
+                                return Err(format!("WASM validation: {} (full: {})", line.trim(), &msg[..msg.len().min(500)]));
+                            }
+                        }
+                        return Err(format!("WASM validation: {} (full: {})", msg.lines().next().unwrap_or(&msg), &msg[..msg.len().min(500)]));
+                    }
+                }
+            }
             wasm
         }
         _ => {

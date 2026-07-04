@@ -117,8 +117,6 @@ impl WasmEmitter {
         let dig_i = self.local_idx("__its2_dig");
         let i_i = self.local_idx("__its2_i");
         let src_i = self.local_idx("__its2_src");
-        let alloc_base = self.next_data_offset.max(3072);
-        self.next_data_offset = (alloc_base + 64) & !7;
         let mut v = Vec::new();
         v.extend(n);
         // Untag the number before converting: val >> TAG_BITS
@@ -131,8 +129,17 @@ impl WasmEmitter {
         v.push(Instruction::LocalSet(neg_i));
         v.push(Instruction::I64Const(0));
         v.push(Instruction::LocalSet(len_i));
-        v.push(Instruction::I64Const(alloc_base as i64));
-        v.push(Instruction::LocalSet(dst_i));
+        // In P2/WASI mode, allocate from runtime heap to avoid fixed buffer corruption in recursive calls.
+        // In NEAR mode, use compile-time fixed buffer (backward compatible).
+        if self.p2_mode || self.wasi_mode {
+            v.extend(self.heap_bump_runtime(64, "__its2_dst"));
+            // dst already set by heap_bump_runtime
+        } else {
+            let alloc_base = self.next_data_offset.max(3072);
+            self.next_data_offset = (alloc_base + 64) & !7;
+            v.push(Instruction::I64Const(alloc_base as i64));
+            v.push(Instruction::LocalSet(dst_i));
+        }
         // Handle negative
         v.push(Instruction::LocalGet(n_i));
         v.push(Instruction::I64Const(0));

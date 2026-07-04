@@ -227,31 +227,59 @@ impl WasmEmitter {
                 let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
                 let buf_local = self.local_idx_i32("__sg_buf");
                 let len_local = self.local_idx_i32("__sg_len");
-                // Read list_ptr and list_len from ret_area
-                v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4));
+                // result<option<list<u8>>, string> canonical ABI:
+                // +0: result disc (0=Ok, 1=Err)
+                // +4: option disc (0=None, 1=Some) [Ok only]
+                // +8: list ptr [Ok+Some only]
+                // +12: list len [Ok+Some only]
+                // Err: +4=err_str_ptr, +8=err_str_len
+                let buf_local = self.local_idx_i32("__sg_buf");
+                let len_local = self.local_idx_i32("__sg_len");
+                let val_local = self.local_idx("__sg_val");
+                // Default: nil (TAG_NIL = 4)
+                v.push(Instruction::I64Const(4));
+                v.push(Instruction::LocalSet(val_local));
+                // Check: result disc != 0 → Err case → build error string
+                v.push(Instruction::I32Const(ret_area));
+                v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I32Const(0));
+                v.push(Instruction::I32Ne);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::I32Const(ret_area + 4));
+                v.push(Instruction::I32Load(ma4));
                 v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Eq);
-                v.push(Instruction::If(BlockType::Result(ValType::I64)));
-                // list_len == 0 → not found → return nil (TAG_NIL = 4)
-                v.push(Instruction::I64Const(4)); // TAG_NIL
-                v.push(Instruction::Else);
-                // list_len > 0 → allocate from runtime heap, copy, construct tagged string
-                // Step 1: Save list_len
-                v.push(Instruction::I32Const(ret_area + 4)); v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I32Const(ret_area + 8));
+                v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_STR));
+                v.push(Instruction::I64Or);
+                v.push(Instruction::LocalSet(val_local));
+                v.push(Instruction::End);
+                // Check: Ok && option disc != 0 → Some case → copy data to heap
+                v.push(Instruction::I32Const(ret_area + 4));
+                v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I32Const(0));
+                v.push(Instruction::I32Ne);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::I32Const(ret_area + 12));
+                v.push(Instruction::I32Load(ma4));
                 v.push(Instruction::LocalSet(len_local));
-                // Step 2: Read heap_ptr from addr 56 (i64), trunc to i32 as safe_buf
-                // Use LocalTee to save AND keep on stack for memory.copy dst
                 v.push(Instruction::I32Const(56));
                 v.push(Instruction::I64Load(ma8));
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::LocalTee(buf_local)); // store AND keep on stack
-                v.push(Instruction::I32Const(ret_area)); v.push(Instruction::I32Load(ma4)); // src = list_ptr
-                v.push(Instruction::LocalGet(len_local)); // len
+                v.push(Instruction::LocalTee(buf_local));
+                v.push(Instruction::I32Const(ret_area + 8));
+                v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::LocalGet(len_local));
                 v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
-                // Step 4: Bump heap_ptr at addr 56 by aligned len
-                // buf_local already has old heap_ptr, no need to re-read from memory
-                v.push(Instruction::I32Const(56)); // addr for i64.store
-                v.push(Instruction::LocalGet(buf_local)); // old heap_ptr
+                // Bump heap_ptr
+                v.push(Instruction::I32Const(56));
+                v.push(Instruction::LocalGet(buf_local));
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::LocalGet(len_local));
                 v.push(Instruction::I64ExtendI32U);
@@ -259,18 +287,24 @@ impl WasmEmitter {
                 v.push(Instruction::I64Add);
                 v.push(Instruction::I64Const(-8));
                 v.push(Instruction::I64And);
-                v.push(Instruction::I64Add); // old + aligned_len
-                v.push(Instruction::I64Store(ma8)); // store new heap_ptr
-                // Step 5: Construct tagged string: ((safe_buf | (len << 32)) << 3) | TAG_STR
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Store(ma8));
+                // Build tagged string from buf/len
                 v.push(Instruction::LocalGet(buf_local));
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::LocalGet(len_local));
                 v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
                 v.push(Instruction::I64Or);
-                v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TAG_STR)); v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_STR));
+                v.push(Instruction::I64Or);
+                v.push(Instruction::LocalSet(val_local));
                 v.push(Instruction::End);
+                // Return the value
+                v.push(Instruction::LocalGet(val_local));
                 Ok(v)
             }
             "storage-has" => {

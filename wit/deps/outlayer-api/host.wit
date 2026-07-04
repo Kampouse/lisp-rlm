@@ -1,27 +1,100 @@
 package outlayer:api@0.1.0;
 
 interface host {
-    /// Sleep for the given number of milliseconds
-    sleep-ms: func(ms: u32) -> result<_, string>;
+    // ==================== NEAR RPC ====================
 
-    /// Send a Telegram message via bot API
-    /// Reads TELEGRAM_BOT_TOKEN from environment
-    send-telegram: func(chat-id: string, text: string) -> result<string, string>;
+    /// Call a view function on a smart contract
+    view: func(contract-id: string, method-name: string, args-json: string) -> result<string, string>;
 
-    /// HTTP POST with dynamic URL
-    /// Returns response body as list<u8>
+    /// Call a method on a smart contract
+    call: func(signer-key: string, receiver-id: string, method-name: string, args-json: string, deposit-yocto: string, gas: string) -> result<string, string>;
+
+    /// Transfer NEAR
+    transfer: func(signer-key: string, receiver-id: string, amount-yocto: string) -> result<string, string>;
+
+    // ==================== HTTP ====================
+
+    /// HTTP GET request
+    http-get: func(url: string) -> result<list<u8>, string>;
+
+    /// HTTP POST request
     http-post: func(url: string, body: list<u8>, content-type: string) -> result<list<u8>, string>;
 
-    /// Web search via ZAI MCP web_search_prime
-    /// Reads AI_API_KEY from environment
-    /// Returns JSON array of search results: [{title, content, url, siteName}]
+    // ==================== Basic Storage ====================
+
+    /// Store a value by key
+    storage-set: func(key: string, value: list<u8>) -> result<_, string>;
+
+    /// Get a value by key
+    storage-get: func(key: string) -> result<option<list<u8>>, string>;
+
+    /// Check if a key exists
+    storage-has: func(key: string) -> result<bool, string>;
+
+    /// Delete a key
+    storage-delete: func(key: string) -> result<_, string>;
+
+    /// Atomically increment a numeric value
+    storage-increment: func(key: string, delta: s64) -> result<s64, string>;
+
+    /// Atomically decrement a numeric value
+    storage-decrement: func(key: string, delta: s64) -> result<s64, string>;
+
+    /// Set a key only if it doesn't already exist
+    storage-set-if-absent: func(key: string, value: list<u8>) -> result<bool, string>;
+
+    /// Set a key only if current value equals expected (compare-and-swap)
+    storage-set-if-equals: func(key: string, expected: list<u8>, new-value: list<u8>) -> result<bool, string>;
+
+    /// List all keys with optional prefix filter
+    storage-list-keys: func(prefix: string) -> result<list<string>, string>;
+
+    /// Clear all storage for the current project
+    storage-clear-all: func() -> result<_, string>;
+
+    /// Store worker data
+    storage-set-worker: func(key: string, value: list<u8>) -> result<_, string>;
+
+    /// Get worker data
+    storage-get-worker: func(key: string) -> result<option<list<u8>>, string>;
+
+    /// Store public worker data (readable by other projects)
+    storage-set-worker-public: func(key: string, value: list<u8>) -> result<_, string>;
+
+    /// Get worker data from another project
+    storage-get-worker-from-project: func(key: string, project: string) -> result<option<list<u8>>, string>;
+
+    // ==================== Environment ====================
+
+    /// Get the signer account ID
+    env-signer: func() -> string;
+
+    /// Get the predecessor account ID
+    env-predecessor: func() -> string;
+
+    /// Get an environment variable
+    env-get: func(key: string) -> option<string>;
+
+    /// Sleep for milliseconds
+    sleep-ms: func(ms: u32) -> result<_, string>;
+
+    // ==================== Telegram ====================
+
+    /// Send a Telegram message via bot API
+    send-telegram: func(chat-id: string, text: string) -> result<string, string>;
+
+    // ==================== AI ====================
+
+    /// Web search
     web-search: func(query: string) -> result<string, string>;
 
-    /// AI chat via ZAI glm-5-turbo — returns content text
+    /// AI chat
     ai-chat: func(prompt: string) -> result<string, string>;
 
-    /// Raw NEAR JSON-RPC call: method name + params JSON array
-    /// Reads NEAR_RPC_URL from env (defaults to https://rpc.mainnet.near.org)
-    /// Returns JSON response string
+    /// Raw NEAR JSON-RPC call
     rpc-call: func(method: string, params-json: string) -> result<string, string>;
+}
+
+world outlayer-world {
+    import host;
 }

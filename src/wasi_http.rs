@@ -171,6 +171,13 @@ impl WasiHttpLayout {
 /// Returns nothing — the type indices are positional (0..HTTP_TYPE_COUNT-1)
 /// and the import indices are the `FN_*` constants.
 pub fn add_http_imports_to_sections(types: &mut TypeSection, imports: &mut ImportSection) {
+    add_http_types_to_sections(types);
+    add_http_imports_only(imports);
+}
+
+/// Add HTTP types only (no imports). Used when HTTP functions are not needed
+/// but type indices must remain stable for the combined P2 core module.
+pub fn add_http_types_to_sections(types: &mut TypeSection) {
     // Canonical ABI types for wasi:http@0.2.2 lowered functions.
     // Type indices must match what the import entries reference below.
     types.ty().function([], [W]); // 0: () -> i32 (constructors)
@@ -182,10 +189,13 @@ pub fn add_http_imports_to_sections(types: &mut TypeSection, imports: &mut Impor
     types.ty().function([W, W, W, W], []); // 6: finish/handle/write-and-flush
     types.ty().function([W, W, W], []); // 7: poll
     types.ty().function([W, ValType::I64, W], []); // 8: read
-    types.ty().function([W, W, W, W, W, W], []); // 9: fields.set(self, name_ptr, name_len, val_list_ptr, val_list_len, ret_ptr)
+    types.ty().function([W, W, W, W, W, W], []); // 9: fields.set
 
     assert_eq!(types.len(), HTTP_TYPE_COUNT, "HTTP type count mismatch");
+}
 
+/// Add HTTP import entries only (no types). Types must already be added.
+pub fn add_http_imports_only(imports: &mut ImportSection) {
     let ht = "wasi:http/types@0.2.2";
     let hh = "wasi:http/outgoing-handler@0.2.2";
     let is = "wasi:io/streams@0.2.2";
@@ -540,12 +550,10 @@ pub fn build_http_wit_metadata() -> Result<(wit_parser::Resolve, wit_parser::Wor
             "cli",
             "http",
             "outlayer-api",
-            "near-storage",
             "near-payment",
             "near-vrf",
             "outlayer-wallet",
             "near-rpc",
-            "simple-http",
         ];
         for subdir in dep_dirs {
             let dir = wit_dir.join(subdir);
@@ -592,7 +600,7 @@ pub fn build_combined_wit_metadata() -> Result<(wit_parser::Resolve, wit_parser:
         // push_dir processes one directory at a time. We need to push deps in
         // dependency order so that cross-package imports resolve correctly.
         // The outlayer-http world (in combined.wit) imports packages
-        // from near-rpc, near-storage, near-payment, near-vrf, outlayer-wallet,
+        // from near-rpc, outlayer-api, near-payment, near-vrf, outlayer-wallet,
         // and all wasi packages, so those must be loaded first.
         let dep_dirs: &[&str] = &[
             "io",
@@ -603,7 +611,6 @@ pub fn build_combined_wit_metadata() -> Result<(wit_parser::Resolve, wit_parser:
             "cli",
             "http",
             "outlayer-api",
-            "near-storage",
             "near-payment",
             "near-vrf",
             "outlayer-wallet",
@@ -635,6 +642,62 @@ pub fn build_combined_wit_metadata() -> Result<(wit_parser::Resolve, wit_parser:
             }
         }
         let world = found_world.ok_or("world 'outlayer-http' not found")?;
+
+        Ok((resolve, world))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        crate::wit_embed::build_http_wit_metadata_embedded()
+    }
+}
+
+/// Build WIT metadata for the outlayer-nohttp world — outlayer host functions
+/// WITHOUT wasi:http. Used when the program needs storage/view/call/etc. but
+/// does NOT make HTTP requests, avoiding HTTP adapter traps in inlayer runtime.
+pub fn build_outlayer_nohttp_wit_metadata() -> Result<(wit_parser::Resolve, wit_parser::WorldId), String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut resolve = wit_parser::Resolve::new();
+        let wit_dir = find_wit_dir()?;
+
+        let dep_dirs: &[&str] = &[
+            "io",
+            "clocks",
+            "random",
+            "filesystem",
+            "sockets",
+            "cli",
+            "outlayer-api",
+            "near-payment",
+            "near-vrf",
+            "outlayer-wallet",
+            "near-rpc",
+        ];
+        for subdir in dep_dirs {
+            let dir = wit_dir.join(subdir);
+            if dir.exists() {
+                resolve
+                    .push_dir(&dir)
+                    .map_err(|e| format!("push_dir {} failed: {}", subdir, e))?;
+            }
+        }
+        resolve
+            .push_file(&wit_dir.join("outlayer-nohttp.wit"))
+            .map_err(|e| format!("push_file outlayer-nohttp.wit failed: {}", e))?;
+
+        let mut found_world = None;
+        for (_pkg_id, pkg) in resolve.packages.iter() {
+            for (name, world_id) in &pkg.worlds {
+                if name == "outlayer-nohttp" {
+                    found_world = Some(*world_id);
+                    break;
+                }
+            }
+            if found_world.is_some() {
+                break;
+            }
+        }
+        let world = found_world.ok_or("world 'outlayer-nohttp' not found")?;
 
         Ok((resolve, world))
     }

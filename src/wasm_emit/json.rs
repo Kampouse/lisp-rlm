@@ -4476,7 +4476,7 @@ impl WasmEmitter {
         ins.push(Instruction::LocalGet(13));
         ins.push(Instruction::I32GeS);
         ins.push(Instruction::If(BlockType::Empty));
-        ins.push(Instruction::Br(2)); // exit skip_loop+skip_block
+        ins.push(Instruction::Br(4)); // scan_i >= arr_len → exit to elem_block AFTER → return nil
         ins.push(Instruction::End);
         ins.push(Instruction::LocalGet(14));
         ins.push(Instruction::LocalGet(2));
@@ -4569,7 +4569,7 @@ impl WasmEmitter {
         ins.push(Instruction::I32Const(1));
         ins.push(Instruction::I32Add);
         ins.push(Instruction::LocalSet(2));
-        ins.push(Instruction::Br(2)); // exit skip_loop+skip_block
+        ins.push(Instruction::Br(5)); // ] at depth 0 → exit to elem_block AFTER → return nil
         ins.push(Instruction::End);
         ins.push(Instruction::LocalGet(4));
         ins.push(Instruction::I32Const(1));

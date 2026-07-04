@@ -1,0 +1,5 @@
+{
+  "ralph:tasks": "[{\"id\": \"task-1\", \"desc\": \"Create a Python hello world program\", \"status\": \"pending\", \"priority\": 80}, {\"id\": \"task-2\", \"desc\": \"Write a function that computes fibonacci\", \"status\": \"pending\", \"priority\": 60}]",
+  "ralph:phase": "idle",
+  "ralph:agent:intent": "ralph-agent"
+}
