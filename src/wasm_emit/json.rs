@@ -87,7 +87,7 @@ impl WasmEmitter {
             align: 0,
             memory_index: 0,
         };
-        let stdout_buf: i32 = 204800; // 200KB — must not collide with SENTINEL_BUF (65536)
+        let stdout_buf: i32 = 2097152; // 2MB — must be above heap (200000-999980) and wit adapter (900000+)
         let json_ptr = 2u32;
         let json_len = 3u32;
         let pat_ptr = 4u32;
@@ -722,7 +722,7 @@ impl WasmEmitter {
             align: 0,
             memory_index: 0,
         };
-        let stdout_buf: i32 = 204800;
+        let stdout_buf: i32 = 2097152; // 2MB — above heap and wit adapter
 
         // Params: 0=buf_packed(i64), 1=index(i64)
         // i32 locals: 2=buf_ptr, 3=buf_len, 4=scan_i, 5=depth, 6=ch,
@@ -1242,7 +1242,7 @@ impl WasmEmitter {
             align: 2,
             memory_index: 0,
         };
-        let stdout_buf: i32 = 204800; // 200KB — must not collide with SENTINEL_BUF (65536)
+        let stdout_buf: i32 = 2097152; // 2MB — must be above heap (200000-999980) and wit adapter (900000+)
         let slot_size: i32 = 4096; // bytes per result string area (large JSON responses need room)
 
         // Locals (all i32 — params are i64 at indices 0..n_keys, rest are i32)
@@ -4433,7 +4433,7 @@ impl WasmEmitter {
 
         // Copy val_start..val_end to json_get output buf via memory.copy (byte-by-byte loop
         // writes null inside block+loop with WASI P1 runtimes — wasmtime bug)
-        let stdout_buf: i32 = 204800; // 200KB — must not collide with SENTINEL_BUF (65536)
+        let stdout_buf: i32 = 2097152; // 2MB — must be above heap (200000-999980) and wit adapter (900000+)
         ins.push(Instruction::LocalGet(10));
         ins.push(Instruction::LocalGet(9));
         ins.push(Instruction::I32Sub);

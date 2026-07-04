@@ -84,8 +84,10 @@ impl WasmEmitter {
                             // We need a version that takes buf from a local, not a constant.
                             // Quick fix: copy the string to a fixed buffer first, then scan it.
                             let _ = buf_val;
-                            // Copy string to INPUT_BUF (NEAR) or STDIN_BUF (WASI), then scan
-                            let target_buf = if self.wasi_mode { 32768i64 } else { INPUT_BUF };
+                            // Copy string to INPUT_BUF (NEAR) or JSON_FIXED_BUF (WASI), then scan
+                            // JSON_FIXED_BUF must NOT overlap STDIN_BUF (32768) — json-get overwrites
+                            // this buffer, which would corrupt any str-slice pointers into stdin.
+                            let target_buf = if self.wasi_mode { 65536i64 } else { INPUT_BUF };
                             let src_ptr_l = self.local_idx("__jgs_sp");
                             let copy_i = self.local_idx("__jgs_ci");
                             let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
@@ -190,8 +192,8 @@ impl WasmEmitter {
                         setup.extend(buf_expr.clone());
                         setup.push(Instruction::I64Const(3)); setup.push(Instruction::I64ShrU);
                         setup.push(Instruction::LocalSet(tmp));
-                        // Copy string to fixed buffer at 32768 (same as json_get_wasi)
-                        let target_buf = if self.wasi_mode { 32768i64 } else { INPUT_BUF };
+                        // Copy string to fixed buffer at 65536 (JSON_FIXED_BUF, not STDIN_BUF 32768)
+                        let target_buf = if self.wasi_mode { 65536i64 } else { INPUT_BUF };
                         let src_ptr_l = self.local_idx("__jgs_sp");
                         let copy_i = self.local_idx("__jgs_ci");
                         let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
