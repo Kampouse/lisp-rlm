@@ -237,7 +237,17 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(pos));
             }
             BorshType::F64 => {
-                return Err("borsh-serialize: F64 not yet supported".into());
+                // Store raw i64 bits at pos (reinterprets as f64 in Borsh wire format)
+                v.push(Instruction::LocalGet(pos));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(tmp));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                // pos += 8
+                v.push(Instruction::LocalGet(pos));
+                v.push(Instruction::I64Const(8));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(pos));
             }
             BorshType::String | BorshType::Bytes => {
                 // Untag tmp to get raw: (heap_off | (len << 32))
@@ -477,19 +487,7 @@ impl WasmEmitter {
                         v.push(Instruction::I32WrapI64);
                         v.push(Instruction::LocalGet(val_tmp));
                         v.push(Instruction::I64Store(ma));
-                        // Advance field_src by field size
-                        let sz = Self::borsh_type_size(ftype);
-                        if sz > 0 {
-                            v.push(Instruction::LocalGet(field_src));
-                            v.push(Instruction::I64Const(sz as i64));
-                            v.push(Instruction::I64Add);
-                            v.push(Instruction::LocalSet(field_src));
-                        } else {
-                            return Err(format!(
-                                "borsh-deserialize: variable-length field '{}' in struct not yet supported",
-                                _fname
-                            ));
-                        }
+                        // field_src already advanced by borsh_read_field
                     }
                     // Return tagged array
                     v.push(Instruction::LocalGet(arr_ptr));
@@ -523,6 +521,11 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
                 v.extend(self.emit_tag_num());
+                // Advance src by 8
+                v.push(Instruction::LocalGet(src));
+                v.push(Instruction::I64Const(8));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(src));
             }
             BorshType::U32 => {
                 v.push(Instruction::LocalGet(src));
@@ -530,6 +533,11 @@ impl WasmEmitter {
                 v.push(Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
                 v.push(Instruction::I64ExtendI32U);
                 v.extend(self.emit_tag_num());
+                // Advance src by 4
+                v.push(Instruction::LocalGet(src));
+                v.push(Instruction::I64Const(4));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(src));
             }
             BorshType::U8 => {
                 v.push(Instruction::LocalGet(src));
@@ -537,6 +545,11 @@ impl WasmEmitter {
                 v.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
                 v.push(Instruction::I64ExtendI32U);
                 v.extend(self.emit_tag_num());
+                // Advance src by 1
+                v.push(Instruction::LocalGet(src));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(src));
             }
             BorshType::Bool => {
                 v.push(Instruction::LocalGet(src));
@@ -544,6 +557,11 @@ impl WasmEmitter {
                 v.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
                 v.push(Instruction::I64ExtendI32U);
                 v.extend(self.emit_tag(TAG_BOOL));
+                // Advance src by 1
+                v.push(Instruction::LocalGet(src));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(src));
             }
             BorshType::U128 => {
                 // Read low 8 bytes only
@@ -551,9 +569,23 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
                 v.extend(self.emit_tag_num());
+                // Advance src by 16
+                v.push(Instruction::LocalGet(src));
+                v.push(Instruction::I64Const(16));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(src));
             }
             BorshType::F64 => {
-                return Err("borsh-deserialize: F64 not yet supported".into());
+                // Read raw i64 bits and tag as Num (Borsh stores f64 as 8 raw bytes = i64 reinterpretation)
+                v.push(Instruction::LocalGet(src));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.extend(self.emit_tag_num());
+                // Advance src by 8
+                v.push(Instruction::LocalGet(src));
+                v.push(Instruction::I64Const(8));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(src));
             }
             BorshType::String | BorshType::Bytes => {
                 let len = self.local_idx("__borsh_len");
@@ -574,32 +606,41 @@ impl WasmEmitter {
                 v.push(Instruction::I64Shl);
                 v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
+                // Advance src by 4 + len
+                v.push(Instruction::LocalGet(src));
+                v.push(Instruction::I64Const(4));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalGet(len));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(src));
             }
             BorshType::Option(inner) => {
                 // Read 1-byte discriminant from src
+                // After this block, src must be advanced by 1 (None) or 1 + inner_size (Some)
                 v.push(Instruction::LocalGet(src));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
                 v.push(Instruction::I32Const(0));
                 v.push(Instruction::I32Eq);
-                v.push(Instruction::If(BlockType::Result(ValType::I64)));
-                // discriminant == 0 → None → TAG_NIL
+                v.push(Instruction::If(BlockType::Empty));
+                // discriminant == 0 → None → TAG_NIL, advance src by 1
                 v.push(Instruction::I64Const(TAG_NIL));
-                v.push(Instruction::Else);
-                // discriminant == 1 → Some → recursively read inner from src+1
-                let inner_src = self.local_idx("__borsh_opt_src");
                 v.push(Instruction::LocalGet(src));
                 v.push(Instruction::I64Const(1));
                 v.push(Instruction::I64Add);
-                v.push(Instruction::LocalSet(inner_src));
-                v.extend(self.borsh_read_field(inner, inner_src)?);
+                v.push(Instruction::LocalSet(src));
+                v.push(Instruction::Else);
+                // discriminant == 1 → Some → advance src by 1, then recursively read inner
+                v.push(Instruction::LocalGet(src));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(src));
+                v.extend(self.borsh_read_field(inner, src)?);
                 v.push(Instruction::End);
             }
             BorshType::Vec(inner) => {
-                let elem_sz = Self::borsh_type_size(inner);
-                if elem_sz == 0 {
-                    return Err("borsh-deserialize: Vec of variable-length element types not yet supported".into());
-                }
+                // Note: borsh_read_field now advances its src local by the field's actual size
+                // (fixed for primitives, runtime for variable-length types)
                 let count = self.local_idx("__borsh_vec_count");
                 let arr_ptr = self.local_idx("__borsh_vec_arr");
                 let elem_idx = self.local_idx("__borsh_vec_eidx");
@@ -614,23 +655,18 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(count));
 
                 // Runtime alloc: (1 + count) * 8 bytes  [count slot + elements]
-                // We emit the alloc inline since count is runtime
-                // alloc size = 8 + count * 8, but count is a local so we compute at runtime
                 {
                     let alloc_tmp = self.local_idx("__borsh_vec_alloc_sz");
-                    // alloc_size = (1 + count) * 8
                     v.push(Instruction::LocalGet(count));
                     v.push(Instruction::I64Const(1));
                     v.push(Instruction::I64Add);
                     v.push(Instruction::I64Const(8));
                     v.push(Instruction::I64Mul);
                     v.push(Instruction::LocalSet(alloc_tmp));
-                    // Read runtime heap ptr
                     v.push(Instruction::I64Const(RUNTIME_HEAP_PTR));
                     v.push(Instruction::I32WrapI64);
                     v.push(Instruction::I64Load(ma));
                     v.push(Instruction::LocalSet(arr_ptr));
-                    // Overflow guard: new_ptr < mem_limit
                     let rha_new = self.local_idx("__borsh_vec_rha_new");
                     let mem_limit = (self.memory_pages as i64) * 65536;
                     v.push(Instruction::LocalGet(arr_ptr));
@@ -641,13 +677,11 @@ impl WasmEmitter {
                     v.push(Instruction::I64Const(mem_limit));
                     v.push(Instruction::I64LtU);
                     v.push(Instruction::If(BlockType::Empty));
-                    // OK: write back new ptr
                     v.push(Instruction::I64Const(RUNTIME_HEAP_PTR));
                     v.push(Instruction::I32WrapI64);
                     v.push(Instruction::LocalGet(rha_new));
                     v.push(Instruction::I64Store(ma));
                     v.push(Instruction::Else);
-                    // Overflow: trap
                     v.push(Instruction::Unreachable);
                     v.push(Instruction::End);
                 }
@@ -665,57 +699,43 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(elem_src));
 
                 // Loop: for i in 0..count, deserialize elem from elem_src, store at arr_ptr[1+i]
+                // borsh_read_field advances elem_src by the element's actual size
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::LocalSet(elem_idx));
                 v.push(Instruction::Block(BlockType::Empty));
                 v.push(Instruction::Loop(BlockType::Empty));
-                // if elem_idx < count
                 v.push(Instruction::LocalGet(elem_idx));
                 v.push(Instruction::LocalGet(count));
                 v.push(Instruction::I64LtU);
-                // I64LtU returns i32 directly — no wrap needed
                 v.push(Instruction::If(BlockType::Empty));
+
                 // Deserialize element from elem_src → tagged value on stack
+                // borsh_read_field advances elem_src automatically
                 v.extend(self.borsh_read_field(inner, elem_src)?);
-                // Store tagged value at arr_ptr + (1 + elem_idx) * 8
-                // I64Store expects [i32 addr, i64 val] — swap order: addr first, then val
-                // Use a temp local to save the value, push addr, then push val
                 let store_tmp = self.local_idx("__borsh_store_tmp");
-                v.push(Instruction::LocalSet(store_tmp)); // save tagged value
+                v.push(Instruction::LocalSet(store_tmp));
                 v.push(Instruction::LocalGet(arr_ptr));
-                v.push(Instruction::I64Const(8)); // skip count
+                v.push(Instruction::I64Const(8));
                 v.push(Instruction::I64Add);
                 v.push(Instruction::LocalGet(elem_idx));
                 v.push(Instruction::I64Const(8));
                 v.push(Instruction::I64Mul);
                 v.push(Instruction::I64Add);
-                v.push(Instruction::I32WrapI64); // addr as i32
-                v.push(Instruction::LocalGet(store_tmp)); // tagged value
-                v.push(Instruction::I64Store(ma)); // [i32 addr, i64 val]
-                // Advance elem_src by elem_sz
-                v.push(Instruction::LocalGet(elem_src));
-                v.push(Instruction::I64Const(elem_sz as i64));
-                v.push(Instruction::I64Add);
-                v.push(Instruction::LocalSet(elem_src));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(store_tmp));
+                v.push(Instruction::I64Store(ma));
                 // elem_idx += 1
                 v.push(Instruction::LocalGet(elem_idx));
                 v.push(Instruction::I64Const(1));
                 v.push(Instruction::I64Add);
                 v.push(Instruction::LocalSet(elem_idx));
-                // Br(1) targets the Loop, not the If — continue iterating
                 v.push(Instruction::Br(1));
-                v.push(Instruction::End); // if
-                v.push(Instruction::End); // loop
-                v.push(Instruction::End); // block
+                v.push(Instruction::End);
+                v.push(Instruction::End);
+                v.push(Instruction::End);
 
-                // Advance caller's src by 4 + count * elem_sz
-                v.push(Instruction::LocalGet(src));
-                v.push(Instruction::I64Const(4));
-                v.push(Instruction::I64Add);
-                v.push(Instruction::LocalGet(count));
-                v.push(Instruction::I64Const(elem_sz as i64));
-                v.push(Instruction::I64Mul);
-                v.push(Instruction::I64Add);
+                // Advance caller's src to elem_src (which was advanced through the loop)
+                v.push(Instruction::LocalGet(elem_src));
                 v.push(Instruction::LocalSet(src));
 
                 // Return tagged array: (arr_ptr << TAG_BITS) | TAG_ARRAY
@@ -743,7 +763,7 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(src));
                 v.push(Instruction::LocalSet(field_src));
                 for (i, (_fname, ftype)) in fields.iter().enumerate() {
-                    // Read field value → tagged i64 on stack
+                    // Read field value → tagged i64 on stack (borsh_read_field advances field_src)
                     v.extend(self.borsh_read_field(ftype, field_src)?);
                     let val_tmp = self.local_idx("__borsh_nested_val");
                     v.push(Instruction::LocalSet(val_tmp));
@@ -755,20 +775,11 @@ impl WasmEmitter {
                     v.push(Instruction::I32WrapI64);
                     v.push(Instruction::LocalGet(val_tmp));
                     v.push(Instruction::I64Store(ma));
-                    // Advance field_src by field size
-                    let sz = Self::borsh_type_size(ftype);
-                    if sz > 0 {
-                        v.push(Instruction::LocalGet(field_src));
-                        v.push(Instruction::I64Const(sz as i64));
-                        v.push(Instruction::I64Add);
-                        v.push(Instruction::LocalSet(field_src));
-                    } else {
-                        return Err(format!(
-                            "borsh-deserialize: variable-length field '{}' in nested struct not yet supported",
-                            _fname
-                        ));
-                    }
+                    // field_src already advanced by borsh_read_field
                 }
+                // Sync parent src to field_src
+                v.push(Instruction::LocalGet(field_src));
+                v.push(Instruction::LocalSet(src));
                 // Return tagged array
                 v.push(Instruction::LocalGet(arr_ptr));
                 v.extend(self.emit_tag(TAG_ARRAY));
@@ -827,8 +838,8 @@ impl WasmEmitter {
                     v.push(Instruction::I64Store(ma));
                     // Read this variant's fields into array slots 2, 3, ...
                     for (fi, (_, ftype)) in vfields.iter().enumerate() {
+                        // borsh_read_field advances src automatically
                         v.extend(self.borsh_read_field(ftype, src)?);
-                        let field_sz = Self::borsh_type_size(ftype);
                         let val_tmp = self.local_idx("__borsh_enum_val");
                         v.push(Instruction::LocalSet(val_tmp)); // save tagged value
                         let slot_off = (2 + fi) as i64 * 8;
@@ -838,12 +849,6 @@ impl WasmEmitter {
                         v.push(Instruction::I32WrapI64);
                         v.push(Instruction::LocalGet(val_tmp)); // load tagged value
                         v.push(Instruction::I64Store(ma));
-                        if field_sz > 0 {
-                            v.push(Instruction::LocalGet(src));
-                            v.push(Instruction::I64Const(field_sz as i64));
-                            v.push(Instruction::I64Add);
-                            v.push(Instruction::LocalSet(src));
-                        }
                     }
                 }
                 // Close nested if/else blocks

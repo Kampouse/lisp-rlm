@@ -113,7 +113,7 @@ pub(crate) const HOST_FUNCS: &[(&str, &[ValType], &[ValType])] = &[
     ("promise_batch_action_create_account", &[ValType::I64], &[]),                                // 41
     ("promise_batch_action_deploy_contract", &[ValType::I64, ValType::I64, ValType::I64], &[]),    // 42
     ("promise_batch_action_function_call", &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[]), // 43
-    ("promise_batch_action_transfer", &[ValType::I64, ValType::I64, ValType::I64], &[]),            // 44
+    ("promise_batch_action_transfer", &[ValType::I64, ValType::I64], &[]),            // 44
     ("promise_batch_action_stake",  &[ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[]), // 45
     ("promise_batch_action_add_key_with_full_access", &[ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[]), // 46
     ("promise_batch_action_add_key_with_function_call", &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[]), // 47
@@ -173,6 +173,8 @@ const INPUT_BUF: i64 = 16384;  // 16KB for input JSON args
 const RETURN_BUF: i64 = 32768;
 const STORAGE_BUF: i64 = 8192;  // 8 bytes for storage read/write buffer
 const STORAGE_U128_BUF: i64 = 8208;  // 16 bytes for u128 storage ops
+pub(crate) const KEY_BUF: i64 = 8224; // 256 bytes for composite key building (near/kv, near/kv-get)
+const KEY_BUF_MAX: usize = 256;       // max composite key length
 pub(crate) const HEAP_START: i64 = 200_000; // heap starts above all data segments and buffers (STDOUT=65536, INPUT=16384, etc.)
 const BORSH_BUF: i64 = 36864; // 4KB scratch buffer for Borsh serialize (after RETURN_BUF)
 
@@ -221,7 +223,7 @@ const PROTECTED_REGIONS: &[(i64, i64)] = &[
     (64, 72),    // TEMP_MEM
     (256, 272),  // AMOUNT_MEM
     (4096, 49152+4096), // HEAP..HANDLE_TABLE end
-    (8192, 8224),// STORAGE_BUF + STORAGE_U128_BUF
+    (8192, 8480),// STORAGE_BUF + STORAGE_U128_BUF + KEY_BUF
     (16384, 32768+8192), // INPUT_BUF..RETURN_BUF end
     (36864, 40960), // BORSH_BUF
 ];

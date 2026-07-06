@@ -250,6 +250,8 @@ impl WasmEmitter {
         let LispVal::Sym(op) = &items[0] else { return };
         match op.as_str() {
             "near/store" => { self.need_host(17); self.need_host(18); self.need_host(0); self.need_host(1); }
+            "near/kv" => { self.need_host(17); }
+            "near/kv-get" => { self.need_host(18); self.need_host(0); }
             "near/load" => { self.need_host(18); self.need_host(0); self.need_host(1); }
             "near/remove" => { self.need_host(19); }
             "near/has_key" => { self.need_host(20); }
@@ -258,6 +260,8 @@ impl WasmEmitter {
             "near/panic" => self.need_host(27),
             "near/current_account_id" => { self.need_host(3); self.need_host(0); self.need_host(1); }
             "near/signer_account_id" => { self.need_host(4); self.need_host(0); self.need_host(1); }
+            "near/signer_to_buf" => { self.need_host(4); self.need_host(0); self.need_host(1); }
+            "near/write_amount" => {} // no host calls, just memory ops
             "near/predecessor_account_id" => { self.need_host(6); self.need_host(0); self.need_host(1); }
             "near/input" => { self.need_host(7); self.need_host(0); self.need_host(1); }
             "near/block_index" => self.need_host(8),

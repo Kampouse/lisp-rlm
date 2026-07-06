@@ -1,0 +1,116 @@
+#!/usr/bin/env expect -f
+set timeout 30
+
+proc call_fn {method args_b64} {
+    if {$args_b64 eq ""} {
+        set cmd "near contract call-function lending.kampy.testnet as-transaction $method base64-args \"\" prepaid-gas 300Tgas attached-deposit 0N sign-as kampy.testnet network-config testnet sign-with-keychain send"
+    } else {
+        set cmd "near contract call-function lending.kampy.testnet as-transaction $method base64-args $args_b64 prepaid-gas 300Tgas attached-deposit 0N sign-as kampy.testnet network-config testnet sign-with-keychain send"
+    }
+    spawn bash -c $cmd
+    sleep 2
+    send "kampy.testnet\r"
+    set result ""
+    expect {
+        "Transaction Execution" { set ok 1 }
+        "has been" { set ok 1 }
+        "Error" { set ok 0 }
+        timeout { set ok -1 }
+    }
+    expect eof
+    return $ok
+}
+
+# Helper to base64-encode u32 LE
+proc u32 {val} {
+    set b0 [expr {$val & 0xff}]
+    set b1 [expr {($val >> 8) & 0xff}]
+    set b2 [expr {($val >> 16) & 0xff}]
+    set b3 [expr {($val >> 24) & 0xff}]
+    binary scan [binary format cccc $b0 $b1 $b2 $b3] H* hex
+    # Use base64 via tcl
+    set raw [binary format cccc $b0 $b1 $b2 $b3]
+    # base64 encode
+    return [exec echo -n $raw | base64]
+}
+
+puts "=== Init ==="
+call_fn "init" ""
+after 1000
+
+puts "\n=== Register asset ==="
+# 7 u32s: vol=80, cf=80, tu=80, r0=100, r1=500, r2=3000, rc=25
+set args [exec printf '\x50\x00\x00\x00\x50\x00\x00\x00\x50\x00\x00\x00\x64\x00\x00\x00\xf4\x01\x00\x00\xb8\x0b\x00\x00\x19\x00\x00\x00' | base64]
+call_fn "register_asset" $args
+after 1000
+
+puts "\n=== Deposit 5M ==="
+set args [exec printf '\x80\x4f\x01\x00' | base64]
+call_fn "deposit" $args
+after 1000
+
+puts "\n=== Pool state ==="
+call_fn "get_pool_s" ""
+after 500
+call_fn "get_pool_a" ""
+after 500
+call_fn "get_borrow_index" ""
+after 500
+call_fn "get_supply_index" ""
+after 500
+
+puts "\n=== Collateral 10M ==="
+set args [exec printf '\x80\x96\x98\x00' | base64]
+call_fn "inc_collat" $args
+after 1000
+
+puts "\n=== Borrow 3M ==="
+set args [exec printf '\x40\x0c\x2d\x00' | base64]
+call_fn "borrow" $args
+after 1000
+
+puts "\n=== Health & rates ==="
+call_fn "get_health" ""
+after 500
+call_fn "get_borrow_rate" ""
+after 500
+call_fn "get_supply_rate" ""
+after 500
+call_fn "get_reserve" ""
+after 500
+
+puts "\n=== Repay 1M ==="
+set args [exec printf '\x40\x42\x0f\x00' | base64]
+call_fn "repay" $args
+after 1000
+
+puts "\n=== Deposit 5M more ==="
+set args [exec printf '\x80\x4f\x01\x00' | base64]
+call_fn "deposit" $args
+after 1000
+
+puts "\n=== Withdraw 2M ==="
+set args [exec printf '\x80\x84\x1e\x00' | base64]
+call_fn "withdraw" $args
+after 1000
+
+puts "\n=== Unsafe borrow 50M ==="
+set args [exec printf '\x00\xfa\xfa\x02' | base64]
+call_fn "borrow" $args
+after 1000
+
+puts "\n=== Dec collateral 3M ==="
+set args [exec printf '\x80\xc2\xc5\x00' | base64]
+call_fn "dec_collat" $args
+after 1000
+
+puts "\n=== Repay remaining 2M ==="
+set args [exec printf '\x80\x84\x1e\x00' | base64]
+call_fn "repay" $args
+after 1000
+
+puts "\n=== Final health ==="
+call_fn "get_health" ""
+after 500
+
+puts "\n=== DONE ==="

@@ -159,28 +159,31 @@ impl WasmEmitter {
             }
             "near/promise_batch_create" => {
                 if a.len() != 2 { return Err("near/promise_batch_create: need 2 args (ptr, len)".into()); }
-                let ptr = self.expr(&a[0])?;
-                let len = self.expr(&a[1])?;
+                self.need_host(39); self.need_host(0);
                 let mut v = Vec::new();
-                v.extend(len); v.extend(ptr);
+                // host expects (len, ptr), lisp passes (ptr, len), so swap
+                v.extend(self.expr(&a[1])?); v.extend(self.emit_untag()); // len
+                v.extend(self.expr(&a[0])?); v.extend(self.emit_untag()); // ptr
                 v.push(Self::host_call(39));
+                v.extend(self.emit_tag_num()); // return tagged promise idx
                 Ok(v)
             }
             "near/promise_batch_then" => {
                 if a.len() != 3 { return Err("near/promise_batch_then: need 3 args (idx, ptr, len)".into()); }
-                let idx = self.expr(&a[0])?;
-                let ptr = self.expr(&a[1])?;
-                let len = self.expr(&a[2])?;
+                self.need_host(40);
                 let mut v = Vec::new();
-                v.extend(idx); v.extend(len); v.extend(ptr);
+                v.extend(self.expr(&a[0])?); v.extend(self.emit_untag()); // idx
+                // host expects (idx, len, ptr), lisp passes (idx, ptr, len), so swap
+                v.extend(self.expr(&a[2])?); v.extend(self.emit_untag()); // len
+                v.extend(self.expr(&a[1])?); v.extend(self.emit_untag()); // ptr
                 v.push(Self::host_call(40));
+                v.extend(self.emit_tag_num()); // return tagged promise idx
                 Ok(v)
             }
             "near/promise_batch_action_create_account" => {
                 if a.len() != 1 { return Err("near/promise_batch_action_create_account: need 1 args (idx)".into()); }
-                let idx = self.expr(&a[0])?;
                 let mut v = Vec::new();
-                v.extend(idx);
+                v.extend(self.expr(&a[0])?); v.extend(self.emit_untag()); // idx
                 v.push(Self::host_call(41));
                 v.push(Instruction::I64Const(0));
                 Ok(v)
@@ -198,42 +201,37 @@ impl WasmEmitter {
             }
             "near/promise_batch_action_function_call" => {
                 if a.len() != 7 { return Err("near/promise_batch_action_function_call: need 7 args (idx, method_ptr, method_len, args_ptr, args_len, amount_ptr, gas)".into()); }
-                let idx = self.expr(&a[0])?;
-                let method_ptr = self.expr(&a[1])?;
-                let method_len = self.expr(&a[2])?;
-                let args_ptr = self.expr(&a[3])?;
-                let args_len = self.expr(&a[4])?;
-                let amount_ptr = self.expr(&a[5])?;
-                let gas = self.expr(&a[6])?;
                 let mut v = Vec::new();
-                v.extend(idx); v.extend(method_len); v.extend(method_ptr);
-                v.extend(args_len); v.extend(args_ptr);
-                v.extend(amount_ptr); v.extend(gas);
+                // host expects (idx, method_len, method_ptr, args_len, args_ptr, amount_ptr, gas)
+                v.extend(self.expr(&a[0])?); v.extend(self.emit_untag()); // idx
+                v.extend(self.expr(&a[2])?); v.extend(self.emit_untag()); // method_len
+                v.extend(self.expr(&a[1])?); v.extend(self.emit_untag()); // method_ptr
+                v.extend(self.expr(&a[4])?); v.extend(self.emit_untag()); // args_len
+                v.extend(self.expr(&a[3])?); v.extend(self.emit_untag()); // args_ptr
+                v.extend(self.expr(&a[5])?); v.extend(self.emit_untag()); // amount_ptr
+                v.extend(self.expr(&a[6])?); v.extend(self.emit_untag()); // gas
                 v.push(Self::host_call(43));
                 v.push(Instruction::I64Const(0));
                 Ok(v)
             }
             "near/promise_batch_action_transfer" => {
-                if a.len() != 3 { return Err("near/promise_batch_action_transfer: need 3 args (idx, amount_ptr, amount_len)".into()); }
-                let idx = self.expr(&a[0])?;
-                let amount_ptr = self.expr(&a[1])?;
-                let amount_len = self.expr(&a[2])?;
+                if a.len() != 2 { return Err("near/promise_batch_action_transfer: need 2 args (idx, amount_ptr)".into()); }
+                self.need_host(44);
                 let mut v = Vec::new();
-                v.extend(idx); v.extend(amount_ptr); v.extend(amount_len);
+                v.extend(self.expr(&a[0])?); v.extend(self.emit_untag()); // idx
+                v.extend(self.expr(&a[1])?); v.extend(self.emit_untag()); // amount_ptr
                 v.push(Self::host_call(44));
                 v.push(Instruction::I64Const(0));
                 Ok(v)
             }
             "near/promise_batch_action_stake" => {
-                if a.len() != 5 { return Err("near/promise_batch_action_stake: need 5 args (idx, amount_ptr, amount_len, pk_ptr, pk_len)".into()); }
-                let idx = self.expr(&a[0])?;
-                let amount_ptr = self.expr(&a[1])?;
-                let amount_len = self.expr(&a[2])?;
-                let pk_ptr = self.expr(&a[3])?;
-                let pk_len = self.expr(&a[4])?;
+                if a.len() != 4 { return Err("near/promise_batch_action_stake: need 4 args (idx, amount_ptr, pk_len, pk_ptr)".into()); }
                 let mut v = Vec::new();
-                v.extend(idx); v.extend(amount_ptr); v.extend(amount_len);
-                v.extend(pk_ptr); v.extend(pk_len);
+                // host expects (idx, amount_ptr, pk_len, pk_ptr)
+                v.extend(self.expr(&a[0])?); v.extend(self.emit_untag()); // idx
+                v.extend(self.expr(&a[1])?); v.extend(self.emit_untag()); // amount_ptr
+                v.extend(self.expr(&a[2])?); v.extend(self.emit_untag()); // pk_len
+                v.extend(self.expr(&a[3])?); v.extend(self.emit_untag()); // pk_ptr
                 v.push(Self::host_call(45));
                 v.push(Instruction::I64Const(0));
                 Ok(v)
@@ -245,7 +243,8 @@ impl WasmEmitter {
                 let pk_len = self.expr(&a[2])?;
                 let nonce = self.expr(&a[3])?;
                 let mut v = Vec::new();
-                v.extend(idx); v.extend(pk_ptr); v.extend(pk_len); v.extend(nonce);
+                // host expects (idx, pk_len, pk_ptr, nonce)
+                v.extend(idx); v.extend(pk_len); v.extend(pk_ptr); v.extend(nonce);
                 v.push(Self::host_call(46));
                 v.push(Instruction::I64Const(0));
                 Ok(v)

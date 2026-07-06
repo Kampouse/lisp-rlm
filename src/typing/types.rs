@@ -57,6 +57,7 @@ fn is_builtin_wildcard(name: &str) -> bool {
 /// Derived from the HOST_FUNCS table in wasm_emit.rs.
 const KNOWN_NEAR_FUNCS: &[&str] = &[
     "store", "load", "store_num", "load_num", "remove", "has_key",
+    "kv", "kv-get",
     "storage_read", "storage_write", "storage_has_key", "storage_remove",
     "return", "return_str", "return_value", "value_return",
     "log",
@@ -67,6 +68,7 @@ const KNOWN_NEAR_FUNCS: &[&str] = &[
     "signer_account_pk",
     "predecessor_account_id", "predecessor",
     "attached_deposit",
+    "deposit-gte",
     "block_index", "block_height", "block_timestamp",
     "ed25519_verify", "p256_verify",
     "sha256", "keccak256", "keccak512",
@@ -84,6 +86,8 @@ const KNOWN_NEAR_FUNCS: &[&str] = &[
     "promise_batch_action_delete_key",
     "promise_batch_action_delete_account",
     "log_utf8", "log_utf16",
+    "signer_to_buf",
+    "write_amount",
     "abort",
     // JSON convenience builtins
     "json_get_int", "json_get_str", "json_return_int", "json_return_str",
@@ -667,6 +671,8 @@ impl TcEnv {
         // near/attached_deposit : () → int
         env.insert_mono("near/attached_deposit".into(), TcType::Arrow(vec![], Box::new(int_ty.clone())));
         // near/block_timestamp : () → int
+        // near/deposit-gte : int → bool (literal only)
+        env.insert_mono("near/deposit-gte".into(), TcType::Arrow(vec![int_ty.clone()], Box::new(bool_ty.clone())));
         env.insert_mono("near/block_timestamp".into(), TcType::Arrow(vec![], Box::new(int_ty.clone())));
         // near/block_height : () → int
         env.insert_mono("near/block_height".into(), TcType::Arrow(vec![], Box::new(int_ty.clone())));
@@ -721,6 +727,8 @@ impl TcEnv {
         env.insert_mono("near/load-bytes".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())));
         env.insert_mono("near/predecessor_account_id".into(), TcType::Arrow(vec![], Box::new(str_ty.clone())));
         env.insert_mono("near/current_account_id".into(), TcType::Arrow(vec![], Box::new(str_ty.clone())));
+        env.insert_mono("near/signer_to_buf".into(), TcType::Arrow(vec![], Box::new(int_ty.clone())));
+        env.insert_mono("near/write_amount".into(), TcType::Arrow(vec![int_ty.clone()], Box::new(nil_ty.clone())));
         env.insert_mono("near/block_index".into(), TcType::Arrow(vec![], Box::new(int_ty.clone())));
         env.insert_mono("near/block_timestamp".into(), TcType::Arrow(vec![], Box::new(int_ty.clone())));
         env.insert_mono("near/ed25519_verify".into(), TcType::Arrow(vec![str_ty.clone(), str_ty.clone(), str_ty.clone()], Box::new(int_ty.clone())));

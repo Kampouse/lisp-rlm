@@ -193,6 +193,19 @@ mod compile {
 
     // outlayer/call is P1 only — tested in P1 section
 
+    // --- outlayer/storage-set + storage-get ---
+
+    p2_test!(
+        p2_outlayer_storage_set_get,
+        r#"
+(define (run)
+  (let* ((result (outlayer/storage-set "test_key" "hello_storage"))
+         (read (outlayer/storage-get "test_key")))
+    read))
+"#,
+        30_000
+    );
+
     // --- near/log ---
 
     // near/log is P1 (env.log_utf8) — test in P1 compile section below

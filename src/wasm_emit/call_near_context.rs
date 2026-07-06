@@ -56,7 +56,7 @@ impl WasmEmitter {
                         v.push(Instruction::I64ExtendI32U);
                     v.push(Instruction::End);
                 v.push(Instruction::End);
-                v.extend(self.emit_tag_num());
+                v.extend(self.emit_tag_bool());
                 Ok(v)
             }
             "near/account_balance" => self.read_u128_low(12),
@@ -91,6 +91,42 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0)); Ok(v)
             }
             "near/validator_total_stake" => self.read_u128_low(85),
+            "near/signer_to_buf" => {
+                self.need_host(4); self.need_host(0); self.need_host(1);
+                // Writes signer_account_id to SIGNER_BUF (4096), returns length as tagged NUM
+                const SIGNER_BUF: i64 = 4096;
+                let mut v = Vec::new();
+                // host_call 4: signer_account_id() writes result to register 0
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(4));
+                // read_register(0, SIGNER_BUF): register_id first, then ptr
+                v.push(Instruction::I64Const(0));          // register_id
+                v.push(Instruction::I64Const(SIGNER_BUF)); // ptr
+                v.push(Self::host_call(0));
+                // register_len(0): returns length of register 0
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(1));
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
+            "near/write_amount" => {
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?);
+                let __wval = self.local_idx("__wval");
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                // Save value to local, then store as u128 (16 bytes) at AMOUNT_MEM (256)
+                v.push(Instruction::LocalSet(__wval));
+                // Low 64 bits at addr 256
+                v.push(Instruction::I32Const(256));
+                v.push(Instruction::LocalGet(__wval));
+                v.push(Instruction::I64Store(ma));
+                // High 64 bits = 0 at addr 264
+                v.push(Instruction::I32Const(264));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Store(ma));
+                v.push(Instruction::I64Const(TAG_NIL));
+                Ok(v)
+            }
             _ => Err("__not_handled__".into()),
         }
     }
