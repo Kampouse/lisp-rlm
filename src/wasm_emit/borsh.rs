@@ -123,13 +123,16 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(pos));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalGet(tmp));
-                // Use unsigned right shift for U64 to avoid sign-extension on large values
-                // (tagged values > 2^61 set bit 63, making shr_s produce wrong results)
+                // Untag: shift right by TAG_BITS
+                // I64 uses arithmetic shift (ShrS) to preserve sign for negative numbers
+                // U64 uses logical shift (ShrU) to avoid sign-extension on large values
                 if matches!(btype, BorshType::U64) {
                     v.push(Instruction::I64Const(TAG_BITS));
                     v.push(Instruction::I64ShrU);
                 } else {
-                    v.extend(self.emit_untag());
+                    // I64: arithmetic shift preserves sign
+                    v.push(Instruction::I64Const(TAG_BITS));
+                    v.push(Instruction::I64ShrS);
                 }
                 v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
                 // pos += 8
@@ -622,7 +625,7 @@ impl WasmEmitter {
                 v.push(Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
                 v.push(Instruction::I32Const(0));
                 v.push(Instruction::I32Eq);
-                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
                 // discriminant == 0 → None → TAG_NIL, advance src by 1
                 v.push(Instruction::I64Const(TAG_NIL));
                 v.push(Instruction::LocalGet(src));

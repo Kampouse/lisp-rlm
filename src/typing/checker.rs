@@ -1265,6 +1265,27 @@ fn infer_application(
             }
             return Ok(TcType::Con(TcCon::Str));
         }
+        // borsh-serialize: variadic (schema_name + field values) → nil
+        if name == "borsh-serialize" {
+            for arg in args {
+                let _ = infer(arg, env, supply, subst)?;
+            }
+            return Ok(TcType::Con(TcCon::Nil));
+        }
+        // borsh-deserialize: (schema_name bytes) → any
+        if name == "borsh-deserialize" {
+            for arg in args {
+                let _ = infer(arg, env, supply, subst)?;
+            }
+            return Ok(TcType::Con(TcCon::Any));
+        }
+        // array: variadic constructor → list of any
+        if name == "array" || name == "list" {
+            for arg in args {
+                let _ = infer(arg, env, supply, subst)?;
+            }
+            return Ok(TcType::Con(TcCon::List(Box::new(TcType::Con(TcCon::Any)))));
+        }
     }
 
     let func_type = infer(func, env, supply, subst)?;

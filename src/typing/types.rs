@@ -743,6 +743,12 @@ impl TcEnv {
         env.insert_mono("dict/keys".into(), TcType::Arrow(vec![dict_ty.clone()], Box::new(TcType::Con(TcCon::List(Box::new(str_ty.clone()))))));
         env.insert_mono("dict/vals".into(), TcType::Arrow(vec![dict_ty.clone()], Box::new(TcType::Con(TcCon::List(Box::new(any_ty.clone()))))));
 
+        // Borsh builtins — variadic (schema name + field values)
+        // borsh-serialize: str → any* → nil (serializes fields per schema, returns nil after value_return)
+        env.insert_mono("borsh-serialize".into(), TcType::Arrow(vec![str_ty.clone(), any_ty.clone()], Box::new(nil_ty.clone())));
+        // borsh-deserialize: str → str → any (takes schema name + bytes, returns tagged value/array)
+        env.insert_mono("borsh-deserialize".into(), TcType::Arrow(vec![str_ty.clone(), str_ty.clone()], Box::new(any_ty.clone())));
+
         // str : variadic string builder (accepts 1+ args)
         let any_b = TcType::Var(1);
         env.insert(
