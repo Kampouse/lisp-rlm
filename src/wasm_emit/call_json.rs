@@ -6,7 +6,11 @@ impl WasmEmitter {
             "near/json_get_int" => {
                 if a.is_empty() { return Err("near/json_get_int requires a string key argument".into()); }
                 match &a[0] {
-                    LispVal::Str(key) => self.json_get_int(key),
+                    LispVal::Str(key) => {
+                        let mut v = self.json_get_int(key)?;
+                        v.extend(self.emit_tag_num());
+                        Ok(v)
+                    }
                     _ => Err("near/json_get_int key must be a string literal".into()),
                 }
             }
@@ -23,7 +27,11 @@ impl WasmEmitter {
             "near/json_get_str" => {
                 if a.is_empty() { return Err("near/json_get_str requires a string key argument".into()); }
                 match &a[0] {
-                    LispVal::Str(key) => self.json_get_str(key),
+                    LispVal::Str(key) => {
+                        let mut v = self.json_get_str(key)?;
+                        v.extend(self.emit_tag_str());
+                        Ok(v)
+                    }
                     _ => Err("near/json_get_str key must be a string literal".into()),
                 }
             }
