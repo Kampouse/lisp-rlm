@@ -48,6 +48,7 @@ pub mod call_string;
 pub mod call_outlayer;
 pub mod call_predicate;
 pub mod call_dict;
+pub mod wasm_link;
 pub mod compile;
 
 // Re-exports: public API lives in compile.rs
@@ -113,7 +114,7 @@ pub(crate) const HOST_FUNCS: &[(&str, &[ValType], &[ValType])] = &[
     ("promise_batch_action_create_account", &[ValType::I64], &[]),                                // 41
     ("promise_batch_action_deploy_contract", &[ValType::I64, ValType::I64, ValType::I64], &[]),    // 42
     ("promise_batch_action_function_call", &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[]), // 43
-    ("promise_batch_action_transfer", &[ValType::I64, ValType::I64, ValType::I64], &[]),            // 44
+    ("promise_batch_action_transfer", &[ValType::I64, ValType::I64], &[]),            // 44
     ("promise_batch_action_stake",  &[ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[]), // 45
     ("promise_batch_action_add_key_with_full_access", &[ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[]), // 46
     ("promise_batch_action_add_key_with_function_call", &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[]), // 47
@@ -165,6 +166,7 @@ pub(crate) const HOST_FUNCS: &[(&str, &[ValType], &[ValType])] = &[
 
 const HOST_BASE: u32 = 0xFF00_0000;
 const USER_BASE: u32 = 0xFF01_0000;
+pub(crate) const WASM_IMPORT_BASE: u32 = 0xFF02_0000; // sentinel for stitched WASM imports (e.g. schnorr)
 pub const WASI_FD_WRITE: u32 = 90; // sentinel for WASI fd_write in outlayer mode
 pub const MEMCPY_SENTINEL: u32 = 91; // sentinel for shared memcpy helper
 const TEMP_MEM: i64 = 64;
@@ -241,6 +243,21 @@ pub(crate) struct FuncDef {
     pub instrs: Vec<Instruction<'static>>,
     /// If set, overrides the default (extra locals as I64) for this function's code section.
     pub local_entries: Option<Vec<(u32, ValType)>>,
+    /// If set, overrides the type index in the function section (params: Vec<ValType>, results: Vec<ValType>).
+    pub custom_type: Option<(Vec<ValType>, Vec<ValType>)>,
+}
+
+impl Default for FuncDef {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            param_count: 0,
+            local_count: 0,
+            instrs: Vec::new(),
+            local_entries: None,
+            custom_type: None,
+        }
+    }
 }
 
 /// Parse a URL string into (authority, path).
@@ -298,6 +315,10 @@ pub struct WasmEmitter {
     // Named function definitions (for compile-time inlining in map/filter/reduce)
     // name → (param_names, body_ast)
     pub(crate) func_defs: HashMap<String, (Vec<String>, LispVal)>,
+    // Stitched WASM imports (e.g. schnorr_verify_bip340)
+    // Vec of (wasm_name, params: Vec<ValType>, results: Vec<ValType>)
+    // These become env.* imports that wasm_stitch.py replaces with real implementations
+    pub(crate) wasm_imports: Vec<(&'static str, Vec<ValType>, Vec<ValType>)>,
 }
 
 impl WasmEmitter {
@@ -308,6 +329,7 @@ impl WasmEmitter {
             data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(),
             gas_local: None, needs_frame: false, heap_ptr: 0, lambda_counter: 0, str_cat_depth: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), http_post_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false, borsh_schemas: HashMap::new(), storage_get_count: 0, http_post_call_count: 0, env_get_count: 0,
             func_defs: HashMap::new(),
+            wasm_imports: Vec::new(),
         }
     }
 
@@ -524,7 +546,9 @@ impl WasmEmitter {
             idx
         } else {
             let idx = self.funcs.len();
-            self.funcs.push(FuncDef { name: name.into(), param_count: params.len(), local_count: 0, instrs: Vec::new(), local_entries: None });
+            self.funcs.push(FuncDef { name: name.into(), param_count: params.len(), local_count: 0, instrs: Vec::new(), local_entries: None,
+            custom_type: None,
+        });
             idx
         };
 
@@ -599,6 +623,7 @@ impl WasmEmitter {
             local_count: total,
             instrs,
             local_entries: Some(local_entries_vec),
+            custom_type: None,
         };
         Ok(())
     }

@@ -805,7 +805,7 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
                 ol_map.insert(post_sentinel_base + i, layout.http_post_fn_idx + (i * 2));
             }
             ol_map.insert(crate::wasm_emit::WASI_FD_WRITE, layout.user_fn_base + em.funcs.len() as u32 + 2); // sentinel
-            WasmEmitter::resolve_static_pub_ex(&f.instrs, &std::collections::HashMap::new(), &name_map, &em.funcs, &ol_map)
+            WasmEmitter::resolve_static_pub_ex(&f.instrs, &std::collections::HashMap::new(), &name_map, &em.funcs, &ol_map, &std::collections::HashMap::new())
         };
 
         let mut fb = Function::new(locals);
@@ -1514,7 +1514,7 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
                 }
             }
         }
-        let resolved = WasmEmitter::resolve_static_pub_ex(&f.instrs, &near_host_idx, &name_map, &em.funcs, &ol_map);
+        let resolved = WasmEmitter::resolve_static_pub_ex(&f.instrs, &near_host_idx, &name_map, &em.funcs, &ol_map, &std::collections::HashMap::new());
         let mut fb = Function::new(locals);
         for instr in &resolved { fb.instruction(instr); }
         fb.instruction(&Instruction::End);
@@ -2217,7 +2217,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
             ol_map.insert(crate::wasm_emit::WASI_FD_WRITE, realloc_fn_idx);
             ol_map.insert(crate::wasm_emit::MEMCPY_SENTINEL, memcpy_fn_idx);
             WasmEmitter::resolve_static_pub_ex(
-                &f.instrs, &std::collections::HashMap::new(), &name_map, &em.funcs, &ol_map,
+                &f.instrs, &std::collections::HashMap::new(), &name_map, &em.funcs, &ol_map, &std::collections::HashMap::new(),
             )
         };
 

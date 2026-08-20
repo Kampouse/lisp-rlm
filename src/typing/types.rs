@@ -843,6 +843,15 @@ impl TcEnv {
                 Box::new(int_ty.clone()),
             ),
         );
+
+        // near/schnorr_verify : str -> str -> str -> int (BIP-340 secp256k1, stitched WASM)
+        env.insert_mono(
+            "near/schnorr_verify".into(),
+            TcType::Arrow(
+                vec![str_ty.clone(), str_ty.clone(), str_ty.clone()],
+                Box::new(int_ty.clone()),
+            ),
+        );
         // near/sha256 : str → str
         env.insert_mono(
             "near/sha256".into(),
@@ -1125,6 +1134,15 @@ impl TcEnv {
         );
         env.insert_mono(
             "near/ed25519_verify".into(),
+            TcType::Arrow(
+                vec![str_ty.clone(), str_ty.clone(), str_ty.clone()],
+                Box::new(int_ty.clone()),
+            ),
+        );
+
+        // near/schnorr_verify : str -> str -> str -> int (BIP-340 secp256k1, stitched WASM)
+        env.insert_mono(
+            "near/schnorr_verify".into(),
             TcType::Arrow(
                 vec![str_ty.clone(), str_ty.clone(), str_ty.clone()],
                 Box::new(int_ty.clone()),

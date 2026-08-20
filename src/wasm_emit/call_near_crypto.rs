@@ -1,5 +1,28 @@
 use super::*;
 
+fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
+    let s = s.as_bytes();
+    if s.len() % 2 != 0 {
+        return Err("hex string has odd length".into());
+    }
+    let mut out = Vec::with_capacity(s.len() / 2);
+    for i in (0..s.len()).step_by(2) {
+        let hi = hex_nibble(s[i])?;
+        let lo = hex_nibble(s[i + 1])?;
+        out.push((hi << 4) | lo);
+    }
+    Ok(out)
+}
+
+fn hex_nibble(b: u8) -> Result<u8, String> {
+    match b {
+        b'0'..=b'9' => Ok(b - b'0'),
+        b'a'..=b'f' => Ok(b - b'a' + 10),
+        b'A'..=b'F' => Ok(b - b'A' + 10),
+        _ => Err(format!("invalid hex char: {}", b as char)),
+    }
+}
+
 impl WasmEmitter {
     pub(crate) fn call_near_crypto(
         &mut self,
@@ -546,6 +569,39 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(TEMP_MEM));
                 v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
+                Ok(v)
+            }
+            "near/schnorr_verify" => {
+                // (near/schnorr_verify pk_hex sig_hex msg_hex) -> int
+                // Compile-time hex decode: hex string literals -> raw bytes in data section.
+                // Returns tagged Num 1 (valid) or 0 (invalid).
+                let wasm_idx = self.need_wasm_import(
+                    "schnorr_verify_bip340",
+                    vec![ValType::I32, ValType::I32, ValType::I32, ValType::I32],
+                    vec![ValType::I32],
+                );
+                // Hex-decode each arg at compile time, alloc in data section
+                let mut bufs: [u32; 3] = [0; 3];
+                let mut msg_len = 0u32;
+                for (i, arg) in a.iter().enumerate().take(3) {
+                    let hex_str = match arg {
+                        LispVal::Str(s) => s.clone(),
+                        _ => return Err(format!("near/schnorr_verify arg {} must be a string literal, got {:?}", i, arg)),
+                    };
+                    let bytes = hex_decode(&hex_str)
+                        .map_err(|e| format!("near/schnorr_verify: invalid hex in arg {}: {}", i, e))?;
+                    if i == 2 { msg_len = bytes.len() as u32; }
+                    let offset = self.alloc_data(&bytes);
+                    bufs[i] = offset;
+                }
+                let mut v = Vec::new();
+                v.push(Instruction::I32Const(bufs[0] as i32));
+                v.push(Instruction::I32Const(bufs[1] as i32));
+                v.push(Instruction::I32Const(bufs[2] as i32));
+                v.push(Instruction::I32Const(msg_len as i32));
+                v.push(Self::wasm_import_call(wasm_idx));
+                v.push(Instruction::I64ExtendI32S);
+                v.extend(self.emit_tag_num());
                 Ok(v)
             }
             _ => Err("__not_handled__".into()),

@@ -698,6 +698,7 @@ impl WasmEmitter {
             local_count: 13,
             instrs: ins,
             local_entries: Some(vec![(13u32, ValType::I32), (1u32, ValType::I64)]),
+            custom_type: None,
         });
         (self.funcs.len() - 1) as u32
     }
@@ -1218,6 +1219,7 @@ impl WasmEmitter {
             local_count: 11, // locals 2..12, but param 0 and 1 are i64
             instrs: ins,
             local_entries: Some(vec![(11u32, ValType::I32), (1u32, ValType::I64)]),
+            custom_type: None,
         });
         (self.funcs.len() - 1) as u32
     }
@@ -2144,6 +2146,7 @@ impl WasmEmitter {
             local_count: total_i32 as usize + 1,
             instrs: ins,
             local_entries: Some(vec![(total_i32 as u32, ValType::I32), (1u32, ValType::I64)]),
+            custom_type: None,
         });
         (self.funcs.len() - 1) as u32
     }
@@ -4676,6 +4679,7 @@ impl WasmEmitter {
             local_count: 13,
             instrs: ins,
             local_entries: Some(vec![(13u32, ValType::I32)]),
+            custom_type: None,
         });
         (self.funcs.len() - 1) as u32
     }
@@ -4865,6 +4869,7 @@ impl WasmEmitter {
             local_count: 8,
             instrs: ins,
             local_entries: Some(vec![(8u32, ValType::I32)]),
+            custom_type: None,
         });
         (self.funcs.len() - 1) as u32
     }

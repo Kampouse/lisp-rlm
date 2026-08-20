@@ -271,6 +271,7 @@ impl WasmEmitter {
             local_count: 0,
             instrs: Vec::new(),
             local_entries: None,
+            custom_type: None,
         });
 
         let instrs = self.expr(body)?;
@@ -281,6 +282,7 @@ impl WasmEmitter {
             local_count: total_locals,
             instrs,
             local_entries: None,
+            custom_type: None,
         };
 
         // Record lambda info
@@ -478,6 +480,14 @@ impl WasmEmitter {
             }
             "near/storage_remove" => {
                 self.need_host(19);
+            }
+            "near/store-deposit" => {
+                self.need_host(14); // attached_deposit
+                self.need_host(17); // storage_write
+            }
+            "near/load-amount" => {
+                self.need_host(18); // storage_read
+                self.need_host(0);  // read_register
             }
             "near/log_num" => self.need_host(28),
             "print" | "println" => {

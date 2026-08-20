@@ -18,7 +18,7 @@ impl WasmEmitter {
         for (i, f) in self.funcs.iter().enumerate() {
             for instr in &f.instrs {
                 if let Instruction::Call(idx) = instr {
-                    if *idx >= USER_BASE {
+                    if *idx >= USER_BASE && *idx < WASM_IMPORT_BASE {
                         let pos = (*idx - USER_BASE) as usize;
                         if pos < self.funcs.len() {
                             calls[i].push(pos);
@@ -94,7 +94,7 @@ impl WasmEmitter {
             }
             for instr in &mut f.instrs {
                 if let Instruction::Call(idx) = instr {
-                    if *idx >= USER_BASE {
+                    if *idx >= USER_BASE && *idx < WASM_IMPORT_BASE {
                         let pos = (*idx - USER_BASE) as usize;
                         if let Some(new_pos) = old_to_new[pos] {
                             *idx = USER_BASE | new_pos as u32;
@@ -180,9 +180,14 @@ impl WasmEmitter {
                 HOST_FUNCS[hi].2.iter().copied(),
             );
         }
+        // WASM import types (stitched functions like schnorr)
+        let wasm_import_type_base = (max_p + 2 + host_list.len()) as u32;
+        for (_name, params, results) in &self.wasm_imports {
+            types.ty().function(params.iter().copied(), results.iter().copied());
+        }
         m.section(&types);
 
-        // Import section (host functions only)
+        // Import section (host functions + stitched WASM imports)
         let mut imports = ImportSection::new();
         let mut host_idx: HashMap<usize, u32> = HashMap::new();
         for (i, &hi) in host_list.iter().enumerate() {
@@ -192,6 +197,16 @@ impl WasmEmitter {
                 EntityType::Function(host_type_base + i as u32),
             );
             host_idx.insert(hi, i as u32);
+        }
+        // Stitched WASM imports (e.g. schnorr_verify_bip340)
+        let mut wasm_import_map: HashMap<usize, u32> = HashMap::new();
+        for (i, (name, _, _)) in self.wasm_imports.iter().enumerate() {
+            imports.import(
+                "env",
+                name,
+                EntityType::Function(wasm_import_type_base + i as u32),
+            );
+            wasm_import_map.insert(i, host_count + i as u32);
         }
         m.section(&imports);
 
@@ -261,7 +276,8 @@ impl WasmEmitter {
         // Exports
         let mut exps = ExportSection::new();
         exps.export("memory", ExportKind::Memory, 0);
-        let internal_base = host_count;
+        let wasm_import_count = self.wasm_imports.len() as u32;
+        let internal_base = host_count + wasm_import_count;
         let wrapper_base = internal_base + self.funcs.len() as u32;
         if self.exports.is_empty() {
             if !self.funcs.is_empty() {
@@ -293,7 +309,7 @@ impl WasmEmitter {
                     vec![]
                 }
             };
-            let resolved = Self::resolve_static_pub(&f.instrs, &host_idx, &name_map, &self.funcs);
+            let resolved = Self::resolve_static_pub_ex(&f.instrs, &host_idx, &name_map, &self.funcs, &HashMap::new(), &wasm_import_map);
             let mut fb = Function::new(locals);
             for instr in &resolved {
                 fb.instruction(instr);
@@ -489,7 +505,14 @@ impl WasmEmitter {
             m.section(&data);
         }
 
-        m.finish()
+        let bytes = m.finish();
+
+        // If there are WASM imports (e.g. schnorr_verify), link the library WASM
+        if !self.wasm_imports.is_empty() {
+            return super::wasm_link::link_schnorr(&bytes);
+        }
+
+        bytes
     }
 
     pub(crate) fn resolve_static_pub(
@@ -498,7 +521,7 @@ impl WasmEmitter {
         name_map: &HashMap<&str, u32>,
         funcs: &[FuncDef],
     ) -> Vec<Instruction<'static>> {
-        Self::resolve_static_pub_ex(instrs, host_map, name_map, funcs, &HashMap::new())
+        Self::resolve_static_pub_ex(instrs, host_map, name_map, funcs, &HashMap::new(), &HashMap::new())
     }
 
     pub(crate) fn resolve_static_pub_ex(
@@ -507,6 +530,7 @@ impl WasmEmitter {
         name_map: &HashMap<&str, u32>,
         funcs: &[FuncDef],
         outlayer_map: &HashMap<u32, u32>,
+        wasm_import_map: &HashMap<usize, u32>,
     ) -> Vec<Instruction<'static>> {
         instrs
             .iter()
@@ -523,7 +547,7 @@ impl WasmEmitter {
                         i.clone()
                     }
                 }
-                Instruction::Call(idx) if *idx >= USER_BASE => {
+                Instruction::Call(idx) if *idx >= USER_BASE && *idx < WASM_IMPORT_BASE => {
                     let pos = (*idx - USER_BASE) as usize;
                     if pos >= funcs.len() {
                         eprintln!(
@@ -542,6 +566,18 @@ impl WasmEmitter {
                         eprintln!("  name_map keys: {:?}", name_map.keys().collect::<Vec<_>>());
                     }
                     Instruction::Call(name_map[fname])
+                }
+                Instruction::Call(idx) if *idx >= WASM_IMPORT_BASE => {
+                    let sentinel = (*idx - WASM_IMPORT_BASE) as usize;
+                    if let Some(&fn_idx) = wasm_import_map.get(&sentinel) {
+                        Instruction::Call(fn_idx)
+                    } else {
+                        eprintln!(
+                            "WARNING: unresolved WASM_IMPORT_BASE sentinel {} in resolve_static",
+                            sentinel
+                        );
+                        i.clone()
+                    }
                 }
                 Instruction::Call(idx) if outlayer_map.contains_key(idx) => {
                     Instruction::Call(outlayer_map[idx])
@@ -595,7 +631,8 @@ fn parse_and_compile_opts(
                                             local_count: 0,
                                             instrs: Vec::new(),
                                             local_entries: None,
-                                        });
+            custom_type: None,
+        });
                                     }
                                 }
                             }
@@ -609,7 +646,8 @@ fn parse_and_compile_opts(
                                     local_count: 0,
                                     instrs: Vec::new(),
                                     local_entries: None,
-                                });
+            custom_type: None,
+        });
                             }
                         }
                     }
@@ -843,7 +881,7 @@ pub fn compile_standalone_opts(source: &str, typecheck: bool) -> Result<Vec<u8>,
             }
         };
         let resolved =
-            WasmEmitter::resolve_static_pub(&f.instrs, &HashMap::new(), &name_map, &em.funcs);
+            WasmEmitter::resolve_static_pub_ex(&f.instrs, &HashMap::new(), &name_map, &em.funcs, &HashMap::new(), &HashMap::new());
         let mut fb = Function::new(locals);
         for instr in &resolved {
             fb.instruction(instr);

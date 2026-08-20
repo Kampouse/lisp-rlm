@@ -321,12 +321,78 @@ fn do_build_target_with_config(project_dir: &str, target: &str, config: ProjectC
     }
     fs::write(&out_path, &wasm_bytes).map_err(|e| format!("write {}: {}", config.output, e))?;
 
-    // Post-build WAT check (only for NEAR target)
+    // Post-build steps (only for NEAR target)
     if target == "near" {
+        run_wasm_stitch(&out_path)?;
         run_wat_check(&out_path);
     }
 
     Ok((config.output.clone(), wasm_bytes))
+}
+
+
+/// Post-build WASM stitch step. If the compiled WASM imports any stitched WASM functions
+/// (e.g. schnorr_verify_bip340), runs wasm_stitch.py to merge the crypto module.
+fn run_wasm_stitch(wasm_path: &Path) -> Result<(), String> {
+    // Check if the WASM has any env.* imports that look like stitched imports
+    // (schnorr_verify_bip340, etc.)
+    let wasm_bytes = fs::read(wasm_path).map_err(|e| format!("read {}: {}", wasm_path.display(), e))?;
+    let module = match wasmparser::Parser::new(0).parse_all(&wasm_bytes).find(|payload| matches!(payload, Ok(wasmparser::Payload::ImportSection(_)))) {
+        Some(Ok(wasmparser::Payload::ImportSection(s))) => s,
+        _ => return Ok(()), // no import section = nothing to stitch
+    };
+    let imports: Vec<_> = module.into_iter().collect::<Result<Vec<_>, _>>().map_err(|e| format!("parse imports: {}", e))?;
+    
+    let stitched_names = ["schnorr_verify_bip340", "schnorr_verify_clearmsig"];
+    let needs_stitch = imports.iter().any(|imp| {
+        imp.module == "env" && stitched_names.contains(&imp.name)
+    });
+    
+    if !needs_stitch {
+        return Ok(());
+    }
+    
+    // Find the schnorr WASM module
+    let stitcher_dir = std::env::var("SCHNORR_WASM_DIR")
+        .unwrap_or_else(|_| format!("{}/.openclaw/workspace/k256-schnorr-wasm", std::env::var("HOME").unwrap_or_default()));
+    let crypto_wasm = Path::new(&stitcher_dir).join("schnorr_verify.wasm");
+    if !crypto_wasm.exists() {
+        return Err(format!(
+            "Contract uses near/schnorr_verify but crypto module not found at {}
+Set SCHNORR_WASM_DIR to override",
+            crypto_wasm.display()
+        ));
+    }
+    
+    // Find the stitcher script
+    let stitcher = Path::new(&stitcher_dir).join("wasm_stitch.py");
+    if !stitcher.exists() {
+        return Err(format!("wasm_stitch.py not found at {}", stitcher.display()));
+    }
+    
+    // Write stitched output to a temp file, then replace original
+    let stitched_path = wasm_path.with_extension("stitched.wasm");
+    let result = std::process::Command::new("python3")
+        .arg(&stitcher)
+        .arg(wasm_path)
+        .arg(&crypto_wasm)
+        .arg("-o")
+        .arg(&stitched_path)
+        .output()
+        .map_err(|e| format!("run wasm_stitch.py: {}", e))?;
+    
+    if !result.status.success() {
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        return Err(format!("wasm_stitch.py failed: {}", stderr.trim()));
+    }
+    
+    // Replace original with stitched
+    let stitched_bytes = fs::read(&stitched_path).map_err(|e| format!("read stitched: {}", e))?;
+    fs::write(wasm_path, &stitched_bytes).map_err(|e| format!("write stitched: {}", e))?;
+    let _ = fs::remove_file(&stitched_path);
+    
+    println!("  🔗 Stitched schnorr_verify WASM ({} → {} bytes)", wasm_bytes.len(), stitched_bytes.len());
+    Ok(())
 }
 
 /// Post-build WAT static analysis.

@@ -482,20 +482,25 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/batch-transfer" => {
-                if a.len() != 3 {
-                    return Err("near/batch-transfer: expected 3 args".into());
+                // NEAR spec: promise_batch_action_transfer(promise_idx, amount_ptr)
+                // amount_ptr points to a 16-byte u128 in linear memory.
+                // The Lisp-level arg is a tagged string (u128 bytes from near/load-bytes
+                // or near/attached_deposit_u128); we untag it to extract the pointer.
+                if a.len() != 2 {
+                    return Err("near/batch-transfer: expected 2 args (promise_idx, amount_bytes)".into());
                 }
                 self.need_host(44);
                 let idx = self.expr(&a[0])?;
-                let amount_ptr = self.expr(&a[1])?;
-                let amount_len = self.expr(&a[2])?;
+                let amount = self.expr(&a[1])?;
                 let mut v = Vec::new();
+                // promise_idx (untag)
                 v.extend(idx);
                 v.extend(self.emit_untag());
-                v.extend(amount_ptr);
+                // amount_ptr: untag the tagged string, then mask to low 32 bits
+                v.extend(amount);
                 v.extend(self.emit_untag());
-                v.extend(amount_len);
-                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
                 v.push(Self::host_call(44));
                 v.push(Instruction::I64Const(0));
                 Ok(v)

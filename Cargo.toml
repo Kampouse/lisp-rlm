@@ -1,6 +1,11 @@
 [workspace]
-members = [".", "clojure-rlm", "crates/browser-compiler"]
-exclude = ["http-adapter"]
+members = [".", "clojure-rlm", "crates/browser-compiler", "schnorr-wasm", "wasm-test"]
+exclude = ["http-adapter", "wasm-test"]
+
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = true
 
 [package]
 name = "lisp-rlm-wasm"

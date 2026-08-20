@@ -388,6 +388,81 @@ impl WasmEmitter {
                 v.push(Instruction::End);
                 Ok(v)
             }
+            "near/store-deposit" => {
+                // (near/store-deposit key) — stores attached_deposit (u128, 16 bytes)
+                // directly from TEMP_MEM under the given storage key.
+                // attached_deposit writes 16 bytes to TEMP_MEM (host idx 14).
+                self.need_host(14); // attached_deposit
+                self.need_host(17); // storage_write
+                let key_expr = self.expr(&a[0])?;
+                let key_local = self.local_idx("__sd_key");
+                let mut v = Vec::new();
+                // Call attached_deposit(TEMP_MEM) → writes 16 bytes at TEMP_MEM (addr 64).
+                v.push(Instruction::I64Const(TEMP_MEM as i64));
+                v.push(Self::host_call(14));
+                // Save key for reuse.
+                v.extend(key_expr);
+                v.push(Instruction::LocalSet(key_local));
+                // storage_write(key_len, key_ptr, val_len=16, val_ptr=TEMP_MEM, register_id=0)
+                v.push(Instruction::LocalGet(key_local));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU); // key_len
+                v.push(Instruction::LocalGet(key_local));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U); // key_ptr
+                v.push(Instruction::I64Const(16)); // val_len
+                v.push(Instruction::I64Const(TEMP_MEM)); // val_ptr
+                v.push(Instruction::I64Const(0)); // register_id
+                v.push(Self::host_call(17));
+                v.push(Instruction::Drop);
+                v.push(Instruction::I64Const(TAG_NIL));
+                Ok(v)
+            }
+            "near/load-amount" => {
+                // (near/load-amount key) — reads 16-byte u128 from storage into TEMP_MEM
+                // and returns a tagged string (len=16 | ptr=TEMP_MEM) so it can be passed
+                // to near/batch-transfer. Returns nil if the key is not found.
+                self.need_host(18); // storage_read
+                self.need_host(0);  // read_register
+                let key_expr = self.expr(&a[0])?;
+                let key_local = self.local_idx("__la_key");
+                let mut v = Vec::new();
+                v.extend(key_expr);
+                v.push(Instruction::LocalSet(key_local));
+                // storage_read(key_len, key_ptr, register_id=1)
+                v.push(Instruction::LocalGet(key_local));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU); // key_len
+                v.push(Instruction::LocalGet(key_local));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U); // key_ptr
+                v.push(Instruction::I64Const(1)); // register 1
+                v.push(Self::host_call(18));
+                // Check return: 0 = not found, 1 = found
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                // Not found: return nil
+                v.push(Instruction::I64Const(TAG_NIL));
+                v.push(Instruction::Else);
+                // Found: read_register(1, TEMP_MEM) → writes 16 bytes at TEMP_MEM
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Self::host_call(0));
+                // Return tagged string: (16 << 32) | TEMP_MEM
+                v.push(Instruction::I64Const(16));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
+                v.push(Instruction::End);
+                Ok(v)
+            }
             _ => Err("__not_handled__".into()),
         }
     }

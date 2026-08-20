@@ -1052,6 +1052,29 @@ impl WasmEmitter {
         Instruction::Call(HOST_BASE | idx as u32)
     }
 
+
+    /// Register a stitched WASM import (e.g. schnorr_verify_bip340).
+    /// Returns the sentinel index to use with wasm_import_call().
+    pub(crate) fn need_wasm_import(
+        &mut self,
+        name: &'static str,
+        params: Vec<ValType>,
+        results: Vec<ValType>,
+    ) -> usize {
+        for (i, (n, _, _)) in self.wasm_imports.iter().enumerate() {
+            if *n == name { return i; }
+        }
+        let idx = self.wasm_imports.len();
+        self.wasm_imports.push((name, params, results));
+        idx
+    }
+
+    /// Emit a call instruction to a stitched WASM import by its sentinel index.
+    pub(crate) fn wasm_import_call(idx: usize) -> Instruction<'static> {
+        Instruction::Call(WASM_IMPORT_BASE | idx as u32)
+    }
+
+    // __hex_decode removed — compile-time hex decode used instead
     // ── Memory safety helpers ──
 
     /// Tag validation: check that low 3 bits of value are a valid tag (0–6).
@@ -1500,6 +1523,7 @@ impl WasmEmitter {
             local_count: 10,
             instrs: ins,
             local_entries: Some(vec![(11u32, ValType::I64)]),
+            custom_type: None,
         });
         (self.funcs.len() - 1) as u32
     }
