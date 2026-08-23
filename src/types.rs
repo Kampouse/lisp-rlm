@@ -503,6 +503,8 @@ pub enum LispVal {
     Bool(bool),
     /// 64-bit signed integer.
     Num(i64),
+    /// 64-bit unsigned integer (wrapping arithmetic for field math).
+    U64(u64),
     /// 64-bit floating-point number.
     Float(f64),
     /// Heap-allocated string.
@@ -588,6 +590,7 @@ impl PartialEq for LispVal {
             (Nil, Nil) => true,
             (Bool(a), Bool(b)) => a == b,
             (Num(a), Num(b)) => a == b,
+            (U64(a), U64(b)) => a == b,
             (Float(a), Float(b)) => a == b,
             (Str(a), Str(b)) => a == b,
             (Sym(a), Sym(b)) => a == b,
@@ -647,6 +650,7 @@ impl std::fmt::Display for LispVal {
             LispVal::Nil => write!(f, "nil"),
             LispVal::Bool(b) => write!(f, "{}", if *b { "true" } else { "false" }),
             LispVal::Num(n) => write!(f, "{}", n),
+            LispVal::U64(n) => write!(f, "{}u64", n),
             LispVal::Float(fl) => {
                 let s = format!("{:.10}", fl);
                 let s = s.trim_end_matches('0');
@@ -711,6 +715,7 @@ pub fn hash_args(args: &[LispVal]) -> u64 {
     for arg in args {
         h ^= match arg {
             LispVal::Num(n) => *n as u64,
+            LispVal::U64(n) => *n ^ 0xAAAAAAAAAAAAAAAA,
             LispVal::Float(f) => f.to_bits(),
             LispVal::Bool(b) => {
                 if *b {

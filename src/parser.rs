@@ -268,6 +268,21 @@ fn parse(tokens: &[(String, usize)], pos: &mut usize, source: &str) -> Result<Li
                     }
                 }
             }
+            // u64 literal: 0xFF...u64 or 123u64
+            if let Some(stripped) = s.strip_suffix("u64") {
+                if !stripped.is_empty() {
+                    let (digits, radix) = if let Some(hex) = stripped.strip_prefix("0x") {
+                        (hex, 16)
+                    } else if let Some(hex) = stripped.strip_prefix("0X") {
+                        (hex, 16)
+                    } else {
+                        (stripped, 10)
+                    };
+                    if let Ok(n) = u64::from_str_radix(digits, radix) {
+                        return Ok(LispVal::U64(n));
+                    }
+                }
+            }
             if let Ok(n) = s.parse::<i64>() {
                 Ok(LispVal::Num(n))
             } else if s.contains('.') {

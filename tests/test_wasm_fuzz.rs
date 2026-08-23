@@ -57,7 +57,8 @@ fn lispval_to_tagged(val: &LispVal) -> Option<i64> {
         | LispVal::Tagged { .. }
         | LispVal::Sym(_)
         | LispVal::Delay { .. }
-        | LispVal::Vec(_) => None,
+        | LispVal::Vec(_)
+        | LispVal::U64(_) => None,
     }
 }
 

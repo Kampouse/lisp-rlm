@@ -27,6 +27,7 @@ pub enum BinOp {
 pub enum Ty {
     I64,
     F64,
+    U64,
 }
 
 /// Bytecode opcodes for the loop VM.
@@ -37,6 +38,8 @@ pub enum Op {
     LoadSlot(usize),
     /// Push a literal i64
     PushI64(i64),
+    /// Push a literal u64 (wrapping arithmetic for field math)
+    PushU64(u64),
     /// Push a literal f64
     PushFloat(f64),
     /// Push a literal bool
@@ -203,6 +206,21 @@ pub enum Op {
     VecContains,
     /// Pop end, pop start, pop vec, push vec[start:end] (fresh copy)
     VecSlice,
+    // --- U64 field-arithmetic ops ---
+    /// Pop 2 U64 values, push high 64 bits of their u128 product
+    U64MulHi,
+    /// Pop 2 U64 values, push bitwise AND
+    U64And,
+    /// Pop 2 U64 values, push bitwise OR
+    U64Or,
+    /// Pop 2 U64 values, push bitwise XOR
+    U64Xor,
+    /// Pop U64 + Num(shift), push value >> shift
+    U64Shr,
+    /// Pop U64 + Num(shift), push value << shift (wrapping)
+    U64Shl,
+    /// Pop U64 value, push bitwise NOT
+    U64Not,
 }
 
 /// Compiled loop representation.

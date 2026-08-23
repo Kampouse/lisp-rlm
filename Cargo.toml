@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "clojure-rlm", "crates/browser-compiler", "schnorr-wasm", "wasm-test"]
+members = [".", "clojure-rlm", "crates/browser-compiler", "schnorr-wasm"]
 exclude = ["http-adapter", "wasm-test"]
 
 [profile.wasm-release]

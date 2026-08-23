@@ -3367,6 +3367,28 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
                             BinOp::Eq => LispVal::Bool(av == bv),
                         });
                     }
+                    Ty::U64 => {
+                        let av = match &a {
+                            LispVal::U64(n) => *n,
+                            _ => 0,
+                        };
+                        let bv = match &b {
+                            LispVal::U64(n) => *n,
+                            _ => 0,
+                        };
+                        stack.push(match op {
+                            BinOp::Add => LispVal::U64(av.wrapping_add(bv)),
+                            BinOp::Sub => LispVal::U64(av.wrapping_sub(bv)),
+                            BinOp::Mul => LispVal::U64(av.wrapping_mul(bv)),
+                            BinOp::Div => LispVal::U64(av.wrapping_div(bv)),
+                            BinOp::Mod => LispVal::U64(av.wrapping_rem(bv)),
+                            BinOp::Lt => LispVal::Bool(av < bv),
+                            BinOp::Le => LispVal::Bool(av <= bv),
+                            BinOp::Gt => LispVal::Bool(av > bv),
+                            BinOp::Ge => LispVal::Bool(av >= bv),
+                            BinOp::Eq => LispVal::Bool(av == bv),
+                        });
+                    }
                 }
                 pc += 1;
             }
@@ -3592,6 +3614,14 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
             | Op::VecConj
             | Op::VecContains
             | Op::VecSlice
+            | Op::PushU64(_)
+            | Op::U64MulHi
+            | Op::U64And
+            | Op::U64Or
+            | Op::U64Xor
+            | Op::U64Shr
+            | Op::U64Shl
+            | Op::U64Not
             | Op::TracePush(_)
             | Op::TracePop => {
                 return Err(
@@ -5118,6 +5148,9 @@ pub fn eval_builtin(
             }
             Err("macroexpand: expected (macro-name args...) form".into())
         }
+        "sha256" => return crate::builtin_schnorr::builtin_sha256(args),
+        "tagged-hash" => return crate::builtin_schnorr::builtin_tagged_hash(args),
+        "schnorr-verify" => return crate::builtin_schnorr::builtin_schnorr_verify(args),
         _ => {
             // Intercept load-file: use run_program (VM) instead of lisp_eval (tree-walker)
             if name == "load-file" {
@@ -6305,6 +6338,28 @@ fn run_compiled_lambda_inner(
                             BinOp::Mul => LispVal::Float(av * bv),
                             BinOp::Div => LispVal::Float(av / bv),
                             BinOp::Mod => LispVal::Float(av % bv),
+                            BinOp::Lt => LispVal::Bool(av < bv),
+                            BinOp::Le => LispVal::Bool(av <= bv),
+                            BinOp::Gt => LispVal::Bool(av > bv),
+                            BinOp::Ge => LispVal::Bool(av >= bv),
+                            BinOp::Eq => LispVal::Bool(av == bv),
+                        });
+                    }
+                    Ty::U64 => {
+                        let av = match &a {
+                            LispVal::U64(n) => *n,
+                            _ => 0,
+                        };
+                        let bv = match &b {
+                            LispVal::U64(n) => *n,
+                            _ => 0,
+                        };
+                        stack.push(match op {
+                            BinOp::Add => LispVal::U64(av.wrapping_add(bv)),
+                            BinOp::Sub => LispVal::U64(av.wrapping_sub(bv)),
+                            BinOp::Mul => LispVal::U64(av.wrapping_mul(bv)),
+                            BinOp::Div => LispVal::U64(av.wrapping_div(bv)),
+                            BinOp::Mod => LispVal::U64(av.wrapping_rem(bv)),
                             BinOp::Lt => LispVal::Bool(av < bv),
                             BinOp::Le => LispVal::Bool(av <= bv),
                             BinOp::Gt => LispVal::Bool(av > bv),

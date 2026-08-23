@@ -809,6 +809,7 @@ fn infer(
         LispVal::Nil => Ok(TcType::Con(TcCon::Nil)),
         LispVal::Bool(_) => Ok(TcType::Con(TcCon::Bool)),
         LispVal::Num(_) => Ok(TcType::Con(TcCon::Int)),
+        LispVal::U64(_) => Ok(TcType::Con(TcCon::Int)), // U64 is an integer
         LispVal::Float(_) => Ok(TcType::Con(TcCon::Float)),
         LispVal::Str(_) => Ok(TcType::Con(TcCon::Str)),
         LispVal::Sym(s) if s.starts_with(':') => Ok(TcType::Con(TcCon::Sym)), // keywords

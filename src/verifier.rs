@@ -491,7 +491,7 @@ fn verify_instruction_consistency(
             Op::TypedBinOp(binop, ty) => {
                 // Validate the typed op combination makes sense
                 match ty {
-                    Ty::I64 | Ty::F64 => match binop {
+                    Ty::I64 | Ty::U64 | Ty::F64 => match binop {
                         BinOp::Add
                         | BinOp::Sub
                         | BinOp::Mul
@@ -528,6 +528,7 @@ fn stack_effect(op: &Op) -> (usize, usize) {
     match op {
         // Push 0, pop 0
         Op::PushI64(_)
+        | Op::PushU64(_)
         | Op::PushFloat(_)
         | Op::PushBool(_)
         | Op::PushStr(_)
@@ -668,6 +669,14 @@ fn stack_effect(op: &Op) -> (usize, usize) {
         Op::VecContains => (2, 1),
         // VecSlice: pop 3 (end, start, vec), push 1
         Op::VecSlice => (3, 1),
+
+        // U64 field arithmetic ops
+        // MulHi/And/Or/Xor: pop 2, push 1
+        Op::U64MulHi | Op::U64And | Op::U64Or | Op::U64Xor => (2, 1),
+        // Shr/Shl: pop 2 (shift, val), push 1
+        Op::U64Shr | Op::U64Shl => (2, 1),
+        // Not: pop 1, push 1
+        Op::U64Not => (1, 1),
     }
 }
 

@@ -27,6 +27,7 @@
 //! - [`dispatch`] — builtin dispatch modules, JSON helpers, and backward-compat stubs
 //! - [`typing`] — type inference and checking
 
+pub mod builtin_schnorr;
 pub mod bytecode;
 pub mod clojure;
 mod dispatch;

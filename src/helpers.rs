@@ -271,6 +271,9 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "str->num",
     "tag-test",
     "get-field",
+    "sha256",
+    "tagged-hash",
+    "schnorr-verify",
 ];
 
 pub fn is_builtin_name(name: &str) -> bool {
