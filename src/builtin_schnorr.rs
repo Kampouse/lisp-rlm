@@ -192,19 +192,11 @@ fn schnorr_verify_impl(pk: &[u8; 32], sig: &[u8; 64], msg: &[u8]) -> bool {
     let s_arr: [u8; 32] = sig[32..].try_into().unwrap();
     let r = be_bytes_to_fe(&r_arr);
     let s = be_bytes_to_fe(&s_arr);
-    eprintln!("DEBUG: r = {:?}", r);
-    eprintln!("DEBUG: s = {:?}", s);
-    eprintln!("DEBUG: r mod n = {:?}", fe_mod_n(&r));
-    eprintln!("DEBUG: is_zero r mod n = {}", is_zero(&fe_mod_n(&r)));
-    eprintln!("DEBUG: is_zero s mod n = {}", is_zero(&fe_mod_n(&s)));
-    if is_zero(&fe_mod_n(&r)) || is_zero(&fe_mod_n(&s)) { eprintln!("FAIL: r or s is zero mod n"); return false; }
+    if is_zero(&fe_mod_n(&r)) || is_zero(&fe_mod_n(&s)) { return false; }
 
     let y_sq = fe_add(&fe_mul(&fe_mul(&pk_x, &pk_x), &pk_x), &[7,0,0,0]);
     let y = fe_sqrt(&y_sq);
-    eprintln!("DEBUG: y_sq = {:?}", y_sq);
-    eprintln!("DEBUG: y = {:?}", y);
-    eprintln!("DEBUG: fe_sqr(y) == y_sq: {}", fe_sqr(&y) == y_sq);
-    if fe_sqr(&y) != y_sq { eprintln!("FAIL: y is not valid sqrt"); return false; }
+    if fe_sqr(&y) != y_sq { return false; }
     let y_bytes = fe_to_be_bytes(&y);
     let py = if (y_bytes[31] & 1) != 0 { fe_sub(&P, &y) } else { y };
     let p_pt = Pt { x: pk_x, y: py, inf: false };
@@ -219,16 +211,9 @@ fn schnorr_verify_impl(pk: &[u8; 32], sig: &[u8; 64], msg: &[u8]) -> bool {
 
     let g = Pt { x: GX, y: GY, inf: false };
     let r_pt = point_add(&scalar_mul(&s, &g), &Pt { x: scalar_mul(&e, &p_pt).x, y: fe_sub(&P, &scalar_mul(&e, &p_pt).y), inf: false });
-    eprintln!("DEBUG: r_pt.inf = {}", r_pt.inf);
-    eprintln!("DEBUG: r_pt.x = {:?}", r_pt.x);
-    eprintln!("DEBUG: r_pt.y = {:?}", r_pt.y);
-    eprintln!("DEBUG: r_pt.x mod n = {:?}", fe_mod_n(&r_pt.x));
-    eprintln!("DEBUG: r mod n = {:?}", fe_mod_n(&r));
-    eprintln!("DEBUG: x match = {}", fe_mod_n(&r_pt.x) == fe_mod_n(&r));
-    if r_pt.inf { eprintln!("FAIL: r_pt is infinity"); return false; }
-    if fe_mod_n(&r_pt.x) != fe_mod_n(&r) { eprintln!("FAIL: x coordinate mismatch"); return false; }
+    if r_pt.inf { return false; }
+    if fe_mod_n(&r_pt.x) != fe_mod_n(&r) { return false; }
     let even_y = (fe_to_be_bytes(&r_pt.y)[31] & 1) == 0;
-    eprintln!("DEBUG: even_y = {}", even_y);
     even_y
 }
 
@@ -273,70 +258,197 @@ pub fn builtin_schnorr_verify(args: &[LispVal]) -> Result<LispVal, String> {
     let sig_arr: [u8; 64] = sig.try_into().map_err(|_| "schnorr-verify: sig must be 64 bytes")?;
     Ok(LispVal::Bool(schnorr_verify_impl(&pk_arr, &sig_arr, &msg)))
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // === Field arithmetic against Python reference values ===
+
     #[test]
-    fn test_sha256_direct() {
-        assert_eq!(sha256_impl(b""), [227,176,196,66,152,252,28,20,154,251,244,200,153,111,185,36,39,174,65,228,100,155,147,76,164,149,153,27,120,82,184,85]);
-        assert_eq!(sha256_impl(b"abc"), [186,120,22,191,143,1,207,234,65,65,64,222,93,174,34,35,176,3,97,163,150,23,122,156,180,16,255,97,242,0,21,173]);
+    fn test_fe_add() {
+        let a = [7u64, 0, 0, 0];
+        let b = [13u64, 0, 0, 0];
+        assert_eq!(fe_add(&a, &b), [20, 0, 0, 0]);
     }
 
     #[test]
-    fn test_schnorr_vector0_direct() {
-        let pk: [u8; 32] = [0xF9,0x30,0x8A,0x01,0x92,0x58,0xC3,0x10,0x49,0x34,0x4F,0x85,0xF8,0x9D,0x52,0x29,0xB5,0x31,0xC8,0x45,0x83,0x6F,0x99,0xB0,0x86,0x01,0xF1,0x13,0xBC,0xE0,0x36,0xF9];
-        let sig: [u8; 64] = [0xE9,0x07,0x83,0x1F,0x80,0x84,0x8D,0x10,0x69,0xA5,0x37,0x1B,0x40,0x24,0x10,0x36,0x4B,0xDF,0x1C,0x5F,0x83,0x07,0xB0,0x08,0x4C,0x55,0xF1,0xCE,0x2D,0xCA,0x82,0x15,0x25,0xF6,0x6A,0x4A,0x85,0xEA,0x8B,0x71,0xE4,0x82,0xA7,0x4F,0x38,0x2D,0x2C,0xE5,0xEB,0xEE,0x8F,0xDB,0x21,0x72,0xF4,0x77,0xDF,0x49,0x00,0xD3,0x10,0x53,0x6C,0x00];
-        assert!(schnorr_verify_impl(&pk, &sig, b""));
+    fn test_fe_sub() {
+        let a = [20u64, 0, 0, 0];
+        let b = [13u64, 0, 0, 0];
+        assert_eq!(fe_sub(&a, &b), [7, 0, 0, 0]);
     }
 
     #[test]
-    fn test_schnorr_vector1_direct() {
-        let pk: [u8; 32] = [0x79,0xBE,0x66,0x7E,0xF9,0xDC,0xBB,0xAC,0x55,0xA0,0x62,0x95,0xCE,0x87,0x0B,0x07,0x02,0x9B,0xFC,0xDB,0x2D,0xCE,0x28,0xD9,0x59,0xF2,0x81,0x5B,0x16,0xF8,0x17,0x98];
-        let sig: [u8; 64] = [0xF7,0x30,0x77,0xED,0x90,0xBE,0xFC,0x05,0x90,0x94,0xCA,0x7C,0xF4,0x03,0x0E,0x47,0x81,0xF9,0x4D,0xAD,0xB0,0x51,0xF8,0xE0,0xE2,0xB4,0x53,0xC5,0x3E,0x72,0x7F,0xE8,0x42,0x53,0xCA,0x4E,0x8B,0xB1,0x5A,0xEF,0x2E,0x58,0x03,0x3F,0x14,0xE5,0x56,0xE9,0x66,0x6B,0x72,0x23,0x8D,0x19,0x3A,0x1B,0xA2,0xB5,0x1B,0x57,0x6A,0x96,0xB5,0x98];
-        assert!(schnorr_verify_impl(&pk, &sig, b""));
+    fn test_fe_mul_small() {
+        let a = [7u64, 0, 0, 0];
+        let b = [13u64, 0, 0, 0];
+        assert_eq!(fe_mul(&a, &b), [91, 0, 0, 0]);
     }
 
     #[test]
-    fn test_scalar_mul_one() {
-        let one = [1u64, 0, 0, 0];
+    fn test_fe_mul_large() {
+        // GX^2 computed in Python
+        assert_eq!(fe_sqr(&GX), [4095181814372826185, 16385539742293079483, 7757922937955756701, 9606432895266517768]);
+    }
+
+    #[test]
+    fn test_fe_inv_small() {
+        // 7 * 7^-1 = 1
+        let inv7 = fe_inv(&[7, 0, 0, 0]);
+        assert_eq!(inv7, [15811494916641071437, 7905747460161236406, 13176245766935394011, 15811494920322472813]);
+        assert_eq!(fe_mul(&[7, 0, 0, 0], &inv7), [1, 0, 0, 0]);
+    }
+
+    #[test]
+    fn test_fe_inv_gx() {
+        // GX * GX^-1 = 1
+        let inv_gx = fe_inv(&GX);
+        assert_eq!(inv_gx, [16581409637254471414, 7473978207347869547, 9730782053094875754, 2556634953548008838]);
+        assert_eq!(fe_mul(&GX, &inv_gx), [1, 0, 0, 0]);
+    }
+
+    #[test]
+    fn test_fe_sqrt() {
+        // sqrt(GX^2) should be GX
+        let sq = fe_sqr(&GX);
+        let root = fe_sqrt(&sq);
+        assert_eq!(fe_sqr(&root), sq);
+    }
+
+    // === SHA-256 ===
+
+    #[test]
+    fn test_sha256_empty() {
+        assert_eq!(sha256_impl(&[]),
+            [227,176,196,66,152,252,28,20,154,251,244,200,153,111,185,36,39,174,65,228,100,155,147,76,164,149,153,27,120,82,184,85]);
+    }
+
+    #[test]
+    fn test_sha256_abc() {
+        assert_eq!(sha256_impl(b"abc").as_slice(),
+            [186,120,22,191,143,1,207,234,65,65,64,222,93,174,34,35,176,3,97,163,150,23,122,156,180,16,255,97,242,0,21,173]);
+    }
+
+    // === EC point operations ===
+
+    #[test]
+    fn test_scalar_mul_1g() {
         let g = Pt { x: GX, y: GY, inf: false };
-        let r = scalar_mul(&one, &g);
-        eprintln!("1*G = ({:?}, {:?})", r.x, r.y);
-        eprintln!("G   = ({:?}, {:?})", GX, GY);
+        let r = scalar_mul(&[1,0,0,0], &g);
         assert_eq!(r.x, GX);
         assert_eq!(r.y, GY);
+        assert!(!r.inf);
     }
 
     #[test]
-    fn test_point_double_g() {
+    fn test_scalar_mul_2g() {
         let g = Pt { x: GX, y: GY, inf: false };
-        let r = point_double(&g);
-        eprintln!("2*G = ({:?}, {:?})", r.x, r.y);
+        let r = scalar_mul(&[2,0,0,0], &g);
+        assert_eq!(r.x, [12370272968204394213, 6662950628856118439, 3478257130916576472, 14268669794154544493]);
+        assert_eq!(r.y, [2550217892273579306, 17867523981857706209, 11800983642684844782, 1936944757666071353]);
     }
 
     #[test]
-    fn test_fe_inv() {
-        let x = [7u64, 0, 0, 0];
-        let xi = fe_inv(&x);
-        let one = fe_mul(&x, &xi);
-        eprintln!("7 * 7^-1 = {:?}", one);
-        assert_eq!(one, [1, 0, 0, 0]);
-
-        let gx_inv = fe_inv(&GX);
-        let should_be_one = fe_mul(&GX, &gx_inv);
-        eprintln!("GX * GX^-1 = {:?}", should_be_one);
-        assert_eq!(should_be_one, [1, 0, 0, 0]);
+    fn test_scalar_mul_3g() {
+        let g = Pt { x: GX, y: GY, inf: false };
+        let r = scalar_mul(&[3,0,0,0], &g);
+        assert_eq!(r.x, [9656264143134537465, 13056436995607206320, 5274928500377997865, 17956003453681058576]);
+        assert_eq!(r.y, [7834571707967399538, 7278003473310950171, 1144820191972553558, 4075611493812267028]);
     }
 
     #[test]
-    fn test_fe_arithmetic() {
-        let one = [1u64, 0, 0, 0];
-        let two = fe_add(&one, &one);
-        assert_eq!(two, [2, 0, 0, 0]);
-        let three = fe_add(&two, &one);
-        assert_eq!(three, [3, 0, 0, 0]);
-        let sq = fe_sqr(&three);
-        assert_eq!(sq, [9, 0, 0, 0]);
+    fn test_scalar_mul_7g() {
+        let g = Pt { x: GX, y: GY, inf: false };
+        let r = scalar_mul(&[7,0,0,0], &g);
+        assert_eq!(r.x, [16801766848214661564, 4413980075321516956, 11788439643834972686, 6682761736226714858]);
+        assert_eq!(r.y, [11891796769454056666, 12111253311957362613, 11752017254187422939, 7704473966897092960]);
+    }
+
+    #[test]
+    fn test_point_double_vs_scalar_mul() {
+        let g = Pt { x: GX, y: GY, inf: false };
+        let d = point_double(&g);
+        let m = scalar_mul(&[2,0,0,0], &g);
+        assert_eq!(d.x, m.x);
+        assert_eq!(d.y, m.y);
+    }
+
+    #[test]
+    fn test_2g_on_curve() {
+        let g = Pt { x: GX, y: GY, inf: false };
+        let r = scalar_mul(&[2,0,0,0], &g);
+        // y^2 = x^3 + 7 mod p
+        let x3 = fe_mul(&fe_mul(&r.x, &r.x), &r.x);
+        let rhs = fe_add(&x3, &[7,0,0,0]);
+        assert_eq!(fe_sqr(&r.y), rhs);
+    }
+
+    // === BIP-340 Schnorr verification ===
+    // Vector 0: msg is 32 zero bytes, NOT empty
+
+    #[test]
+    fn test_schnorr_v0_direct() {
+        let pk: [u8; 32] = [249,48,138,1,146,88,195,16,73,52,79,133,248,157,82,41,181,49,200,69,131,111,153,176,134,1,241,19,188,224,54,249];
+        let sig: [u8; 64] = [233,7,131,31,128,132,141,16,105,165,55,27,64,36,16,54,75,223,28,95,131,7,176,8,76,85,241,206,45,202,130,21,37,246,106,74,133,234,139,113,228,130,167,79,56,45,44,229,235,238,232,253,178,23,47,71,125,244,144,13,49,5,54,192];
+        let msg: [u8; 32] = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0];
+        assert!(schnorr_verify_impl(&pk, &sig, &msg));
+    }
+
+    #[test]
+    fn test_schnorr_v1_direct() {
+        let pk: [u8; 32] = [223,241,215,127,42,103,28,95,54,24,55,38,219,35,65,190,88,254,174,29,162,222,206,216,67,36,15,123,80,43,166,89];
+        let sig: [u8; 64] = [104,150,189,96,238,174,41,109,180,138,34,159,247,29,254,7,27,222,65,62,109,67,249,23,220,141,207,140,120,222,51,65,137,6,209,26,201,118,171,204,178,11,9,18,146,191,244,234,137,126,252,182,57,234,135,28,250,149,246,222,51,158,75,10];
+        let msg: [u8; 32] = [36,63,106,136,133,163,8,211,19,25,138,46,3,112,115,68,164,9,56,34,41,159,49,208,8,46,250,152,236,78,108,137];
+        assert!(schnorr_verify_impl(&pk, &sig, &msg));
+    }
+
+    #[test]
+    fn test_schnorr_v2_direct() {
+        let pk: [u8; 32] = [221,48,138,254,197,119,126,19,18,31,167,43,156,193,183,204,1,57,113,83,9,176,134,201,96,225,143,217,105,119,78,184];
+        let sig: [u8; 64] = [88,49,170,238,215,180,75,183,78,94,171,148,186,157,66,148,196,155,207,42,96,114,141,139,76,32,15,80,221,49,60,27,171,116,88,121,165,173,149,74,114,196,90,145,195,165,29,60,122,222,169,141,130,248,72,30,14,30,3,103,74,111,63,183];
+        let msg: [u8; 32] = [126,45,88,216,179,188,223,26,186,222,199,130,144,84,249,13,218,152,5,170,181,108,119,51,48,36,185,208,165,8,183,92];
+        assert!(schnorr_verify_impl(&pk, &sig, &msg));
+    }
+
+    #[test]
+    fn test_schnorr_bad_sig_direct() {
+        let pk: [u8; 32] = [0xF9,0x30,0x8A,0x01,0x92,0x58,0xC3,0x10,0x49,0x34,0x4F,0x85,0xF8,0x9D,0x52,0x29,0xB5,0x31,0xC8,0x45,0x83,0x6F,0x99,0xB0,0x86,0x01,0xF1,0x13,0xBC,0xE0,0x36,0xF9];
+        let sig: [u8; 64] = [0u8; 64];
+        let msg: [u8; 32] = [0u8; 32];
+        assert!(!schnorr_verify_impl(&pk, &sig, &msg));
+    }
+
+    // === Negative BIP-340 test vectors (should reject) ===
+
+    #[test]
+    fn test_schnorr_v5_false() {
+        let pk: [u8; 32] = [238,253,234,76,219,103,119,80,164,32,254,232,7,234,207,33,235,152,152,174,121,185,118,135,102,228,250,160,74,45,74,52];
+        let sig: [u8; 64] = [108,255,92,59,168,108,105,234,75,115,118,243,26,155,203,79,116,193,151,96,137,178,217,150,61,162,229,84,62,23,119,105,105,232,155,76,85,100,208,3,73,16,107,132,151,120,93,215,209,215,19,168,174,130,179,47,167,157,95,127,196,7,211,155];
+        let msg: [u8; 32] = [36,63,106,136,133,163,8,211,19,25,138,46,3,112,115,68,164,9,56,34,41,159,49,208,8,46,250,152,236,78,108,137];
+        assert!(!schnorr_verify_impl(&pk, &sig, &msg));
+    }
+
+    #[test]
+    fn test_schnorr_v6_false() {
+        let pk: [u8; 32] = [223,241,215,127,42,103,28,95,54,24,55,38,219,35,65,190,88,254,174,29,162,222,206,216,67,36,15,123,80,43,166,89];
+        let sig: [u8; 64] = [255,249,123,213,117,94,238,164,32,69,58,20,53,82,53,211,130,246,71,47,133,104,161,139,47,5,122,20,96,41,117,86,60,194,121,68,100,10,198,7,205,16,122,225,9,35,217,239,122,115,198,67,225,102,190,94,190,175,163,75,26,197,83,226];
+        let msg: [u8; 32] = [36,63,106,136,133,163,8,211,19,25,138,46,3,112,115,68,164,9,56,34,41,159,49,208,8,46,250,152,236,78,108,137];
+        assert!(!schnorr_verify_impl(&pk, &sig, &msg));
+    }
+
+    #[test]
+    fn test_schnorr_v9_false() {
+        let pk: [u8; 32] = [223,241,215,127,42,103,28,95,54,24,55,38,219,35,65,190,88,254,174,29,162,222,206,216,67,36,15,123,80,43,166,89];
+        let sig: [u8; 64] = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,18,61,218,131,40,175,156,35,169,76,31,238,207,209,35,186,79,183,52,118,240,213,148,220,182,92,100,37,189,24,96,81];
+        let msg: [u8; 32] = [36,63,106,136,133,163,8,211,19,25,138,46,3,112,115,68,164,9,56,34,41,159,49,208,8,46,250,152,236,78,108,137];
+        assert!(!schnorr_verify_impl(&pk, &sig, &msg));
+    }
+
+    #[test]
+    fn test_scalar_mul_order_g_is_infinity() {
+        let g = Pt { x: GX, y: GY, inf: false };
+        let r = scalar_mul(&N, &g);
+        assert!(r.inf);
     }
 }
