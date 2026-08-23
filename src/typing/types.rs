@@ -52,6 +52,7 @@ fn is_builtin_wildcard(name: &str) -> bool {
                 // P1 context functions (OutLayer env)
                 | "env/signer"
                 | "env/predecessor"
+                | "schnorr-verify"
         )
 }
 
@@ -844,6 +845,14 @@ impl TcEnv {
             ),
         );
 
+        // schnorr-verify : str -> str -> str -> int (BIP-340, runtime bytes)
+        env.insert_mono(
+            "schnorr-verify".into(),
+            TcType::Arrow(
+                vec![str_ty.clone(), str_ty.clone(), str_ty.clone()],
+                Box::new(int_ty.clone()),
+            ),
+        );
         // near/schnorr_verify : str -> str -> str -> int (BIP-340 secp256k1, stitched WASM)
         env.insert_mono(
             "near/schnorr_verify".into(),
@@ -1140,6 +1149,14 @@ impl TcEnv {
             ),
         );
 
+        // schnorr-verify : str -> str -> str -> int (BIP-340, runtime bytes)
+        env.insert_mono(
+            "schnorr-verify".into(),
+            TcType::Arrow(
+                vec![str_ty.clone(), str_ty.clone(), str_ty.clone()],
+                Box::new(int_ty.clone()),
+            ),
+        );
         // near/schnorr_verify : str -> str -> str -> int (BIP-340 secp256k1, stitched WASM)
         env.insert_mono(
             "near/schnorr_verify".into(),

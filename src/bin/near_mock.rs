@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use wasmtime::*;
+use lisp_rlm_wasm::builtin_schnorr::schnorr_verify_impl;
 
 const STATE_FILE: &str = "/tmp/near-mock-state.bin";
 
@@ -567,6 +568,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     linker.define(&store, "env", "prepaid_gas", noop0r.clone())?;
     linker.define(&store, "env", "random_seed", noop1.clone())?;
     linker.define(&store, "env", "sha256", noop1.clone())?;
+    // schnorr_verify_bip340(pk_ptr: i32, sig_ptr: i32, msg_ptr: i32, msg_len: i32) -> i32
+    let schnorr_fn = Func::new(
+        &mut store,
+        FuncType::new(&engine, vec![ValType::I32; 4], vec![ValType::I32]),
+        |mut caller, params, results| {
+            let pk_ptr = params[0].unwrap_i32() as usize;
+            let sig_ptr = params[1].unwrap_i32() as usize;
+            let msg_ptr = params[2].unwrap_i32() as usize;
+            let msg_len = params[3].unwrap_i32() as usize;
+            
+            let mem = caller.get_export("memory")
+                .and_then(|e| e.into_memory())
+                .expect("missing memory export");
+            let data = mem.data(&caller);
+            
+            if pk_ptr + 32 > data.len() || sig_ptr + 64 > data.len() || msg_ptr + msg_len > data.len() {
+                results[0] = Val::I32(0);
+                return Ok(());
+            }
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let pk: [u8; 32] = data[pk_ptr..pk_ptr+32].try_into().unwrap();
+                let sig: [u8; 64] = data[sig_ptr..sig_ptr+64].try_into().unwrap();
+                let msg = &data[msg_ptr..msg_ptr+msg_len];
+                schnorr_verify_impl(&pk, &sig, msg) as i32
+            })).unwrap_or(0);
+            
+            results[0] = Val::I32(result);
+            Ok(())
+        },
+    );
+    linker.define(&store, "env", "schnorr_verify_bip340", schnorr_fn)?;
     linker.define(&store, "env", "keccak256", noop1.clone())?;
     linker.define(&store, "env", "log", noop1.clone())?;
     linker.define(&store, "env", "validator_stake", noop_3i.clone())?;

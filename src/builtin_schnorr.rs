@@ -186,7 +186,7 @@ fn scalar_mul(k: &[u64; 4], base: &Pt) -> Pt {
     r
 }
 
-fn schnorr_verify_impl(pk: &[u8; 32], sig: &[u8; 64], msg: &[u8]) -> bool {
+pub fn schnorr_verify_impl(pk: &[u8; 32], sig: &[u8; 64], msg: &[u8]) -> bool {
     let pk_x = be_bytes_to_fe(pk);
     let r_arr: [u8; 32] = sig[..32].try_into().unwrap();
     let s_arr: [u8; 32] = sig[32..].try_into().unwrap();

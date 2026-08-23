@@ -128,6 +128,44 @@ impl WasmEmitter {
                 v.extend(self.emit_tag_num());
                 Ok(v)
             }
+            "schnorr-verify" => {
+                // (schnorr-verify pk_bytes sig_bytes msg_bytes) -> int (1/0)
+                // BIP-340 via WASI-resolved import: schnorr_verify_bip340(pk_ptr, sig_ptr, msg_ptr, msg_len) -> i32
+                // Local: near_mock.rs resolves to builtin_schnorr.rs. On-chain: linker stitches WASM.
+                let pk = self.expr(&a[0])?;
+                let sig = self.expr(&a[1])?;
+                let msg = self.expr(&a[2])?;
+                let wasm_idx = self.need_wasm_import(
+                    "schnorr_verify_bip340",
+                    vec![ValType::I32, ValType::I32, ValType::I32, ValType::I32],
+                    vec![ValType::I32],
+                );
+                let mut v = Vec::new();
+                // pk_ptr (untag Str -> raw pointer)
+                v.extend(pk.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                // sig_ptr
+                v.extend(sig.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                // msg_ptr
+                v.extend(msg.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                // msg_len (upper 32 bits of tagged Str = length)
+                v.extend(msg);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                // Call stitched WASM schnorr
+                v.push(Self::wasm_import_call(wasm_idx));
+                // Result: i32 (1=valid, 0=invalid) -> tag as Num
+                v.push(Instruction::I64ExtendI32S);
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
             "near/p256_verify" => {
                 // (near/p256_verify signature message public_key) → bool
                 // NEAR host: p256_verify(sig_len, sig_ptr, msg_len, msg_ptr, pk_len, pk_ptr) → u64 — idx 55
@@ -249,39 +287,6 @@ impl WasmEmitter {
                 vv.push(Self::host_call(54));
                 vv.extend(self.emit_tag_num());
                 Ok(vv)
-            }
-            "near/p256_verify" => {
-                let msg = self.expr(&a[0])?;
-                let sig = self.expr(&a[1])?;
-                let pk = self.expr(&a[2])?;
-                let mut v = Vec::new();
-                v.extend(msg.clone());
-                v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64ShrU);
-                v.extend(msg);
-                v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64ExtendI32U);
-                v.extend(sig.clone());
-                v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64ShrU);
-                v.extend(sig);
-                v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64ExtendI32U);
-                v.extend(pk.clone());
-                v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64ShrU);
-                v.extend(pk);
-                v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64ExtendI32U);
-                v.push(Self::host_call(55));
-                v.extend(self.emit_tag_num());
-                Ok(v)
             }
             "near/alt_bn128_g1_multiexp" => {
                 let data = self.expr(&a[0])?;
