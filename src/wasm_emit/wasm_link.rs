@@ -436,10 +436,11 @@ fn remap_calls(
 
 // ─── Main merge function ─────────────────────────────────────────────
 
-/// Embed schnorr-wasm (compiled by build.rs) and merge into the contract.
-pub fn link_schnorr(contract_wasm: &[u8]) -> Vec<u8> {
-    let lib_wasm = include_bytes!(env!("SCHNORR_WASM_PATH"));
-    match merge_lib_wasm(contract_wasm, lib_wasm, "schnorr_verify_bip340") {
+/// Embed schnorr from schnorr.wat (self-contained, no env var or build.rs).
+pub fn link_schnorr_wat(contract_wasm: &[u8]) -> Vec<u8> {
+    let lib_wasm = wat::parse_str(include_str!("schnorr.wat"))
+        .expect("failed to parse schnorr.wat");
+    match merge_lib_wasm(contract_wasm, &lib_wasm, "schnorr_verify_bip340") {
         Ok(bytes) => bytes,
         Err(e) => panic!("schnorr WASM linking failed: {}", e),
     }
