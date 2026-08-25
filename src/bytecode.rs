@@ -5362,7 +5362,12 @@ pub fn eval_builtin(
             Ok(LispVal::CaseLambda { clauses })
         }
         "abs" => match args.get(0) {
-            Some(LispVal::Num(n)) => Ok(LispVal::Num(n.abs())),
+            // checked_abs: abs(i64::MIN) overflows — must be a Lisp-level
+            // error, not a Rust panic (debug builds abort with exit 101).
+            Some(LispVal::Num(n)) => n
+                .checked_abs()
+                .map(|v| LispVal::Num(v))
+                .ok_or_else(|| "integer overflow in abs".to_string()),
             Some(LispVal::Float(f)) => Ok(LispVal::Float(f.abs())),
             _ => Ok(LispVal::Num(0)),
         },

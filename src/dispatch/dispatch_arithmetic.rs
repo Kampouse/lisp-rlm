@@ -87,7 +87,12 @@ pub fn handle(
         }
         // ── Tier 1: Numeric ──
         "abs" => match args.first() {
-            Some(LispVal::Num(n)) => Ok(Some(LispVal::Num(n.abs()))),
+            // checked_abs: abs(i64::MIN) overflows — must be a Lisp-level
+            // error, not a Rust panic (debug builds abort with exit 101).
+            Some(LispVal::Num(n)) => n
+                .checked_abs()
+                .map(|v| Some(LispVal::Num(v)))
+                .ok_or_else(|| "integer overflow in abs".to_string()),
             Some(LispVal::Float(f)) => Ok(Some(LispVal::Float(f.abs()))),
             _ => Err("abs: need number".into()),
         },
