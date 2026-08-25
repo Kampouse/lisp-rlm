@@ -5,7 +5,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "+", "-", "*", "/", "mod",
     "=", "==", "!=", "/=", "<", ">", "<=", ">=",
     "list", "vec", "vec-nth", "vec-assoc", "vec-len", "vec-conj", "vec-contains?", "vec-slice", "vec?", "car", "cdr", "cons", "len", "append", "nth",
-    "str-concat", "str-contains", "to-string", "str-length",
+    "str-cat", "str-concat", "str-contains", "to-string", "str-length",
     "str-substring", "str-split", "str-split-exact", "str-trim",
     "str-index-of", "str-upcase", "str-downcase",
     "str-starts-with", "str-ends-with", "str=", "str!=",

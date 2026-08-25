@@ -351,6 +351,16 @@ impl TcEnv {
                 ),
             );
         }
+        // str-cat: strings-only variadic concat (interpreter + wasm_emit agree;
+        // Num args are NOT stringified — wasm untag assumes TAG_STR, so the
+        // interpreter hard-errors instead of wasm's silent mis-read)
+        env.insert_mono(
+            "str-cat".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Str), TcType::Con(TcCon::Str)],
+                Box::new(TcType::Con(TcCon::Str)),
+            ),
+        );
         env.insert_mono(
             "str-length".to_string(),
             TcType::Arrow(

@@ -3266,8 +3266,16 @@ fn peephole_optimize(code: &mut Vec<Op>, slot_is_i64: &[bool], slot_is_f64: &[bo
             }
         }
         // Fuse LoadSlot(N) + Return → ReturnSlot(N)
-        // Only if i is not a jump target (the LoadSlot must be reachable only from predecessor)
-        if i + 1 < code.len() && !jump_targets.contains(&i) {
+        // Only if NEITHER op is a jump target: the LoadSlot must be reachable
+        // only from its predecessor, AND the Return must not be a join point
+        // (if-branches jump straight to the tail Return with their value on
+        // the stack — fusing that pair into ReturnSlot(N) would drop the
+        // pushed branch value and return slot N instead, which the stack
+        // verifier rejects as a height mismatch at the join).
+        if i + 1 < code.len()
+            && !jump_targets.contains(&i)
+            && !jump_targets.contains(&(i + 1))
+        {
             if let (Op::LoadSlot(s), Op::Return) = (&code[i], &code[i + 1]) {
                 index_map.push(new_code.len());
                 new_code.push(Op::ReturnSlot(*s));
@@ -5565,6 +5573,29 @@ pub fn eval_builtin(
             }
             _ => Ok(LispVal::Nil),
         },
+        "str-cat" => {
+            // Variadic string concat — matches wasm_emit (call_string.rs "str-cat"):
+            // strings-only, NO implicit stringification of non-string args
+            // (wasm untag→len<<32|ptr assumes TAG_STR; a Num arg would be
+            // silently mis-read there, so here it is a hard error instead).
+            // Arity: ≥1 arg; 1 arg returns that string unchanged.
+            if args.is_empty() {
+                return Err("str-cat: need at least 1 arg".into());
+            }
+            let mut s = String::new();
+            for a in args {
+                match a {
+                    LispVal::Str(st) => s.push_str(st),
+                    other => {
+                        return Err(format!(
+                            "str-cat: expected string argument, got {} — convert explicitly with (to-string x) / (u128/from-i64 x)",
+                            other
+                        ))
+                    }
+                }
+            }
+            Ok(LispVal::Str(s))
+        }
         "str-concat" => {
             let s: String = args
                 .iter()
