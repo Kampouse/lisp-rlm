@@ -2,6 +2,28 @@ use super::*;
 
 impl WasmEmitter {
     pub(crate) fn call(&mut self, op: &str, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
+        // ── u128 builtins (string-based): interpreter-only for now ──
+        // The decimal-string u128 family is not yet lowered to wasm limb math.
+        // Intercept BEFORE the domain dispatch: several of these names overlap
+        // the address-based limbs in call_u128 (different calling convention),
+        // which would silently miscompile string arguments as memory addresses.
+        if matches!(
+            op,
+            "u128/add"
+                | "u128/sub"
+                | "u128/mul"
+                | "u128/div"
+                | "u128/mod"
+                | "u128/lt"
+                | "u128/gt"
+                | "u128/eq"
+                | "u128/from-i64"
+                | "u128/to-i64"
+                | "u128/is-zero"
+        ) {
+            return Err("u128 builtins not yet implemented for wasm target".into());
+        }
+
         // ── Domain dispatch (each returns Err("__not_handled__") if op doesn't match) ──
         macro_rules! try_domain {
             ($method:expr) => {

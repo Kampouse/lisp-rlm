@@ -628,6 +628,40 @@ impl TcEnv {
             ),
         );
 
+        // ── u128 builtins (string-based decimal values, pure functions) ──
+        // Typed here too so wasm entry points get the emitter's clear
+        // "u128 builtins not yet implemented for wasm target" error instead
+        // of a misleading "undefined variable" from the checker.
+        {
+            let str_ty = TcType::Con(TcCon::Str);
+            let int_ty = TcType::Con(TcCon::Int);
+            let bool_ty = TcType::Con(TcCon::Bool);
+            for name in &["u128/add", "u128/sub", "u128/mul", "u128/div", "u128/mod"] {
+                env.insert_mono(
+                    name.to_string(),
+                    TcType::Arrow(vec![str_ty.clone(), str_ty.clone()], Box::new(str_ty.clone())),
+                );
+            }
+            for name in &["u128/lt", "u128/gt", "u128/eq"] {
+                env.insert_mono(
+                    name.to_string(),
+                    TcType::Arrow(vec![str_ty.clone(), str_ty.clone()], Box::new(bool_ty.clone())),
+                );
+            }
+            env.insert_mono(
+                "u128/from-i64".into(),
+                TcType::Arrow(vec![int_ty], Box::new(str_ty.clone())),
+            );
+            env.insert_mono(
+                "u128/to-i64".into(),
+                TcType::Arrow(vec![str_ty.clone()], Box::new(TcType::Con(TcCon::Int))),
+            );
+            env.insert_mono(
+                "u128/is-zero".into(),
+                TcType::Arrow(vec![str_ty], Box::new(bool_ty)),
+            );
+        }
+
         env
     }
 
@@ -763,6 +797,37 @@ impl TcEnv {
                 vars: vec![1],
                 ty: TcType::Arrow(vec![any_b.clone(), any_b], Box::new(TcType::Con(TcCon::Str))),
             },
+        );
+
+        // ── u128 builtins (string-based decimal values) ──
+        // Arithmetic: str → str → str
+        for name in &["u128/add", "u128/sub", "u128/mul", "u128/div", "u128/mod"] {
+            env.insert_mono(
+                name.to_string(),
+                TcType::Arrow(vec![str_ty.clone(), str_ty.clone()], Box::new(str_ty.clone())),
+            );
+        }
+        // Comparisons: str → str → bool
+        for name in &["u128/lt", "u128/gt", "u128/eq"] {
+            env.insert_mono(
+                name.to_string(),
+                TcType::Arrow(vec![str_ty.clone(), str_ty.clone()], Box::new(bool_ty.clone())),
+            );
+        }
+        // u128/from-i64 : int → str
+        env.insert_mono(
+            "u128/from-i64".into(),
+            TcType::Arrow(vec![int_ty], Box::new(str_ty.clone())),
+        );
+        // u128/to-i64 : str → int
+        env.insert_mono(
+            "u128/to-i64".into(),
+            TcType::Arrow(vec![str_ty.clone()], Box::new(TcType::Con(TcCon::Int))),
+        );
+        // u128/is-zero : str → bool
+        env.insert_mono(
+            "u128/is-zero".into(),
+            TcType::Arrow(vec![str_ty], Box::new(bool_ty)),
         );
 
         env.near_wildcard = true;

@@ -101,6 +101,10 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "near/ed25519_verify", "near/ecdsa_verify", "near/hmac_sha256",
     "near/iter_prefix", "near/iter_range", "near/iter_next",
     "near/config", "near/current_account_id", "near/signer_account_id", "near/predecessor_account_id",
+    // u128 builtins (string-based decimal values, NEAR yocto scale)
+    "u128/add", "u128/sub", "u128/mul", "u128/div", "u128/mod",
+    "u128/lt", "u128/gt", "u128/eq",
+    "u128/from-i64", "u128/to-i64", "u128/is-zero",
 ];
 
 pub fn is_builtin_name(name: &str) -> bool {

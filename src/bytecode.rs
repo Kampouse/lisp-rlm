@@ -5227,6 +5227,70 @@ pub fn eval_builtin(
             Ok(LispVal::Str(desc))
         }
         // to-json: (to-json value) → JSON string
+        // ── u128 builtins: decimal-string values, NEAR yocto scale ──
+        // u128 values are STRINGS in lisp land (matches NEAR's JSON API).
+        // All failures (bad parse, overflow, wrong type) are hard errors.
+        "u128/add" | "u128/sub" | "u128/mul" | "u128/div" | "u128/mod"
+        | "u128/lt" | "u128/gt" | "u128/eq"
+        | "u128/from-i64" | "u128/to-i64" | "u128/is-zero" => {
+            fn parse_u128_arg(builtin: &str, arg: Option<&LispVal>) -> Result<u128, String> {
+                match arg {
+                    Some(LispVal::Str(s)) => s.parse::<u128>().map_err(|_| {
+                        format!("{}: invalid u128 string '{}'", builtin, s)
+                    }),
+                    Some(other) => Err(format!("{}: expected string argument, got {}", builtin, other)),
+                    None => Err(format!("{}: missing argument", builtin)),
+                }
+            }
+            match name {
+                "u128/add" | "u128/sub" | "u128/mul" | "u128/div" | "u128/mod" => {
+                    let a = parse_u128_arg(name, args.get(0))?;
+                    let b = parse_u128_arg(name, args.get(1))?;
+                    let r = match name {
+                        "u128/add" => a.checked_add(b),
+                        "u128/sub" => a.checked_sub(b),
+                        "u128/mul" => a.checked_mul(b),
+                        "u128/div" => {
+                            if b == 0 { return Err(format!("{}: division by zero", name)); }
+                            Some(a / b)
+                        }
+                        "u128/mod" => {
+                            if b == 0 { return Err(format!("{}: division by zero", name)); }
+                            Some(a % b)
+                        }
+                        _ => unreachable!(),
+                    };
+                    match r {
+                        Some(v) => Ok(LispVal::Str(v.to_string())),
+                        None => Err(format!("{}: u128 overflow", name)),
+                    }
+                }
+                "u128/lt" | "u128/gt" | "u128/eq" => {
+                    let a = parse_u128_arg(name, args.get(0))?;
+                    let b = parse_u128_arg(name, args.get(1))?;
+                    let r = match name {
+                        "u128/lt" => a < b,
+                        "u128/gt" => a > b,
+                        _ => a == b,
+                    };
+                    Ok(LispVal::Bool(r))
+                }
+                "u128/from-i64" => match args.get(0) {
+                    Some(LispVal::Num(n)) => Ok(LispVal::Str(n.to_string())),
+                    Some(other) => Err(format!("u128/from-i64: expected i64 number, got {}", other)),
+                    None => Err("u128/from-i64: missing argument".into()),
+                },
+                "u128/to-i64" => {
+                    let v = parse_u128_arg(name, args.get(0))?;
+                    if v > i64::MAX as u128 {
+                        return Err(format!("u128/to-i64: value {} exceeds i64::MAX", v));
+                    }
+                    Ok(LispVal::Num(v as i64))
+                }
+                "u128/is-zero" => Ok(LispVal::Bool(parse_u128_arg(name, args.get(0))? == 0)),
+                _ => unreachable!(),
+            }
+        }
         "to-json" => {
             fn to_json(val: &LispVal) -> String {
                 match val {
