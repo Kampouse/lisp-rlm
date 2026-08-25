@@ -202,3 +202,22 @@ Tagged value scheme (3-bit tag in bottom bits):
 - `5` Str — payload = (heap_off | (len << 32))
 - `6` Array — payload = heap pointer; heap layout: [count, elem0, elem1, ...]
 - Falsy set: { Bool(false)=1, Nil=4 }. Num(0) is truthy (Lisp semantics).
+
+## 2026-08-25 — found by tests/compiler-torture (first run)
+
+### T4 (CRITICAL): closures over let vars share state across instances
+- Two `(make-counter)` instances with the same binding name (`n`) share ONE
+  cell: c1,c1,c2,c1 → 1,2,3,4 (expected 1,2,1,3). Param-capturing closures
+  are independent (p1=101, p2=201); DIFFERENT binding names (n vs m) also
+  independent. Mechanism: forward-captured let vars compile set!/read to
+  StoreGlobal/LoadGlobal on the flat name-keyed env → env["n"] is global
+  across all instances. Contract impact: two users' balances would alias.
+  Fix requires per-instance closure cells (heap-allocated capture env at
+  lambda creation) — architectural, not a patch. Until fixed: NEVER use
+  same-named let-captured mutable state in two instances of a factory.
+
+### T6: str-cat missing from interpreter (surface divergence, 3rd of its class)
+- `(str-cat "x" 42)` → unknown builtin in lisp-run; exists in the WASM
+  emitter path (GAPS str-cat key-collision entry references it). Same class
+  as while/dotimes divergence. Note: hard-error change is what surfaced it
+  (pre-fix it would have silently returned the form as data).
