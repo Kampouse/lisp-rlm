@@ -5641,6 +5641,12 @@ pub fn eval_builtin(
         "to-float" => match args.get(0) {
             Some(LispVal::Num(n)) => Ok(LispVal::Float(*n as f64)),
             Some(LispVal::Float(f)) => Ok(LispVal::Float(*f)),
+            // Match dispatch_predicates::handle: parse strings ("3.5" → 3.5)
+            // instead of silently returning 0.0 (silent-wrong-answer class).
+            Some(LispVal::Str(s)) => s
+                .parse::<f64>()
+                .map(LispVal::Float)
+                .map_err(|_| format!("to-float: cannot parse '{}'", s)),
             _ => Ok(LispVal::Float(0.0)),
         },
         // --- Additional builtins for lambda bytecode ---
