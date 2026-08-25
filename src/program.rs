@@ -264,6 +264,12 @@ pub fn run_program(
     })?;
 
     verify_bytecode(&cl).map_err(|errs| {
+        if std::env::var("LISP_DUMP_OPS").is_ok() {
+            eprintln!("=== VERIFIED FAILED LAMBDA ({:?}, slots: {}) ===", cl.name, cl.total_slots);
+            for (idx, op) in cl.code.iter().enumerate() {
+                eprintln!("  {:>4}: {:?}", idx, op);
+            }
+        }
         errs.iter()
             .map(|e| e.to_string())
             .collect::<Vec<_>>()

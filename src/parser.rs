@@ -36,12 +36,13 @@ fn tokenize(input: &str) -> Vec<(String, usize)> {
             cur_start = i;
             cur.push(ch);
             i += 1;
-        } else if ch == ';' && i + 1 < len && chars[i + 1] == ';' {
+        } else if ch == ';' {
+            // Line comment: `;` (single or double) to end of line, anywhere outside strings.
             if !cur.is_empty() {
                 tokens.push((cur.clone(), cur_start));
                 cur.clear();
             }
-            i += 2;
+            i += 1;
             while i < len && chars[i] != '\n' {
                 i += 1;
             }

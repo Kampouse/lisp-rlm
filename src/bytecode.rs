@@ -1754,6 +1754,120 @@ impl LoopCompiler {
                             self.code[jmp_idx] = Op::Jump(self.code.len());
                             true
                         }
+                        // while: (while cond body...) → nil; loops while cond truthy
+                        "while" => {
+                            if list.len() < 3 {
+                                return false;
+                            }
+                            let loop_start = self.code.len();
+                            // compile condition
+                            if !self.compile_expr(&list[1], outer_env) {
+                                return false;
+                            }
+                            let jf_idx = self.code.len();
+                            self.code.push(Op::JumpIfFalse(0));
+                            // compile body as implicit begin; pop every value
+                            // (while evaluates to nil)
+                            for arg in &list[2..] {
+                                if !self.compile_expr(arg, outer_env) {
+                                    return false;
+                                }
+                                self.code.push(Op::Pop);
+                            }
+                            // jump back to condition
+                            self.code.push(Op::Jump(loop_start));
+                            // exit lands here with nil
+                            self.code[jf_idx] = Op::JumpIfFalse(self.code.len());
+                            self.code.push(Op::PushNil);
+                            true
+                        }
+                        // dotimes: (dotimes (i n) body...) → nil; i from 0..n
+                        // Desugared inline: fresh slots for counter and limit,
+                        // then a while-style loop over (< i limit).
+                        "dotimes" => {
+                            if list.len() < 3 {
+                                return false;
+                            }
+                            let (iter_name, count_expr) = match &list[1] {
+                                LispVal::List(spec) => match (spec.first(), spec.get(1)) {
+                                    (Some(LispVal::Sym(n)), Some(c)) => (n.clone(), c.clone()),
+                                    _ => return false,
+                                },
+                                _ => return false,
+                            };
+                            // Iterator slot: if the name already exists (shadowing, e.g.
+                            // sequential/nested dotimes with the same iterator), REUSE that
+                            // slot with save/restore (same pattern as `let`). Otherwise
+                            // allocate a fresh slot.
+                            let (i_slot, save_slot) = match self.slot_map.iter().position(|s| *s == iter_name) {
+                                Some(existing) => {
+                                    let save_slot = self.slot_map.len();
+                                    self.slot_map.push(format!("dotimes-save-{}", save_slot));
+                                    // save current value of the shadowed slot
+                                    self.code.push(Op::LoadSlot(existing));
+                                    self.code.push(Op::StoreSlot(save_slot));
+                                    (existing, Some(save_slot))
+                                }
+                                None => {
+                                    let i_slot = self.slot_map.len();
+                                    self.slot_map.push(iter_name.clone());
+                                    (i_slot, None)
+                                }
+                            };
+                            let limit_name = format!("dotimes-limit-{}", self.slot_map.len());
+                            let limit_slot = self.slot_map.len();
+                            self.slot_map.push(limit_name.clone());
+                            // i = 0
+                            self.code.push(Op::PushI64(0));
+                            self.code.push(Op::StoreSlot(i_slot));
+                            // limit = n  (evaluated ONCE, before the loop)
+                            if !self.compile_expr(&count_expr, outer_env) {
+                                return false;
+                            }
+                            self.code.push(Op::StoreSlot(limit_slot));
+                            // loop: while (< i limit)
+                            let loop_start = self.code.len();
+                            let lt_form = LispVal::List(vec![
+                                LispVal::Sym("<".into()),
+                                LispVal::Sym(iter_name.clone()),
+                                LispVal::Sym(limit_name.clone()),
+                            ]);
+                            if !self.compile_expr(&lt_form, outer_env) {
+                                return false;
+                            }
+                            let jf_idx = self.code.len();
+                            self.code.push(Op::JumpIfFalse(0));
+                            // body as implicit begin; pop all values
+                            for arg in &list[2..] {
+                                if !self.compile_expr(arg, outer_env) {
+                                    return false;
+                                }
+                                self.code.push(Op::Pop);
+                            }
+                            // i = i + 1
+                            let inc_form = LispVal::List(vec![
+                                LispVal::Sym("set!".into()),
+                                LispVal::Sym(iter_name.clone()),
+                                LispVal::List(vec![
+                                    LispVal::Sym("+".into()),
+                                    LispVal::Sym(iter_name.clone()),
+                                    LispVal::Num(1),
+                                ]),
+                            ]);
+                            if !self.compile_expr(&inc_form, outer_env) {
+                                return false;
+                            }
+                            self.code.push(Op::Pop); // set! returns value; discard
+                            self.code.push(Op::Jump(loop_start));
+                            self.code[jf_idx] = Op::JumpIfFalse(self.code.len());
+                            self.code.push(Op::PushNil);
+                            // restore shadowed iterator value (if we shadowed)
+                            if let Some(sv) = save_slot {
+                                self.code.push(Op::LoadSlot(sv));
+                                self.code.push(Op::StoreSlot(i_slot));
+                            }
+                            true
+                        }
                         // loop: (loop ((var init) ...) body) with (recur val ...) inside body
                         "loop" => {
                             let bindings = match list.get(1) {
@@ -1854,7 +1968,7 @@ impl LoopCompiler {
                                     }
                                     self.set_target_globals.insert(name.clone());
                                     self.code.push(Op::StoreGlobal(name.clone()));
-                                    self.code.push(Op::LoadGlobal(name));
+                                    // StoreGlobal already pushes the value back, no need for LoadGlobal
                                 } else {
                                     // Runtime capture (let/param in enclosing scope) —
                                     // use StoreCaptured to mutate the closure's captured snapshot
@@ -1862,7 +1976,7 @@ impl LoopCompiler {
                                         return false;
                                     }
                                     self.code.push(Op::StoreCaptured(idx));
-                                    self.code.push(Op::LoadCaptured(idx));
+                                    // StoreCaptured already pushes the value back
                                 }
                                 true
                             } else if self.try_capture(&name, outer_env) {
@@ -2014,9 +2128,10 @@ impl LoopCompiler {
                                 }
                             }
                             // If callee is an unresolvable symbol (not a slot, not captured,
-                            // not a builtin), compile the whole form as a list literal.
-                            // This handles type descriptors like (:fn :int → :int) and
-                            // other data-as-code patterns.
+                            // not a builtin), it is ONLY acceptable as data when it is a
+                            // keyword-style head (`:fn`, `:int`, ...). Any other unknown
+                            // head is a hard compile error — a typo'd function or missing
+                            // special form must never silently evaluate to a list literal.
                             if self.slot_of(op).is_none()
                                 && self.captured_idx(op).is_none()
                                 && !self.try_capture(op, outer_env)
@@ -2024,31 +2139,38 @@ impl LoopCompiler {
                                 && crate::helpers::lookup_constructor(op).is_none()
                                 && self.self_name.as_deref() != Some(op)
                             {
-                                // Compile each element, then build a list
-                                // But we need the UNEVALUATED forms as data, not evaluated values.
-                                // Use PushLiteral for symbols/atoms, compile_expr for sub-lists.
-                                for elem in list.iter() {
-                                    match elem {
-                                        LispVal::Sym(s) => {
-                                            self.code.push(Op::PushLiteral(LispVal::Sym(s.clone())));
-                                        }
-                                        LispVal::Num(n) => {
-                                            self.code.push(Op::PushI64(*n));
-                                        }
-                                        LispVal::Str(s) => {
-                                            self.code.push(Op::PushLiteral(LispVal::Str(s.clone())));
-                                        }
-                                        LispVal::Bool(b) => {
-                                            self.code.push(Op::PushLiteral(LispVal::Bool(*b)));
-                                        }
-                                        other => {
-                                            // For sub-lists and other complex forms, push as literal
-                                            self.code.push(Op::PushLiteral(other.clone()));
+                                if op.starts_with(':') || op.starts_with("→") {
+                                    // Keyword/type-descriptor head: keep data-as-code.
+                                    // Compile each element, then build a list.
+                                    for elem in list.iter() {
+                                        match elem {
+                                            LispVal::Sym(s) => {
+                                                self.code.push(Op::PushLiteral(LispVal::Sym(s.clone())));
+                                            }
+                                            LispVal::Num(n) => {
+                                                self.code.push(Op::PushI64(*n));
+                                            }
+                                            LispVal::Str(s) => {
+                                                self.code.push(Op::PushLiteral(LispVal::Str(s.clone())));
+                                            }
+                                            LispVal::Bool(b) => {
+                                                self.code.push(Op::PushLiteral(LispVal::Bool(*b)));
+                                            }
+                                            other => {
+                                                // For sub-lists and other complex forms, push as literal
+                                                self.code.push(Op::PushLiteral(other.clone()));
+                                            }
                                         }
                                     }
+                                    self.code.push(Op::BuiltinCall("list".to_string(), list.len()));
+                                    return true;
                                 }
-                                self.code.push(Op::BuiltinCall("list".to_string(), list.len()));
-                                return true;
+                                // Unknown non-keyword head — hard error.
+                                eprintln!(
+                                    "compile error: unknown function or special form '{}' in ({} ...)",
+                                    op, op
+                                );
+                                return false;
                             }
                             // Check for inline dict ops first
                             if op == "dict/get" || op == "dict-ref" {
@@ -2973,7 +3095,9 @@ fn peephole_optimize(code: &mut Vec<Op>, slot_is_i64: &[bool], slot_is_f64: &[bo
                     _ => None,
                 };
                 if let Some(top) = typed {
-                    index_map.push(new_code.len());
+                    // NOTE: loop-top already pushed an index_map entry for code[i].
+                    // These 1:1 conversions (3 ops -> 3 ops) need exactly one entry
+                    // per original op; the old extra push shifted all later remaps by +1.
                     new_code.push(code[i].clone());
                     index_map.push(new_code.len());
                     new_code.push(code[i + 1].clone());
@@ -3002,7 +3126,6 @@ fn peephole_optimize(code: &mut Vec<Op>, slot_is_i64: &[bool], slot_is_f64: &[bo
                     _ => None,
                 };
                 if let Some(top) = typed {
-                    index_map.push(new_code.len());
                     new_code.push(code[i].clone());
                     index_map.push(new_code.len());
                     new_code.push(code[i + 1].clone());
@@ -3037,7 +3160,6 @@ fn peephole_optimize(code: &mut Vec<Op>, slot_is_i64: &[bool], slot_is_f64: &[bo
                         _ => None,
                     };
                     if let Some(top) = typed {
-                        index_map.push(new_code.len());
                         new_code.push(code[i].clone());
                         index_map.push(new_code.len());
                         new_code.push(code[i + 1].clone());
@@ -3059,7 +3181,6 @@ fn peephole_optimize(code: &mut Vec<Op>, slot_is_i64: &[bool], slot_is_f64: &[bo
                         _ => None,
                     };
                     if let Some(top) = typed {
-                        index_map.push(new_code.len());
                         new_code.push(code[i].clone());
                         index_map.push(new_code.len());
                         new_code.push(code[i + 1].clone());
@@ -6247,9 +6368,11 @@ pub fn try_compile_lambda(
     let mut code = compiler.code;
     let slot_i64 = compiler.slot_is_i64;
     let slot_f64 = compiler.slot_is_f64;
-    peephole_optimize(&mut code, &slot_i64, &slot_f64);
-    peephole_optimize(&mut code, &slot_i64, &slot_f64);
-    peephole_optimize(&mut code, &slot_i64, &slot_f64);
+    if std::env::var("LISP_NO_PEEPHOLE").is_err() {
+        peephole_optimize(&mut code, &slot_i64, &slot_f64);
+        peephole_optimize(&mut code, &slot_i64, &slot_f64);
+        peephole_optimize(&mut code, &slot_i64, &slot_f64);
+    }
     // Compute total slots: params + any let-binding slots used in code
     // Captured vars are accessed via LoadCaptured/CallCapturedRef, not slots
     let base_slots = param_names.len();
@@ -6519,10 +6642,13 @@ pub fn run_compiled_lambda(
     state.call_depth += 1;
     if state.call_depth > state.max_call_depth {
         state.call_depth -= 1;
-        return Err(format!(
-            "call depth exceeded (max {})",
-            state.max_call_depth
-        ));
+        return Err("call depth exceeded".into());
+    }
+    if std::env::var("LISP_DUMP_OPS").is_ok() {
+        eprintln!("=== COMPILED LAMBDA OPS ({:?}, slots: {}) ===", cl.name, cl.total_slots);
+        for (idx, op) in cl.code.iter().enumerate() {
+            eprintln!("  {:>4}: {:?}", idx, op);
+        }
     }
     let fname = cl.name.as_deref().unwrap_or_else(|| {
         // Generate a hint from the first few ops: e.g. "<(fn [x] ...)>"
