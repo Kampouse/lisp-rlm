@@ -3189,6 +3189,146 @@ impl WasmEmitter {
                 v.extend(self.emit_tag_num());
                 Ok(v)
             }
+            "hex-decode" => {
+                // (hex-decode hex_str) -> byte_str
+                // Decodes hex ASCII to raw bytes using FP_GLOBAL allocation.
+                // Nibble trick: (c & 0xF) + ((c >= 0x40) * 9)
+                if a.len() != 1 {
+                    return Err("hex-decode: expected 1 arg".into());
+                }
+                let raw_i = self.local_idx("__hd_raw");
+                let in_len_i = self.local_idx("__hd_inl");
+                let out_len_i = self.local_idx("__hd_ol");
+                let out_ptr_i = self.local_idx("__hd_op");
+                let i_i = self.local_idx("__hd_i");
+                let nibble_i = self.local_idx("__hd_nib");
+                let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+                let mut v = Vec::new();
+                // Untag input → (len<<32|ptr)
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(raw_i));
+                v.push(Instruction::LocalGet(raw_i));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(in_len_i));
+                v.push(Instruction::LocalGet(in_len_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(out_len_i));
+                // Allocate output from FP_GLOBAL
+                v.push(Instruction::GlobalGet(FP_GLOBAL));
+                v.push(Instruction::LocalSet(out_ptr_i));
+                v.push(Instruction::GlobalGet(FP_GLOBAL));
+                v.push(Instruction::LocalGet(out_len_i));
+                v.push(Instruction::I64Const(7));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Const(-8i64 as u64 as i64));
+                v.push(Instruction::I64And);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::GlobalSet(FP_GLOBAL));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalSet(i_i));
+                // block/loop
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(i_i));
+                v.push(Instruction::LocalGet(in_len_i));
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::BrIf(1));
+                // --- Hi nibble at in_ptr[i]: (c & 0xF) + ((c >= 0x40) * 9) ---
+                // All arithmetic in i64 to match local types
+                v.push(Instruction::LocalGet(raw_i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i_i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma8));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0x0F));
+                v.push(Instruction::I64And);
+                v.push(Instruction::LocalGet(raw_i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i_i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma8));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0x40));
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(9));
+                v.push(Instruction::I64Mul);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(nibble_i));
+                // --- Lo nibble at in_ptr[i+1] ---
+                v.push(Instruction::LocalGet(raw_i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i_i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32S);
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma8));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0x0F));
+                v.push(Instruction::I64And);
+                v.push(Instruction::LocalGet(raw_i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i_i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32S);
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma8));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0x40));
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(9));
+                v.push(Instruction::I64Mul);
+                v.push(Instruction::I64Add);
+                // Stack: [lo_nibble i64]. Combine: (nibble_i << 4) | lo
+                v.push(Instruction::LocalGet(nibble_i));
+                v.push(Instruction::I64Const(4));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Or);
+                // Save combined byte, compute addr, store
+                v.push(Instruction::LocalSet(nibble_i));
+                // addr = out_ptr + (i >> 1) [i32]
+                v.push(Instruction::LocalGet(out_ptr_i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                // Stack: [addr i32]
+                v.push(Instruction::LocalGet(nibble_i));
+                v.push(Instruction::I32WrapI64);
+                // Stack: [addr i32, val i32]
+                v.push(Instruction::I32Store8(ma8));
+                // i += 2
+                v.push(Instruction::LocalGet(i_i));
+                v.push(Instruction::I64Const(2));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(i_i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End);
+                v.push(Instruction::End);
+                // Return tagged Str
+                v.push(Instruction::LocalGet(out_len_i));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalGet(out_ptr_i));
+                v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
+                Ok(v)
+            }
             _ => Err("__not_handled__".into()),
         }
     }

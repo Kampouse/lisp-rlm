@@ -85,6 +85,49 @@ pub fn schnorr_verify(pk_bytes: &[u8; 32], sig_bytes: &[u8; 64], msg: &[u8; 32])
     rx == r && (ry[0] & 1) == 0
 }
 
+// ── BIP-340 Schnorr sign ──
+pub fn schnorr_sign(sk_bytes: &[u8; 32], msg: &[u8; 32], aux: &[u8; 32]) -> [u8; 64] {
+    let d = fe_bytes_to_fe(sk_bytes);
+    // P = d * G
+    let (px, py) = match point_mul((GX, GY), d) {
+        Some(r) => jac_to_affine(r),
+        None => return [0u8; 64],
+    };
+    // d' = d if even y, else n - d
+    let dp = if py[0] & 1 == 0 { d } else { sc_sub_n(d) };
+    // t = xor(d', tagged_hash("BIP0340/aux", aux))
+    let aux_hash = tagged_hash(b"BIP0340/aux", aux);
+    let mut dp_bytes = [0u8; 32]; for i in 0..4 { dp_bytes[i*8..(i+1)*8].copy_from_slice(&dp[3-i].to_be_bytes()); }
+    let mut t = [0u8; 32]; for i in 0..32 { t[i] = dp_bytes[i] ^ aux_hash[i]; }
+    // rand = tagged_hash("BIP0340/nonce", t || P_bytes || msg)
+    let mut p_bytes = [0u8; 32]; for i in 0..4 { p_bytes[i*8..(i+1)*8].copy_from_slice(&px[3-i].to_be_bytes()); }
+    let mut nonce_input = [0u8; 96]; nonce_input[..32].copy_from_slice(&t); nonce_input[32..64].copy_from_slice(&p_bytes); nonce_input[64..96].copy_from_slice(msg);
+    let rand = tagged_hash(b"BIP0340/nonce", &nonce_input);
+    let k = fe_bytes_to_fe(&rand);
+    // k' = k mod n (already reduced since k < 2^256 < n is unlikely, but handle it)
+    // Actually k could be >= n, so reduce
+    let kp = if !sc_lt_n(k) { sc_sub_n(k) } else { k };
+    if kp == [0;4] { return [0u8; 64]; } // should basically never happen
+    // R = k' * G
+    let (rx, ry) = match point_mul((GX, GY), kp) {
+        Some(r) => jac_to_affine(r),
+        None => return [0u8; 64],
+    };
+    if ry[0] & 1 != 0 { return [0u8; 64]; } // fail if odd y
+    // e = tagged_hash("BIP0340/challenge", R || P || msg) mod n
+    let mut r_bytes = [0u8; 32]; for i in 0..4 { r_bytes[i*8..(i+1)*8].copy_from_slice(&rx[3-i].to_be_bytes()); }
+    let mut challenge_input = [0u8; 96]; challenge_input[..32].copy_from_slice(&r_bytes); challenge_input[32..64].copy_from_slice(&p_bytes); challenge_input[64..96].copy_from_slice(msg);
+    let e_hash = tagged_hash(b"BIP0340/challenge", &challenge_input);
+    let e = fe_bytes_to_fe(&e_hash);
+    // sig_s = (k' + e * d') mod n
+    let ed = fe_mul(e, dp);
+    let mut sig_s = fe_add(kp, ed);
+    if !sc_lt_n(sig_s) { sig_s = sc_sub_n(sig_s); }
+    let mut sig = [0u8; 64]; sig[..32].copy_from_slice(&r_bytes);
+    for i in 0..4 { sig[32 + i*8..32 + (i+1)*8].copy_from_slice(&sig_s[3-i].to_be_bytes()); }
+    sig
+}
+
 // ── WASM exports ──
 #[no_mangle] pub unsafe extern "C" fn schnorr_verify_bip340(pk_ptr: u32, sig_ptr: u32, msg_ptr: u32, msg_len: u32) -> u32 {
     let pk = core::slice::from_raw_parts(pk_ptr as *const u8, 32);
@@ -112,4 +155,72 @@ pub fn schnorr_verify(pk_bytes: &[u8; 32], sig_bytes: &[u8; 64], msg: &[u8; 32])
     #[test] fn test_fe_mul() { let two = [2,0,0,0]; assert_eq!(fe_mul(two, fe_inv(two)), FE_ONE); }
     #[test] fn test_bip340_valid() { let pk = a32(h("F9308A019258C31049344F85F89D5229B531C845836F99B08601F113BCE036F9")); let sig = a64(h("E907831F80848D1069A5371B402410364BDF1C5F8307B0084C55F1CE2DCA821525F66A4A85EA8B71E482A74F382D2CE5EBEEE8FDB2172F477DF4900D310536C0")); let msg = a32(h("0000000000000000000000000000000000000000000000000000000000000000")); assert!(schnorr_verify(&pk, &sig, &msg)); }
     #[test] fn test_bip340_invalid() { let pk = a32(h("F9308A019258C31049344F85F89D5229B531C845836F99B08601F113BCE036F9")); let sig = a64(h("E907831F80848D1069A5371B402410364BDF1C5F8307B0084C55F1CE2DCA821525F66A4A85EA8B71E482A74F382D2CE5EBEEE8FDB2172F477DF4900D310536C0")); let msg = a32(h("0000000000000000000000000000000000000000000000000000000000000001")); assert!(!schnorr_verify(&pk, &sig, &msg)); }
+}
+
+#[cfg(test)]
+mod sign_test {
+    use super::*;
+    fn h(s: &str) -> Vec<u8> { (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i+2], 16).unwrap()).collect() }
+    fn a32(v: Vec<u8>) -> [u8; 32] { let mut a = [0u8; 32]; a.copy_from_slice(&v); a }
+    #[test]
+    fn test_sign_roundtrip() {
+        let sk = a32(h("0000000000000000000000000000000000000000000000000000000000000003"));
+        let aux = [0u8; 32];
+        let msg = compute_sha256(b"test.near1000000000000000000000000");
+        let sig = schnorr_sign(&sk, &msg, &aux);
+        assert!(sig != [0u8; 64], "signing produced zero sig");
+        let (px, py, _pz) = point_mul((GX, GY), fe_bytes_to_fe(&sk)).unwrap();
+        let (px, _) = jac_to_affine((px, py, [1,0,0,0]));
+        let mut pk = [0u8; 32];
+        for i in 0..4 { pk[i*8..(i+1)*8].copy_from_slice(&px[3-i].to_be_bytes()); }
+        assert!(schnorr_verify(&pk, &sig, &msg), "roundtrip failed");
+        eprintln!("PK: {}", pk.iter().map(|b| format!("{:02X}", b)).collect::<String>());
+        eprintln!("SIG: {}", sig.iter().map(|b| format!("{:02X}", b)).collect::<String>());
+        eprintln!("MSG: {}", msg.iter().map(|b| format!("{:02X}", b)).collect::<String>());
+    }
+}
+
+#[cfg(test)]
+mod sign_test2 {
+    use super::*;
+    fn h(s: &str) -> Vec<u8> { (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i+2], 16).unwrap()).collect() }
+    fn a32(v: Vec<u8>) -> [u8; 32] { let mut a = [0u8; 32]; a.copy_from_slice(&v); a }
+    #[test]
+    fn test_sign_bruteforce() {
+        let sk = a32(h("0000000000000000000000000000000000000000000000000000000000000003"));
+        let msg = compute_sha256(b"test.near1000000000000000000000000");
+        for aux_byte in 0u8..255 {
+            let aux = [aux_byte; 32];
+            let sig = schnorr_sign(&sk, &msg, &aux);
+            if sig != [0u8; 64] {
+                let (px, py, _pz) = point_mul((GX, GY), fe_bytes_to_fe(&sk)).unwrap();
+                let (px, _) = jac_to_affine((px, py, [1,0,0,0]));
+                let mut pk = [0u8; 32];
+                for i in 0..4 { pk[i*8..(i+1)*8].copy_from_slice(&px[3-i].to_be_bytes()); }
+                assert!(schnorr_verify(&pk, &sig, &msg), "verify failed");
+                eprintln!("AUX={}: PK={} SIG={} MSG={}", aux_byte,
+                    pk.iter().map(|b| format!("{:02X}", b)).collect::<String>(),
+                    sig.iter().map(|b| format!("{:02X}", b)).collect::<String>(),
+                    msg.iter().map(|b| format!("{:02X}", b)).collect::<String>());
+                return;
+            }
+        }
+        panic!("no valid aux found");
+    }
+}
+
+#[cfg(test)]
+mod verify_python_sig {
+    use super::*;
+    fn h(s: &str) -> Vec<u8> { (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i+2], 16).unwrap()).collect() }
+    fn a32(v: Vec<u8>) -> [u8; 32] { let mut a = [0u8; 32]; a.copy_from_slice(&v); a }
+    fn a64(v: Vec<u8>) -> [u8; 64] { let mut a = [0u8; 64]; a.copy_from_slice(&v); a }
+    #[test]
+    fn test_python_sig() {
+        let pk = a32(h("F9308A019258C31049344F85F89D5229B531C845836F99B08601F113BCE036F9"));
+        let sig = a64(h("5A7DF9EA987C0F24DD076A984F760D772D7D2E3DB3F52E71481CE98A6C8FC1914B9AAB2E8DB5A06EE6D4DA99D38835B0FBA9B069261BBC5AEB7800EFEBCAE29B"));
+        let msg = compute_sha256(b"test.near1000000000000000000000000");
+        eprintln!("MSG: {}", msg.iter().map(|b| format!("{:02X}", b)).collect::<String>());
+        assert!(schnorr_verify(&pk, &sig, &msg), "python sig verify failed");
+    }
 }

@@ -2,8 +2,6 @@ use super::*;
 
 impl WasmEmitter {
     pub(crate) fn tree_shake(&mut self) {
-        eprintln!("DBG tree_shake: wasm_imports = {:?}", self.wasm_imports.iter().map(|(n,_,_)| *n).collect::<Vec<_>>());
-        eprintln!("DBG tree_shake: funcs = {:?}", self.funcs.iter().map(|f| f.name.clone()).collect::<Vec<_>>());
         if self.funcs.is_empty() {
             return;
         }
@@ -116,16 +114,7 @@ impl WasmEmitter {
         }
         self.funcs = new_funcs;
 
-        let removed = before - self.funcs.len();
-        if removed > 0 {
-            eprintln!(
-                "Tree-shake: removed {}/{} unused functions",
-                removed, before
-            );
-        }
-        for (i, f) in self.funcs.iter().enumerate() {
-            eprintln!("  KEEP {} {} ({} instrs)", i, f.name, f.instrs.len());
-        }
+        let _ = before; // tree-shake is silent unless warnings are needed
     }
 
     pub fn gas_estimate(&self) -> Vec<(String, usize, f64)> {
@@ -508,8 +497,6 @@ impl WasmEmitter {
         }
 
         let bytes = m.finish();
-        eprintln!("DBG finish: wasm_imports = {:?}, bytes len = {}", self.wasm_imports.iter().map(|(n,_,_)| *n).collect::<Vec<_>>(), bytes.len());
-        std::fs::write("/tmp/pre_link.wasm", &bytes).ok();
 
         // WASM imports (e.g. schnorr_verify_bip340, sha256_hash) are inlined from WAT.
         // Uses wasm_link::merge_lib_wasm_multi (instruction-level binary patching).
@@ -517,7 +504,6 @@ impl WasmEmitter {
             let import_export_pairs: Vec<(&str, &str)> = self.wasm_imports.iter()
                 .map(|(name, _, _)| (name.as_ref(), name.as_ref()))
                 .collect();
-            eprintln!("DBG finish: calling link_schnorr_wat with pairs = {:?}", import_export_pairs);
             return super::wasm_link::link_schnorr_wat(&bytes, &import_export_pairs);
         }
 
