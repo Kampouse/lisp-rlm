@@ -2,6 +2,8 @@ use super::*;
 
 impl WasmEmitter {
     pub(crate) fn tree_shake(&mut self) {
+        eprintln!("DBG tree_shake: wasm_imports = {:?}", self.wasm_imports.iter().map(|(n,_,_)| *n).collect::<Vec<_>>());
+        eprintln!("DBG tree_shake: funcs = {:?}", self.funcs.iter().map(|f| f.name.clone()).collect::<Vec<_>>());
         if self.funcs.is_empty() {
             return;
         }
@@ -506,11 +508,17 @@ impl WasmEmitter {
         }
 
         let bytes = m.finish();
+        eprintln!("DBG finish: wasm_imports = {:?}, bytes len = {}", self.wasm_imports.iter().map(|(n,_,_)| *n).collect::<Vec<_>>(), bytes.len());
+        std::fs::write("/tmp/pre_link.wasm", &bytes).ok();
 
-        // WASM imports (e.g. schnorr_verify_bip340) are inlined from WAT.
-        // Uses wasm_link::merge_lib_wasm (instruction-level binary patching).
+        // WASM imports (e.g. schnorr_verify_bip340, sha256_hash) are inlined from WAT.
+        // Uses wasm_link::merge_lib_wasm_multi (instruction-level binary patching).
         if !self.wasm_imports.is_empty() {
-            return super::wasm_link::link_schnorr_wat(&bytes);
+            let import_export_pairs: Vec<(&str, &str)> = self.wasm_imports.iter()
+                .map(|(name, _, _)| (name.as_ref(), name.as_ref()))
+                .collect();
+            eprintln!("DBG finish: calling link_schnorr_wat with pairs = {:?}", import_export_pairs);
+            return super::wasm_link::link_schnorr_wat(&bytes, &import_export_pairs);
         }
 
         bytes

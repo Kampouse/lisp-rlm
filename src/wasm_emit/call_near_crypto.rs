@@ -166,6 +166,42 @@ impl WasmEmitter {
                 v.extend(self.emit_tag_num());
                 Ok(v)
             }
+            "sha256-hash" => {
+                // (sha256-hash input_str) -> 32-byte hash string
+                // WASM import: sha256_hash(input_ptr: i32, input_len: i32, output_ptr: i32)
+                // Writes 32 bytes to output_ptr
+                let input = self.expr(&a[0])?;
+                let wasm_idx = self.need_wasm_import(
+                    "sha256_hash",
+                    vec![ValType::I32, ValType::I32, ValType::I32],
+                    vec![],  // no return value
+                );
+                let mut v = Vec::new();
+                // input_ptr
+                v.extend(input.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                // input_len (upper 32 bits of tagged Str)
+                v.extend(input.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                // output_ptr: use TEMP_MEM area
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I32WrapI64);
+                // Call sha256_hash
+                v.push(Self::wasm_import_call(wasm_idx));
+                // Build result: tagged Str from 32 bytes at TEMP_MEM
+                // Str tag: (ptr | (len << 32)) where ptr=TEMP_MEM, len=32
+                v.push(Instruction::I64Const(TEMP_MEM as i64));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
+                Ok(v)
+            }
             "near/p256_verify" => {
                 // (near/p256_verify signature message public_key) → bool
                 // NEAR host: p256_verify(sig_len, sig_ptr, msg_len, msg_ptr, pk_len, pk_ptr) → u64 — idx 55
