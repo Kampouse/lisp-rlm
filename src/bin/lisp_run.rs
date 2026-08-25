@@ -291,6 +291,34 @@ fn parse_list_items(s: &str) -> Vec<String> {
 // ── Commands ────────────────────────────────────────────────
 
 fn eval_and_print(code: &str, verbose: bool) {
+    let code = code.to_string();
+    // Run on a dedicated big-stack thread: deep dynamic-dispatch recursion
+    // (closures called via values) consumes ~60KB of native stack per Lisp
+    // frame in debug builds, so the default 8MB main-thread stack overflows
+    // (hard SIGABRT) around depth ~130 — BEFORE the max_call_depth=256 guard
+    // can fire. A 512MB stack lets the guard produce a clean Lisp-level
+    // "call depth exceeded" error instead of a native crash.
+    let handle = std::thread::Builder::new()
+        .name("lisp-run".into())
+        .stack_size(512 * 1024 * 1024)
+        .spawn(move || eval_and_print_inner(&code, verbose))
+        .expect("failed to spawn lisp-run thread");
+    match handle.join() {
+        Ok(()) => {}
+        Err(payload) => {
+            // A Rust panic inside the VM (e.g. an unchecked arithmetic overflow
+            // in a debug build). Preserve the classic exit code 101.
+            if let Some(s) = payload.downcast_ref::<&str>() {
+                eprintln!("panic: {}", s);
+            } else if let Some(s) = payload.downcast_ref::<String>() {
+                eprintln!("panic: {}", s);
+            }
+            std::process::exit(101);
+        }
+    }
+}
+
+fn eval_and_print_inner(code: &str, verbose: bool) {
     let mut env = Env::new();
     let mut state = EvalState::new();
     let exprs = match parse_all(code) {
