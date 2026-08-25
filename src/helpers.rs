@@ -80,6 +80,27 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "string-suffix?", "string-prefix?",
     "str->num",
     "tag-test", "get-field",
+    // NEAR mock builtins
+    "near-reset", "near-promises", "near-register", "near-register-source", "near-contracts",
+    "near/store", "near/load", "near/remove", "near/has", "near/kv", "near/storage_usage",
+    "near/account_id", "near/signer_id", "near/predecessor_id", "near/block_height", "near/block_timestamp",
+    "near/attached_deposit", "near/prepaid_gas", "near/random_seed", "near/input",
+    "near/return", "near/return_str", "near/return_json", "near/json_return_str",
+    "near/panic", "near/abort", "near/assert", "near/require",
+    "near/log", "near/log_str",
+    "near/promise_create", "near/promise_then", "near/promise_and",
+    "near/promise_results_count", "near/promise_result", "near/promise_return",
+    "near/call", "near/transfer", "near/deploy_contract",
+    "near/batch_create", "near/batch_action_create", "near/batch_action_function_call",
+    "near/batch_action_transfer", "near/batch_action_deploy_contract", "near/batch_action_stake",
+    "near/batch_action_add_key", "near/batch_action_delete_key", "near/batch_action_delete_account",
+    "near/batch_action_delete_key_full_access", "near/batch_action_delete_key_function_call",
+    "near/batch_action_delete_key_with_access_key",
+    "near/batch_commit",
+    "near/keccak256", "near/keccak512", "near/sha256",
+    "near/ed25519_verify", "near/ecdsa_verify", "near/hmac_sha256",
+    "near/iter_prefix", "near/iter_range", "near/iter_next",
+    "near/config", "near/current_account_id", "near/signer_account_id", "near/predecessor_account_id",
 ];
 
 pub fn is_builtin_name(name: &str) -> bool {
@@ -243,6 +264,31 @@ pub fn match_pattern(pattern: &LispVal, value: &LispVal) -> Option<Vec<(String, 
             }
         }
         LispVal::List(pats) if !pats.is_empty() => {
+            // Tagged sum-type pattern: (:type::variant ?f1 ?f2 ...)
+            if let LispVal::Sym(tag) = &pats[0] {
+                if tag.contains("::") && !tag.starts_with('?') {
+                    if let LispVal::Tagged { type_name, variant_id, fields } = value {
+                        if tag != &format!("{}::{}", type_name, variant_id) {
+                            return None;
+                        }
+                        let field_pats = &pats[1..];
+                        if fields.len() != field_pats.len() {
+                            return None;
+                        }
+                        let mut all = vec![];
+                        for (p, v) in field_pats.iter().zip(fields.iter()) {
+                            if let Some(b) = match_pattern(p, v) {
+                                all.extend(b);
+                            } else {
+                                return None;
+                            }
+                        }
+                        return Some(all);
+                    } else {
+                        return None;
+                    }
+                }
+            }
             if let LispVal::Sym(s) = &pats[0] {
                 if s == "list" {
                     if let LispVal::List(vals) = value {
@@ -456,10 +502,10 @@ pub fn get_doc(name: &str) -> Option<&'static str> {
 // ─────────────────────────────────────────────────────
 // Sum-type registry (deftype)
 // ─────────────────────────────────────────────────────
+// Uses RefCell inside thread_local! — WASM-compatible (no Mutex/LazyLock).
 
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::LazyLock;
-use std::sync::Mutex;
 
 /// A registered variant constructor.
 #[derive(Clone, Debug)]
@@ -469,30 +515,31 @@ pub struct TypeVariant {
     pub n_fields: u8,
 }
 
-/// Type registry: constructor name → type info.
-static TYPE_REGISTRY: LazyLock<Mutex<HashMap<String, TypeVariant>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+thread_local! {
+    static TYPE_REGISTRY: RefCell<HashMap<String, TypeVariant>> = RefCell::new(HashMap::new());
+}
 
-/// Register a type definition. Silently ignores duplicate constructor names
-/// (needed because tests may run in parallel sharing the global registry).
+/// Register a type definition. Silently ignores duplicate constructor names.
 pub fn register_type(type_name: &str, variants: &[(&str, u8)]) {
-    let mut reg = TYPE_REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
-    for (i, (name, n_fields)) in variants.iter().enumerate() {
-        let variant = TypeVariant {
-            type_name: type_name.to_string(),
-            variant_id: i as u16,
-            n_fields: *n_fields,
-        };
-        reg.entry(name.to_string()).or_insert(variant);
-    }
+    TYPE_REGISTRY.with(|reg| {
+        let mut reg = reg.borrow_mut();
+        for (i, (name, n_fields)) in variants.iter().enumerate() {
+            let variant = TypeVariant {
+                type_name: type_name.to_string(),
+                variant_id: i as u16,
+                n_fields: *n_fields,
+            };
+            reg.entry(name.to_string()).or_insert(variant);
+        }
+    });
 }
 
 /// Look up a constructor. Returns None if not a registered constructor.
 pub fn lookup_constructor(name: &str) -> Option<TypeVariant> {
-    TYPE_REGISTRY.lock().unwrap_or_else(|e| e.into_inner()).get(name).cloned()
+    TYPE_REGISTRY.with(|reg| reg.borrow().get(name).cloned())
 }
 
 /// Clear all registered types. Used by tests.
 pub fn clear_type_registry() {
-    TYPE_REGISTRY.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    TYPE_REGISTRY.with(|reg| reg.borrow_mut().clear());
 }

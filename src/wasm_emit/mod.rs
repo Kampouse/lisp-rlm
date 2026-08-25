@@ -211,13 +211,13 @@ const RETURN_FLAG: u32 = 0; // mutable i64 global for return flag
 const FP_GLOBAL: u32 = 1;  // mutable i64 global for frame pointer (NEAR mode)
 
 // ── Memory safety constants ──
-const DEPTH_COUNTER: i64 = 999980;  // 8-byte slot: recursion depth counter (high address to avoid component adapter clobber)
+const DEPTH_COUNTER: i64 = 40;  // 8-byte slot: recursion depth counter. MUST live below HEAP_START — the runtime heap grows upward unboundedly and would stomp a high address (e.g. old 999980) once allocation volume grows.
 const MAX_DEPTH: i64 = 512;     // max call depth before trap
 // Protected memory regions: [start, end) — store_i64/load_i64/mem-set!/mem-get may NOT write here
 // Covers: TEMP_MEM(64), AMOUNT_MEM(256), STORAGE_BUF(8192), STORAGE_U128_BUF(8208),
 //         HANDLE_COUNT_ADDR(48), RUNTIME_HEAP_PTR(56), DEPTH_COUNTER(999980), BORSH_BUF(36864)
 const PROTECTED_REGIONS: &[(i64, i64)] = &[
-    (999980, 999988), // DEPTH_COUNTER
+    (40, 48),    // DEPTH_COUNTER (below HANDLE_COUNT — 64..96 is the test-call marshalling area, do NOT use)
     (48, 56),    // HANDLE_COUNT_ADDR
     (56, 64),    // RUNTIME_HEAP_PTR
     (64, 72),    // TEMP_MEM
@@ -274,6 +274,7 @@ pub struct WasmEmitter {
     pub(crate) needs_frame: bool, // function body allocates from FP_GLOBAL
     pub(crate) heap_ptr: u32, // bump allocator; 0 = not yet initialized (lazy snap to data section end)
     pub(crate) lambda_counter: u32, // unique lambda id
+    pub(crate) list_ptr_counter: u32, // unique temp per (list ...) site — nested dynamic lists each need their OWN __lst_ptr local
     pub(crate) str_cat_depth: u32, // nesting depth for str-cat local isolation
     pub(crate) fuzz_mode: bool, // if true, export wrappers store tagged values (no untag, no value_return)
     pub(crate) need_outlayer: bool, // true if outlayer/* dispatch forms are used
@@ -302,9 +303,10 @@ impl WasmEmitter {
     pub fn new() -> Self {
         Self {
             locals: HashMap::new(), next_local: 0, free_locals: Vec::new(), local_type_map: Vec::new(), current_func: None, current_param_count: 0,
-            while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 16, exports: Vec::new(),
+            while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 512, exports: Vec::new(),
             data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(),
-            gas_local: None, needs_frame: false, heap_ptr: 0, lambda_counter: 0, str_cat_depth: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), http_post_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false, borsh_schemas: HashMap::new(), storage_get_count: 0, http_post_call_count: 0,
+            gas_local: None, needs_frame: false, heap_ptr: 0, lambda_counter: 0,
+            list_ptr_counter: 0, str_cat_depth: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), http_post_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false, borsh_schemas: HashMap::new(), storage_get_count: 0, http_post_call_count: 0,
             func_defs: HashMap::new(),
         }
     }
@@ -367,7 +369,10 @@ impl WasmEmitter {
             self.next_local += 1;
             self.local_type_map.push(ValType::I32);
         } else {
-            // Reused slot — overwrite type
+            // Reused slot — pad map to length, then overwrite type
+            while self.local_type_map.len() <= i as usize {
+                self.local_type_map.push(ValType::I64);
+            }
             self.local_type_map[i as usize] = ValType::I32;
         }
         self.locals.insert(name.to_string(), i);
@@ -622,6 +627,11 @@ impl WasmEmitter {
                         *expr = LispVal::List(call_items);
                         return;
                     }
+                    if head == "loop" {
+                        // Nested loop: its (recur ...) forms belong to the inner loop,
+                        // which gets lifted separately during emit_define. Do not descend.
+                        return;
+                    }
                 }
                 // Recurse into children
                 for item in items.iter_mut() {
@@ -671,8 +681,21 @@ impl WasmEmitter {
                 self.expr(e)
             }
             _ if Some(op.as_str()) == self.current_func.as_deref() && a.len() == self.current_param_count => {
+                // Evaluate ALL args into distinct temps FIRST, then copy into param
+                // locals — a later arg may reference a param local that an earlier
+                // arg already overwrote (e.g. (recur (+ i 1) (+ s i)) must see the
+                // OLD i when evaluating (+ s i)).
+                let n = a.len();
+                let tmps: Vec<u32> = (0..n).map(|i| self.local_idx(&format!("__tcarg{}", i))).collect();
                 let mut v = Vec::new();
-                for (i, x) in a.iter().enumerate() { v.extend(self.expr(x)?); v.push(Instruction::LocalSet(i as u32)); }
+                for (i, x) in a.iter().enumerate() {
+                    v.extend(self.expr(x)?);
+                    v.push(Instruction::LocalSet(tmps[i]));
+                }
+                for (i, t) in tmps.iter().enumerate() {
+                    v.push(Instruction::LocalGet(*t));
+                    v.push(Instruction::LocalSet(i as u32));
+                }
                 v.push(Instruction::Br(0));
                 Ok(v)
             }
@@ -746,9 +769,17 @@ impl WasmEmitter {
 
     fn self_sets(&mut self, e: &LispVal) -> Result<Vec<Instruction<'static>>, String> {
         let LispVal::List(items) = e else { return Ok(Vec::new()) };
+        // Args into temps first (see TC arm note) — avoid param-local aliasing.
+        let n = items.len().saturating_sub(1).min(self.current_param_count);
+        let tmps: Vec<u32> = (0..n).map(|i| self.local_idx(&format!("__tcarg{}", i))).collect();
         let mut v = Vec::new();
-        for (i, a) in items[1..].iter().enumerate().take(self.current_param_count) {
-            v.extend(self.expr(a)?); v.push(Instruction::LocalSet(i as u32));
+        for (i, a) in items[1..].iter().enumerate().take(n) {
+            v.extend(self.expr(a)?);
+            v.push(Instruction::LocalSet(tmps[i]));
+        }
+        for (i, t) in tmps.iter().enumerate() {
+            v.push(Instruction::LocalGet(*t));
+            v.push(Instruction::LocalSet(i as u32));
         }
         Ok(v)
     }

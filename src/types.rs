@@ -292,6 +292,26 @@ pub struct EvalState {
     pub near_storage: im::HashMap<String, LispVal>,
     /// Mock NEAR context (account_id, signer, block_height, etc.)
     pub near_context: im::HashMap<String, LispVal>,
+    /// Mock NEAR promise log — records every promise operation for test assertions.
+    pub near_promises: Vec<LispVal>,
+    /// Mock NEAR promise index counter — incremented on each create/and/then/batch.
+    pub near_promise_idx: i64,
+    /// Mock NEAR promise results — set via `(near-config "promise_results" (list ...))`.
+    pub near_promise_results: Vec<String>,
+    /// Mock NEAR returned promise index — set by `near/promise_return`.
+    pub near_returned_promise: Option<i64>,
+    /// Mock NEAR batch actions — list of batch action records (for test assertions).
+    pub near_batch_actions: Vec<LispVal>,
+    /// Mock NEAR iteration state — prefix→keys map for `near/iter_prefix`/`near/iter_next`.
+    pub near_iter_prefixes: im::HashMap<i64, Vec<String>>,
+    /// Mock NEAR iteration cursors — iter_id → current position.
+    pub near_iter_cursors: im::HashMap<i64, i64>,
+    /// Mock NEAR iteration next ID — incremented on each iter_prefix/iter_range.
+    pub near_iter_next_id: i64,
+    /// Registered NEAR contracts for mock cross-contract calls.
+    pub near_contracts: im::HashMap<String, NearContract>,
+    /// Captured return value from near/return.
+    pub near_return_value: Option<LispVal>,
     /// Shared global env — the canonical env from run_program. All nested
     /// run_compiled_lambda calls share this via Arc, so StoreGlobal mutations
     /// are visible to LoadGlobal in any nesting depth.
@@ -308,7 +328,7 @@ impl EvalState {
             eval_count: 0,
             eval_budget: DEFAULT_EVAL_BUDGET,
             call_depth: 0,
-            max_call_depth: 16,
+            max_call_depth: 256,
             snapshots: Vec::new(),
             rlm_state: im::OrdMap::new(),
             tokens_used: Arc::new(AtomicU64::new(0)),
@@ -324,6 +344,16 @@ impl EvalState {
             pure_types: std::collections::HashMap::new(),
             near_storage: im::HashMap::new(),
             near_context: im::HashMap::new(),
+            near_promises: Vec::new(),
+            near_promise_idx: 0,
+            near_promise_results: Vec::new(),
+            near_returned_promise: None,
+            near_batch_actions: Vec::new(),
+            near_iter_prefixes: im::HashMap::new(),
+            near_iter_cursors: im::HashMap::new(),
+            near_iter_next_id: 0,
+            near_contracts: im::HashMap::new(),
+            near_return_value: None,
             global_env: None,
             try_stack: Vec::new(),
         }
@@ -363,6 +393,16 @@ impl EvalState {
             pure_types: std::collections::HashMap::new(),
             near_storage: im::HashMap::new(),
             near_context: im::HashMap::new(),
+            near_promises: Vec::new(),
+            near_promise_idx: 0,
+            near_promise_results: Vec::new(),
+            near_returned_promise: None,
+            near_batch_actions: Vec::new(),
+            near_iter_prefixes: im::HashMap::new(),
+            near_iter_cursors: im::HashMap::new(),
+            near_iter_next_id: 0,
+            near_contracts: im::HashMap::new(),
+            near_return_value: None,
             global_env: None,
             try_stack: Vec::new(),
         }
@@ -440,6 +480,16 @@ impl Clone for EvalState {
             global_env: None, // Don't share global_env with forks
             near_storage: self.near_storage.clone(),
             near_context: self.near_context.clone(),
+            near_promises: Vec::new(),
+            near_promise_idx: 0,
+            near_promise_results: Vec::new(),
+            near_returned_promise: None,
+            near_batch_actions: Vec::new(),
+            near_iter_prefixes: im::HashMap::new(),
+            near_iter_cursors: im::HashMap::new(),
+            near_iter_next_id: 0,
+            near_contracts: im::HashMap::new(),
+            near_return_value: None,
             try_stack: Vec::new(),
         }
     }
@@ -457,6 +507,15 @@ impl std::fmt::Debug for EvalState {
             .field("llm_provider", &cfg!(not(target_arch = "wasm32")))
             .finish()
     }
+}
+
+/// A registered NEAR contract for mock cross-contract calls.
+#[derive(Clone, Debug)]
+pub struct NearContract {
+    /// The contract's entry point — a 0-arg lambda.
+    pub entry: LispVal,
+    /// Per-contract storage (persisted across calls).
+    pub storage: im::HashMap<String, LispVal>,
 }
 
 /// A value in the Lisp interpreter.
@@ -687,35 +746,109 @@ impl std::fmt::Display for LispVal {
     }
 }
 
-/// Fast hash of argument values for memoization. Uses a simple FNV-1a-like hash
-/// on the discriminant + payload of each LispVal. Only works for simple types
-/// (Num, Float, Bool, Str, Nil) — complex types (List, Map, Lambda) hash to 0.
+/// Hash a single LispVal for memoization cache keys.
+/// Recurses into List/Vec/Map so complex args get unique hashes.
+fn hash_lisp_val(v: &LispVal) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x00000100000001B3;
+    match v {
+        LispVal::Num(n) => {
+            let mut h = FNV_OFFSET;
+            h ^= 0x01; // discriminant tag for Num
+            h = h.wrapping_mul(FNV_PRIME);
+            h ^= *n as u64;
+            h = h.wrapping_mul(FNV_PRIME);
+            h
+        }
+        LispVal::Float(f) => {
+            let mut h = FNV_OFFSET;
+            h ^= 0x02;
+            h = h.wrapping_mul(FNV_PRIME);
+            h ^= f.to_bits();
+            h = h.wrapping_mul(FNV_PRIME);
+            h
+        }
+        LispVal::Bool(b) => {
+            let mut h = FNV_OFFSET;
+            h ^= 0x03;
+            h = h.wrapping_mul(FNV_PRIME);
+            h ^= if *b { 1 } else { 0 };
+            h = h.wrapping_mul(FNV_PRIME);
+            h
+        }
+        LispVal::Nil => {
+            let mut h = FNV_OFFSET;
+            h ^= 0x04;
+            h = h.wrapping_mul(FNV_PRIME);
+            h
+        }
+        LispVal::Str(s) => {
+            let mut h = FNV_OFFSET;
+            h ^= 0x05;
+            h = h.wrapping_mul(FNV_PRIME);
+            for b in s.bytes() {
+                h ^= b as u64;
+                h = h.wrapping_mul(FNV_PRIME);
+            }
+            h
+        }
+        LispVal::Sym(s) => {
+            let mut h = FNV_OFFSET;
+            h ^= 0x06;
+            h = h.wrapping_mul(FNV_PRIME);
+            for b in s.bytes() {
+                h ^= b as u64;
+                h = h.wrapping_mul(FNV_PRIME);
+            }
+            h
+        }
+        LispVal::List(vals) | LispVal::Vec(vals) => {
+            let mut h = FNV_OFFSET;
+            h ^= if matches!(v, LispVal::List(_)) { 0x07 } else { 0x08 };
+            h = h.wrapping_mul(FNV_PRIME);
+            for elem in vals {
+                h ^= hash_lisp_val(elem);
+                h = h.wrapping_mul(FNV_PRIME);
+            }
+            h
+        }
+        LispVal::Map(m) => {
+            let mut h = FNV_OFFSET;
+            h ^= 0x09;
+            h = h.wrapping_mul(FNV_PRIME);
+            // Sort keys for deterministic hash
+            let mut pairs: Vec<_> = m.iter().collect();
+            pairs.sort_by_key(|(k, _)| *k);
+            for (k, val) in pairs {
+                h ^= hash_lisp_val(&LispVal::Str(k.clone()));
+                h = h.wrapping_mul(FNV_PRIME);
+                h ^= hash_lisp_val(val);
+                h = h.wrapping_mul(FNV_PRIME);
+            }
+            h
+        }
+        _ => {
+            // Lambda, Macro, BuiltinFn, Tagged, Delay, Recur, Memoized, CompiledLoop
+            // Use Display as fallback — not ideal but avoids collision
+            let mut h = FNV_OFFSET;
+            h ^= 0xFF;
+            h = h.wrapping_mul(FNV_PRIME);
+            for b in v.to_string().bytes() {
+                h ^= b as u64;
+                h = h.wrapping_mul(FNV_PRIME);
+            }
+            h
+        }
+    }
+}
+
+/// Hash argument list for memoization cache key.
 pub fn hash_args(args: &[LispVal]) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325; // FNV offset basis
+    const FNV_PRIME: u64 = 0x00000100000001B3;
+    let mut h: u64 = 0xcbf29ce484222325;
     for arg in args {
-        h ^= match arg {
-            LispVal::Num(n) => *n as u64,
-            LispVal::Float(f) => f.to_bits(),
-            LispVal::Bool(b) => {
-                if *b {
-                    1
-                } else {
-                    0
-                }
-            }
-            LispVal::Nil => 0xDEAD,
-            LispVal::Str(s) => {
-                // Simple string hash
-                let mut sh: u64 = 0x100000001b3;
-                for b in s.bytes() {
-                    sh ^= b as u64;
-                    sh = sh.wrapping_mul(0x00000100000001B3);
-                }
-                sh
-            }
-            _ => 0, // complex types can't be hashed fast
-        };
-        h = h.wrapping_mul(0x00000100000001B3); // FNV prime
+        h ^= hash_lisp_val(arg);
+        h = h.wrapping_mul(FNV_PRIME);
     }
     h
 }

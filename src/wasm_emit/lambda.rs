@@ -148,6 +148,32 @@ impl WasmEmitter {
                             }
                         }
                         "define" => return, // don't look inside nested defines
+                        "loop" => {
+                            // (loop ((var init)...) body...): init exprs evaluate in the
+                            // ENCLOSING scope (collect with current bound); body is scoped
+                            // with the loop vars added to bound. Inner loop vars are NOT
+                            // free vars of ours, but names the inner body uses (e.g. Wf)
+                            // ARE — they resolve from our emitted scope at the inner call site.
+                            if items.len() >= 3 {
+                                if let LispVal::List(bindings) = &items[1] {
+                                    let mut inner_bound = bound.clone();
+                                    for b in bindings {
+                                        if let LispVal::List(pair) = b {
+                                            if pair.len() == 2 {
+                                                if let LispVal::Sym(v) = &pair[0] {
+                                                    self.collect_free(&pair[1], bound, free);
+                                                    inner_bound.insert(v.clone());
+                                                }
+                                            }
+                                        }
+                                    }
+                                    for body_expr in &items[2..] {
+                                        self.collect_free(body_expr, &inner_bound, free);
+                                    }
+                                }
+                            }
+                            return;
+                        }
                         _ => {}
                     }
                 }

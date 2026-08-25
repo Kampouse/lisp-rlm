@@ -1281,7 +1281,24 @@ fn run_tests_target(base_src: &str, tests: &[TestCase], target: &str) -> (usize,
         let expr_val = match expr_val {
             Ok(v) => v,
             Err(e) => {
-                println!("  ❌ {}: runtime error: {}", tc.name, e);
+                // Dump wasm + resolve backtrace frames to function names for debugging
+                let dbg_path = std::env::temp_dir().join("lisp_rlm_trap_debug.wasm");
+                let _ = fs::write(&dbg_path, &wasm);
+                let names = extract_func_names(base_src).unwrap_or_default();
+                let mut annotated = e.clone();
+                for cap in e.split("wasm function ").skip(1) {
+                    let idx: String = cap.chars().take_while(|c| c.is_ascii_digit()).collect();
+                    if let Ok(fi) = idx.parse::<usize>() {
+                        if let Some(nm) = find_function_at_index(&wasm, fi, &names) {
+                            annotated = annotated.replace(
+                                &format!("wasm function {}", fi),
+                                &format!("wasm function {} ({})", fi, nm),
+                            );
+                        }
+                    }
+                }
+                let _ = annotated;
+                println!("  ❌ {}: runtime error: {} [wasm dumped to {:?}]", tc.name, e, dbg_path);
                 failed += 1;
                 continue;
             }
@@ -1487,7 +1504,7 @@ fn run_test_fn(wasm: &[u8], fn_name: &str) -> Result<i64, String> {
     let mut store = Store::new(&engine, ());
 
     let memory =
-        Memory::new(&mut store, MemoryType::new(4, None)).map_err(|e| format!("memory: {}", e))?;
+        Memory::new(&mut store, MemoryType::new(512, None)).map_err(|e| format!("memory: {}", e))?;
 
     let logs_c = logs.clone();
     let log_fn = Func::new(
@@ -1986,6 +2003,80 @@ fn find_function_at_offset(
         pos = section_end;
     }
     None
+}
+
+// Map a wasm function index (including imports) to a source function name.
+fn find_function_at_index(
+    wasm: &[u8],
+    func_index: usize,
+    func_names: &[String],
+) -> Option<String> {
+    // Count imported functions (import section id = 2)
+    let mut pos = 8;
+    let mut import_count = 0usize;
+    while pos < wasm.len() {
+        let section_id = *wasm.get(pos)? as usize;
+        pos += 1;
+        let (section_size, leb_bytes) = read_leb128(&wasm[pos..])?;
+        pos += leb_bytes;
+        let section_start = pos;
+        let section_end = pos + section_size;
+        if section_id == 2 {
+            let mut p = section_start;
+            let (_count, leb) = read_leb128(&wasm[p..])?;
+            p += leb;
+            while p < section_end {
+                // module name
+                let (nlen, leb) = read_leb128(&wasm[p..])?;
+                p += leb + nlen;
+                // field name
+                let (flen, leb) = read_leb128(&wasm[p..])?;
+                p += leb + flen;
+                let kind = *wasm.get(p)?;
+                p += 1;
+                match kind {
+                    0 => {
+                        // func: typeidx leb
+                        let (_t, leb) = read_leb128(&wasm[p..])?;
+                        p += leb;
+                        import_count += 1;
+                    }
+                    1 => {
+                        // table: reftype + limits
+                        let flags = *wasm.get(p)?;
+                        p += 2;
+                        if flags & 1 == 1 {
+                            let (_m, leb) = read_leb128(&wasm[p..])?;
+                            p += leb;
+                        }
+                    }
+                    2 => {
+                        // memory: limits
+                        let flags = *wasm.get(p)?;
+                        p += 1;
+                        if flags & 1 == 0 {
+                            let (_m, leb) = read_leb128(&wasm[p..])?;
+                            p += leb;
+                        } else {
+                            let (_m, leb) = read_leb128(&wasm[p..])?;
+                            p += leb;
+                            let (_n, leb) = read_leb128(&wasm[p..])?;
+                            p += leb;
+                        }
+                    }
+                    3 => {
+                        // global: valtype + mut
+                        p += 2;
+                    }
+                    _ => return None,
+                }
+            }
+            break;
+        }
+        pos = section_end;
+    }
+    let defined = func_index.checked_sub(import_count)?;
+    func_names.get(defined).cloned()
 }
 
 fn read_leb128(data: &[u8]) -> Option<(usize, usize)> {
@@ -2952,7 +3043,7 @@ fn run_wasmtime(
     let mut store = Store::new(&engine, ());
 
     let memory =
-        Memory::new(&mut store, MemoryType::new(4, None)).map_err(|e| format!("memory: {}", e))?;
+        Memory::new(&mut store, MemoryType::new(512, None)).map_err(|e| format!("memory: {}", e))?;
 
     let logs_c = logs.clone();
     let log_fn = Func::new(

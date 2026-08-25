@@ -452,22 +452,59 @@ impl WasmEmitter {
                 Ok(v)
             }
             "list" => {
+                // Two paths:
+                // 1) ALL-literal list (e.g. constants like (c-p _d) (list ...)):
+                //    a compile-time STATIC address is safe — the content never
+                //    changes, so sharing one buffer across calls is fine and
+                //    avoids heap churn (fe-mul calls (c-pp 0)/(c-p 0) ~186× per
+                //    invocation; runtime alloc there would burn ~15KB/call).
+                // 2) ANY dynamic element: must allocate at RUNTIME. A static
+                //    address would make every execution of the same list site
+                //    share ONE buffer — two live lists from the same call site
+                //    would alias and clobber each other.
                 let count = a.len() as u32;
                 let slots_needed = 1 + count;
-                let ptr = self.heap_bump(slots_needed * 8);
+                let is_constant = a.iter().all(|x| matches!(x, LispVal::Num(_) | LispVal::Bool(_) | LispVal::Nil));
                 let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
                 let mut v = Vec::new();
-                v.push(Instruction::I64Const(ptr as i64));
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Const(count as i64));
-                v.push(Instruction::I64Store(ma));
-                for (i, elem) in a.iter().enumerate() {
-                    v.push(Instruction::I64Const((ptr + ((i as u32 + 1) * 8)) as i64));
+                if is_constant {
+                    let ptr = self.heap_bump(slots_needed * 8);
+                    v.push(Instruction::I64Const(ptr as i64));
                     v.push(Instruction::I32WrapI64);
-                    v.extend(self.expr(elem)?);
+                    v.push(Instruction::I64Const(count as i64));
                     v.push(Instruction::I64Store(ma));
+                    for (i, elem) in a.iter().enumerate() {
+                        v.push(Instruction::I64Const((ptr + ((i as u32 + 1) * 8)) as i64));
+                        v.push(Instruction::I32WrapI64);
+                        v.extend(self.expr(elem)?);
+                        v.push(Instruction::I64Store(ma));
+                    }
+                    v.push(Instruction::I64Const(((ptr as i64) << TAG_BITS) | TAG_ARRAY));
+                } else {
+                    let list_ptr_id = self.list_ptr_counter;
+                    self.list_ptr_counter += 1;
+                    let ptr_local = self.local_idx(&format!("__lst_ptr_{}", list_ptr_id));
+                    // [old_ptr] on stack (guarded against mem_limit)
+                    v.extend(self.emit_runtime_alloc((slots_needed * 8) as i64));
+                    v.push(Instruction::LocalSet(ptr_local));
+                    v.push(Instruction::LocalGet(ptr_local));
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::I64Const(count as i64));
+                    v.push(Instruction::I64Store(ma));
+                    for (i, elem) in a.iter().enumerate() {
+                        v.push(Instruction::LocalGet(ptr_local));
+                        v.push(Instruction::I64Const(((i as u32 + 1) * 8) as i64));
+                        v.push(Instruction::I64Add);
+                        v.push(Instruction::I32WrapI64);
+                        v.extend(self.expr(elem)?);
+                        v.push(Instruction::I64Store(ma));
+                    }
+                    v.push(Instruction::LocalGet(ptr_local));
+                    v.push(Instruction::I64Const(TAG_BITS as i64));
+                    v.push(Instruction::I64Shl);
+                    v.push(Instruction::I64Const(TAG_ARRAY));
+                    v.push(Instruction::I64Or);
                 }
-                v.push(Instruction::I64Const(((ptr as i64) << TAG_BITS) | TAG_ARRAY));
                 Ok(v)
             }
             "car" | "first" => {

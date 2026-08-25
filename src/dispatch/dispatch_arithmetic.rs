@@ -10,7 +10,7 @@ pub fn handle(
     match name {
         "+" => Ok(Some(do_arith(args, |a, b| a + b, |a, b| a + b)?)),
         "-" => Ok(Some(do_arith(args, |a, b| a - b, |a, b| a - b)?)),
-        "*" => Ok(Some(do_arith(args, |a, b| a * b, |a, b| a * b)?)),
+        "*" => Ok(Some(do_arith(args, |a, b| a.checked_mul(b).expect("integer overflow in *"), |a, b| a * b)?)),
         "/" => {
             if any_float(args) {
                 let b = as_float(args.get(1).ok_or("/ needs 2 args")?)?;

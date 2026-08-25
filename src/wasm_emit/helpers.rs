@@ -592,7 +592,12 @@ impl WasmEmitter {
             Instruction::LocalGet(tmp),
             Instruction::I64Const(TAGGED_NIL),
             Instruction::I64Eq,             // → i32
-            Instruction::I32Or,             // → i32
+            Instruction::I32Or,             // → i32 (false | nil)
+            // Check val == 0 (Num 0 — TAGGED_NUM(0) = 0 << 3 | 0 = 0)
+            Instruction::LocalGet(tmp),
+            Instruction::I64Const(0),
+            Instruction::I64Eq,             // → i32
+            Instruction::I32Or,             // → i32 (false | nil | zero)
             // invert: 0 → truthy, 1 → falsy
             Instruction::I32Eqz,            // → i32
             Instruction::I64ExtendI32U,    // → i64 for callers

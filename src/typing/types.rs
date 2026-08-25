@@ -710,6 +710,12 @@ impl TcEnv {
         env.insert_mono("u32-to-bytes".into(), TcType::Arrow(vec![int_ty.clone()], Box::new(str_ty.clone())));
         env.insert_mono("bytes-to-u32".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(int_ty.clone())));
 
+        // Array/vec builtins (emitter: call_list.rs — runtime heap arrays)
+        let any_arr_ty = TcType::Con(TcCon::List(Box::new(TcType::Con(TcCon::Any))));
+        env.insert_mono("vec-nth".into(), TcType::Arrow(vec![any_arr_ty.clone(), int_ty.clone()], Box::new(TcType::Con(TcCon::Any))));
+        env.insert_mono("vec-length".into(), TcType::Arrow(vec![any_arr_ty.clone()], Box::new(int_ty.clone())));
+        env.insert_mono("vec-push".into(), TcType::Arrow(vec![any_arr_ty.clone(), TcType::Con(TcCon::Any)], Box::new(any_arr_ty.clone())));
+
         // NEAR storage (emitter names)
         env.insert_mono("near/storage_set".into(), TcType::Arrow(vec![str_ty.clone(), str_ty.clone()], Box::new(nil_ty.clone())));
         // near/storage_get : str → any (returns nil on miss, str on hit)

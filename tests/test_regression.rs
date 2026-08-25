@@ -753,6 +753,81 @@ mod outlayer_e2e {
         assert!(ret.contains("hello"), "expected hello in output, got: {}", ret);
     }
 
+    /// Fix 2: variadic str-cat in NEAR mode (3+ args folded to nested 2-arg)
+    #[test]
+    fn nm_str_cat_variadic_3() {
+        if !has_near_mock() { return; }
+        let out = run_near_mock(r#"(define (main) (str-cat "a" "b" "c"))"#, "_run", "{}", None);
+        eprintln!("VARIADIC3 OUTPUT: {}", out);
+        let ret = extract_return(&out).expect("should have return value");
+        assert!(ret.contains("abc"), "expected 'abc', got: {}", ret);
+    }
+
+    #[test]
+    fn nm_str_cat_variadic_4() {
+        if !has_near_mock() { return; }
+        let out = run_near_mock(r#"(define (main) (str-cat "foo" " " "bar" "!"))"#, "_run", "{}", None);
+        let ret = extract_return(&out).expect("should have return value");
+        assert!(ret.contains("foo bar!"), "expected 'foo bar!', got: {}", ret);
+    }
+
+    /// Fix 3: nested let with same-name shadowing should get fresh locals
+    #[test]
+    fn nm_let_shadow() {
+        if !has_near_mock() { return; }
+        let out = run_near_mock(r#"
+(define (main)
+  (let* ((x 1))
+    (let* ((x (+ x 1)))
+      x)))
+"#, "_run", "{}", None);
+        let ret = extract_return(&out).expect("should have return value");
+        assert!(ret.contains("2"), "expected 2, got: {}", ret);
+    }
+
+    /// Fix 3: deep nested let shadowing (previously broke >10)
+    #[test]
+    fn nm_let_deep_shadow() {
+        if !has_near_mock() { return; }
+        let out = run_near_mock(r#"
+(define (main)
+  (let* ((x 1))
+    (let* ((x 2))
+      (let* ((x 3))
+        (let* ((x 4))
+          (let* ((x 5))
+            (let* ((x 6))
+              (let* ((x 7))
+                (let* ((x 8))
+                  (let* ((x 9))
+                    (let* ((x 10))
+                      (let* ((x 11))
+                        x)))))))))))
+"#, "_run", "{}", None);
+        let ret = extract_return(&out).expect("should have return value");
+        assert!(ret.contains("11"), "expected 11, got: {}", ret);
+    }
+
+    /// Fix 4: 0 should be falsy
+    #[test]
+    fn nm_zero_is_falsy() {
+        if !has_near_mock() { return; }
+        let out = run_near_mock("(define (main) (if 0 100 42))", "_run", "{}", None);
+        let ret = extract_return(&out).expect("should have return value");
+        assert!(ret.contains("42"), "expected 42 (else branch), got: {}", ret);
+    }
+
+    /// Fix 5: multiply overflow should trap/error, not wrap
+    #[test]
+    fn nm_mul_overflow_traps() {
+        if !has_near_mock() { return; }
+        // 2^30 * 2^30 = 2^60 which overflows i32 but fits i64 — should succeed
+        let out = run_near_mock("(define (main) (* 1073741824 1073741824))", "_run", "{}", None);
+        let ret = extract_return(&out).expect("should have return value");
+        // 2^60 = 1152921504606846976
+        assert!(ret.contains("1152921504606846976"), "expected 2^60, got: {}", ret);
+    }
+
     #[test]
     fn nm_fibonacci_10() {
         if !has_near_mock() { return; }
@@ -790,5 +865,14 @@ mod outlayer_e2e {
         // Should log or return something with the deposit value
         assert!(out.contains("2000000000") || out.contains("2e18") || out.contains("2000000000000000000"),
             "expected deposit value in output, got: {}", out);
+    }
+
+    /// Fix 1: near/return auto-detects string vs non-string
+    #[test]
+    fn nm_return_string_auto() {
+        if !has_near_mock() { return; }
+        let out = run_near_mock(r#"(define (main) (near/return "hello world"))"#, "_run", "{}", None);
+        let ret = extract_return(&out).expect("should have return value");
+        assert!(ret.contains("hello world"), "expected 'hello world', got: {}", ret);
     }
 }

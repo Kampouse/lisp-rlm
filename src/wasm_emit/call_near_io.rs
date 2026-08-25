@@ -4,14 +4,38 @@ impl WasmEmitter {
     pub(crate) fn call_near_io(&mut self, op: &str, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
         match op {
             "near/return" => {
+                self.need_host(25);
                 let val = self.expr(&a[0])?;
                 let mut v = Vec::new();
-                v.push(Instruction::I32Const(TEMP_MEM as i32)); v.extend(val);
+                let tagged_tmp = self.local_idx("__ret_tagged");
+                // Save the tagged value
+                v.extend(val.clone());
+                v.push(Instruction::LocalSet(tagged_tmp));
+                // Check tag: (tagged & 7) == TAG_STR (5)
+                v.push(Instruction::LocalGet(tagged_tmp));
+                v.push(Instruction::I64Const(7));
+                v.push(Instruction::I64And);
+                v.push(Instruction::I64Const(TAG_STR));
+                v.push(Instruction::I64Eq); // → i32
+                v.push(Instruction::If(BlockType::Empty));
+                // ── String path: untag packed (ptr|len<<32), extract len and ptr ──
+                v.push(Instruction::LocalGet(tagged_tmp));
                 v.extend(self.emit_untag());
-                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                // value_return(len=8, ptr=TEMP_MEM) — idx 25
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // len
+                v.push(Instruction::LocalGet(tagged_tmp));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // ptr
+                v.push(Self::host_call(25)); // value_return
+                v.push(Instruction::Else);
+                // ── Non-string path: store 8-byte untagged value at TEMP_MEM ──
+                v.push(Instruction::I32Const(TEMP_MEM as i32));
+                v.extend(val);
+                v.extend(self.emit_untag());
+                let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                v.push(Instruction::I64Store(ma8));
                 v.push(Instruction::I64Const(8)); v.push(Instruction::I64Const(TEMP_MEM));
                 v.push(Self::host_call(25));
+                v.push(Instruction::End);
                 // Set return flag so export wrapper skips its value_return
                 v.push(Instruction::I64Const(1));
                 v.push(Instruction::GlobalSet(RETURN_FLAG));

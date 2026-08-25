@@ -462,12 +462,16 @@ impl WasmEmitter {
                 let saved_param_count = self.current_param_count;
                 let saved_gas_local = self.gas_local;
                 let saved_while_id = self.while_id.get();
+                let saved_type_map = self.local_type_map.clone();
+                let saved_free_locals = self.free_locals.clone();
 
                 self.emit_define(&loop_n, &all_params, &loop_body)?;
 
                 // Restore emitter state
                 self.locals = saved_locals;
                 self.next_local = saved_next_local;
+                self.local_type_map = saved_type_map;
+                self.free_locals = saved_free_locals;
                 self.current_func = saved_func;
                 self.current_param_count = saved_param_count;
                 self.gas_local = saved_gas_local;

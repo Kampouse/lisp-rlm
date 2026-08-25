@@ -1,7 +1,7 @@
 #![allow(unreachable_patterns)]
 #![allow(dead_code)]
 use crate::helpers::is_truthy;
-use crate::types::{Env, EvalState, LispVal};
+use crate::types::{Env, EvalState, LispVal, NearContract};
 
 /// Replace `(old_name args...)` with `(new_name args...)` recursively in an expression.
 fn replace_sym_call(expr: &LispVal, old_name: &str, new_name: &str) -> LispVal {
@@ -26,6 +26,7 @@ fn replace_sym_call(expr: &LispVal, old_name: &str, new_name: &str) -> LispVal {
 pub fn expand_macro_call(
     macro_val: &LispVal,
     unevaluated_args: &[LispVal],
+    state: Option<&mut EvalState>,
 ) -> Result<LispVal, String> {
     match macro_val {
         LispVal::Macro {
@@ -57,7 +58,7 @@ pub fn expand_macro_call(
                 macro_env.insert_mut(rest.clone(), LispVal::List(rest_args));
             }
             // Evaluate macro body in macro_env
-            let mut state = EvalState::new();
+            let mut state = match state { Some(s) => s, None => &mut EvalState::new() };
             crate::program::run_program(&[body.as_ref().clone()], &mut macro_env, &mut state)
         }
         _ => Err("not a macro".into()),
@@ -915,7 +916,7 @@ impl LoopCompiler {
                                     if let LispVal::Sym(ref name) = form_list[0] {
                                         if let Some(macro_val) = outer_env.get(name) {
                                             if matches!(macro_val, LispVal::Macro { .. }) {
-                                                match expand_macro_call(&macro_val, &form_list[1..]) {
+                                                match expand_macro_call(&macro_val, &form_list[1..], None) {
                                                     Ok(expansion) => {
                                                         self.code.push(Op::PushLiteral(expansion));
                                                         self.last_result_i64 = false;
@@ -1991,6 +1992,7 @@ impl LoopCompiler {
                                 captured: std::sync::RwLock::new(inner.captured.clone()),
                                 closures: inner.closures,
                                 runtime_captures: inner.runtime_captures,
+                                capture_cells: std::sync::RwLock::new(vec![]),
                                 rest_param_idx: rest_param.as_ref().map(|_| n_fixed),
                                 num_fixed_params: n_fixed,
                             });
@@ -2003,7 +2005,7 @@ impl LoopCompiler {
                             // Check if it's a macro — expand at compile time before compiling args
                             if let Some(macro_val) = outer_env.get(op) {
                                 if matches!(macro_val, LispVal::Macro { .. }) {
-                                    match expand_macro_call(macro_val, &list[1..]) {
+                                    match expand_macro_call(macro_val, &list[1..], None) {
                                         Ok(expansion) => {
                                             return self.compile_expr(&expansion, outer_env);
                                         }
@@ -4111,10 +4113,29 @@ pub fn lisp_eq(a: &LispVal, b: &LispVal) -> bool {
     }
 }
 
+fn extract_str(args: &[LispVal], idx: usize) -> Result<String, String> {
+    args.get(idx)
+        .and_then(|v| match v {
+            LispVal::Str(s) => Some(s.clone()),
+            _ => None,
+        })
+        .ok_or_else(|| format!("expected string at index {}, got {:?}", idx, args.get(idx)))
+}
+
+fn extract_num(args: &[LispVal], idx: usize) -> Result<i64, String> {
+    match args.get(idx) {
+        Some(LispVal::Num(n)) => Ok(*n),
+        Some(LispVal::Float(f)) => Ok(*f as i64),
+        Some(v) => Err(format!("expected number at index {}, got {}", idx, v)),
+        None => Err(format!("expected number at index {}, got none", idx)),
+    }
+}
+
 /// Evaluate a builtin by name (for Op::BuiltinCall)
 /// Check if a name is a NEAR builtin
 fn eval_near_builtin_match(name: &str) -> bool {
     matches!(name,
+        // ── Legacy bare names (pre-near/ namespace) ──
         "storage-write" | "storage_write"
         | "storage-read" | "storage_read"
         | "storage-remove" | "storage_remove"
@@ -4129,6 +4150,76 @@ fn eval_near_builtin_match(name: &str) -> bool {
         | "log-utf8" | "log_utf8" | "log"
         | "near-config" | "near_config"
         | "near-reset" | "near_reset"
+        // ── Test seams / registry ──
+        | "near-promises" | "near-batch-actions" | "near-returned-promise"
+        | "near-register" | "near-register-source" | "near-contracts"
+        // ── near/* I/O ──
+        | "near/input"
+        | "near/return" | "near/return_str" | "near/return_value" | "near/value_return"
+        | "near/log" | "near/log_num" | "near/log_utf16" | "near/log-debug" | "near/debug"
+        | "near/panic" | "near/abort"
+        // ── near/* storage ──
+        | "near/store" | "near/load" | "near/remove" | "near/has_key"
+        | "near/store_num" | "near/load_num"
+        | "near/kv" | "near/kv-get"
+        | "near/storage_write" | "near/storage_read" | "near/storage_remove"
+        | "near/storage_has_key" | "near/storage_set" | "near/storage_get"
+        | "near/storage_has"
+        // ── near/* context / account ──
+        | "near/current_account_id" | "near/predecessor_account_id"
+        | "near/signer_account_id" | "near/signer_account_pk" | "near/signer_public_key"
+        | "near/account_id" | "near/predecessor"
+        | "near/attached_deposit" | "near/attached_deposit_high" | "near/deposit-gte"
+        | "near/account_balance" | "near/account_balance_high"
+        | "near/account_locked_balance" | "near/account_locked_balance_high"
+        | "near/block_index" | "near/block_height" | "near/block_timestamp"
+        | "near/epoch_height" | "near/storage_usage"
+        | "near/prepaid_gas" | "near/used_gas"
+        | "near/current_code_hash" | "near/current_contract_code"
+        | "near/refund_to_account_id"
+        | "near/validator_stake" | "near/validator_total_stake"
+        | "near/signer_to_buf" | "near/write_amount"
+        // ── near/* crypto ──
+        | "near/sha256" | "near/keccak256" | "near/keccak512" | "near/ripemd160"
+        | "near/ecrecover" | "near/ed25519_verify" | "near/p256_verify" | "near/schnorr_verify"
+        | "near/alt_bn128_g1_multiexp" | "near/alt_bn128_g1_sum" | "near/alt_bn128_pairing_check"
+        | "near/bls12381_p1_sum"
+        | "near/random_seed"
+        // ── near/* promises ──
+        | "near/call" | "near/transfer" | "near/deploy_contract"
+        | "near/promise_create" | "near/promise_then" | "near/promise_and"
+        | "near/promise_results_count" | "near/promise_result" | "near/promise_return"
+        | "near/promise_batch_create" | "near/promise_batch_then"
+        | "near/promise_batch_action_create_account"
+        | "near/promise_batch_action_deploy_contract"
+        | "near/promise_batch_action_function_call"
+        | "near/promise_batch_action_function_call_weight"
+        | "near/promise_batch_action_transfer"
+        | "near/promise_batch_action_stake"
+        | "near/promise_batch_action_add_key_with_full_access"
+        | "near/promise_batch_action_add_key_with_function_call"
+        | "near/promise_batch_action_delete_key"
+        | "near/promise_batch_action_delete_account"
+        | "near/promise_batch_action_state_init"
+        | "near/promise_batch_action_state_init_by_account_id"
+        | "near/promise_batch_action_deploy_global_contract"
+        | "near/promise_batch_action_deploy_global_contract_by_account_id"
+        | "near/promise_batch_action_use_global_contract"
+        | "near/promise_batch_action_use_global_contract_by_account_id"
+        | "near/promise_batch_action_transfer_to_gas_key"
+        | "near/promise_batch_action_add_gas_key_with_full_access"
+        | "near/promise_batch_action_add_gas_key_with_function_call"
+        | "near/promise_set_refund_to"
+        | "near/set_state_init_data_entry"
+        | "near/promise_yield_create" | "near/promise_yield_resume"
+        | "near/batch"
+        // ── near/* iteration ──
+        | "near/iter_prefix" | "near/iter_range" | "near/iter_next"
+        // ── near/* JSON helpers ──
+        | "near/json_get_int" | "near/json_get_str"
+        | "near/json_return_int" | "near/json_return_str"
+        // ── Mock contract registry ──
+        | "near-register" | "near-register-source" | "near-contracts"
     )
 }
 
@@ -4138,94 +4229,738 @@ fn eval_near_builtin(
     args: &[LispVal],
     state: &mut EvalState,
 ) -> Option<Result<LispVal, String>> {
+    let ctx_get = |s: &mut EvalState, key: &str, def: LispVal| -> LispVal {
+        s.near_context.get(key).cloned().unwrap_or(def)
+    };
+    let key_of = |a: &[LispVal], i: usize| -> String {
+        match a.get(i) {
+            Some(LispVal::Str(s)) => s.clone(),
+            Some(v) => v.to_string(),
+            None => String::new(),
+        }
+    };
     match name {
-        "storage-write" | "storage_write" => {
-            let key = match args.get(0) {
-                Some(LispVal::Str(s)) => s.clone(),
-                Some(v) => v.to_string(),
-                None => return Some(Err("storage-write: need key".into())),
-            };
+        // ═══════════════════════════════════════════════════════════════
+        //  STORAGE — near/ namespace (matches WASM return types: Num, not Bool)
+        // ═══════════════════════════════════════════════════════════════
+        "near/store" | "near/storage_write" | "near/storage_set" | "near/storage_has" => {
+            let key = key_of(args, 0);
+            if key.is_empty() { return Some(Err("near/store: need key".into())); }
             let val = args.get(1).cloned().unwrap_or(LispVal::Nil);
             state.near_storage.insert(key, val);
-            Some(Ok(LispVal::Bool(true)))
+            Some(Ok(LispVal::Num(0)))
+        }
+        "near/load" | "near/storage_read" | "near/storage_get" => {
+            let key = key_of(args, 0);
+            Some(Ok(state.near_storage.get(&key).cloned().unwrap_or(LispVal::Num(0))))
+        }
+        "near/remove" | "near/storage_remove" | "near/storage_has" => {
+            let key = key_of(args, 0);
+            state.near_storage.remove(&key);
+            Some(Ok(LispVal::Num(0)))
+        }
+        "near/has_key" | "near/storage_has_key" => {
+            let key = key_of(args, 0);
+            Some(Ok(LispVal::Num(if state.near_storage.contains_key(&key) { 1 } else { 0 })))
+        }
+        "near/store_num" => {
+            let key = key_of(args, 0);
+            let val = args.get(1).cloned().unwrap_or(LispVal::Num(0));
+            state.near_storage.insert(key, val);
+            Some(Ok(LispVal::Num(0)))
+        }
+        "near/load_num" => {
+            let key = key_of(args, 0);
+            Some(Ok(state.near_storage.get(&key).cloned().unwrap_or(LispVal::Num(0))))
+        }
+        "near/kv" => {
+            // (near/kv val prefix part1 part2 ...) — composite key storage
+            let val = args.get(0).cloned().unwrap_or(LispVal::Nil);
+            let parts: Vec<String> = args[1..].iter().map(|a| match a {
+                LispVal::Str(s) => s.clone(),
+                v => v.to_string(),
+            }).collect();
+            let key = parts.join("/");
+            state.near_storage.insert(key, val);
+            Some(Ok(LispVal::Num(0)))
+        }
+        "near/kv-get" => {
+            // (near/kv-get prefix part1 part2 ...)
+            let parts: Vec<String> = args.iter().map(|a| match a {
+                LispVal::Str(s) => s.clone(),
+                v => v.to_string(),
+            }).collect();
+            let key = parts.join("/");
+            Some(Ok(state.near_storage.get(&key).cloned().unwrap_or(LispVal::Num(0))))
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        //  LEGACY STORAGE (pre-near/ namespace — kept for compat)
+        // ═══════════════════════════════════════════════════════════════
+        "storage-write" | "storage_write" => {
+            let key = key_of(args, 0);
+            let val = args.get(1).cloned().unwrap_or(LispVal::Nil);
+            state.near_storage.insert(key, val);
+            Some(Ok(LispVal::Num(0)))
         }
         "storage-read" | "storage_read" => {
-            let key = match args.get(0) {
-                Some(LispVal::Str(s)) => s.clone(),
-                Some(v) => v.to_string(),
-                None => return Some(Err("storage-read: need key".into())),
-            };
-            Some(Ok(state.near_storage.get(&key).cloned().unwrap_or(LispVal::Nil)))
+            let key = key_of(args, 0);
+            Some(Ok(state.near_storage.get(&key).cloned().unwrap_or(LispVal::Num(0))))
         }
         "storage-remove" | "storage_remove" => {
-            let key = match args.get(0) {
-                Some(LispVal::Str(s)) => s.clone(),
-                Some(v) => v.to_string(),
-                None => return Some(Err("storage-remove: need key".into())),
-            };
+            let key = key_of(args, 0);
             state.near_storage.remove(&key);
-            Some(Ok(LispVal::Bool(true)))
+            Some(Ok(LispVal::Num(0)))
         }
         "storage-has-key" | "storage_has_key" => {
-            let key = match args.get(0) {
-                Some(LispVal::Str(s)) => s.clone(),
-                Some(v) => v.to_string(),
-                None => return Some(Err("storage-has-key: need key".into())),
+            let key = key_of(args, 0);
+            Some(Ok(LispVal::Num(if state.near_storage.contains_key(&key) { 1 } else { 0 })))
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        //  CONTEXT
+        // ═══════════════════════════════════════════════════════════════
+        "near/current_account_id" | "current-account-id" | "current_account_id"
+        | "near/account_id" => {
+            Some(Ok(ctx_get(state, "current_account_id", LispVal::Str("contract.near".into()))))
+        }
+        "near/predecessor_account_id" | "predecessor-account-id" | "predecessor_account_id"
+        | "near/predecessor" => {
+            Some(Ok(ctx_get(state, "predecessor_account_id", LispVal::Str("bob.near".into()))))
+        }
+        "near/signer_account_id" | "signer-account-id" | "signer_account_id" => {
+            Some(Ok(ctx_get(state, "signer_account_id", LispVal::Str("alice.near".into()))))
+        }
+        "near/signer_account_pk" | "near/signer_public_key" => {
+            Some(Ok(ctx_get(state, "signer_account_pk", LispVal::Str(String::new()))))
+        }
+        "near/input" => {
+            Some(Ok(ctx_get(state, "input", LispVal::Str(String::new()))))
+        }
+        "near/block_index" | "near/block_height" | "block-height" | "block_height" => {
+            Some(Ok(ctx_get(state, "block_index", LispVal::Num(42_000_000))))
+        }
+        "near/block_timestamp" | "block-timestamp" | "block_timestamp" => {
+            Some(Ok(ctx_get(state, "block_timestamp", LispVal::Num(1_714_000_000_000_000_000))))
+        }
+        "near/epoch_height" => {
+            Some(Ok(ctx_get(state, "epoch_height", LispVal::Num(100))))
+        }
+        "near/prepaid_gas" => {
+            Some(Ok(ctx_get(state, "prepaid_gas", LispVal::Num(300_000_000_000_000_i64))))
+        }
+        "near/used_gas" => {
+            Some(Ok(ctx_get(state, "used_gas", LispVal::Num(0))))
+        }
+        "near/attached_deposit" | "attached-deposit" | "attached_deposit"
+        | "near/attached_deposit_high" => {
+            Some(Ok(ctx_get(state, "attached_deposit", LispVal::Num(0))))
+        }
+        "near/deposit-gte" => {
+            // (near/deposit-gte target_deposit_lo target_deposit_hi) → Num(1) or Num(0)
+            let threshold = args.get(0).and_then(|v| match v {
+                LispVal::Num(n) => Some(*n),
+                LispVal::Float(f) => Some(*f as i64),
+                _ => None,
+            }).unwrap_or(0);
+            let dep = state.near_context.get("attached_deposit").and_then(|v| match v {
+                LispVal::Num(n) => Some(*n),
+                _ => None,
+            }).unwrap_or(0);
+            Some(Ok(LispVal::Num(if dep >= threshold { 1 } else { 0 })))
+        }
+        "near/account_balance" | "account-balance" | "account_balance" => {
+            // WASM returns u128 low bits as i64
+            Some(Ok(ctx_get(state, "account_balance", LispVal::Num(1_000_000_000_000_000_000_i64))))
+        }
+        "near/account_balance_high" => {
+            Some(Ok(ctx_get(state, "account_balance_high", LispVal::Num(0))))
+        }
+        "near/account_locked_balance" => {
+            Some(Ok(ctx_get(state, "account_locked_balance", LispVal::Num(0))))
+        }
+        "near/account_locked_balance_high" => {
+            Some(Ok(ctx_get(state, "account_locked_balance_high", LispVal::Num(0))))
+        }
+        "near/storage_usage" => {
+            Some(Ok(ctx_get(state, "storage_usage", LispVal::Num(0))))
+        }
+        "near/current_code_hash" => {
+            Some(Ok(ctx_get(state, "current_code_hash", LispVal::Str("mock_code_hash_32bytes".into()))))
+        }
+        "near/current_contract_code" => {
+            Some(Ok(ctx_get(state, "current_contract_code", LispVal::Str(String::new()))))
+        }
+        "near/signer_to_buf" => {
+            // Mock: return length of signer account id
+            let signer = match state.near_context.get("signer_account_id") {
+                Some(LispVal::Str(s)) => s.len() as i64,
+                _ => 10, // "alice.near".len()
             };
-            Some(Ok(LispVal::Bool(state.near_storage.contains_key(&key))))
+            Some(Ok(LispVal::Num(signer)))
         }
-        "block-height" | "block_height" => {
-            Some(Ok(state.near_context.get("block_height").cloned()
-                .unwrap_or(LispVal::Num(42_000_000))))
-        }
-        "block-timestamp" | "block_timestamp" => {
-            Some(Ok(state.near_context.get("block_timestamp").cloned()
-                .unwrap_or(LispVal::Num(1_714_000_000_000_000_000))))
-        }
-        "signer-account-id" | "signer_account_id" => {
-            Some(Ok(state.near_context.get("signer_account_id").cloned()
-                .unwrap_or(LispVal::Str("alice.near".into()))))
-        }
-        "predecessor-account-id" | "predecessor_account_id" => {
-            Some(Ok(state.near_context.get("predecessor_account_id").cloned()
-                .unwrap_or(LispVal::Str("bob.near".into()))))
-        }
-        "current-account-id" | "current_account_id" => {
-            Some(Ok(state.near_context.get("current_account_id").cloned()
-                .unwrap_or(LispVal::Str("contract.near".into()))))
-        }
-        "attached-deposit" | "attached_deposit" => {
-            Some(Ok(state.near_context.get("attached_deposit").cloned()
-                .unwrap_or(LispVal::Num(0))))
-        }
-        "account-balance" | "account_balance" => {
-            Some(Ok(state.near_context.get("account_balance").cloned()
-                .unwrap_or(LispVal::Str("10000000000000000000000000".into()))))  // 10 NEAR (yocto)
-        }
-        "log-utf8" | "log_utf8" | "log" => {
-            let msg = match args.get(0) {
-                Some(LispVal::Str(s)) => s.clone(),
-                Some(v) => v.to_string(),
-                None => return Some(Ok(LispVal::Nil)),
-            };
-            eprintln!("[log] {}", msg);
+        "near/write_amount" => {
+            // Mock: store amount, return Nil
             Some(Ok(LispVal::Nil))
         }
-        "near-config" | "near_config" => {
-            if args.len() == 2 {
-                let key = match &args[0] {
-                    LispVal::Str(s) => s.clone(),
-                    v => v.to_string(),
+        "near/validator_stake" => {
+            Some(Ok(ctx_get(state, "validator_stake", LispVal::Num(0))))
+        }
+        "near/validator_total_stake" => {
+            Some(Ok(ctx_get(state, "validator_total_stake", LispVal::Num(0))))
+        }
+        "near/refund_to_account_id" => {
+            // (near/refund_to_account_id account_id_ptr_len account_id_ptr)
+            // Mock: just log
+            Some(Ok(LispVal::Num(0)))
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        //  PROMISES
+        // ═══════════════════════════════════════════════════════════════
+        "near/call" => {
+            // (near/call target method args gas deposit) → auto promise_return
+            let target = key_of(args, 0);
+            let method = key_of(args, 1);
+            let call_args = key_of(args, 2);
+            let gas = extract_num(args, 3).unwrap_or(30_000_000_000_000);
+            let deposit = extract_num(args, 4).unwrap_or(0);
+            let idx = state.near_promise_idx;
+            state.near_promise_idx += 1;
+            let mut m = im::HashMap::new();
+            m.insert("type".into(), LispVal::Str("call".into()));
+            m.insert("idx".into(), LispVal::Num(idx));
+            m.insert("target".into(), LispVal::Str(target.clone()));
+            m.insert("method".into(), LispVal::Str(method));
+            m.insert("args".into(), LispVal::Str(call_args));
+            m.insert("gas".into(), LispVal::Num(gas));
+            m.insert("deposit".into(), LispVal::Num(deposit));
+            state.near_promises.push(LispVal::Map(m));
+            state.near_returned_promise = Some(idx);
+            Some(Ok(LispVal::Num(idx)))
+        }
+        "near/promise_create" => {
+            let target = key_of(args, 0);
+            let method = key_of(args, 1);
+            let call_args = key_of(args, 2);
+            let gas = extract_num(args, 3).unwrap_or(30_000_000_000_000);
+            let deposit = extract_num(args, 4).unwrap_or(0);
+            let idx = state.near_promise_idx;
+            state.near_promise_idx += 1;
+            let mut m = im::HashMap::new();
+            m.insert("type".into(), LispVal::Str("create".into()));
+            m.insert("idx".into(), LispVal::Num(idx));
+            m.insert("target".into(), LispVal::Str(target.clone()));
+            m.insert("method".into(), LispVal::Str(method));
+            m.insert("args".into(), LispVal::Str(call_args));
+            m.insert("gas".into(), LispVal::Num(gas));
+            m.insert("deposit".into(), LispVal::Num(deposit));
+            state.near_promises.push(LispVal::Map(m));
+            Some(Ok(LispVal::Num(idx)))
+        }
+        "near/promise_then" => {
+            let base_idx = extract_num(args, 0).unwrap_or(0);
+            let target = key_of(args, 1);
+            let method = key_of(args, 2);
+            let call_args = key_of(args, 3);
+            let gas = extract_num(args, 4).unwrap_or(30_000_000_000_000);
+            let deposit = extract_num(args, 5).unwrap_or(0);
+            let idx = state.near_promise_idx;
+            state.near_promise_idx += 1;
+            let mut m = im::HashMap::new();
+            m.insert("type".into(), LispVal::Str("then".into()));
+            m.insert("idx".into(), LispVal::Num(idx));
+            m.insert("base".into(), LispVal::Num(base_idx));
+            m.insert("target".into(), LispVal::Str(target.clone()));
+            m.insert("method".into(), LispVal::Str(method));
+            m.insert("args".into(), LispVal::Str(call_args));
+            m.insert("gas".into(), LispVal::Num(gas));
+            m.insert("deposit".into(), LispVal::Num(deposit));
+            state.near_promises.push(LispVal::Map(m));
+
+            // If base promise has a result and target is registered, execute immediately
+            let base_result = state.near_promise_results.get(base_idx as usize).cloned().unwrap_or_default();
+            // If base promise has a result and target is registered, execute immediately
+            let base_result = state.near_promise_results.get(base_idx as usize).cloned().unwrap_or_default();
+            if !base_result.is_empty() {
+                let (entry, contract_storage) = {
+                    let contract = state.near_contracts.get_mut(&target);
+                    match contract {
+                        Some(c) => (c.entry.clone(), std::mem::take(&mut c.storage)),
+                        None => { return Some(Ok(LispVal::Num(idx))); }
+                    }
                 };
+
+                let caller_storage = std::mem::take(&mut state.near_storage);
+                let caller_ctx = state.near_context.clone();
+                std::mem::swap(&mut state.near_storage, &mut contract_storage.clone());
+
+                let caller_acct = caller_ctx.get("current_account_id")
+                    .cloned().unwrap_or(LispVal::Str("unknown.near".into()));
+                state.near_context.insert("current_account_id".into(), LispVal::Str(target.clone()));
+                state.near_context.insert("predecessor_account_id".into(), caller_acct);
+                state.near_context.insert("input".into(), LispVal::Str(base_result));
+
+                state.near_return_value = None;
+                let saved_promise_idx = state.near_promise_idx;
+                let saved_promises = std::mem::take(&mut state.near_promises);
+                let saved_batch = std::mem::take(&mut state.near_batch_actions);
+
+                let mut contract_env = Env::new();
+                let result = vm_call_lambda(&entry, &[], &mut contract_env, state);
+
+                let final_contract_storage = std::mem::take(&mut state.near_storage);
+                state.near_contracts.get_mut(&target).map(|c| c.storage = final_contract_storage);
+                state.near_storage = caller_storage;
+                state.near_context = caller_ctx;
+                state.near_promises = saved_promises;
+                state.near_batch_actions = saved_batch;
+                state.near_promise_idx = saved_promise_idx;
+
+                let ret = state.near_return_value.take();
+                let result_str = match ret {
+                    Some(LispVal::Str(s)) => s,
+                    Some(v) => v.to_string(),
+                    None => result.map(|v| v.to_string()).unwrap_or_default(),
+                };
+                while state.near_promise_results.len() <= idx as usize {
+                    state.near_promise_results.push(String::new());
+                }
+                state.near_promise_results[idx as usize] = result_str;
+            }
+
+            Some(Ok(LispVal::Num(idx)))
+        }
+        "near/promise_and" => {
+            // (near/promise_and p1 p2 ...) → returns new promise idx
+            let mut indices = Vec::new();
+            for a in args {
+                if let LispVal::Num(n) = a { indices.push(LispVal::Num(*n)); }
+            }
+            let idx = state.near_promise_idx;
+            state.near_promise_idx += 1;
+            let mut m = im::HashMap::new();
+            m.insert("type".into(), LispVal::Str("and".into()));
+            m.insert("idx".into(), LispVal::Num(idx));
+            m.insert("promises".into(), LispVal::List(indices));
+            state.near_promises.push(LispVal::Map(m));
+            Some(Ok(LispVal::Num(idx)))
+        }
+        "near/promise_results_count" => {
+            Some(Ok(LispVal::Num(state.near_promise_results.len() as i64)))
+        }
+        "near/promise_result" => {
+            let idx = extract_num(args, 0).unwrap_or(0) as usize;
+            let result = state.near_promise_results.get(idx).cloned().unwrap_or_default();
+            Some(Ok(LispVal::Str(result)))
+        }
+        "near/promise_return" => {
+            let idx = extract_num(args, 0).unwrap_or(0);
+            state.near_returned_promise = Some(idx);
+            Some(Ok(LispVal::Num(0)))
+        }
+        "near/promise_set_refund_to" => {
+            let mut m = im::HashMap::new();
+            m.insert("type".into(), LispVal::Str("set_refund".into()));
+            m.insert("promise_idx".into(), args.get(0).cloned().unwrap_or(LispVal::Num(0)));
+            state.near_promises.push(LispVal::Map(m));
+            Some(Ok(LispVal::Num(0)))
+        }
+        "near/transfer" => {
+            let mut m = im::HashMap::new();
+            m.insert("type".into(), LispVal::Str("transfer".into()));
+            m.insert("target".into(), LispVal::Str(key_of(args, 0)));
+            m.insert("amount".into(), args.get(1).cloned().unwrap_or(LispVal::Num(0)));
+            state.near_promises.push(LispVal::Map(m));
+            let idx = state.near_promise_idx;
+            state.near_promise_idx += 1;
+            state.near_returned_promise = Some(idx);
+            Some(Ok(LispVal::Num(idx)))
+        }
+        "near/deploy_contract" => {
+            let mut m = im::HashMap::new();
+            m.insert("type".into(), LispVal::Str("deploy_contract".into()));
+            state.near_promises.push(LispVal::Map(m));
+            let idx = state.near_promise_idx;
+            state.near_promise_idx += 1;
+            state.near_returned_promise = Some(idx);
+            Some(Ok(LispVal::Num(idx)))
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        //  BATCH PROMISES
+        // ═══════════════════════════════════════════════════════════════
+        "near/promise_batch_create" | "near/batch" => {
+            let target = key_of(args, 0);
+            let idx = state.near_promise_idx;
+            state.near_promise_idx += 1;
+            let mut m = im::HashMap::new();
+            m.insert("type".into(), LispVal::Str("batch_create".into()));
+            m.insert("idx".into(), LispVal::Num(idx));
+            m.insert("target".into(), LispVal::Str(target.clone()));
+            state.near_promises.push(LispVal::Map(m));
+            Some(Ok(LispVal::Num(idx)))
+        }
+        "near/promise_batch_then" => {
+            let base_idx = extract_num(args, 0).unwrap_or(0);
+            let target = key_of(args, 1);
+            let idx = state.near_promise_idx;
+            state.near_promise_idx += 1;
+            let mut m = im::HashMap::new();
+            m.insert("type".into(), LispVal::Str("batch_then".into()));
+            m.insert("idx".into(), LispVal::Num(idx));
+            m.insert("base".into(), LispVal::Num(base_idx));
+            m.insert("target".into(), LispVal::Str(target.clone()));
+            state.near_promises.push(LispVal::Map(m));
+            Some(Ok(LispVal::Num(idx)))
+        }
+        // Batch action helpers — log to near_batch_actions
+        "near/batch-call" | "near/promise_batch_action_function_call"
+        | "near/promise_batch_action_function_call_weight" => {
+            let mut m = im::HashMap::new();
+            m.insert("type".into(), LispVal::Str("batch_function_call".into()));
+            m.insert("target".into(), LispVal::Str(key_of(args, 0)));
+            m.insert("method".into(), LispVal::Str(key_of(args, 1)));
+            m.insert("args".into(), LispVal::Str(key_of(args, 2)));
+            m.insert("gas".into(), LispVal::Num(extract_num(args, 3).unwrap_or(30_000_000_000_000)));
+            m.insert("deposit".into(), LispVal::Num(extract_num(args, 4).unwrap_or(0)));
+            state.near_batch_actions.push(LispVal::Map(m));
+            Some(Ok(LispVal::Num(0)))
+        }
+        "near/batch-transfer" | "near/promise_batch_action_transfer" => {
+            let mut m = im::HashMap::new();
+            m.insert("type".into(), LispVal::Str("batch_transfer".into()));
+            m.insert("target".into(), LispVal::Str(key_of(args, 0)));
+            m.insert("amount".into(), LispVal::Num(extract_num(args, 1).unwrap_or(0)));
+            state.near_batch_actions.push(LispVal::Map(m));
+            Some(Ok(LispVal::Num(0)))
+        }
+        "near/batch-deploy" | "near/promise_batch_action_deploy_contract" => {
+            let mut m = im::HashMap::new();
+            m.insert("type".into(), LispVal::Str("batch_deploy_contract".into()));
+            state.near_batch_actions.push(LispVal::Map(m));
+            Some(Ok(LispVal::Num(0)))
+        }
+        "near/batch-create-account" | "near/promise_batch_action_create_account" => {
+            let mut m = im::HashMap::new();
+            m.insert("type".into(), LispVal::Str("batch_create_account".into()));
+            state.near_batch_actions.push(LispVal::Map(m));
+            Some(Ok(LispVal::Num(0)))
+        }
+        "near/batch-add-key" | "near/promise_batch_action_add_key_with_full_access" => {
+            let mut m = im::HashMap::new();
+            m.insert("type".into(), LispVal::Str("batch_add_key".into()));
+            state.near_batch_actions.push(LispVal::Map(m));
+            Some(Ok(LispVal::Num(0)))
+        }
+        "near/promise_batch_action_add_key_with_function_call" => {
+            let mut m = im::HashMap::new();
+            m.insert("type".into(), LispVal::Str("batch_add_key_fc".into()));
+            state.near_batch_actions.push(LispVal::Map(m));
+            Some(Ok(LispVal::Num(0)))
+        }
+        "near/promise_batch_action_delete_key" => {
+            let mut m = im::HashMap::new();
+            m.insert("type".into(), LispVal::Str("batch_delete_key".into()));
+            state.near_batch_actions.push(LispVal::Map(m));
+            Some(Ok(LispVal::Num(0)))
+        }
+        "near/promise_batch_action_delete_account" => {
+            let mut m = im::HashMap::new();
+            m.insert("type".into(), LispVal::Str("batch_delete_account".into()));
+            state.near_batch_actions.push(LispVal::Map(m));
+            Some(Ok(LispVal::Num(0)))
+        }
+        "near/promise_batch_action_stake" => {
+            let mut m = im::HashMap::new();
+            m.insert("type".into(), LispVal::Str("batch_stake".into()));
+            state.near_batch_actions.push(LispVal::Map(m));
+            Some(Ok(LispVal::Num(0)))
+        }
+        // State init
+        "near/promise_batch_action_state_init" => {
+            let mut m = im::HashMap::new();
+            m.insert("type".into(), LispVal::Str("state_init".into()));
+            state.near_batch_actions.push(LispVal::Map(m));
+            Some(Ok(LispVal::Num(0)))
+        }
+        "near/promise_batch_action_state_init_by_account_id" => {
+            let mut m = im::HashMap::new();
+            m.insert("type".into(), LispVal::Str("state_init_by_account".into()));
+            state.near_batch_actions.push(LispVal::Map(m));
+            Some(Ok(LispVal::Num(0)))
+        }
+        "near/set_state_init_data_entry" => {
+            Some(Ok(LispVal::Num(0)))
+        }
+        // Yield
+        "near/promise_yield_create" | "near/promise_yield_resume" => {
+            let mut m = im::HashMap::new();
+            m.insert("type".into(), LispVal::Str(name.strip_prefix("near/").unwrap_or(name).into()));
+            state.near_promises.push(LispVal::Map(m));
+            Some(Ok(LispVal::Num(0)))
+        }
+        // Global contract
+        "near/promise_batch_action_deploy_global_contract"
+        | "near/promise_batch_action_deploy_global_contract_by_account_id"
+        | "near/promise_batch_action_use_global_contract"
+        | "near/promise_batch_action_use_global_contract_by_account_id" => {
+            let mut m = im::HashMap::new();
+            m.insert("type".into(), LispVal::Str(name.strip_prefix("near/").unwrap_or(name).into()));
+            state.near_batch_actions.push(LispVal::Map(m));
+            Some(Ok(LispVal::Num(0)))
+        }
+        // Gas keys
+        "near/promise_batch_action_transfer_to_gas_key"
+        | "near/promise_batch_action_add_gas_key_with_full_access"
+        | "near/promise_batch_action_add_gas_key_with_function_call" => {
+            let mut m = im::HashMap::new();
+            m.insert("type".into(), LispVal::Str(name.strip_prefix("near/").unwrap_or(name).into()));
+            state.near_batch_actions.push(LispVal::Map(m));
+            Some(Ok(LispVal::Num(0)))
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        //  RETURN
+        // ═══════════════════════════════════════════════════════════════
+        "near/return" | "near/return_value" | "near/value_return" => {
+            if let Some(val) = args.get(0) {
+                state.near_return_value = Some(val.clone());
+            }
+            Some(Ok(LispVal::Num(0)))
+        }
+        "near/return_str" => {
+            let s = key_of(args, 0);
+            state.near_return_value = Some(LispVal::Str(s));
+            Some(Ok(LispVal::Num(0)))
+        }
+        "near/panic" => {
+            let msg = key_of(args, 0);
+            Some(Err(format!("near/panic: {}", msg)))
+        }
+        "near/abort" => {
+            let msg = key_of(args, 0);
+            Some(Err(format!("near/abort: {}", msg)))
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        //  LOG
+        // ═══════════════════════════════════════════════════════════════
+        "near/log" | "near/log-debug" | "near/debug" | "log-utf8" | "log_utf8" | "log" => {
+            let msg = key_of(args, 0);
+            if !msg.is_empty() { eprintln!("[log] {}", msg); }
+            Some(Ok(LispVal::Nil))
+        }
+        "near/log_num" => {
+            let n = extract_num(args, 0).unwrap_or(0);
+            eprintln!("[log_num] {}", n);
+            Some(Ok(LispVal::Nil))
+        }
+        "near/log_utf16" => {
+            let msg = key_of(args, 0);
+            if !msg.is_empty() { eprintln!("[log_utf16] {}", msg); }
+            Some(Ok(LispVal::Nil))
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        //  CRYPTO — mock: deterministic hashes, signatures always valid
+        // ═══════════════════════════════════════════════════════════════
+        "near/sha256" | "near/keccak256" | "near/keccak512" | "near/ripemd160" => {
+            Some(Ok(LispVal::Str(format!("mock_{}", name.strip_prefix("near/").unwrap_or(name)))))
+        }
+        "near/ed25519_verify" | "near/p256_verify" | "near/ecrecover" | "near/schnorr_verify" => {
+            Some(Ok(LispVal::Num(1))) // mock: always valid
+        }
+        "near/random_seed" => {
+            Some(Ok(ctx_get(state, "random_seed", LispVal::Num(42))))
+        }
+        // Alt BN128
+        "near/alt_bn128_g1_multiexp" | "near/alt_bn128_g1_sum" | "near/alt_bn128_pairing_check" => {
+            Some(Ok(LispVal::Num(0)))
+        }
+        // BLS12-381
+        "near/bls12381_p1_sum" | "near/bls12381_p2_sum"
+        | "near/bls12381_g1_multiexp" | "near/bls12381_g2_multiexp"
+        | "near/bls12381_map_fp_to_g1" | "near/bls12381_map_fp2_to_g2"
+        | "near/bls12381_pairing_check"
+        | "near/bls12381_p1_decompress" | "near/bls12381_p2_decompress" => {
+            Some(Ok(LispVal::Num(0)))
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        //  ITERATION
+        // ═══════════════════════════════════════════════════════════════
+        "near/iter_prefix" => {
+            let prefix = key_of(args, 0);
+            let keys: Vec<String> = state.near_storage.keys()
+                .filter(|k| k.starts_with(&prefix))
+                .cloned().collect();
+            let id = state.near_iter_next_id;
+            state.near_iter_next_id += 1;
+            state.near_iter_prefixes.insert(id, keys);
+            state.near_iter_cursors.insert(id, 0);
+            Some(Ok(LispVal::Num(id)))
+        }
+        "near/iter_range" => {
+            let start = key_of(args, 0);
+            let end = key_of(args, 1);
+            let keys: Vec<String> = state.near_storage.keys()
+                .filter(|k| k.as_str() >= start.as_str() && k.as_str() < end.as_str())
+                .cloned().collect();
+            let id = state.near_iter_next_id;
+            state.near_iter_next_id += 1;
+            state.near_iter_prefixes.insert(id, keys);
+            state.near_iter_cursors.insert(id, 0);
+            Some(Ok(LispVal::Num(id)))
+        }
+        "near/iter_next" => {
+            let id = extract_num(args, 0).unwrap_or(-1);
+            if let Some(keys) = state.near_iter_prefixes.get(&id) {
+                let cursor = state.near_iter_cursors.entry(id).or_insert(0);
+                if *cursor < keys.len() as i64 {
+                    let key = &keys[*cursor as usize];
+                    *cursor += 1;
+                    Some(Ok(LispVal::Str(key.clone())))
+                } else {
+                    Some(Ok(LispVal::Nil))
+                }
+            } else {
+                Some(Ok(LispVal::Nil))
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        //  JSON HELPERS
+        // ═══════════════════════════════════════════════════════════════
+        "near/json_get_int" => {
+            Some(Ok(LispVal::Num(0)))
+        }
+        "near/json_get_str" => {
+            Some(Ok(LispVal::Str(String::new())))
+        }
+        "near/json_return_int" => {
+            Some(Ok(LispVal::Num(0)))
+        }
+        "near/json_return_str" => {
+            Some(Ok(LispVal::Num(0)))
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        //  U128 HELPERS
+        // ═══════════════════════════════════════════════════════════════
+        "near/store_u128" | "near/load_u128" => {
+            Some(Ok(LispVal::Num(0)))
+        }
+        "near/attached_deposit_u128" => {
+            Some(Ok(LispVal::Num(0)))
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        //  CONFIG / RESET / TEST SEAM
+        // ═══════════════════════════════════════════════════════════════
+        "near-config" | "near_config" => {
+            if args.len() >= 2 {
+                let key = key_of(args, 0);
+                // Special: populate promise results from a list of strings
+                if key == "promise_results" {
+                    if let Some(LispVal::List(items)) = args.get(1) {
+                        state.near_promise_results = items.iter().map(|v| match v {
+                            LispVal::Str(s) => s.clone(),
+                            o => o.to_string(),
+                        }).collect();
+                        return Some(Ok(LispVal::Num(items.len() as i64)));
+                    }
+                }
                 state.near_context.insert(key, args[1].clone());
-                return Some(Ok(LispVal::Bool(true)));
+                return Some(Ok(LispVal::Num(0)));
             }
             Some(Ok(LispVal::Nil))
         }
         "near-reset" | "near_reset" => {
             state.near_storage.clear();
-            Some(Ok(LispVal::Bool(true)))
+            state.near_context.clear();
+            state.near_promises.clear();
+            state.near_promise_results.clear();
+            state.near_batch_actions.clear();
+            state.near_returned_promise = None;
+            state.near_promise_idx = 0;
+            state.near_iter_prefixes.clear();
+            state.near_iter_cursors.clear();
+            state.near_iter_next_id = 0;
+            state.near_contracts.clear();
+            state.near_return_value = None;
+            Some(Ok(LispVal::Num(0)))
         }
+        // Test seam: inspect promise/batch state from tests
+        "near-promises" => {
+            Some(Ok(LispVal::List(state.near_promises.clone())))
+        }
+        "near-batch-actions" => {
+            Some(Ok(LispVal::List(state.near_batch_actions.clone())))
+        }
+        "near-returned-promise" => {
+            Some(Ok(LispVal::Num(state.near_returned_promise.unwrap_or(-1))))
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        //  MOCK CONTRACT REGISTRY
+        // ═══════════════════════════════════════════════════════════════
+        "near-register" => {
+            // (near-register "account.near" (lambda () ...))
+            if args.len() >= 2 {
+                let acct = key_of(args, 0);
+                let entry = args[1].clone();
+                let contract = NearContract {
+                    entry,
+                    storage: im::HashMap::new(),
+                };
+                state.near_contracts.insert(acct, contract);
+                return Some(Ok(LispVal::Num(0)));
+            }
+            Some(Err("near-register: expected (near-register account-id lambda)".into()))
+        }
+        "near-register-source" => {
+            // (near-register-source "account.near" "(near/store "x" 42) (near/return "ok")")
+            if args.len() >= 2 {
+                let acct = key_of(args, 0);
+                let src = key_of(args, 1);
+                match crate::parser::parse_all(&src) {
+                    Ok(exprs) if !exprs.is_empty() => {
+                        let mut setup_env = Env::new();
+                        let mut tmp_state = EvalState::new();
+                        let _ = crate::program::run_program(&exprs, &mut setup_env, &mut tmp_state);
+                        // Use the last expression as entry, wrapped in a lambda
+                        let body_val = exprs.last().unwrap().clone();
+                        let lambda = LispVal::Lambda {
+                            params: vec![],
+                            rest_param: None,
+                            body: Box::new(body_val),
+                            closed_env: std::sync::Arc::new(std::sync::RwLock::new(setup_env.snapshot())),
+                            compiled: None,
+                            pure_type: None,
+                            memo_cache: None,
+                        };
+                        let contract = NearContract {
+                            entry: lambda,
+                            storage: im::HashMap::new(),
+                        };
+                        state.near_contracts.insert(acct, contract);
+                        return Some(Ok(LispVal::Num(0)));
+                    }
+                    Ok(_) => return Some(Err("near-register-source: empty source".into())),
+                    Err(e) => return Some(Err(format!("near-register-source: {}", e))),
+                }
+            }
+            Some(Err("near-register-source: expected (near-register-source account-id source-string)".into()))
+        }
+        "near-contracts" => {
+            // Returns list of registered account IDs
+            let accts: Vec<LispVal> = state.near_contracts.keys()
+                .map(|k| LispVal::Str(k.clone()))
+                .collect();
+            Some(Ok(LispVal::List(accts)))
+        }
+
         _ => None,
     }
 }
@@ -5064,7 +5799,7 @@ pub fn eval_builtin(
                     if let Some(env) = env {
                         if let Some(macro_val) = env.get(sym_name) {
                             if matches!(macro_val, LispVal::Macro { .. }) {
-                                return expand_macro_call(&macro_val, &form_list[1..]);
+                                return expand_macro_call(&macro_val, &form_list[1..], state);
                             }
                         }
                     }
@@ -5439,6 +6174,9 @@ pub struct CompiledLambda {
     /// Paired with names in order — at PushClosure time, read slots[i] for each entry
     /// and add to the closure's captured list.
     pub runtime_captures: Vec<(String, usize)>,
+    /// Cell table for runtime captures: indexed by parent slot index.
+    /// Created lazily at PushClosure time so sibling closures share cells.
+    capture_cells: std::sync::RwLock<Vec<Option<std::sync::Arc<std::sync::RwLock<LispVal>>>>>,
 }
 
 impl Clone for CompiledLambda {
@@ -5453,6 +6191,7 @@ impl Clone for CompiledLambda {
             captured: std::sync::RwLock::new(self.captured.read().unwrap().clone()),
             closures: self.closures.clone(),
             runtime_captures: self.runtime_captures.clone(),
+            capture_cells: std::sync::RwLock::new(self.capture_cells.read().unwrap().clone()),
         }
     }
 }
@@ -5551,6 +6290,7 @@ pub fn try_compile_lambda(
         captured: std::sync::RwLock::new(compiler.captured),
         closures: compiler.closures,
         runtime_captures: compiler.runtime_captures,
+            capture_cells: std::sync::RwLock::new(vec![]),
         rest_param_idx: None,
         num_fixed_params: param_names.len(),
     })
@@ -5591,7 +6331,7 @@ pub fn vm_call_lambda(
         }
         LispVal::Memoized { func, cache } => {
             // Build cache key from args
-            let key: String = args.iter().map(|a| format!("{:?}", a)).collect();
+            let key = crate::types::hash_args(args).to_string();
             // Check cache
             if let Ok(cached) = cache.read() {
                 if let Some(result) = cached.get(&key) {
@@ -5671,6 +6411,7 @@ pub fn make_test_compiled_lambda(
         captured: std::sync::RwLock::new(vec![]),
         closures: vec![],
         runtime_captures: vec![],
+        capture_cells: std::sync::RwLock::new(vec![]),
     }
 }
 
@@ -5867,12 +6608,22 @@ fn run_compiled_lambda_inner(
                 pc += 1;
             }
             Op::LoadCaptured(idx) => {
-                stack.push(cl.captured.read().unwrap()[*idx].1.clone());
+                // Check for a shared cell (runtime capture)
+                if let Some(cell) = cl.capture_cells.read().unwrap().get(*idx).and_then(|o| o.as_ref()) {
+                    stack.push(cell.read().unwrap().clone());
+                } else {
+                    stack.push(cl.captured.read().unwrap()[*idx].1.clone());
+                }
                 pc += 1;
             }
             Op::StoreCaptured(idx) => {
                 let val = stack.pop().unwrap_or(LispVal::Nil);
-                cl.captured.write().unwrap()[*idx].1 = val.clone();
+                // Check for a shared cell (runtime capture)
+                if let Some(cell) = cl.capture_cells.read().unwrap().get(*idx).and_then(|o| o.as_ref()) {
+                    *cell.write().unwrap() = val.clone();
+                } else {
+                    cl.captured.write().unwrap()[*idx].1 = val.clone();
+                }
                 stack.push(val);
                 pc += 1;
             }
@@ -6428,22 +7179,54 @@ fn run_compiled_lambda_inner(
                 // Build the inner lambda's captured list for the compiled path
                 let mut inner_cloned = inner.clone();
                 // Merge runtime captures into captured list so the compiled inner lambda
-                // can find them via captured_idx
+                // can find them via captured_idx. Use shared cells so sibling closures
+                // see each other's set! mutations.
                 for (name, slot_idx) in &inner.runtime_captures {
                     let val = if *slot_idx < slots.len() {
                         slots[*slot_idx].clone()
                     } else {
                         LispVal::Nil
                     };
+                    // Create or reuse a shared cell for this parent slot
+                    let cell: std::sync::Arc<std::sync::RwLock<LispVal>> = {
+                        let mut parent_cells = cl.capture_cells.write().unwrap();
+                        // Extend parent_cells if needed
+                        while parent_cells.len() <= *slot_idx {
+                            parent_cells.push(None);
+                        }
+                        match &parent_cells[*slot_idx] {
+                            Some(existing_cell) => {
+                                // Sibling closure already created a cell for this slot — reuse it
+                                *existing_cell.write().unwrap() = val.clone();
+                                existing_cell.clone()
+                            }
+                            None => {
+                                // First closure capturing this slot — create cell
+                                let cell = std::sync::Arc::new(std::sync::RwLock::new(val));
+                                parent_cells[*slot_idx] = Some(cell.clone());
+                                cell
+                            }
+                        }
+                    };
+                    let val_for_captured = cell.read().unwrap().clone();
                     if inner_cloned.captured.read().unwrap().iter().all(|(n, _)| n != name) {
-                        inner_cloned.captured.write().unwrap().push((name.clone(), val));
+                        inner_cloned.captured.write().unwrap().push((name.clone(), val_for_captured));
                     } else {
-                        // Update existing captured value with runtime value
                         if let Some(entry) =
                             inner_cloned.captured.write().unwrap().iter_mut().find(|(n, _)| n == name)
                         {
-                            entry.1 = val;
+                            entry.1 = val_for_captured;
                         }
+                    }
+                    // Store the cell in the child's capture_cells at the same captured index
+                    let captured_idx = inner_cloned.captured.read().unwrap()
+                        .iter().position(|(n, _)| n == name).unwrap();
+                    {
+                        let mut child_cells = inner_cloned.capture_cells.write().unwrap();
+                        while child_cells.len() <= captured_idx {
+                            child_cells.push(None);
+                        }
+                        child_cells[captured_idx] = Some(cell);
                     }
                 }
                 // Recompute total_slots to account for any new captured entries

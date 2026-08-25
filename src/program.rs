@@ -123,7 +123,7 @@ pub fn run_program(
                     if let Some(val) = env.get(name) {
                         if matches!(val, LispVal::Macro { .. }) {
                             let args: &[LispVal] = &list[1..];
-                            match crate::bytecode::expand_macro_call(val, args) {
+                            match crate::bytecode::expand_macro_call(val, args, Some(state)) {
                                 Ok(expansion) => {
                                     preprocessed_owned.push(expansion);
                                     continue;
@@ -165,18 +165,15 @@ pub fn run_program(
     // ── Phase 3: Separate defines from expressions ──
     // Defines must be executed imperatively (writing to env) so that
     // subsequent code and nested run_program calls (require) can see them.
+    // NOTE: defines can be interspersed with expressions (R5RS §5.2.2).
     let mut defines: Vec<((String, LispVal), Option<String>)> = Vec::new();
     let mut exprs: Vec<&LispVal> = Vec::new();
-    let mut in_defines = true;
 
-     for form in &preprocessed {
-        if in_defines {
-            let bindings = desugar_define_to_pairs(form)?;
-            if !bindings.is_empty() {
-                defines.extend(bindings);
-                continue;
-            }
-            in_defines = false;
+    for form in &preprocessed {
+        let bindings = desugar_define_to_pairs(form)?;
+        if !bindings.is_empty() {
+            defines.extend(bindings);
+            continue;
         }
         exprs.push(form);
     }
