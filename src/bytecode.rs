@@ -6267,25 +6267,26 @@ pub fn eval_builtin(
                     Ok(None) => {}
                 }
             }
-            if let Ok(Some(result)) = crate::dispatch::dispatch_arithmetic::handle(name, args) {
-                return Ok(result);
-            }
-            if let Ok(Some(result)) = crate::dispatch::dispatch_strings::handle(name, args) {
-                return Ok(result);
-            }
-            if let Ok(Some(result)) = crate::dispatch::dispatch_predicates::handle(name, args) {
-                return Ok(result);
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Ok(Some(result)) = crate::dispatch::dispatch_json::handle(name, args) {
-                return Ok(result);
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Ok(Some(result)) = crate::dispatch::dispatch_http::handle(name, args) {
-                return Ok(result);
-            }
-            if let Ok(Some(result)) = crate::dispatch::dispatch_types::handle(name, args) {
-                return Ok(result);
+            // Propagate module errors instead of swallowing them: every
+            // dispatch module returns Ok(None) for names it does not own, so
+            // an Err means the name WAS recognized and genuinely failed (e.g.
+            // "str-substring: indices out of range"). Previously these were
+            // swallowed and misreported as "unknown builtin '<name>'".
+            for module in [
+                crate::dispatch::dispatch_arithmetic::handle(name, args).map(|r| r),
+                crate::dispatch::dispatch_strings::handle(name, args).map(|r| r),
+                crate::dispatch::dispatch_predicates::handle(name, args).map(|r| r),
+                #[cfg(not(target_arch = "wasm32"))]
+                crate::dispatch::dispatch_json::handle(name, args).map(|r| r),
+                #[cfg(not(target_arch = "wasm32"))]
+                crate::dispatch::dispatch_http::handle(name, args).map(|r| r),
+                crate::dispatch::dispatch_types::handle(name, args).map(|r| r),
+            ] {
+                match module {
+                    Ok(Some(result)) => return Ok(result),
+                    Err(e) => return Err(e),
+                    Ok(None) => {}
+                }
             }
 
             let args_str: Vec<String> = args.iter().map(|a| {
