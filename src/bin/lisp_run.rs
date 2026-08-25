@@ -225,6 +225,40 @@ fn display_val(v: &LispVal) -> String {
     }
 }
 
+/// Collect define names from a parsed form list so forward references across
+/// top-level forms (mutual recursion) resolve at compile time. Mirrors
+/// program.rs's collect_define_names, which only sees one form per call.
+fn collect_file_define_names(exprs: &[LispVal]) -> Vec<String> {
+    fn walk(form: &LispVal, out: &mut Vec<String>) {
+        if let LispVal::List(list) = form {
+            if let Some(LispVal::Sym(name)) = list.first() {
+                match name.as_str() {
+                    "define" if list.len() >= 2 => match &list[1] {
+                        LispVal::Sym(s) => out.push(s.clone()),
+                        LispVal::List(inner) if !inner.is_empty() => {
+                            if let LispVal::Sym(s) = &inner[0] {
+                                out.push(s.clone());
+                            }
+                        }
+                        _ => {}
+                    },
+                    "progn" | "begin" => {
+                        for inner in &list[1..] {
+                            walk(inner, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    let mut names = Vec::new();
+    for expr in exprs {
+        walk(expr, &mut names);
+    }
+    names
+}
+
 fn truncate_display(v: &LispVal, max_len: usize) -> String {
     truncate_str(&format!("{:?}", v), max_len)
 }
@@ -328,6 +362,16 @@ fn eval_and_print_inner(code: &str, verbose: bool) {
             std::process::exit(1);
         }
     };
+    // Pre-collect ALL define names in the file and seed them into the env as
+    // Nil before any form is compiled. The per-form run_program calls below
+    // can otherwise not resolve forward references ACROSS top-level forms
+    // (e.g. mutual recursion), because each call only sees one form —
+    // unlike the library API, which takes the whole form list at once.
+    for name in collect_file_define_names(&exprs) {
+        if !env.contains(&name) {
+            env.insert_mut(name, LispVal::Nil);
+        }
+    }
     if verbose {
         eprintln!("Parsed {} top-level forms", exprs.len());
     }
