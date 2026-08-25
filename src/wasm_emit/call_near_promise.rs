@@ -229,6 +229,48 @@ impl WasmEmitter {
                 v.push(Instruction::I64Or);
                 Ok(v)
             }
+            "near/transfer" => {
+                // (near/transfer receiver_id amount_yocto) → sends NEAR via a
+                // transfer-only promise batch. Sugar over promise_batch_create (39)
+                // + promise_batch_action_transfer (44). Amount (i64 yocto) is
+                // stored 16-byte LE at TEMP_MEM as u128.
+                if a.len() != 2 {
+                    return Err("near/transfer: need 2 args (receiver_id, amount_yocto)".into());
+                }
+                self.need_host(39);
+                self.need_host(44);
+                let recv = self.expr(&a[0])?; // tagged Str
+                let amt = self.expr(&a[1])?;  // tagged Num
+                let mut v = Vec::new();
+                // promise_batch_create(account_id_len, account_id_ptr)
+                // len = packed >> 32
+                v.extend(recv.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                // ptr = low 32 bits, zero-extended
+                v.extend(recv);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Self::host_call(39)); // → batch idx on stack
+                // u128 amount lo at TEMP_MEM
+                v.push(Instruction::I64Const(TEMP_MEM as i64));
+                v.push(Instruction::I32WrapI64);
+                v.extend(amt.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                // u128 hi = 0 at TEMP_MEM+8
+                v.push(Instruction::I64Const(TEMP_MEM as i64 + 8));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                // promise_batch_action_transfer(batch_idx, amount_ptr)
+                v.push(Instruction::I64Const(TEMP_MEM as i64));
+                v.push(Self::host_call(44));
+                v.push(Instruction::I64Const(0));
+                Ok(v)
+            }
             "near/promise_return" => {
                 let idx = self.expr(&a[0])?;
                 let mut v = Vec::new();
