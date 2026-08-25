@@ -281,7 +281,72 @@ pub fn parse_all(input: &str) -> Result<Vec<LispVal>, String> {
     while pos < tokens.len() {
         exprs.push(parse(&tokens, &mut pos, input)?);
     }
+    // Canonical lowering pass: rewrite syntactic sugar into the core forms
+    // every backend (bytecode VM, wasm_emit, future yul_emit) understands.
+    // Single implementation point — backends cannot diverge on sugar.
+    let mut dt_counter = 0usize;
+    for e in exprs.iter_mut() {
+        desugar_expr(e, &mut dt_counter);
+    }
     Ok(exprs)
+}
+
+/// Bottom-up AST rewrite: (dotimes (VAR COUNT) body...)
+///   → (let ((VAR 0) (%dotimes-limit-N COUNT))
+///       (while (< VAR %dotimes-limit-N) body... (set! VAR (+ VAR 1))))
+/// COUNT is evaluated once. `let` shadowing makes nested/same-name
+/// iterators correct in every backend.
+fn desugar_expr(expr: &mut LispVal, counter: &mut usize) {
+    if let LispVal::List(items) = expr {
+        // children first (bottom-up): body gets desugared before rewrite
+        for it in items.iter_mut() {
+            desugar_expr(it, counter);
+        }
+        if items.len() >= 3 {
+            let is_dotimes = matches!(&items[0], LispVal::Sym(s) if s == "dotimes");
+            if is_dotimes {
+                let spec_ok = matches!(&items[1], LispVal::List(sp)
+                    if matches!((sp.first(), sp.get(1)), (Some(LispVal::Sym(_)), Some(_))));
+                if spec_ok {
+                    if let LispVal::List(sp) = &items[1] {
+                        let (var, count) = (sp.first().cloned().unwrap(), sp.get(1).cloned().unwrap());
+                        if let LispVal::Sym(var) = var {
+                            *counter += 1;
+                            let limit = LispVal::Sym(format!("%dotimes-limit-{}", counter));
+                            let mut body: Vec<LispVal> = items[2..].to_vec();
+                            // implicit iterator increment at end of body
+                            body.push(LispVal::List(vec![
+                                LispVal::Sym("set!".into()),
+                                LispVal::Sym(var.clone()),
+                                LispVal::List(vec![
+                                    LispVal::Sym("+".into()),
+                                    LispVal::Sym(var.clone()),
+                                    LispVal::Num(1),
+                                ]),
+                            ]));
+                            let while_form = LispVal::List(vec![
+                                LispVal::Sym("while".into()),
+                                LispVal::List(vec![
+                                    LispVal::Sym("<".into()),
+                                    LispVal::Sym(var.clone()),
+                                    limit.clone(),
+                                ]),
+                            ].into_iter().chain(body).collect());
+                            let let_form = LispVal::List(vec![
+                                LispVal::Sym("let".into()),
+                                LispVal::List(vec![
+                                    LispVal::List(vec![LispVal::Sym(var.clone()), LispVal::Num(0)]),
+                                    LispVal::List(vec![limit, count]),
+                                ]),
+                                while_form,
+                            ]);
+                            *expr = let_form;
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 // Stubs for span-aware API (used by error reporting)

@@ -1354,12 +1354,15 @@ impl LoopCompiler {
                             };
                             // Track slots that need cleanup (only newly allocated ones)
                             let let_start = self.slot_map.len();
-                            // Save area: beyond all slots this let could allocate.
-                            // Worst case: all bindings are new, each gets one slot.
-                            let save_base = let_start + bindings.len();
-                            // Track slots we shadow so we can restore them
-                            let mut shadowed: Vec<usize> = Vec::new(); // (original_slot, save at save_base+i)
-                            let mut shadow_idx = 0usize;
+                            // Shadow-save slots are EAGERLY registered in slot_map as they
+                            // are needed. (The old scheme reserved a speculative
+                            // `let_start + bindings.len()` save area WITHOUT registering it,
+                            // so when shadowing occurred slot_map grew slower than the
+                            // reservation assumed, and later fresh allocations walked into
+                            // the phantom save indices — corrupting restores. See: nested
+                            // same-name dotimes depth>=4.)
+                            // (original_slot, save_slot) pairs:
+                            let mut shadowed: Vec<(usize, usize)> = Vec::new();
                             let mut all_ok = true;
                             for binding in bindings {
                                 match binding {
@@ -1385,14 +1388,15 @@ impl LoopCompiler {
                                             if let Some(existing) =
                                                 self.slot_map.iter().position(|s| s == name)
                                             {
-                                                // Save old value to a temporary slot
-                                                let save_slot = save_base + shadow_idx;
+                                                // Save old value to a REGISTERED temp slot
+                                                let save_slot = self.slot_map.len();
+                                                self.slot_map
+                                                    .push(format!("%let-shadow-save-{}", save_slot));
                                                 self.code.push(Op::LoadSlot(existing)); // push old value
                                                 self.code.push(Op::StoreSlot(save_slot)); // save it
                                                 // Now store the new value
                                                 self.code.push(Op::StoreSlot(existing));
-                                                shadowed.push(existing);
-                                                shadow_idx += 1;
+                                                shadowed.push((existing, save_slot));
                                                 if val_is_i64 {
                                                     self.mark_slot_i64(existing);
                                                 }
@@ -1427,8 +1431,7 @@ impl LoopCompiler {
                                 }
                             }
                             // Restore shadowed slots (reverse order)
-                            for (i, &original_slot) in shadowed.iter().enumerate().rev() {
-                                let save_slot = save_base + i;
+                            for &(original_slot, save_slot) in shadowed.iter().rev() {
                                 self.code.push(Op::LoadSlot(save_slot));
                                 self.code.push(Op::StoreSlot(original_slot));
                             }
@@ -1781,93 +1784,6 @@ impl LoopCompiler {
                             self.code.push(Op::PushNil);
                             true
                         }
-                        // dotimes: (dotimes (i n) body...) → nil; i from 0..n
-                        // Desugared inline: fresh slots for counter and limit,
-                        // then a while-style loop over (< i limit).
-                        "dotimes" => {
-                            if list.len() < 3 {
-                                return false;
-                            }
-                            let (iter_name, count_expr) = match &list[1] {
-                                LispVal::List(spec) => match (spec.first(), spec.get(1)) {
-                                    (Some(LispVal::Sym(n)), Some(c)) => (n.clone(), c.clone()),
-                                    _ => return false,
-                                },
-                                _ => return false,
-                            };
-                            // Iterator slot: if the name already exists (shadowing, e.g.
-                            // sequential/nested dotimes with the same iterator), REUSE that
-                            // slot with save/restore (same pattern as `let`). Otherwise
-                            // allocate a fresh slot.
-                            let (i_slot, save_slot) = match self.slot_map.iter().position(|s| *s == iter_name) {
-                                Some(existing) => {
-                                    let save_slot = self.slot_map.len();
-                                    self.slot_map.push(format!("dotimes-save-{}", save_slot));
-                                    // save current value of the shadowed slot
-                                    self.code.push(Op::LoadSlot(existing));
-                                    self.code.push(Op::StoreSlot(save_slot));
-                                    (existing, Some(save_slot))
-                                }
-                                None => {
-                                    let i_slot = self.slot_map.len();
-                                    self.slot_map.push(iter_name.clone());
-                                    (i_slot, None)
-                                }
-                            };
-                            let limit_name = format!("dotimes-limit-{}", self.slot_map.len());
-                            let limit_slot = self.slot_map.len();
-                            self.slot_map.push(limit_name.clone());
-                            // i = 0
-                            self.code.push(Op::PushI64(0));
-                            self.code.push(Op::StoreSlot(i_slot));
-                            // limit = n  (evaluated ONCE, before the loop)
-                            if !self.compile_expr(&count_expr, outer_env) {
-                                return false;
-                            }
-                            self.code.push(Op::StoreSlot(limit_slot));
-                            // loop: while (< i limit)
-                            let loop_start = self.code.len();
-                            let lt_form = LispVal::List(vec![
-                                LispVal::Sym("<".into()),
-                                LispVal::Sym(iter_name.clone()),
-                                LispVal::Sym(limit_name.clone()),
-                            ]);
-                            if !self.compile_expr(&lt_form, outer_env) {
-                                return false;
-                            }
-                            let jf_idx = self.code.len();
-                            self.code.push(Op::JumpIfFalse(0));
-                            // body as implicit begin; pop all values
-                            for arg in &list[2..] {
-                                if !self.compile_expr(arg, outer_env) {
-                                    return false;
-                                }
-                                self.code.push(Op::Pop);
-                            }
-                            // i = i + 1
-                            let inc_form = LispVal::List(vec![
-                                LispVal::Sym("set!".into()),
-                                LispVal::Sym(iter_name.clone()),
-                                LispVal::List(vec![
-                                    LispVal::Sym("+".into()),
-                                    LispVal::Sym(iter_name.clone()),
-                                    LispVal::Num(1),
-                                ]),
-                            ]);
-                            if !self.compile_expr(&inc_form, outer_env) {
-                                return false;
-                            }
-                            self.code.push(Op::Pop); // set! returns value; discard
-                            self.code.push(Op::Jump(loop_start));
-                            self.code[jf_idx] = Op::JumpIfFalse(self.code.len());
-                            self.code.push(Op::PushNil);
-                            // restore shadowed iterator value (if we shadowed)
-                            if let Some(sv) = save_slot {
-                                self.code.push(Op::LoadSlot(sv));
-                                self.code.push(Op::StoreSlot(i_slot));
-                            }
-                            true
-                        }
                         // loop: (loop ((var init) ...) body) with (recur val ...) inside body
                         "loop" => {
                             let bindings = match list.get(1) {
@@ -1960,15 +1876,19 @@ impl LoopCompiler {
                                 true
                             } else if let Some(idx) = self.captured_idx(&name) {
                                 if self.forward_captures.contains(&name) {
-                                    // Env capture — use StoreGlobal so other closures see the mutation
-                                    // Compile RHS BEFORE inserting into set_target_globals,
-                                    // so the RHS reads the captured value (LoadCaptured), not env (LoadGlobal).
+                                    // Env capture — use StoreGlobal so other closures see the mutation.
+                                    // Register as set-target BEFORE compiling the RHS so reads
+                                    // of the same variable inside the RHS resolve to LoadGlobal
+                                    // (live shared env). The old order (RHS first) made
+                                    // accumulators like (set! total (+ total i)) read a stale
+                                    // creation-time snapshot — silent wrong results at depth.
+                                    self.set_target_globals.insert(name.clone());
                                     if !self.compile_expr(&list[2], outer_env) {
                                         return false;
                                     }
-                                    self.set_target_globals.insert(name.clone());
                                     self.code.push(Op::StoreGlobal(name.clone()));
                                     // StoreGlobal already pushes the value back, no need for LoadGlobal
+                                    let _ = idx;
                                 } else {
                                     // Runtime capture (let/param in enclosing scope) —
                                     // use StoreCaptured to mutate the closure's captured snapshot

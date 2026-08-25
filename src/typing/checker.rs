@@ -828,6 +828,18 @@ fn infer(
                 LispVal::Sym(s) if s == "if" => infer_if(&list[1..], env, supply, subst),
                 LispVal::Sym(s) if s == "let" => infer_let(&list[1..], env, supply, subst),
                 LispVal::Sym(s) if s == "let*" => infer_let_star(&list[1..], env, supply, subst),
+                LispVal::Sym(s) if s == "while" => {
+                    // (while cond body...) — loop, evaluates to nil.
+                    // Note: desugar rewrites dotimes into let+while BEFORE type
+                    // checking, so this also covers dotimes.
+                    if list.len() >= 3 {
+                        let _ = infer(&list[1], env, supply, subst)?;
+                        for expr in &list[2..] {
+                            let _ = infer(expr, env, supply, subst)?;
+                        }
+                    }
+                    Ok(TcType::Con(TcCon::Nil))
+                }
                 LispVal::Sym(s) if s == "begin" => infer_begin(&list[1..], env, supply, subst),
                 LispVal::Sym(s) if s == "and" => infer_and(&list[1..], env, supply, subst),
                 LispVal::Sym(s) if s == "or" => infer_or(&list[1..], env, supply, subst),
