@@ -3449,25 +3449,25 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
             Op::Lt => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                stack.push(LispVal::Bool(num_cmp(&a, &b, |x, y| x < y, |x, y| x < y)));
+                stack.push(LispVal::Bool(num_cmp(&a, &b, "<", |x, y| x < y, |x, y| x < y)?));
                 pc += 1;
             }
             Op::Le => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                stack.push(LispVal::Bool(num_cmp(&a, &b, |x, y| x <= y, |x, y| x <= y)));
+                stack.push(LispVal::Bool(num_cmp(&a, &b, "<=", |x, y| x <= y, |x, y| x <= y)?));
                 pc += 1;
             }
             Op::Gt => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                stack.push(LispVal::Bool(num_cmp(&a, &b, |x, y| x > y, |x, y| x > y)));
+                stack.push(LispVal::Bool(num_cmp(&a, &b, ">", |x, y| x > y, |x, y| x > y)?));
                 pc += 1;
             }
             Op::Ge => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                stack.push(LispVal::Bool(num_cmp(&a, &b, |x, y| x >= y, |x, y| x >= y)));
+                stack.push(LispVal::Bool(num_cmp(&a, &b, ">=", |x, y| x >= y, |x, y| x >= y)?));
                 pc += 1;
             }
             Op::Not => {
@@ -4059,29 +4059,9 @@ fn safe_slot<'a>(slots: &'a [LispVal], idx: usize) -> &'a LispVal {
     slots.get(idx).unwrap_or(&LispVal::Nil)
 }
 
-/// Polymorphic arithmetic: if either operand is Float, use float arithmetic.
-fn num_arith(
-    a: &LispVal,
-    b: &LispVal,
-    int_op: impl Fn(i64, i64) -> i64,
-    float_op: impl Fn(f64, f64) -> f64,
-) -> LispVal {
-    match (a, b) {
-        (LispVal::Float(x), LispVal::Float(y)) => LispVal::Float(float_op(*x, *y)),
-        (LispVal::Float(x), LispVal::Num(y)) => LispVal::Float(float_op(*x, *y as f64)),
-        (LispVal::Num(x), LispVal::Float(y)) => LispVal::Float(float_op(*x as f64, *y)),
-        (LispVal::Num(x), LispVal::Num(y)) => LispVal::Num(int_op(*x, *y)),
-        _ => {
-            if matches!(a, LispVal::Float(_)) || matches!(b, LispVal::Float(_)) {
-                LispVal::Float(float_op(num_val_ref_f64(a), num_val_ref_f64(b)))
-            } else {
-                LispVal::Num(int_op(num_val_ref(a), num_val_ref(b)))
-            }
-        }
-    }
-}
-
-/// Like num_arith but uses checked integer arithmetic — returns Err on overflow.
+/// Like num_arith but uses checked integer arithmetic — returns Err on overflow
+/// or non-numeric operands (GAPS.md round-3 fix 4: bare arith is i64/f64 only;
+/// string numerics must go through the u128/* builtins).
 fn num_arith_checked(
     a: &LispVal,
     b: &LispVal,
@@ -4097,19 +4077,11 @@ fn num_arith_checked(
             Some(r) => Ok(LispVal::Num(r)),
             None => Err(format!("integer overflow in {}", op_name)),
         },
-        // Non-numeric: coerce to 0 (matches spec VM num_val_ref).
-        _ => {
-            if matches!(a, LispVal::Float(_)) || matches!(b, LispVal::Float(_)) {
-                Ok(LispVal::Float(float_op(num_val_ref_f64(a), num_val_ref_f64(b))))
-            } else {
-                let av = num_val_ref(a);
-                let bv = num_val_ref(b);
-                match int_op(av, bv) {
-                    Some(r) => Ok(LispVal::Num(r)),
-                    None => Err(format!("integer overflow in {}", op_name)),
-                }
-            }
-        }
+        // Non-numeric operand: hard error (was: coerce via num_val_ref → 0).
+        _ => Err(format!(
+            "type error: {} expects numbers, got {} {}",
+            op_name, a, b
+        )),
     }
 }
 
@@ -4130,15 +4102,24 @@ fn check_float_zero(a: &LispVal, b: &LispVal, op_name: &str) -> Result<(), Strin
     }
 }
 
-/// Polymorphic numeric comparison: returns bool, float-aware.
-/// Non-numeric operands return false (matches spec VM behavior).
-fn num_cmp(a: &LispVal, b: &LispVal, op: impl Fn(f64, f64) -> bool, int_op: impl Fn(i64, i64) -> bool) -> bool {
+/// Polymorphic numeric comparison: float-aware (GAPS.md round-3 fix 4).
+/// Non-numeric operands are a hard type error (was: return false).
+fn num_cmp(
+    a: &LispVal,
+    b: &LispVal,
+    op_name: &str,
+    op: impl Fn(f64, f64) -> bool,
+    int_op: impl Fn(i64, i64) -> bool,
+) -> Result<bool, String> {
     match (a, b) {
-        (LispVal::Float(x), LispVal::Float(y)) => op(*x, *y),
-        (LispVal::Float(x), LispVal::Num(y)) => op(*x, *y as f64),
-        (LispVal::Num(x), LispVal::Float(y)) => op(*x as f64, *y),
-        (LispVal::Num(x), LispVal::Num(y)) => int_op(*x, *y),
-        _ => false,
+        (LispVal::Float(x), LispVal::Float(y)) => Ok(op(*x, *y)),
+        (LispVal::Float(x), LispVal::Num(y)) => Ok(op(*x, *y as f64)),
+        (LispVal::Num(x), LispVal::Float(y)) => Ok(op(*x as f64, *y)),
+        (LispVal::Num(x), LispVal::Num(y)) => Ok(int_op(*x, *y)),
+        _ => Err(format!(
+            "type error: {} expects numbers, got {} {}",
+            op_name, a, b
+        )),
     }
 }
 
@@ -6962,25 +6943,25 @@ fn run_compiled_lambda_inner(
             Op::Lt => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                stack.push(LispVal::Bool(num_cmp(&a, &b, |x, y| x < y, |x, y| x < y)));
+                stack.push(LispVal::Bool(num_cmp(&a, &b, "<", |x, y| x < y, |x, y| x < y)?));
                 pc += 1;
             }
             Op::Le => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                stack.push(LispVal::Bool(num_cmp(&a, &b, |x, y| x <= y, |x, y| x <= y)));
+                stack.push(LispVal::Bool(num_cmp(&a, &b, "<=", |x, y| x <= y, |x, y| x <= y)?));
                 pc += 1;
             }
             Op::Gt => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                stack.push(LispVal::Bool(num_cmp(&a, &b, |x, y| x > y, |x, y| x > y)));
+                stack.push(LispVal::Bool(num_cmp(&a, &b, ">", |x, y| x > y, |x, y| x > y)?));
                 pc += 1;
             }
             Op::Ge => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                stack.push(LispVal::Bool(num_cmp(&a, &b, |x, y| x >= y, |x, y| x >= y)));
+                stack.push(LispVal::Bool(num_cmp(&a, &b, ">=", |x, y| x >= y, |x, y| x >= y)?));
                 pc += 1;
             }
             Op::Not => {

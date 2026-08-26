@@ -7,10 +7,9 @@
 ;; Choke point: run_compiled_lambda — vm_call_lambda, const-fold inlining,
 ;; apply/map/filter/reduce, and try/catch thunks all funnel through it.
 ;;
-;; ARITH-PIN: bare + - * / still coerce non-numbers (nil/str/list → 0 in
-;; arith) — KNOWN bug, GAPS.md round-3 fix 4. Pinned here as tripwires;
-;; flip when num_arith/num_arith_checked/num_cmp return Result.
-;; Decision recorded: bare arith = i64/f64 only; string numerics via u128/*.
+;; ARITH-TYPES (flipped, round-3 fix 4): bare + - * / mod < <= > >= are
+;; i64/f64 ONLY — non-numeric operands hard-error. String numerics go
+;; through u128/* builtins (unchanged).
 
 ;; ── arity: direct calls ──
 (define (f0) 42)
@@ -36,7 +35,17 @@
 ;; ── arity: higher-order builtins pass correct counts ──
 (println (map (lambda (x) (* x x)) (list 1 2 3))) ; (1 4 9)
 
-;; ── ARITH-PIN (fix 4) — non-numbers still coerce to 0 in bare arith ──
-(println (+ "a" 1))                            ; 1   ARITH-PIN: should err
-(println (* (list 1 2) 10))                    ; 0   ARITH-PIN: should err
-(println (+ nil 5))                            ; 5   ARITH-PIN: should err
+;; ── arith/comparison types (flipped, round-3 fix 4) — i64/f64 only ──
+;; Was ARITH-PIN: non-numbers coerced to 0 (or false for cmp). Now hard
+;; errors: "type error: <op> expects numbers, got <a> <b>". String numerics
+;; must go through u128/* (still legal, unchanged).
+(println (try (+ "a" 1) (catch e "err-str")))      ; err-str (was 1)
+(println (try (* (list 1 2) 10) (catch e "err-list"))) ; err-list (was 0)
+(println (try (+ nil 5) (catch e "err-nil")))      ; err-nil (was 5)
+(println (try (+ 1.5 "a") (catch e "err-fmix")))   ; err-fmix — float+non-num too
+(println (try (< 1 "a") (catch e "err-cmp")))      ; err-cmp — comparisons typed too
+(println (+ 1 2))                                  ; 3 — ints fine
+(println (+ 1.5 2))                                ; 3.5 — float mixing fine
+(println (< 1 2))                                  ; true
+(println (<= 1.5 2))                               ; true
+(println (u128/add "5" "6"))                       ; "11" — string numerics via u128/*

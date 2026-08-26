@@ -255,11 +255,9 @@ Tagged value scheme (3-bit tag in bottom bits):
   (define (f2 a b) ...) runs with b = nil (arith-coerced to 0); `(f2 1 2 3)`
   silently drops the extra arg. Should be a hard error. Fix needs agreement
   between the inlining compiler path and vm_call_lambda — not a one-liner.
-- **Compiled arithmetic coerces non-numbers to 0** (found via t14):
-  `(+ "a" 1)` → 1, `(* (list 1 2) 10)` → 0 — silent wrong-answer class. The
-  dispatch path (do_arith/as_num) errors properly; the hot compiled ops use
-  num_val() which defaults to 0. Likely deliberate for the i64-only WASM tag
-  scheme; flagging for a deliberate decision.
+- **Compiled arithmetic coerces non-numbers to 0** — ✅ FIXED (round-3
+  fix 4, 2026-08-26): bare arith/comparisons now hard-error on non-numeric
+  operands; see round-3 section below. String numerics via u128/*.
 - **Division-by-zero message inconsistency** (t10): literal zero divisor
   const-folds to "integer overflow in div"; computed zero gives
   "division by zero". Same error, two messages.
@@ -329,13 +327,20 @@ returns false → ops emitted → runtime check fires).
 - wasm parity: compile-time via typing::type_check_program (when typecheck
   enabled) — semantics agree, wasm errors earlier.
 
-### 4. Arith type errors — ❌ NOT STARTED (no code, no t21)
-Next session: the lenient arms are `num_arith` (~src/bytecode.rs:4063),
-`num_arith_checked` (~:4087, comment "Non-numeric: coerce to 0" at :4100),
-and `num_cmp` (returns bool, non-numeric → false). num_arith/num_cmp don't
-return Result — needs caller refactor to propagate
-"type error: <op> expects numbers, got <type>". Decision recorded: bare
-+ - * / mod < > <= >= are i64/f64 only; string numerics go through u128/*.
+### 4. Arith type errors — ✅ LANDED 2026-08-26 (fix 4)
+Bare `+ - * / mod < <= > >=` are now i64/f64 ONLY. Non-numeric operands
+hard-error: "type error: <op> expects numbers, got <a> <b>" (house style:
+Display the actual values, like u128/* does). String numerics unchanged —
+they go through u128/* (erc20 corpus unaffected, verified exit 0).
+- num_arith (unchecked, dead code) deleted; num_arith_checked's coerce-to-0
+  fallback replaced with the type error (both int and float coerce paths);
+  num_cmp returns Result<bool,String> + op_name param — all 8 VM call sites
+  (2 dispatch sites × 4 ops) rewritten with `?`.
+- Const-fold path safe: it only folds pure fn CALLS (runtime arity/type
+  checks now apply); peephole SlotAddImm/TypedBinOp fusions are i64/f64
+  tag-guarded, so non-nums never reach them.
+- t21 ARITH-PINs flipped + 5 new assertions (float-mix, cmp typing, u128
+  unaffected). Sweep clean; cargo test 125/11 baseline intact.
 
 ### 2. T4 closure aliasing — ❌ NOT STARTED (deliberately last; riskiest)
 t20 T4-PIN and t4-closures.lisp still assert shared-cell (1,2,3,4) behavior.
