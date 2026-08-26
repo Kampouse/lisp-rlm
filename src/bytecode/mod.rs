@@ -3637,16 +3637,16 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
                         };
                         stack.push(match op {
                             BinOp::Add => LispVal::Num(
-                                i64::checked_add(av, bv).ok_or("integer overflow in add")?,
+                                i64::checked_add(av, bv).and_then(|r| check_num_range(r, "add").ok()).ok_or("integer overflow in add")?,
                             ),
                             BinOp::Sub => LispVal::Num(
-                                i64::checked_sub(av, bv).ok_or("integer overflow in sub")?,
+                                i64::checked_sub(av, bv).and_then(|r| check_num_range(r, "sub").ok()).ok_or("integer overflow in sub")?,
                             ),
                             BinOp::Mul => LispVal::Num(
-                                i64::checked_mul(av, bv).ok_or("integer overflow in mul")?,
+                                i64::checked_mul(av, bv).and_then(|r| check_num_range(r, "mul").ok()).ok_or("integer overflow in mul")?,
                             ),
                             BinOp::Div => LispVal::Num(
-                                i64::checked_div(av, bv).ok_or("integer overflow in div")?,
+                                i64::checked_div(av, bv).and_then(|r| check_num_range(r, "div").ok()).ok_or("integer overflow in div")?,
                             ),
                             BinOp::Mod => LispVal::Num(
                                 i64::checked_rem(av, bv).ok_or("integer overflow in mod")?,
@@ -3746,7 +3746,7 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
             // --- Compound ops: fused LoadSlot + PushI64 + Arith/Cmp ---
             Op::SlotAddImm(s, imm) => {
                 let v = num_val_ref(safe_slot(&slots, *s));
-                match i64::checked_add(v, *imm) {
+                match i64::checked_add(v, *imm).and_then(|r| check_num_range(r, "add").ok()) {
                     Some(result) => {
                         stack.push(LispVal::Num(result));
                         pc += 1;
@@ -3756,7 +3756,7 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
             }
             Op::SlotSubImm(s, imm) => {
                 let v = num_val_ref(safe_slot(&slots, *s));
-                match i64::checked_sub(v, *imm) {
+                match i64::checked_sub(v, *imm).and_then(|r| check_num_range(r, "sub").ok()) {
                     Some(result) => {
                         stack.push(LispVal::Num(result));
                         pc += 1;
@@ -3766,7 +3766,7 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
             }
             Op::SlotMulImm(s, imm) => {
                 let v = num_val_ref(safe_slot(&slots, *s));
-                match i64::checked_mul(v, *imm) {
+                match i64::checked_mul(v, *imm).and_then(|r| check_num_range(r, "mul").ok()) {
                     Some(result) => {
                         stack.push(LispVal::Num(result));
                         pc += 1;
@@ -3776,7 +3776,7 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
             }
             Op::SlotDivImm(s, imm) => {
                 let v = num_val_ref(safe_slot(&slots, *s));
-                match i64::checked_div(v, *imm) {
+                match i64::checked_div(v, *imm).and_then(|r| check_num_range(r, "div").ok()) {
                     Some(result) => {
                         stack.push(LispVal::Num(result));
                         pc += 1;
@@ -4344,6 +4344,21 @@ fn u64_pair(args: &[LispVal], op_name: &str) -> Result<(u64, u64), String> {
     }
 }
 
+/// Tagged-scheme payload range (wasm is the semantic anchor): every Num the
+/// language produces must fit [-2^60, 2^60-1] because wasm tags values as
+/// `payload << 3 | tag`. Interp traps exactly where the wasm emitter's
+/// checked tagged arithmetic traps — otherwise balances diverge between VMs.
+pub(crate) const NUM_PAYLOAD_MIN: i64 = -(1i64 << 60);
+pub(crate) const NUM_PAYLOAD_MAX: i64 = (1i64 << 60) - 1;
+
+pub(crate) fn check_num_range(r: i64, op: &str) -> Result<i64, String> {
+    if (NUM_PAYLOAD_MIN..=NUM_PAYLOAD_MAX).contains(&r) {
+        Ok(r)
+    } else {
+        Err(format!("integer overflow in {} (payload range ±2^60)", op))
+    }
+}
+
 fn num_arith_checked(
     a: &LispVal,
     b: &LispVal,
@@ -4356,7 +4371,7 @@ fn num_arith_checked(
         (LispVal::Float(x), LispVal::Num(y)) => Ok(LispVal::Float(float_op(*x, *y as f64))),
         (LispVal::Num(x), LispVal::Float(y)) => Ok(LispVal::Float(float_op(*x as f64, *y))),
         (LispVal::Num(x), LispVal::Num(y)) => match int_op(*x, *y) {
-            Some(r) => Ok(LispVal::Num(r)),
+            Some(r) => check_num_range(r, op_name).map(LispVal::Num),
             None => Err(format!("integer overflow in {}", op_name)),
         },
         // U64 × U64: wrapping field arithmetic — overflow wraps (u64 semantics),
@@ -7533,16 +7548,16 @@ fn run_compiled_lambda_inner(
                         };
                         stack.push(match op {
                             BinOp::Add => LispVal::Num(
-                                i64::checked_add(av, bv).ok_or("integer overflow in add")?,
+                                i64::checked_add(av, bv).and_then(|r| check_num_range(r, "add").ok()).ok_or("integer overflow in add")?,
                             ),
                             BinOp::Sub => LispVal::Num(
-                                i64::checked_sub(av, bv).ok_or("integer overflow in sub")?,
+                                i64::checked_sub(av, bv).and_then(|r| check_num_range(r, "sub").ok()).ok_or("integer overflow in sub")?,
                             ),
                             BinOp::Mul => LispVal::Num(
-                                i64::checked_mul(av, bv).ok_or("integer overflow in mul")?,
+                                i64::checked_mul(av, bv).and_then(|r| check_num_range(r, "mul").ok()).ok_or("integer overflow in mul")?,
                             ),
                             BinOp::Div => LispVal::Num(
-                                i64::checked_div(av, bv).ok_or("integer overflow in div")?,
+                                i64::checked_div(av, bv).and_then(|r| check_num_range(r, "div").ok()).ok_or("integer overflow in div")?,
                             ),
                             BinOp::Mod => LispVal::Num(
                                 i64::checked_rem(av, bv).ok_or("integer overflow in mod")?,
@@ -7605,7 +7620,7 @@ fn run_compiled_lambda_inner(
             }
             Op::SlotAddImm(s, imm) => {
                 let v = num_val_ref(safe_slot(&slots, *s));
-                match i64::checked_add(v, *imm) {
+                match i64::checked_add(v, *imm).and_then(|r| check_num_range(r, "add").ok()) {
                     Some(result) => {
                         stack.push(LispVal::Num(result));
                         pc += 1;
@@ -7615,7 +7630,7 @@ fn run_compiled_lambda_inner(
             }
             Op::SlotSubImm(s, imm) => {
                 let v = num_val_ref(safe_slot(&slots, *s));
-                match i64::checked_sub(v, *imm) {
+                match i64::checked_sub(v, *imm).and_then(|r| check_num_range(r, "sub").ok()) {
                     Some(result) => {
                         stack.push(LispVal::Num(result));
                         pc += 1;
@@ -7625,7 +7640,7 @@ fn run_compiled_lambda_inner(
             }
             Op::SlotMulImm(s, imm) => {
                 let v = num_val_ref(safe_slot(&slots, *s));
-                match i64::checked_mul(v, *imm) {
+                match i64::checked_mul(v, *imm).and_then(|r| check_num_range(r, "mul").ok()) {
                     Some(result) => {
                         stack.push(LispVal::Num(result));
                         pc += 1;
@@ -7635,7 +7650,7 @@ fn run_compiled_lambda_inner(
             }
             Op::SlotDivImm(s, imm) => {
                 let v = num_val_ref(safe_slot(&slots, *s));
-                match i64::checked_div(v, *imm) {
+                match i64::checked_div(v, *imm).and_then(|r| check_num_range(r, "div").ok()) {
                     Some(result) => {
                         stack.push(LispVal::Num(result));
                         pc += 1;

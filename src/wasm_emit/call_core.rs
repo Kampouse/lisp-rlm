@@ -40,7 +40,7 @@ impl WasmEmitter {
                 v.extend(self.expr(&a[0])?);
                 v.extend(self.emit_untag());
                 v.extend(self.emit_checked_sub()); // 0 - x, traps on MIN
-                v.extend(self.emit_tag_num());
+                v.extend(self.emit_checked_retag()); // -(-2^60) leaves payload range
                 Ok(v)
             }
             "-" => self.fold_binop(a, Instruction::I64Sub, i64::MIN as _),

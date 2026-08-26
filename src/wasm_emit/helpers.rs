@@ -46,6 +46,35 @@ impl WasmEmitter {
         v
     }
 
+    /// Range-check an untagged Num payload against the tagged scheme's
+    /// representable range [-2^60, 2^60), trap (Unreachable) if outside,
+    /// then re-tag. Money-safety: sums/products that fit i64 but not the
+    /// 61-bit payload range previously re-tagged with a silent `shl` wrap.
+    pub(crate) fn emit_checked_retag(&mut self) -> Vec<Instruction<'static>> {
+        let r = self.local_idx("__ck_retag_r");
+        vec![
+            Instruction::LocalSet(r),
+            // r < -(1<<60) → trap
+            Instruction::LocalGet(r),
+            Instruction::I64Const(-(1i64 << 60)),
+            Instruction::I64LtS,
+            Instruction::If(BlockType::Empty),
+            Instruction::Unreachable,
+            Instruction::End,
+            // r > (1<<60)-1 → trap
+            Instruction::LocalGet(r),
+            Instruction::I64Const((1i64 << 60) - 1),
+            Instruction::I64GtS,
+            Instruction::If(BlockType::Empty),
+            Instruction::Unreachable,
+            Instruction::End,
+            // re-tag
+            Instruction::LocalGet(r),
+            Instruction::I64Const(TAG_BITS),
+            Instruction::I64Shl,
+        ]
+    }
+
     pub(crate) fn emit_tag_num(&self) -> Vec<Instruction<'static>> {
         self.emit_tag(TAG_NUM)
     }
@@ -243,8 +272,24 @@ impl WasmEmitter {
         self.emit_tag(TAG_ARRAY)
     }
 
-    pub(crate) fn emit_tagged_const(&self, val: i64, tag: i64) -> Vec<Instruction<'static>> {
-        vec![Instruction::I64Const((val << TAG_BITS) | tag)]
+    pub(crate) fn emit_tagged_const(&self, val: i64, tag: i64) -> Result<Vec<Instruction<'static>>, String> {
+        // Money-safety: `val << TAG_BITS` overflows silently for payloads
+        // outside [-2^60, 2^60) (release-mode Rust wraps). i64::MAX literally
+        // compiled to -1 at runtime. Refuse instead — a literal the tagged
+        // scheme can't represent must never deploy.
+        let tagged = val
+            .checked_mul(1 << TAG_BITS)
+            .ok_or_else(|| format!(
+                "integer literal {} exceeds tagged range [-2^60, 2^60): silent corruption on-chain",
+                val
+            ))?;
+        Ok(vec![Instruction::I64Const(tagged | tag)])
+    }
+
+    /// Wrapping twin for wrap-* ops: their contract IS wrap semantics, so the
+    /// tag shift wraps too instead of refusing.
+    pub(crate) fn emit_tagged_const_wrapping(&self, val: i64, tag: i64) -> Vec<Instruction<'static>> {
+        vec![Instruction::I64Const(val.wrapping_mul(1 << TAG_BITS) | tag)]
     }
 
     pub(crate) fn emit_str_eq(&mut self) -> Vec<Instruction<'static>> {

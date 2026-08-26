@@ -1956,13 +1956,32 @@ mod tests {
 
     #[test]
     fn test_wrap_add_no_overflow() {
-        // wrap-add should always succeed, even on overflow
-        let src = "(define (run) (wrap-add 9223372036854775807 1))";
+        // wrap-add should always succeed, even when the wrapped result
+        // leaves the tagged payload range (wrap is its explicit contract).
+        let src = "(define (run) (wrap-add 576460752303423488 576460752303423488))";
         let result = crate::wasm_emit::compile_pure(src);
         assert!(
             result.is_ok(),
             "wrap-add should not error, got: {:?}",
             result
+        );
+    }
+
+    #[test]
+    fn test_checked_add_refuses_unrepresentable_literal() {
+        // Money-safety: literals outside [-2^60, 2^60) silently corrupted
+        // at emission before (i64::MAX compiled to -1). Now: hard error.
+        let src = "(define (run) (+ 9223372036854775807 1))";
+        let result = crate::wasm_emit::compile_pure(src);
+        assert!(result.is_err(), "unrepresentable literal must be refused");
+        let err = result.unwrap_err();
+        // Refusal may come from either guard: compile-time fold
+        // ("arithmetic overflow at compile time") or literal emission
+        // ("exceeds tagged range"). Both are safe refusals.
+        assert!(
+            err.contains("exceeds tagged range") || err.contains("overflow"),
+            "error should name overflow/refusal, got: {}",
+            err
         );
     }
 

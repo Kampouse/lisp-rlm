@@ -111,7 +111,7 @@ impl WasmEmitter {
         identity: i64,
     ) -> Result<Vec<Instruction<'static>>, String> {
         if a.is_empty() {
-            return Ok(self.emit_tagged_const(identity, TAG_NUM));
+            return self.emit_tagged_const(identity, TAG_NUM);
         }
         // Deep constant folding: try to const_eval each arg first
         let folded_args: Vec<LispVal> = a
@@ -141,15 +141,26 @@ impl WasmEmitter {
                 _ => None,
             };
             match folded {
-                Some(result) => return Ok(self.emit_tagged_const(result, TAG_NUM)),
+                Some(result) => return self.emit_tagged_const(result, TAG_NUM),
                 None => return Err("arithmetic overflow at compile time".into()),
             }
         }
+        // Runtime path. Add/Sub operate on TAGGED operands directly:
+        // (a<<3) ± (b<<3) == (a±b)<<3, so a checked add/sub on tagged values
+        // traps EXACTLY when the result leaves the 61-bit payload range —
+        // no untag/retag, no silent wrap window. Mul must untag (tagged
+        // squares don't compose); the product stays untagged across args and
+        // is range-checked + re-tagged once, after the loop.
+        let tagged_direct = matches!(op, Instruction::I64Add | Instruction::I64Sub);
         let mut v = self.expr(&folded_args[0])?;
-        v.extend(self.emit_untag());
+        if !tagged_direct {
+            v.extend(self.emit_untag());
+        }
         for x in &folded_args[1..] {
             v.extend(self.expr(x)?);
-            v.extend(self.emit_untag());
+            if !tagged_direct {
+                v.extend(self.emit_untag());
+            }
             match &op {
                 Instruction::I64Add => v.extend(self.emit_checked_add()),
                 Instruction::I64Sub => v.extend(self.emit_checked_sub()),
@@ -157,7 +168,9 @@ impl WasmEmitter {
                 _ => v.push(op.clone()),
             }
         }
-        v.extend(self.emit_tag_num());
+        if !tagged_direct {
+            v.extend(self.emit_checked_retag());
+        }
         Ok(v)
     }
 
@@ -168,7 +181,7 @@ impl WasmEmitter {
         identity: i64,
     ) -> Result<Vec<Instruction<'static>>, String> {
         if a.is_empty() {
-            return Ok(self.emit_tagged_const(identity, TAG_NUM));
+            return Ok(self.emit_tagged_const_wrapping(identity, TAG_NUM));
         }
         let folded_args: Vec<LispVal> = a
             .iter()
@@ -199,7 +212,7 @@ impl WasmEmitter {
                 _ => None,
             };
             if let Some(result) = folded {
-                return Ok(self.emit_tagged_const(result, TAG_NUM));
+                return Ok(self.emit_tagged_const_wrapping(result, TAG_NUM));
             }
         }
         let mut v = self.expr(&folded_args[0])?;
@@ -221,7 +234,7 @@ impl WasmEmitter {
         is_div: bool,
     ) -> Result<Vec<Instruction<'static>>, String> {
         if a.is_empty() {
-            return Ok(self.emit_tagged_const(identity, TAG_NUM));
+            return self.emit_tagged_const(identity, TAG_NUM);
         }
         let mut v = self.expr(&a[0])?;
         v.extend(self.emit_untag());

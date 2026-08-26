@@ -357,6 +357,14 @@ pub fn do_arith(
     op_int: fn(i64, i64) -> i64,
     op_float: fn(f64, f64) -> f64,
 ) -> Result<LispVal, String> {
+    do_arith_impl(args, op_int, op_float)
+}
+
+fn do_arith_impl(
+    args: &[LispVal],
+    op_int: fn(i64, i64) -> i64,
+    op_float: fn(f64, f64) -> f64,
+) -> Result<LispVal, String> {
     if args.len() < 2 {
         // Allow 1-arg: (+ x) = x, (* x) = x, etc
         if args.len() == 1 {
@@ -375,6 +383,39 @@ pub fn do_arith(
         let res: Result<i64, String> = args[1..]
             .iter()
             .try_fold(init, |a, b| Ok(op_int(a, as_num(b)?)));
+        Ok(LispVal::Num(res?))
+    }
+}
+
+/// Checked integer variant for money-bearing ops (+ - *): traps on i64
+/// overflow AND on results outside the tagged payload range [-2^60, 2^60),
+/// matching the wasm emitter (semantic anchor). No silent release-mode wrap,
+/// no process panic.
+pub fn do_arith_checked(
+    args: &[LispVal],
+    op_name: &str,
+    op_int: fn(i64, i64) -> Option<i64>,
+    op_float: fn(f64, f64) -> f64,
+) -> Result<LispVal, String> {
+    if args.len() < 2 {
+        if args.len() == 1 {
+            return Ok(args[0].clone());
+        }
+        return Err("arith needs 1+ args".into());
+    }
+    if any_float(args) {
+        let init = as_float(&args[0])?;
+        let res: Result<f64, String> = args[1..]
+            .iter()
+            .try_fold(init, |a, b| Ok(op_float(a, as_float(b)?)));
+        Ok(LispVal::Float(res?))
+    } else {
+        let init = as_num(&args[0])?;
+        let res: Result<i64, String> = args[1..].iter().try_fold(init, |a, b| {
+            let r = op_int(a, as_num(b)?)
+                .ok_or_else(|| format!("integer overflow in {}", op_name))?;
+            crate::bytecode::check_num_range(r, op_name)
+        });
         Ok(LispVal::Num(res?))
     }
 }

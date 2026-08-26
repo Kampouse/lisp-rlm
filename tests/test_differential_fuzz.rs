@@ -268,7 +268,18 @@ impl SpecVm {
             (LispVal::Float(x), LispVal::Num(y)) => Ok(LispVal::Float(float_op(*x, *y as f64))),
             (LispVal::Num(x), LispVal::Float(y)) => Ok(LispVal::Float(float_op(*x as f64, *y))),
             (LispVal::Num(x), LispVal::Num(y)) => match int_op(*x, *y) {
-                Some(r) => Ok(LispVal::Num(r)),
+                Some(r) => {
+                    // Payload-range check — mirrors src/bytecode::check_num_range
+                    // (tagged scheme anchor: Num must fit [-2^60, 2^60-1]).
+                    if (-(1i64 << 60)..=(1i64 << 60) - 1).contains(&r) {
+                        Ok(LispVal::Num(r))
+                    } else {
+                        Err(format!(
+                            "integer overflow in {} (payload range ±2^60)",
+                            op_name
+                        ))
+                    }
+                }
                 None => Err(format!("integer overflow in {}", op_name)),
             },
             (LispVal::U64(x), LispVal::U64(y)) => {
@@ -644,31 +655,63 @@ impl SpecVm {
                         let bv = Self::spec_typed_i64_val(&b);
                         self.stack.push(match binop {
                             BinOp::Add => match av.checked_add(bv) {
-                                Some(r) => LispVal::Num(r),
+                                Some(r) => {
+                                    if (-(1i64 << 60)..=(1i64 << 60) - 1).contains(&r) {
+                                        LispVal::Num(r)
+                                    } else {
+                                        return StepOutcome::Error(
+                                            "integer overflow in add (payload range ±2^60)".into(),
+                                        )
+                                    }
+                                }
                                 None => {
                                     return StepOutcome::Error("integer overflow in add".into())
                                 }
                             },
                             BinOp::Sub => match av.checked_sub(bv) {
-                                Some(r) => LispVal::Num(r),
+                                Some(r) => {
+                                    if (-(1i64 << 60)..=(1i64 << 60) - 1).contains(&r) {
+                                        LispVal::Num(r)
+                                    } else {
+                                        return StepOutcome::Error(
+                                            "integer overflow in sub (payload range ±2^60)".into(),
+                                        )
+                                    }
+                                }
                                 None => {
                                     return StepOutcome::Error("integer overflow in sub".into())
                                 }
                             },
                             BinOp::Mul => match av.checked_mul(bv) {
-                                Some(r) => LispVal::Num(r),
+                                Some(r) => {
+                                    if (-(1i64 << 60)..=(1i64 << 60) - 1).contains(&r) {
+                                        LispVal::Num(r)
+                                    } else {
+                                        return StepOutcome::Error(
+                                            "integer overflow in mul (payload range ±2^60)".into(),
+                                        )
+                                    }
+                                }
                                 None => {
                                     return StepOutcome::Error("integer overflow in mul".into())
                                 }
                             },
                             BinOp::Div => match av.checked_div(bv) {
-                                Some(r) => LispVal::Num(r),
+                                Some(r) => {
+                                    if (-(1i64 << 60)..=(1i64 << 60) - 1).contains(&r) {
+                                        LispVal::Num(r)
+                                    } else {
+                                        return StepOutcome::Error(
+                                            "integer overflow in div (payload range ±2^60)".into(),
+                                        )
+                                    }
+                                }
                                 None => {
                                     return StepOutcome::Error("integer overflow in div".into())
                                 }
                             },
                             BinOp::Mod => match av.checked_rem(bv) {
-                                Some(r) => LispVal::Num(r),
+                                Some(r) => LispVal::Num(r), // |a mod b| <= |a|: stays in range
                                 None => {
                                     return StepOutcome::Error("integer overflow in mod".into())
                                 }
@@ -766,6 +809,9 @@ impl SpecVm {
                 let v = self.slot_num(*s);
                 match v.checked_add(*imm) {
                     Some(r) => {
+                        if !(-(1i64 << 60)..=(1i64 << 60) - 1).contains(&r) {
+                            return StepOutcome::Error("integer overflow in add (payload range ±2^60)".into());
+                        }
                         self.stack.push(LispVal::Num(r));
                         self.pc += 1;
                     }
@@ -777,6 +823,9 @@ impl SpecVm {
                 let v = self.slot_num(*s);
                 match v.checked_sub(*imm) {
                     Some(r) => {
+                        if !(-(1i64 << 60)..=(1i64 << 60) - 1).contains(&r) {
+                            return StepOutcome::Error("integer overflow in sub (payload range ±2^60)".into());
+                        }
                         self.stack.push(LispVal::Num(r));
                         self.pc += 1;
                     }
@@ -787,6 +836,9 @@ impl SpecVm {
                 let v = self.slot_num(*s);
                 match v.checked_mul(*imm) {
                     Some(r) => {
+                        if !(-(1i64 << 60)..=(1i64 << 60) - 1).contains(&r) {
+                            return StepOutcome::Error("integer overflow in mul (payload range ±2^60)".into());
+                        }
                         self.stack.push(LispVal::Num(r));
                         self.pc += 1;
                     }
@@ -797,6 +849,9 @@ impl SpecVm {
                 let v = self.slot_num(*s);
                 match v.checked_div(*imm) {
                     Some(r) => {
+                        if !(-(1i64 << 60)..=(1i64 << 60) - 1).contains(&r) {
+                            return StepOutcome::Error("integer overflow in div (payload range ±2^60)".into());
+                        }
                         self.stack.push(LispVal::Num(r));
                         self.pc += 1;
                     }
@@ -877,7 +932,14 @@ impl SpecVm {
                 } else {
                     let av = self.slot_num(*accum);
                     let new_accum = match av.checked_add(cv) {
-                        Some(r) => r,
+                        Some(r) => {
+                            if !(-(1i64 << 60)..=(1i64 << 60) - 1).contains(&r) {
+                                return StepOutcome::Error(
+                                    "integer overflow in add (payload range ±2^60)".into(),
+                                );
+                            }
+                            r
+                        }
                         None => return StepOutcome::Error("integer overflow in add".into()),
                     };
                     let new_counter = match cv.checked_add(*step) {

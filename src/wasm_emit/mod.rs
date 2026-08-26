@@ -864,9 +864,9 @@ impl WasmEmitter {
 
     fn expr(&mut self, e: &LispVal) -> Result<Vec<Instruction<'static>>, String> {
         match e {
-            LispVal::Num(n) => Ok(self.emit_tagged_const(*n as i64, TAG_NUM)),
-            LispVal::Bool(true) => Ok(self.emit_tagged_const(1, TAG_BOOL)),
-            LispVal::Bool(false) => Ok(self.emit_tagged_const(0, TAG_BOOL)),
+            LispVal::Num(n) => self.emit_tagged_const(*n as i64, TAG_NUM),
+            LispVal::Bool(true) => self.emit_tagged_const(1, TAG_BOOL),
+            LispVal::Bool(false) => self.emit_tagged_const(0, TAG_BOOL),
             LispVal::Nil => Ok(vec![Instruction::I64Const(TAG_NIL)]),
             LispVal::Sym(n) => {
                 // Check if it's a captured variable from enclosing lambda
@@ -889,7 +889,7 @@ impl WasmEmitter {
                         .ok_or_else(|| format!("internal: value define '{}' not registered", n))?;
                     Ok(vec![Instruction::Call(USER_BASE | pos as u32)])
                 } else if let Some(pos) = self.funcs.iter().position(|func| &func.name == n) {
-                    Ok(self.emit_tagged_const(pos as i64, TAG_FNREF))
+                    self.emit_tagged_const(pos as i64, TAG_FNREF)
                 } else {
                     // Check if it's a bare 0-arg host function call (e.g. near/block_index used as value)
                     let name = n.as_str();
