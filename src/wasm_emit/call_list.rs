@@ -1746,7 +1746,7 @@ impl WasmEmitter {
             name: "__h_arr_to_str".into(),
             param_count: 1, local_count: 11,
             instrs: v,
-            local_entries: None,
+            local_entries: None, custom_type: None,
         });
         self.arr_str_helper = Some(idx as u32);
         idx as u32

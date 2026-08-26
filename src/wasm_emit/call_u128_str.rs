@@ -58,49 +58,49 @@ impl WasmEmitter {
             name: "__h_u128_parse".into(),
             param_count: 2, local_count: 13,
             instrs: Self::h_parse(),
-            local_entries: None,
+            local_entries: None, custom_type: None,
         });
         let to_str = self.funcs.len();
         self.funcs.push(FuncDef {
             name: "__h_u128_to_str".into(),
             param_count: 1, local_count: 12,
             instrs: Self::h_to_str(mem_limit),
-            local_entries: None,
+            local_entries: None, custom_type: None,
         });
         let add = self.funcs.len();
         self.funcs.push(FuncDef {
             name: "__h_u128_add".into(),
             param_count: 2, local_count: 10,
             instrs: Self::h_add(),
-            local_entries: None,
+            local_entries: None, custom_type: None,
         });
         let sub = self.funcs.len();
         self.funcs.push(FuncDef {
             name: "__h_u128_sub".into(),
             param_count: 2, local_count: 10,
             instrs: Self::h_sub(),
-            local_entries: None,
+            local_entries: None, custom_type: None,
         });
         let mul = self.funcs.len();
         self.funcs.push(FuncDef {
             name: "__h_u128_mul".into(),
             param_count: 2, local_count: 16,
             instrs: Self::h_mul(),
-            local_entries: None,
+            local_entries: None, custom_type: None,
         });
         let divmod = self.funcs.len();
         self.funcs.push(FuncDef {
             name: "__h_u128_divmod".into(),
             param_count: 3, local_count: 14,
             instrs: Self::h_divmod(),
-            local_entries: None,
+            local_entries: None, custom_type: None,
         });
         let i64_to_str = self.funcs.len();
         self.funcs.push(FuncDef {
             name: "__h_i64_to_str".into(),
             param_count: 1, local_count: 7,
             instrs: Self::h_i64_to_str(mem_limit),
-            local_entries: None,
+            local_entries: None, custom_type: None,
         });
         let h = U128Helpers { parse: parse as u32, to_str: to_str as u32, add: add as u32, sub: sub as u32, mul: mul as u32, divmod: divmod as u32, i64_to_str: i64_to_str as u32 };
         self.u128h = Some(h);

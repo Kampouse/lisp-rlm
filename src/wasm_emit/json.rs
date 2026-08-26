@@ -69,7 +69,8 @@ impl WasmEmitter {
             v.push(Instruction::I64ExtendI32U);
             v.push(Instruction::I64Const(32));
             v.push(Instruction::I64Shl);
-            v.push(Instruction::LocalGet(rha_old));
+            v.push(Instruction::I32Const(heap_dst as i32));
+            v.push(Instruction::I64ExtendI32U);
             v.push(Instruction::I64Or);
             v.push(Instruction::I64Const(3));
             v.push(Instruction::I64Shl);

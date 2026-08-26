@@ -354,7 +354,7 @@ impl WasmEmitter {
             param_count: 2,
             local_count: 11, // locals 2..10 (local_count = highest index + 1)
             instrs: v,
-            local_entries: None,
+            local_entries: None, custom_type: None,
         });
         self.val_eq_helper = Some(idx as u32);
         idx as u32
