@@ -115,7 +115,7 @@ pub fn decode(memory: &[u8], tagged: i64) -> TaggedValue {
         Some(Tag::Closure) => TaggedValue::Closure(payload),
         Some(Tag::Str) => {
             // payload = heap_off | (len << 32)
-            let ptr = payload & 0xFFFF_FFFF;   // lower 32 bits = offset
+            let ptr = payload & 0xFFFF_FFFF; // lower 32 bits = offset
             let len = (payload >> 32) & 0xFFFF_FFFF; // upper 32 bits = length
             TaggedValue::Str { ptr, len }
         }
@@ -185,7 +185,15 @@ mod tests {
 
     #[test]
     fn tag_roundtrip() {
-        for &tag_val in &[TAG_NUM, TAG_BOOL, TAG_FNREF, TAG_CLOSURE, TAG_NIL, TAG_STR, TAG_ARRAY] {
+        for &tag_val in &[
+            TAG_NUM,
+            TAG_BOOL,
+            TAG_FNREF,
+            TAG_CLOSURE,
+            TAG_NIL,
+            TAG_STR,
+            TAG_ARRAY,
+        ] {
             let tag = Tag::from_i64(tag_val).unwrap_or_else(|| panic!("unknown tag {}", tag_val));
             assert_eq!(tag.as_i64(), tag_val);
         }
@@ -225,7 +233,7 @@ mod tests {
         assert_eq!(nil, TAG_NIL);
         assert_eq!(nil & TAG_MASK, TAG_NIL);
         match decode(&[], nil) {
-            TaggedValue::Nil => {},
+            TaggedValue::Nil => {}
             other => panic!("expected Nil, got {:?}", other),
         }
     }

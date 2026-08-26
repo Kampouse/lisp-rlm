@@ -1,0 +1,38 @@
+(define (get-default m key default)
+  (let ((v (dict/get m key)))
+    (if (nil? v) default v)))
+
+(define (count-pending tasks)
+  (if (nil? tasks)
+    0
+    (let ((task (car tasks)))
+      (if (!= (get-default task "status" "pending") "done")
+        (+ 1 (count-pending (cdr tasks)))
+        (count-pending (cdr tasks))))))
+
+(define (parse-task json-str)
+  (let ((id (json-get "id" json-str))
+        (desc (json-get "desc" json-str))
+        (status (json-get "status" json-str)))
+    (dict "id" (if (nil? id) "" id)
+          "desc" (if (nil? desc) "" desc)
+          "status" (if (nil? status) "pending" status))))
+
+(define (load-task-list json-str idx)
+  (let ((elem (json-array-get json-str idx)))
+    (if (or (nil? elem) (= elem ""))
+      (list)
+      (cons (parse-task elem)
+            (load-task-list json-str (+ idx 1))))))
+
+(define (load-tasks)
+  (let ((data (storage-get "ralph:tasks")))
+    (if (or (nil? data) (= data ""))
+      (list)
+      (load-task-list data 0))))
+
+(define (run input)
+  (storage-set "ralph:tasks" "[{\"id\":\"t1\",\"desc\":\"hello\",\"status\":\"pending\"}]")
+  (let ((tasks (load-tasks)))
+    (let ((pending (count-pending tasks)))
+      (str-concat "pending=" (to-string pending) " total=" (to-string (length tasks))))))

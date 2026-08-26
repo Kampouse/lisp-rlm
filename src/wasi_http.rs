@@ -52,9 +52,31 @@ pub const HTTP_IMPORT_COUNT: u32 = 28;
 /// Count the `types.ty().function(...)` calls in [`add_http_imports_to_sections`].
 pub const HTTP_TYPE_COUNT: u32 = 10;
 
-// ── Scratch memory layout (single source of truth) ──
-// Shared by both wasi_http.rs (runtime URL path) and wasi_http_buffer.rs (data-segment path).
-pub const SCRATCH: i32 = 196608; // 192KB offset
+// ── Memory layout for OutLayer (P2 WASI) ──
+// HTTP response buffer starts after fixed areas (100KB), 1MB max.
+// OutLayer return area comes after to avoid collision.
+
+/// Maximum memory for OutLayer P2.
+/// Default: 128 MB (OutLayer default per contract/src/lib.rs ResourceLimits).
+/// Hard limit: None (configurable up to platform limits).
+pub const MAX_MEMORY_P2: i32 = 2048 * 65536; // 128MB
+
+/// HTTP max response size (APIs return <100KB, allow headroom)
+pub const HTTP_MAX_RESPONSE: i32 = 1_048_576; // 1MB (power of 2)
+
+/// OutLayer return area size
+pub const OL_RET_AREA_SIZE: i32 = 4096; // 4KB
+
+/// HTTP buffer - at END of memory, grows DOWN from OL_RET_AREA
+/// SENTINEL_BUF is kept for backwards compatibility (HTTP buffer start)
+pub const SENTINEL_BUF: i32 = MAX_MEMORY_P2 - OL_RET_AREA_SIZE - HTTP_MAX_RESPONSE;
+pub const SENTINEL_BUF_SIZE: i32 = HTTP_MAX_RESPONSE;
+
+/// OutLayer return area - at very END of memory
+pub const OL_RET_AREA_BASE: i32 = MAX_MEMORY_P2 - OL_RET_AREA_SIZE;
+
+/// HTTP scratch area for poll results, future handles, etc.
+pub const SCRATCH: i32 = OL_RET_AREA_BASE;
 pub const SCRATCH_BODY_RESULT: i32 = SCRATCH;
 pub const SCRATCH_STREAM_RESULT: i32 = SCRATCH + 4;
 pub const SCRATCH_FUTURE_RESULT: i32 = SCRATCH + 8;
@@ -62,20 +84,9 @@ pub const SCRATCH_GET_RESULT: i32 = SCRATCH + 16;
 pub const SCRATCH_CONSUME_RESULT: i32 = SCRATCH + 24;
 pub const SCRATCH_READ_RESULT: i32 = SCRATCH + 32;
 pub const SCRATCH_POLL_RESULT: i32 = SCRATCH + 48;
-pub const SCRATCH_WRITE_RESULT: i32 = SCRATCH + 64; // write result area (runtime path)
-
-/// Buffer for HTTP response body (used by data-segment path in call_outlayer.rs).
-/// Placed between STDOUT_BUF (65536) and SCRATCH (196608) — 128KB available.
-pub const SENTINEL_BUF: i32 = 65536; // right after STDOUT
-pub const SENTINEL_BUF_SIZE: i32 = 131008; // ~128KB response buffer (ends at 196544, 64 byte gap before SCRATCH)
-// Data-segment path uses different sub-offsets (see wasi_http_buffer.rs),
-// but all start from SCRATCH.
+pub const SCRATCH_WRITE_RESULT: i32 = SCRATCH + 64;
 
 /// Computed layout for the entire P2 WASM module.
-///
-/// Derives all type/import/function indices from the canonical constants,
-/// so adding a new import doesn't require touching hardcoded numbers elsewhere.
-#[derive(Debug, Clone)]
 pub struct WasiHttpLayout {
     /// Number of user function types (0..=16 params → 17 types).
     pub user_type_count: u32,
@@ -160,22 +171,31 @@ impl WasiHttpLayout {
 /// Returns nothing — the type indices are positional (0..HTTP_TYPE_COUNT-1)
 /// and the import indices are the `FN_*` constants.
 pub fn add_http_imports_to_sections(types: &mut TypeSection, imports: &mut ImportSection) {
+    add_http_types_to_sections(types);
+    add_http_imports_only(imports);
+}
 
+/// Add HTTP types only (no imports). Used when HTTP functions are not needed
+/// but type indices must remain stable for the combined P2 core module.
+pub fn add_http_types_to_sections(types: &mut TypeSection) {
     // Canonical ABI types for wasi:http@0.2.2 lowered functions.
     // Type indices must match what the import entries reference below.
-    types.ty().function([], [W]);                          // 0: () -> i32 (constructors)
-    types.ty().function([W], [W]);                         // 1: (i32) -> i32 (constructor, subscribe)
-    types.ty().function([W, W], []);                       // 2: (i32,i32) -> () (body, consume, get)
-    types.ty().function([W], []);                          // 3: (i32) -> () (resource drops)
-    types.ty().function([W, W, W, W], [W]);                // 4: set-method/authority/path -> result
-    types.ty().function([W, W, W, W, W], [W]);             // 5: set-scheme -> result
-    types.ty().function([W, W, W, W], []);                 // 6: finish/handle/write-and-flush
-    types.ty().function([W, W, W], []);                    // 7: poll
-    types.ty().function([W, ValType::I64, W], []);         // 8: read
-    types.ty().function([W, W, W, W, W, W], []);           // 9: fields.set(self, name_ptr, name_len, val_list_ptr, val_list_len, ret_ptr)
+    types.ty().function([], [W]); // 0: () -> i32 (constructors)
+    types.ty().function([W], [W]); // 1: (i32) -> i32 (constructor, subscribe)
+    types.ty().function([W, W], []); // 2: (i32,i32) -> () (body, consume, get)
+    types.ty().function([W], []); // 3: (i32) -> () (resource drops)
+    types.ty().function([W, W, W, W], [W]); // 4: set-method/authority/path -> result
+    types.ty().function([W, W, W, W, W], [W]); // 5: set-scheme -> result
+    types.ty().function([W, W, W, W], []); // 6: finish/handle/write-and-flush
+    types.ty().function([W, W, W], []); // 7: poll
+    types.ty().function([W, ValType::I64, W], []); // 8: read
+    types.ty().function([W, W, W, W, W, W], []); // 9: fields.set
 
     assert_eq!(types.len(), HTTP_TYPE_COUNT, "HTTP type count mismatch");
+}
 
+/// Add HTTP import entries only (no types). Types must already be added.
+pub fn add_http_imports_only(imports: &mut ImportSection) {
     let ht = "wasi:http/types@0.2.2";
     let hh = "wasi:http/outgoing-handler@0.2.2";
     let is = "wasi:io/streams@0.2.2";
@@ -185,34 +205,86 @@ pub fn add_http_imports_to_sections(types: &mut TypeSection, imports: &mut Impor
     // Import entries — order MUST match FN_* constants.
     imports.import(is, "[resource-drop]input-stream", EntityType::Function(3));
     imports.import(is, "[resource-drop]output-stream", EntityType::Function(3));
-    imports.import(ht, "[resource-drop]incoming-response", EntityType::Function(3));
-    imports.import(ht, "[resource-drop]future-incoming-response", EntityType::Function(3));
+    imports.import(
+        ht,
+        "[resource-drop]incoming-response",
+        EntityType::Function(3),
+    );
+    imports.import(
+        ht,
+        "[resource-drop]future-incoming-response",
+        EntityType::Function(3),
+    );
     imports.import(ht, "[constructor]fields", EntityType::Function(0));
     imports.import(ht, "[constructor]outgoing-request", EntityType::Function(1));
-    imports.import(ht, "[method]outgoing-request.set-method", EntityType::Function(4));
-    imports.import(ht, "[method]outgoing-request.set-scheme", EntityType::Function(5));
-    imports.import(ht, "[method]outgoing-request.set-authority", EntityType::Function(4));
-    imports.import(ht, "[method]outgoing-request.set-path-with-query", EntityType::Function(4));
+    imports.import(
+        ht,
+        "[method]outgoing-request.set-method",
+        EntityType::Function(4),
+    );
+    imports.import(
+        ht,
+        "[method]outgoing-request.set-scheme",
+        EntityType::Function(5),
+    );
+    imports.import(
+        ht,
+        "[method]outgoing-request.set-authority",
+        EntityType::Function(4),
+    );
+    imports.import(
+        ht,
+        "[method]outgoing-request.set-path-with-query",
+        EntityType::Function(4),
+    );
     imports.import(ht, "[method]outgoing-request.body", EntityType::Function(2));
     imports.import(ht, "[method]outgoing-body.write", EntityType::Function(2));
     imports.import(ht, "[static]outgoing-body.finish", EntityType::Function(6));
     imports.import(ht, "[resource-drop]outgoing-body", EntityType::Function(3));
     imports.import(hh, "handle", EntityType::Function(6));
-    imports.import(ht, "[resource-drop]outgoing-request", EntityType::Function(3));
-    imports.import(ht, "[method]future-incoming-response.get", EntityType::Function(2));
-    imports.import(ht, "[method]future-incoming-response.subscribe", EntityType::Function(1));
+    imports.import(
+        ht,
+        "[resource-drop]outgoing-request",
+        EntityType::Function(3),
+    );
+    imports.import(
+        ht,
+        "[method]future-incoming-response.get",
+        EntityType::Function(2),
+    );
+    imports.import(
+        ht,
+        "[method]future-incoming-response.subscribe",
+        EntityType::Function(1),
+    );
     imports.import(ip, "poll", EntityType::Function(7));
     imports.import(ip, "[resource-drop]pollable", EntityType::Function(3));
-    imports.import(ht, "[method]incoming-response.consume", EntityType::Function(2));
+    imports.import(
+        ht,
+        "[method]incoming-response.consume",
+        EntityType::Function(2),
+    );
     imports.import(ht, "[method]incoming-body.stream", EntityType::Function(2));
-    imports.import(is, "[method]input-stream.blocking-read", EntityType::Function(8));
+    imports.import(
+        is,
+        "[method]input-stream.blocking-read",
+        EntityType::Function(8),
+    );
     imports.import(cs, "get-stdout", EntityType::Function(0));
-    imports.import(is, "[method]output-stream.blocking-write-and-flush", EntityType::Function(6));
+    imports.import(
+        is,
+        "[method]output-stream.blocking-write-and-flush",
+        EntityType::Function(6),
+    );
     imports.import(ht, "[resource-drop]incoming-body", EntityType::Function(3));
     imports.import(ht, "[resource-drop]fields", EntityType::Function(3));
     imports.import(ht, "[method]fields.set", EntityType::Function(9));
 
-    assert_eq!(imports.len(), HTTP_IMPORT_COUNT, "HTTP import count mismatch");
+    assert_eq!(
+        imports.len(),
+        HTTP_IMPORT_COUNT,
+        "HTTP import count mismatch"
+    );
 }
 
 /// Emit the full HTTP GET call sequence as WASM instructions.
@@ -237,7 +309,13 @@ pub fn add_http_imports_to_sections(types: &mut TypeSection, imports: &mut Impor
 /// Locals: 0=fields, 1=req, 2=body, 3=future, 4=pollable,
 ///         5=response, 6=resp_body, 7=in_stream, 8=stdout, 9=scratch, 10=url_ptr, 11=url_len
 pub fn emit_http_get(func: &mut Function, url_ptr_local: u32, url_len_local: u32) {
-    let ld = |off: i32| Instruction::I32Load(MemArg { offset: off as u64, align: 2, memory_index: 0 });
+    let ld = |off: i32| {
+        Instruction::I32Load(MemArg {
+            offset: off as u64,
+            align: 2,
+            memory_index: 0,
+        })
+    };
     let cst = |v: i32| Instruction::I32Const(v);
     let lg = |i: u32| Instruction::LocalGet(i);
     let ls = |i: u32| Instruction::LocalSet(i);
@@ -254,9 +332,10 @@ pub fn emit_http_get(func: &mut Function, url_ptr_local: u32, url_len_local: u32
     func.instruction(&ls(1));
 
     // Step 4: set-method GET  -- (i32,i32,i32,i32) -> i32
-    func.instruction(&lg(1));  // req
+    func.instruction(&lg(1)); // req
     func.instruction(&cst(0)); // disc=0 (get)
-    func.instruction(&cst(SCRATCH)); func.instruction(&cst(0)); // valid ptr, len=0
+    func.instruction(&cst(SCRATCH));
+    func.instruction(&cst(0)); // valid ptr, len=0
     func.instruction(&cl(FN_SET_METHOD));
     func.instruction(&Instruction::Drop);
 
@@ -265,7 +344,8 @@ pub fn emit_http_get(func: &mut Function, url_ptr_local: u32, url_len_local: u32
     func.instruction(&lg(1));
     func.instruction(&cst(0)); // Some = 0
     func.instruction(&cst(1)); // HTTPS = 1
-    func.instruction(&cst(SCRATCH)); func.instruction(&cst(0)); // valid ptr, len=0
+    func.instruction(&cst(SCRATCH));
+    func.instruction(&cst(0)); // valid ptr, len=0
     func.instruction(&cl(FN_SET_SCHEME));
     func.instruction(&Instruction::Drop);
 
@@ -281,7 +361,11 @@ pub fn emit_http_get(func: &mut Function, url_ptr_local: u32, url_len_local: u32
     // Step 7: set-path-with-query = "/"  -- (i32,i32,i32,i32) -> i32
     func.instruction(&cst(SCRATCH));
     func.instruction(&cst(0x2F));
-    func.instruction(&Instruction::I32Store8(MemArg { offset: 0, align: 0, memory_index: 0 }));
+    func.instruction(&Instruction::I32Store8(MemArg {
+        offset: 0,
+        align: 0,
+        memory_index: 0,
+    }));
     func.instruction(&lg(1));
     func.instruction(&cst(1)); // Some = 1
     func.instruction(&cst(SCRATCH));
@@ -314,9 +398,9 @@ pub fn emit_http_get(func: &mut Function, url_ptr_local: u32, url_len_local: u32
     func.instruction(&cst(0)); // None = 0
     func.instruction(&cst(0)); // pad
     func.instruction(&cst(SCRATCH_WRITE_RESULT)); // valid dst — reuse from above (SCRATCH+64)
-    // Note: SCRATCH_WRITE_RESULT was defined as SCRATCH+64 in the old split,
-    // but here we use the canonical constant from the buffer module.
-    // The value is the same: 131072 + 64 = 131136.
+                                                  // Note: SCRATCH_WRITE_RESULT was defined as SCRATCH+64 in the old split,
+                                                  // but here we use the canonical constant from the buffer module.
+                                                  // The value is the same: 131072 + 64 = 131136.
     func.instruction(&cl(FN_OUTGOING_BODY_FINISH));
 
     // Step 11: drop body
@@ -362,7 +446,7 @@ pub fn emit_http_get(func: &mut Function, url_ptr_local: u32, url_len_local: u32
     func.instruction(&cst(1));
     func.instruction(&cst(SCRATCH_POLL_RESULT + 8));
     func.instruction(&cl(FN_POLL)); // (i32,i32,i32) -> ()
-    // Drop pollable
+                                    // Drop pollable
     func.instruction(&lg(4));
     func.instruction(&cl(FN_DROP_POLLABLE));
     // Loop back
@@ -425,12 +509,12 @@ pub fn emit_http_get(func: &mut Function, url_ptr_local: u32, url_len_local: u32
     func.instruction(&cst(0));
     func.instruction(&Instruction::I32Ne);
     func.instruction(&Instruction::BrIf(1)); // break on error
-    // Check len (0=EOF)
+                                             // Check len (0=EOF)
     func.instruction(&cst(0));
     func.instruction(&ld(SCRATCH_READ_RESULT + 8));
     func.instruction(&Instruction::I32Eqz);
     func.instruction(&Instruction::BrIf(1)); // break on EOF
-    // Write to stdout
+                                             // Write to stdout
     func.instruction(&lg(8));
     func.instruction(&cst(0));
     func.instruction(&ld(SCRATCH_READ_RESULT + 4)); // ptr
@@ -438,7 +522,7 @@ pub fn emit_http_get(func: &mut Function, url_ptr_local: u32, url_len_local: u32
     func.instruction(&ld(SCRATCH_READ_RESULT + 8)); // len
     func.instruction(&cst(0)); // pad
     func.instruction(&cl(FN_OUTPUT_STREAM_WRITE)); // (i32,i32,i32,i32) -> ()
-    // Loop
+                                                   // Loop
     func.instruction(&Instruction::Br(0)); // back to loop start
     func.instruction(&Instruction::End); // end loop
     func.instruction(&Instruction::End); // end block
@@ -458,18 +542,31 @@ pub fn build_http_wit_metadata() -> Result<(wit_parser::Resolve, wit_parser::Wor
 
         // Push dependency subdirs first so cross-package imports resolve
         let dep_dirs: &[&str] = &[
-            "io", "clocks", "random", "filesystem", "sockets", "cli", "http",
-            "near-storage", "near-payment", "near-vrf", "outlayer-wallet", "near-rpc",
-            "simple-http",
+            "io",
+            "clocks",
+            "random",
+            "filesystem",
+            "sockets",
+            "cli",
+            "http",
+            "outlayer-api",
+            "near-payment",
+            "near-vrf",
+            "outlayer-wallet",
+            "near-rpc",
         ];
         for subdir in dep_dirs {
             let dir = wit_dir.join(subdir);
             if dir.exists() {
-                resolve.push_dir(&dir).map_err(|e| format!("push_dir {} failed: {}", subdir, e))?;
+                resolve
+                    .push_dir(&dir)
+                    .map_err(|e| format!("push_dir {} failed: {}", subdir, e))?;
             }
         }
         // Now push root which contains combined.wit
-        resolve.push_dir(&wit_dir).map_err(|e| format!("push_dir root failed: {}", e))?;
+        resolve
+            .push_dir(&wit_dir)
+            .map_err(|e| format!("push_dir root failed: {}", e))?;
 
         // Look for simple-http world first, fall back to outlayer-http
         let mut found_world = None;
@@ -480,7 +577,9 @@ pub fn build_http_wit_metadata() -> Result<(wit_parser::Resolve, wit_parser::Wor
                     break;
                 }
             }
-            if found_world.is_some() { break; }
+            if found_world.is_some() {
+                break;
+            }
         }
         let world = found_world.ok_or("world 'simple-http' or 'outlayer-http' not found")?;
 
@@ -501,20 +600,34 @@ pub fn build_combined_wit_metadata() -> Result<(wit_parser::Resolve, wit_parser:
         // push_dir processes one directory at a time. We need to push deps in
         // dependency order so that cross-package imports resolve correctly.
         // The outlayer-http world (in combined.wit) imports packages
-        // from near-rpc, near-storage, near-payment, near-vrf, outlayer-wallet,
+        // from near-rpc, outlayer-api, near-payment, near-vrf, outlayer-wallet,
         // and all wasi packages, so those must be loaded first.
         let dep_dirs: &[&str] = &[
-            "io", "clocks", "random", "filesystem", "sockets", "cli", "http",
-            "near-storage", "near-payment", "near-vrf", "outlayer-wallet", "near-rpc",
+            "io",
+            "clocks",
+            "random",
+            "filesystem",
+            "sockets",
+            "cli",
+            "http",
+            "outlayer-api",
+            "near-payment",
+            "near-vrf",
+            "outlayer-wallet",
+            "near-rpc",
         ];
         for subdir in dep_dirs {
             let dir = wit_dir.join(subdir);
             if dir.exists() {
-                resolve.push_dir(&dir).map_err(|e| format!("push_dir {} failed: {}", subdir, e))?;
+                resolve
+                    .push_dir(&dir)
+                    .map_err(|e| format!("push_dir {} failed: {}", subdir, e))?;
             }
         }
         // Now push the root deps/ dir which contains combined.wit with outlayer-http
-        resolve.push_dir(&wit_dir).map_err(|e| format!("push_dir root failed: {}", e))?;
+        resolve
+            .push_dir(&wit_dir)
+            .map_err(|e| format!("push_dir root failed: {}", e))?;
 
         let mut found_world = None;
         for (_pkg_id, pkg) in resolve.packages.iter() {
@@ -524,9 +637,67 @@ pub fn build_combined_wit_metadata() -> Result<(wit_parser::Resolve, wit_parser:
                     break;
                 }
             }
-            if found_world.is_some() { break; }
+            if found_world.is_some() {
+                break;
+            }
         }
         let world = found_world.ok_or("world 'outlayer-http' not found")?;
+
+        Ok((resolve, world))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        crate::wit_embed::build_http_wit_metadata_embedded()
+    }
+}
+
+/// Build WIT metadata for the outlayer-nohttp world — outlayer host functions
+/// WITHOUT wasi:http. Used when the program needs storage/view/call/etc. but
+/// does NOT make HTTP requests, avoiding HTTP adapter traps in inlayer runtime.
+pub fn build_outlayer_nohttp_wit_metadata() -> Result<(wit_parser::Resolve, wit_parser::WorldId), String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut resolve = wit_parser::Resolve::new();
+        let wit_dir = find_wit_dir()?;
+
+        let dep_dirs: &[&str] = &[
+            "io",
+            "clocks",
+            "random",
+            "filesystem",
+            "sockets",
+            "cli",
+            "outlayer-api",
+            "near-payment",
+            "near-vrf",
+            "outlayer-wallet",
+            "near-rpc",
+        ];
+        for subdir in dep_dirs {
+            let dir = wit_dir.join(subdir);
+            if dir.exists() {
+                resolve
+                    .push_dir(&dir)
+                    .map_err(|e| format!("push_dir {} failed: {}", subdir, e))?;
+            }
+        }
+        resolve
+            .push_file(&wit_dir.join("outlayer-nohttp.wit"))
+            .map_err(|e| format!("push_file outlayer-nohttp.wit failed: {}", e))?;
+
+        let mut found_world = None;
+        for (_pkg_id, pkg) in resolve.packages.iter() {
+            for (name, world_id) in &pkg.worlds {
+                if name == "outlayer-nohttp" {
+                    found_world = Some(*world_id);
+                    break;
+                }
+            }
+            if found_world.is_some() {
+                break;
+            }
+        }
+        let world = found_world.ok_or("world 'outlayer-nohttp' not found")?;
 
         Ok((resolve, world))
     }
@@ -545,7 +716,9 @@ fn find_wit_dir() -> Result<std::path::PathBuf, String> {
     ];
     for dir in &candidates {
         let p = std::path::Path::new(dir);
-        if p.exists() { return Ok(p.to_path_buf()); }
+        if p.exists() {
+            return Ok(p.to_path_buf());
+        }
     }
     Err(format!("WIT directory not found, tried: {:?}", candidates))
 }
@@ -599,16 +772,43 @@ mod tests {
     fn test_fn_constants_sequential() {
         // Verify FN_* constants are sequential 0..27
         let max_fn = *[
-            FN_DROP_INPUT_STREAM, FN_DROP_OUTPUT_STREAM, FN_DROP_INCOMING_RESPONSE,
-            FN_DROP_FUTURE_INCOMING_RESPONSE, FN_CONSTRUCTOR_FIELDS, FN_CONSTRUCTOR_OUTGOING_REQUEST,
-            FN_SET_METHOD, FN_SET_SCHEME, FN_SET_AUTHORITY, FN_SET_PATH_WITH_QUERY,
-            FN_OUTGOING_REQUEST_BODY, FN_OUTGOING_BODY_WRITE, FN_OUTGOING_BODY_FINISH,
-            FN_DROP_OUTGOING_BODY, FN_HANDLE, FN_DROP_OUTGOING_REQUEST, FN_FUTURE_GET,
-            FN_FUTURE_SUBSCRIBE, FN_POLL, FN_DROP_POLLABLE, FN_INCOMING_RESPONSE_CONSUME,
-            FN_INCOMING_BODY_STREAM, FN_INPUT_STREAM_BLOCKING_READ, FN_GET_STDOUT, FN_OUTPUT_STREAM_WRITE,
-            FN_DROP_INCOMING_BODY, FN_DROP_FIELDS, FN_FIELDS_SET,
-        ].iter().max().unwrap();
-        assert_eq!(HTTP_IMPORT_COUNT, max_fn + 1, "HTTP_IMPORT_COUNT should be max FN_* + 1");
+            FN_DROP_INPUT_STREAM,
+            FN_DROP_OUTPUT_STREAM,
+            FN_DROP_INCOMING_RESPONSE,
+            FN_DROP_FUTURE_INCOMING_RESPONSE,
+            FN_CONSTRUCTOR_FIELDS,
+            FN_CONSTRUCTOR_OUTGOING_REQUEST,
+            FN_SET_METHOD,
+            FN_SET_SCHEME,
+            FN_SET_AUTHORITY,
+            FN_SET_PATH_WITH_QUERY,
+            FN_OUTGOING_REQUEST_BODY,
+            FN_OUTGOING_BODY_WRITE,
+            FN_OUTGOING_BODY_FINISH,
+            FN_DROP_OUTGOING_BODY,
+            FN_HANDLE,
+            FN_DROP_OUTGOING_REQUEST,
+            FN_FUTURE_GET,
+            FN_FUTURE_SUBSCRIBE,
+            FN_POLL,
+            FN_DROP_POLLABLE,
+            FN_INCOMING_RESPONSE_CONSUME,
+            FN_INCOMING_BODY_STREAM,
+            FN_INPUT_STREAM_BLOCKING_READ,
+            FN_GET_STDOUT,
+            FN_OUTPUT_STREAM_WRITE,
+            FN_DROP_INCOMING_BODY,
+            FN_DROP_FIELDS,
+            FN_FIELDS_SET,
+        ]
+        .iter()
+        .max()
+        .unwrap();
+        assert_eq!(
+            HTTP_IMPORT_COUNT,
+            max_fn + 1,
+            "HTTP_IMPORT_COUNT should be max FN_* + 1"
+        );
     }
 
     #[test]
@@ -616,7 +816,13 @@ mod tests {
         let (resolve, world) = build_http_wit_metadata().unwrap();
 
         let mut module = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
-        wit_component::embed_component_metadata(&mut module, &resolve, world, wit_component::StringEncoding::UTF8).unwrap();
+        wit_component::embed_component_metadata(
+            &mut module,
+            &resolve,
+            world,
+            wit_component::StringEncoding::UTF8,
+        )
+        .unwrap();
 
         assert!(!module.is_empty());
         assert!(module.starts_with(&[0x00, 0x61, 0x73, 0x6d]));

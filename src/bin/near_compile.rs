@@ -1,11 +1,12 @@
+use sha2::Digest;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use sha2::Digest;
 
 // ── PROJECT CONFIG ──
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct ProjectConfig {
     name: String,
     src: String,
@@ -14,6 +15,7 @@ struct ProjectConfig {
     key_path: String,
     output: String,
     tests: String,
+    target: String,
 }
 
 fn load_project_config(dir: &str) -> Result<ProjectConfig, String> {
@@ -34,6 +36,7 @@ fn load_project_config(dir: &str) -> Result<ProjectConfig, String> {
         .unwrap_or(&format!("target/{}.wasm", name))
         .to_string();
     let tests = json["tests"].as_str().unwrap_or("tests/").to_string();
+    let target = json["target"].as_str().unwrap_or("near").to_string();
     Ok(ProjectConfig {
         name,
         src,
@@ -42,6 +45,7 @@ fn load_project_config(dir: &str) -> Result<ProjectConfig, String> {
         key_path,
         output,
         tests,
+        target,
     })
 }
 
@@ -68,6 +72,7 @@ fn main() {
         "build" => run_build(args.get(2).map(|s| s.as_str())),
         "deploy" => run_deploy(&args[2..]),
         "call" => run_call(&args[2..]),
+        "view" => run_view(&args[2..]),
         "create" => run_create(&args[2..]),
         "test" => run_project_test(args.get(2).map(|s| s.as_str())),
         "--repl" | "-r" => run_repl(),
@@ -184,7 +189,11 @@ fn do_build(project_dir: &str) -> Result<(ProjectConfig, Vec<u8>), String> {
     let effective_source = if config.src.ends_with(".sol") {
         let lisp_vals = lisp_rlm_wasm::solidity::translate_solidity(&source)
             .map_err(|e| format!("Solidity translation: {}", e))?;
-        lisp_vals.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("\n")
+        lisp_vals
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
     } else {
         source.clone()
     };
@@ -210,12 +219,25 @@ fn do_build(project_dir: &str) -> Result<(ProjectConfig, Vec<u8>), String> {
 
 fn run_build(dir: Option<&str>) {
     let args: Vec<String> = std::env::args().collect();
+    let project_dir = dir.unwrap_or(".");
+    
+    // Load config first to get default target
+    let config = match load_project_config(project_dir) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("❌ Build failed: {}", e);
+            std::process::exit(1);
+        }
+    };
+    
+    // CLI --target overrides config target
     let target = args
         .iter()
         .find_map(|a| a.strip_prefix("--target="))
-        .unwrap_or("near");
-    let project_dir = dir.unwrap_or(".");
-    match do_build_target(project_dir, target) {
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| config.target.clone());
+    
+    match do_build_target_with_config(project_dir, &target, config) {
         Ok((output, wasm)) => {
             println!(
                 "✅ {} ({} bytes) — validated [target={}]",
@@ -231,9 +253,7 @@ fn run_build(dir: Option<&str>) {
     }
 }
 
-fn do_build_target(project_dir: &str, target: &str) -> Result<(String, Vec<u8>), String> {
-    let config = load_project_config(project_dir)?;
-
+fn do_build_target_with_config(project_dir: &str, target: &str, config: ProjectConfig) -> Result<(String, Vec<u8>), String> {
     let src_path = Path::new(project_dir).join(&config.src);
     let source =
         fs::read_to_string(&src_path).map_err(|e| format!("read {}: {}", config.src, e))?;
@@ -242,7 +262,11 @@ fn do_build_target(project_dir: &str, target: &str) -> Result<(String, Vec<u8>),
     let effective_source = if config.src.ends_with(".sol") {
         let lisp_vals = lisp_rlm_wasm::solidity::translate_solidity(&source)
             .map_err(|e| format!("Solidity translation: {}", e))?;
-        lisp_vals.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("\n")
+        lisp_vals
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
     } else {
         source.clone()
     };
@@ -257,11 +281,30 @@ fn do_build_target(project_dir: &str, target: &str) -> Result<(String, Vec<u8>),
             wasm
         }
         "outlayer" | "wasi" | "wasi-p1" => {
-            let wasm = lisp_rlm_wasm::wasi_emit::compile_outlayer(&effective_source)?;
+            let wasm = lisp_rlm_wasm::wasi::compile_outlayer(&effective_source)?;
             wasm
         }
         "outlayer-p2" | "wasi-p2" | "component" => {
-            let wasm = lisp_rlm_wasm::wasi_emit::compile_outlayer_p2(&effective_source)?;
+            let wasm = lisp_rlm_wasm::wasi::compile_outlayer_p2(&effective_source)?;
+            // Validate with wasmtime to catch codegen bugs that the encoder misses.
+            // NOTE: wasmtime's component parser may reject valid components built by
+            // wasm-encoder's ComponentBuilder. wasm-tools validate is the authoritative
+            // check — wasmtime validation is a secondary sanity check.
+            if std::env::var("HERMES_STRICT_WASM_VALIDATION").is_ok() {
+                let engine = wasmtime::Engine::default();
+                match wasmtime::component::Component::new(&engine, &wasm) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        let msg = e.to_string();
+                        for line in msg.lines() {
+                            if line.contains("failed to compile") || line.contains("type mismatch") || line.contains("values remaining") {
+                                return Err(format!("WASM validation: {} (full: {})", line.trim(), &msg[..msg.len().min(500)]));
+                            }
+                        }
+                        return Err(format!("WASM validation: {} (full: {})", msg.lines().next().unwrap_or(&msg), &msg[..msg.len().min(500)]));
+                    }
+                }
+            }
             wasm
         }
         _ => {
@@ -278,9 +321,135 @@ fn do_build_target(project_dir: &str, target: &str) -> Result<(String, Vec<u8>),
     }
     fs::write(&out_path, &wasm_bytes).map_err(|e| format!("write {}: {}", config.output, e))?;
 
+    // Post-build steps (only for NEAR target)
+    if target == "near" {
+        run_wasm_stitch(&out_path)?;
+        run_wat_check(&out_path);
+    }
+
     Ok((config.output.clone(), wasm_bytes))
 }
 
+
+/// Post-build WASM stitch step. If the compiled WASM imports any stitched WASM functions
+/// (e.g. schnorr_verify_bip340), runs wasm_stitch.py to merge the crypto module.
+fn run_wasm_stitch(wasm_path: &Path) -> Result<(), String> {
+    // Check if the WASM has any env.* imports that look like stitched imports
+    // (schnorr_verify_bip340, etc.)
+    let wasm_bytes = fs::read(wasm_path).map_err(|e| format!("read {}: {}", wasm_path.display(), e))?;
+    let module = match wasmparser::Parser::new(0).parse_all(&wasm_bytes).find(|payload| matches!(payload, Ok(wasmparser::Payload::ImportSection(_)))) {
+        Some(Ok(wasmparser::Payload::ImportSection(s))) => s,
+        _ => return Ok(()), // no import section = nothing to stitch
+    };
+    let imports: Vec<_> = module.into_iter().collect::<Result<Vec<_>, _>>().map_err(|e| format!("parse imports: {}", e))?;
+    
+    let stitched_names = ["schnorr_verify_bip340", "schnorr_verify_clearmsig"];
+    let needs_stitch = imports.iter().any(|imp| {
+        imp.module == "env" && stitched_names.contains(&imp.name)
+    });
+    
+    if !needs_stitch {
+        return Ok(());
+    }
+    
+    // Find the schnorr WASM module
+    let stitcher_dir = std::env::var("SCHNORR_WASM_DIR")
+        .unwrap_or_else(|_| format!("{}/.openclaw/workspace/k256-schnorr-wasm", std::env::var("HOME").unwrap_or_default()));
+    let crypto_wasm = Path::new(&stitcher_dir).join("schnorr_verify.wasm");
+    if !crypto_wasm.exists() {
+        return Err(format!(
+            "Contract uses near/schnorr_verify but crypto module not found at {}
+Set SCHNORR_WASM_DIR to override",
+            crypto_wasm.display()
+        ));
+    }
+    
+    // Find the stitcher script
+    let stitcher = Path::new(&stitcher_dir).join("wasm_stitch.py");
+    if !stitcher.exists() {
+        return Err(format!("wasm_stitch.py not found at {}", stitcher.display()));
+    }
+    
+    // Write stitched output to a temp file, then replace original
+    let stitched_path = wasm_path.with_extension("stitched.wasm");
+    let result = std::process::Command::new("python3")
+        .arg(&stitcher)
+        .arg(wasm_path)
+        .arg(&crypto_wasm)
+        .arg("-o")
+        .arg(&stitched_path)
+        .output()
+        .map_err(|e| format!("run wasm_stitch.py: {}", e))?;
+    
+    if !result.status.success() {
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        return Err(format!("wasm_stitch.py failed: {}", stderr.trim()));
+    }
+    
+    // Replace original with stitched
+    let stitched_bytes = fs::read(&stitched_path).map_err(|e| format!("read stitched: {}", e))?;
+    fs::write(wasm_path, &stitched_bytes).map_err(|e| format!("write stitched: {}", e))?;
+    let _ = fs::remove_file(&stitched_path);
+    
+    println!("  🔗 Stitched schnorr_verify WASM ({} → {} bytes)", wasm_bytes.len(), stitched_bytes.len());
+    Ok(())
+}
+
+/// Post-build WAT static analysis.
+/// Runs wasm2wat + wat_check.py if available, printing any warnings.
+fn run_wat_check(wasm_path: &Path) {
+    // Check if wasm2wat is available
+    if which("wasm2wat").is_none() {
+        return;
+    }
+    // Check if wat_check.py is available
+    let script_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/wat_check.py");
+    if !script_path.exists() {
+        return;
+    }
+    let wat_path = wasm_path.with_extension("wat");
+    let output = std::process::Command::new("wasm2wat")
+        .arg(wasm_path)
+        .arg("-o")
+        .arg(&wat_path)
+        .output();
+    let output = match output {
+        Ok(o) if o.status.success() => o,
+        _ => return, // wasm2wat failed, skip silently
+    };
+    let result = std::process::Command::new("python3")
+        .arg(&script_path)
+        .arg(&wat_path)
+        .output();
+    match result {
+        Ok(o) => {
+            if !o.stdout.is_empty() {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                for line in stdout.lines() {
+                    eprintln!("  {}", line);
+                }
+            }
+        }
+        Err(_) => {} // python3 not found, skip
+    }
+    // Clean up wat file
+    let _ = std::fs::remove_file(&wat_path);
+}
+
+/// Simple `which` check for a binary.
+fn which(name: &str) -> Option<std::path::PathBuf> {
+    std::process::Command::new("which")
+        .arg(name)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .next()
+                .map(|l| std::path::PathBuf::from(l.trim()))
+        })
+}
 
 // ── NEAR CLI INFRASTRUCTURE ──
 
@@ -293,6 +462,7 @@ struct NearCliOverrides {
     gas: Option<u64>,
     deposit: Option<String>,
     fund: bool,
+    borsh_args: Option<(String, u64)>, // (account_id, amount) for borsh-encoded input
 }
 
 /// Resolved NEAR connection details.
@@ -313,6 +483,7 @@ fn parse_overrides(args: &[String]) -> (NearCliOverrides, Vec<String>) {
         gas: None,
         deposit: None,
         fund: false,
+        borsh_args: None,
     };
     let mut positional = Vec::new();
     let mut i = 0;
@@ -345,6 +516,13 @@ fn parse_overrides(args: &[String]) -> (NearCliOverrides, Vec<String>) {
             "--fund" => {
                 overrides.fund = true;
                 i += 1;
+            }
+            "--borsh" => {
+                // --borsh <account_id> <amount>
+                let acct = args.get(i + 1).cloned().unwrap_or_default();
+                let amt = args.get(i + 2).and_then(|a| a.parse::<u64>().ok()).unwrap_or(0);
+                overrides.borsh_args = Some((acct, amt));
+                i += 3;
             }
             _ => {
                 positional.push(args[i].clone());
@@ -379,10 +557,11 @@ fn resolve_near_ctx(
         return Err("No account specified. Use --account or set account in near.json".into());
     }
 
-    let rpc_url = match network.as_str() {
-        "mainnet" => "https://rpc.mainnet.near.org",
-        _ => "https://rpc.testnet.near.org",
-    };
+    let rpc_url = std::env::var("NEAR_RPC_URL")
+        .unwrap_or_else(|_| match network.as_str() {
+            "mainnet" => "https://rpc.mainnet.near.org".into(),
+            _ => "https://rpc.testnet.fastnear.com".into(),
+        });
 
     // Load signing key
     let signing_key = if overrides.seed_phrase {
@@ -606,30 +785,40 @@ async fn prepare_tx(
     let client = reqwest::Client::new();
     let pk_display = format!("ed25519:{}", ctx.pk_b58);
 
-    // Fetch access key nonce
-    let access_key: serde_json::Value = rpc_call(
+    // Fetch access key nonce — use view_access_key_list (view_access_key fails on fastnear)
+    let access_keys: serde_json::Value = rpc_call(
         &client,
         &ctx.rpc_url,
         "query",
         serde_json::json!({
-            "request_type": "view_access_key",
+            "request_type": "view_access_key_list",
             "finality": "final",
-            "account_id": ctx.account,
-            "public_key": &pk_display
+            "account_id": ctx.account
         }),
     )
     .await?;
 
-    let nonce: u64 = access_key["result"]["nonce"]
-        .as_u64()
+    // Find our key in the list; fall back to first key if ours not found
+    let nonce: u64 = access_keys["result"]["keys"]
+        .as_array()
+        .and_then(|keys| {
+            keys.iter()
+                .find(|k| k["public_key"] == pk_display)
+                .or_else(|| keys.first())
+        })
+        .and_then(|k| k["access_key"]["nonce"].as_u64())
         .unwrap_or(0)
         .checked_add(1)
         .ok_or("nonce overflow")?;
 
     // Fetch latest block hash
-    let block: serde_json::Value =
-        rpc_call(&client, &ctx.rpc_url, "block", serde_json::json!({"finality": "final"}))
-            .await?;
+    let block: serde_json::Value = rpc_call(
+        &client,
+        &ctx.rpc_url,
+        "block",
+        serde_json::json!({"finality": "final"}),
+    )
+    .await?;
 
     let block_hash_b58 = block["result"]["header"]["hash"]
         .as_str()
@@ -638,7 +827,10 @@ async fn prepare_tx(
         .into_vec()
         .map_err(|e| format!("decode block hash: {}", e))?;
     if block_hash.len() != 32 {
-        return Err(format!("block hash is {} bytes, expected 32", block_hash.len()));
+        return Err(format!(
+            "block hash is {} bytes, expected 32",
+            block_hash.len()
+        ));
     }
 
     // Build borsh-encoded transaction (actions added by caller)
@@ -737,7 +929,12 @@ async fn run_deploy_async(args: &[String]) {
         }
     };
 
-    println!("🚀 Deploying {} bytes to {} ({})...", wasm.len(), ctx.account, ctx.network);
+    println!(
+        "🚀 Deploying {} bytes to {} ({})...",
+        wasm.len(),
+        ctx.account,
+        ctx.network
+    );
 
     let (mut tx_body, client) = match prepare_tx(&ctx, &ctx.account).await {
         Ok(r) => r,
@@ -764,6 +961,105 @@ async fn run_deploy_async(args: &[String]) {
 
 // ── CALL ──
 
+fn run_view(args: &[String]) {
+    let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
+    rt.block_on(async { run_view_async(args).await });
+}
+
+async fn run_view_async(args: &[String]) {
+    let (overrides, mut positional) = parse_overrides(args);
+
+    let contract = positional.first().cloned().unwrap_or_else(|| {
+        eprintln!("Usage: near-compile view <contract> <method> [args.json] [dir]");
+        std::process::exit(1);
+    });
+    positional.remove(0);
+
+    let method = positional.first().cloned().unwrap_or_else(|| {
+        eprintln!("Usage: near-compile view <contract> <method> [args.json] [dir]");
+        std::process::exit(1);
+    });
+    positional.remove(0);
+
+    let project_dir = positional.first().map(|s| s.as_str()).unwrap_or(".");
+
+    // Build args bytes — --borsh or JSON
+    let args_bytes = if let Some((acct, amt)) = &overrides.borsh_args {
+        let acct_bytes = acct.as_bytes();
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&(acct_bytes.len() as u32).to_le_bytes());
+        buf.extend_from_slice(acct_bytes);
+        buf.extend_from_slice(&(amt.to_le_bytes()));
+        buf
+    } else if !positional.is_empty() {
+        let candidate = &positional[0];
+        if candidate.ends_with(".json") && Path::new(candidate).exists() {
+            let content = fs::read_to_string(candidate).unwrap_or_else(|e| {
+                eprintln!("❌ Read {}: {}", candidate, e);
+                std::process::exit(1);
+            });
+            serde_json::from_str::<serde_json::Value>(&content).unwrap().to_string().into_bytes()
+        } else if candidate.starts_with('{') || candidate.starts_with('[') {
+            serde_json::from_str::<serde_json::Value>(candidate).unwrap().to_string().into_bytes()
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
+    let ctx = match resolve_near_ctx(project_dir, &overrides) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("❌ {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    use base64::Engine;
+    let args_b64 = base64::engine::general_purpose::STANDARD.encode(&args_bytes);
+
+    let client = reqwest::Client::new();
+    let payload = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "query",
+        "params": {
+            "request_type": "call_function",
+            "account_id": contract,
+            "method_name": method,
+            "args_base64": args_b64,
+            "finality": "final"
+        }
+    });
+
+    let resp = client
+        .post(&ctx.rpc_url)
+        .header("Content-Type", "application/json")
+        .json(&payload)
+        .send()
+        .await
+        .expect("RPC request failed")
+        .json::<serde_json::Value>()
+        .await
+        .expect("parse RPC response");
+
+    if let Some(err) = resp.get("error") {
+        eprintln!("❌ RPC error: {}", err["message"]);
+        std::process::exit(1);
+    }
+
+    if let Some(result) = resp.get("result").and_then(|r| r.get("result")) {
+        if let Some(arr) = result.as_array() {
+            let bytes: Vec<u8> = arr.iter().map(|v| v.as_u64().unwrap_or(0) as u8).collect();
+            let output = String::from_utf8_lossy(&bytes);
+            println!("→ {}", output);
+        }
+    } else {
+        println!("→ (empty)");
+    }
+}
+
 fn run_call(args: &[String]) {
     let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
     rt.block_on(async { run_call_async(args).await });
@@ -784,8 +1080,16 @@ async fn run_call_async(args: &[String]) {
     });
     positional.remove(0);
 
-    // Optional args — inline JSON string or .json file
-    let (args_json, project_dir) = if !positional.is_empty() {
+    // Optional args — inline JSON string, .json file, or --borsh encoded input
+    let (args_json, project_dir) = if let Some((acct, amt)) = &overrides.borsh_args {
+        // Borsh-encoded: 4-byte LE len + account_id bytes + 4-byte LE amount
+        let acct_bytes = acct.as_bytes();
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&(acct_bytes.len() as u32).to_le_bytes());
+        buf.extend_from_slice(acct_bytes);
+        buf.extend_from_slice(&(amt.to_le_bytes()));
+        (buf, positional.first().map(|s| s.as_str()).unwrap_or("."))
+    } else if !positional.is_empty() {
         let candidate = &positional[0];
         if candidate.ends_with(".json") && Path::new(candidate).exists() {
             // It's a .json file path
@@ -808,7 +1112,10 @@ async fn run_call_async(args: &[String]) {
             let bytes = serde_json::to_vec(&val).unwrap();
             (bytes, positional.get(1).map(|s| s.as_str()).unwrap_or("."))
         } else {
-            (Vec::new(), positional.first().map(|s| s.as_str()).unwrap_or("."))
+            (
+                Vec::new(),
+                positional.first().map(|s| s.as_str()).unwrap_or("."),
+            )
         }
     } else {
         (Vec::new(), ".")
@@ -867,7 +1174,10 @@ fn parse_deposit(deposit: &Option<String>) -> u128 {
     match deposit {
         Some(d) => {
             let parts: Vec<&str> = d.split('.').collect();
-            let whole = parts.first().and_then(|s| s.parse::<u128>().ok()).unwrap_or(0);
+            let whole = parts
+                .first()
+                .and_then(|s| s.parse::<u128>().ok())
+                .unwrap_or(0);
             let frac = if parts.len() > 1 {
                 let f = parts[1];
                 let f_padded = format!("{:0<24}", &f[..f.len().min(24)]);
@@ -916,13 +1226,18 @@ async fn run_create_async(args: &[String]) {
         positional.remove(0)
     };
     let funder_overrides = NearCliOverrides {
-        account: if funder.is_empty() { None } else { Some(funder) },
+        account: if funder.is_empty() {
+            None
+        } else {
+            Some(funder)
+        },
         network: Some(network.clone()),
         key_path: overrides.key_path.clone(),
         seed_phrase: overrides.seed_phrase,
         gas: None,
         deposit: None,
         fund: false,
+        borsh_args: None,
     };
 
     // Resolve funder context (uses "." as project dir — no near.json needed)
@@ -943,7 +1258,10 @@ async fn run_create_async(args: &[String]) {
         format!("{}.{}", new_account, ctx.account)
     };
 
-    println!("👤 Creating account {} (funded by {})...", new_account_id, ctx.account);
+    println!(
+        "👤 Creating account {} (funded by {})...",
+        new_account_id, ctx.account
+    );
 
     // Generate a new keypair for the new account
     let mut rng = rand::rngs::OsRng;
@@ -960,11 +1278,13 @@ async fn run_create_async(args: &[String]) {
         }
     };
 
-    // CreateAccount action (variant 0) + AddKey action (variant 5)
-    tx_body.extend_from_slice(&2u32.to_le_bytes()); // action count
+    // CreateAccount (0) + Transfer (3) + AddKey (5) = 3 actions
+    tx_body.extend_from_slice(&3u32.to_le_bytes()); // action count
     tx_body.push(0x00); // CreateAccount
+    tx_body.push(0x03); // Transfer (5 NEAR = 5_000_000_000_000_000_000_000_000 yocto)
+    tx_body.extend_from_slice(&5_000_000_000_000_000_000_000_000u128.to_le_bytes());
     tx_body.push(0x05); // AddKey
-    // PublicKey: ED25519 tag + 32 bytes
+                        // PublicKey: ED25519 tag + 32 bytes
     tx_body.push(0x00);
     tx_body.extend_from_slice(&new_pk_bytes);
     // AccessKey: nonce(u64) + permission(FullAccess = variant 1)
@@ -973,7 +1293,10 @@ async fn run_create_async(args: &[String]) {
 
     match sign_and_broadcast(tx_body, &ctx, &client).await {
         Ok(tx_hash) => {
-            println!("✅ Account created: {}", explorer_url(&ctx.network, &tx_hash));
+            println!(
+                "✅ Account created: {}",
+                explorer_url(&ctx.network, &tx_hash)
+            );
 
             // Save credentials for the new account
             let home = std::env::var("HOME").unwrap_or_default();
@@ -991,8 +1314,11 @@ async fn run_create_async(args: &[String]) {
                 "public_key": format!("ed25519:{}", new_pk_b58),
                 "secret_key": format!("ed25519:{}", sk_b58)
             });
-            fs::write(&cred_path, serde_json::to_string_pretty(&cred_json).unwrap())
-                .unwrap_or_else(|e| eprintln!("⚠️  Save credentials: {}", e));
+            fs::write(
+                &cred_path,
+                serde_json::to_string_pretty(&cred_json).unwrap(),
+            )
+            .unwrap_or_else(|e| eprintln!("⚠️  Save credentials: {}", e));
 
             println!("🔑 Credentials saved to {}", cred_path);
             println!("   Account: {}", new_account_id);
@@ -1031,7 +1357,11 @@ async fn fund_from_faucet(account_id: &str, pk_b58: &str) -> Result<(), String> 
 
     if !resp.status().is_success() {
         let text = resp.text().await.unwrap_or_default();
-        return Err(format!("faucet returned {}: {}", text.len(), &text[..text.len().min(200)]));
+        return Err(format!(
+            "faucet returned {}: {}",
+            text.len(),
+            &text[..text.len().min(200)]
+        ));
     }
 
     Ok(())
@@ -1189,6 +1519,7 @@ fn run_test_from_source_target(src: &str, target: &str) {
     }
 }
 
+#[allow(dead_code)]
 struct TestCase {
     name: String,
     expr: lisp_rlm_wasm::types::LispVal,
@@ -1248,14 +1579,16 @@ fn run_tests_target(base_src: &str, tests: &[TestCase], target: &str) -> (usize,
                     continue;
                 }
             },
-            "outlayer" | "wasi" | "wasi-p1" => match lisp_rlm_wasm::wasi_emit::compile_outlayer(&test_src) {
-                Ok(w) => w,
-                Err(e) => {
-                    println!("  ❌ {}: compile error: {}", tc.name, e);
-                    failed += 1;
-                    continue;
+            "outlayer" | "wasi" | "wasi-p1" => {
+                match lisp_rlm_wasm::wasi::compile_outlayer(&test_src) {
+                    Ok(w) => w,
+                    Err(e) => {
+                        println!("  ❌ {}: compile error: {}", tc.name, e);
+                        failed += 1;
+                        continue;
+                    }
                 }
-            },
+            }
             _ => {
                 println!("  ❌ {}: unknown target '{}'", tc.name, target);
                 failed += 1;
@@ -1345,36 +1678,93 @@ fn run_outlayer_test_fn(wasm: &[u8], fn_name: &str) -> Result<i64, String> {
 
     let fd_read_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
     let fd_write_fn = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
-    let proc_exit_fn = Func::new(&mut store, FuncType::new(&engine, [ValType::I32], []),
-        |_, _, _| Err(wasmtime::Error::msg("proc_exit")));
+    let proc_exit_fn = Func::new(
+        &mut store,
+        FuncType::new(&engine, [ValType::I32], []),
+        |_, _, _| Err(wasmtime::Error::msg("proc_exit")),
+    );
     let random_fn = Func::wrap(&mut store, |_: i32, _: i32| -> i32 { 0 });
     let env_sizes_fn = Func::wrap(&mut store, |_: i32, _: i32| -> i32 { 0 });
     let env_get_fn = Func::wrap(&mut store, |_: i32, _: i32| -> i32 { 0 });
     let fd_seek_fn = Func::wrap(&mut store, |_: i32, _: i64, _: i32, _: i32| -> i32 { 0 });
-    let ol_view = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
-    let ol_call = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
-    let ol_transfer = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
+    let ol_view = Func::wrap(
+        &mut store,
+        |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 },
+    );
+    let ol_call = Func::wrap(
+        &mut store,
+        |_: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32|
+         -> i32 { 0 },
+    );
+    let ol_transfer = Func::wrap(
+        &mut store,
+        |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 {
+            0
+        },
+    );
     let read_reg = Func::wrap(&mut store, |_: i64, _: i64| {});
     let reg_len = Func::wrap(&mut store, |_: i64| -> i64 { 0 });
 
     let mut linker = Linker::new(&engine);
-    linker.define(&store, "wasi_snapshot_preview1", "fd_read", fd_read_fn).unwrap();
-    linker.define(&store, "wasi_snapshot_preview1", "fd_write", fd_write_fn).unwrap();
-    linker.define(&store, "wasi_snapshot_preview1", "proc_exit", proc_exit_fn).unwrap();
-    linker.define(&store, "wasi_snapshot_preview1", "random_get", random_fn).unwrap();
-    linker.define(&store, "wasi_snapshot_preview1", "environ_sizes_get", env_sizes_fn).unwrap();
-    linker.define(&store, "wasi_snapshot_preview1", "environ_get", env_get_fn).unwrap();
-    linker.define(&store, "wasi_snapshot_preview1", "fd_seek", fd_seek_fn).unwrap();
+    linker
+        .define(&store, "wasi_snapshot_preview1", "fd_read", fd_read_fn)
+        .unwrap();
+    linker
+        .define(&store, "wasi_snapshot_preview1", "fd_write", fd_write_fn)
+        .unwrap();
+    linker
+        .define(&store, "wasi_snapshot_preview1", "proc_exit", proc_exit_fn)
+        .unwrap();
+    linker
+        .define(&store, "wasi_snapshot_preview1", "random_get", random_fn)
+        .unwrap();
+    linker
+        .define(
+            &store,
+            "wasi_snapshot_preview1",
+            "environ_sizes_get",
+            env_sizes_fn,
+        )
+        .unwrap();
+    linker
+        .define(&store, "wasi_snapshot_preview1", "environ_get", env_get_fn)
+        .unwrap();
+    linker
+        .define(&store, "wasi_snapshot_preview1", "fd_seek", fd_seek_fn)
+        .unwrap();
     linker.define(&store, "outlayer", "view", ol_view).unwrap();
     linker.define(&store, "outlayer", "call", ol_call).unwrap();
-    linker.define(&store, "outlayer", "transfer", ol_transfer).unwrap();
-    linker.define(&store, "env", "read_register", read_reg).unwrap();
-    linker.define(&store, "env", "register_len", reg_len).unwrap();
+    linker
+        .define(&store, "outlayer", "transfer", ol_transfer)
+        .unwrap();
+    linker
+        .define(&store, "env", "read_register", read_reg)
+        .unwrap();
+    linker
+        .define(&store, "env", "register_len", reg_len)
+        .unwrap();
 
-    let instance = linker.instantiate(&mut store, &module).map_err(|e| format!("instantiate: {}", e))?;
-    let func = instance.get_typed_func::<(), i64>(&mut store, fn_name)
+    let instance = linker
+        .instantiate(&mut store, &module)
+        .map_err(|e| format!("instantiate: {}", e))?;
+    let func = instance
+        .get_typed_func::<(), i64>(&mut store, fn_name)
         .map_err(|e| format!("get func {}: {}", fn_name, e))?;
-    func.call(&mut store, ()).map_err(|e| format!("call: {}", e))
+    func.call(&mut store, ())
+        .map_err(|e| format!("call: {}", e))
 }
 
 fn run_test(args: &[String]) {
@@ -1417,11 +1807,35 @@ fn run_compile(args: &[String]) {
 
     let src = strip_test_forms(&src);
 
-    let target = args
-        .iter()
-        .find_map(|a| a.strip_prefix("--target="))
-        .unwrap_or("near");
-    let wasm_bytes = match target {
+    // CLI --target overrides config
+    let cli_target = args.iter().find_map(|a| a.strip_prefix("--target="));
+    
+    // Try to load project config if no explicit target
+    let target = if let Some(t) = cli_target {
+        t.to_string()
+    } else {
+        // Look for near.json in the source file's directory
+        let src_dir = Path::new(src_path).parent().unwrap_or(Path::new("."));
+        let config_path = src_dir.join("near.json");
+        if config_path.exists() {
+            if let Ok(content) = fs::read_to_string(&config_path) {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(t) = json["target"].as_str() {
+                        t.to_string()
+                    } else {
+                        "near".to_string()
+                    }
+                } else {
+                    "near".to_string()
+                }
+            } else {
+                "near".to_string()
+            }
+        } else {
+            "near".to_string()
+        }
+    };
+    let wasm_bytes = match target.as_str() {
         "near" => match lisp_rlm_wasm::wasm_emit::compile_near(&src) {
             Ok(w) => w,
             Err(e) => {
@@ -1429,7 +1843,7 @@ fn run_compile(args: &[String]) {
                 std::process::exit(1);
             }
         },
-        "outlayer" | "wasi" | "wasi-p1" => match lisp_rlm_wasm::wasi_emit::compile_outlayer(&src) {
+        "outlayer" | "wasi" | "wasi-p1" => match lisp_rlm_wasm::wasi::compile_outlayer(&src) {
             Ok(w) => w,
             Err(e) => {
                 eprintln!("❌ Compile error: {}", e);
@@ -1437,7 +1851,7 @@ fn run_compile(args: &[String]) {
             }
         },
         "outlayer-p2" | "wasi-p2" | "component" => {
-            match lisp_rlm_wasm::wasi_emit::compile_outlayer_p2(&src) {
+            match lisp_rlm_wasm::wasi::compile_outlayer_p2(&src) {
                 Ok(w) => w,
                 Err(e) => {
                     eprintln!("❌ Compile error: {}", e);
@@ -1453,7 +1867,7 @@ fn run_compile(args: &[String]) {
             std::process::exit(1);
         }
     };
-    let func_names: Vec<String> = extract_func_names(&src).unwrap_or_default();
+    let _func_names: Vec<String> = extract_func_names(&src).unwrap_or_default();
 
     // Validate only for NEAR target (component model has different format)
     if target == "near" {
@@ -1461,7 +1875,8 @@ fn run_compile(args: &[String]) {
             let func_name_map = extract_func_names(&src).unwrap_or_default();
             let err_str = e.to_string();
             let offset = extract_offset(&err_str);
-            let func_name = offset.and_then(|off| find_function_at_offset(&wasm_bytes, off, &func_name_map));
+            let func_name =
+                offset.and_then(|off| find_function_at_offset(&wasm_bytes, off, &func_name_map));
             match func_name {
                 Some(name) => eprintln!("❌ WASM error in `{}`: {}", name, err_str),
                 None => eprintln!("❌ WASM validation: {}", err_str),
@@ -3254,7 +3669,7 @@ fn run_wasmtime(
         Err(wasmtime::Error::msg("NEAR panic"))
     });
     let noop0 = Func::new(&mut store, FuncType::new(&engine, [], []), |_, _, _| Ok(()));
-    let noop1 = Func::new(
+    let _noop1 = Func::new(
         &mut store,
         FuncType::new(&engine, [ValType::I64], []),
         |_, _, _| Ok(()),
@@ -3410,7 +3825,7 @@ fn deploy(wasm: &[u8]) -> Result<String, String> {
 }
 
 fn call_testnet_view(method: &str) -> Result<String, String> {
-    let args_base64 = base64::encode("{}");
+    let args_base64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, "{}");
     let rpc_payload = format!(
         r#"{{"jsonrpc":"2.0","id":1,"method":"query","params":{{"request_type":"call_function","finality":"optimistic","account_id":"kampy.testnet","method_name":"{}","args_base64":"{}"}}}}"#,
         method, args_base64

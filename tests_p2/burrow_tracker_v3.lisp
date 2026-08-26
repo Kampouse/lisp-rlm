@@ -1,0 +1,61 @@
+;; Burrow Tracker v3 — permissionless margin position tracking.
+;; Uses near/kstore for user-specific keys (no str-cat needed).
+;;
+;; Storage layout:
+;;   "owner"                — contract owner (bytes)
+;;   "poll/" + account_id   — poll authorization (1 = allowed)
+;;   "u/" + account_id      — user's u128 deposit (16 bytes, via near/kstore_u128)
+;;   "c/" + account_id      — user's credits (i64)
+
+(define (init)
+  (begin
+    (near/store-bytes "owner" (near/signer_account_id))
+    (near/kstore "poll/" (near/signer_account_id) 1)
+    (near/return_str "ok")))
+
+(define (register)
+  (if (near/deposit-gte 1000000000000000000)
+    (let ((acct (near/signer_account_id)))
+      (begin
+        ;; Store u128 deposit using u/ prefix
+        (near/store_u128 (str-cat "u/" acct) (near/attached_deposit_u128))
+        ;; Store credits using c/ prefix
+        (near/kstore "c/" acct 1000)
+        (near/return_str "registered")))
+    (near/panic "minimum 0.001 NEAR")))
+
+(define (withdraw)
+  (let ((acct (near/signer_account_id)))
+    (if (near/has_key (str-cat "u/" acct))
+      (let ((dep-ptr (near/load_u128 (str-cat "u/" acct))))
+        (begin
+          (near/remove (str-cat "u/" acct))
+          (near/remove (str-cat "c/" acct))
+          (near/transfer acct dep-ptr)
+          (near/return_str "withdrawn")))
+      (near/panic "no deposit"))))
+
+(define (poll)
+  (if (near/kload "poll/" (near/signer_account_id))
+    (near/return_str "polled")
+    (near/panic "only owner can poll")))
+
+(define (get_balance)
+  (let ((inp (near/input)))
+    (let ((acct-len (bytes-to-u32 (str-slice inp 0 4))))
+      (let ((acct (str-slice inp 4 (+ 4 acct-len))))
+        (if (near/has_key (str-cat "u/" acct))
+          (let ((dep-ptr (near/load_u128 (str-cat "u/" acct))))
+            (let ((buf (+ dep-ptr 16)))
+              (near/return_str (u128/to_str dep-ptr buf))))
+          (near/return_str "0"))))))
+
+(define (get_info)
+  (near/return_str (near/load-bytes "owner")))
+
+(export "init" init false)
+(export "register" register false)
+(export "withdraw" withdraw false)
+(export "poll" poll false)
+(export "get_balance" get_balance true)
+(export "get_info" get_info true)

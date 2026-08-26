@@ -1,8 +1,8 @@
 #![allow(unreachable_patterns)]
 //! NEAR gas estimation using finite-wasm — same analysis as nearcore's prepare step.
 
-use finite_wasm::{Analysis, Fee, max_stack, prefix_sum_vec::PrefixSumVec};
 use finite_wasm::wasmparser as wp;
+use finite_wasm::{max_stack, prefix_sum_vec::PrefixSumVec, Analysis, Fee};
 
 /// Calibrated from on-chain benchmarks (testnet, Apr 30 2026):
 ///
@@ -40,14 +40,24 @@ impl std::fmt::Display for GasEstimate {
         if !self.function_details.is_empty() {
             writeln!(f, "  Per function:")?;
             for (i, fd) in self.function_details.iter().enumerate() {
-                writeln!(f, "    [{}] {} ops, {} locals, {}B stack",
-                    i, fd.instructions, fd.locals, fd.stack_bytes)?;
+                writeln!(
+                    f,
+                    "    [{}] {} ops, {} locals, {}B stack",
+                    i, fd.instructions, fd.locals, fd.stack_bytes
+                )?;
             }
         }
-        let total_gas = self.total_instructions as u64 * GAS_PER_RAW_OP + WRAPPER_OVERHEAD_GAS + RECEIPT_OVERHEAD_GAS;
+        let total_gas = self.total_instructions as u64 * GAS_PER_RAW_OP
+            + WRAPPER_OVERHEAD_GAS
+            + RECEIPT_OVERHEAD_GAS;
         let tgas = total_gas as f64 / 1e12;
-        writeln!(f, "  Est. gas:   ~{:.3} Tgas (static × {} gas/op + {:.1} Tgas wrapper)",
-            tgas, GAS_PER_RAW_OP, WRAPPER_OVERHEAD_GAS as f64 / 1e12)?;
+        writeln!(
+            f,
+            "  Est. gas:   ~{:.3} Tgas (static × {} gas/op + {:.1} Tgas wrapper)",
+            tgas,
+            GAS_PER_RAW_OP,
+            WRAPPER_OVERHEAD_GAS as f64 / 1e12
+        )?;
         Ok(())
     }
 }
@@ -113,7 +123,8 @@ pub fn estimate_gas(wasm: &[u8]) -> Result<GasEstimate, String> {
         .with_stack(StackSizeConfig)
         .with_gas(UniformCost);
 
-    let outcome = analysis.analyze(wasm)
+    let outcome = analysis
+        .analyze(wasm)
         .map_err(|e| format!("gas analysis failed: {:?}", e))?;
 
     let mut details = Vec::new();
@@ -121,11 +132,17 @@ pub fn estimate_gas(wasm: &[u8]) -> Result<GasEstimate, String> {
 
     for i in 0..outcome.function_frame_sizes.len() {
         let frame = outcome.function_frame_sizes.get(i).copied().unwrap_or(0);
-        let ops = outcome.function_operand_stack_sizes.get(i).copied().unwrap_or(0);
+        let ops = outcome
+            .function_operand_stack_sizes
+            .get(i)
+            .copied()
+            .unwrap_or(0);
         let stack = frame + ops;
 
         // Sum gas costs for this function
-        let costs: u64 = outcome.gas_costs.get(i)
+        let costs: u64 = outcome
+            .gas_costs
+            .get(i)
             .map(|c| c.iter().map(|f| f.constant).sum::<u64>())
             .unwrap_or(0);
 

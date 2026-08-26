@@ -1,0 +1,1 @@
+{"name":"telegram_only","src":"telegram_only.lisp","target":"outlayer-p2","output":"telegram_only.wasm"}

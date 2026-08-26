@@ -1,0 +1,5 @@
+(define (run)
+  (let* ((prices (http-get "https://api.rhea.finance/list-token-price"))
+         (stnear-obj (json-get-str "meta-pool.near" prices))
+         (stnear-p (json-get-str "price" stnear-obj)))
+    (str-cat "obj:" stnear-obj " p:" stnear-p)))

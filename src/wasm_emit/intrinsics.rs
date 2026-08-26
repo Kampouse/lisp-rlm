@@ -45,77 +45,156 @@ impl WasmEmitter {
             Instruction::End,
             // ===== Step 1: Schoolbook 128-bit multiply =====
             // Split a into a_hi:a_lo
-            Instruction::LocalGet(a), Instruction::I64Const(32), Instruction::I64ShrU, Instruction::LocalSet(a_hi),
-            Instruction::LocalGet(a), Instruction::LocalGet(a_hi), Instruction::I64Const(32), Instruction::I64Shl, Instruction::I64Sub, Instruction::LocalSet(a_lo),
+            Instruction::LocalGet(a),
+            Instruction::I64Const(32),
+            Instruction::I64ShrU,
+            Instruction::LocalSet(a_hi),
+            Instruction::LocalGet(a),
+            Instruction::LocalGet(a_hi),
+            Instruction::I64Const(32),
+            Instruction::I64Shl,
+            Instruction::I64Sub,
+            Instruction::LocalSet(a_lo),
             // Split b into b_hi:b_lo
-            Instruction::LocalGet(b), Instruction::I64Const(32), Instruction::I64ShrU, Instruction::LocalSet(b_hi),
-            Instruction::LocalGet(b), Instruction::LocalGet(b_hi), Instruction::I64Const(32), Instruction::I64Shl, Instruction::I64Sub, Instruction::LocalSet(b_lo),
+            Instruction::LocalGet(b),
+            Instruction::I64Const(32),
+            Instruction::I64ShrU,
+            Instruction::LocalSet(b_hi),
+            Instruction::LocalGet(b),
+            Instruction::LocalGet(b_hi),
+            Instruction::I64Const(32),
+            Instruction::I64Shl,
+            Instruction::I64Sub,
+            Instruction::LocalSet(b_lo),
             // p0 = a_lo * b_lo
-            Instruction::LocalGet(a_lo), Instruction::LocalGet(b_lo), Instruction::I64Mul, Instruction::LocalSet(p0),
+            Instruction::LocalGet(a_lo),
+            Instruction::LocalGet(b_lo),
+            Instruction::I64Mul,
+            Instruction::LocalSet(p0),
             // p1 = a_lo * b_hi
-            Instruction::LocalGet(a_lo), Instruction::LocalGet(b_hi), Instruction::I64Mul, Instruction::LocalSet(p1),
+            Instruction::LocalGet(a_lo),
+            Instruction::LocalGet(b_hi),
+            Instruction::I64Mul,
+            Instruction::LocalSet(p1),
             // p2 = a_hi * b_lo
-            Instruction::LocalGet(a_hi), Instruction::LocalGet(b_lo), Instruction::I64Mul, Instruction::LocalSet(p2),
+            Instruction::LocalGet(a_hi),
+            Instruction::LocalGet(b_lo),
+            Instruction::I64Mul,
+            Instruction::LocalSet(p2),
             // p3 = a_hi * b_hi
-            Instruction::LocalGet(a_hi), Instruction::LocalGet(b_hi), Instruction::I64Mul, Instruction::LocalSet(p3),
+            Instruction::LocalGet(a_hi),
+            Instruction::LocalGet(b_hi),
+            Instruction::I64Mul,
+            Instruction::LocalSet(p3),
             // mid = p1 + p2
-            Instruction::LocalGet(p1), Instruction::LocalGet(p2), Instruction::I64Add, Instruction::LocalSet(mid),
+            Instruction::LocalGet(p1),
+            Instruction::LocalGet(p2),
+            Instruction::I64Add,
+            Instruction::LocalSet(mid),
             // carry_mid = (mid <u p1) ? 1 : 0
-            Instruction::LocalGet(mid), Instruction::LocalGet(p1), Instruction::I64LtU,
-            Instruction::I64ExtendI32U, Instruction::LocalSet(carry_mid),
+            Instruction::LocalGet(mid),
+            Instruction::LocalGet(p1),
+            Instruction::I64LtU,
+            Instruction::I64ExtendI32U,
+            Instruction::LocalSet(carry_mid),
             // mid_lo = mid & 0xFFFFFFFF, mid_hi = mid >> 32
-            Instruction::LocalGet(mid), Instruction::I64Const(mask32), Instruction::I64And, Instruction::LocalSet(mid_lo),
-            Instruction::LocalGet(mid), Instruction::I64Const(32), Instruction::I64ShrU, Instruction::LocalSet(mid_hi),
+            Instruction::LocalGet(mid),
+            Instruction::I64Const(mask32),
+            Instruction::I64And,
+            Instruction::LocalSet(mid_lo),
+            Instruction::LocalGet(mid),
+            Instruction::I64Const(32),
+            Instruction::I64ShrU,
+            Instruction::LocalSet(mid_hi),
             // lo = p0 + (mid_lo << 32)
-            Instruction::LocalGet(p0), Instruction::LocalGet(mid_lo), Instruction::I64Const(32), Instruction::I64Shl, Instruction::I64Add, Instruction::LocalSet(lo),
+            Instruction::LocalGet(p0),
+            Instruction::LocalGet(mid_lo),
+            Instruction::I64Const(32),
+            Instruction::I64Shl,
+            Instruction::I64Add,
+            Instruction::LocalSet(lo),
             // carry_lo = (lo <u p0) ? 1 : 0
-            Instruction::LocalGet(lo), Instruction::LocalGet(p0), Instruction::I64LtU,
-            Instruction::I64ExtendI32U, Instruction::LocalSet(carry_lo),
+            Instruction::LocalGet(lo),
+            Instruction::LocalGet(p0),
+            Instruction::I64LtU,
+            Instruction::I64ExtendI32U,
+            Instruction::LocalSet(carry_lo),
             // hi = p3 + mid_hi + (carry_mid << 32) + carry_lo
             Instruction::LocalGet(p3),
-            Instruction::LocalGet(mid_hi), Instruction::I64Add,
-            Instruction::LocalGet(carry_mid), Instruction::I64Const(32), Instruction::I64Shl, Instruction::I64Add,
-            Instruction::LocalGet(carry_lo), Instruction::I64Add,
+            Instruction::LocalGet(mid_hi),
+            Instruction::I64Add,
+            Instruction::LocalGet(carry_mid),
+            Instruction::I64Const(32),
+            Instruction::I64Shl,
+            Instruction::I64Add,
+            Instruction::LocalGet(carry_lo),
+            Instruction::I64Add,
             Instruction::LocalSet(hi),
             // ===== Step 2: Overflow check — hi >= c means result won't fit i64 =====
-            Instruction::LocalGet(hi), Instruction::LocalGet(c), Instruction::I64GeU,
+            Instruction::LocalGet(hi),
+            Instruction::LocalGet(c),
+            Instruction::I64GeU,
             Instruction::If(BlockType::Empty),
             Instruction::Unreachable,
             Instruction::End,
             // ===== Step 3: Binary long division [hi:lo] / c =====
-            Instruction::LocalGet(hi), Instruction::LocalSet(r),
-            Instruction::I64Const(0), Instruction::LocalSet(q),
-            Instruction::I64Const(63), Instruction::LocalSet(i),
+            Instruction::LocalGet(hi),
+            Instruction::LocalSet(r),
+            Instruction::I64Const(0),
+            Instruction::LocalSet(q),
+            Instruction::I64Const(63),
+            Instruction::LocalSet(i),
             Instruction::Block(BlockType::Empty),
             Instruction::Loop(BlockType::Empty),
             // if i < 0: break
-            Instruction::LocalGet(i), Instruction::I64Const(0), Instruction::I64LtS,
+            Instruction::LocalGet(i),
+            Instruction::I64Const(0),
+            Instruction::I64LtS,
             Instruction::If(BlockType::Empty),
             Instruction::Br(2),
             Instruction::End,
             // bit = (lo >> i) & 1
-            Instruction::LocalGet(lo), Instruction::LocalGet(i), Instruction::I64ShrU, Instruction::I64Const(1), Instruction::I64And,
+            Instruction::LocalGet(lo),
+            Instruction::LocalGet(i),
+            Instruction::I64ShrU,
+            Instruction::I64Const(1),
+            Instruction::I64And,
             Instruction::LocalSet(bit),
             // r = (r << 1) | bit
-            Instruction::LocalGet(r), Instruction::I64Const(1), Instruction::I64Shl,
-            Instruction::LocalGet(bit), Instruction::I64Or,
+            Instruction::LocalGet(r),
+            Instruction::I64Const(1),
+            Instruction::I64Shl,
+            Instruction::LocalGet(bit),
+            Instruction::I64Or,
             Instruction::LocalSet(r),
             // if r >=u c: r -= c; q |= (1 << i)
-            Instruction::LocalGet(r), Instruction::LocalGet(c), Instruction::I64GeU,
+            Instruction::LocalGet(r),
+            Instruction::LocalGet(c),
+            Instruction::I64GeU,
             Instruction::If(BlockType::Empty),
-            Instruction::LocalGet(r), Instruction::LocalGet(c), Instruction::I64Sub, Instruction::LocalSet(r),
+            Instruction::LocalGet(r),
+            Instruction::LocalGet(c),
+            Instruction::I64Sub,
+            Instruction::LocalSet(r),
             Instruction::LocalGet(q),
-            Instruction::I64Const(1), Instruction::LocalGet(i), Instruction::I64Shl,
-            Instruction::I64Or, Instruction::LocalSet(q),
+            Instruction::I64Const(1),
+            Instruction::LocalGet(i),
+            Instruction::I64Shl,
+            Instruction::I64Or,
+            Instruction::LocalSet(q),
             Instruction::End,
             // i--
-            Instruction::LocalGet(i), Instruction::I64Const(1), Instruction::I64Sub, Instruction::LocalSet(i),
+            Instruction::LocalGet(i),
+            Instruction::I64Const(1),
+            Instruction::I64Sub,
+            Instruction::LocalSet(i),
             Instruction::Br(0),
             Instruction::End, // loop
             Instruction::End, // block
             // ===== Step 4: Tag and return =====
             Instruction::LocalGet(q),
-            Instruction::I64Const(TAG_BITS), Instruction::I64Shl,
+            Instruction::I64Const(TAG_BITS),
+            Instruction::I64Shl,
         ]
     }
 
@@ -129,32 +208,48 @@ impl WasmEmitter {
         vec![
             Instruction::LocalSet(n),
             // if n < 2: return n tagged
-            Instruction::LocalGet(n), Instruction::I64Const(2), Instruction::I64LtU,
+            Instruction::LocalGet(n),
+            Instruction::I64Const(2),
+            Instruction::I64LtU,
             Instruction::If(BlockType::Result(ValType::I64)),
-            Instruction::LocalGet(n), Instruction::I64Const(TAG_BITS), Instruction::I64Shl,
+            Instruction::LocalGet(n),
+            Instruction::I64Const(TAG_BITS),
+            Instruction::I64Shl,
             Instruction::Else,
             // x0 = n >> 1
-            Instruction::LocalGet(n), Instruction::I64Const(1), Instruction::I64ShrU, Instruction::LocalSet(x0),
+            Instruction::LocalGet(n),
+            Instruction::I64Const(1),
+            Instruction::I64ShrU,
+            Instruction::LocalSet(x0),
             // Newton loop
             Instruction::Block(BlockType::Empty),
             Instruction::Loop(BlockType::Empty),
             // x1 = (n / x0 + x0) >> 1
-            Instruction::LocalGet(n), Instruction::LocalGet(x0), Instruction::I64DivU,
-            Instruction::LocalGet(x0), Instruction::I64Add,
-            Instruction::I64Const(1), Instruction::I64ShrU,
+            Instruction::LocalGet(n),
+            Instruction::LocalGet(x0),
+            Instruction::I64DivU,
+            Instruction::LocalGet(x0),
+            Instruction::I64Add,
+            Instruction::I64Const(1),
+            Instruction::I64ShrU,
             Instruction::LocalSet(x1),
             // if x1 >= x0: converged, break
-            Instruction::LocalGet(x1), Instruction::LocalGet(x0), Instruction::I64GeU,
+            Instruction::LocalGet(x1),
+            Instruction::LocalGet(x0),
+            Instruction::I64GeU,
             Instruction::If(BlockType::Empty),
             Instruction::Br(2),
             Instruction::End,
             // x0 = x1
-            Instruction::LocalGet(x1), Instruction::LocalSet(x0),
+            Instruction::LocalGet(x1),
+            Instruction::LocalSet(x0),
             Instruction::Br(0),
             Instruction::End, // loop
             Instruction::End, // block
             // Return x0 tagged
-            Instruction::LocalGet(x0), Instruction::I64Const(TAG_BITS), Instruction::I64Shl,
+            Instruction::LocalGet(x0),
+            Instruction::I64Const(TAG_BITS),
+            Instruction::I64Shl,
             Instruction::End, // if
         ]
     }
@@ -169,27 +264,40 @@ impl WasmEmitter {
         vec![
             Instruction::LocalSet(v),
             // if v == 0: trap
-            Instruction::LocalGet(v), Instruction::I64Eqz,
+            Instruction::LocalGet(v),
+            Instruction::I64Eqz,
             Instruction::If(BlockType::Empty),
             Instruction::Unreachable,
             Instruction::End,
             // count = 0
-            Instruction::I64Const(0), Instruction::LocalSet(count),
+            Instruction::I64Const(0),
+            Instruction::LocalSet(count),
             // Loop while (v & 1) == 0
             Instruction::Block(BlockType::Empty),
             Instruction::Loop(BlockType::Empty),
-            Instruction::LocalGet(v), Instruction::I64Const(1), Instruction::I64And,
-            Instruction::I64Const(0), Instruction::I64Ne,
+            Instruction::LocalGet(v),
+            Instruction::I64Const(1),
+            Instruction::I64And,
+            Instruction::I64Const(0),
+            Instruction::I64Ne,
             Instruction::If(BlockType::Empty),
             Instruction::Br(2),
             Instruction::End,
-            Instruction::LocalGet(v), Instruction::I64Const(1), Instruction::I64ShrU, Instruction::LocalSet(v),
-            Instruction::LocalGet(count), Instruction::I64Const(1), Instruction::I64Add, Instruction::LocalSet(count),
+            Instruction::LocalGet(v),
+            Instruction::I64Const(1),
+            Instruction::I64ShrU,
+            Instruction::LocalSet(v),
+            Instruction::LocalGet(count),
+            Instruction::I64Const(1),
+            Instruction::I64Add,
+            Instruction::LocalSet(count),
             Instruction::Br(0),
             Instruction::End, // loop
             Instruction::End, // block
             // Return count tagged
-            Instruction::LocalGet(count), Instruction::I64Const(TAG_BITS), Instruction::I64Shl,
+            Instruction::LocalGet(count),
+            Instruction::I64Const(TAG_BITS),
+            Instruction::I64Shl,
         ]
     }
 
@@ -207,7 +315,11 @@ impl WasmEmitter {
         let cursor = self.local_idx("__ma_cur");
         let hcount = self.local_idx("__ma_hc");
         let entry_addr = self.local_idx("__ma_ea");
-        let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+        let ma = wasm_encoder::MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 0,
+        };
         let mem_limit = (self.memory_pages as i64) * 65536;
         vec![
             // Pop n_bytes (already untagged by dispatch)
@@ -307,7 +419,8 @@ impl WasmEmitter {
             Instruction::I64Store(ma.clone()),
             // Return handle index tagged
             Instruction::LocalGet(hcount),
-            Instruction::I64Const(TAG_BITS), Instruction::I64Shl,
+            Instruction::I64Const(TAG_BITS),
+            Instruction::I64Shl,
         ]
     }
 
@@ -323,7 +436,11 @@ impl WasmEmitter {
         let real_ptr = self.local_idx("__si_rp");
         let alloc_size = self.local_idx("__si_sz");
         let addr = self.local_idx("__si_addr");
-        let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+        let ma = wasm_encoder::MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 0,
+        };
         vec![
             // Pop val, off, handle (reverse stack order)
             Instruction::LocalSet(val),
@@ -397,7 +514,11 @@ impl WasmEmitter {
         let real_ptr = self.local_idx("__li_rp");
         let alloc_size = self.local_idx("__li_sz");
         let addr = self.local_idx("__li_addr");
-        let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+        let ma = wasm_encoder::MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 0,
+        };
         vec![
             // Pop off, handle
             Instruction::LocalSet(off),
@@ -454,7 +575,8 @@ impl WasmEmitter {
             Instruction::I32WrapI64,
             Instruction::I64Load(ma),
             // Tag as number
-            Instruction::I64Const(TAG_BITS), Instruction::I64Shl,
+            Instruction::I64Const(TAG_BITS),
+            Instruction::I64Shl,
         ]
     }
 
@@ -468,7 +590,11 @@ impl WasmEmitter {
         let pos = self.local_idx("__itoa_pos");
         let count = self.local_idx("__itoa_cnt");
         let digit = self.local_idx("__itoa_d");
-        let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+        let ma8 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 0,
+            memory_index: 0,
+        };
 
         // Allocate scratch buffer from data segment space
         let buf_base = self.next_data_offset.max(3200);
@@ -481,7 +607,6 @@ impl WasmEmitter {
             Instruction::I64Const(TAG_BITS),
             Instruction::I64ShrU,
             Instruction::LocalSet(n),
-
             // Handle negative
             Instruction::LocalGet(n),
             Instruction::I64Const(0),
@@ -491,123 +616,117 @@ impl WasmEmitter {
             Instruction::LocalGet(neg),
             Instruction::I32WrapI64,
             Instruction::If(BlockType::Empty),
-                Instruction::LocalGet(n),
-                Instruction::I64Const(0),
-                Instruction::I64Sub,
-                Instruction::LocalSet(n),
+            Instruction::LocalGet(n),
+            Instruction::I64Const(0),
+            Instruction::I64Sub,
+            Instruction::LocalSet(n),
             Instruction::End,
-
             // Special case: n == 0 → "0"
             Instruction::LocalGet(n),
             Instruction::I64Eqz,
             Instruction::If(BlockType::Result(ValType::I64)),
-                // Write "0" at buf_base, return tagged string
-                Instruction::I64Const(buf_base as i64),
-                Instruction::I32WrapI64,
-                Instruction::I32Const(48), // '0'
-                Instruction::I32Store8(ma8.clone()),
-                // packed = (1 << 32) | buf_base, then tag as string
-                Instruction::I64Const(buf_base as i64),
-                Instruction::I64Const(1),
-                Instruction::I64Const(32),
-                Instruction::I64Shl,
-                Instruction::I64Or,
-                Instruction::I64Const(TAG_BITS),
-                Instruction::I64Shl,
-                Instruction::I64Const(TAG_STR),
-                Instruction::I64Or,
-
+            // Write "0" at buf_base, return tagged string
+            Instruction::I64Const(buf_base as i64),
+            Instruction::I32WrapI64,
+            Instruction::I32Const(48), // '0'
+            Instruction::I32Store8(ma8.clone()),
+            // packed = (1 << 32) | buf_base, then tag as string
+            Instruction::I64Const(buf_base as i64),
+            Instruction::I64Const(1),
+            Instruction::I64Const(32),
+            Instruction::I64Shl,
+            Instruction::I64Or,
+            Instruction::I64Const(TAG_BITS),
+            Instruction::I64Shl,
+            Instruction::I64Const(TAG_STR),
+            Instruction::I64Or,
             Instruction::Else,
-                // Write digits backward from buf_base + 21
-                Instruction::I64Const(21),
-                Instruction::LocalSet(pos),
-                Instruction::I64Const(0),
-                Instruction::LocalSet(count),
-
-                Instruction::Block(BlockType::Empty),
-                Instruction::Loop(BlockType::Empty),
-                    // if n == 0: break
-                    Instruction::LocalGet(n),
-                    Instruction::I64Eqz,
-                    Instruction::If(BlockType::Empty),
-                        Instruction::Br(2),
-                    Instruction::End,
-                    // digit = n % 10
-                    Instruction::LocalGet(n),
-                    Instruction::I64Const(10),
-                    Instruction::I64RemU,
-                    Instruction::LocalSet(digit),
-                    // n = n / 10
-                    Instruction::LocalGet(n),
-                    Instruction::I64Const(10),
-                    Instruction::I64DivU,
-                    Instruction::LocalSet(n),
-                    // buf[pos] = '0' + digit
-                    Instruction::I64Const(buf_base as i64),
-                    Instruction::LocalGet(pos),
-                    Instruction::I64Add,
-                    Instruction::I32WrapI64,
-                    Instruction::LocalGet(digit),
-                    Instruction::I64Const(48),
-                    Instruction::I64Add,
-                    Instruction::I32WrapI64,
-                    Instruction::I32Store8(ma8.clone()),
-                    // pos--, count++
-                    Instruction::LocalGet(pos),
-                    Instruction::I64Const(1),
-                    Instruction::I64Sub,
-                    Instruction::LocalSet(pos),
-                    Instruction::LocalGet(count),
-                    Instruction::I64Const(1),
-                    Instruction::I64Add,
-                    Instruction::LocalSet(count),
-                    Instruction::Br(0),
-                Instruction::End, // loop
-                Instruction::End, // block
-
-                // Handle negative: write '-' before digits
-                Instruction::LocalGet(neg),
-                Instruction::I32WrapI64,
-                Instruction::If(BlockType::Empty),
-                    // buf[pos] = '-'
-                    Instruction::I64Const(buf_base as i64),
-                    Instruction::LocalGet(pos),
-                    Instruction::I64Add,
-                    Instruction::I32WrapI64,
-                    Instruction::I32Const(45), // '-'
-                    Instruction::I32Store8(ma8.clone()),
-                    // pos--, count++
-                    Instruction::LocalGet(pos),
-                    Instruction::I64Const(1),
-                    Instruction::I64Sub,
-                    Instruction::LocalSet(pos),
-                    Instruction::LocalGet(count),
-                    Instruction::I64Const(1),
-                    Instruction::I64Add,
-                    Instruction::LocalSet(count),
-                Instruction::End,
-
-                // String start = buf_base + pos + 1
-                // len = count
-                // packed = (count << 32) | (buf_base + pos + 1)
-                Instruction::I64Const(buf_base as i64),
-                Instruction::LocalGet(pos),
-                Instruction::I64Add,
-                Instruction::I64Const(1),
-                Instruction::I64Add,
-                Instruction::LocalSet(tmp),
-                // packed = (count << 32) | tmp
-                Instruction::LocalGet(count),
-                Instruction::I64Const(32),
-                Instruction::I64Shl,
-                Instruction::LocalGet(tmp),
-                Instruction::I64Or,
-                // Tag as string
-                Instruction::I64Const(TAG_BITS),
-                Instruction::I64Shl,
-                Instruction::I64Const(TAG_STR),
-                Instruction::I64Or,
-
+            // Write digits backward from buf_base + 21
+            Instruction::I64Const(21),
+            Instruction::LocalSet(pos),
+            Instruction::I64Const(0),
+            Instruction::LocalSet(count),
+            Instruction::Block(BlockType::Empty),
+            Instruction::Loop(BlockType::Empty),
+            // if n == 0: break
+            Instruction::LocalGet(n),
+            Instruction::I64Eqz,
+            Instruction::If(BlockType::Empty),
+            Instruction::Br(2),
+            Instruction::End,
+            // digit = n % 10
+            Instruction::LocalGet(n),
+            Instruction::I64Const(10),
+            Instruction::I64RemU,
+            Instruction::LocalSet(digit),
+            // n = n / 10
+            Instruction::LocalGet(n),
+            Instruction::I64Const(10),
+            Instruction::I64DivU,
+            Instruction::LocalSet(n),
+            // buf[pos] = '0' + digit
+            Instruction::I64Const(buf_base as i64),
+            Instruction::LocalGet(pos),
+            Instruction::I64Add,
+            Instruction::I32WrapI64,
+            Instruction::LocalGet(digit),
+            Instruction::I64Const(48),
+            Instruction::I64Add,
+            Instruction::I32WrapI64,
+            Instruction::I32Store8(ma8.clone()),
+            // pos--, count++
+            Instruction::LocalGet(pos),
+            Instruction::I64Const(1),
+            Instruction::I64Sub,
+            Instruction::LocalSet(pos),
+            Instruction::LocalGet(count),
+            Instruction::I64Const(1),
+            Instruction::I64Add,
+            Instruction::LocalSet(count),
+            Instruction::Br(0),
+            Instruction::End, // loop
+            Instruction::End, // block
+            // Handle negative: write '-' before digits
+            Instruction::LocalGet(neg),
+            Instruction::I32WrapI64,
+            Instruction::If(BlockType::Empty),
+            // buf[pos] = '-'
+            Instruction::I64Const(buf_base as i64),
+            Instruction::LocalGet(pos),
+            Instruction::I64Add,
+            Instruction::I32WrapI64,
+            Instruction::I32Const(45), // '-'
+            Instruction::I32Store8(ma8.clone()),
+            // pos--, count++
+            Instruction::LocalGet(pos),
+            Instruction::I64Const(1),
+            Instruction::I64Sub,
+            Instruction::LocalSet(pos),
+            Instruction::LocalGet(count),
+            Instruction::I64Const(1),
+            Instruction::I64Add,
+            Instruction::LocalSet(count),
+            Instruction::End,
+            // String start = buf_base + pos + 1
+            // len = count
+            // packed = (count << 32) | (buf_base + pos + 1)
+            Instruction::I64Const(buf_base as i64),
+            Instruction::LocalGet(pos),
+            Instruction::I64Add,
+            Instruction::I64Const(1),
+            Instruction::I64Add,
+            Instruction::LocalSet(tmp),
+            // packed = (count << 32) | tmp
+            Instruction::LocalGet(count),
+            Instruction::I64Const(32),
+            Instruction::I64Shl,
+            Instruction::LocalGet(tmp),
+            Instruction::I64Or,
+            // Tag as string
+            Instruction::I64Const(TAG_BITS),
+            Instruction::I64Shl,
+            Instruction::I64Const(TAG_STR),
+            Instruction::I64Or,
             Instruction::End, // if n==0
         ]
     }

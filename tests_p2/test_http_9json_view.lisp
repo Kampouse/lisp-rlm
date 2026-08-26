@@ -1,0 +1,17 @@
+(define (run)
+  (let* (
+    (prices (http-get "https://api.rhea.finance/list-token-price"))
+    (nbtc-p (json-get-str "price" (json-get-str "nbtc.bridge.near" prices)))
+    (zec-p (json-get-str "price" (json-get-str "zec.omft.near" prices)))
+    (usdt-p (json-get-str "price" (json-get-str "usdt.tether-token.near" prices)))
+    (stnear-p (json-get-str "price" (json-get-str "meta-pool.near" prices)))
+    (xrhea-p (json-get-str "price" (json-get-str "xtoken.rhealab.near" prices)))
+    (burrow-p (json-get-str "price" (json-get-str "token.burrow.near" prices)))
+    (lst-p (json-get-str "price" (json-get-str "lst.rhealab.near" prices)))
+    (usdce-p (json-get-str "price" (json-get-str "a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.factory.bridge.near" prices)))
+    (weth-p (json-get-str "price" (json-get-str "2260fac5e5542a773aa44fbcfedf7c193bc2c599.factory.bridge.near" prices)))
+    ;; Minimal str-cat before view
+    (p1 (str-cat nbtc-p zec-p usdt-p))
+    (account (outlayer/view "contract.main.burrow.near" "get_account" "{\"account_id\":\"kampouse.near\"}"))
+    )
+    (str-cat "{\"p\":\"" p1 "\",\"s\":\"" (json-get-str "supplied" account) "\"}")))

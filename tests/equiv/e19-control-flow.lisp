@@ -1,0 +1,11 @@
+;; e19 — control flow: nested while/if, deep let nesting
+(define (main)
+  (let ((total 0))
+    (let ((i 0))
+      (while (< i 10)
+        (if (mod i 2)
+          (set! total (+ total i))
+          (set! total (+ total 1)))
+        (set! i (+ i 1)))
+      (println total)
+      (println i))))

@@ -1,37 +1,80 @@
 use super::*;
 
 impl WasmEmitter {
-    pub(crate) fn call_list(&mut self, op: &str, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
+    pub(crate) fn call_list(
+        &mut self,
+        op: &str,
+        a: &[LispVal],
+    ) -> Result<Vec<Instruction<'static>>, String> {
         match op {
             "array" => {
                 // (array elem0 elem1 ...) → TAG_ARRAY
                 // Allocate on compile-time heap: [count, elem0, elem1, ...]
                 let count = a.len() as u32;
                 let slots_needed = 1 + count; // count + elements
-                let ptr = self.heap_bump(slots_needed * 8);
-                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let alloc_size = slots_needed * 8;
+                let ma = wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                };
                 let mut v = Vec::new();
-                // Store count at ptr[0]
-                v.push(Instruction::I64Const(ptr as i64));
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Const(count as i64));
-                v.push(Instruction::I64Store(ma));
-                // Evaluate and store each element
-                for (i, elem) in a.iter().enumerate() {
-                    // I64Store expects [i32 addr, i64 val] — push address first
-                    v.push(Instruction::I64Const((ptr + ((i as u32 + 1) * 8)) as i64));
+                if self.p2_mode || self.wasi_mode {
+                    let alloc_local = self.local_idx("__arr_alloc");
+                    v.extend(self.heap_bump_runtime(alloc_size, "__arr_alloc"));
+                    // Store count at ptr[0]
+                    v.push(Instruction::LocalGet(alloc_local));
                     v.push(Instruction::I32WrapI64);
-                    v.extend(self.expr(elem)?);
+                    v.push(Instruction::I64Const(count as i64));
                     v.push(Instruction::I64Store(ma));
+                    // Evaluate and store each element
+                    for (i, elem) in a.iter().enumerate() {
+                        // I64Store expects [i32 addr, i64 val] — push address first
+                        v.push(Instruction::LocalGet(alloc_local));
+                        v.push(Instruction::I64Const(((i as u32 + 1) * 8) as i64));
+                        v.push(Instruction::I64Add);
+                        v.push(Instruction::I32WrapI64);
+                        v.extend(self.expr(elem)?);
+                        v.push(Instruction::I64Store(ma));
+                    }
+                    // Return tagged array ptr
+                    v.push(Instruction::LocalGet(alloc_local));
+                    v.push(Instruction::I64Const(TAG_BITS as i64));
+                    v.push(Instruction::I64Shl);
+                    v.push(Instruction::I64Const(TAG_ARRAY));
+                    v.push(Instruction::I64Or);
+                } else {
+                    let ptr = self.heap_bump(alloc_size);
+                    // Store count at ptr[0]
+                    v.push(Instruction::I64Const(ptr as i64));
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::I64Const(count as i64));
+                    v.push(Instruction::I64Store(ma));
+                    // Evaluate and store each element
+                    for (i, elem) in a.iter().enumerate() {
+                        // I64Store expects [i32 addr, i64 val] — push address first
+                        v.push(Instruction::I64Const((ptr + ((i as u32 + 1) * 8)) as i64));
+                        v.push(Instruction::I32WrapI64);
+                        v.extend(self.expr(elem)?);
+                        v.push(Instruction::I64Store(ma));
+                    }
+                    // Return tagged array ptr
+                    v.push(Instruction::I64Const(
+                        ((ptr as i64) << TAG_BITS) | TAG_ARRAY,
+                    ));
                 }
-                // Return tagged array ptr
-                v.push(Instruction::I64Const(((ptr as i64) << TAG_BITS) | TAG_ARRAY));
                 Ok(v)
             }
             "vec-length" => {
-                if a.len() != 1 { return Err("vec-length: expected 1 arg".into()); }
+                if a.len() != 1 {
+                    return Err("vec-length: expected 1 arg".into());
+                }
                 let arr_tmp = self.local_idx("__vl_arr");
-                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let ma = wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                };
                 let mut v = self.expr(&a[0])?;
                 // Untag: >> TAG_BITS → raw heap ptr
                 v.extend(self.emit_untag());
@@ -45,12 +88,18 @@ impl WasmEmitter {
                 Ok(v)
             }
             "vec-nth" => {
-                if a.len() != 2 { return Err("vec-nth: expected 2 args".into()); }
+                if a.len() != 2 {
+                    return Err("vec-nth: expected 2 args".into());
+                }
                 let arr_tmp = self.local_idx_i32("__vn_arr");
                 let idx_tmp = self.local_idx_i32("__vn_idx");
                 let count_tmp = self.local_idx_i32("__vn_count");
                 let result_tmp = self.local_idx("__vn_result");
-                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let ma = wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                };
                 let mut v = Vec::new();
                 // Compile and save array ptr
                 v.extend(self.expr(&a[0])?);
@@ -90,12 +139,18 @@ impl WasmEmitter {
                 Ok(v)
             }
             "vec-set!" => {
-                if a.len() != 3 { return Err("vec-set!: expected 3 args".into()); }
+                if a.len() != 3 {
+                    return Err("vec-set!: expected 3 args".into());
+                }
                 let arr_tmp = self.local_idx_i32("__vs_arr");
                 let idx_tmp = self.local_idx_i32("__vs_idx");
                 let val_tmp = self.local_idx("__vs_val");
                 let count_tmp = self.local_idx_i32("__vs_count");
-                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let ma = wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                };
                 let mut v = Vec::new();
                 // Compile and save array ptr
                 v.extend(self.expr(&a[0])?);
@@ -134,13 +189,19 @@ impl WasmEmitter {
                 Ok(v)
             }
             "vec-push" => {
-                if a.len() != 2 { return Err("vec-push: expected 2 args".into()); }
+                if a.len() != 2 {
+                    return Err("vec-push: expected 2 args".into());
+                }
                 let old_arr = self.local_idx("__vp_old");
                 let new_arr = self.local_idx("__vp_new");
                 let old_count = self.local_idx("__vp_oc");
                 let word_idx = self.local_idx("__vp_wi");
                 let val_tmp = self.local_idx("__vp_val");
-                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let ma = wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                };
                 let mut v = Vec::new();
                 // Compile and save old array
                 v.extend(self.expr(&a[0])?);
@@ -167,12 +228,12 @@ impl WasmEmitter {
                 let rha_tmp = self.local_idx("__vp_rha");
                 let rha_new = self.local_idx("__vp_rhan");
                 v.push(Instruction::LocalSet(rha_tmp)); // save alloc_size
-                // Read current runtime heap ptr
+                                                        // Read current runtime heap ptr
                 v.push(Instruction::I64Const(RUNTIME_HEAP_PTR));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(ma));
                 v.push(Instruction::LocalSet(new_arr)); // new_arr = old heap ptr
-                // Compute new ptr
+                                                        // Compute new ptr
                 v.push(Instruction::LocalGet(new_arr));
                 v.push(Instruction::LocalGet(rha_tmp));
                 v.push(Instruction::I64Add);
@@ -233,7 +294,7 @@ impl WasmEmitter {
                 v.push(Instruction::End); // close If
                 v.push(Instruction::End); // close Loop
                 v.push(Instruction::End); // close Block
-                // Write new count: new_arr[0] = old_count + 1
+                                          // Write new count: new_arr[0] = old_count + 1
                 v.push(Instruction::LocalGet(new_arr));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalGet(old_count));
@@ -260,12 +321,14 @@ impl WasmEmitter {
                 Ok(v)
             }
             "vec?" => {
-                if a.len() != 1 { return Err("vec?: expected 1 arg".into()); }
+                if a.len() != 1 {
+                    return Err("vec?: expected 1 arg".into());
+                }
                 let mut v = self.expr(&a[0])?;
                 v.push(Instruction::I64Const(7)); // tag mask
                 v.push(Instruction::I64And);
                 v.push(Instruction::I64Const(TAG_ARRAY));
-                v.push(Instruction::I64Eq);      // i32 result
+                v.push(Instruction::I64Eq); // i32 result
                 v.push(Instruction::I64ExtendI32U); // widen to i64 for tagging
                 v.extend(self.emit_tag(TAG_BOOL)); // tag the bool
                 Ok(v)
@@ -277,25 +340,50 @@ impl WasmEmitter {
                 let sz_i = self.local_idx("__an_sz");
                 let i_i = self.local_idx("__an_i");
                 let mut v = Vec::new();
-                v.extend(offset_expr); v.push(Instruction::LocalSet(off_i));
-                v.extend(size_expr); v.push(Instruction::LocalSet(sz_i));
+                v.extend(offset_expr);
+                v.push(Instruction::LocalSet(off_i));
+                v.extend(size_expr);
+                v.push(Instruction::LocalSet(sz_i));
                 // Store length at offset-8
-                v.push(Instruction::LocalGet(off_i)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Sub); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(off_i));
+                v.push(Instruction::I64Const(8));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalGet(sz_i));
-                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
                 // Zero-fill loop
-                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(i_i));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalSet(i_i));
                 v.push(Instruction::Block(BlockType::Result(ValType::I64)));
                 v.push(Instruction::Loop(BlockType::Empty));
-                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::LocalGet(sz_i)); v.push(Instruction::I64GeS);
+                v.push(Instruction::LocalGet(i_i));
+                v.push(Instruction::LocalGet(sz_i));
+                v.push(Instruction::I64GeS);
                 v.push(Instruction::If(BlockType::Empty));
-                v.push(Instruction::I64Const(0)); v.push(Instruction::Br(2));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::Br(2));
                 v.push(Instruction::End);
                 // mem[offset + i*8] = 0
-                v.push(Instruction::LocalGet(off_i)); v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(off_i));
+                v.push(Instruction::LocalGet(i_i));
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Const(0));
-                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(i_i));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                v.push(Instruction::LocalGet(i_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(i_i));
                 v.push(Instruction::Br(0));
                 v.push(Instruction::End); // loop
                 v.push(Instruction::I64Const(0));
@@ -307,9 +395,16 @@ impl WasmEmitter {
                 let idx = self.expr(&a[1])?;
                 let mut v = Vec::new();
                 v.extend(off);
-                v.extend(idx); v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl); v.push(Instruction::I64Add);
+                v.extend(idx);
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Add);
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Load(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
                 Ok(v)
             }
             "arr_set" => {
@@ -318,17 +413,30 @@ impl WasmEmitter {
                 let val = self.expr(&a[2])?;
                 let mut v = Vec::new();
                 v.extend(off);
-                v.extend(idx); v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl); v.push(Instruction::I64Add);
+                v.extend(idx);
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Add);
                 v.push(Instruction::I32WrapI64);
                 v.extend(val);
-                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                v.push(Instruction::I64Const(TAG_NIL));
+                Ok(v)
             }
             "arr_len" => {
                 let mut v = self.expr(&a[0])?;
-                v.push(Instruction::I64Const(8)); v.push(Instruction::I64Sub);
+                v.push(Instruction::I64Const(8));
+                v.push(Instruction::I64Sub);
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Load(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
                 Ok(v)
             }
             "arr_push" => {
@@ -337,20 +445,47 @@ impl WasmEmitter {
                 let off_i = self.local_idx("__ap_off");
                 let len_i = self.local_idx("__ap_len");
                 let mut v = Vec::new();
-                v.extend(off); v.push(Instruction::LocalSet(off_i));
+                v.extend(off);
+                v.push(Instruction::LocalSet(off_i));
                 // Load current length from offset-8
-                v.push(Instruction::LocalGet(off_i)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Sub); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalGet(off_i));
+                v.push(Instruction::I64Const(8));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
                 v.push(Instruction::LocalSet(len_i));
                 // Store val at offset + len*8
-                v.push(Instruction::LocalGet(off_i)); v.push(Instruction::LocalGet(len_i)); v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(off_i));
+                v.push(Instruction::LocalGet(len_i));
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
                 v.extend(val);
-                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
                 // Increment length
-                v.push(Instruction::LocalGet(off_i)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Sub); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::LocalGet(len_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add);
-                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
+                v.push(Instruction::LocalGet(off_i));
+                v.push(Instruction::I64Const(8));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(len_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                v.push(Instruction::I64Const(TAG_NIL));
+                Ok(v)
             }
             "arr_sort" => {
                 // Bubble sort: arr[offset..offset+n*8]
@@ -362,59 +497,139 @@ impl WasmEmitter {
                 let j_i = self.local_idx("__as_j");
                 let tmp_i = self.local_idx("__as_tmp");
                 let mut v = Vec::new();
-                v.extend(off); v.push(Instruction::LocalSet(off_i));
+                v.extend(off);
+                v.push(Instruction::LocalSet(off_i));
                 // n = mem[(offset-8)]
-                v.push(Instruction::LocalGet(off_i)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Sub); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalGet(off_i));
+                v.push(Instruction::I64Const(8));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
                 v.push(Instruction::LocalSet(n_i));
                 // Outer loop: i = 0..n-1
-                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(i_i));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalSet(i_i));
                 v.push(Instruction::Block(BlockType::Empty));
                 v.push(Instruction::Loop(BlockType::Empty));
                 // if i >= n-1: br 2 (exit)
-                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::LocalGet(n_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Sub); v.push(Instruction::I64GeS);
-                v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
+                v.push(Instruction::LocalGet(i_i));
+                v.push(Instruction::LocalGet(n_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::I64GeS);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Br(2));
+                v.push(Instruction::End);
                 // j = 0
-                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(j_i));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalSet(j_i));
                 // Inner loop
                 v.push(Instruction::Block(BlockType::Empty));
                 v.push(Instruction::Loop(BlockType::Empty));
                 // if j >= n-i-1: br 2
                 v.push(Instruction::LocalGet(j_i));
-                v.push(Instruction::LocalGet(n_i)); v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Sub); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Sub);
+                v.push(Instruction::LocalGet(n_i));
+                v.push(Instruction::LocalGet(i_i));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Sub);
                 v.push(Instruction::I64GeS);
-                v.push(Instruction::If(BlockType::Empty)); v.push(Instruction::Br(2)); v.push(Instruction::End);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Br(2));
+                v.push(Instruction::End);
                 // tmp = arr[j], load arr[j+1]
                 // Compare: if arr[j] > arr[j+1], swap
-                v.push(Instruction::LocalGet(off_i)); v.push(Instruction::LocalGet(j_i)); v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalGet(off_i));
+                v.push(Instruction::LocalGet(j_i));
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
                 v.push(Instruction::LocalSet(tmp_i)); // tmp = arr[j]
-                v.push(Instruction::LocalGet(off_i)); v.push(Instruction::LocalGet(j_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 })); // arr[j+1]
-                // stack: arr[j+1]; tmp_i = arr[j]
-                // if arr[j] > arr[j+1] → swap
+                v.push(Instruction::LocalGet(off_i));
+                v.push(Instruction::LocalGet(j_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                })); // arr[j+1]
+                     // stack: arr[j+1]; tmp_i = arr[j]
+                     // if arr[j] > arr[j+1] → swap
                 v.push(Instruction::LocalGet(tmp_i)); // tmp, arr[j+1] on stack
                 v.push(Instruction::I64LtS); // arr[j+1] < arr[j] i.e. arr[j] > arr[j+1]
                 v.push(Instruction::If(BlockType::Empty));
                 // arr[j] = arr[j+1]
-                v.push(Instruction::LocalGet(off_i)); v.push(Instruction::LocalGet(j_i)); v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::LocalGet(off_i)); v.push(Instruction::LocalGet(j_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalGet(off_i));
+                v.push(Instruction::LocalGet(j_i));
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(off_i));
+                v.push(Instruction::LocalGet(j_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
                 // arr[j+1] = tmp
-                v.push(Instruction::LocalGet(off_i)); v.push(Instruction::LocalGet(j_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(off_i));
+                v.push(Instruction::LocalGet(j_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalGet(tmp_i));
-                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
                 v.push(Instruction::End); // if swap
-                v.push(Instruction::LocalGet(j_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(j_i));
+                v.push(Instruction::LocalGet(j_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(j_i));
                 v.push(Instruction::Br(0));
                 v.push(Instruction::End); // inner loop
                 v.push(Instruction::End); // inner block
-                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(i_i));
+                v.push(Instruction::LocalGet(i_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(i_i));
                 v.push(Instruction::Br(0));
                 v.push(Instruction::End); // outer loop
                 v.push(Instruction::End); // outer block
-                v.push(Instruction::I64Const(TAG_NIL)); Ok(v)
+                v.push(Instruction::I64Const(TAG_NIL));
+                Ok(v)
             }
             "arr_find" => {
                 let off = self.expr(&a[0])?;
@@ -424,27 +639,54 @@ impl WasmEmitter {
                 let n_i = self.local_idx("__af_n");
                 let i_i = self.local_idx("__af_i");
                 let mut v = Vec::new();
-                v.extend(off); v.push(Instruction::LocalSet(off_i));
-                v.extend(val); v.push(Instruction::LocalSet(val_i));
+                v.extend(off);
+                v.push(Instruction::LocalSet(off_i));
+                v.extend(val);
+                v.push(Instruction::LocalSet(val_i));
                 // Load length
-                v.push(Instruction::LocalGet(off_i)); v.push(Instruction::I64Const(8)); v.push(Instruction::I64Sub); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalGet(off_i));
+                v.push(Instruction::I64Const(8));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
                 v.push(Instruction::LocalSet(n_i));
-                v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(i_i));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalSet(i_i));
                 v.push(Instruction::Block(BlockType::Result(ValType::I64)));
                 v.push(Instruction::Loop(BlockType::Empty));
-                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::LocalGet(n_i)); v.push(Instruction::I64GeS);
+                v.push(Instruction::LocalGet(i_i));
+                v.push(Instruction::LocalGet(n_i));
+                v.push(Instruction::I64GeS);
                 v.push(Instruction::If(BlockType::Empty));
-                v.push(Instruction::I64Const(-1)); v.push(Instruction::Br(2)); // not found
+                v.push(Instruction::I64Const(-1));
+                v.push(Instruction::Br(2)); // not found
                 v.push(Instruction::End);
                 // if arr[i] == val → return i
-                v.push(Instruction::LocalGet(off_i)); v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Const(3)); v.push(Instruction::I64Shl); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
-                v.push(Instruction::LocalGet(val_i)); v.push(Instruction::I64Eq);
+                v.push(Instruction::LocalGet(off_i));
+                v.push(Instruction::LocalGet(i_i));
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                v.push(Instruction::LocalGet(val_i));
+                v.push(Instruction::I64Eq);
                 v.push(Instruction::If(BlockType::Empty));
-                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::Br(2)); // found
+                v.push(Instruction::LocalGet(i_i));
+                v.push(Instruction::Br(2)); // found
                 v.push(Instruction::End);
-                v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(i_i));
+                v.push(Instruction::LocalGet(i_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(i_i));
                 v.push(Instruction::Br(0));
                 v.push(Instruction::End); // loop
                 v.push(Instruction::I64Const(-1)); // fallback
@@ -508,22 +750,42 @@ impl WasmEmitter {
                 Ok(v)
             }
             "car" | "first" => {
-                if a.len() != 1 { return Err("car: expected 1 arg".into()); }
+                if a.len() != 1 {
+                    return Err("car: expected 1 arg".into());
+                }
                 let arr_tmp = self.local_idx("__car_arr");
-                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let ma = wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                };
+                let result_tmp = self.local_idx("__car_res");
                 let mut v = self.expr(&a[0])?;
                 v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(arr_tmp));
+                // Default result: nil
+                v.push(Instruction::I64Const(4)); // TAG_NIL
+                v.push(Instruction::LocalSet(result_tmp));
+                // Only load if arr_tmp != 0
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::LocalGet(arr_tmp));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::BrIf(0)); // skip if nil
                 // ptr + 8 (skip count word) → first element
                 v.push(Instruction::LocalGet(arr_tmp));
                 v.push(Instruction::I64Const(8));
                 v.push(Instruction::I64Add);
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(ma));
+                v.push(Instruction::LocalSet(result_tmp));
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(result_tmp));
                 Ok(v)
             }
             "map" => {
-                if a.len() != 2 { return Err("map: need (map fn lst)".into()); }
+                if a.len() != 2 {
+                    return Err("map: need (map fn lst)".into());
+                }
                 let (param_name, body) = self.resolve_lambda_1(&a[0], "map")?;
                 let arr_tmp = self.local_idx("__map_arr");
                 let n_tmp = self.local_idx("__map_n");
@@ -531,7 +793,11 @@ impl WasmEmitter {
                 let new_ptr = self.local_idx("__map_new");
                 let res_tmp = self.local_idx("__map_res");
                 let p_idx = self.local_idx(&param_name);
-                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let ma = wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                };
                 let mut v = Vec::new();
                 // Evaluate lst, untag, save
                 v.extend(self.expr(&a[1])?);
@@ -543,8 +809,14 @@ impl WasmEmitter {
                 v.push(Instruction::I64Load(ma));
                 v.push(Instruction::LocalSet(n_tmp));
                 // Alloc new array at heap (fixed max allocation since count is runtime)
-                let new_heap = self.heap_bump(64 * 8);
-                v.push(Instruction::I64Const(new_heap as i64));
+                let alloc_size = 64 * 8;
+                if self.p2_mode || self.wasi_mode {
+                    v.extend(self.heap_bump_runtime(alloc_size, "__map_alloc"));
+                    v.push(Instruction::LocalGet(self.local_idx("__map_alloc")));
+                } else {
+                    let new_heap = self.heap_bump(alloc_size);
+                    v.push(Instruction::I64Const(new_heap as i64));
+                }
                 v.push(Instruction::LocalSet(new_ptr));
                 // Store count at new[0]
                 v.push(Instruction::LocalGet(new_ptr));
@@ -596,12 +868,18 @@ impl WasmEmitter {
                 v.push(Instruction::Br(0));
                 v.push(Instruction::End); // loop
                 v.push(Instruction::End); // block
-                // Return tagged new array
-                v.push(Instruction::I64Const(((new_heap as i64) << TAG_BITS) | TAG_ARRAY));
+                                          // Return tagged new array
+                v.push(Instruction::LocalGet(new_ptr));
+                v.push(Instruction::I64Const(TAG_BITS as i64));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_ARRAY));
+                v.push(Instruction::I64Or);
                 Ok(v)
             }
             "filter" => {
-                if a.len() != 2 { return Err("filter: need (filter fn lst)".into()); }
+                if a.len() != 2 {
+                    return Err("filter: need (filter fn lst)".into());
+                }
                 let (param_name, body) = self.resolve_lambda_1(&a[0], "filter")?;
                 let arr_tmp = self.local_idx("__fil_arr");
                 let n_tmp = self.local_idx("__fil_n");
@@ -611,7 +889,11 @@ impl WasmEmitter {
                 let _pred_tmp = self.local_idx("__fil_p");
                 let new_ptr = self.local_idx("__fil_new");
                 let p_idx = self.local_idx(&param_name);
-                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let ma = wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                };
                 let mut v = Vec::new();
                 // Evaluate lst
                 v.extend(self.expr(&a[1])?);
@@ -623,8 +905,14 @@ impl WasmEmitter {
                 v.push(Instruction::I64Load(ma));
                 v.push(Instruction::LocalSet(n_tmp));
                 // Alloc new array
-let new_heap = self.heap_bump((1 + 64) * 8);
-                v.push(Instruction::I64Const(new_heap as i64));
+                let alloc_size = (1 + 64) * 8;
+                if self.p2_mode || self.wasi_mode {
+                    v.extend(self.heap_bump_runtime(alloc_size, "__fil_alloc"));
+                    v.push(Instruction::LocalGet(self.local_idx("__fil_alloc")));
+                } else {
+                    let new_heap = self.heap_bump(alloc_size);
+                    v.push(Instruction::I64Const(new_heap as i64));
+                }
                 v.push(Instruction::LocalSet(new_ptr));
                 // Store initial count 0
                 v.push(Instruction::LocalGet(new_ptr));
@@ -689,7 +977,7 @@ let new_heap = self.heap_bump((1 + 64) * 8);
                 v.push(Instruction::I64Add);
                 v.push(Instruction::LocalSet(write_i));
                 v.push(Instruction::End); // if
-                // i++
+                                          // i++
                 v.push(Instruction::LocalGet(i_tmp));
                 v.push(Instruction::I64Const(1));
                 v.push(Instruction::I64Add);
@@ -697,21 +985,39 @@ let new_heap = self.heap_bump((1 + 64) * 8);
                 v.push(Instruction::Br(0));
                 v.push(Instruction::End); // loop
                 v.push(Instruction::End); // block
-                // Return tagged new array
-                v.push(Instruction::I64Const(((new_heap as i64) << TAG_BITS) | TAG_ARRAY));
+                                          // Return tagged new array
+                v.push(Instruction::LocalGet(new_ptr));
+                v.push(Instruction::I64Const(TAG_BITS as i64));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_ARRAY));
+                v.push(Instruction::I64Or);
                 Ok(v)
             }
             "cdr" | "rest" => {
-                if a.len() != 1 { return Err("cdr: expected 1 arg".into()); }
+                if a.len() != 1 {
+                    return Err("cdr: expected 1 arg".into());
+                }
                 let arr_tmp = self.local_idx("__cdr_arr");
                 let n_tmp = self.local_idx("__cdr_n");
                 let new_ptr = self.local_idx("__cdr_new");
                 let i_tmp = self.local_idx("__cdr_i");
                 let val_tmp = self.local_idx("__cdr_v");
-                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let ma = wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                };
                 let mut v = self.expr(&a[0])?;
                 v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(arr_tmp));
+                // Guard: if arr_tmp == 0 (nil), return nil
+                let cdr_res = self.local_idx("__cdr_res");
+                v.push(Instruction::I64Const(4)); // TAG_NIL
+                v.push(Instruction::LocalSet(cdr_res));
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::LocalGet(arr_tmp));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::BrIf(0)); // skip if nil
                 // Load count
                 v.push(Instruction::LocalGet(arr_tmp));
                 v.push(Instruction::I32WrapI64);
@@ -723,8 +1029,14 @@ let new_heap = self.heap_bump((1 + 64) * 8);
                 v.push(Instruction::I64Sub);
                 v.push(Instruction::LocalSet(n_tmp));
                 // Alloc new
-let new_heap = self.heap_bump((1 + 64) * 8);
-                v.push(Instruction::I64Const(new_heap as i64));
+                let alloc_size = (1 + 64) * 8;
+                if self.p2_mode || self.wasi_mode {
+                    v.extend(self.heap_bump_runtime(alloc_size, "__cdr_alloc"));
+                    v.push(Instruction::LocalGet(self.local_idx("__cdr_alloc")));
+                } else {
+                    let new_heap = self.heap_bump(alloc_size);
+                    v.push(Instruction::I64Const(new_heap as i64));
+                }
                 v.push(Instruction::LocalSet(new_ptr));
                 // Store new_count
                 v.push(Instruction::LocalGet(new_ptr));
@@ -770,25 +1082,38 @@ let new_heap = self.heap_bump((1 + 64) * 8);
                 v.push(Instruction::Br(0));
                 v.push(Instruction::End); // loop
                 v.push(Instruction::End); // block
-                // If new_count == 0, return nil instead of empty array
+                                          // If new_count == 0, return nil instead of empty array
                 v.push(Instruction::LocalGet(n_tmp));
                 v.push(Instruction::I64Eqz);
                 v.push(Instruction::If(BlockType::Result(ValType::I64)));
                 v.push(Instruction::I64Const(TAG_NIL));
                 v.push(Instruction::Else);
-                v.push(Instruction::I64Const(((new_heap as i64) << TAG_BITS) | TAG_ARRAY));
+                v.push(Instruction::LocalGet(new_ptr));
+                v.push(Instruction::I64Const(TAG_BITS as i64));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_ARRAY));
+                v.push(Instruction::I64Or);
                 v.push(Instruction::End);
+                v.push(Instruction::LocalSet(cdr_res));
+                v.push(Instruction::End); // end nil-guard block
+                v.push(Instruction::LocalGet(cdr_res));
                 Ok(v)
             }
             "cons" => {
-                if a.len() != 2 { return Err("cons: expected 2 args".into()); }
+                if a.len() != 2 {
+                    return Err("cons: expected 2 args".into());
+                }
                 let item_tmp = self.local_idx("__cons_item");
                 let arr_tmp = self.local_idx("__cons_arr");
                 let n_tmp = self.local_idx("__cons_n");
                 let new_ptr = self.local_idx("__cons_new");
                 let i_tmp = self.local_idx("__cons_i");
                 let val_tmp = self.local_idx("__cons_v");
-                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let ma = wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                };
                 let mut v = Vec::new();
                 // Eval lst first (so item is evaluated after, but order doesn't matter for pure)
                 v.extend(self.expr(&a[1])?);
@@ -797,14 +1122,27 @@ let new_heap = self.heap_bump((1 + 64) * 8);
                 // Eval item
                 v.extend(self.expr(&a[0])?);
                 v.push(Instruction::LocalSet(item_tmp));
-                // Load count
+                // Load count (nil = 0 elements, not a heap pointer)
+                v.push(Instruction::LocalGet(arr_tmp));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.push(Instruction::I64Const(0)); // nil → count 0
+                v.push(Instruction::Else);
                 v.push(Instruction::LocalGet(arr_tmp));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(ma));
+                v.push(Instruction::End);
                 v.push(Instruction::LocalSet(n_tmp));
-                // Alloc new: count + 1 elements (heap_bump returns compile-time ptr; emit const for the local)
-                let new_heap = self.heap_bump((1 + 64) * 8);
-                v.push(Instruction::I64Const(new_heap as i64));
+                // Alloc new: count + 1 elements
+                let alloc_size = (1 + 64) * 8;
+                if self.p2_mode || self.wasi_mode {
+                    v.extend(self.heap_bump_runtime(alloc_size, "__cons_alloc"));
+                    v.push(Instruction::LocalGet(self.local_idx("__cons_alloc")));
+                } else {
+                    let new_heap = self.heap_bump(alloc_size);
+                    v.push(Instruction::I64Const(new_heap as i64));
+                }
                 v.push(Instruction::LocalSet(new_ptr));
                 // Store new_count = old_count + 1
                 v.push(Instruction::LocalGet(new_ptr));
@@ -859,47 +1197,109 @@ let new_heap = self.heap_bump((1 + 64) * 8);
                 v.push(Instruction::Br(0));
                 v.push(Instruction::End); // loop
                 v.push(Instruction::End); // block
-                v.push(Instruction::I64Const(((new_heap as i64) << TAG_BITS) | TAG_ARRAY));
+                v.push(Instruction::LocalGet(new_ptr));
+                v.push(Instruction::I64Const(TAG_BITS as i64));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_ARRAY));
+                v.push(Instruction::I64Or);
                 Ok(v)
             }
             "len" => {
-                if a.len() != 1 { return Err("len: expected 1 arg".into()); }
+                if a.len() != 1 {
+                    return Err("len: expected 1 arg".into());
+                }
+                // len handles both TAG_STR (length from tagged value) and TAG_ARRAY (count from memory)
+                let val_tmp = self.local_idx("__len_val");
                 let arr_tmp = self.local_idx("__len_arr");
-                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let ma = wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                };
                 let mut v = self.expr(&a[0])?;
+                // Save tagged value in local (evaluate ONCE)
+                v.push(Instruction::LocalSet(val_tmp));
+                // Check tag: TAG_STR=5 → extract len from value, TAG_ARRAY=6 → load count from memory
+                v.push(Instruction::LocalGet(val_tmp));
+                v.push(Instruction::I64Const(7));
+                v.push(Instruction::I64And);
+                // TAG_STR? (val & 7 == 5)
+                v.push(Instruction::I64Const(5));
+                v.push(Instruction::I64Eq); // i32
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                // TAG_STR: untag then extract len (upper 32 bits)
+                v.push(Instruction::LocalGet(val_tmp));
+                v.extend(self.emit_untag()); // (len << 32 | ptr)
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU); // len
+                v.push(Instruction::Else);
+                // TAG_ARRAY: untag → ptr, load count from arr[0]
+                v.push(Instruction::LocalGet(val_tmp));
                 v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(arr_tmp));
                 v.push(Instruction::LocalGet(arr_tmp));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(ma));
+                v.push(Instruction::End);
                 v.extend(self.emit_tag_num());
                 Ok(v)
             }
             "length" => {
-                if a.len() != 1 { return Err("length: expected 1 arg".into()); }
+                if a.len() != 1 {
+                    return Err("length: expected 1 arg".into());
+                }
                 let arr_tmp = self.local_idx("__len_arr");
-                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let ma = wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                };
                 let mut v = self.expr(&a[0])?;
                 v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(arr_tmp));
+                // Guard: if arr_tmp == 0 (nil/empty), return count 0
+                let len_res = self.local_idx("__len_res");
+                v.push(Instruction::I64Const(0)); // count = 0
+                v.push(Instruction::LocalSet(len_res));
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::LocalGet(arr_tmp));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::BrIf(0)); // skip if nil
                 v.push(Instruction::LocalGet(arr_tmp));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(ma));
+                v.push(Instruction::LocalSet(len_res));
+                v.push(Instruction::End); // end nil-guard block
+                v.push(Instruction::LocalGet(len_res));
                 v.extend(self.emit_tag_num());
                 Ok(v)
             }
             "nth" => {
-                if a.len() != 2 { return Err("nth: expected 2 args".into()); }
+                if a.len() != 2 {
+                    return Err("nth: expected 2 args".into());
+                }
                 let arr_tmp = self.local_idx("__nth_arr");
                 let idx_tmp = self.local_idx("__nth_i");
                 let len_tmp = self.local_idx("__nth_len");
-                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let ma = wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                };
                 let mut v = self.expr(&a[0])?;
                 v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(arr_tmp));
                 v.extend(self.expr(&a[1])?);
                 v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(idx_tmp));
+                // Guard: if arr_tmp == 0 (nil), return nil
+                let nth_res = self.local_idx("__nth_res");
+                v.push(Instruction::I64Const(4)); // TAG_NIL
+                v.push(Instruction::LocalSet(nth_res));
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::LocalGet(arr_tmp));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::BrIf(0)); // skip if nil
                 // Load list length (ptr[0])
                 v.push(Instruction::LocalGet(arr_tmp));
                 v.push(Instruction::I32WrapI64);
@@ -922,16 +1322,25 @@ let new_heap = self.heap_bump((1 + 64) * 8);
                 v.push(Instruction::I64Add);
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(ma));
+                v.push(Instruction::LocalSet(nth_res));
+                v.push(Instruction::End); // end nil-guard block
+                v.push(Instruction::LocalGet(nth_res));
                 Ok(v)
             }
             "range" => {
-                if a.len() != 2 { return Err("range: need (range start end)".into()); }
+                if a.len() != 2 {
+                    return Err("range: need (range start end)".into());
+                }
                 let start_tmp = self.local_idx("__rng_s");
                 let end_tmp = self.local_idx("__rng_e");
                 let i_tmp = self.local_idx("__rng_i");
                 let write_i = self.local_idx("__rng_w");
                 let new_ptr = self.local_idx("__rng_new");
-                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let ma = wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                };
                 let mut v = Vec::new();
                 v.extend(self.expr(&a[0])?);
                 v.extend(self.emit_untag());
@@ -939,8 +1348,14 @@ let new_heap = self.heap_bump((1 + 64) * 8);
                 v.extend(self.expr(&a[1])?);
                 v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(end_tmp));
-let new_heap = self.heap_bump((1 + 64) * 8);
-                v.push(Instruction::I64Const(new_heap as i64));
+                let alloc_size = (1 + 64) * 8;
+                if self.p2_mode || self.wasi_mode {
+                    v.extend(self.heap_bump_runtime(alloc_size, "__rng_alloc"));
+                    v.push(Instruction::LocalGet(self.local_idx("__rng_alloc")));
+                } else {
+                    let new_heap = self.heap_bump(alloc_size);
+                    v.push(Instruction::I64Const(new_heap as i64));
+                }
                 v.push(Instruction::LocalSet(new_ptr));
                 // count = 0
                 v.push(Instruction::LocalGet(new_ptr));
@@ -990,17 +1405,27 @@ let new_heap = self.heap_bump((1 + 64) * 8);
                 v.push(Instruction::Br(0));
                 v.push(Instruction::End); // loop
                 v.push(Instruction::End); // block
-                v.push(Instruction::I64Const(((new_heap as i64) << TAG_BITS) | TAG_ARRAY));
+                v.push(Instruction::LocalGet(new_ptr));
+                v.push(Instruction::I64Const(TAG_BITS as i64));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_ARRAY));
+                v.push(Instruction::I64Or);
                 Ok(v)
             }
             "reverse" => {
-                if a.len() != 1 { return Err("reverse: expected 1 arg".into()); }
+                if a.len() != 1 {
+                    return Err("reverse: expected 1 arg".into());
+                }
                 let arr_tmp = self.local_idx("__rev_arr");
                 let n_tmp = self.local_idx("__rev_n");
                 let i_tmp = self.local_idx("__rev_i");
                 let new_ptr = self.local_idx("__rev_new");
                 let val_tmp = self.local_idx("__rev_v");
-                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let ma = wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                };
                 let mut v = self.expr(&a[0])?;
                 v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(arr_tmp));
@@ -1010,8 +1435,14 @@ let new_heap = self.heap_bump((1 + 64) * 8);
                 v.push(Instruction::I64Load(ma));
                 v.push(Instruction::LocalSet(n_tmp));
                 // Alloc new
-let new_heap = self.heap_bump((1 + 64) * 8);
-                v.push(Instruction::I64Const(new_heap as i64));
+                let alloc_size = (1 + 64) * 8;
+                if self.p2_mode || self.wasi_mode {
+                    v.extend(self.heap_bump_runtime(alloc_size, "__rev_alloc"));
+                    v.push(Instruction::LocalGet(self.local_idx("__rev_alloc")));
+                } else {
+                    let new_heap = self.heap_bump(alloc_size);
+                    v.push(Instruction::I64Const(new_heap as i64));
+                }
                 v.push(Instruction::LocalSet(new_ptr));
                 // Store count
                 v.push(Instruction::LocalGet(new_ptr));
@@ -1057,18 +1488,28 @@ let new_heap = self.heap_bump((1 + 64) * 8);
                 v.push(Instruction::Br(0));
                 v.push(Instruction::End); // loop
                 v.push(Instruction::End); // block
-                v.push(Instruction::I64Const(((new_heap as i64) << TAG_BITS) | TAG_ARRAY));
+                v.push(Instruction::LocalGet(new_ptr));
+                v.push(Instruction::I64Const(TAG_BITS as i64));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_ARRAY));
+                v.push(Instruction::I64Or);
                 Ok(v)
             }
             "reduce" => {
-                if a.len() != 3 { return Err("reduce: need (reduce fn init lst)".into()); }
+                if a.len() != 3 {
+                    return Err("reduce: need (reduce fn init lst)".into());
+                }
                 let (acc_name, elem_name, body) = self.resolve_lambda_2(&a[0], "reduce")?;
                 let arr_tmp = self.local_idx("__red_arr");
                 let n_tmp = self.local_idx("__red_n");
                 let i_tmp = self.local_idx("__red_i");
                 let acc_local = self.local_idx(&acc_name);
                 let elem_local = self.local_idx(&elem_name);
-                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let ma = wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                };
                 let mut v = Vec::new();
                 // Eval init → acc
                 v.extend(self.expr(&a[1])?);
@@ -1114,12 +1555,14 @@ let new_heap = self.heap_bump((1 + 64) * 8);
                 v.push(Instruction::Br(0));
                 v.push(Instruction::End); // loop
                 v.push(Instruction::End); // block
-                // Result is acc
+                                          // Result is acc
                 v.push(Instruction::LocalGet(acc_local));
                 Ok(v)
             }
             "append" => {
-                if a.len() != 2 { return Err("append: expected 2 args".into()); }
+                if a.len() != 2 {
+                    return Err("append: expected 2 args".into());
+                }
                 let a1_tmp = self.local_idx("__ap_a");
                 let a2_tmp = self.local_idx("__ap_b");
                 let n1_tmp = self.local_idx("__ap_n1");
@@ -1127,7 +1570,11 @@ let new_heap = self.heap_bump((1 + 64) * 8);
                 let i_tmp = self.local_idx("__ap_i");
                 let val_tmp = self.local_idx("__ap_v");
                 let new_ptr = self.local_idx("__ap_new");
-                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let ma = wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                };
                 let mut v = Vec::new();
                 v.extend(self.expr(&a[0])?);
                 v.extend(self.emit_untag());
@@ -1135,7 +1582,38 @@ let new_heap = self.heap_bump((1 + 64) * 8);
                 v.extend(self.expr(&a[1])?);
                 v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(a2_tmp));
-                // Load counts
+                // Guard: if either arg is nil (ptr==0), return the other re-tagged
+                let ap_res = self.local_idx("__ap_res");
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::LocalGet(a1_tmp));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::LocalGet(a2_tmp));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::I32Or);
+                v.push(Instruction::If(BlockType::Empty));
+                // Either is nil — store the non-nil one
+                v.push(Instruction::LocalGet(a1_tmp));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::If(BlockType::Empty));
+                // a1 is nil → a2 re-tagged
+                v.push(Instruction::LocalGet(a2_tmp));
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(6));
+                v.push(Instruction::I64Or);
+                v.push(Instruction::LocalSet(ap_res));
+                v.push(Instruction::Else);
+                // a2 is nil → a1 re-tagged
+                v.push(Instruction::LocalGet(a1_tmp));
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(6));
+                v.push(Instruction::I64Or);
+                v.push(Instruction::LocalSet(ap_res));
+                v.push(Instruction::End);
+                v.push(Instruction::Br(1)); // skip main body
+                v.push(Instruction::End); // end nil guard
+                // Load counts (main body: both non-nil)
                 v.push(Instruction::LocalGet(a1_tmp));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(ma));
@@ -1145,8 +1623,14 @@ let new_heap = self.heap_bump((1 + 64) * 8);
                 v.push(Instruction::I64Load(ma));
                 v.push(Instruction::LocalSet(n2_tmp));
                 // Alloc new
-let new_heap = self.heap_bump((1 + 64) * 8);
-                v.push(Instruction::I64Const(new_heap as i64));
+                let alloc_size = (1 + 64) * 8;
+                if self.p2_mode || self.wasi_mode {
+                    v.extend(self.heap_bump_runtime(alloc_size, "__ap_alloc"));
+                    v.push(Instruction::LocalGet(self.local_idx("__ap_alloc")));
+                } else {
+                    let new_heap = self.heap_bump(alloc_size);
+                    v.push(Instruction::I64Const(new_heap as i64));
+                }
                 v.push(Instruction::LocalSet(new_ptr));
                 // Store total count
                 v.push(Instruction::LocalGet(new_ptr));
@@ -1229,7 +1713,14 @@ let new_heap = self.heap_bump((1 + 64) * 8);
                 v.push(Instruction::Br(0));
                 v.push(Instruction::End);
                 v.push(Instruction::End);
-                v.push(Instruction::I64Const(((new_heap as i64) << TAG_BITS) | TAG_ARRAY));
+                v.push(Instruction::LocalGet(new_ptr));
+                v.push(Instruction::I64Const(TAG_BITS as i64));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_ARRAY));
+                v.push(Instruction::I64Or);
+                v.push(Instruction::LocalSet(ap_res));
+                v.push(Instruction::End); // end outer block
+                v.push(Instruction::LocalGet(ap_res));
                 Ok(v)
             }
             _ => Err("__not_handled__".into()),

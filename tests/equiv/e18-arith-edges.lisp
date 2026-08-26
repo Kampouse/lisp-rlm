@@ -1,0 +1,7 @@
+;; e18 — arith error edges: overflow, div-by-zero (hard errors both sides)
+(define (main)
+  (println (try (/ 10 0) (catch e "err-div0")))
+  (println (try (mod 10 0) (catch e "err-mod0")))
+  (println (- 0 9223372036854775807))
+  (println (try (- (- (- 0 9223372036854775807) 1) 1) (catch e "err-ovf")))
+  (println (try (* 3037000500 3037000500) (catch e "err-mul-ovf"))))

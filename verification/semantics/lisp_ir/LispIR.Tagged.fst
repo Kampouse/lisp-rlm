@@ -362,3 +362,158 @@ let test_eval_vm_agree () = assert_norm (run_eval "(+ 3 4)" = run_vm "(+ 3 4)")
 val coerce_nil : unit -> Lemma (num_coerce (make_nil ()) = 0)
 let coerce_nil () =
   let _h : squash (num_coerce (make_nil ()) = 0) = admit () in ()
+
+// ============================================================
+// MEMORY SAFETY: TAG/UNTAG ARE INVERSES
+// ============================================================
+
+(* Key theorem: untag is left inverse of tag for all tags.
+   For any payload v and valid tag t (0 <= t < 8):
+   untag(tag(v, t)) = v
+   
+   Proof: tag(v, t) = v * 8 + t
+           untag(x) = x / 8
+           untag(tag(v, t)) = (v * 8 + t) / 8
+                          = v + (t / 8)     (by division algorithm)
+                          = v + 0           (since t < 8)
+                          = v
+*)
+val untag_tag_inverse : v:int -> t:int -> Lemma
+  (requires (0 <= t && t < 8))
+  (ensures (untag_val (tag_val v t) = v))
+let untag_tag_inverse v t = ()
+
+(* Key theorem: get_tag extracts the tag correctly.
+   For any payload v and valid tag t:
+   get_tag(tag(v, t)) = t
+   
+   Proof: tag(v, t) = v * 8 + t
+           get_tag(x) = x % 8
+           get_tag(tag(v, t)) = (v * 8 + t) % 8
+                              = ((v * 8) % 8 + t % 8) % 8   (distributivity)
+                              = (0 + t) % 8                 (since 8 | v*8)
+                              = t                           (since t < 8)
+*)
+val get_tag_correct : v:int -> t:int -> Lemma
+  (requires (0 <= t && t < 8))
+  (ensures (get_tag_val (tag_val v t) = t))
+let get_tag_correct v t = ()
+
+(* Key theorem: tag after untag recovers the original for valid tagged values.
+   If v has the correct tag t, then tag(untag(v), t) = v.
+   
+   Proof: v = p * 8 + t for some payload p
+           untag(v) = v / 8 = p
+           tag(untag(v), t) = p * 8 + t = v
+*)
+val tag_untag_inverse : v:int -> t:int -> Lemma
+  (requires (0 <= t && t < 8 /\ get_tag_val v = t))
+  (ensures (tag_val (untag_val v) t = v))
+let tag_untag_inverse v t = ()
+
+// ============================================================
+// MEMORY SAFETY: TAGGED ≠ RAW ADDRESS
+// ============================================================
+
+(* CRITICAL SAFETY PROPERTY: Tagged value as address reads wrong memory!
+   
+   If you use a tagged value as a memory address, you read from:
+   - payload * 8 + tag (tagged value)
+   instead of:
+   - payload (raw address)
+   
+   For non-zero payload and non-zero tag:
+   payload * 8 + tag > payload
+   (since payload >= 1 and tag >= 1, we have payload * 8 + tag >= 8 + 1 > payload)
+   
+   This is the heart of the memory safety argument: you CANNOT use a tagged
+   pointer as an address - you must untag it first.
+*)
+
+(* Lemma: For positive payload and non-zero tag, tagged value > payload *)
+val tagged_gt_payload_pos : p:int -> t:int -> Lemma
+  (requires (p > 0 /\ t > 0 /\ t < 8))
+  (ensures (tag_val p t > p))
+let tagged_gt_payload_pos p t = ()
+
+(* Lemma: For non-negative payload and non-zero tag, tagged value != payload *)
+val tagged_ne_payload_nonneg : p:int -> t:int -> Lemma
+  (requires (p >= 0 /\ t > 0 /\ t < 8))
+  (ensures (tag_val p t <> p))
+let tagged_ne_payload_nonneg p t = ()
+
+(* Lemma: For negative payload and any tag, tagged value < payload (except edge case) *)
+(* Proof: p*8 + t - p = p*7 + t. For p < 0 and t >= 0, p*7 < 0 so p*7 + t may be <= 0 *)
+(* Edge case: p = -1, t = 7 gives (-1)*8 + 7 = -1 = p *)
+val tagged_lt_payload_neg : p:int -> t:int -> Lemma
+  (requires (p < 0 /\ t >= 0 /\ t < 8))
+  (ensures (tag_val p t <= p))
+let tagged_lt_payload_neg p t = ()
+
+// ============================================================
+// MEMORY ADDRESS OFFSET CALCULATION
+// ============================================================
+
+(* When you use tagged value as address, the offset error is exactly the tag.
+   Correct address:  p
+   Wrong address:    p * 8 + tag
+   Difference:       p * 8 + tag - p = p * 7 + tag
+   
+   For p = 0: difference = tag (small error, reads address tag)
+   For p > 0: difference = p * 7 + tag > 7 (reads way past intended)
+   For p < 0: difference = p * 7 + tag < -7 (reads before intended)
+*)
+
+(* The offset error when using tagged as address *)
+let offset_error (p:int) (t:int) : Tot int = tag_val p t - p
+
+(* Lemma: offset_error = p * 7 + tag *)
+val offset_error_formula : p:int -> t:int -> Lemma
+  (ensures (offset_error p t = Prims.op_Multiply p 7 + t))
+let offset_error_formula p t = ()
+
+(* Lemma: For p > 0 and t > 0, offset_error > 7 *)
+val offset_error_large : p:int -> t:int -> Lemma
+  (requires (p > 0 /\ t > 0))
+  (ensures (offset_error p t > 7))
+let offset_error_large p t = ()
+
+// ============================================================
+// TAG-SPECIFIC SAFETY: u128 MUST USE RAW ADDRESS
+// ============================================================
+
+(* Per the task requirements, TAG_U128 = 7.
+   u128 values in memory are 16 bytes (128 bits).
+   Using tagged_u128(p) as address would read from p*8+7,
+   which is 8*p+7 bytes past the actual u128 location.
+   
+   CRITICAL: u128 operations MUST use untagged addresses.
+*)
+
+(* Lemma: For tag_u128=7 and positive payload, tagged > raw address *)
+val u128_tagged_gt_raw : p:int -> Lemma
+  (requires (p > 0))
+  (ensures (tag_val p 7 > p))
+let u128_tagged_gt_raw p = ()
+
+(* Lemma: For tag_u128=7 and p >= 2, the offset is >= 16 bytes *)
+val u128_offset_exceeds_u128_size : p:int -> Lemma
+  (requires (p >= 2))
+  (ensures (tag_val p 7 >= p + 16))
+let u128_offset_exceeds_u128_size p = ()
+
+(* Lemma: For non-negative payload and tag 7, tagged != raw (except p=0) *)
+val u128_tagged_ne_raw_nonneg : p:int -> Lemma
+  (requires (p >= 0))
+  (ensures (tag_val p 7 <> p \/ p = 0))  // tag_val p 7 = p*8+7 != p for p > 0; for p=0, tagged=7!=0
+let u128_tagged_ne_raw_nonneg p = ()
+
+// ============================================================
+// COMPREHENSIVE INVERSE PROOF
+// ============================================================
+
+(* Full roundtrip: For any valid tag, tag then untag returns original payload *)
+val roundtrip_tag_untag : v:int -> t:int -> Lemma
+  (requires (0 <= t && t < 8))
+  (ensures (untag_val (tag_val v t) = v /\ get_tag_val (tag_val v t) = t))
+let roundtrip_tag_untag v t = ()

@@ -35,7 +35,11 @@ fn test_i64_deserialize() {
     runner.write_bytes(BORSH_BUF_USIZE, &42i64.to_le_bytes());
     runner.run().unwrap();
     let result = runner.read_result();
-    assert!(matches!(result, TaggedValue::Num(42)), "i64 deserialize: {:?}", result);
+    assert!(
+        matches!(result, TaggedValue::Num(42)),
+        "i64 deserialize: {:?}",
+        result
+    );
 }
 
 #[test]
@@ -50,7 +54,11 @@ fn test_i64_roundtrip() {
     deser.write_bytes(BORSH_BUF_USIZE, &ser_bytes);
     deser.run().unwrap();
     let result = deser.read_result();
-    assert!(matches!(result, TaggedValue::Num(99)), "i64 roundtrip: {:?}", result);
+    assert!(
+        matches!(result, TaggedValue::Num(99)),
+        "i64 roundtrip: {:?}",
+        result
+    );
 }
 
 #[test]
@@ -69,7 +77,11 @@ fn test_i64_negative_deserialize() {
     runner.write_bytes(BORSH_BUF_USIZE, &(-1i64).to_le_bytes());
     runner.run().unwrap();
     let result = runner.read_result();
-    assert!(matches!(result, TaggedValue::Num(-1)), "i64 -1 deserialize: {:?}", result);
+    assert!(
+        matches!(result, TaggedValue::Num(-1)),
+        "i64 -1 deserialize: {:?}",
+        result
+    );
 }
 
 // ══════════════════════════════════════════════════
@@ -94,7 +106,12 @@ fn test_struct_2field_deserialize() {
     runner.write_bytes(BORSH_BUF_USIZE, &bytes);
     runner.run().unwrap();
     let tagged = runner.read_raw_result();
-    assert_eq!(tag_of(tagged), TAG_ARRAY, "struct 2-field: expected TAG_ARRAY, got tag {}", tag_of(tagged));
+    assert_eq!(
+        tag_of(tagged),
+        TAG_ARRAY,
+        "struct 2-field: expected TAG_ARRAY, got tag {}",
+        tag_of(tagged)
+    );
     let vals = runner.read_array_nums(tagged);
     assert_eq!(vals, vec![10, 20], "struct 2-field deserialize");
 }
@@ -142,7 +159,11 @@ fn test_option_some_serialize() {
     let mut runner = WasmRunner::new(&src).unwrap();
     runner.run().unwrap();
     let bytes = runner.read_borsh_bytes(9);
-    let expected: Vec<u8> = [1u8].iter().copied().chain(42i64.to_le_bytes().iter().copied()).collect();
+    let expected: Vec<u8> = [1u8]
+        .iter()
+        .copied()
+        .chain(42i64.to_le_bytes().iter().copied())
+        .collect();
     assert_eq!(bytes, expected, "Option Some serialize");
 }
 
@@ -150,11 +171,19 @@ fn test_option_some_serialize() {
 fn test_option_some_deserialize() {
     let src = deser_program("(Wrapper (value (Option i64)))");
     let mut runner = WasmRunner::new(&src).unwrap();
-    let bytes: Vec<u8> = [1u8].iter().copied().chain(42i64.to_le_bytes().iter().copied()).collect();
+    let bytes: Vec<u8> = [1u8]
+        .iter()
+        .copied()
+        .chain(42i64.to_le_bytes().iter().copied())
+        .collect();
     runner.write_bytes(BORSH_BUF_USIZE, &bytes);
     runner.run().unwrap();
     let result = runner.read_result();
-    assert!(matches!(result, TaggedValue::Num(42)), "Option Some deserialize: {:?}", result);
+    assert!(
+        matches!(result, TaggedValue::Num(42)),
+        "Option Some deserialize: {:?}",
+        result
+    );
 }
 
 #[test]
@@ -178,7 +207,13 @@ fn test_option_none_deserialize() {
     runner.run().unwrap();
     let tagged = runner.read_raw_result();
     // Nil is written as the nil sentinel by the export wrapper
-    assert_eq!(tag_of(tagged), TAG_NIL, "Option None: expected TAG_NIL, got tag {} value {}", tag_of(tagged), tagged);
+    assert_eq!(
+        tag_of(tagged),
+        TAG_NIL,
+        "Option None: expected TAG_NIL, got tag {} value {}",
+        tag_of(tagged),
+        tagged
+    );
 }
 
 // ══════════════════════════════════════════════════
@@ -205,7 +240,12 @@ fn test_enum_unit_deserialize() {
     runner.write_bytes(BORSH_BUF_USIZE, &[2u8]);
     runner.run().unwrap();
     let tagged = runner.read_raw_result();
-    assert_eq!(tag_of(tagged), TAG_ARRAY, "enum unit: expected TAG_ARRAY, got tag {}", tag_of(tagged));
+    assert_eq!(
+        tag_of(tagged),
+        TAG_ARRAY,
+        "enum unit: expected TAG_ARRAY, got tag {}",
+        tag_of(tagged)
+    );
     let vals = runner.read_array_nums(tagged);
     assert_eq!(vals, vec![2], "Color::Blue: expected [2], got {:?}", vals);
 }
@@ -220,7 +260,11 @@ fn test_enum_fields_serialize() {
     let mut runner = WasmRunner::new(&src).unwrap();
     runner.run().unwrap();
     let bytes = runner.read_borsh_bytes(9);
-    let expected: Vec<u8> = [0u8].iter().copied().chain(42i64.to_le_bytes().iter().copied()).collect();
+    let expected: Vec<u8> = [0u8]
+        .iter()
+        .copied()
+        .chain(42i64.to_le_bytes().iter().copied())
+        .collect();
     assert_eq!(bytes, expected, "Shape::Circle serialize");
 }
 
@@ -228,14 +272,23 @@ fn test_enum_fields_serialize() {
 fn test_enum_fields_deserialize() {
     let src = deser_program("(Shape (Circle (radius i64)) (Rect (w i64) (h i64)))");
     let mut runner = WasmRunner::new(&src).unwrap();
-    let bytes: Vec<u8> = [0u8].iter().copied().chain(42i64.to_le_bytes().iter().copied()).collect();
+    let bytes: Vec<u8> = [0u8]
+        .iter()
+        .copied()
+        .chain(42i64.to_le_bytes().iter().copied())
+        .collect();
     runner.write_bytes(BORSH_BUF_USIZE, &bytes);
     runner.run().unwrap();
     let tagged = runner.read_raw_result();
     assert_eq!(tag_of(tagged), TAG_ARRAY, "enum fields: expected TAG_ARRAY");
     let vals = runner.read_array_nums(tagged);
     // Variant 0 (Circle) with 1 field: [0, 42]
-    assert_eq!(vals, vec![0, 42], "Shape::Circle deserialize: expected [0, 42], got {:?}", vals);
+    assert_eq!(
+        vals,
+        vec![0, 42],
+        "Shape::Circle deserialize: expected [0, 42], got {:?}",
+        vals
+    );
 }
 
 #[test]
@@ -315,7 +368,11 @@ fn test_u8_deserialize() {
     runner.write_bytes(BORSH_BUF_USIZE, &[200u8]);
     runner.run().unwrap();
     let result = runner.read_result();
-    assert!(matches!(result, TaggedValue::Num(200)), "u8 deserialize: {:?}", result);
+    assert!(
+        matches!(result, TaggedValue::Num(200)),
+        "u8 deserialize: {:?}",
+        result
+    );
 }
 
 #[test]
@@ -334,7 +391,11 @@ fn test_u32_deserialize() {
     runner.write_bytes(BORSH_BUF_USIZE, &1000u32.to_le_bytes());
     runner.run().unwrap();
     let result = runner.read_result();
-    assert!(matches!(result, TaggedValue::Num(1000)), "u32 deserialize: {:?}", result);
+    assert!(
+        matches!(result, TaggedValue::Num(1000)),
+        "u32 deserialize: {:?}",
+        result
+    );
 }
 
 #[test]
@@ -357,7 +418,11 @@ fn test_bool_deserialize() {
     runner.write_bytes(BORSH_BUF_USIZE, &[1u8]);
     runner.run().unwrap();
     let result = runner.read_result();
-    assert!(matches!(result, TaggedValue::Bool(true)), "bool true deserialize: {:?}", result);
+    assert!(
+        matches!(result, TaggedValue::Bool(true)),
+        "bool true deserialize: {:?}",
+        result
+    );
 }
 
 // ── Helper: get tag of a tagged value, handling nil sentinel ──

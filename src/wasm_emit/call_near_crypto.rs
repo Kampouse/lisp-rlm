@@ -1,7 +1,34 @@
 use super::*;
 
+fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
+    let s = s.as_bytes();
+    if s.len() % 2 != 0 {
+        return Err("hex string has odd length".into());
+    }
+    let mut out = Vec::with_capacity(s.len() / 2);
+    for i in (0..s.len()).step_by(2) {
+        let hi = hex_nibble(s[i])?;
+        let lo = hex_nibble(s[i + 1])?;
+        out.push((hi << 4) | lo);
+    }
+    Ok(out)
+}
+
+fn hex_nibble(b: u8) -> Result<u8, String> {
+    match b {
+        b'0'..=b'9' => Ok(b - b'0'),
+        b'a'..=b'f' => Ok(b - b'a' + 10),
+        b'A'..=b'F' => Ok(b - b'A' + 10),
+        _ => Err(format!("invalid hex char: {}", b as char)),
+    }
+}
+
 impl WasmEmitter {
-    pub(crate) fn call_near_crypto(&mut self, op: &str, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
+    pub(crate) fn call_near_crypto(
+        &mut self,
+        op: &str,
+        a: &[LispVal],
+    ) -> Result<Vec<Instruction<'static>>, String> {
         match op {
             "near/sha256" => {
                 let data = self.expr(&a[0])?;
@@ -9,20 +36,26 @@ impl WasmEmitter {
                 // Untag string: extract len and ptr
                 v.extend(data.clone());
                 v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // data_len
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU); // data_len
                 v.extend(data);
                 v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // data_ptr
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U); // data_ptr
                 v.push(Instruction::I64Const(0)); // register_id=0
                 v.push(Self::host_call(21)); // sha256
-                // read_register(0, TEMP_MEM)
-                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(TEMP_MEM));
+                                             // read_register(0, TEMP_MEM)
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Const(TEMP_MEM));
                 v.push(Self::host_call(0));
                 // register_len(0)
-                v.push(Instruction::I64Const(0)); v.push(Self::host_call(1));
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(1));
                 // Pack: (len << 32) | TEMP_MEM — tag as Str
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TEMP_MEM)); v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 Ok(v)
             }
@@ -32,20 +65,26 @@ impl WasmEmitter {
                 // Untag string: extract len and ptr
                 v.extend(data.clone());
                 v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // data_len
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU); // data_len
                 v.extend(data);
                 v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // data_ptr
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U); // data_ptr
                 v.push(Instruction::I64Const(0)); // register_id=0
                 v.push(Self::host_call(22)); // keccak256
-                // read_register(0, TEMP_MEM)
-                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(TEMP_MEM));
+                                             // read_register(0, TEMP_MEM)
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Const(TEMP_MEM));
                 v.push(Self::host_call(0));
                 // register_len(0)
-                v.push(Instruction::I64Const(0)); v.push(Self::host_call(1));
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(1));
                 // Pack: (len << 32) | TEMP_MEM — tag as Str
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TEMP_MEM)); v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 Ok(v)
             }
@@ -60,27 +99,107 @@ impl WasmEmitter {
                 // sig (param0, param1)
                 v.extend(sig.clone());
                 v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // sig_len
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU); // sig_len
                 v.extend(sig);
                 v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // sig_ptr
-                // msg (param2, param3)
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U); // sig_ptr
+                                                    // msg (param2, param3)
                 v.extend(msg.clone());
                 v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // msg_len
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU); // msg_len
                 v.extend(msg);
                 v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // msg_ptr
-                // pk (param4, param5)
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U); // msg_ptr
+                                                    // pk (param4, param5)
                 v.extend(pk.clone());
                 v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // pk_len
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU); // pk_len
                 v.extend(pk);
                 v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // pk_ptr
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U); // pk_ptr
                 v.push(Self::host_call(24)); // ed25519_verify — returns u64 directly (1=valid, 0=invalid)
-                // Tag result as Num
+                                             // Tag result as Num
                 v.extend(self.emit_tag_num());
+                Ok(v)
+            }
+            "schnorr-verify" => {
+                // (schnorr-verify pk_bytes sig_bytes msg_bytes) -> int (1/0)
+                // BIP-340 via WASI-resolved import: schnorr_verify_bip340(pk_ptr, sig_ptr, msg_ptr, msg_len) -> i32
+                // Local: near_mock.rs resolves to builtin_schnorr.rs. On-chain: linker stitches WASM.
+                let pk = self.expr(&a[0])?;
+                let sig = self.expr(&a[1])?;
+                let msg = self.expr(&a[2])?;
+                let wasm_idx = self.need_wasm_import(
+                    "schnorr_verify_bip340",
+                    vec![ValType::I32, ValType::I32, ValType::I32, ValType::I32],
+                    vec![ValType::I32],
+                );
+                let mut v = Vec::new();
+                // pk_ptr (untag Str -> raw pointer)
+                v.extend(pk.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                // sig_ptr
+                v.extend(sig.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                // msg_ptr
+                v.extend(msg.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                // msg_len (upper 32 bits of tagged Str = length)
+                v.extend(msg);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                // Call stitched WASM schnorr
+                v.push(Self::wasm_import_call(wasm_idx));
+                // Result: i32 (1=valid, 0=invalid) -> tag as Num
+                v.push(Instruction::I64ExtendI32S);
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
+            "sha256-hash" => {
+                // (sha256-hash input_str) -> 32-byte hash string
+                // WASM import: sha256_hash(input_ptr: i32, input_len: i32, output_ptr: i32)
+                // Writes 32 bytes to output_ptr
+                let input = self.expr(&a[0])?;
+                let wasm_idx = self.need_wasm_import(
+                    "sha256_hash",
+                    vec![ValType::I32, ValType::I32, ValType::I32],
+                    vec![],  // no return value
+                );
+                let mut v = Vec::new();
+                // input_ptr
+                v.extend(input.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                // input_len (upper 32 bits of tagged Str)
+                v.extend(input.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                // output_ptr: use TEMP_MEM area
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I32WrapI64);
+                // Call sha256_hash
+                v.push(Self::wasm_import_call(wasm_idx));
+                // Build result: tagged Str from 32 bytes at TEMP_MEM
+                // Str tag: (ptr | (len << 32)) where ptr=TEMP_MEM, len=32
+                v.push(Instruction::I64Const(TEMP_MEM as i64));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
                 Ok(v)
             }
             "near/p256_verify" => {
@@ -96,26 +215,32 @@ impl WasmEmitter {
                 // sig (param0, param1)
                 v.extend(sig.clone());
                 v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // sig_len
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU); // sig_len
                 v.extend(sig);
                 v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // sig_ptr
-                // msg (param2, param3)
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U); // sig_ptr
+                                                    // msg (param2, param3)
                 v.extend(msg.clone());
                 v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // msg_len
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU); // msg_len
                 v.extend(msg);
                 v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // msg_ptr
-                // pk (param4, param5)
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U); // msg_ptr
+                                                    // pk (param4, param5)
                 v.extend(pk.clone());
                 v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // pk_len
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU); // pk_len
                 v.extend(pk);
                 v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // pk_ptr
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U); // pk_ptr
                 v.push(Self::host_call(55)); // p256_verify — returns u64 directly (1=valid, 0=invalid)
-                // Tag result as Num
+                                             // Tag result as Num
                 v.extend(self.emit_tag_num());
                 Ok(v)
             }
@@ -125,17 +250,23 @@ impl WasmEmitter {
                 let mut v = Vec::new();
                 v.extend(data.clone());
                 v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // data_len
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU); // data_len
                 v.extend(data);
                 v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // data_ptr
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U); // data_ptr
                 v.push(Instruction::I64Const(0)); // register_id=0
                 v.push(Self::host_call(52));
-                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Const(TEMP_MEM));
                 v.push(Self::host_call(0)); // read_register
-                v.push(Instruction::I64Const(0)); v.push(Self::host_call(1)); // register_len
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TEMP_MEM)); v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(1)); // register_len
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 Ok(v)
             }
@@ -144,17 +275,23 @@ impl WasmEmitter {
                 let mut v = Vec::new();
                 v.extend(data.clone());
                 v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // data_len
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU); // data_len
                 v.extend(data);
                 v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // data_ptr
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U); // data_ptr
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(53));
-                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Const(TEMP_MEM));
                 v.push(Self::host_call(0));
-                v.push(Instruction::I64Const(0)); v.push(Self::host_call(1));
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TEMP_MEM)); v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(1));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 Ok(v)
             }
@@ -164,14 +301,22 @@ impl WasmEmitter {
                 let v_val = self.expr(&a[2])?;
                 let malleability = self.expr(&a[3])?;
                 let mut vv = Vec::new();
-                vv.extend(hash.clone()); vv.extend(self.emit_untag());
-                vv.push(Instruction::I64Const(32)); vv.push(Instruction::I64ShrU);
-                vv.extend(hash); vv.extend(self.emit_untag());
-                vv.push(Instruction::I32WrapI64); vv.push(Instruction::I64ExtendI32U);
-                vv.extend(sig.clone()); vv.extend(self.emit_untag());
-                vv.push(Instruction::I64Const(32)); vv.push(Instruction::I64ShrU);
-                vv.extend(sig); vv.extend(self.emit_untag());
-                vv.push(Instruction::I32WrapI64); vv.push(Instruction::I64ExtendI32U);
+                vv.extend(hash.clone());
+                vv.extend(self.emit_untag());
+                vv.push(Instruction::I64Const(32));
+                vv.push(Instruction::I64ShrU);
+                vv.extend(hash);
+                vv.extend(self.emit_untag());
+                vv.push(Instruction::I32WrapI64);
+                vv.push(Instruction::I64ExtendI32U);
+                vv.extend(sig.clone());
+                vv.extend(self.emit_untag());
+                vv.push(Instruction::I64Const(32));
+                vv.push(Instruction::I64ShrU);
+                vv.extend(sig);
+                vv.extend(self.emit_untag());
+                vv.push(Instruction::I32WrapI64);
+                vv.push(Instruction::I64ExtendI32U);
                 vv.extend(v_val);
                 vv.extend(malleability);
                 vv.push(Instruction::I64Const(0)); // register_id
@@ -179,68 +324,67 @@ impl WasmEmitter {
                 vv.extend(self.emit_tag_num());
                 Ok(vv)
             }
-            "near/p256_verify" => {
-                let msg = self.expr(&a[0])?;
-                let sig = self.expr(&a[1])?;
-                let pk = self.expr(&a[2])?;
-                let mut v = Vec::new();
-                v.extend(msg.clone()); v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(msg); v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
-                v.extend(sig.clone()); v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(sig); v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
-                v.extend(pk.clone()); v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(pk); v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
-                v.push(Self::host_call(55));
-                v.extend(self.emit_tag_num());
-                Ok(v)
-            }
             "near/alt_bn128_g1_multiexp" => {
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
-                v.extend(data.clone()); v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(data); v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(data.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.extend(data);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(0)); // register_id
                 v.push(Self::host_call(56));
-                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Const(TEMP_MEM));
                 v.push(Self::host_call(0));
-                v.push(Instruction::I64Const(0)); v.push(Self::host_call(1));
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TEMP_MEM)); v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(1));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 Ok(v)
             }
             "near/alt_bn128_g1_sum" => {
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
-                v.extend(data.clone()); v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(data); v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(data.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.extend(data);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(57));
-                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Const(TEMP_MEM));
                 v.push(Self::host_call(0));
-                v.push(Instruction::I64Const(0)); v.push(Self::host_call(1));
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TEMP_MEM)); v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(1));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 Ok(v)
             }
             "near/alt_bn128_pairing_check" => {
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
-                v.extend(data.clone()); v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(data); v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(data.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.extend(data);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
                 v.push(Self::host_call(58));
                 v.extend(self.emit_tag_num());
                 Ok(v)
@@ -248,118 +392,170 @@ impl WasmEmitter {
             "near/bls12381_p1_sum" => {
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
-                v.extend(data.clone()); v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(data); v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(data.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.extend(data);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(59));
                 v.push(Instruction::Drop); // drop status u64
-                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Const(TEMP_MEM));
                 v.push(Self::host_call(0));
-                v.push(Instruction::I64Const(0)); v.push(Self::host_call(1));
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TEMP_MEM)); v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(1));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 Ok(v)
             }
             "near/bls12381_p2_sum" => {
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
-                v.extend(data.clone()); v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(data); v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(data.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.extend(data);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(60));
                 v.push(Instruction::Drop); // drop status u64
-                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Const(TEMP_MEM));
                 v.push(Self::host_call(0));
-                v.push(Instruction::I64Const(0)); v.push(Self::host_call(1));
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TEMP_MEM)); v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(1));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 Ok(v)
             }
             "near/bls12381_g1_multiexp" => {
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
-                v.extend(data.clone()); v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(data); v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(data.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.extend(data);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(61));
                 v.push(Instruction::Drop); // drop status u64
-                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Const(TEMP_MEM));
                 v.push(Self::host_call(0));
-                v.push(Instruction::I64Const(0)); v.push(Self::host_call(1));
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TEMP_MEM)); v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(1));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 Ok(v)
             }
             "near/bls12381_g2_multiexp" => {
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
-                v.extend(data.clone()); v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(data); v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(data.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.extend(data);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(62));
                 v.push(Instruction::Drop); // drop status u64
-                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Const(TEMP_MEM));
                 v.push(Self::host_call(0));
-                v.push(Instruction::I64Const(0)); v.push(Self::host_call(1));
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TEMP_MEM)); v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(1));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 Ok(v)
             }
             "near/bls12381_map_fp_to_g1" => {
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
-                v.extend(data.clone()); v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(data); v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(data.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.extend(data);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(63));
                 v.push(Instruction::Drop); // drop status u64
-                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Const(TEMP_MEM));
                 v.push(Self::host_call(0));
-                v.push(Instruction::I64Const(0)); v.push(Self::host_call(1));
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TEMP_MEM)); v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(1));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 Ok(v)
             }
             "near/bls12381_map_fp2_to_g2" => {
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
-                v.extend(data.clone()); v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(data); v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(data.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.extend(data);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(64));
                 v.push(Instruction::Drop); // drop status u64
-                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Const(TEMP_MEM));
                 v.push(Self::host_call(0));
-                v.push(Instruction::I64Const(0)); v.push(Self::host_call(1));
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TEMP_MEM)); v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(1));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 Ok(v)
             }
             "near/bls12381_pairing_check" => {
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
-                v.extend(data.clone()); v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(data); v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(data.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.extend(data);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
                 v.push(Self::host_call(65));
                 v.extend(self.emit_tag_num());
                 Ok(v)
@@ -367,37 +563,86 @@ impl WasmEmitter {
             "near/bls12381_p1_decompress" => {
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
-                v.extend(data.clone()); v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(data); v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(data.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.extend(data);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(66));
                 v.push(Instruction::Drop); // drop status u64
-                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Const(TEMP_MEM));
                 v.push(Self::host_call(0));
-                v.push(Instruction::I64Const(0)); v.push(Self::host_call(1));
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TEMP_MEM)); v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(1));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 Ok(v)
             }
             "near/bls12381_p2_decompress" => {
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
-                v.extend(data.clone()); v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.extend(data); v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(data.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.extend(data);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(67));
                 v.push(Instruction::Drop); // drop status u64
-                v.push(Instruction::I64Const(0)); v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Const(TEMP_MEM));
                 v.push(Self::host_call(0));
-                v.push(Instruction::I64Const(0)); v.push(Self::host_call(1));
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TEMP_MEM)); v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(1));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
+                Ok(v)
+            }
+            "near/schnorr_verify" => {
+                // (near/schnorr_verify pk_hex sig_hex msg_hex) -> int
+                // Compile-time hex decode: hex string literals -> raw bytes in data section.
+                // Returns tagged Num 1 (valid) or 0 (invalid).
+                let wasm_idx = self.need_wasm_import(
+                    "schnorr_verify_bip340",
+                    vec![ValType::I32, ValType::I32, ValType::I32, ValType::I32],
+                    vec![ValType::I32],
+                );
+                // Hex-decode each arg at compile time, alloc in data section
+                let mut bufs: [u32; 3] = [0; 3];
+                let mut msg_len = 0u32;
+                for (i, arg) in a.iter().enumerate().take(3) {
+                    let hex_str = match arg {
+                        LispVal::Str(s) => s.clone(),
+                        _ => return Err(format!("near/schnorr_verify arg {} must be a string literal, got {:?}", i, arg)),
+                    };
+                    let bytes = hex_decode(&hex_str)
+                        .map_err(|e| format!("near/schnorr_verify: invalid hex in arg {}: {}", i, e))?;
+                    if i == 2 { msg_len = bytes.len() as u32; }
+                    let offset = self.alloc_data(&bytes);
+                    bufs[i] = offset;
+                }
+                let mut v = Vec::new();
+                v.push(Instruction::I32Const(bufs[0] as i32));
+                v.push(Instruction::I32Const(bufs[1] as i32));
+                v.push(Instruction::I32Const(bufs[2] as i32));
+                v.push(Instruction::I32Const(msg_len as i32));
+                v.push(Self::wasm_import_call(wasm_idx));
+                v.push(Instruction::I64ExtendI32S);
+                v.extend(self.emit_tag_num());
                 Ok(v)
             }
             _ => Err("__not_handled__".into()),

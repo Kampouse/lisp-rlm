@@ -93,6 +93,10 @@ interface api {
 
     /// Raw JSON-RPC call (for any method not covered above)
     raw: func(method: string, params-json: string) -> tuple<string, string>;
+
+    /// Read an environment variable value
+    /// Returns the value string, or empty string if not found
+    env-var: func(name: string) -> string;
 }
 
 world rpc-host {
@@ -102,7 +106,7 @@ world rpc-host {
 // Combined world with RPC, storage, payment, VRF, and wallet
 world outlayer-host {
     import api;
-    import near:storage/api@0.1.0;
+    import outlayer:api/host@0.1.0;
     import near:payment/api@0.1.0;
     import near:vrf/api@0.1.0;
     import outlayer:wallet/api@0.1.0;

@@ -3,8 +3,8 @@
 //! Given a pure lambda, probe each parameter with representative values of each type,
 //! observe which inputs succeed and what type the output is. Build an inferred signature.
 
-use crate::program::run_program;
 use crate::parser::parse_all;
+use crate::program::run_program;
 use crate::types::{Env, EvalState, LispVal};
 
 /// Representative sample values for each type.

@@ -78,7 +78,13 @@ fn tokenize(input: &str) -> Vec<(String, usize)> {
             i += 2;
             if i < len {
                 let mut char_name = String::new();
-                while i < len && !chars[i].is_whitespace() && chars[i] != '(' && chars[i] != ')' && chars[i] != '[' && chars[i] != ']' {
+                while i < len
+                    && !chars[i].is_whitespace()
+                    && chars[i] != '('
+                    && chars[i] != ')'
+                    && chars[i] != '['
+                    && chars[i] != ']'
+                {
                     char_name.push(chars[i]);
                     i += 1;
                     if char_name.len() == 1 && (i >= len || !chars[i].is_ascii_alphabetic()) {
@@ -141,7 +147,9 @@ fn offset_to_line_col(input: &str, offset: usize) -> (usize, usize) {
     let mut line = 1;
     let mut col = 1;
     for (i, ch) in input.char_indices() {
-        if i >= offset { break; }
+        if i >= offset {
+            break;
+        }
         if ch == '\n' {
             line += 1;
             col = 1;
@@ -258,6 +266,21 @@ fn parse(tokens: &[(String, usize)], pos: &mut usize, source: &str) -> Result<Li
                         if den != 0.0 {
                             return Ok(LispVal::Float(num / den));
                         }
+                    }
+                }
+            }
+            // u64 literal: 0xFF...u64 or 123u64
+            if let Some(stripped) = s.strip_suffix("u64") {
+                if !stripped.is_empty() {
+                    let (digits, radix) = if let Some(hex) = stripped.strip_prefix("0x") {
+                        (hex, 16)
+                    } else if let Some(hex) = stripped.strip_prefix("0X") {
+                        (hex, 16)
+                    } else {
+                        (stripped, 10)
+                    };
+                    if let Ok(n) = u64::from_str_radix(digits, radix) {
+                        return Ok(LispVal::U64(n));
                     }
                 }
             }

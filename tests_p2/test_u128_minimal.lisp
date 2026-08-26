@@ -1,0 +1,5 @@
+(define (test)
+  (let ((x 100))
+    (u128/store 64 x 0)
+    (u128/to_str 64 80)))
+(export "test" test)

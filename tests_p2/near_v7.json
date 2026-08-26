@@ -1,0 +1,8 @@
+{
+  "name": "burrow_tracker",
+  "src": "burrow_tracker_v7.lisp",
+  "account": "burrow-tracker.kampy.testnet",
+  "network": "testnet",
+  "output": "burrow_tracker_v7.wasm",
+  "tests": ""
+}

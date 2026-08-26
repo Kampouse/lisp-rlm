@@ -50,6 +50,7 @@ pub mod call_string;
 pub mod call_outlayer;
 pub mod call_predicate;
 pub mod call_dict;
+pub mod wasm_link;
 pub mod compile;
 
 // Re-exports: public API lives in compile.rs
@@ -167,6 +168,7 @@ pub(crate) const HOST_FUNCS: &[(&str, &[ValType], &[ValType])] = &[
 
 const HOST_BASE: u32 = 0xFF00_0000;
 const USER_BASE: u32 = 0xFF01_0000;
+pub(crate) const WASM_IMPORT_BASE: u32 = 0xFF02_0000; // sentinel for stitched WASM imports (e.g. schnorr)
 pub const WASI_FD_WRITE: u32 = 90; // sentinel for WASI fd_write in outlayer mode
 pub const MEMCPY_SENTINEL: u32 = 91; // sentinel for shared memcpy helper
 const TEMP_MEM: i64 = 64;
@@ -246,6 +248,21 @@ pub(crate) struct FuncDef {
     pub instrs: Vec<Instruction<'static>>,
     /// If set, overrides the default (extra locals as I64) for this function's code section.
     pub local_entries: Option<Vec<(u32, ValType)>>,
+    /// If set, overrides the type index in the function section (params: Vec<ValType>, results: Vec<ValType>).
+    pub custom_type: Option<(Vec<ValType>, Vec<ValType>)>,
+}
+
+impl Default for FuncDef {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            param_count: 0,
+            local_count: 0,
+            instrs: Vec::new(),
+            local_entries: None,
+            custom_type: None,
+        }
+    }
 }
 
 /// Parse a URL string into (authority, path).
@@ -267,6 +284,8 @@ pub struct WasmEmitter {
     pub(crate) local_type_map: Vec<ValType>, // per-local type (indexed by local idx)
     pub(crate) current_func: Option<String>,
     pub(crate) current_param_count: usize,
+    /// Nesting depth inside tc() — 0 = directly in loop, 1 = inside tc_if's if, etc.
+    pub(crate) tc_depth: u32,
     pub(crate) while_id: Cell<usize>,
     pub(crate) funcs: Vec<FuncDef>,
     pub(crate) memory_pages: u32,
@@ -291,6 +310,7 @@ pub struct WasmEmitter {
     pub(crate) no_proc_exit: bool, // true when wrapping with wit-component adapter (return cleanly, don't call proc_exit)
     pub(crate) storage_get_count: u32, // counter for unique ret_area per storage-get call
     pub(crate) http_post_call_count: u32, // counter for per-call sentinel offset in wasi:http POST path
+    pub(crate) env_get_count: u32, // counter for unique ret_area per env/get call
 
     // Track which function each lambda maps to, and its captured var count
     // lambda_id -> (func_array_idx, captured_count)
@@ -311,17 +331,22 @@ pub struct WasmEmitter {
     pub(crate) arr_str_helper: Option<u32>,
     // Index of the synthesized __h_val_eq helper (structural equality)
     pub(crate) val_eq_helper: Option<u32>,
+    // Stitched WASM imports (e.g. schnorr_verify_bip340)
+    // Vec of (wasm_name, params: Vec<ValType>, results: Vec<ValType>)
+    // These become env.* imports that wasm_stitch.py replaces with real implementations
+    pub(crate) wasm_imports: Vec<(&'static str, Vec<ValType>, Vec<ValType>)>,
 }
 
 impl WasmEmitter {
     pub fn new() -> Self {
         Self {
-            locals: HashMap::new(), next_local: 0, free_locals: Vec::new(), local_type_map: Vec::new(), current_func: None, current_param_count: 0,
-            while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 512, exports: Vec::new(),
+            locals: HashMap::new(), next_local: 0, free_locals: Vec::new(), local_type_map: Vec::new(), current_func: None, current_param_count: 0, tc_depth: 0,
+            while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 64, exports: Vec::new(),
             data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(),
-            gas_local: None, needs_frame: false, heap_ptr: 0, lambda_counter: 0,
-            list_ptr_counter: 0, str_cat_depth: 0, fuzz_mode: false, u128h: None, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), http_post_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false, borsh_schemas: HashMap::new(), storage_get_count: 0, http_post_call_count: 0,
+            gas_local: None, needs_frame: false, heap_ptr: 0, lambda_counter: 0, str_cat_depth: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), http_post_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false, borsh_schemas: HashMap::new(), storage_get_count: 0, http_post_call_count: 0, env_get_count: 0,
             func_defs: HashMap::new(),
+            wasm_imports: Vec::new(),
+            list_ptr_counter: 0,
             value_defines: std::collections::HashSet::new(),
             arr_str_helper: None,
             val_eq_helper: None,
@@ -346,11 +371,39 @@ impl WasmEmitter {
     }
 
     /// Bump heap_ptr by `bytes`, return old position.
+    /// In P2 mode, returns None (callers must use heap_bump_runtime for runtime allocation).
+    /// In NEAR mode, returns compile-time address.
     pub(crate) fn heap_bump(&mut self, bytes: u32) -> u32 {
         self.ensure_heap_init();
         let old = self.heap_ptr;
         self.heap_ptr = old + bytes;
         old
+    }
+
+    /// Emit instructions to allocate `bytes` from RUNTIME_HEAP_PTR (addr 56) at runtime.
+    /// Returns the allocated address in a local variable.
+    /// Used in P2/WASI mode for recursive-safe allocation.
+    /// Generates: result = *(56); *(56) = result + bytes (aligned to 8)
+    pub(crate) fn heap_bump_runtime(&mut self, bytes: u32, local_name: &str) -> Vec<Instruction<'static>> {
+        let tmp = self.local_idx(local_name);
+        let ma = wasm_encoder::MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 0,
+        };
+        let aligned = ((bytes as i64 + 7) & !7) as i64;
+        vec![
+            // Load current heap ptr from RUNTIME_HEAP_PTR (addr 56)
+            Instruction::I32Const(56),
+            Instruction::I64Load(ma.clone()),
+            Instruction::LocalSet(tmp),
+            // Bump: *(56) = old + aligned_size
+            Instruction::I32Const(56),
+            Instruction::LocalGet(tmp),
+            Instruction::I64Const(aligned),
+            Instruction::I64Add,
+            Instruction::I64Store(ma),
+        ]
     }
 
     /// Split a URL string into (authority, path_with_query).
@@ -516,7 +569,9 @@ impl WasmEmitter {
             idx
         } else {
             let idx = self.funcs.len();
-            self.funcs.push(FuncDef { name: name.into(), param_count: params.len(), local_count: 0, instrs: Vec::new(), local_entries: None });
+            self.funcs.push(FuncDef { name: name.into(), param_count: params.len(), local_count: 0, instrs: Vec::new(), local_entries: None,
+            custom_type: None,
+        });
             idx
         };
 
@@ -524,8 +579,8 @@ impl WasmEmitter {
 
         // Build prologue: frame save (NEAR mode + function uses FP-allocating builtins)
         let mut prologue = Vec::new();
-        // Recursion depth guard: increment on entry, will decrement in epilogue
-        prologue.extend(self.emit_depth_inc());
+        // Recursion depth guard: DISABLED for debugging (max_depth issue)
+        // prologue.extend(self.emit_depth_inc());
         let fp_save = if !self.p2_mode && !self.wasi_mode && self.needs_frame {
             let fp_save = self.local_idx("__fp_save");
             prologue.push(Instruction::GlobalGet(FP_GLOBAL));
@@ -591,6 +646,7 @@ impl WasmEmitter {
             local_count: total,
             instrs,
             local_entries: Some(local_entries_vec),
+            custom_type: None,
         };
         Ok(())
     }
@@ -618,13 +674,14 @@ impl WasmEmitter {
     // ── Tail-call ──
 
     fn tc_body(&mut self, body: &LispVal) -> Result<Vec<Instruction<'static>>, String> {
+        self.tc_depth = 0;
         let inner = self.tc(body)?;
         let mut v = Vec::with_capacity(inner.len() + 5);
         v.push(Instruction::Block(BlockType::Result(ValType::I64)));
         v.push(Instruction::Loop(BlockType::Empty));
         v.extend(inner);
         v.push(Instruction::End);
-        v.push(Instruction::I64Const(TAG_NIL));
+        // Loop should never exit normally - inner must branch with Br(0) to loop or Br(1) to exit block
         v.push(Instruction::Unreachable);
         v.push(Instruction::End);
         Ok(v)
@@ -690,6 +747,8 @@ impl WasmEmitter {
             "begin" | "progn" => {
                 let mut v = Vec::new();
                 for (i, x) in a.iter().enumerate() { v.extend(self.expr(x)?); if i < a.len()-1 { v.push(Instruction::Drop); } }
+                // Exit block: directly in TC loop, Br(1) exits block (result i64)
+                v.push(Instruction::Br(1));
                 Ok(v)
             }
             "let" => self.tc_let(a),
@@ -716,8 +775,8 @@ impl WasmEmitter {
                 v.push(Instruction::Br(0));
                 Ok(v)
             }
-            // Any other expression inside TC loop: evaluate and exit block via Br(2)
-            _ => { let mut v = self.expr(e)?; v.push(Instruction::Br(2)); Ok(v) }
+            // Any other expression inside TC loop: evaluate and exit block via Br(1)
+            _ => { let mut v = self.expr(e)?; v.push(Instruction::Br(1)); Ok(v) }
         }
     }
 

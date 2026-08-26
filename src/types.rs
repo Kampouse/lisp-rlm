@@ -92,7 +92,8 @@ impl Env {
         // First-class builtin function references.
         // Allows builtins to be captured and passed as values (e.g., to map, compose).
         for &name in crate::helpers::BUILTIN_NAMES {
-            env.bindings.insert(name.to_string(), LispVal::BuiltinFn(name.to_string()));
+            env.bindings
+                .insert(name.to_string(), LispVal::BuiltinFn(name.to_string()));
         }
         env
     }
@@ -362,7 +363,10 @@ impl EvalState {
     /// Set the LLM provider for this state.
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn set_llm_provider(&mut self, provider: Box<dyn crate::dispatch::llm_provider::LlmProvider>) {
+    pub fn set_llm_provider(
+        &mut self,
+        provider: Box<dyn crate::dispatch::llm_provider::LlmProvider>,
+    ) {
         self.llm_provider = Some(provider);
     }
 
@@ -385,7 +389,7 @@ impl EvalState {
             llm_calls: Arc::clone(&self.llm_calls),
             rlm_depth: self.rlm_depth,
             rlm_iteration: self.rlm_iteration,
-#[cfg(not(target_arch = "wasm32"))]
+            #[cfg(not(target_arch = "wasm32"))]
             llm_provider: provider,
             call_trace: Vec::new(),
             call_trace_max: self.call_trace_max,
@@ -558,6 +562,8 @@ pub enum LispVal {
     Bool(bool),
     /// 64-bit signed integer.
     Num(i64),
+    /// 64-bit unsigned integer (wrapping arithmetic for field math).
+    U64(u64),
     /// 64-bit floating-point number.
     Float(f64),
     /// Heap-allocated string.
@@ -643,6 +649,7 @@ impl PartialEq for LispVal {
             (Nil, Nil) => true,
             (Bool(a), Bool(b)) => a == b,
             (Num(a), Num(b)) => a == b,
+            (U64(a), U64(b)) => a == b,
             (Float(a), Float(b)) => a == b,
             (Str(a), Str(b)) => a == b,
             (Sym(a), Sym(b)) => a == b,
@@ -680,8 +687,16 @@ impl PartialEq for LispVal {
             ) => pa == pb && ra == rb && ba == bb,
             (Memoized { func: a, .. }, Memoized { func: b, .. }) => a == b,
             (
-                Tagged { type_name: ta, variant_id: va, fields: fa },
-                Tagged { type_name: tb, variant_id: vb, fields: fb },
+                Tagged {
+                    type_name: ta,
+                    variant_id: va,
+                    fields: fa,
+                },
+                Tagged {
+                    type_name: tb,
+                    variant_id: vb,
+                    fields: fb,
+                },
             ) => ta == tb && va == vb && fa == fb,
             _ => false,
         }
@@ -694,6 +709,7 @@ impl std::fmt::Display for LispVal {
             LispVal::Nil => write!(f, "nil"),
             LispVal::Bool(b) => write!(f, "{}", if *b { "true" } else { "false" }),
             LispVal::Num(n) => write!(f, "{}", n),
+            LispVal::U64(n) => write!(f, "{}u64", n),
             LispVal::Float(fl) => {
                 let s = format!("{:.10}", fl);
                 let s = s.trim_end_matches('0');
@@ -733,7 +749,11 @@ impl std::fmt::Display for LispVal {
                 write!(f, "#<memoized {} entries>", cache_len)
             }
             LispVal::BuiltinFn(name) => write!(f, "#<builtin {}>", name),
-            LispVal::Tagged { type_name, variant_id, fields } => {
+            LispVal::Tagged {
+                type_name,
+                variant_id,
+                fields,
+            } => {
                 if fields.is_empty() {
                     write!(f, "#<{}::{}>", type_name, variant_id)
                 } else {

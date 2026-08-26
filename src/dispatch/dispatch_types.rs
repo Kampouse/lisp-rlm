@@ -239,6 +239,7 @@ pub fn type_of(value: &LispVal) -> &'static str {
         LispVal::Recur(_) => ":recur",
         LispVal::Delay { .. } => ":promise",
         LispVal::Memoized { .. } => ":memoized",
+        LispVal::U64(_) => ":u64",
     }
 }
 

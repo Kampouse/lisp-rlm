@@ -1,0 +1,10 @@
+;; e16 — u128 edge cases: sub underflow, mul overflow, div, parse errors
+(define (main)
+  (println (u128/sub "10" "3"))
+  (println (u128/mul "4294967296" "4294967296"))
+  (println (u128/div "100" "7"))
+  (println (u128/mod "100" "7"))
+  (println (u128/gt "18446744073709551616" "18446744073709551615"))
+  (println (try (u128/add "abc" "1") (catch e "err-parse")))
+  (println (try (u128/sub "1" "2") (catch e "err-under")))
+  (println (try (u128/div "1" "0") (catch e "err-div0"))))

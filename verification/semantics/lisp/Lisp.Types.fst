@@ -113,6 +113,15 @@ noeq type opcode =
   | DictSet
   | DictMutSet     of nat
 
+  // u128 operations (NEAR DeFi safety: overflow/underflow trap)
+  // All arguments come from the stack (not immediate parameters)
+  | U128Load                // addr -> lo:i64 (pushes low 64 bits)
+  | U128LoadHigh            // addr -> hi:i64 (pushes high 64 bits)
+  | U128Store               // addr lo hi -> nil
+  | U128Add                 // dst_addr src_addr -> nil (traps on overflow)
+  | U128Sub                 // dst_addr src_addr -> nil (traps on underflow)
+  | U128Mul                 // dst_addr val:i64 -> nil (traps on overflow)
+
   // Self-call
   | CallSelf       of nat
 

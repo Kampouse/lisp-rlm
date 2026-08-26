@@ -47,11 +47,17 @@ fn run_fuzz_wasm(wasm: &[u8]) -> Result<(i64, Vec<u8>), String> {
     );
 
     let mut linker = Linker::new(&engine);
-    linker.define(&store, "env", "read_register", read_reg_fn).unwrap();
-    linker.define(&store, "env", "register_len", reg_len_fn).unwrap();
+    linker
+        .define(&store, "env", "read_register", read_reg_fn)
+        .unwrap();
+    linker
+        .define(&store, "env", "register_len", reg_len_fn)
+        .unwrap();
     linker.define(&store, "env", "input", input_fn).unwrap();
     linker.define(&store, "env", "log_utf8", log_fn).unwrap();
-    linker.define(&store, "env", "value_return", value_return_fn).unwrap();
+    linker
+        .define(&store, "env", "value_return", value_return_fn)
+        .unwrap();
 
     let instance = linker
         .instantiate(&mut store, &module)
@@ -61,9 +67,12 @@ fn run_fuzz_wasm(wasm: &[u8]) -> Result<(i64, Vec<u8>), String> {
         .get_typed_func::<(), ()>(&mut store, "run")
         .map_err(|e| format!("get func 'run': {e}"))?;
 
-    func.call(&mut store, ()).map_err(|e| format!("call: {e}"))?;
+    func.call(&mut store, ())
+        .map_err(|e| format!("call: {e}"))?;
 
-    let memory = instance.get_memory(&mut store, "memory").ok_or("no memory export")?;
+    let memory = instance
+        .get_memory(&mut store, "memory")
+        .ok_or("no memory export")?;
     let data = memory.data(&store).to_vec();
     let tagged = i64::from_le_bytes(data[64..72].try_into().unwrap());
     Ok((tagged, data))
@@ -132,7 +141,9 @@ fn tagged_to_key(tagged: i64, mem: Option<&[u8]>) -> String {
             if let Some(data) = mem {
                 if ptr + 8 <= data.len() {
                     let count = i64::from_le_bytes(data[ptr..ptr + 8].try_into().unwrap()) as usize;
-                    if count == 0 { return "nil".into(); }
+                    if count == 0 {
+                        return "nil".into();
+                    }
                     let mut elems = Vec::new();
                     for i in 0..count {
                         let off = ptr + 8 + i * 8;
@@ -185,9 +196,7 @@ fn classify_mismatch(src: &str, bc_key: &str, wasm_key: &str) -> MismatchClass {
     // Same type, different value — check if from type-incorrect usage
     // (arithmetic on bools, zero? on non-numbers, comparisons with bool/nil args)
     let type_unsafe_ops = [
-        "(+ ", "(- ", "(* ", "(mod ",
-        "(zero? ",
-        "(< ", "(> ", "(<= ", "(>= ", "(= ",
+        "(+ ", "(- ", "(* ", "(mod ", "(zero? ", "(< ", "(> ", "(<= ", "(>= ", "(= ",
     ];
     let has_type_unsafe = type_unsafe_ops.iter().any(|op| src.contains(op));
 
@@ -200,9 +209,9 @@ fn classify_mismatch(src: &str, bc_key: &str, wasm_key: &str) -> MismatchClass {
 
     // and/or returning bools fed into arithmetic/compare context
     let has_bool_flow = src.contains("(or ") || src.contains("(and ");
-    let has_num_ops = [
-        "(+ ", "(- ", "(* ", "(mod ", "(< ", "(> ", "(<= ", "(>= ",
-    ].iter().any(|op| src.contains(op));
+    let has_num_ops = ["(+ ", "(- ", "(* ", "(mod ", "(< ", "(> ", "(<= ", "(>= "]
+        .iter()
+        .any(|op| src.contains(op));
     if has_bool_flow && has_num_ops {
         return MismatchClass::TypeUb {
             op: "bool_in_arith".into(),
@@ -221,9 +230,9 @@ use rand::prelude::*;
 /// Expression types for tracking what an expression returns.
 #[derive(Clone, Copy, PartialEq)]
 enum ExprType {
-    Any,    // Could be anything
-    Num,    // Guaranteed numeric
-    Bool,   // Guaranteed boolean
+    Any,  // Could be anything
+    Num,  // Guaranteed numeric
+    Bool, // Guaranteed boolean
 }
 
 struct ExprGen {
@@ -232,7 +241,9 @@ struct ExprGen {
 
 impl ExprGen {
     fn new(seed: u64) -> Self {
-        Self { rng: rand::rngs::StdRng::seed_from_u64(seed) }
+        Self {
+            rng: rand::rngs::StdRng::seed_from_u64(seed),
+        }
     }
 
     /// Generate a full test program.
@@ -362,9 +373,11 @@ impl ExprGen {
             }
             3 => format!("(car (list {}))", self.gen_expr(depth - 1, ExprType::Any)),
             4 => format!("(cdr (list {}))", self.gen_expr(depth - 1, ExprType::Any)),
-            _ => format!("(len (list {} {}))",
+            _ => format!(
+                "(len (list {} {}))",
                 self.gen_expr(depth - 1, ExprType::Any),
-                self.gen_expr(depth - 1, ExprType::Any)),
+                self.gen_expr(depth - 1, ExprType::Any)
+            ),
         }
     }
 
@@ -422,13 +435,25 @@ fn fuzz_one(seed: u64) -> FuzzResult {
     // WASM compile
     let wasm = match compile_fuzz(&src) {
         Ok(w) => w,
-        Err(_) => return FuzzResult::CompileFail { seed, bc_result, src },
+        Err(_) => {
+            return FuzzResult::CompileFail {
+                seed,
+                bc_result,
+                src,
+            }
+        }
     };
 
     // WASM run
     let (tagged, mem_data) = match run_fuzz_wasm(&wasm) {
         Ok(t) => t,
-        Err(_) => return FuzzResult::CompileFail { seed, bc_result, src },
+        Err(_) => {
+            return FuzzResult::CompileFail {
+                seed,
+                bc_result,
+                src,
+            }
+        }
     };
 
     // Compare
@@ -451,9 +476,18 @@ fn fuzz_one(seed: u64) -> FuzzResult {
 }
 
 enum FuzzResult {
-    Success { seed: u64 },
-    BothFail { seed: u64, src: String },
-    CompileFail { seed: u64, bc_result: LispVal, src: String },
+    Success {
+        seed: u64,
+    },
+    BothFail {
+        seed: u64,
+        src: String,
+    },
+    CompileFail {
+        seed: u64,
+        bc_result: LispVal,
+        src: String,
+    },
     Mismatch {
         seed: u64,
         src: String,
@@ -495,7 +529,14 @@ fn fuzzer_deep_inner() {
             FuzzResult::Success { .. } => successes += 1,
             FuzzResult::BothFail { .. } => both_fails += 1,
             FuzzResult::CompileFail { .. } => compile_fails += 1,
-            FuzzResult::Mismatch { seed, src, bc_key, wasm_key, tagged_raw, class } => {
+            FuzzResult::Mismatch {
+                seed,
+                src,
+                bc_key,
+                wasm_key,
+                tagged_raw,
+                class,
+            } => {
                 let detail = format!(
                     "  [seed={seed}] {}\n    BC:   {bc_key}\n    WASM: {wasm_key}\n    Raw:  {tagged_raw}",
                     src.trim().replace('\n', " ")
@@ -504,10 +545,11 @@ fn fuzzer_deep_inner() {
                     MismatchClass::RealBug => {
                         real_bugs.push(format!("🔴 REAL BUG\n{detail}"));
                     }
-                    MismatchClass::TypeUb { ref op, ref got_type } => {
-                        type_ubs.push(format!(
-                            "⚠️  TYPE UB ({op}: got {got_type})\n{detail}"
-                        ));
+                    MismatchClass::TypeUb {
+                        ref op,
+                        ref got_type,
+                    } => {
+                        type_ubs.push(format!("⚠️  TYPE UB ({op}: got {got_type})\n{detail}"));
                     }
                     MismatchClass::TagUb => {
                         tag_ubs.push(format!("🏷️ TAG UB\n{detail}"));
@@ -557,8 +599,11 @@ fn fuzzer_deep_inner() {
 
     // Summary: if no real bugs, we're clean
     if real_bugs.is_empty() {
-        eprintln!("\n✅ No real bugs found. {} type UBs and {} tag UBs are language spec gaps.",
-            type_ubs.len(), tag_ubs.len());
+        eprintln!(
+            "\n✅ No real bugs found. {} type UBs and {} tag UBs are language spec gaps.",
+            type_ubs.len(),
+            tag_ubs.len()
+        );
     }
 }
 

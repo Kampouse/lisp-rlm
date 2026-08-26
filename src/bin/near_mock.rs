@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use wasmtime::*;
+use lisp_rlm_wasm::builtin_schnorr::schnorr_verify_impl;
 
 const STATE_FILE: &str = "/tmp/near-mock-state.bin";
 
@@ -72,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // === Host functions (all created before linking) ===
 
-    let s1 = state.clone();
+    let _s1 = state.clone();
     let log_fn = Func::new(
         &mut store,
         FuncType::new(&engine, vec![ValType::I64; 2], vec![]),
@@ -408,15 +409,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     );
 
-    let s_ad = state.clone();
+    let _s_ad = state.clone();
     let attached_deposit_fn = Func::new(
         &mut store,
         FuncType::new(&engine, vec![ValType::I64], vec![]),
-        move |_, args, _| {
-            s_ad.lock()
-                .unwrap()
-                .registers
-                .insert(args[0].unwrap_i64() as u64, vec![0u8; 16]);
+        move |mut caller, args, _| {
+            let ptr = args[0].unwrap_i64() as usize;
+            // Write 16 zero bytes to memory (mock always has 0 deposit)
+            if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                let md = mem.data_mut(&mut caller);
+                if ptr + 16 <= md.len() {
+                    md[ptr..ptr + 16].copy_from_slice(&[0u8; 16]);
+                    eprintln!("  → attached_deposit(ptr={}) wrote 16b zeros", ptr);
+                }
+            }
             Ok(())
         },
     );
@@ -497,11 +503,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         FuncType::new(&engine, vec![ValType::I64; 9], vec![]),
         |_, _, _| Ok(()),
     );
-    let noop_4i_i32 = Func::new(
+    let _noop_4i_i32 = Func::new(
         &mut store,
         FuncType::new(&engine, vec![ValType::I64; 4], vec![ValType::I32]),
         |_, _, r| {
             r[0] = Val::I32(0);
+            Ok(())
+        },
+    );
+    let noop_4i_1o = Func::new(
+        &mut store,
+        FuncType::new(&engine, vec![ValType::I64; 4], vec![ValType::I64]),
+        |_, _, r| {
+            r[0] = Val::I64(0);
+            Ok(())
+        },
+    );
+    let noop_8i_1o = Func::new(
+        &mut store,
+        FuncType::new(&engine, vec![ValType::I64; 8], vec![ValType::I64]),
+        |_, _, r| {
+            r[0] = Val::I64(0);
+            Ok(())
+        },
+    );
+    let noop_9i_1o = Func::new(
+        &mut store,
+        FuncType::new(&engine, vec![ValType::I64; 9], vec![ValType::I64]),
+        |_, _, r| {
+            r[0] = Val::I64(0);
             Ok(())
         },
     );
@@ -538,21 +568,52 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     linker.define(&store, "env", "prepaid_gas", noop0r.clone())?;
     linker.define(&store, "env", "random_seed", noop1.clone())?;
     linker.define(&store, "env", "sha256", noop1.clone())?;
+    // schnorr_verify_bip340(pk_ptr: i32, sig_ptr: i32, msg_ptr: i32, msg_len: i32) -> i32
+    let schnorr_fn = Func::new(
+        &mut store,
+        FuncType::new(&engine, vec![ValType::I32; 4], vec![ValType::I32]),
+        |mut caller, params, results| {
+            let pk_ptr = params[0].unwrap_i32() as usize;
+            let sig_ptr = params[1].unwrap_i32() as usize;
+            let msg_ptr = params[2].unwrap_i32() as usize;
+            let msg_len = params[3].unwrap_i32() as usize;
+            
+            let mem = caller.get_export("memory")
+                .and_then(|e| e.into_memory())
+                .expect("missing memory export");
+            let data = mem.data(&caller);
+            
+            if pk_ptr + 32 > data.len() || sig_ptr + 64 > data.len() || msg_ptr + msg_len > data.len() {
+                results[0] = Val::I32(0);
+                return Ok(());
+            }
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let pk: [u8; 32] = data[pk_ptr..pk_ptr+32].try_into().unwrap();
+                let sig: [u8; 64] = data[sig_ptr..sig_ptr+64].try_into().unwrap();
+                let msg = &data[msg_ptr..msg_ptr+msg_len];
+                schnorr_verify_impl(&pk, &sig, msg) as i32
+            })).unwrap_or(0);
+            
+            results[0] = Val::I32(result);
+            Ok(())
+        },
+    );
+    linker.define(&store, "env", "schnorr_verify_bip340", schnorr_fn)?;
     linker.define(&store, "env", "keccak256", noop1.clone())?;
     linker.define(&store, "env", "log", noop1.clone())?;
-    linker.define(&store, "env", "validator_stake", noop_2i_1o.clone())?;
-    linker.define(&store, "env", "validator_total_stake", noop0r.clone())?;
+    linker.define(&store, "env", "validator_stake", noop_3i.clone())?;
+    linker.define(&store, "env", "validator_total_stake", noop1.clone())?;
     linker.define(&store, "env", "alt_bn128_g1_multiexp", noop1.clone())?;
     linker.define(&store, "env", "alt_bn128_g1_sum", noop1.clone())?;
     linker.define(&store, "env", "alt_bn128_pairing_check", noop1.clone())?;
     linker.define(&store, "env", "ed25519_verify", noop_6i_1o)?;
-    linker.define(&store, "env", "ecrecover", noop_2i_1o.clone())?;
+    linker.define(&store, "env", "ecrecover", noop_7i_1o.clone())?;
     linker.define(&store, "env", "epoch_height", noop0r.clone())?;
     linker.define(&store, "env", "storage_usage", noop0r.clone())?;
     linker.define(&store, "env", "log_s", noop1.clone())?;
     linker.define(&store, "env", "validator_account_id", noop1.clone())?;
-    linker.define(&store, "env", "promise_create", noop_3i_1o.clone())?;
-    linker.define(&store, "env", "promise_then", noop_3i_1o.clone())?;
+    linker.define(&store, "env", "promise_create", noop_8i_1o.clone())?;
+    linker.define(&store, "env", "promise_then", noop_9i_1o.clone())?;
     linker.define(&store, "env", "promise_and", noop_2i_1o.clone())?;
     linker.define(&store, "env", "promise_batch_create", noop_2i_1o.clone())?;
     linker.define(&store, "env", "promise_batch_then", noop_3i_1o)?;
@@ -561,7 +622,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     linker.define(&store, "env", "promise_result", noop_2i_1o.clone())?;
     linker.define(&store, "env", "promise_return", noop1.clone())?;
     linker.define(&store, "env", "promise_yield_create", noop_7i_1o)?;
-    linker.define(&store, "env", "promise_yield_resume", noop_4i_i32)?;
+    linker.define(&store, "env", "promise_yield_resume", noop_4i_1o.clone())?;
+    linker.define(&store, "env", "account_locked_balance", noop1.clone())?;
+    linker.define(&store, "env", "storage_iter_prefix", noop_2i_1o.clone())?;
+    linker.define(&store, "env", "storage_iter_range", noop_4i_1o.clone())?;
+    linker.define(&store, "env", "storage_iter_next", noop_3i_1o.clone())?;
+    linker.define(&store, "env", "write_register", noop_3i.clone())?;
     linker.define(
         &store,
         "env",
@@ -581,7 +647,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "promise_batch_action_function_call_weight",
         noop_8i,
     )?;
-    linker.define(&store, "env", "promise_batch_action_transfer", noop_2i)?;
+    linker.define(
+        &store,
+        "env",
+        "promise_batch_action_transfer",
+        noop_2i.clone(),
+    )?;
     linker.define(&store, "env", "promise_batch_action_stake", noop_4i.clone())?;
     linker.define(
         &store,

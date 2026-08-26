@@ -1,6 +1,11 @@
 [workspace]
-members = [".", "clojure-rlm", "crates/browser-compiler"]
-exclude = ["http-adapter"]
+members = [".", "clojure-rlm", "crates/browser-compiler", "schnorr-wasm"]
+exclude = ["http-adapter", "wasm-test"]
+
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = true
 
 [package]
 name = "lisp-rlm-wasm"
@@ -38,9 +43,9 @@ solang-parser = "0.3.5"
 leb128 = "0.2.6"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-wasmtime = { version = "44.0.1", features = ["cranelift"] }
-wasmtime-wasi = { version = "44.0.1" }
-wasmtime-wasi-http = { version = "44.0.1" }
+wasmtime = { version = "45", features = ["cranelift"] }
+wasmtime-wasi = { version = "45" }
+wasmtime-wasi-http = { version = "45" }
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", features = ["json"] }
 rustyline = "14"

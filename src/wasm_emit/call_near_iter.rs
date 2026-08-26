@@ -1,10 +1,16 @@
 use super::*;
 
 impl WasmEmitter {
-    pub(crate) fn call_near_iter(&mut self, op: &str, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
+    pub(crate) fn call_near_iter(
+        &mut self,
+        op: &str,
+        a: &[LispVal],
+    ) -> Result<Vec<Instruction<'static>>, String> {
         match op {
             "near/iter_prefix" => {
-                if a.len() < 2 { return Err("near/iter_prefix: need 2 args (prefix_ptr, prefix_len)".into()); }
+                if a.len() < 2 {
+                    return Err("near/iter_prefix: need 2 args (prefix_ptr, prefix_len)".into());
+                }
                 let prefix = self.expr(&a[0])?;
                 let prefix_len = self.expr(&a[1])?;
                 let mut v = Vec::new();
@@ -18,21 +24,27 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0)); // register_id = 0
                 v.extend(prefix_len.clone());
                 v.extend(prefix);
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U); // ptr as i64
-                // Swap to get (register_id, data_ptr, data_len) — nope, write_register is (register_id, data_len, data_ptr)
-                // Actually HOST_FUNCS[2] = write_register: (I64, I64, I64) = (register_id, data_len, data_ptr)
-                // We pushed: reg_id=0, prefix_len, prefix_ptr. That's correct order.
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U); // ptr as i64
+                                                    // Swap to get (register_id, data_ptr, data_len) — nope, write_register is (register_id, data_len, data_ptr)
+                                                    // Actually HOST_FUNCS[2] = write_register: (I64, I64, I64) = (register_id, data_len, data_ptr)
+                                                    // We pushed: reg_id=0, prefix_len, prefix_ptr. That's correct order.
                 v.push(Self::host_call(2)); // write_register — returns void, no drop
-                // storage_iter_prefix(prefix_len, register_id=0) — idx 36
-                // But wait: HOST_FUNCS[36] = storage_iter_prefix: (I64, I64) = (prefix_len, register_id)
-                // We need to pass the length again and register_id
+                                            // storage_iter_prefix(prefix_len, register_id=0) — idx 36
+                                            // But wait: HOST_FUNCS[36] = storage_iter_prefix: (I64, I64) = (prefix_len, register_id)
+                                            // We need to pass the length again and register_id
                 v.extend(prefix_len.clone());
                 v.push(Instruction::I64Const(0)); // register_id = 0
                 v.push(Self::host_call(36));
                 Ok(v)
             }
             "near/iter_range" => {
-                if a.len() < 4 { return Err("near/iter_range: need 4 args (start_ptr, start_len, end_ptr, end_len)".into()); }
+                if a.len() < 4 {
+                    return Err(
+                        "near/iter_range: need 4 args (start_ptr, start_len, end_ptr, end_len)"
+                            .into(),
+                    );
+                }
                 let start = self.expr(&a[0])?;
                 let start_len = self.expr(&a[1])?;
                 let end = self.expr(&a[2])?;
@@ -41,14 +53,18 @@ impl WasmEmitter {
                 // Write start to register 0
                 v.push(Instruction::I64Const(0)); // register_id
                 v.extend(start_len.clone());
-                v.extend(start); v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(start);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
                 v.push(Self::host_call(2)); // write_register — void
-                // Write end to register 1
+                                            // Write end to register 1
                 v.push(Instruction::I64Const(1)); // register_id
                 v.extend(end_len.clone());
-                v.extend(end); v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.extend(end);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
                 v.push(Self::host_call(2)); // write_register — void
-                // storage_iter_range(start_len, register_id=0, end_len, register_id=1) — idx 37
+                                            // storage_iter_range(start_len, register_id=0, end_len, register_id=1) — idx 37
                 v.extend(start_len);
                 v.push(Instruction::I64Const(0));
                 v.extend(end_len);
@@ -57,7 +73,9 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/iter_next" => {
-                if a.len() < 3 { return Err("near/iter_next: need 3 args (iter_id, key_ptr, val_ptr)".into()); }
+                if a.len() < 3 {
+                    return Err("near/iter_next: need 3 args (iter_id, key_ptr, val_ptr)".into());
+                }
                 let iter_id = self.expr(&a[0])?;
                 let key_ptr = self.expr(&a[1])?;
                 let val_ptr = self.expr(&a[2])?;

@@ -1,0 +1,8 @@
+{
+  "name": "test_ret_debug",
+  "src": "test_ret_debug.lisp",
+  "account": "test.kampy.testnet",
+  "network": "testnet",
+  "output": "test_ret_debug.wasm",
+  "tests": ""
+}

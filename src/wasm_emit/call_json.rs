@@ -81,29 +81,21 @@ impl WasmEmitter {
                             // We'll make buf_setup push the length, and pass buf=0 as sentinel
                             // Actually let's do it differently: extract ptr and len at runtime
                             let mut setup = Vec::new();
-                            setup.extend(buf_expr.clone());
                             // Untag: >> 3 to get payload
-                            setup.push(Instruction::I64Const(3)); setup.push(Instruction::I64ShrU);
-                            // Now payload = (len << 32) | ptr
-                            // Extract len: payload >> 32
-                            setup.push(Instruction::I64Const(32)); setup.push(Instruction::I64ShrU);
-                            // len is now on stack — but json_get_from_buf expects (ilen) as setup
-                            // We also need the ptr. Store payload in a temp, compute both.
                             let tmp = self.local_idx("__jgs_tmp");
                             let _buf_ptr = self.local_idx("__jgs_bptr");
-                            setup.extend(buf_expr);
+                            setup.extend(buf_expr.clone());
                             setup.push(Instruction::I64Const(3)); setup.push(Instruction::I64ShrU);
                             setup.push(Instruction::LocalSet(tmp));
-                            // len = tmp >> 32
-                            setup.push(Instruction::LocalGet(tmp));
-                            setup.push(Instruction::I64Const(32)); setup.push(Instruction::I64ShrU);
-                            // buf_ptr = tmp & 0xFFFFFFFF (but we need a fixed buf value for json_get_from_buf)
+                            // Copy string to STDIN_BUF, then scan — len comes from copy_setup
                             // Problem: json_get_from_buf takes a fixed buf address. The ptr is runtime.
                             // We need a version that takes buf from a local, not a constant.
                             // Quick fix: copy the string to a fixed buffer first, then scan it.
                             let _ = buf_val;
-                            // Copy string to INPUT_BUF (NEAR) or STDIN_BUF (WASI), then scan
-                            let target_buf = if self.wasi_mode { 32768i64 } else { INPUT_BUF };
+                            // Copy string to INPUT_BUF (NEAR) or JSON_FIXED_BUF (WASI), then scan
+                            // JSON_FIXED_BUF must NOT overlap STDIN_BUF (32768) — json-get overwrites
+                            // this buffer, which would corrupt any str-slice pointers into stdin.
+                            let target_buf = if self.wasi_mode { 65536i64 } else { INPUT_BUF };
                             let src_ptr_l = self.local_idx("__jgs_sp");
                             let copy_i = self.local_idx("__jgs_ci");
                             let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
@@ -138,101 +130,154 @@ impl WasmEmitter {
                             copy_setup.push(Instruction::Br(0));
                             copy_setup.push(Instruction::End); copy_setup.push(Instruction::End);
                             // Now scan from target_buf with the length
-                            self.json_get_from_buf(key, "int", target_buf, &mut copy_setup)?
+                            let mut v = self.json_get_from_buf(key, "str", target_buf, &mut copy_setup)?;
+                            // Prepend setup (tmp extraction + copy loop) before the json_get_from_buf instructions
+                            v.splice(0..0, setup.iter().cloned());
+                            // json_get_from_buf("str") returns raw (len << 32 | ptr) — copy to heap and tag as TAG_STR
+                            let jgs_tmp2 = self.local_idx("jgs_packed2");
+                            let jgs_len = self.local_idx_i32("jgs_len2");
+                            let jgs_ptr = self.local_idx_i32("jgs_ptr2");
+                            v.push(Instruction::LocalSet(jgs_tmp2));
+                            v.push(Instruction::LocalGet(jgs_tmp2));
+                            v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                            v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(jgs_len));
+                            v.push(Instruction::LocalGet(jgs_tmp2));
+                            v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(jgs_ptr));
+                            // Runtime heap allocation (safe for recursive calls)
+                            // Allocate only result_len bytes — 65536 overwrites other heap data
+                            let jgs_heap = self.local_idx("jgs_heap");
+                            let jgs_aligned = self.local_idx_i32("jgs_aligned");
+                            let rhp: i32 = 56;
+                            let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                            // Align len to 8
+                            v.push(Instruction::LocalGet(jgs_len));
+                            v.push(Instruction::I32Const(7));
+                            v.push(Instruction::I32Add);
+                            v.push(Instruction::I32Const(-8));
+                            v.push(Instruction::I32And);
+                            v.push(Instruction::LocalSet(jgs_aligned));
+                            v.push(Instruction::I32Const(rhp));
+                            v.push(Instruction::I64Load(ma8.clone()));
+                            v.push(Instruction::LocalSet(jgs_heap));
+                            v.push(Instruction::I32Const(rhp));
+                            v.push(Instruction::LocalGet(jgs_heap));
+                            v.push(Instruction::LocalGet(jgs_aligned));
+                            v.push(Instruction::I64ExtendI32U);
+                            v.push(Instruction::I64Add);
+                            v.push(Instruction::I64Store(ma8));
+                            let ma = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+                            v.push(Instruction::LocalGet(jgs_heap));
+                            v.push(Instruction::I32WrapI64); // dst as i32
+                            v.push(Instruction::LocalGet(jgs_ptr));
+                            v.push(Instruction::LocalGet(jgs_len));
+                            v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+                            v.push(Instruction::LocalGet(jgs_len)); v.push(Instruction::I64ExtendI32U);
+                            v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                            v.push(Instruction::LocalGet(jgs_heap)); // already i64
+                            v.push(Instruction::I64Or);
+                            v.extend(self.emit_tag_str());
+                            v
                         } else if self.wasi_mode {
-                            self.json_get_wasi(key, "int")?
+                            self.json_get_wasi(key, "str")?
                         } else {
-                            self.json_get_with_scanner(key, "int")?
+                            self.json_get_with_scanner(key, "auto")?
                         };
-                        v.extend(self.emit_tag_num());
+                        // json_get_from_buf("auto") returns tagged value directly (TAG_STR or TAG_NUM)
                         Ok(v)
                     }
                     _ => Err("json-get key must be a string literal".into()),
                 }
             }
             "json-get-str" => {
-                if a.is_empty() { return Err("json-get-str requires a string key argument".into()); }
+                if a.len() < 2 { return Err("json-get-str requires two arguments: (json-get-str \"key\" input-buffer)".into()); }
                 match &a[0] {
                     LispVal::Str(key) => {
-                        let mut v = if a.len() > 1 {
-                            // (json-get-str "key" buffer) — scan directly from buffer, zero-copy
-                            // The tagged string payload IS the packed (len<<32|ptr) that __json_get expects
-                            let mut setup = Vec::new();
-                            setup.extend(self.expr(&a[1])?);
-                            setup.push(Instruction::I64Const(3)); setup.push(Instruction::I64ShrU);
-                            // Stack: payload = (len << 32) | ptr — pass directly to __json_get
-                            let pat = {
-                                let mut p = vec![b'"'];
-                                p.extend(key.as_bytes());
-                                p.extend_from_slice(b"\":");
-                                p
-                            };
-                            let pat_off = self.alloc_data(&pat) as i64;
-                            let pat_len = pat.len() as i64;
-                            let pat_packed = (pat_off as u64) | ((pat_len as u64) << 32);
-                            setup.push(Instruction::I64Const(pat_packed as i64));
-                            let jg_idx = self.ensure_json_get_func();
-                            setup.push(Instruction::Call(crate::wasm_emit::USER_BASE | jg_idx));
-                            // Runtime heap bump: copy jgs_len bytes using runtime allocator
-                            let jgs_tmp = self.local_idx("jgs_packed");
-                            let jgs_len = self.local_idx_i32("jgs_len");
-                            let jgs_ptr = self.local_idx_i32("jgs_ptr");
-                            let rha_old = self.local_idx("jgs_rha_old");
-                            let rha_new = self.local_idx("jgs_rha_new");
-                            let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
-                            let mem_limit = (self.memory_pages as i64) * 65536;
-                            setup.push(Instruction::LocalSet(jgs_tmp));
-                            // Extract len and ptr from packed result
-                            setup.push(Instruction::LocalGet(jgs_tmp));
-                            setup.push(Instruction::I64Const(32)); setup.push(Instruction::I64ShrU);
-                            setup.push(Instruction::I32WrapI64); setup.push(Instruction::LocalSet(jgs_len));
-                            setup.push(Instruction::LocalGet(jgs_tmp));
-                            setup.push(Instruction::I32WrapI64); setup.push(Instruction::LocalSet(jgs_ptr));
-                            // Runtime bump allocator: read RUNTIME_HEAP_PTR, advance by aligned len
-                            setup.push(Instruction::I64Const(56)); // RUNTIME_HEAP_PTR
-                            setup.push(Instruction::I32WrapI64);
-                            setup.push(Instruction::I64Load(ma8));
-                            setup.push(Instruction::LocalSet(rha_old));
-                            // aligned_len = (len + 7) & ~7
-                            setup.push(Instruction::LocalGet(jgs_len));
-                            setup.push(Instruction::I64ExtendI32U);
-                            setup.push(Instruction::I64Const(7)); setup.push(Instruction::I64Add);
-                            setup.push(Instruction::I64Const(-8)); setup.push(Instruction::I64And);
-                            setup.push(Instruction::LocalGet(rha_old));
-                            setup.push(Instruction::I64Add);
-                            setup.push(Instruction::LocalSet(rha_new));
-                            // Guard: new_ptr < mem_limit
-                            setup.push(Instruction::LocalGet(rha_new));
-                            setup.push(Instruction::I64Const(mem_limit));
-                            setup.push(Instruction::I64LtU);
-                            setup.push(Instruction::If(BlockType::Empty));
-                            // OK: write back new ptr to RUNTIME_HEAP_PTR
-                            setup.push(Instruction::I64Const(56));
-                            setup.push(Instruction::I32WrapI64);
-                            setup.push(Instruction::LocalGet(rha_new));
-                            setup.push(Instruction::I64Store(ma8));
-                            setup.push(Instruction::Else);
-                            setup.push(Instruction::Unreachable);
-                            setup.push(Instruction::End);
-                            // memory.copy dst=rha_old, src=jgs_ptr, len=jgs_len
-                            setup.push(Instruction::LocalGet(rha_old));
-                            setup.push(Instruction::I32WrapI64);
-                            setup.push(Instruction::LocalGet(jgs_ptr));
-                            setup.push(Instruction::LocalGet(jgs_len));
-                            setup.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
-                            // Repack (untagged): (len << 32) | rha_old
-                            // emit_tag_str() at line 201 adds the tag for ALL paths
-                            setup.push(Instruction::LocalGet(jgs_len)); setup.push(Instruction::I64ExtendI32U);
-                            setup.push(Instruction::I64Const(32)); setup.push(Instruction::I64Shl);
-                            setup.push(Instruction::LocalGet(rha_old));
-                            setup.push(Instruction::I64Or);
-                            setup
-                        } else if self.wasi_mode {
-                            self.json_get_wasi(key, "str")?
-                        } else {
-                            self.json_get_with_scanner(key, "str")?
-                        };
+                        // (json-get-str "key" buffer) — supports dot-path notation
+                        let buf_expr = self.expr(&a[1])?;
+                        let tmp = self.local_idx("__jgs_tmp");
+                        let mut setup = Vec::new();
+                        // Untag buffer to get payload (len<<32|ptr)
+                        setup.extend(buf_expr.clone());
+                        setup.push(Instruction::I64Const(3)); setup.push(Instruction::I64ShrU);
+                        setup.push(Instruction::LocalSet(tmp));
+                        // Copy string to fixed buffer at 65536 (JSON_FIXED_BUF, not STDIN_BUF 32768)
+                        let target_buf = if self.wasi_mode { 65536i64 } else { INPUT_BUF };
+                        let src_ptr_l = self.local_idx("__jgs_sp");
+                        let copy_i = self.local_idx("__jgs_ci");
+                        let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+                        // src_ptr = tmp & 0xFFFFFFFF
+                        setup.push(Instruction::LocalGet(tmp));
+                        setup.push(Instruction::I64Const(0xFFFFFFFF)); setup.push(Instruction::I64And);
+                        setup.push(Instruction::LocalSet(src_ptr_l));
+                        // len = tmp >> 32
+                        let mut len_setup = Vec::new();
+                        len_setup.push(Instruction::LocalGet(tmp));
+                        len_setup.push(Instruction::I64Const(32)); len_setup.push(Instruction::I64ShrU);
+                        // Copy loop
+                        setup.push(Instruction::I64Const(0)); setup.push(Instruction::LocalSet(copy_i));
+                        setup.push(Instruction::Block(BlockType::Empty));
+                        setup.push(Instruction::Loop(BlockType::Empty));
+                        setup.push(Instruction::LocalGet(copy_i)); len_setup.iter().for_each(|i| setup.push(i.clone()));
+                        setup.push(Instruction::I64GeU); setup.push(Instruction::BrIf(1));
+                        setup.push(Instruction::I64Const(target_buf));
+                        setup.push(Instruction::LocalGet(copy_i)); setup.push(Instruction::I64Add);
+                        setup.push(Instruction::I32WrapI64);
+                        setup.push(Instruction::LocalGet(src_ptr_l));
+                        setup.push(Instruction::LocalGet(copy_i)); setup.push(Instruction::I64Add);
+                        setup.push(Instruction::I32WrapI64);
+                        setup.push(Instruction::I32Load8U(ma8.clone()));
+                        setup.push(Instruction::I32Store8(ma8.clone()));
+                        setup.push(Instruction::LocalGet(copy_i)); setup.push(Instruction::I64Const(1));
+                        setup.push(Instruction::I64Add); setup.push(Instruction::LocalSet(copy_i));
+                        setup.push(Instruction::Br(0));
+                        setup.push(Instruction::End); setup.push(Instruction::End);
+                        // Now use json_get_from_buf with "str" value type (supports dot-path)
+                        let mut len_for_jg = Vec::new();
+                        len_for_jg.push(Instruction::LocalGet(tmp));
+                        len_for_jg.push(Instruction::I64Const(32)); len_for_jg.push(Instruction::I64ShrU);
+                        let mut v = self.json_get_from_buf(key, "str", target_buf, &mut len_for_jg)?;
+                        // Copy result from stdout_buf (204800) to heap for persistence
+                        let jgs_tmp2 = self.local_idx("jgs_packed2");
+                        let jgs_len = self.local_idx_i32("jgs_len2");
+                        let jgs_ptr = self.local_idx_i32("jgs_ptr2");
+                        v.push(Instruction::LocalSet(jgs_tmp2));
+                        v.push(Instruction::LocalGet(jgs_tmp2));
+                        v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                        v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(jgs_len));
+                        v.push(Instruction::LocalGet(jgs_tmp2));
+                        v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(jgs_ptr));
+                        // Runtime heap allocation (safe for recursive calls)
+                        let jgs_heap2 = self.local_idx("jgs_heap2");
+                        let jgs_aligned2 = self.local_idx_i32("jgs_aligned2");
+                        let rhp2: i32 = 56;
+                        let ma82 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                        // Align len to 8
+                        v.push(Instruction::LocalGet(jgs_len));
+                        v.push(Instruction::I32Const(7));
+                        v.push(Instruction::I32Add);
+                        v.push(Instruction::I32Const(-8));
+                        v.push(Instruction::I32And);
+                        v.push(Instruction::LocalSet(jgs_aligned2));
+                        v.push(Instruction::I32Const(rhp2));
+                        v.push(Instruction::I64Load(ma82.clone()));
+                        v.push(Instruction::LocalSet(jgs_heap2));
+                        v.push(Instruction::I32Const(rhp2));
+                        v.push(Instruction::LocalGet(jgs_heap2));
+                        v.push(Instruction::LocalGet(jgs_aligned2));
+                        v.push(Instruction::I64ExtendI32U);
+                        v.push(Instruction::I64Add);
+                        v.push(Instruction::I64Store(ma82));
+                        v.push(Instruction::LocalGet(jgs_heap2));
+                        v.push(Instruction::I32WrapI64); // dst as i32
+                        v.push(Instruction::LocalGet(jgs_ptr));
+                        v.push(Instruction::LocalGet(jgs_len));
+                        v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+                        v.push(Instruction::LocalGet(jgs_len)); v.push(Instruction::I64ExtendI32U);
+                        v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                        v.push(Instruction::LocalGet(jgs_heap2)); // already i64
+                        v.push(Instruction::I64Or);
                         v.extend(self.emit_tag_str());
+                        v.splice(0..0, setup.iter().cloned());
                         Ok(v)
                     }
                     _ => Err("json-get-str key must be a string literal".into()),
@@ -309,25 +354,58 @@ impl WasmEmitter {
             "json-array-get" => {
                 if a.len() != 2 { return Err("json-array-get: expected 2 args (array-str, index)".into()); }
                 let mut v = Vec::new();
+                // Evaluate array string and index
                 v.extend(self.expr(&a[0])?); // array string (tagged)
                 v.push(Instruction::I64Const(3));
                 v.push(Instruction::I64ShrU); // untag to packed (len<<32|ptr)
                 v.extend(self.expr(&a[1])?); // index (tagged number)
                 v.push(Instruction::I64Const(3));
                 v.push(Instruction::I64ShrU); // untag to raw i64 number
+                // Save packed and index to locals before any heap manipulation
+                let jag_data = self.local_idx("jag_data");   // packed input (len<<32|ptr)
+                let jag_idx = self.local_idx("jag_idx");     // raw index
+                let jag_inlen = self.local_idx_i32("jag_inlen"); // input string len
+                let jag_inalign = self.local_idx_i32("jag_inalign");
+                v.push(Instruction::LocalSet(jag_idx));  // pop index
+                v.push(Instruction::LocalSet(jag_data)); // pop packed
+                // Extract input length: packed >> 32
+                v.push(Instruction::LocalGet(jag_data));
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalSet(jag_inlen));
+                // Align input len to 8
+                v.push(Instruction::LocalGet(jag_inlen));
+                v.push(Instruction::I32Const(7));
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Const(-8));
+                v.push(Instruction::I32And);
+                v.push(Instruction::LocalSet(jag_inalign));
+                // CRITICAL: Bump the heap pointer PAST the input data BEFORE calling
+                // __json_array_get. This ensures that when we later allocate space for
+                // the result, it won't overlap with (and overwrite) the input string.
+                let rhp: i32 = 56; // RUNTIME_HEAP_PTR
+                let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let jag_oldheap = self.local_idx("jag_oldheap");
+                v.push(Instruction::I32Const(rhp));
+                v.push(Instruction::I64Load(ma8.clone()));
+                v.push(Instruction::LocalSet(jag_oldheap));
+                v.push(Instruction::I32Const(rhp));
+                v.push(Instruction::LocalGet(jag_oldheap));
+                v.push(Instruction::LocalGet(jag_inalign));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Store(ma8.clone()));
+                // Now call __json_array_get with the original packed data + index
                 let idx = self.ensure_json_array_get_func();
+                v.push(Instruction::LocalGet(jag_data));
+                v.push(Instruction::LocalGet(jag_idx));
                 v.push(Instruction::Call(crate::wasm_emit::USER_BASE | idx));
-                // Heap copy: jag returns tagged str ((len<<32|ptr)<<3|5).
-                // Must UNTAG first (>>3), then extract ptr/len.
+                // Post-processing: copy result from stdout_buf to heap
                 let jag_tmp = self.local_idx("jag_packed");
                 let jag_len = self.local_idx_i32("jag_len");
                 let jag_ptr = self.local_idx_i32("jag_ptr");
-                let jag_heap = self.local_idx_i32("jag_heap");
-                let rhp: i32 = 56; // RUNTIME_HEAP_PTR
-                let jag_old = self.local_idx("jag_rha_old");
-                let jag_new = self.local_idx("jag_rha_new");
-                let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
-                let mem_limit = (self.memory_pages as i64) * 65536;
+                let jag_heap = self.local_idx("jag_heap");
+                let jag_aligned = self.local_idx_i32("jag_aligned");
                 v.push(Instruction::LocalSet(jag_tmp));
                 v.push(Instruction::LocalGet(jag_tmp));
                 v.extend(self.emit_untag()); // untag: >> 3
@@ -336,41 +414,34 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(jag_tmp));
                 v.extend(self.emit_untag()); // untag: >> 3
                 v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(jag_ptr));
-                // Runtime bump allocator
-                v.push(Instruction::I64Const(56)); // RUNTIME_HEAP_PTR
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Load(ma8.clone()));
-                v.push(Instruction::LocalSet(jag_old));
-                // aligned_len = (len + 7) & ~7
+                // Align result len to 8
                 v.push(Instruction::LocalGet(jag_len));
+                v.push(Instruction::I32Const(7));
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Const(-8));
+                v.push(Instruction::I32And);
+                v.push(Instruction::LocalSet(jag_aligned));
+                // Read current heap ptr (already bumped past input)
+                v.push(Instruction::I32Const(rhp));
+                v.push(Instruction::I64Load(ma8.clone()));
+                v.push(Instruction::LocalSet(jag_heap));
+                // Bump: heap_ptr + aligned result len
+                v.push(Instruction::I32Const(rhp));
+                v.push(Instruction::LocalGet(jag_heap));
+                v.push(Instruction::LocalGet(jag_aligned));
                 v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::I64Const(7)); v.push(Instruction::I64Add);
-                v.push(Instruction::I64Const(-8)); v.push(Instruction::I64And);
-                v.push(Instruction::LocalGet(jag_old));
                 v.push(Instruction::I64Add);
-                v.push(Instruction::LocalSet(jag_new));
-                // Guard
-                v.push(Instruction::LocalGet(jag_new));
-                v.push(Instruction::I64Const(mem_limit));
-                v.push(Instruction::I64LtU);
-                v.push(Instruction::If(BlockType::Empty));
-                v.push(Instruction::I64Const(56));
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::LocalGet(jag_new));
-                v.push(Instruction::I64Store(ma8));
-                v.push(Instruction::Else);
-                v.push(Instruction::Unreachable);
-                v.push(Instruction::End);
-                // memory.copy dst=jag_old, src=jag_ptr, len=jag_len
-                v.push(Instruction::LocalGet(jag_old));
-                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Store(ma8.clone()));
+                // memory.copy dst=jag_heap, src=jag_ptr(stdout_buf), len=jag_len
+                v.push(Instruction::LocalGet(jag_heap));
+                v.push(Instruction::I32WrapI64); // dst as i32
                 v.push(Instruction::LocalGet(jag_ptr));
                 v.push(Instruction::LocalGet(jag_len));
                 v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
                 // Repack: (len << 32) | jag_old
                 v.push(Instruction::LocalGet(jag_len)); v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
-                v.push(Instruction::LocalGet(jag_old));
+                v.push(Instruction::LocalGet(jag_heap)); // already i64
                 v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 Ok(v)

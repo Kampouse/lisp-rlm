@@ -1,0 +1,25 @@
+(define (run)
+  (let* (
+    ;; === BATCH 1: 4 prices ===
+    (prices1 (http-get "https://api.rhea.finance/list-token-price"))
+    (o1 (json-get-str "nbtc.bridge.near" prices1))
+    (p1 (json-get-str "price" o1))
+    (o2 (json-get-str "zec.omft.near" prices1))
+    (p2 (json-get-str "price" o2))
+    (o3 (json-get-str "usdt.tether-token.near" prices1))
+    (p3 (json-get-str "price" o3))
+    (o4 (json-get-str "meta-pool.near" prices1))
+    (p4 (json-get-str "price" o4))
+    ;; === BATCH 2: 4 more prices (fresh GET to reset) ===
+    (prices2 (http-get "https://api.rhea.finance/list-token-price"))
+    (o5 (json-get-str "token.burrow.near" prices2))
+    (p5 (json-get-str "price" o5))
+    (o6 (json-get-str "xtoken.rhealab.near" prices2))
+    (p6 (json-get-str "price" o6))
+    (o7 (json-get-str "wrap.near" prices2))
+    (p7 (json-get-str "price" o7))
+    (o8 (json-get-str "rnek.v2.near" prices2))
+    (p8 (json-get-str "price" o8))
+    ;; === OUTPUT ===
+    (out (str-cat p1 "|" p2 "|" p3 "|" p4 "|" p5 "|" p6 "|" p7 "|" p8)))
+    out))

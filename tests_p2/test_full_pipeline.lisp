@@ -1,0 +1,27 @@
+(define (run)
+  (let* (
+    ;; === STEP 1: Fetch ALL token prices ===
+    (prices (http-get "https://api.rhea.finance/list-token-price"))
+    (nbtc-p (json-get-str "price" (json-get-str "nbtc.bridge.near" prices)))
+    (zec-p (json-get-str "price" (json-get-str "zec.omft.near" prices)))
+    (usdt-p (json-get-str "price" (json-get-str "usdt.tether-token.near" prices)))
+    (stnear-p (json-get-str "price" (json-get-str "meta-pool.near" prices)))
+    (xrhea-p (json-get-str "price" (json-get-str "xtoken.rhealab.near" prices)))
+    (usdc-p (json-get-str "price" (json-get-str "a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.factory.bridge.near" prices)))
+    (near-p (json-get-str "price" (json-get-str "wrap.near" prices)))
+    ;; === STEP 2: Fetch Burrow account ===
+    (args-b64 "eyJhY2NvdW50X2lkIjogIjk0M2FkZGFiZGU3OTEzYzZmNTgwNDNkMzQ4ZWM3NjM2NDM2ODliNjhkYTJlN2FiMTg2YjdkNzVlMWQ1NDRmZjIifQ==")
+    (rpc-body (str-cat "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"query\",\"params\":{\"request_type\":\"call_function\",\"finality\":\"final\",\"account_id\":\"contract.main.burrow.near\",\"method_name\":\"get_account\",\"args_base64\":\"" args-b64 "\"}}"))
+    (rpc-result (http-post "https://rpc.mainnet.near.org" rpc-body))
+    (outer-result (json-get-str "result" rpc-result))
+    (inner-result (json-get-str "result" outer-result))
+    (account-bytes (json-decode-bytes inner-result))
+    (supplied (json-get-str "supplied" account-bytes))
+    (collateral (json-get-str "collateral" account-bytes))
+    (borrowed (json-get-str "borrowed" account-bytes))
+    (s-len (str-len supplied))
+    (c-len (str-len collateral))
+    (b-len (str-len borrowed))
+    ;; === STEP 3: Output ===
+    (out (str-cat "nBTC=" nbtc-p " ZEC=" zec-p " USDT=" usdt-p " stNEAR=" stnear-p " XRHEA=" xrhea-p " USDC=" usdc-p " NEAR=" near-p "\nSupplied: " (to-string s-len) " bytes\nCollateral: " (to-string c-len) " bytes\nBorrowed: " (to-string b-len) " bytes")))
+    out))

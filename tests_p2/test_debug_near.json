@@ -1,0 +1,7 @@
+{
+  "name": "test_debug",
+  "src": "test_debug.lisp",
+  "account": "test.kampy.testnet",
+  "network": "testnet",
+  "output": "test_debug.wasm"
+}

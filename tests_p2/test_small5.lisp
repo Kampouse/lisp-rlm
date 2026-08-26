@@ -1,0 +1,8 @@
+(define (run)
+  (let* ((data "{\"a\":{\"v\":\"1\"},\"b\":{\"v\":\"2\"},\"c\":{\"v\":\"3\"},\"d\":{\"v\":\"4\"},\"e\":{\"v\":\"5\"}}")
+         (d1 (json-get-str "v" (json-get-str "a" data)))
+         (d2 (json-get-str "v" (json-get-str "b" data)))
+         (d3 (json-get-str "v" (json-get-str "c" data)))
+         (d4 (json-get-str "v" (json-get-str "d" data)))
+         (d5 (json-get-str "v" (json-get-str "e" data))))
+    (str-cat d1 "|" d2 "|" d3 "|" d4 "|" d5)))

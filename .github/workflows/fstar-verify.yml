@@ -1,0 +1,34 @@
+name: F* Verification
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install opam
+        run: brew install opam
+      
+      - name: Initialize opam
+        run: opam init --disable-sandboxing -y
+      
+      - name: Install F*
+        run: opam install fstar -y
+      
+      - name: Verify proofs
+        run: |
+          eval $(opam env)
+          cd ~/.hermes/skills/lisp-rlm-sim || git clone https://github.com/user/lisp-rlm-sim.git ~/.hermes/skills/lisp-rlm-sim
+          ~/.opam/fstar/bin/fstar.exe CoreTypes.fst ValueCorrespondence.fst Simulation.fst HttpStateMachine.fst Integration.fst RuntimeAssertions.fst
+      
+      - name: Check invariants match Rust
+        run: |
+          # Verify tag constants match between F* and Rust
+          grep "TAG_NUM.*=.*0" src/tagged_value.rs
+          grep "tag_num.*=.*0" ~/.hermes/skills/lisp-rlm-sim/CoreTypes.fst

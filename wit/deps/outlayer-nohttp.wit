@@ -1,0 +1,17 @@
+package near:outlayer-combined@0.1.0;
+
+// Outlayer-only world for P2 components WITHOUT wasi:http.
+// Includes minimal wasi:cli/stdin + wasi:cli/stdout + wasi:io/streams
+// for stdin/stdout I/O, but NO wasi:http/types or outgoing-handler.
+
+world outlayer-nohttp {
+    import outlayer:api/host@0.1.0;
+
+    import wasi:io/poll@0.2.2;
+    import wasi:io/error@0.2.2;
+    import wasi:io/streams@0.2.2;
+    import wasi:cli/stdin@0.2.2;
+    import wasi:cli/stdout@0.2.2;
+
+    export run: func(input: string) -> result<string>;
+}

@@ -899,11 +899,15 @@ fn test_try_catch_division_by_zero() {
 }
 #[test]
 fn test_try_catch_type_error() {
-    // Arithmetic coerces non-numeric args to 0 (matches spec VM num_val_ref).
-    // (+ 1 "hello") => 1, not a type error.
+    // Round-3 semantics (dca060d): bare arithmetic hard-errors on non-numeric
+    // operands instead of silently coercing to 0. The error is catchable.
     let code = r#"(try (+ 1 "hello") (catch e (str-concat "caught: " e)))"#;
     let result = eval_str(code);
-    assert_eq!(result, "1");
+    assert!(
+        result.contains("caught:"),
+        "should catch type error: {}",
+        result
+    );
 }
 #[test]
 fn test_type_checks() {

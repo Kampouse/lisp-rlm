@@ -1,0 +1,5 @@
+(define (run input)
+  (let ((lst (cons "hello" nil)))
+    (let ((a (car lst)))
+      (let ((b (cdr lst)))
+        (str-concat "car=" a "|cdr=" (if (nil? b) "nil" "not-nil"))))))

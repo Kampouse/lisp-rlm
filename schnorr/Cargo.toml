@@ -1,0 +1,16 @@
+[package]
+name = "schnorr"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "schnorr"
+crate-type = ["cdylib", "rlib"]
+
+[workspace]
+
+[profile.release]
+opt-level = "z"
+overflow-checks = false
+lto = true
+codegen-units = 1

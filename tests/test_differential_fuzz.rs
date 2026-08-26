@@ -276,6 +276,10 @@ impl SpecVm {
                 self.stack.push(val);
                 self.pc += 1;
             }
+            Op::PushU64(n) => {
+                self.stack.push(LispVal::U64(*n));
+                self.pc += 1;
+            }
             Op::PushI64(n) => {
                 self.stack.push(LispVal::Num(*n));
                 self.pc += 1;
@@ -629,6 +633,22 @@ impl SpecVm {
                             BinOp::Mul => LispVal::Float(av * bv),
                             BinOp::Div => LispVal::Float(av / bv),
                             BinOp::Mod => LispVal::Float(av % bv),
+                            BinOp::Lt => LispVal::Bool(av < bv),
+                            BinOp::Le => LispVal::Bool(av <= bv),
+                            BinOp::Gt => LispVal::Bool(av > bv),
+                            BinOp::Ge => LispVal::Bool(av >= bv),
+                            BinOp::Eq => LispVal::Bool(av == bv),
+                        });
+                    }
+                    Ty::U64 => {
+                        let av = match &a { LispVal::U64(v) => *v, _ => 0u64 };
+                        let bv = match &b { LispVal::U64(v) => *v, _ => 0u64 };
+                        self.stack.push(match binop {
+                            BinOp::Add => LispVal::U64(av.wrapping_add(bv)),
+                            BinOp::Sub => LispVal::U64(av.wrapping_sub(bv)),
+                            BinOp::Mul => LispVal::U64(av.wrapping_mul(bv)),
+                            BinOp::Div => LispVal::U64(av.wrapping_div(bv)),
+                            BinOp::Mod => LispVal::U64(av.wrapping_rem(bv)),
                             BinOp::Lt => LispVal::Bool(av < bv),
                             BinOp::Le => LispVal::Bool(av <= bv),
                             BinOp::Gt => LispVal::Bool(av > bv),
@@ -1072,6 +1092,11 @@ impl SpecVm {
                     _ => self.stack.push(LispVal::Bool(false)),
                 }
                 self.pc += 1;
+            }
+            // U64 field ops: spec VM doesn't fuzz these, return error
+            Op::U64MulHi | Op::U64And | Op::U64Or | Op::U64Xor
+            | Op::U64Shr | Op::U64Shl | Op::U64Not => {
+                return StepOutcome::Error("u64 op not supported in spec VM".into());
             }
             Op::VecSlice => {
                 let end = Self::spec_num_val(&self.pop());

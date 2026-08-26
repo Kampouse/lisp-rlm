@@ -1,0 +1,9 @@
+{
+  "name": "burrow_positions",
+  "src": "burrow_positions_v6.lisp",
+  "account": "burrow-positions.kampy.testnet",
+  "network": "testnet",
+  "output": "burrow_positions_v7.wasm",
+  "target": "outlayer-p2",
+  "tests": ""
+}

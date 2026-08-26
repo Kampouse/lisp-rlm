@@ -14,28 +14,29 @@ const S64_FUNCS: &[&str] = &["storage-increment", "storage-decrement"];
 
 /// Ordered list of all WIT function names (kebab-case) — core module import names.
 /// Used to iterate in a consistent order for both type definition and canon lower.
+/// Includes both short names (set, get) and prefixed names (storage-set, storage-get)
+/// because finish_outlayer_inner uses the prefixed forms.
 const WIT_FUNC_NAMES: &[&str] = &[
     "view",
     "call",
     "transfer",
     "http-get",
     "http-post",
-    "set",
-    "get",
-    "has",
-    "delete",
-    "increment",
-    "decrement",
-    "set-if-absent",
-    "set-if-equals",
-    "list-keys",
-    "clear-all",
-    "set-worker",
-    "get-worker",
-    "set-worker-public",
-    "get-worker-from-project",
-    "env-signer",
-    "env-predecessor",
+    "set", "storage-set",
+    "get", "storage-get",
+    "has", "storage-has",
+    "delete", "storage-delete",
+    "increment", "storage-increment",
+    "decrement", "storage-decrement",
+    "set-if-absent", "storage-set-if-absent",
+    "set-if-equals", "storage-set-if-equals",
+    "list-keys", "storage-list-keys",
+    "clear-all", "storage-clear-all",
+    "set-worker", "storage-set-worker",
+    "get-worker", "storage-get-worker",
+    "set-worker-public", "storage-set-worker-public",
+    "get-worker-from-project", "storage-get-worker-from-project",
+    "env-signer", "env-predecessor",
     "raw",
 ];
 
@@ -51,23 +52,25 @@ fn core_import_sig(kebab: &str) -> Vec<wasm_encoder::ValType> {
         // 11 i32 params: 5 strings (signer-id, signer-key, receiver, amount, wait-until) + ret_area
         "transfer" => vec![ValType::I32; 11],
         // 7 i32 params
-        "http-post" | "set-if-equals" => vec![ValType::I32; 7],
+        "http-post" | "set-if-equals" | "storage-set-if-equals" => vec![ValType::I32; 7],
         // 6 i32 params: key + value + option<bool> + ret_area
-        "set-worker" | "get-worker" | "set-worker-public" | "get-worker-from-project" => vec![ValType::I32; 6],
+        "set-worker" | "get-worker" | "set-worker-public" | "get-worker-from-project"
+        | "storage-set-worker" | "storage-get-worker"
+        | "storage-set-worker-public" | "storage-get-worker-from-project" => {
+            vec![ValType::I32; 6]
+        }
         // 5 i32 params: key + value + ret_area
-        "set" | "set-if-absent" => vec![ValType::I32; 5],
+        "set" | "set-if-absent" | "storage-set" | "storage-set-if-absent" => vec![ValType::I32; 5],
         // 5 i32 params: 2 strings + ret_area
         "raw" => vec![ValType::I32; 5],
         // 3 i32 params
-        "http-get" | "get" | "list-keys" => vec![ValType::I32; 3],
+        "http-get" | "get" | "list-keys" | "storage-get" | "storage-list-keys" => vec![ValType::I32; 3],
         // 2 i32 params (returns i32 directly, no ret_area)
-        "has" | "delete" => vec![ValType::I32; 2],
+        "has" | "delete" | "storage-has" | "storage-delete" => vec![ValType::I32; 2],
         // s64 signature: 2 i32 + i64 + i32
-        "increment" | "decrement" => vec![
-            ValType::I32, ValType::I32, ValType::I64, ValType::I32,
-        ],
+        "increment" | "decrement" | "storage-increment" | "storage-decrement" => vec![ValType::I32, ValType::I32, ValType::I64, ValType::I32],
         // 1 i32 param
-        "clear-all" | "env-signer" | "env-predecessor" => vec![ValType::I32; 1],
+        "clear-all" | "env-signer" | "env-predecessor" | "storage-clear-all" => vec![ValType::I32; 1],
         // Fallback
         _ => vec![ValType::I32; 1],
     }
@@ -75,20 +78,20 @@ fn core_import_sig(kebab: &str) -> Vec<wasm_encoder::ValType> {
 
 fn func_interface(kebab: &str) -> &'static str {
     match kebab {
-        "set"
-        | "get"
-        | "has"
-        | "delete"
-        | "increment"
-        | "decrement"
-        | "set-if-absent"
-        | "set-if-equals"
-        | "list-keys"
-        | "clear-all"
-        | "set-worker"
-        | "get-worker"
-        | "set-worker-public"
-        | "get-worker-from-project" => "near:storage/api@0.1.0",
+        "set" | "storage-set"
+        | "get" | "storage-get"
+        | "has" | "storage-has"
+        | "delete" | "storage-delete"
+        | "increment" | "storage-increment"
+        | "decrement" | "storage-decrement"
+        | "set-if-absent" | "storage-set-if-absent"
+        | "set-if-equals" | "storage-set-if-equals"
+        | "list-keys" | "storage-list-keys"
+        | "clear-all" | "storage-clear-all"
+        | "set-worker" | "storage-set-worker"
+        | "get-worker" | "storage-get-worker"
+        | "set-worker-public" | "storage-set-worker-public"
+        | "get-worker-from-project" | "storage-get-worker-from-project" => "outlayer:api/host@0.1.0",
         "view" | "call" | "transfer" | "raw" => "near:rpc/api@0.1.0",
         "http-get" | "http-post" => "lisp:http-adapter/api@0.1.0",
         "env-signer" | "env-predecessor" => "trap",
@@ -119,11 +122,11 @@ fn wit_func_signature(
     // Legacy result types (for trap stubs matching core module's old canonical ABI)
     result_string_string: ComponentValType,
     result_list_u8_string: ComponentValType,
-    result_void_string: ComponentValType,
-    result_bool_string: ComponentValType,
-    result_s64_string: ComponentValType,
-    result_option_list_u8_string: ComponentValType,
-    result_list_string_string: ComponentValType,
+    _result_void_string: ComponentValType,
+    _result_bool_string: ComponentValType,
+    _result_s64_string: ComponentValType,
+    _result_option_list_u8_string: ComponentValType,
+    _result_list_string_string: ComponentValType,
     // Production tuple types (for near:storage/api functions where ABI matches)
     _tuple_list_u8_string: ComponentValType,
     _tuple_string_string: ComponentValType,
@@ -136,16 +139,16 @@ fn wit_func_signature(
     Vec<(&'static str, ComponentValType)>,
     Option<ComponentValType>,
 ) {
-    match name {
+    // Strip "storage-" prefix if present (finish_outlayer_inner uses "storage-set",
+    // but the WIT definitions use "set").
+    let kebab = name.strip_prefix("storage-").unwrap_or(name);
+    match kebab {
         // ── near:storage/api@0.1.0 (production WIT: bare returns, not result<>) ──
         "set" => (
             vec![("key", string_ty), ("value", list_u8_ty)],
             Some(string_ty),
         ),
-        "get" => (
-            vec![("key", string_ty)],
-            Some(_tuple_list_u8_string),
-        ),
+        "get" => (vec![("key", string_ty)], Some(_tuple_list_u8_string)),
         "has" => (
             vec![("key", string_ty)],
             Some(ComponentValType::Primitive(PrimitiveValType::Bool)),
@@ -167,19 +170,21 @@ fn wit_func_signature(
             Some(_tuple_bool_string),
         ),
         "set-if-equals" => (
-            vec![("key", string_ty), ("expected", list_u8_ty), ("new-value", list_u8_ty)],
+            vec![
+                ("key", string_ty),
+                ("expected", list_u8_ty),
+                ("new-value", list_u8_ty),
+            ],
             Some(_tuple_bool_list_u8_string),
         ),
-        "list-keys" => (
-            vec![("prefix", string_ty)],
-            Some(_tuple_string_string),
-        ),
-        "clear-all" => (
-            vec![],
-            Some(string_ty),
-        ),
+        "list-keys" => (vec![("prefix", string_ty)], Some(_tuple_string_string)),
+        "clear-all" => (vec![], Some(string_ty)),
         "set-worker" => (
-            vec![("key", string_ty), ("value", list_u8_ty), ("is-encrypted", _option_bool_ty)],
+            vec![
+                ("key", string_ty),
+                ("value", list_u8_ty),
+                ("is-encrypted", _option_bool_ty),
+            ],
             Some(string_ty),
         ),
         "get-worker" => (
@@ -187,37 +192,46 @@ fn wit_func_signature(
             Some(_tuple_list_u8_string),
         ),
         "set-worker-public" => (
-            vec![("key", string_ty), ("value", list_u8_ty), ("is-encrypted", _option_bool_ty)],
+            vec![
+                ("key", string_ty),
+                ("value", list_u8_ty),
+                ("is-encrypted", _option_bool_ty),
+            ],
             Some(string_ty),
         ),
         "get-worker-from-project" => (
             vec![("key", string_ty), ("project", _option_string_ty)],
             Some(_tuple_list_u8_string),
         ),
-        "env-signer" => (
-            vec![],
-            Some(string_ty),
-        ),
-        "env-predecessor" => (
-            vec![],
-            Some(string_ty),
-        ),
+        "env-signer" => (vec![], Some(string_ty)),
+        "env-predecessor" => (vec![], Some(string_ty)),
 
         // ── near:rpc/api@0.1.0 ──
         "view" => (
-            vec![("contract-id", string_ty), ("method-name", string_ty), ("args-json", string_ty)],
+            vec![
+                ("contract-id", string_ty),
+                ("method-name", string_ty),
+                ("args-json", string_ty),
+            ],
             Some(result_string_string),
         ),
         "call" => (
             vec![
-                ("signer-key", string_ty), ("receiver-id", string_ty),
-                ("method-name", string_ty), ("args-json", string_ty),
-                ("deposit-yocto", string_ty), ("gas", string_ty),
+                ("signer-key", string_ty),
+                ("receiver-id", string_ty),
+                ("method-name", string_ty),
+                ("args-json", string_ty),
+                ("deposit-yocto", string_ty),
+                ("gas", string_ty),
             ],
             Some(result_string_string),
         ),
         "transfer" => (
-            vec![("signer-key", string_ty), ("receiver-id", string_ty), ("amount-yocto", string_ty)],
+            vec![
+                ("signer-key", string_ty),
+                ("receiver-id", string_ty),
+                ("amount-yocto", string_ty),
+            ],
             Some(result_string_string),
         ),
 
@@ -227,12 +241,13 @@ fn wit_func_signature(
         ),
 
         // ── lisp:http-adapter/api@0.1.0 ──
-        "http-get" => (
-            vec![("url", string_ty)],
-            Some(result_list_u8_string),
-        ),
+        "http-get" => (vec![("url", string_ty)], Some(result_list_u8_string)),
         "http-post" => (
-            vec![("url", string_ty), ("body", list_u8_ty), ("content-type", string_ty)],
+            vec![
+                ("url", string_ty),
+                ("body", list_u8_ty),
+                ("content-type", string_ty),
+            ],
             Some(result_list_u8_string),
         ),
 
@@ -261,7 +276,7 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
     }
 
     // Set of core module import names (kebab-case from WASM binary)
-    let core_names_set: std::collections::HashSet<String> = info.names.iter().cloned().collect();
+    let _core_names_set: std::collections::HashSet<String> = info.names.iter().cloned().collect();
 
     // Set of functions actually called (has Call instruction in code section)
     let called_names: std::collections::HashSet<String> = info
@@ -296,7 +311,6 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
     let list_u8_ty = ComponentValType::Type(list_u8_idx);
 
     if has_outlayer {
-
         // bool
         let (bool_idx, bool_enc) = b.type_defined(None);
         bool_enc.primitive(PrimitiveValType::Bool);
@@ -335,8 +349,7 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
         // result<option<list<u8>>, string>
         let (result_opt_list_u8_string_idx, rol8s_enc) = b.type_defined(None);
         rol8s_enc.result(Some(option_list_u8_ty), Some(string_ty));
-        let result_option_list_u8_string =
-            ComponentValType::Type(result_opt_list_u8_string_idx);
+        let result_option_list_u8_string = ComponentValType::Type(result_opt_list_u8_string_idx);
 
         // list<string>
         let (list_string_idx, ls_enc) = b.type_defined(None);
@@ -346,8 +359,7 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
         // result<list<string>, string>
         let (result_list_string_string_idx, rlss_enc) = b.type_defined(None);
         rlss_enc.result(Some(list_string_ty), Some(string_ty));
-        let result_list_string_string =
-            ComponentValType::Type(result_list_string_string_idx);
+        let result_list_string_string = ComponentValType::Type(result_list_string_string_idx);
 
         // ══════════════════════════════════════════════════════════
         // Production split WIT types (near:storage/api, near:rpc/api)
@@ -428,7 +440,7 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
         let mut http_names: Vec<&str> = Vec::new();
         for &name in &used_wit_names {
             match func_interface(name) {
-                "near:storage/api@0.1.0" => storage_names.push(name),
+                "outlayer:api/host@0.1.0" => storage_names.push(name),
                 "near:rpc/api@0.1.0" => rpc_names.push(name),
                 "lisp:http-adapter/api@0.1.0" => http_names.push(name),
                 _ => {} // "trap" — no component-level import needed
@@ -436,31 +448,32 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
         }
 
         // Build instance type for a group of functions
-        let build_inst_type = |b: &mut ComponentBuilder, names: &[&str], all_types: &[u32]| -> u32 {
-            let (inst_type, inst_enc) = b.ty(None);
-            {
-                let mut inst = InstanceType::new();
-                // Alias function types from outer scope
-                for &name in names {
-                    if let Some(idx) = used_wit_names.iter().position(|&n| n == name) {
-                        inst.alias(Alias::Outer {
-                            kind: ComponentOuterAliasKind::Type,
-                            count: 1,
-                            index: all_types[idx],
-                        });
+        let build_inst_type =
+            |b: &mut ComponentBuilder, names: &[&str], all_types: &[u32]| -> u32 {
+                let (inst_type, inst_enc) = b.ty(None);
+                {
+                    let mut inst = InstanceType::new();
+                    // Alias function types from outer scope
+                    for &name in names {
+                        if let Some(idx) = used_wit_names.iter().position(|&n| n == name) {
+                            inst.alias(Alias::Outer {
+                                kind: ComponentOuterAliasKind::Type,
+                                count: 1,
+                                index: all_types[idx],
+                            });
+                        }
                     }
+                    // Export functions with their WIT names
+                    let mut local_idx = 0u32;
+                    for &name in names {
+                        let wit_name = func_wit_name(name);
+                        inst.export(wit_name, ComponentTypeRef::Func(local_idx));
+                        local_idx += 1;
+                    }
+                    inst_enc.instance(&inst);
                 }
-                // Export functions with their WIT names
-                let mut local_idx = 0u32;
-                for &name in names {
-                    let wit_name = func_wit_name(name);
-                    inst.export(wit_name, ComponentTypeRef::Func(local_idx));
-                    local_idx += 1;
-                }
-                inst_enc.instance(&inst);
-            }
-            inst_type
-        };
+                inst_type
+            };
 
         let storage_type_idx = if !storage_names.is_empty() {
             let it = build_inst_type(&mut b, &storage_names, &func_type_indices);
@@ -486,7 +499,7 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
         let mut interface_import_idx: std::collections::HashMap<&str, u32> =
             std::collections::HashMap::new();
         if let Some(st) = storage_type_idx {
-            let idx = b.import("near:storage/api@0.1.0", ComponentTypeRef::Instance(st));
+            let idx = b.import("outlayer:api/host@0.1.0", ComponentTypeRef::Instance(st));
             interface_import_idx.insert("storage", idx);
         }
         if let Some(rt) = rpc_type_idx {
@@ -494,11 +507,18 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
             interface_import_idx.insert("rpc", idx);
         }
         if let Some(ht) = http_type_idx {
-            let idx = b.import("lisp:http-adapter/api@0.1.0", ComponentTypeRef::Instance(ht));
+            let idx = b.import(
+                "lisp:http-adapter/api@0.1.0",
+                ComponentTypeRef::Instance(ht),
+            );
             interface_import_idx.insert("http", idx);
         }
         // Store for later use in canon lower section
-        used_interface_imports = Some((interface_import_idx, used_wit_names.clone(), func_type_indices.clone()));
+        used_interface_imports = Some((
+            interface_import_idx,
+            used_wit_names.clone(),
+            func_type_indices.clone(),
+        ));
     }
 
     // ── Embed core module (patched to import memory from "env") ──
@@ -516,9 +536,15 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
     let realloc = b.core_alias_export(None, mem_inst, "cabi_realloc", ExportKind::Func);
 
     // Alias all trap stubs from memory module for per-signature type matching
-    let trap_s64_sig = vec![wasm_encoder::ValType::I32, wasm_encoder::ValType::I32, wasm_encoder::ValType::I64, wasm_encoder::ValType::I32];
-    let mut trap_stubs: std::collections::HashMap<Vec<wasm_encoder::ValType>, u32> = std::collections::HashMap::new();
-    for (sig, &export_name) in &trap_func_map {
+    let trap_s64_sig = vec![
+        wasm_encoder::ValType::I32,
+        wasm_encoder::ValType::I32,
+        wasm_encoder::ValType::I64,
+        wasm_encoder::ValType::I32,
+    ];
+    let mut trap_stubs: std::collections::HashMap<Vec<wasm_encoder::ValType>, u32> =
+        std::collections::HashMap::new();
+    for (sig, &_export_name) in &trap_func_map {
         let name = format!("trap_{}i32", sig.len());
         let core_func = b.core_alias_export(None, mem_inst, &name, ExportKind::Func);
         trap_stubs.insert(sig.clone(), core_func);
@@ -545,7 +571,10 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
         ie.instance(&inst);
         it
     };
-    let error_comp_inst = b.import("wasi:io/error@0.2.2", ComponentTypeRef::Instance(error_type_idx));
+    let error_comp_inst = b.import(
+        "wasi:io/error@0.2.2",
+        ComponentTypeRef::Instance(error_type_idx),
+    );
     let error_type = b.alias_export(error_comp_inst, "error", ComponentExportKind::Type);
 
     // ── wasi:io/streams@0.2.2 instance type ──
@@ -561,9 +590,15 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
         let (it, ie) = b.ty(None);
         let mut inst = InstanceType::new();
         // 0: input-stream (SubResource)
-        inst.export("input-stream", ComponentTypeRef::Type(TypeBounds::SubResource));
+        inst.export(
+            "input-stream",
+            ComponentTypeRef::Type(TypeBounds::SubResource),
+        );
         // 1: output-stream (SubResource)
-        inst.export("output-stream", ComponentTypeRef::Type(TypeBounds::SubResource));
+        inst.export(
+            "output-stream",
+            ComponentTypeRef::Type(TypeBounds::SubResource),
+        );
         // 2: alias error from outer (component-level error_type)
         inst.alias(Alias::Outer {
             kind: ComponentOuterAliasKind::Type,
@@ -584,14 +619,17 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
         // 7: borrow(0) — borrow<input-stream>
         inst.ty().defined_type().borrow(0);
         // 8: list<u8> defined inline (NOT aliased from outer)
-        inst.ty().defined_type().list(ComponentValType::Primitive(PrimitiveValType::U8));
+        inst.ty()
+            .defined_type()
+            .list(ComponentValType::Primitive(PrimitiveValType::U8));
         // 9: result<list<u8>=8, stream-error=6>
         inst.ty().defined_type().result(
             Some(ComponentValType::Type(8)),
             Some(ComponentValType::Type(6)),
         );
         // 10: func (self:7, len: u64) -> result<list<u8>, stream-error>=9
-        inst.ty().function()
+        inst.ty()
+            .function()
             .params([
                 ("self", ComponentValType::Type(7)),
                 ("len", ComponentValType::Primitive(PrimitiveValType::U64)),
@@ -602,16 +640,22 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
         // 11: borrow(1) — borrow<output-stream>
         inst.ty().defined_type().borrow(1);
         // 12: result<_, stream-error=6>
-        inst.ty().defined_type().result(None, Some(ComponentValType::Type(6)));
+        inst.ty()
+            .defined_type()
+            .result(None, Some(ComponentValType::Type(6)));
         // 13: func (self:11, contents:8) -> result<_, stream-error>=12
-        inst.ty().function()
+        inst.ty()
+            .function()
             .params([
                 ("self", ComponentValType::Type(11)),
                 ("contents", ComponentValType::Type(8)),
             ])
             .result(Some(ComponentValType::Type(12)));
         // Export "[method]output-stream.blocking-write-and-flush" func(13)
-        inst.export("[method]output-stream.blocking-write-and-flush", ComponentTypeRef::Func(13));
+        inst.export(
+            "[method]output-stream.blocking-write-and-flush",
+            ComponentTypeRef::Func(13),
+        );
         ie.instance(&inst);
         it
     };
@@ -620,8 +664,13 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
         ComponentTypeRef::Instance(streams_type_idx),
     );
     // ── Alias resource types from streams import to component level ──
-    let input_stream_type = b.alias_export(streams_comp_inst, "input-stream", ComponentExportKind::Type);
-    let output_stream_type = b.alias_export(streams_comp_inst, "output-stream", ComponentExportKind::Type);
+    let input_stream_type =
+        b.alias_export(streams_comp_inst, "input-stream", ComponentExportKind::Type);
+    let output_stream_type = b.alias_export(
+        streams_comp_inst,
+        "output-stream",
+        ComponentExportKind::Type,
+    );
 
     // ── wasi:cli/stdin@0.2.2 instance type ──
     let stdin_type_idx = {
@@ -638,7 +687,8 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
         // own<input-stream> using local 1 — local 2
         inst.ty().defined_type().own(1);
         // get-stdin func: () -> own(1) — local 3
-        inst.ty().function()
+        inst.ty()
+            .function()
             .params([] as [(&str, ComponentValType); 0])
             .result(Some(ComponentValType::Type(2)));
         inst.export("get-stdin", ComponentTypeRef::Func(3));
@@ -665,7 +715,8 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
         // own<output-stream> using local 1 — local 2
         inst.ty().defined_type().own(1);
         // get-stdout func: () -> own(1) — local 3
-        inst.ty().function()
+        inst.ty()
+            .function()
             .params([] as [(&str, ComponentValType); 0])
             .result(Some(ComponentValType::Type(2)));
         inst.export("get-stdout", ComponentTypeRef::Func(3));
@@ -692,10 +743,14 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
         ComponentExportKind::Func,
     );
     // Realloc needed for blocking_read (returns list<u8> which host writes to memory)
-    let blocking_read_core = b.lower_func(None, blocking_read_comp, [
-        CanonicalOption::Memory(mem),
-        CanonicalOption::Realloc(realloc),
-    ]);
+    let blocking_read_core = b.lower_func(
+        None,
+        blocking_read_comp,
+        [
+            CanonicalOption::Memory(mem),
+            CanonicalOption::Realloc(realloc),
+        ],
+    );
 
     let blocking_write_comp = b.alias_export(
         streams_comp_inst,
@@ -703,9 +758,8 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
         ComponentExportKind::Func,
     );
     // No realloc needed for blocking_write — list<u8> is a param (guest→host), result is just discriminant
-    let blocking_write_core = b.lower_func(None, blocking_write_comp, [
-        CanonicalOption::Memory(mem),
-    ]);
+    let blocking_write_core =
+        b.lower_func(None, blocking_write_comp, [CanonicalOption::Memory(mem)]);
 
     // Resource drops use canon resource.drop on the component-level type
     let drop_input_core = b.resource_drop(input_stream_type);
@@ -722,21 +776,30 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
             ("blocking_read", ExportKind::Func, blocking_read_core),
             ("drop_input_stream", ExportKind::Func, drop_input_core),
             ("get_stdout", ExportKind::Func, get_stdout_core),
-            ("blocking_write_and_flush", ExportKind::Func, blocking_write_core),
+            (
+                "blocking_write_and_flush",
+                ExportKind::Func,
+                blocking_write_core,
+            ),
             ("drop_output_stream", ExportKind::Func, drop_output_core),
         ],
     );
 
-    let bridge_inst = b.core_instantiate(None, bridge_mod, [
-        ("env", ModuleArg::Instance(mem_inst)),
-        ("p2", ModuleArg::Instance(p2_funcs_inst)),
-    ]);
+    let bridge_inst = b.core_instantiate(
+        None,
+        bridge_mod,
+        [
+            ("env", ModuleArg::Instance(mem_inst)),
+            ("p2", ModuleArg::Instance(p2_funcs_inst)),
+        ],
+    );
 
     let mut lowered_funcs: Vec<u32> = Vec::new();
     let mut lowered_names: Vec<String> = Vec::new();
     let mut outlayer_inst_idx: u32 = 0;
     if has_outlayer {
-        let (ref iface_imports, ref wit_names, _ref_types) = used_interface_imports.as_ref().unwrap();
+        let (ref iface_imports, _wit_names, _ref_types) =
+            used_interface_imports.as_ref().unwrap();
 
         // Lower ALL outlayer functions that the core module imports
         for kebab in &info.names {
@@ -749,7 +812,9 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
             // use a type-matched trap stub so the core module's imports are satisfied
             if !called_names.contains(kebab.as_str()) {
                 let sig = core_import_sig(kebab.as_str());
-                let trap = trap_stubs.get(&sig).expect(&format!("no trap stub for {} sig {:?}", kebab, sig));
+                let trap = trap_stubs
+                    .get(&sig)
+                    .expect(&format!("no trap stub for {} sig {:?}", kebab, sig));
                 lowered_funcs.push(*trap);
                 lowered_names.push(kebab.clone());
                 continue;
@@ -766,7 +831,10 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
             let iface = func_interface(kebab.as_str());
             if iface == "trap" {
                 // No production split interface — use trap stub even for called functions
-                eprintln!("⚠️ No production split interface for {}, using trap stub", kebab);
+                eprintln!(
+                    "⚠️ No production split interface for {}, using trap stub",
+                    kebab
+                );
                 let sig = core_import_sig(kebab.as_str());
                 let trap = trap_stubs
                     .get(&sig)
@@ -776,7 +844,7 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
                 continue;
             }
             let iface_key = match iface {
-                "near:storage/api@0.1.0" => "storage",
+                "outlayer:api/host@0.1.0" => "storage",
                 "near:rpc/api@0.1.0" => "rpc",
                 "lisp:http-adapter/api@0.1.0" => "http",
                 _ => unreachable!(),
@@ -841,9 +909,8 @@ pub fn build_native_p2_component(core_bytes: &[u8]) -> Result<Vec<u8>, String> {
     // Our core _start returns (), so we wrap it with a tiny adapter module
     let wrapper_bytes = build_run_wrapper();
     let wrapper_mod = b.core_module_raw(None, &wrapper_bytes);
-    let wrapper_inst = b.core_instantiate(None, wrapper_mod, [
-        ("env", ModuleArg::Instance(core_inst)),
-    ]);
+    let wrapper_inst =
+        b.core_instantiate(None, wrapper_mod, [("env", ModuleArg::Instance(core_inst))]);
     let run_core = b.core_alias_export(None, wrapper_inst, "run", ExportKind::Func);
     let run_func = b.lift_func(None, run_core, run_type, []);
 
@@ -900,22 +967,27 @@ pub fn load_wasi_adapter() -> Vec<u8> {
 
 /// Build a tiny WASM module that exports memory, a bump-allocator realloc,
 /// and per-signature unreachable trap stubs for unused outlayer imports.
-fn build_memory_module(min_pages: u64) -> (Vec<u8>, std::collections::HashMap<Vec<wasm_encoder::ValType>, u32>) {
+fn build_memory_module(
+    min_pages: u64,
+) -> (
+    Vec<u8>,
+    std::collections::HashMap<Vec<wasm_encoder::ValType>, u32>,
+) {
     use wasm_encoder::*;
     let mut m = Module::new();
 
     // Collect unique param signatures needed for trap stubs
     // All outlayer imports return () — only params vary
     let trap_sigs: Vec<Vec<ValType>> = vec![
-        vec![ValType::I32; 1],   // clear-all, env-signer, env-predecessor
-        vec![ValType::I32; 2],   // has, delete
-        vec![ValType::I32; 3],   // http-get, get, list-keys
-        vec![ValType::I32; 5],   // set, set-if-absent, raw
-        vec![ValType::I32; 6],   // set-worker, get-worker, set-worker-public, get-worker-from-project
-        vec![ValType::I32; 7],   // http-post, set-if-equals
-        vec![ValType::I32; 9],   // view
-        vec![ValType::I32; 11],  // transfer
-        vec![ValType::I32; 17],  // call
+        vec![ValType::I32; 1],  // clear-all, env-signer, env-predecessor
+        vec![ValType::I32; 2],  // has, delete
+        vec![ValType::I32; 3],  // http-get, get, list-keys
+        vec![ValType::I32; 5],  // set, set-if-absent, raw
+        vec![ValType::I32; 6], // set-worker, get-worker, set-worker-public, get-worker-from-project
+        vec![ValType::I32; 7], // http-post, set-if-equals
+        vec![ValType::I32; 9], // view
+        vec![ValType::I32; 11], // transfer
+        vec![ValType::I32; 17], // call
         vec![ValType::I32, ValType::I32, ValType::I64, ValType::I32], // increment, decrement (s64)
     ];
 
@@ -924,9 +996,13 @@ fn build_memory_module(min_pages: u64) -> (Vec<u8>, std::collections::HashMap<Ve
     // type 0: () -> ()
     types.ty().function([], []);
     // type 1: (i32, i32, i32, i32) -> i32 — realloc signature
-    types.ty().function([ValType::I32, ValType::I32, ValType::I32, ValType::I32], [ValType::I32]);
+    types.ty().function(
+        [ValType::I32, ValType::I32, ValType::I32, ValType::I32],
+        [ValType::I32],
+    );
     // types 2..: per-signature trap stubs (all return ())
-    let mut trap_type_map: std::collections::HashMap<Vec<ValType>, u32> = std::collections::HashMap::new();
+    let mut trap_type_map: std::collections::HashMap<Vec<ValType>, u32> =
+        std::collections::HashMap::new();
     for (i, sig) in trap_sigs.iter().enumerate() {
         let type_idx = 2 + i as u32;
         types.ty().function(sig.iter().copied(), []);
@@ -944,14 +1020,24 @@ fn build_memory_module(min_pages: u64) -> (Vec<u8>, std::collections::HashMap<Ve
 
     // Memory section
     let mut mems = MemorySection::new();
-    mems.memory(MemoryType { minimum: min_pages + 1, maximum: None, memory64: false, shared: false, page_size_log2: None });
+    mems.memory(MemoryType {
+        minimum: min_pages + 1,
+        maximum: None,
+        memory64: false,
+        shared: false,
+        page_size_log2: None,
+    });
     m.section(&mems);
 
     // Global: bump pointer (i32, mutable)
     let mut globals = GlobalSection::new();
     let init_val = (min_pages * 65536) as i64;
     globals.global(
-        GlobalType { val_type: ValType::I32, mutable: true, shared: false },
+        GlobalType {
+            val_type: ValType::I32,
+            mutable: true,
+            shared: false,
+        },
         &ConstExpr::i32_const(init_val as i32),
     );
     m.section(&globals);
@@ -962,7 +1048,8 @@ fn build_memory_module(min_pages: u64) -> (Vec<u8>, std::collections::HashMap<Ve
     exports.export("cabi_realloc", ExportKind::Func, 0);
     // Export trap stubs by name for reference (func indices 1..)
     let mut func_idx = 1u32;
-    let mut trap_func_map: std::collections::HashMap<Vec<ValType>, u32> = std::collections::HashMap::new();
+    let mut trap_func_map: std::collections::HashMap<Vec<ValType>, u32> =
+        std::collections::HashMap::new();
     for (sig, _) in &trap_type_map {
         let name = format!("trap_{}i32", sig.len());
         exports.export(&name, ExportKind::Func, func_idx);
@@ -974,7 +1061,12 @@ fn build_memory_module(min_pages: u64) -> (Vec<u8>, std::collections::HashMap<Ve
     // Code section
     let mut codes = CodeSection::new();
     // realloc: bump allocator
-    let mut f = Function::new([(0, ValType::I32), (1, ValType::I32), (2, ValType::I32), (3, ValType::I32)]);
+    let mut f = Function::new([
+        (0, ValType::I32),
+        (1, ValType::I32),
+        (2, ValType::I32),
+        (3, ValType::I32),
+    ]);
     f.instruction(&Instruction::GlobalGet(0));
     f.instruction(&Instruction::LocalTee(0));
     f.instruction(&Instruction::LocalGet(3));
@@ -986,7 +1078,11 @@ fn build_memory_module(min_pages: u64) -> (Vec<u8>, std::collections::HashMap<Ve
 
     // Trap stubs: one per unique signature, all just unreachable
     for sig in &trap_sigs {
-        let locals: Vec<(u32, ValType)> = sig.iter().enumerate().map(|(i, &vt)| (i as u32, vt)).collect();
+        let locals: Vec<(u32, ValType)> = sig
+            .iter()
+            .enumerate()
+            .map(|(i, &vt)| (i as u32, vt))
+            .collect();
         let mut trap = Function::new(locals);
         trap.instruction(&Instruction::Unreachable);
         trap.instruction(&Instruction::End);
@@ -1003,14 +1099,16 @@ fn build_memory_module(min_pages: u64) -> (Vec<u8>, std::collections::HashMap<Ve
 fn extract_memory_pages(wasm: &[u8]) -> u64 {
     let mut pos = 8usize;
     while pos < wasm.len() {
-        let sid = wasm[pos]; pos += 1;
-        let (sz, lb) = rleb(wasm, pos); pos += lb;
+        let sid = wasm[pos];
+        pos += 1;
+        let (sz, lb) = rleb(wasm, pos);
+        pos += lb;
         if sid == 5 {
             // Memory section: count, then each has flags + min ( + max)
             let (_cnt, cl) = rleb(wasm, pos);
             let p = pos + cl;
             let (flags, fl) = rleb(wasm, p);
-            let (min, ml) = rleb(wasm, p + fl);
+            let (min, _ml) = rleb(wasm, p + fl);
             let _ = flags;
             return min as u64;
         }
@@ -1026,13 +1124,15 @@ fn make_memory_import(wasm: &[u8]) -> Vec<u8> {
 
     let mut pos = 8usize;
     let mut mem_limits: Option<(u64, Option<u64>)> = None;
-    let mut import_count_delta: i32 = 0;
+    let _import_count_delta: i32 = 0;
 
     // First pass: find memory section to extract limits
     let mut scan = 8usize;
     while scan < wasm.len() {
-        let sid = wasm[scan]; scan += 1;
-        let (sz, lb) = rleb(wasm, scan); scan += lb;
+        let sid = wasm[scan];
+        scan += 1;
+        let (sz, lb) = rleb(wasm, scan);
+        scan += lb;
         if sid == 5 {
             let p = scan;
             let (cnt, cl) = rleb(wasm, p);
@@ -1109,20 +1209,24 @@ fn make_memory_import(wasm: &[u8]) -> Vec<u8> {
 
         if sid == 7 {
             // Export section — remove the "memory" export
-            let section_start = pos;
+            let _section_start = pos;
             let (cnt, cl) = rleb(wasm, pos);
             let header_end = pos + cl;
-            let section_end = pos + sz;
+            let _section_end = pos + sz;
             let mut new_exports = Vec::new();
             new_exports.extend_from_slice(&wasm[pos..header_end]); // original count placeholder
 
             let mut ep = header_end;
             let mut kept = 0u32;
             for _ in 0..cnt {
-                let (nl, nll) = rleb(wasm, ep); ep += nll;
-                let name = &wasm[ep..ep+nl]; ep += nl;
-                let kind = wasm[ep]; ep += 1;
-                let (idx, il) = rleb(wasm, ep); ep += il;
+                let (nl, nll) = rleb(wasm, ep);
+                ep += nll;
+                let name = &wasm[ep..ep + nl];
+                ep += nl;
+                let kind = wasm[ep];
+                ep += 1;
+                let (idx, il) = rleb(wasm, ep);
+                ep += il;
                 if name == b"memory" && kind == 2 {
                     continue; // skip memory export
                 }
@@ -1243,12 +1347,15 @@ fn build_wasi_stub() -> Vec<u8> {
 /// This bridges the core module's `() -> ()` _start to the canonical ABI's
 /// `() -> i32` expected by the lift for `wasi:cli/run` `() -> result<()>`.
 fn build_run_wrapper() -> Vec<u8> {
-    use wasm_encoder::{Module, TypeSection, ImportSection, FunctionSection, ExportSection, CodeSection, Function, Instruction};
+    use wasm_encoder::{
+        CodeSection, ExportSection, Function, FunctionSection, ImportSection, Instruction, Module,
+        TypeSection,
+    };
 
     let mut m = Module::new();
     // Type section
     let mut types = TypeSection::new();
-    types.ty().function([], []);          // type 0: () -> ()  (_start signature)
+    types.ty().function([], []); // type 0: () -> ()  (_start signature)
     types.ty().function([], [ValType::I32]); // type 1: () -> i32 (run wrapper signature)
     m.section(&types);
 
@@ -1354,7 +1461,7 @@ fn analyze_outlayer(wasm: &[u8]) -> OutlayerInfo {
         let (sz, lb) = rleb(wasm, pos);
         pos += lb;
         if sid == 2 {
-            let section_end = pos + sz;
+            let _section_end = pos + sz;
             let (cnt, cl) = rleb(wasm, pos);
             pos += cl;
             let mut found_outlayer = false;
@@ -1375,8 +1482,11 @@ fn analyze_outlayer(wasm: &[u8]) -> OutlayerInfo {
                     0 => {
                         let (tl, tll) = rleb(wasm, pos);
                         pos += tll;
-                        if module == "outlayer" || module == "outlayer:api/host"
-                            || module == "near:storage/api" || module == "near:rpc/api"
+                        if module == "outlayer"
+                            || module == "outlayer:api/host"
+                            || module == "near:storage/api"
+                            || module == "outlayer:api/host@0.1.0"
+                            || module == "near:rpc/api"
                         {
                             if !found_outlayer {
                                 outlayer_import_start = total_import_funcs;
@@ -1406,7 +1516,6 @@ fn analyze_outlayer(wasm: &[u8]) -> OutlayerInfo {
                     _ => {}
                 }
             }
-            pos = section_end;
             break;
         }
         pos += sz;
@@ -1422,11 +1531,11 @@ fn analyze_outlayer(wasm: &[u8]) -> OutlayerInfo {
         pos += lb;
         if sid == 10 {
             // Code section
-            let section_end = pos + sz;
+            let _section_end = pos + sz;
             let (_cnt, cl) = rleb(wasm, pos);
             pos += cl;
             // Scan raw bytes for Call opcodes (0x10) followed by function index
-            while pos < section_end {
+            while pos < _section_end {
                 // Skip function body header (local count + locals)
                 let (_body_size, bsl) = rleb(wasm, pos);
                 pos += bsl;
@@ -1448,7 +1557,8 @@ fn analyze_outlayer(wasm: &[u8]) -> OutlayerInfo {
                         pos += fl;
                         // Check if this is an outlayer import
                         if func_idx >= outlayer_import_start as usize
-                            && func_idx < outlayer_import_start as usize + outlayer_names_in_order.len()
+                            && func_idx
+                                < outlayer_import_start as usize + outlayer_names_in_order.len()
                         {
                             called.insert(func_idx - outlayer_import_start as usize);
                         }
@@ -1473,8 +1583,14 @@ fn analyze_outlayer(wasm: &[u8]) -> OutlayerInfo {
                         // local.get/local.set/local.tee/global.get/global.set
                         let (_, ll) = rleb(wasm, pos);
                         pos += ll;
-                    } else if opcode == 0x28 || opcode == 0x29 || opcode == 0x2A || opcode == 0x2B
-                        || opcode == 0x2C || opcode == 0x2D || opcode == 0x2E || opcode == 0x2F
+                    } else if opcode == 0x28
+                        || opcode == 0x29
+                        || opcode == 0x2A
+                        || opcode == 0x2B
+                        || opcode == 0x2C
+                        || opcode == 0x2D
+                        || opcode == 0x2E
+                        || opcode == 0x2F
                     {
                         // Load instructions — skip align + offset
                         pos += 1; // align
@@ -1538,17 +1654,50 @@ fn analyze_outlayer(wasm: &[u8]) -> OutlayerInfo {
                         // f32.const / f64.const
                         let sz = if opcode == 0x43 { 4 } else { 8 };
                         pos += sz;
-                    } else if opcode == 0x50 || opcode == 0x51 || opcode == 0x52 || opcode == 0x53
-                        || opcode == 0x54 || opcode == 0x55 || opcode == 0x56 || opcode == 0x57
-                        || opcode == 0x58 || opcode == 0x59 || opcode == 0x5A || opcode == 0x5B
-                        || opcode == 0x5C || opcode == 0x5D || opcode == 0x5E || opcode == 0x5F
-                        || opcode == 0x60 || opcode == 0x61 || opcode == 0x62 || opcode == 0x63
-                        || opcode == 0x64 || opcode == 0x65 || opcode == 0x66 || opcode == 0x67
-                        || opcode == 0x68 || opcode == 0x69 || opcode == 0x6A || opcode == 0x6B
-                        || opcode == 0x6C || opcode == 0x6D || opcode == 0x6E || opcode == 0x6F
-                        || opcode == 0x70 || opcode == 0x71 || opcode == 0x72 || opcode == 0x73
-                        || opcode == 0x74 || opcode == 0x75 || opcode == 0x76 || opcode == 0x77
-                        || opcode == 0x78 || opcode == 0x79 || opcode == 0x7A || opcode == 0x7B
+                    } else if opcode == 0x50
+                        || opcode == 0x51
+                        || opcode == 0x52
+                        || opcode == 0x53
+                        || opcode == 0x54
+                        || opcode == 0x55
+                        || opcode == 0x56
+                        || opcode == 0x57
+                        || opcode == 0x58
+                        || opcode == 0x59
+                        || opcode == 0x5A
+                        || opcode == 0x5B
+                        || opcode == 0x5C
+                        || opcode == 0x5D
+                        || opcode == 0x5E
+                        || opcode == 0x5F
+                        || opcode == 0x60
+                        || opcode == 0x61
+                        || opcode == 0x62
+                        || opcode == 0x63
+                        || opcode == 0x64
+                        || opcode == 0x65
+                        || opcode == 0x66
+                        || opcode == 0x67
+                        || opcode == 0x68
+                        || opcode == 0x69
+                        || opcode == 0x6A
+                        || opcode == 0x6B
+                        || opcode == 0x6C
+                        || opcode == 0x6D
+                        || opcode == 0x6E
+                        || opcode == 0x6F
+                        || opcode == 0x70
+                        || opcode == 0x71
+                        || opcode == 0x72
+                        || opcode == 0x73
+                        || opcode == 0x74
+                        || opcode == 0x75
+                        || opcode == 0x76
+                        || opcode == 0x77
+                        || opcode == 0x78
+                        || opcode == 0x79
+                        || opcode == 0x7A
+                        || opcode == 0x7B
                     {
                         // Numeric i32/i64/f32/f64 operations — no operands
                     }
