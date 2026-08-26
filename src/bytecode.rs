@@ -6684,7 +6684,32 @@ pub fn run_compiled_lambda(
         Box::leak(hint.into_boxed_str())
     });
     state.trace_push(fname);
-    let result = run_compiled_lambda_inner(cl, args, outer_env, state);
+    // Arity validation — hard error on mismatch (GAPS.md round-3 fix 3).
+    // Was: missing args read as nil (arith-coerced to 0), extra args dropped.
+    // Choke point: all call paths (vm_call_lambda, const-fold inlining,
+    // apply/map/filter, CallSelf frames) funnel through here.
+    let n_args = args.len();
+    let arity_err = if cl.rest_param_idx.is_some() {
+        if n_args < cl.num_fixed_params {
+            Some(format!(
+                "arity mismatch: {} expects at least {} args, got {}",
+                fname, cl.num_fixed_params, n_args
+            ))
+        } else {
+            None
+        }
+    } else if n_args != cl.num_fixed_params {
+        Some(format!(
+            "arity mismatch: {} expects {} args, got {}",
+            fname, cl.num_fixed_params, n_args
+        ))
+    } else {
+        None
+    };
+    let result = match arity_err {
+        Some(e) => Err(e),
+        None => run_compiled_lambda_inner(cl, args, outer_env, state),
+    };
     state.call_depth -= 1;
     match result {
         Err(e) => {

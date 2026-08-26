@@ -312,12 +312,22 @@ state per fix:
   until a float tag exists; when it does, add Float(0.0) to the wasm falsy set.
   Stale comments fixed in src/wasm_emit/mod.rs tag-scheme header.
 
-### 3. User-fn arity validation — ❌ NOT STARTED (no code, no t21)
-Next session: find the user-fn call arm in bytecode.rs (define-compiled fn
-invocation), compare argc vs param count, hard error
-"arity mismatch: fn-name expects N args, got M". Flip ARITY-PIN in t20
-(two lines) + write t21-arity-and-types.lisp. Grep tests/ + corpus/ for
-wrong-arity calls that relied on nil→0.
+### 3. User-fn arity validation — ✅ LANDED 2026-08-26 (fix 3)
+Single choke point: `run_compiled_lambda` (src/bytecode.rs) validates
+argc vs `num_fixed_params` after trace_push — every path funnels through it
+(vm_call_lambda, const-fold inlining, apply/map/filter/reduce, try/catch
+thunks, CallSelf entry). Missing AND extra args hard-error:
+"arity mismatch: fn expects N args, got M"; variadic (&rest) requires
+"at least N". Const-fold inlining now defers wrong-arity const calls to
+runtime instead of baking wrong answers into constants (its Err arm
+returns false → ops emitted → runtime check fires).
+- t20 ARITY-PIN flipped (try/catch assertions); t21-arity-and-types.lisp
+  written (14 assertions: direct/anonymous/apply/variadic/HOF + 3
+  ARITH-PINs for fix 4).
+- Full sweep: 33 files, no panics, all *b-err* files still exit 1 with
+  designed messages. cargo test 125/11 baseline intact.
+- wasm parity: compile-time via typing::type_check_program (when typecheck
+  enabled) — semantics agree, wasm errors earlier.
 
 ### 4. Arith type errors — ❌ NOT STARTED (no code, no t21)
 Next session: the lenient arms are `num_arith` (~src/bytecode.rs:4063),
