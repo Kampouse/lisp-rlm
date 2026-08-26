@@ -1054,7 +1054,12 @@ impl WasmEmitter {
                 // ret_ptr
                 v.push(Instruction::I32Const(ret_area));
                 v.push(Instruction::Call(110)); // near:storage/api set
-                v.push(Instruction::Drop);
+                // NOTE: sentinel 110's import is (i32×5) -> () — returns NOTHING
+                // (result written to ret_area). No Drop here: popping an empty
+                // stack fails wasm validation ("expected a type but nothing on
+                // stack" — test_regression p2_outlayer_storage_set_get). The
+                // NEAR host stubs return register ids and need Drop; the
+                // canonical imports do not. The NIL below is the value.
                 v.push(Instruction::I64Const(TAG_NIL));
                 Ok(v)
             }

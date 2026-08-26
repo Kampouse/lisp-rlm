@@ -302,7 +302,13 @@ mod compile {
     result))
 "#);
         validate(&wasm, "p1_combined");
-        assert!(wasm.len() > 5000, "combined pipeline should be non-trivial");
+        // P1 core module is lean (~3KB) — the old >5000 size floor was
+        // calibrated for the component artifact compile_outlayer returned
+        // before the be4aaa7 refactor regression. Assert the http machinery
+        // directly instead: import name + realloc must be in the binary.
+        let s = String::from_utf8_lossy(&wasm);
+        assert!(s.contains("http-get"), "P1 core must import outlayer http-get");
+        assert!(s.contains("cabi_realloc"), "P1 core must export cabi_realloc");
     }
 }
 

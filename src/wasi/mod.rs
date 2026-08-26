@@ -339,7 +339,12 @@ pub fn compile_outlayer(source: &str) -> Result<Vec<u8>, String> {
             }
         }
     }
-    finish_outlayer(&mut em)
+    // P1 contract: core WASM module (version 0x01) with WASI P1 + OutLayer
+    // host imports — NOT a component. finish_outlayer was refactored (be4aaa7)
+    // to always emit a P2 component, silently breaking the documented P1
+    // entry point (test_regression compile::p1_* reds). Emit the core module
+    // directly via finish_outlayer_inner(skip_outlayer=false).
+    finish_outlayer_inner(&mut em, false)
 }
 
 /// Build the WASI P1 binary from a populated WasmEmitter.
@@ -1203,7 +1208,7 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
         (filtered, smap, count)
     };
     let wasi_count = wasi.len() as u32;
-    let total_imports = wasi_count + ol_count;
+    let mut total_imports = wasi_count + ol_count;
 
     // Find which NEAR host functions are actually used, so we can emit stubs
     // that delegate to OutLayer equivalents
@@ -1341,6 +1346,12 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     let near_4i64_to_void = nti;
     nti += 1;
     let _ = nti;
+    // type: (i32*5) -> i32 — internal http_get shim (P1 core path): adapts the
+    // combined-core 5-param convention (url_ptr,url_len,buf_ptr,buf_len,len_ptr)
+    // to the canonical outlayer:api/host http-get import (3 i32 + ret_area)
+    types.ty().function(vec![W; 5], [W]);
+    let http_shim_type = nti;
+    nti += 1;
 
     m.section(&types);
 
@@ -1397,6 +1408,20 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
             imports.import(f.module, f.name, EntityType::Function(ol_type_map_full[ol_idx]));
         }
     }
+    // http-get import (canonical 3-param) — only when the emitter produced
+    // http sentinels Call(103+url_idx). Needed by the P1 http_get shim.
+    let http_url_count = em.http_urls.len() as u32;
+    let http_get_used = http_url_count > 0 && em.funcs.iter().any(|f| f.instrs.iter().any(
+        |i| matches!(i, Instruction::Call(n) if (103..103 + http_url_count).contains(n))));
+    let http_get_import_idx = if http_get_used {
+        let hf = &outlayer_imports()[3]; // http-get: (url_ptr, url_len, ret_area) -> ()
+        let idx = total_imports;
+        imports.import(hf.module, hf.name, EntityType::Function(ol_type_map_full[3]));
+        total_imports += 1;
+        idx
+    } else {
+        u32::MAX
+    };
     // NEAR host stubs as imports from "env" — same as NEAR target
     // This lets the existing NEAR-style instruction emission work unchanged
     let mut near_host_idx: std::collections::HashMap<usize, u32> = std::collections::HashMap::new();
@@ -1445,6 +1470,13 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
         } else {
             memcpy_type_idx = 0; // unused
         }
+    }
+    // http_get shim: (i32*5) -> i32 — after _start(+0), cabi_realloc(+1), memcpy(+2 if present)
+    let mut http_shim_fn_idx = u32::MAX;
+    if http_get_used {
+        let uses_memcpy_flag = em.funcs.iter().any(|f| f.instrs.iter().any(|i| matches!(i, Instruction::Call(idx) if *idx == crate::wasm_emit::MEMCPY_SENTINEL)));
+        http_shim_fn_idx = internal_base + em.funcs.len() as u32 + 2 + uses_memcpy_flag as u32;
+        funcs.function(http_shim_type);
     }
     m.section(&funcs);
 
@@ -1511,6 +1543,12 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
                 if uses_memcpy {
                     let memcpy_fn_idx = internal_base + em.funcs.len() as u32 + 2; // after _start + cabi_realloc
                     ol_map.insert(crate::wasm_emit::MEMCPY_SENTINEL, memcpy_fn_idx);
+                }
+                // HTTP GET sentinels Call(103+url_idx) → internal P1 shim (one fn for all URLs)
+                if http_get_used && http_shim_fn_idx != u32::MAX {
+                    for i in 0..http_url_count {
+                        ol_map.insert(103 + i, http_shim_fn_idx);
+                    }
                 }
             }
         }
@@ -1802,6 +1840,71 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
         }
     }
 
+    // ── http_get shim (P1 core path) ──
+    // shim(url_ptr, url_len, buf_ptr, buf_len, len_ptr) -> status:i32
+    // Calls canonical outlayer http-get(url_ptr, url_len, SHIM_RET), copies the
+    // body into buf_ptr (capped at buf_len), writes body_len at len_ptr, returns 0.
+    // Replaces the combined-P2 per-URL internal fns for the P1 core module target.
+    if http_get_used {
+        let ma0 = MemArg { offset: 0, align: 0, memory_index: 0 };
+        let ma2 = MemArg { offset: 0, align: 2, memory_index: 0 };
+        // Scratch ret-area distinct from the caller's OL_RET_AREA_BASE usage
+        let shim_ret: i32 = crate::wasi_http::OL_RET_AREA_BASE + 128;
+        // params: 0 url_ptr, 1 url_len, 2 buf_ptr, 3 buf_len, 4 len_ptr
+        // locals: 5 body_ptr, 6 body_len, 7 i
+        let mut hs = Function::new([(1, ValType::I32), (1, ValType::I32), (1, ValType::I32)]);
+        hs.instruction(&Instruction::LocalGet(0));
+        hs.instruction(&Instruction::LocalGet(1));
+        hs.instruction(&Instruction::I32Const(shim_ret));
+        hs.instruction(&Instruction::Call(http_get_import_idx));
+        hs.instruction(&Instruction::I32Const(shim_ret + 4));
+        hs.instruction(&Instruction::I32Load(ma2));
+        hs.instruction(&Instruction::LocalSet(5));
+        hs.instruction(&Instruction::I32Const(shim_ret + 8));
+        hs.instruction(&Instruction::I32Load(ma2));
+        hs.instruction(&Instruction::LocalSet(6));
+        // cap body_len at buf_len
+        hs.instruction(&Instruction::LocalGet(6));
+        hs.instruction(&Instruction::LocalGet(3));
+        hs.instruction(&Instruction::I32GtU);
+        hs.instruction(&Instruction::If(BlockType::Empty));
+        hs.instruction(&Instruction::LocalGet(3));
+        hs.instruction(&Instruction::LocalSet(6));
+        hs.instruction(&Instruction::End);
+        // i = 0; byte-copy body_ptr → buf_ptr
+        hs.instruction(&Instruction::I32Const(0));
+        hs.instruction(&Instruction::LocalSet(7));
+        hs.instruction(&Instruction::Block(BlockType::Empty));
+        hs.instruction(&Instruction::Loop(BlockType::Empty));
+        hs.instruction(&Instruction::LocalGet(7));
+        hs.instruction(&Instruction::LocalGet(6));
+        hs.instruction(&Instruction::I32GeU);
+        hs.instruction(&Instruction::BrIf(1));
+        hs.instruction(&Instruction::LocalGet(2));
+        hs.instruction(&Instruction::LocalGet(7));
+        hs.instruction(&Instruction::I32Add);
+        hs.instruction(&Instruction::LocalGet(5));
+        hs.instruction(&Instruction::LocalGet(7));
+        hs.instruction(&Instruction::I32Add);
+        hs.instruction(&Instruction::I32Load8U(ma0));
+        hs.instruction(&Instruction::I32Store8(ma0));
+        hs.instruction(&Instruction::LocalGet(7));
+        hs.instruction(&Instruction::I32Const(1));
+        hs.instruction(&Instruction::I32Add);
+        hs.instruction(&Instruction::LocalSet(7));
+        hs.instruction(&Instruction::Br(0));
+        hs.instruction(&Instruction::End);
+        hs.instruction(&Instruction::End);
+        // *len_ptr = body_len
+        hs.instruction(&Instruction::LocalGet(4));
+        hs.instruction(&Instruction::LocalGet(6));
+        hs.instruction(&Instruction::I32Store(ma2));
+        // return status 0
+        hs.instruction(&Instruction::I32Const(0));
+        hs.instruction(&Instruction::End);
+        code.function(&hs);
+    }
+
     m.section(&code);
 
     // ── Data section ──
@@ -1817,7 +1920,6 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     }
 
     let core_bytes = m.finish();
-    std::fs::write("/tmp/p2_outlayer_core.wasm", &core_bytes).ok();
     Ok(core_bytes)
 }
 
