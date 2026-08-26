@@ -206,15 +206,9 @@ Tagged value scheme (3-bit tag in bottom bits):
 ## 2026-08-25 — found by tests/compiler-torture (first run)
 
 ### T4 (CRITICAL): closures over let vars share state across instances
-- Two `(make-counter)` instances with the same binding name (`n`) share ONE
-  cell: c1,c1,c2,c1 → 1,2,3,4 (expected 1,2,1,3). Param-capturing closures
-  are independent (p1=101, p2=201); DIFFERENT binding names (n vs m) also
-  independent. Mechanism: forward-captured let vars compile set!/read to
-  StoreGlobal/LoadGlobal on the flat name-keyed env → env["n"] is global
-  across all instances. Contract impact: two users' balances would alias.
-  Fix requires per-instance closure cells (heap-allocated capture env at
-  lambda creation) — architectural, not a patch. Until fixed: NEVER use
-  same-named let-captured mutable state in two instances of a factory.
+- ✅ FIXED 2026-08-26 (round-3 fix 2): per-frame capture-cell table in
+  run_compiled_lambda_inner — see round-3 section below. Two factory
+  instances now get independent cells; same-invocation siblings share.
 
 ### T6: str-cat missing from interpreter (surface divergence, 3rd of its class)
 - RESOLVED for the interpreter by dd0285d (corpus #1): str-cat now exists in
@@ -342,10 +336,19 @@ they go through u128/* (erc20 corpus unaffected, verified exit 0).
 - t21 ARITH-PINs flipped + 5 new assertions (float-mix, cmp typing, u128
   unaffected). Sweep clean; cargo test 125/11 baseline intact.
 
-### 2. T4 closure aliasing — ❌ NOT STARTED (deliberately last; riskiest)
-t20 T4-PIN and t4-closures.lisp still assert shared-cell (1,2,3,4) behavior.
-Architectural: clone captured env cells at closure instantiation
-(LoadCaptured/StoreCaptured in bytecode.rs). Run full battery after.
+### 2. T4 closure aliasing — ✅ LANDED 2026-08-26 (fix 2; round-3 COMPLETE)
+Per-frame cell table in run_compiled_lambda_inner: PushClosure now
+allocates/reuses capture cells from the CURRENT frame's table (main frame
++ each CallSelf frame gets a fresh one), not from the shared CompiledLambda
+(cl.capture_cells) that aliased all invocations. Children still carry their
+cells via the per-PushClosure inner_cloned.capture_cells (LoadCaptured/
+StoreCaptured arms unchanged).
+- Semantics now correct on all three axes: separate factory calls
+  independent (1 2 1 2); siblings from ONE invocation share (inc/get probe:
+  1 2 2); fresh pair → 0. Counter pattern persists per-closure.
+- t20 T4-PIN flipped (1 2 1 2); t4-closures.lisp expanded with the
+  sibling-sharing + fresh-invocation assertions (8 asserts).
+- Full battery: sweep clean, cargo test 125/11 exact baseline.
 
 Baseline at wrap: cargo test 125 passed / 11 failed (11 = sibling's known
 wasi_emit outlayer/wasmtime failures). Working tree left dirty ONLY with the

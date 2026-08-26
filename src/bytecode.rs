@@ -6303,8 +6303,11 @@ pub struct CompiledLambda {
     /// Paired with names in order — at PushClosure time, read slots[i] for each entry
     /// and add to the closure's captured list.
     pub runtime_captures: Vec<(String, usize)>,
-    /// Cell table for runtime captures: indexed by parent slot index.
-    /// Created lazily at PushClosure time so sibling closures share cells.
+    /// Cell table carried by a closure VALUE for its runtime captures:
+    /// indexed by the closure's captured-entry index. Populated at
+    /// PushClosure time from the PARENT FRAME's per-invocation cell table
+    /// (see run_compiled_lambda_inner) — siblings from one invocation share
+    /// cells; separate invocations get independent ones (T4 fix).
     capture_cells: std::sync::RwLock<Vec<Option<std::sync::Arc<std::sync::RwLock<LispVal>>>>>,
 }
 
@@ -6723,11 +6726,19 @@ fn run_compiled_lambda_inner(
         slots[rest_idx] = rest_list;
     }
     let mut stack: Vec<LispVal> = Vec::with_capacity(8);
+    // Per-frame shared-cell table for runtime captures (GAPS.md round-3 fix 2 /
+    // T4): keyed by parent slot index. Scoped to THIS frame execution, so
+    // sibling closures created in the same invocation share cells (correct —
+    // same let location), but separate invocations of the factory get fresh
+    // cells (correct — independent bindings). Was: cl.capture_cells on the
+    // shared CompiledLambda → all invocations aliased one cell.
+    let mut capture_cells: Vec<Option<std::sync::Arc<std::sync::RwLock<LispVal>>>> = Vec::new();
     // Frame stack for iterative CallSelf — avoids recursive run_compiled_lambda calls
     struct Frame {
         pc: usize,
         slots: Vec<LispVal>,
         stack: Vec<LispVal>,
+        capture_cells: Vec<Option<std::sync::Arc<std::sync::RwLock<LispVal>>>>,
     }
     let mut frames: Vec<Frame> = Vec::new();
     let code = &cl.code;
@@ -7346,14 +7357,14 @@ fn run_compiled_lambda_inner(
                     } else {
                         LispVal::Nil
                     };
-                    // Create or reuse a shared cell for this parent slot
+                    // Create or reuse a shared cell for this parent slot —
+                    // from THIS frame's table (per-invocation, T4 fix), so
+                    // siblings share but separate factory calls don't alias.
                     let cell: std::sync::Arc<std::sync::RwLock<LispVal>> = {
-                        let mut parent_cells = cl.capture_cells.write().unwrap();
-                        // Extend parent_cells if needed
-                        while parent_cells.len() <= *slot_idx {
-                            parent_cells.push(None);
+                        while capture_cells.len() <= *slot_idx {
+                            capture_cells.push(None);
                         }
-                        match &parent_cells[*slot_idx] {
+                        match &capture_cells[*slot_idx] {
                             Some(existing_cell) => {
                                 // Sibling closure already created a cell for this slot — reuse it
                                 *existing_cell.write().unwrap() = val.clone();
@@ -7362,7 +7373,7 @@ fn run_compiled_lambda_inner(
                             None => {
                                 // First closure capturing this slot — create cell
                                 let cell = std::sync::Arc::new(std::sync::RwLock::new(val));
-                                parent_cells[*slot_idx] = Some(cell.clone());
+                                capture_cells[*slot_idx] = Some(cell.clone());
                                 cell
                             }
                         }
@@ -7701,9 +7712,11 @@ fn run_compiled_lambda_inner(
                     pc: return_pc,
                     slots: std::mem::take(&mut slots),
                     stack: std::mem::take(&mut stack),
+                    capture_cells: std::mem::take(&mut capture_cells),
                 });
-                // Fresh slots for new invocation
+                // Fresh slots (and fresh capture cells — new bindings) for new invocation
                 slots = vec![LispVal::Nil; cl.total_slots];
+                capture_cells = Vec::new();
                 for i in 0..cl.num_param_slots.min(self_args.len()) {
                     slots[i] = self_args[i].clone();
                 }

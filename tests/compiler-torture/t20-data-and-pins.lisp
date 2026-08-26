@@ -6,9 +6,8 @@
 ;; TRUTHINESS-PIN (flipped, GAPS.md round 3 fix 1): numeric zero is FALSY —
 ;; Num(0) and Float(0.0) both take the else-branch. Deliberate re-spec
 ;; (was: 0 truthy, Lisp-1 style). "" and '() REMAIN truthy by decision.
-;; T4-PIN: closures returned from the same factory SHARE one cell (GAPS.md
-;; T4) — c2 sees c1's increments. Correct semantics: independent cells
-;; (1 2 1 2). Pinned as the T4 tripwire.
+;; T4 (flipped, round-3 fix 2): closures get independent cells per factory
+;; invocation (siblings from ONE invocation still share — same let location).
 
 (println (= (list 1 (list 2 3) 4) (list 1 (list 2 3) 4))) ; true — deep equality
 (println (= (list 1 (list 2 3)) (list 1 (list 2 4))))     ; false — inner differs
@@ -31,14 +30,14 @@
 (println (if 7 "a" "b"))     ; "a" — nonzero num truthy
 (println (not 0))            ; true
 
-;; T4-PIN — shared closure cell (documented T4 bug, GAPS.md)
+;; T4 — closures over mutable state (flipped, round-3 fix 2, 2026-08-26)
 (define (mk) (let ((n 0)) (lambda () (set! n (+ n 1)) n)))
 (define c1 (mk))
 (define c2 (mk))
 (println (c1))  ; 1
 (println (c1))  ; 2
-(println (c2))  ; 3   T4-PIN: should be 1 with independent cells
-(println (c2))  ; 4   T4-PIN: should be 2
+(println (c2))  ; 1  — independent cell (was 3, T4 shared-cell bug; flipped round-3 fix 2)
+(println (c2))  ; 2  — own count (was 4)
 
 ;; ARITY (flipped, round-3 fix 3) — user-fn calls hard-error on mismatch.
 ;; Was ARITY-PIN: missing args read as nil (arith-coerced to 0), extra args
