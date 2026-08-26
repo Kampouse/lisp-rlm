@@ -639,7 +639,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         method,
         if args_json == "{}" { "" } else { &args_json }
     );
-    let result = func.call(&mut store, &[], &mut []);
+    // --once: skip the warm-up call (single execution — trace-equivalence
+    // harness needs exactly one run so logs/storage effects aren't doubled)
+    let run_once = args.iter().any(|a| a == "--once");
+    let result = if run_once {
+        Ok(())
+    } else {
+        func.call(&mut store, &[], &mut [])
+    };
 
     // Check memory before call
     if let Some(real_mem) = instance.get_memory(&mut store, "memory") {

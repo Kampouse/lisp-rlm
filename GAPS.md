@@ -353,3 +353,43 @@ StoreCaptured arms unchanged).
 Baseline at wrap: cargo test 125 passed / 11 failed (11 = sibling's known
 wasi_emit outlayer/wasmtime failures). Working tree left dirty ONLY with the
 sibling's uncommitted src/wasm_emit/* changes — do not stash/revert those.
+
+## Trace-Equivalence Harness (landed 2026-08-26)
+
+`scripts/trace-equiv.py` — differential testing: every tests/equiv/*.lisp
+probe (defines `(main)`) runs through BOTH surfaces:
+- INTERP: lisp-run (probe + appended `(main)`), println lines
+- WASM: near-compile → near-mock `--once _run {}`, `LOG:` lines
+State isolated (state file wiped per run); 30s timeout → WASM_HANG class.
+Categories: MATCH / DIVERGE / WASM_CERR / INTERP_ERR / BOTH_ERR / WASM_HANG.
+
+First-run scoreboard: 13 probes → 8 MATCH, 5 WASM_CERR (surface gaps:
+closures-as-values, lists/map, try/catch, deep equality), 0 DIVERGE.
+
+### wasm bugs the harness caught (all fixed 2026-08-26, NEAR mode)
+1. **to_str tag layout** — h_i64_to_str/h_to_str returned `len<<32|pos|5`
+   (tag OR'd into payload, unshifted). Correct: `((len<<32)|pos)<<TAG_BITS|TAG_STR`.
+   Symptom: every Num println silently logged nothing (garbage len/ptr →
+   near-mock log_fn bounds check silently drops). 4 return sites fixed.
+2. **h_i64_to_str magnitude** — `u = 0 - n` unconditionally → positives
+   printed as 2^64-n (e.g. 42 → 18446744073709551574). Now `neg ? 0-n : n`.
+3. **"false" constant** — 0x6573_6c61 ("alse") → 0x736c_6166; println false
+   printed "alsee".
+4. **NEAR str-cat local clobber** — fixed-name locals (`__sc_a`) → nested
+   `(str-cat "x" (str-cat "y" "z"))` flattened to "yz". Depth-keyed
+   (`__scn{d}_*`) like the P2/WASI arm. (3+ arg str-cat on NEAR is still
+   binary-only — drops extras; TODO.)
+5. **abs unsigned untag** — emit_untag is `shr_u`; abs(-5) = -5. Now
+   signed `shr_s` inline in the abs arm.
+
+### Documented surface gaps (WASM_CERR class — not bugs, scope)
+- closures/lambda-as-values: "unknown function 'f'" (clean CERR).
+  NOTE: top-level `(define c1 (mk))` referenced inside main reads as nil
+  SILENTLY (no error, no-op) — should hard-error like local lambdas.
+  TODO for wasm_emit.
+- lists (car/cdr/map/len) emit broken code that fails wasm validation
+  with a stack-underflow error at RUN time (should CERR at compile).
+- try/catch, structural equality: unsupported (CERR).
+- top-level program globals: interpreter has them; NEAR contract model
+  compiles top-level defines as contract METHODS. Probes must use let
+  locals (e07 pattern). PORTING HAZARD for corpus files.

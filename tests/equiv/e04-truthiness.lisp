@@ -1,0 +1,7 @@
+;; e04 — if + truthiness (0-falsy spec)
+(define (main)
+  (println (if 0 "a" "b"))
+  (println (if 1 "a" "b"))
+  (println (if nil "a" "b"))
+  (println (if "" "a" "b"))
+  (println (if "x" "a" "b"))) 

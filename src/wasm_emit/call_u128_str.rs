@@ -188,8 +188,10 @@ impl WasmEmitter {
         e(&Instruction::LocalGet(1)); e(&Instruction::LocalGet(2)); e(&Instruction::I64Or); e(&Instruction::I64Eqz);
         e(&Instruction::If(BlockType::Result(ValType::I64)));
         e(&Instruction::LocalGet(3)); e(&Instruction::I32WrapI64); e(&Instruction::I32Const(48)); e(&Instruction::I32Store8(ma()));
-        e(&Instruction::I64Const(1)); e(&Instruction::I64Const(32)); e(&Instruction::I64Shl);
-        e(&Instruction::LocalGet(3)); e(&Instruction::I64Or); e(&Instruction::I64Const(TAG_STR)); e(&Instruction::I64Or);
+        // tagged str = ((1<<32)|dst)<<TAG_BITS | TAG_STR  (payload layout: len<<32|ptr)
+        e(&Instruction::LocalGet(3)); e(&Instruction::I64Const(TAG_BITS)); e(&Instruction::I64Shl);
+        e(&Instruction::I64Const(1)); e(&Instruction::I64Const(32)); e(&Instruction::I64Shl); e(&Instruction::I64Or);
+        e(&Instruction::I64Const(TAG_STR)); e(&Instruction::I64Or);
         e(&Instruction::Else);
         e(&Instruction::LocalGet(3)); e(&Instruction::I64Const(48)); e(&Instruction::I64Add); e(&Instruction::LocalSet(4));
         // outer loop: while (lo|hi) != 0
@@ -242,8 +244,10 @@ impl WasmEmitter {
         // tagged str: ((dst+48-pos) << 32) | pos
         e(&Instruction::LocalGet(3)); e(&Instruction::I64Const(48)); e(&Instruction::I64Add);
         e(&Instruction::LocalGet(4)); e(&Instruction::I64Sub); e(&Instruction::LocalSet(10));
+        // tagged str = ((len<<32)|pos)<<TAG_BITS | TAG_STR
         e(&Instruction::LocalGet(10)); e(&Instruction::I64Const(32)); e(&Instruction::I64Shl);
-        e(&Instruction::LocalGet(4)); e(&Instruction::I64Or); e(&Instruction::I64Const(TAG_STR)); e(&Instruction::I64Or);
+        e(&Instruction::LocalGet(4)); e(&Instruction::I64Or);
+        e(&Instruction::I64Const(TAG_BITS)); e(&Instruction::I64Shl); e(&Instruction::I64Const(TAG_STR)); e(&Instruction::I64Or);
         e(&Instruction::End);
         v
     }
@@ -445,7 +449,14 @@ impl WasmEmitter {
         let mut v = vec![];
         let mut e = |i: &Instruction<'static>| v.push(i.clone());
         e(&Instruction::LocalGet(0)); e(&Instruction::I64Const(0)); e(&Instruction::I64LtS); e(&Instruction::I64ExtendI32U); e(&Instruction::LocalSet(1));
-        e(&Instruction::I64Const(0)); e(&Instruction::LocalGet(0)); e(&Instruction::I64Sub); e(&Instruction::LocalSet(2));
+        // u = |n| — negate ONLY when negative (unconditional 0-n broke positives:
+        // 0-42 = -42 → digits of 2^64-42)
+        e(&Instruction::LocalGet(1)); e(&Instruction::I32WrapI64); e(&Instruction::If(BlockType::Result(ValType::I64)));
+        e(&Instruction::I64Const(0)); e(&Instruction::LocalGet(0)); e(&Instruction::I64Sub);
+        e(&Instruction::Else);
+        e(&Instruction::LocalGet(0));
+        e(&Instruction::End);
+        e(&Instruction::LocalSet(2));
         // alloc 24 bytes
         e(&Instruction::I64Const(56)); e(&Instruction::I32WrapI64); e(&Instruction::I64Load(ma8())); e(&Instruction::LocalSet(3));
         e(&Instruction::LocalGet(3)); e(&Instruction::I64Const(24)); e(&Instruction::I64Add); e(&Instruction::LocalSet(5));
@@ -457,8 +468,10 @@ impl WasmEmitter {
         e(&Instruction::LocalGet(2)); e(&Instruction::I64Eqz);
         e(&Instruction::If(BlockType::Result(ValType::I64)));
         e(&Instruction::LocalGet(3)); e(&Instruction::I32WrapI64); e(&Instruction::I32Const(48)); e(&Instruction::I32Store8(ma()));
-        e(&Instruction::I64Const(1)); e(&Instruction::I64Const(32)); e(&Instruction::I64Shl);
-        e(&Instruction::LocalGet(3)); e(&Instruction::I64Or); e(&Instruction::I64Const(TAG_STR)); e(&Instruction::I64Or);
+        // tagged str = ((1<<32)|dst)<<TAG_BITS | TAG_STR
+        e(&Instruction::LocalGet(3)); e(&Instruction::I64Const(TAG_BITS)); e(&Instruction::I64Shl);
+        e(&Instruction::I64Const(1)); e(&Instruction::I64Const(32)); e(&Instruction::I64Shl); e(&Instruction::I64Or);
+        e(&Instruction::I64Const(TAG_STR)); e(&Instruction::I64Or);
         e(&Instruction::Else);
         e(&Instruction::LocalGet(3)); e(&Instruction::I64Const(24)); e(&Instruction::I64Add); e(&Instruction::LocalSet(4));
         e(&Instruction::Block(BlockType::Empty));
@@ -480,8 +493,10 @@ impl WasmEmitter {
         e(&Instruction::LocalGet(4)); e(&Instruction::I32WrapI64); e(&Instruction::I32Const(45)); e(&Instruction::I32Store8(ma()));
         e(&Instruction::End);
         e(&Instruction::LocalGet(3)); e(&Instruction::I64Const(24)); e(&Instruction::I64Add); e(&Instruction::LocalGet(4)); e(&Instruction::I64Sub); e(&Instruction::LocalSet(6));
+        // tagged str = ((len<<32)|pos)<<TAG_BITS | TAG_STR
         e(&Instruction::LocalGet(6)); e(&Instruction::I64Const(32)); e(&Instruction::I64Shl);
-        e(&Instruction::LocalGet(4)); e(&Instruction::I64Or); e(&Instruction::I64Const(TAG_STR)); e(&Instruction::I64Or);
+        e(&Instruction::LocalGet(4)); e(&Instruction::I64Or);
+        e(&Instruction::I64Const(TAG_BITS)); e(&Instruction::I64Shl); e(&Instruction::I64Const(TAG_STR)); e(&Instruction::I64Or);
         e(&Instruction::End); // close zero fast-path If(Result i64)
         v
     }

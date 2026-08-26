@@ -141,7 +141,11 @@ impl WasmEmitter {
                 let temp = self.local_idx("__abs_tmp");
                 let mut v = Vec::new();
                 v.extend(self.expr(&a[0])?);
-                v.extend(self.emit_untag());
+                // SIGNED untag (i64.shr_s) — emit_untag is unsigned, which turns
+                // tagged negatives into huge positives so the <0 check never fires
+                // and abs(-5) round-trips to -5
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64ShrS);
                 v.push(Instruction::LocalTee(temp));
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::I64LtS);

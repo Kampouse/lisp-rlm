@@ -448,7 +448,7 @@ impl WasmEmitter {
                     // "true" / "false" written at STDOUT_BUF (65536)
                     v.push(Instruction::LocalGet(tagged)); v.push(Instruction::I64Const(TAG_BITS)); v.push(Instruction::I64ShrU); v.push(Instruction::I64Eqz);
                     v.push(Instruction::If(BlockType::Empty));
-                    v.push(Instruction::I32Const(65536)); v.push(Instruction::I32Const(0x6573_6c61)); v.push(Instruction::I32Store(ma4.clone())); // "fals"
+                    v.push(Instruction::I32Const(65536)); v.push(Instruction::I32Const(0x736c_6166)); v.push(Instruction::I32Store(ma4.clone())); // "fals"
                     v.push(Instruction::I32Const(65540)); v.push(Instruction::I32Const(0x65)); v.push(Instruction::I32Store8(ma8b.clone()));    // "e"
                     v.push(Instruction::I64Const(5));
                     v.push(Instruction::I64Const(65536));

@@ -796,17 +796,23 @@ impl WasmEmitter {
                     return Ok(v);
                 }
                 // NEAR mode: frame-based allocation
-                let a_raw_i = self.local_idx("__sc_a");
-                let b_raw_i = self.local_idx("__sc_b");
-                let a_len_i = self.local_idx("__sc_a_len");
-                let a_ptr_i = self.local_idx("__sc_a_ptr");
-                let b_len_i = self.local_idx("__sc_b_len");
-                let b_ptr_i = self.local_idx("__sc_b_ptr");
-                let dst_i = self.local_idx("__sc_dst");
-                let dst_save_i = self.local_idx("__sc_dst_save");
-                let total_len_i = self.local_idx("__sc_total");
-                let qwords_i = self.local_idx("__sc_qw");
-                let remain_i = self.local_idx("__sc_rem");
+                // Depth-keyed locals: nested str-cat calls must not clobber
+                // each other's arg slots (P2 arm had this via __sc{d}_;
+                // NEAR arm used fixed names → (str-cat "x" (str-cat "y" "z"))
+                // flattened to "yz" — "y" overwrote "x" in __sc_a)
+                let d = self.str_cat_depth;
+                self.str_cat_depth += 1;
+                let a_raw_i = self.local_idx(&format!("__scn{}_a", d));
+                let b_raw_i = self.local_idx(&format!("__scn{}_b", d));
+                let a_len_i = self.local_idx(&format!("__scn{}_a_len", d));
+                let a_ptr_i = self.local_idx(&format!("__scn{}_a_ptr", d));
+                let b_len_i = self.local_idx(&format!("__scn{}_b_len", d));
+                let b_ptr_i = self.local_idx(&format!("__scn{}_b_ptr", d));
+                let dst_i = self.local_idx(&format!("__scn{}_dst", d));
+                let dst_save_i = self.local_idx(&format!("__scn{}_dst_save", d));
+                let total_len_i = self.local_idx(&format!("__scn{}_total", d));
+                let qwords_i = self.local_idx(&format!("__scn{}_qw", d));
+                let remain_i = self.local_idx(&format!("__scn{}_rem", d));
                 let mut v = Vec::new();
                 let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
                 // Evaluate a, extract raw descriptor
