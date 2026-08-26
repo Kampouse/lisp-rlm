@@ -20,6 +20,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "to-int",
     "to-num",
     "type?",
+    "u64-and", "u64-or", "u64-xor", "u64-shr", "u64-shl", "u64-not", "u64-mul-hi",
     "dict",
     "dict/get",
     "dict/set",

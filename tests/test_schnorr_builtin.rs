@@ -35,7 +35,7 @@ fn test_schnorr_v0() {
     let sig = "(list 233 7 131 31 128 132 141 16 105 165 55 27 64 36 16 54 75 223 28 95 131 7 176 8 76 85 241 206 45 202 130 21 37 246 106 74 133 234 139 113 228 130 167 79 56 45 44 229 235 238 143 219 33 114 244 119 223 73 0 211 16 83 108 0)";
     let msg = "(list 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)";
     let code = format!("(schnorr-verify {} {} {})", pk, sig, msg);
-    assert_eq!(format!("{}", eval(\&code)), "true");
+    assert_eq!(format!("{}", eval(&code)), "true");
 }
 
 #[test]
@@ -44,7 +44,7 @@ fn test_schnorr_v1() {
     let sig = "(list 104 150 189 96 238 174 41 109 212 138 34 159 255 113 223 224 113 189 228 19 62 109 67 249 23 220 140 248 200 120 222 51 65 137 144 109 17 172 151 106 204 203 32 176 145 41 146 191 78 168 151 142 252 182 57 158 168 113 207 159 109 254 51 158 75 10)";
     let msg = "(list 36 63 106 136 133 163 8 211 19 25 138 46 3 112 115 68 164 9 56 34 41 159 49 208 8 46 250 152 236 78 108 137)";
     let code = format!("(schnorr-verify {} {} {})", pk, sig, msg);
-    assert_eq!(format!("{}", eval(\&code)), "true");
+    assert_eq!(format!("{}", eval(&code)), "true");
 }
 
 #[test]
@@ -53,7 +53,7 @@ fn test_schnorr_bad_sig() {
     let sig = "(list 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)";
     let msg = "(list 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)";
     let code = format!("(schnorr-verify {} {} {})", pk, sig, msg);
-    assert_eq!(format!("{}", eval(\&code)), "false");
+    assert_eq!(format!("{}", eval(&code)), "false");
 }
 
 #[test]
@@ -62,7 +62,7 @@ fn test_schnorr_wrong_msg() {
     let sig = "(list 233 7 131 31 128 132 141 16 105 165 55 27 64 36 16 54 75 223 28 95 131 7 176 8 76 85 241 206 45 202 130 21 37 246 106 74 133 234 139 113 228 130 167 79 56 45 44 229 235 238 143 219 33 114 244 119 223 73 0 211 16 83 108 0)";
     let msg = "(list 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1)";
     let code = format!("(schnorr-verify {} {} {})", pk, sig, msg);
-    assert_eq!(format!("{}", eval(\&code)), "false");
+    assert_eq!(format!("{}", eval(&code)), "false");
 }
 
 #[test]
@@ -71,5 +71,5 @@ fn test_schnorr_wrong_pk() {
     let sig = "(list 233 7 131 31 128 132 141 16 105 165 55 27 64 36 16 54 75 223 28 95 131 7 176 8 76 85 241 206 45 202 130 21 37 246 106 74 133 234 139 113 228 130 167 79 56 45 44 229 235 238 143 219 33 114 244 119 223 73 0 211 16 83 108 0)";
     let msg = "(list 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)";
     let code = format!("(schnorr-verify {} {} {})", pk, sig, msg);
-    assert_eq!(format!("{}", eval(\&code)), "false");
+    assert_eq!(format!("{}", eval(&code)), "false");
 }

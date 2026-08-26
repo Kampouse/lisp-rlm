@@ -117,11 +117,16 @@ struct LoopCompiler {
     set_target_globals: std::collections::HashSet<String>,
     /// Per-slot type info: true if slot is known to always hold Num(i64)
     slot_is_i64: Vec<bool>,
+    /// Per-slot type info: true if slot is known to always hold U64(u64)
+    slot_is_u64: Vec<bool>,
     /// Per-slot type info: true if slot is known to always hold Float(f64)
     slot_is_f64: Vec<bool>,
     /// Whether the last compile_expr call produced an i64 value on the stack.
     /// Used by callers (e.g., let-binding) to propagate type info to new slots.
     last_result_i64: bool,
+    /// Whether the last compile_expr call produced a u64 value on the stack.
+    /// Used by callers (e.g., let-binding) to propagate type info to new slots.
+    last_result_u64: bool,
     /// Whether the last compile_expr call produced an f64 value on the stack.
     /// Used by callers (e.g., let-binding) to propagate type info to new slots.
     last_result_f64: bool,
@@ -144,8 +149,10 @@ impl LoopCompiler {
             forward_captures: Vec::new(),
             set_target_globals: std::collections::HashSet::new(),
             slot_is_i64: Vec::new(),
+            slot_is_u64: Vec::new(),
             slot_is_f64: Vec::new(),
             last_result_i64: false,
+            last_result_u64: false,
             last_result_f64: false,
             pending_lambda_name: None,
         }
@@ -183,6 +190,23 @@ impl LoopCompiler {
             self.slot_is_i64.push(false);
         }
         self.slot_is_i64[slot] = false;
+    }
+
+    /// Mark a slot as known to always hold U64(u64)
+    fn mark_slot_u64(&mut self, slot: usize) {
+        while self.slot_is_u64.len() <= slot {
+            self.slot_is_u64.push(false);
+        }
+        self.slot_is_u64[slot] = true;
+        // u64 is mutually exclusive with i64 and f64
+        while self.slot_is_i64.len() <= slot {
+            self.slot_is_i64.push(false);
+        }
+        self.slot_is_i64[slot] = false;
+        while self.slot_is_f64.len() <= slot {
+            self.slot_is_f64.push(false);
+        }
+        self.slot_is_f64[slot] = false;
     }
 
     /// Check if a slot is known to always hold Num(i64)
@@ -407,11 +431,17 @@ impl LoopCompiler {
     /// Try to compile an expression. Returns false if unsupported.
     fn compile_expr(&mut self, expr: &LispVal, outer_env: &Env) -> bool {
         self.last_result_i64 = false; // default: unknown type
+        self.last_result_u64 = false; // default: unknown type
         self.last_result_f64 = false; // default: unknown type
         match expr {
             LispVal::Num(n) => {
                 self.code.push(Op::PushI64(*n));
                 self.last_result_i64 = true;
+                true
+            }
+            LispVal::U64(n) => {
+                self.code.push(Op::PushU64(*n));
+                self.last_result_u64 = true;
                 true
             }
             LispVal::Float(f) => {
@@ -1199,6 +1229,7 @@ impl LoopCompiler {
                                             }
                                             self.pending_lambda_name = None;
                                             let val_is_i64 = self.last_result_i64;
+                                            let val_is_u64 = self.last_result_u64;
                                             let val_is_f64 = self.last_result_f64;
                                             // Check if this name already has a slot (shadowing)
                                             if let Some(existing) =
@@ -1216,6 +1247,9 @@ impl LoopCompiler {
                                                 if val_is_i64 {
                                                     self.mark_slot_i64(existing);
                                                 }
+                                                if val_is_u64 {
+                                                    self.mark_slot_u64(existing);
+                                                }
                                                 if val_is_f64 {
                                                     self.mark_slot_f64(existing);
                                                 }
@@ -1225,6 +1259,9 @@ impl LoopCompiler {
                                                 self.code.push(Op::StoreSlot(slot_idx));
                                                 if val_is_i64 {
                                                     self.mark_slot_i64(slot_idx);
+                                                }
+                                                if val_is_u64 {
+                                                    self.mark_slot_u64(slot_idx);
                                                 }
                                                 if val_is_f64 {
                                                     self.mark_slot_f64(slot_idx);
@@ -1647,6 +1684,15 @@ impl LoopCompiler {
                                         if !self.compile_expr(&chunk[1], outer_env) {
                                             return false;
                                         }
+                                        if self.last_result_i64 {
+                                            self.mark_slot_i64(slot);
+                                        }
+                                        if self.last_result_u64 {
+                                            self.mark_slot_u64(slot);
+                                        }
+                                        if self.last_result_f64 {
+                                            self.mark_slot_f64(slot);
+                                        }
                                         self.code.push(Op::StoreSlot(slot));
                                     } else {
                                         return false;
@@ -1677,6 +1723,15 @@ impl LoopCompiler {
                                                     return false;
                                                 }
                                                 self.pending_lambda_name = None;
+                                                if self.last_result_i64 {
+                                                    self.mark_slot_i64(slot);
+                                                }
+                                                if self.last_result_u64 {
+                                                    self.mark_slot_u64(slot);
+                                                }
+                                                if self.last_result_f64 {
+                                                    self.mark_slot_f64(slot);
+                                                }
                                                 self.code.push(Op::StoreSlot(slot));
                                                 continue;
                                             }
@@ -1825,10 +1880,11 @@ impl LoopCompiler {
                             // Compute total_slots
                             // Run peephole on inner lambda code
                             let inner_i64 = inner.slot_is_i64.clone();
+                            let inner_u64 = inner.slot_is_u64.clone();
                             let inner_f64 = inner.slot_is_f64.clone();
-                            peephole_optimize(&mut inner.code, &inner_i64, &inner_f64);
-                            peephole_optimize(&mut inner.code, &inner_i64, &inner_f64);
-                            peephole_optimize(&mut inner.code, &inner_i64, &inner_f64);
+                            peephole_optimize(&mut inner.code, &inner_i64, &inner_u64, &inner_f64);
+                            peephole_optimize(&mut inner.code, &inner_i64, &inner_u64, &inner_f64);
+                            peephole_optimize(&mut inner.code, &inner_i64, &inner_u64, &inner_f64);
 
                             let base = params.len();
                             let mut max_slot = base;
@@ -2617,11 +2673,11 @@ impl LoopCompiler {
                 self.code.push(Op::Return);
                 let captured = self.captured.clone();
                 let mut code = self.code;
-                peephole_optimize(&mut code, &[], &[]);
+                peephole_optimize(&mut code, &[], &[], &[]);
                 // Second pass: now that 3-op and 2-op fusions are done, check for mega-fuse
-                peephole_optimize(&mut code, &[], &[]);
+                peephole_optimize(&mut code, &[], &[], &[]);
                 // Third pass: 2-op fusion may have created new JumpIfSlotCmpImm for mega-fuse
-                peephole_optimize(&mut code, &[], &[]);
+                peephole_optimize(&mut code, &[], &[], &[]);
                 return Some(CompiledLoop {
                     num_slots,
                     slot_names: self.slot_map,
@@ -2637,11 +2693,11 @@ impl LoopCompiler {
             self.code.push(Op::Return);
             let captured = self.captured.clone();
             let mut code = self.code;
-            peephole_optimize(&mut code, &[], &[]);
+            peephole_optimize(&mut code, &[], &[], &[]);
             // Second pass: now that 3-op and 2-op fusions are done, check for mega-fuse
-            peephole_optimize(&mut code, &[], &[]);
+            peephole_optimize(&mut code, &[], &[], &[]);
             // Third pass: 2-op fusion may have created new JumpIfSlotCmpImm for mega-fuse
-            peephole_optimize(&mut code, &[], &[]);
+            peephole_optimize(&mut code, &[], &[], &[]);
             return Some(CompiledLoop {
                 num_slots,
                 slot_names: self.slot_map,
@@ -2749,7 +2805,12 @@ fn remap_op(op: &Op, slot_offset: usize, captured_remap: &[usize], jump_offset: 
 /// When provided, converts generic Arith/Cmp ops to typed I64 variants
 /// when both source slots are known i64.
 /// `slot_is_f64` maps slot index → true if known to always hold Float(f64).
-fn peephole_optimize(code: &mut Vec<Op>, slot_is_i64: &[bool], slot_is_f64: &[bool]) {
+fn peephole_optimize(
+    code: &mut Vec<Op>,
+    slot_is_i64: &[bool],
+    slot_is_u64: &[bool],
+    slot_is_f64: &[bool],
+) {
     // Pre-compute set of jump targets — positions that are jumped to from elsewhere.
     // Used to prevent fusing ops at jump targets (which would break fallthrough semantics).
     let jump_targets: std::collections::HashSet<usize> = code
@@ -2905,6 +2966,91 @@ fn peephole_optimize(code: &mut Vec<Op>, slot_is_i64: &[bool], slot_is_f64: &[bo
             }
         }
 
+        // U64 const+const: PushU64 + PushU64 + BinOp → TypedBinOp U64
+        // Without this, generic Op::Add hard-errors on U64 operands.
+        if i + 2 < code.len() {
+            if let (Op::PushU64(_), Op::PushU64(_)) = (&code[i], &code[i + 1]) {
+                let typed = match &code[i + 2] {
+                    Op::Add => Some(Op::TypedBinOp(BinOp::Add, Ty::U64)),
+                    Op::Sub => Some(Op::TypedBinOp(BinOp::Sub, Ty::U64)),
+                    Op::Mul => Some(Op::TypedBinOp(BinOp::Mul, Ty::U64)),
+                    Op::Div => Some(Op::TypedBinOp(BinOp::Div, Ty::U64)),
+                    Op::Mod => Some(Op::TypedBinOp(BinOp::Mod, Ty::U64)),
+                    Op::Lt => Some(Op::TypedBinOp(BinOp::Lt, Ty::U64)),
+                    Op::Le => Some(Op::TypedBinOp(BinOp::Le, Ty::U64)),
+                    Op::Gt => Some(Op::TypedBinOp(BinOp::Gt, Ty::U64)),
+                    Op::Ge => Some(Op::TypedBinOp(BinOp::Ge, Ty::U64)),
+                    Op::Eq => Some(Op::TypedBinOp(BinOp::Eq, Ty::U64)),
+                    _ => None,
+                };
+                if let Some(top) = typed {
+                    new_code.push(code[i].clone());
+                    index_map.push(new_code.len());
+                    new_code.push(code[i + 1].clone());
+                    index_map.push(new_code.len());
+                    new_code.push(top);
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+
+        // Convert LoadSlot(s) + PushU64(n) + BinOp → TypedBinOp U64
+        if i + 2 < code.len() {
+            if let (Op::LoadSlot(_), Op::PushU64(_)) = (&code[i], &code[i + 1]) {
+                let typed = match &code[i + 2] {
+                    Op::Add => Some(Op::TypedBinOp(BinOp::Add, Ty::U64)),
+                    Op::Sub => Some(Op::TypedBinOp(BinOp::Sub, Ty::U64)),
+                    Op::Mul => Some(Op::TypedBinOp(BinOp::Mul, Ty::U64)),
+                    Op::Div => Some(Op::TypedBinOp(BinOp::Div, Ty::U64)),
+                    Op::Mod => Some(Op::TypedBinOp(BinOp::Mod, Ty::U64)),
+                    Op::Lt => Some(Op::TypedBinOp(BinOp::Lt, Ty::U64)),
+                    Op::Le => Some(Op::TypedBinOp(BinOp::Le, Ty::U64)),
+                    Op::Gt => Some(Op::TypedBinOp(BinOp::Gt, Ty::U64)),
+                    Op::Ge => Some(Op::TypedBinOp(BinOp::Ge, Ty::U64)),
+                    Op::Eq => Some(Op::TypedBinOp(BinOp::Eq, Ty::U64)),
+                    _ => None,
+                };
+                if let Some(top) = typed {
+                    new_code.push(code[i].clone());
+                    index_map.push(new_code.len());
+                    new_code.push(code[i + 1].clone());
+                    index_map.push(new_code.len());
+                    new_code.push(top);
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+
+        // Also match PushU64(n) + LoadSlot(s) + BinOp (reversed operand order)
+        if i + 2 < code.len() {
+            if let (Op::PushU64(_), Op::LoadSlot(_)) = (&code[i], &code[i + 1]) {
+                let typed = match &code[i + 2] {
+                    Op::Add => Some(Op::TypedBinOp(BinOp::Add, Ty::U64)),
+                    Op::Sub => Some(Op::TypedBinOp(BinOp::Sub, Ty::U64)),
+                    Op::Mul => Some(Op::TypedBinOp(BinOp::Mul, Ty::U64)),
+                    Op::Div => Some(Op::TypedBinOp(BinOp::Div, Ty::U64)),
+                    Op::Mod => Some(Op::TypedBinOp(BinOp::Mod, Ty::U64)),
+                    Op::Lt => Some(Op::TypedBinOp(BinOp::Lt, Ty::U64)),
+                    Op::Le => Some(Op::TypedBinOp(BinOp::Le, Ty::U64)),
+                    Op::Gt => Some(Op::TypedBinOp(BinOp::Gt, Ty::U64)),
+                    Op::Ge => Some(Op::TypedBinOp(BinOp::Ge, Ty::U64)),
+                    Op::Eq => Some(Op::TypedBinOp(BinOp::Eq, Ty::U64)),
+                    _ => None,
+                };
+                if let Some(top) = typed {
+                    new_code.push(code[i].clone());
+                    index_map.push(new_code.len());
+                    new_code.push(code[i + 1].clone());
+                    index_map.push(new_code.len());
+                    new_code.push(top);
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+
         // Convert LoadSlot(a) + LoadSlot(b) + {Add|Sub|...} → typed variant
         // when both slots are known to hold the same type.
         if i + 2 < code.len() {
@@ -2915,6 +3061,8 @@ fn peephole_optimize(code: &mut Vec<Op>, slot_is_i64: &[bool], slot_is_f64: &[bo
                 let sb = slot_is_i64.get(b).copied().unwrap_or(false);
                 let fa = slot_is_f64.get(a).copied().unwrap_or(false);
                 let fb = slot_is_f64.get(b).copied().unwrap_or(false);
+                let ua = slot_is_u64.get(a).copied().unwrap_or(false);
+                let ub = slot_is_u64.get(b).copied().unwrap_or(false);
                 if sa && sb {
                     let typed = match &code[i + 2] {
                         Op::Add => Some(Op::TypedBinOp(BinOp::Add, Ty::I64)),
@@ -2946,6 +3094,29 @@ fn peephole_optimize(code: &mut Vec<Op>, slot_is_i64: &[bool], slot_is_f64: &[bo
                         Op::Gt => Some(Op::TypedBinOp(BinOp::Gt, Ty::F64)),
                         Op::Ge => Some(Op::TypedBinOp(BinOp::Ge, Ty::F64)),
                         Op::Eq => Some(Op::TypedBinOp(BinOp::Eq, Ty::F64)),
+                        _ => None,
+                    };
+                    if let Some(top) = typed {
+                        new_code.push(code[i].clone());
+                        index_map.push(new_code.len());
+                        new_code.push(code[i + 1].clone());
+                        index_map.push(new_code.len());
+                        new_code.push(top);
+                        i += 3;
+                        continue;
+                    }
+                } else if ua && ub {
+                    let typed = match &code[i + 2] {
+                        Op::Add => Some(Op::TypedBinOp(BinOp::Add, Ty::U64)),
+                        Op::Sub => Some(Op::TypedBinOp(BinOp::Sub, Ty::U64)),
+                        Op::Mul => Some(Op::TypedBinOp(BinOp::Mul, Ty::U64)),
+                        Op::Div => Some(Op::TypedBinOp(BinOp::Div, Ty::U64)),
+                        Op::Mod => Some(Op::TypedBinOp(BinOp::Mod, Ty::U64)),
+                        Op::Lt => Some(Op::TypedBinOp(BinOp::Lt, Ty::U64)),
+                        Op::Le => Some(Op::TypedBinOp(BinOp::Le, Ty::U64)),
+                        Op::Gt => Some(Op::TypedBinOp(BinOp::Gt, Ty::U64)),
+                        Op::Ge => Some(Op::TypedBinOp(BinOp::Ge, Ty::U64)),
+                        Op::Eq => Some(Op::TypedBinOp(BinOp::Eq, Ty::U64)),
                         _ => None,
                     };
                     if let Some(top) = typed {
@@ -3215,6 +3386,10 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
             }
             Op::PushI64(n) => {
                 stack.push(LispVal::Num(*n));
+                pc += 1;
+            }
+            Op::PushU64(n) => {
+                stack.push(LispVal::U64(*n));
                 pc += 1;
             }
             Op::PushFloat(f) => {
@@ -3661,7 +3836,6 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
             | Op::VecConj
             | Op::VecContains
             | Op::VecSlice
-            | Op::PushU64(_)
             | Op::U64MulHi
             | Op::U64And
             | Op::U64Or
@@ -4065,6 +4239,18 @@ fn safe_slot<'a>(slots: &'a [LispVal], idx: usize) -> &'a LispVal {
 /// Like num_arith but uses checked integer arithmetic — returns Err on overflow
 /// or non-numeric operands (GAPS.md round-3 fix 4: bare arith is i64/f64 only;
 /// string numerics must go through the u128/* builtins).
+/// Extract a strict (U64, U64) pair from builtin args. Hard error on wrong types
+/// (never silent 0-coercion — GAPS.md hard-error policy).
+fn u64_pair(args: &[LispVal], op_name: &str) -> Result<(u64, u64), String> {
+    match (args.get(0), args.get(1)) {
+        (Some(LispVal::U64(a)), Some(LispVal::U64(b))) => Ok((*a, *b)),
+        _ => Err(format!(
+            "type error: {} expects two u64 values, got {:?}",
+            op_name, args
+        )),
+    }
+}
+
 fn num_arith_checked(
     a: &LispVal,
     b: &LispVal,
@@ -4080,6 +4266,31 @@ fn num_arith_checked(
             Some(r) => Ok(LispVal::Num(r)),
             None => Err(format!("integer overflow in {}", op_name)),
         },
+        // U64 × U64: wrapping field arithmetic — overflow wraps (u64 semantics),
+        // division by zero stays a hard error. Mixed U64/Num is NOT coerced.
+        (LispVal::U64(x), LispVal::U64(y)) => {
+            let r = match op_name {
+                "add" => x.wrapping_add(*y),
+                "sub" => x.wrapping_sub(*y),
+                "mul" => x.wrapping_mul(*y),
+                "div" => {
+                    if *y == 0 {
+                        return Err("division by zero".into());
+                    }
+                    x.wrapping_div(*y)
+                }
+                "mod" => {
+                    if *y == 0 {
+                        return Err("modulo by zero".into());
+                    }
+                    x.wrapping_rem(*y)
+                }
+                other => {
+                    return Err(format!("type error: {} on u64 operands", other));
+                }
+            };
+            Ok(LispVal::U64(r))
+        }
         // Non-numeric operand: hard error (was: coerce via num_val_ref → 0).
         _ => Err(format!(
             "type error: {} expects numbers, got {} {}",
@@ -4119,6 +4330,14 @@ fn num_cmp(
         (LispVal::Float(x), LispVal::Num(y)) => Ok(op(*x, *y as f64)),
         (LispVal::Num(x), LispVal::Float(y)) => Ok(op(*x as f64, *y)),
         (LispVal::Num(x), LispVal::Num(y)) => Ok(int_op(*x, *y)),
+        // U64 × U64: unsigned ordering (bit-pattern compare, not i64 cast).
+        (LispVal::U64(x), LispVal::U64(y)) => match op_name {
+            "<" => Ok(x < y),
+            "<=" => Ok(x <= y),
+            ">" => Ok(x > y),
+            ">=" => Ok(x >= y),
+            _ => Err(format!("type error: {} on u64 operands", op_name)),
+        },
         _ => Err(format!(
             "type error: {} expects numbers, got {} {}",
             op_name, a, b
@@ -5022,6 +5241,44 @@ pub fn eval_builtin(
     }
 
     match name {
+        // ── U64 field arithmetic (secp256k1 limb ops) ──
+        "u64-mul-hi" => {
+            let (a, b) = u64_pair(args, "u64-mul-hi")?;
+            Ok(LispVal::U64((((a as u128) * (b as u128)) >> 64) as u64))
+        }
+        "u64-and" => {
+            let (a, b) = u64_pair(args, "u64-and")?;
+            Ok(LispVal::U64(a & b))
+        }
+        "u64-or" => {
+            let (a, b) = u64_pair(args, "u64-or")?;
+            Ok(LispVal::U64(a | b))
+        }
+        "u64-xor" => {
+            let (a, b) = u64_pair(args, "u64-xor")?;
+            Ok(LispVal::U64(a ^ b))
+        }
+        "u64-shr" => {
+            let (a, s) = u64_pair(args, "u64-shr")?;
+            if s >= 64 {
+                return Err(format!("u64-shr: shift amount {} out of range 0..63", s));
+            }
+            Ok(LispVal::U64(a >> s))
+        }
+        "u64-shl" => {
+            let (a, s) = u64_pair(args, "u64-shl")?;
+            if s >= 64 {
+                return Err(format!("u64-shl: shift amount {} out of range 0..63", s));
+            }
+            Ok(LispVal::U64(a << s))
+        }
+        "u64-not" => match args.get(0) {
+            Some(LispVal::U64(a)) => Ok(LispVal::U64(!a)),
+            other => Err(format!(
+                "u64-not: expected U64, got {:?}",
+                other.map(|v| format!("{:?}", v)).unwrap_or_else(|| "missing arg".into())
+            )),
+        },
         // ── Promises (delay/force) ──
         "make-promise" => {
             // (make-promise thunk) → wraps a 0-param closure in a Delay
@@ -6504,11 +6761,12 @@ pub fn try_compile_lambda(
     compiler.code.push(Op::Return);
     let mut code = compiler.code;
     let slot_i64 = compiler.slot_is_i64;
+    let slot_u64 = compiler.slot_is_u64;
     let slot_f64 = compiler.slot_is_f64;
     if std::env::var("LISP_NO_PEEPHOLE").is_err() {
-        peephole_optimize(&mut code, &slot_i64, &slot_f64);
-        peephole_optimize(&mut code, &slot_i64, &slot_f64);
-        peephole_optimize(&mut code, &slot_i64, &slot_f64);
+        peephole_optimize(&mut code, &slot_i64, &slot_u64, &slot_f64);
+        peephole_optimize(&mut code, &slot_i64, &slot_u64, &slot_f64);
+        peephole_optimize(&mut code, &slot_i64, &slot_u64, &slot_f64);
     }
     // Compute total slots: params + any let-binding slots used in code
     // Captured vars are accessed via LoadCaptured/CallCapturedRef, not slots
@@ -6961,6 +7219,10 @@ fn run_compiled_lambda_inner(
             }
             Op::PushI64(n) => {
                 stack.push(LispVal::Num(*n));
+                pc += 1;
+            }
+            Op::PushU64(n) => {
+                stack.push(LispVal::U64(*n));
                 pc += 1;
             }
             Op::PushFloat(f) => {
