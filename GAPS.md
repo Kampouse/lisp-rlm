@@ -304,9 +304,13 @@ state per fix:
 - NOTE: the change rode into the wasm-sibling's wip commit a27b0b2 (they
   committed src/helpers.rs + t20 while both were dirty in my tree). Content is
   correct and verified; just don't credit-blame the commit message.
-- wasm path: OUT OF SCOPE per task — branch-on-zero on wasm still treats 0 as
-  truthy. TODO: reconcile wasm emitter conditionals with interpreter semantics
-  when the wasm task lands (they own src/wasm_emit/*).
+- wasm path: ✅ RECONCILED (2026-08-26 audit) — emit_is_truthy checks val==0
+  (false|nil|zero falsy), landed riding 85765a0. Verified: nm_zero_is_falsy
+  executes real wasm (returns else-branch); live interpreter probe agrees
+  (0/nil/false falsy, ""/() truthy, (not 0)=true). Float(0.0) can't diverge on
+  wasm — float literals hard-error ("unsupported expression form: Float(0.0)")
+  until a float tag exists; when it does, add Float(0.0) to the wasm falsy set.
+  Stale comments fixed in src/wasm_emit/mod.rs tag-scheme header.
 
 ### 3. User-fn arity validation — ❌ NOT STARTED (no code, no t21)
 Next session: find the user-fn call arm in bytecode.rs (define-compiled fn

@@ -192,9 +192,11 @@ pub(crate) enum BorshType {
 // ── Tagged value scheme (3-bit tag in bottom bits) ──
 // Every value on the WASM stack is a tagged i64:
 //   bits 2..0 = type tag, bits 63..3 = payload
-// Falsy set: { Bool(false)=1, Nil=4 }
-// Note: Num(0)=0 is NOT falsy — in Lisp, only #f and nil are falsy.
-// Everything else (including Num(n≠0), FnRef, Closure, Str) is truthy.
+// Falsy set: { Bool(false)=1, Nil=4, Num(0)=0 }  (GAPS.md round-3 fix 1 — numeric
+// zero is FALSY, matching interpreter helpers::is_truthy; verified by nm_zero_is_falsy).
+// "" (empty str) and '() (empty array) REMAIN truthy by decision.
+// NOTE: Float(0.0) is falsy in the interpreter; wasm has no float runtime tag yet —
+// float literals hard-error at compile. When floats land here, add Float(0.0) to the falsy set.
 const TAG_NUM:     i64 = 0; // payload = integer value (61-bit signed)
 const TAG_BOOL:    i64 = 1; // payload = 0 (false) or 1 (true)
 const TAG_FNREF:   i64 = 2; // payload = function index
