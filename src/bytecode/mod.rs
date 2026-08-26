@@ -30,6 +30,83 @@ fn replace_sym_call(expr: &LispVal, old_name: &str, new_name: &str) -> LispVal {
     }
 }
 
+/// Desugar an internal define into a letrec binding pair.
+/// (define name value)            → (name, value)
+/// (define (name params...) body) → (name, (lambda (params...) body))
+fn desugar_define(d: &LispVal) -> Option<(String, LispVal)> {
+    if let LispVal::List(l) = d {
+        if l.len() >= 3 && matches!(&l[0], LispVal::Sym(s) if s == "define") {
+            match &l[1] {
+                LispVal::Sym(name) => Some((name.clone(), l[2].clone())),
+                LispVal::List(sig) if !sig.is_empty() => {
+                    let name = match &sig[0] {
+                        LispVal::Sym(n) => n.clone(),
+                        _ => return None,
+                    };
+                    let params = sig[1..].to_vec();
+                    let lam = LispVal::List(
+                        std::iter::once(LispVal::Sym("lambda".into()))
+                            .chain(std::iter::once(LispVal::List(params)))
+                            .chain(l[2..].iter().cloned())
+                            .collect(),
+                    );
+                    Some((name, lam))
+                }
+                _ => None,
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
+/// Split leading internal defines out of a body sequence.
+/// Returns Some((letrec_bindings, remaining_body)) when the sequence STARTS
+/// with at least one define. Returns None when the first form is not a define
+/// (a define appearing later falls through to the unknown-special-form error —
+/// internal defines must head the body, R7RS-style).
+fn split_internal_defines(forms: &[LispVal]) -> Option<(Vec<LispVal>, Vec<LispVal>)> {
+    let mut bindings = Vec::new();
+    let mut idx = 0;
+    while idx < forms.len() {
+        if let Some((name, value)) = desugar_define(&forms[idx]) {
+            bindings.push(LispVal::List(vec![
+                LispVal::Sym(name),
+                value,
+            ]));
+            idx += 1;
+        } else {
+            break;
+        }
+    }
+    if bindings.is_empty() {
+        return None;
+    }
+    Some((bindings, forms[idx..].to_vec()))
+}
+
+/// Wrap a desugared body into a letrec form: (letrec bindings body-wrap).
+fn build_letrec_form(bindings: Vec<LispVal>, body: Vec<LispVal>) -> LispVal {
+    let body_form = if body.len() == 1 {
+        body[0].clone()
+    } else if body.is_empty() {
+        LispVal::Nil
+    } else {
+        LispVal::List(
+            std::iter::once(LispVal::Sym("begin".into()))
+                .chain(body.iter().cloned())
+                .collect(),
+        )
+    };
+    LispVal::List(vec![
+        LispVal::Sym("letrec".into()),
+        LispVal::List(bindings),
+        body_form,
+    ])
+}
+
 /// Expand a macro call at compile time.
 pub fn expand_macro_call(
     macro_val: &LispVal,
@@ -785,6 +862,12 @@ impl LoopCompiler {
                                 self.last_result_i64 = false;
                                 self.last_result_f64 = false;
                                 return true;
+                            }
+                            // Internal defines heading the begin → letrec* desugar.
+                            // (begin (define a 1) (define (f x) ...) body...)
+                            if let Some((bindings, body)) = split_internal_defines(&list[1..]) {
+                                let form = build_letrec_form(bindings, body);
+                                return self.compile_expr(&form, outer_env);
                             }
                             for (i, form) in list[1..].iter().enumerate() {
                                 if !self.compile_expr(form, outer_env) {
@@ -1865,16 +1948,26 @@ impl LoopCompiler {
                                 inner.self_name = self.pending_lambda_name.clone();
                             }
                             let body = &list[2..];
-                            let mut ok = true;
-                            for (_bi, expr) in body.iter().enumerate() {
-                                if !inner.compile_expr(expr, outer_env) {
-                                    ok = false;
-                                    break;
+                            // Internal defines heading the lambda body → letrec* desugar.
+                            // (lambda (x) (define y 1) body...) — avoids the per-form
+                            // loop below, which cannot see sibling defines.
+                            if let Some((bindings, rest)) = split_internal_defines(body) {
+                                let form = build_letrec_form(bindings, rest);
+                                if !inner.compile_expr(&form, outer_env) {
+                                    return false;
                                 }
-                            }
-                            if ok {}
-                            if !ok {
-                                return false;
+                            } else {
+                                let mut ok = true;
+                                for (_bi, expr) in body.iter().enumerate() {
+                                    if !inner.compile_expr(expr, outer_env) {
+                                        ok = false;
+                                        break;
+                                    }
+                                }
+                                if ok {}
+                                if !ok {
+                                    return false;
+                                }
                             }
                             inner.code.push(Op::Return);
                             // Compute total_slots

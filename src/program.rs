@@ -171,76 +171,107 @@ pub fn run_program(
         }
     }
 
-    // ── Phase 3: Separate defines from expressions ──
-    // Defines must be executed imperatively (writing to env) so that
-    // subsequent code and nested run_program calls (require) can see them.
-    // NOTE: defines can be interspersed with expressions (R5RS §5.2.2).
-    let mut defines: Vec<((String, LispVal), Option<String>)> = Vec::new();
-    let mut exprs: Vec<&LispVal> = Vec::new();
-
+    // ── Phase 3: Ordered item list (defines interleaved with expressions) ──
+    // Defines execute imperatively (writing to env) so that subsequent code
+    // and nested run_program calls (require) can see them.
+    // R5RS §5.2.2 interspersed defines: each define takes effect AT ITS
+    // POSITION. The old two-pass scheme ran ALL defines before ANY
+    // expression, reordering side effects — e.g. (register-x ...) followed
+    // by (define best (read-*x*)) computed best against the pre-mutation
+    // state. Order is semantics; preserve it.
+    enum Item<'a> {
+        Define(((String, LispVal), Option<String>)),
+        Expr(&'a LispVal),
+    }
+    let mut items: Vec<Item> = Vec::new();
     for form in &preprocessed {
         let bindings = desugar_define_to_pairs(form)?;
         if !bindings.is_empty() {
-            defines.extend(bindings);
+            for b in bindings {
+                items.push(Item::Define(b));
+            }
             continue;
         }
-        exprs.push(form);
+        items.push(Item::Expr(form));
     }
 
-    // ── Phase 4: Execute defines imperatively ──
-    // Each define's value expression is compiled and run separately.
-    // The result is stored in env so subsequent defines/expressions can see it.
-    for ((name, val_expr), pure_type) in &defines {
-        // For function defines (lambda values), pass the name so self_name
-        // is set for recursive calls via CallSelf.
-        let func_name = if matches!(
-            val_expr,
-            LispVal::List(ref l) if !l.is_empty() && matches!(&l[0], LispVal::Sym(s) if s == "lambda")
-        ) {
-            Some(name.as_str())
-        } else {
-            None
-        };
+    // ── Phase 4/5: Execute in program order ──
+    // Consecutive expressions form a group compiled as one begin-body;
+    // a define flushes the pending group first, then runs imperatively.
+    let mut group: Vec<&LispVal> = Vec::new();
+    let mut last_result = LispVal::Nil;
 
-        let closed_env = std::sync::Arc::new(std::sync::RwLock::new(env.snapshot()));
-        let cl = try_compile_lambda(
-            &[],
-            val_expr,
-            &closed_env
-                .read()
-                .unwrap()
-                .clone()
-                .into_iter()
-                .collect::<Vec<_>>(),
-            env,
-            func_name,
-            pure_type.as_deref(),
-        )
-        .ok_or_else(|| {
-            format!(
-                "run_program: compilation failed for define '{}' = {:?}",
-                name, val_expr
-            )
-        })?;
+    for item in items {
+        match item {
+            Item::Expr(form) => group.push(form),
+            Item::Define(((name, val_expr), pure_type)) => {
+                if !group.is_empty() {
+                    last_result = run_expr_group(&group, env, state)?;
+                    group.clear();
+                }
+                // For function defines (lambda values), pass the name so self_name
+                // is set for recursive calls via CallSelf.
+                let func_name = if matches!(
+                    val_expr,
+                    LispVal::List(ref l)
+                        if !l.is_empty() && matches!(&l[0], LispVal::Sym(s) if s == "lambda")
+                ) {
+                    Some(name.as_str())
+                } else {
+                    None
+                };
 
-        verify_bytecode(&cl).map_err(|errs| {
-            errs.iter()
-                .map(|e| e.to_string())
-                .collect::<Vec<_>>()
-                .join("; ")
-        })?;
+                let closed_env = std::sync::Arc::new(std::sync::RwLock::new(env.snapshot()));
+                let cl = try_compile_lambda(
+                    &[],
+                    &val_expr,
+                    &closed_env
+                        .read()
+                        .unwrap()
+                        .clone()
+                        .into_iter()
+                        .collect::<Vec<_>>(),
+                    env,
+                    func_name,
+                    pure_type.as_deref(),
+                )
+                .ok_or_else(|| {
+                    format!(
+                        "run_program: compilation failed for define '{}' = {:?}",
+                        name, val_expr
+                    )
+                })?;
 
-        let value = run_compiled_lambda(&cl, &[], env, state)?;
-        env.insert_mut(name.clone(), value);
-        if let Some(ref pt) = pure_type {
-            state.pure_types.insert(name.clone(), pt.clone());
+                verify_bytecode(&cl).map_err(|errs| {
+                    errs.iter()
+                        .map(|e| e.to_string())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                })?;
+
+                let value = run_compiled_lambda(&cl, &[], env, state)?;
+                env.insert_mut(name.clone(), value);
+                if let Some(ref pt) = pure_type {
+                    state.pure_types.insert(name.clone(), pt.clone());
+                }
+            }
         }
     }
-
-    // ── Phase 5: Evaluate remaining expressions ──
-    if exprs.is_empty() {
-        return Ok(LispVal::Nil);
+    if !group.is_empty() {
+        last_result = run_expr_group(&group, env, state)?;
     }
+    Ok(last_result)
+}
+
+/// Compile and run a group of consecutive top-level expressions as one
+/// begin-body. Mirrors the old Phase 5 (snapshot env, compile, verify,
+/// share live env for nested StoreGlobal mutations).
+fn run_expr_group(
+    exprs: &[&LispVal],
+    env: &mut Env,
+    state: &mut EvalState,
+) -> Result<LispVal, String> {
+    use crate::program::{run_compiled_lambda, try_compile_lambda, verify_bytecode};
 
     // Build body: single expr or (begin expr1 expr2 ...)
     let body = if exprs.len() == 1 {
@@ -276,7 +307,10 @@ pub fn run_program(
 
     verify_bytecode(&cl).map_err(|errs| {
         if std::env::var("LISP_DUMP_OPS").is_ok() {
-            eprintln!("=== VERIFIED FAILED LAMBDA ({:?}, slots: {}) ===", cl.name, cl.total_slots);
+            eprintln!(
+                "=== VERIFIED FAILED LAMBDA ({:?}, slots: {}) ===",
+                cl.name, cl.total_slots
+            );
             for (idx, op) in cl.code.iter().enumerate() {
                 eprintln!("  {:>4}: {:?}", idx, op);
             }

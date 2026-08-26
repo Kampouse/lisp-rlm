@@ -1,6 +1,11 @@
 //! Test: boot the harness and run one scheduler tick
 
 use lisp_rlm_wasm::*;
+use std::sync::{Mutex, MutexGuard};
+
+// Serialize tests touching the shared runtime/state dir (checkpoint writes
+// race test_persistence's write-then-load round-trip in parallel threads).
+static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn eval(code: &str, env: &mut Env, state: &mut EvalState) -> LispVal {
     let exprs = parse_all(code).unwrap();
@@ -9,6 +14,7 @@ fn eval(code: &str, env: &mut Env, state: &mut EvalState) -> LispVal {
 
 #[test]
 fn test_harness_boot() {
+    let _lock = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let mut env = Env::new();
     let mut state = EvalState::new();
 
@@ -24,6 +30,7 @@ fn test_harness_boot() {
 
 #[test]
 fn test_register_and_tick() {
+    let _lock = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let mut env = Env::new();
     let mut state = EvalState::new();
 
@@ -62,6 +69,7 @@ fn test_register_and_tick() {
 
 #[test]
 fn test_persistence() {
+    let _lock = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let mut env = Env::new();
     let mut state = EvalState::new();
 
