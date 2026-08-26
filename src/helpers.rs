@@ -35,6 +35,8 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "json-get",
     "json-get-in",
     "json-build",
+    "from-json",
+    "json/get",
     "error",
     "empty?",
     "range",
