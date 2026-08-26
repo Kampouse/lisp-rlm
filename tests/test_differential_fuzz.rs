@@ -213,7 +213,15 @@ impl SpecVm {
     /// Spec truthiness — matches is_truthy in Rust:
     /// false/nil are falsy, everything else is truthy.
     fn spec_is_truthy(v: &LispVal) -> bool {
-        !matches!(v, LispVal::Nil | LispVal::Bool(false))
+        // Anchor-aligned (2026-08-26): wasm is the semantic anchor.
+        // wasm_emit::emit_is_truthy treats Bool(false), Nil, and tagged-0
+        // (Num(0)) as falsy — matching Rust's is_truthy, which also treats
+        // Float(0.0) as falsy. (NOTE: boxed Float(0.0) would be truthy under
+        // the pure wasm tag check — GAPS.md: wasm-vs-Rust Float(0.0) split.)
+        !matches!(
+            v,
+            LispVal::Nil | LispVal::Bool(false) | LispVal::Num(0) | LispVal::Float(0.0)
+        )
     }
 
     /// Spec lisp_eq — mirrors the Rust lisp_eq function.
@@ -241,6 +249,81 @@ impl SpecVm {
                 },
             ) => ta == tb && va == vb && fa == fb,
             _ => false,
+        }
+    }
+
+    /// Anchor arithmetic — mirrors src/bytecode::num_arith_checked exactly.
+    /// GAPS.md decision (2026-08-26): the Rust VM / wasm emission is the
+    /// semantic anchor; this spec oracle must be trace-equivalent to it.
+    /// No silent coercion — non-numeric operands hard-error (trap semantics).
+    fn spec_arith_anchor(
+        op_name: &str,
+        a: &LispVal,
+        b: &LispVal,
+        int_op: impl Fn(i64, i64) -> Option<i64>,
+        float_op: impl Fn(f64, f64) -> f64,
+    ) -> Result<LispVal, String> {
+        match (a, b) {
+            (LispVal::Float(x), LispVal::Float(y)) => Ok(LispVal::Float(float_op(*x, *y))),
+            (LispVal::Float(x), LispVal::Num(y)) => Ok(LispVal::Float(float_op(*x, *y as f64))),
+            (LispVal::Num(x), LispVal::Float(y)) => Ok(LispVal::Float(float_op(*x as f64, *y))),
+            (LispVal::Num(x), LispVal::Num(y)) => match int_op(*x, *y) {
+                Some(r) => Ok(LispVal::Num(r)),
+                None => Err(format!("integer overflow in {}", op_name)),
+            },
+            (LispVal::U64(x), LispVal::U64(y)) => {
+                let r = match op_name {
+                    "add" => x.wrapping_add(*y),
+                    "sub" => x.wrapping_sub(*y),
+                    "mul" => x.wrapping_mul(*y),
+                    "div" => {
+                        if *y == 0 {
+                            return Err("division by zero".into());
+                        }
+                        x.wrapping_div(*y)
+                    }
+                    "mod" => {
+                        if *y == 0 {
+                            return Err("modulo by zero".into());
+                        }
+                        x.wrapping_rem(*y)
+                    }
+                    other => return Err(format!("type error: {} on u64 operands", other)),
+                };
+                Ok(LispVal::U64(r))
+            }
+            _ => Err(format!(
+                "type error: {} expects numbers, got {} {}",
+                op_name, a, b
+            )),
+        }
+    }
+
+    /// Anchor comparison — mirrors src/bytecode::num_cmp exactly.
+    /// U64×U64 compares unsigned; mixed non-numerics hard-error.
+    fn spec_cmp_anchor(
+        op_name: &str,
+        a: &LispVal,
+        b: &LispVal,
+        fop: impl Fn(f64, f64) -> bool,
+        iop: impl Fn(i64, i64) -> bool,
+    ) -> Result<bool, String> {
+        match (a, b) {
+            (LispVal::Float(x), LispVal::Float(y)) => Ok(fop(*x, *y)),
+            (LispVal::Float(x), LispVal::Num(y)) => Ok(fop(*x, *y as f64)),
+            (LispVal::Num(x), LispVal::Float(y)) => Ok(fop(*x as f64, *y)),
+            (LispVal::Num(x), LispVal::Num(y)) => Ok(iop(*x, *y)),
+            (LispVal::U64(x), LispVal::U64(y)) => match op_name {
+                "<" => Ok(x < y),
+                "<=" => Ok(x <= y),
+                ">" => Ok(x > y),
+                ">=" => Ok(x >= y),
+                other => Err(format!("type error: {} on u64 operands", other)),
+            },
+            _ => Err(format!(
+                "type error: {} expects numbers, got {} {}",
+                op_name, a, b
+            )),
         }
     }
 
@@ -346,22 +429,15 @@ impl SpecVm {
                     (LispVal::Num(an), LispVal::Float(bf)) => {
                         self.stack.push(LispVal::Float((*an as f64) + bf));
                     }
-                    _ => {
-                        // Float promotion: if either operand is Float, do float arithmetic
-                        if matches!(&a, LispVal::Float(_)) || matches!(&b, LispVal::Float(_)) {
-                            self.stack.push(LispVal::Float(
-                                Self::spec_to_f64(&a) + Self::spec_to_f64(&b),
-                            ));
-                        } else {
-                            let av = Self::spec_num_val(&a);
-                            let bv = Self::spec_num_val(&b);
-                            match av.checked_add(bv) {
-                                Some(r) => self.stack.push(LispVal::Num(r)),
-                                None => {
-                                    return StepOutcome::Error("integer overflow in add".into())
-                                }
-                            }
-                        }
+                    _ => match Self::spec_arith_anchor(
+                        "add",
+                        &a,
+                        &b,
+                        i64::checked_add,
+                        |x, y| x + y,
+                    ) {
+                        Ok(v) => self.stack.push(v),
+                        Err(e) => return StepOutcome::Error(e),
                     }
                 }
                 self.pc += 1;
@@ -379,21 +455,15 @@ impl SpecVm {
                     (LispVal::Num(an), LispVal::Float(bf)) => {
                         self.stack.push(LispVal::Float((*an as f64) - bf));
                     }
-                    _ => {
-                        if matches!(&a, LispVal::Float(_)) || matches!(&b, LispVal::Float(_)) {
-                            self.stack.push(LispVal::Float(
-                                Self::spec_to_f64(&a) - Self::spec_to_f64(&b),
-                            ));
-                        } else {
-                            let av = Self::spec_num_val(&a);
-                            let bv = Self::spec_num_val(&b);
-                            match av.checked_sub(bv) {
-                                Some(r) => self.stack.push(LispVal::Num(r)),
-                                None => {
-                                    return StepOutcome::Error("integer overflow in sub".into())
-                                }
-                            }
-                        }
+                    _ => match Self::spec_arith_anchor(
+                        "sub",
+                        &a,
+                        &b,
+                        i64::checked_sub,
+                        |x, y| x - y,
+                    ) {
+                        Ok(v) => self.stack.push(v),
+                        Err(e) => return StepOutcome::Error(e),
                     }
                 }
                 self.pc += 1;
@@ -411,21 +481,15 @@ impl SpecVm {
                     (LispVal::Num(an), LispVal::Float(bf)) => {
                         self.stack.push(LispVal::Float((*an as f64) * bf));
                     }
-                    _ => {
-                        if matches!(&a, LispVal::Float(_)) || matches!(&b, LispVal::Float(_)) {
-                            self.stack.push(LispVal::Float(
-                                Self::spec_to_f64(&a) * Self::spec_to_f64(&b),
-                            ));
-                        } else {
-                            let av = Self::spec_num_val(&a);
-                            let bv = Self::spec_num_val(&b);
-                            match av.checked_mul(bv) {
-                                Some(r) => self.stack.push(LispVal::Num(r)),
-                                None => {
-                                    return StepOutcome::Error("integer overflow in mul".into())
-                                }
-                            }
-                        }
+                    _ => match Self::spec_arith_anchor(
+                        "mul",
+                        &a,
+                        &b,
+                        i64::checked_mul,
+                        |x, y| x * y,
+                    ) {
+                        Ok(v) => self.stack.push(v),
+                        Err(e) => return StepOutcome::Error(e),
                     }
                 }
                 self.pc += 1;
@@ -452,23 +516,15 @@ impl SpecVm {
                         }
                         self.stack.push(LispVal::Float((*an as f64) / bf));
                     }
-                    _ => {
-                        if matches!(&a, LispVal::Float(_)) || matches!(&b, LispVal::Float(_)) {
-                            let bf = Self::spec_to_f64(&b);
-                            if bf == 0.0 {
-                                return StepOutcome::Error("division by zero".into());
-                            }
-                            self.stack.push(LispVal::Float(Self::spec_to_f64(&a) / bf));
-                        } else {
-                            let av = Self::spec_num_val(&a);
-                            let bv = Self::spec_num_val(&b);
-                            match av.checked_div(bv) {
-                                Some(r) => self.stack.push(LispVal::Num(r)),
-                                None => {
-                                    return StepOutcome::Error("integer overflow in div".into())
-                                }
-                            }
-                        }
+                    _ => match Self::spec_arith_anchor(
+                        "div",
+                        &a,
+                        &b,
+                        i64::checked_div,
+                        |x, y| x / y,
+                    ) {
+                        Ok(v) => self.stack.push(v),
+                        Err(e) => return StepOutcome::Error(e),
                     }
                 }
                 self.pc += 1;
@@ -495,23 +551,15 @@ impl SpecVm {
                         }
                         self.stack.push(LispVal::Float((*an as f64) % bf));
                     }
-                    _ => {
-                        if matches!(&a, LispVal::Float(_)) || matches!(&b, LispVal::Float(_)) {
-                            let bf = Self::spec_to_f64(&b);
-                            if bf == 0.0 {
-                                return StepOutcome::Error("modulo by zero".into());
-                            }
-                            self.stack.push(LispVal::Float(Self::spec_to_f64(&a) % bf));
-                        } else {
-                            let av = Self::spec_num_val(&a);
-                            let bv = Self::spec_num_val(&b);
-                            match av.checked_rem(bv) {
-                                Some(r) => self.stack.push(LispVal::Num(r)),
-                                None => {
-                                    return StepOutcome::Error("integer overflow in mod".into())
-                                }
-                            }
-                        }
+                    _ => match Self::spec_arith_anchor(
+                        "mod",
+                        &a,
+                        &b,
+                        i64::checked_rem,
+                        |x, y| x % y,
+                    ) {
+                        Ok(v) => self.stack.push(v),
+                        Err(e) => return StepOutcome::Error(e),
                     }
                 }
                 self.pc += 1;
@@ -525,45 +573,61 @@ impl SpecVm {
             Op::Lt => {
                 let b = self.pop();
                 let a = self.pop();
-                self.stack.push(LispVal::Bool(Self::spec_num_cmp(
+                match Self::spec_cmp_anchor(
+                    "<",
                     &a,
                     &b,
                     |x, y| x < y,
                     |x, y| x < y,
-                )));
+                ) {
+                    Ok(r) => self.stack.push(LispVal::Bool(r)),
+                    Err(e) => return StepOutcome::Error(e),
+                }
                 self.pc += 1;
             }
             Op::Le => {
                 let b = self.pop();
                 let a = self.pop();
-                self.stack.push(LispVal::Bool(Self::spec_num_cmp(
+                match Self::spec_cmp_anchor(
+                    "<=",
                     &a,
                     &b,
                     |x, y| x <= y,
                     |x, y| x <= y,
-                )));
+                ) {
+                    Ok(r) => self.stack.push(LispVal::Bool(r)),
+                    Err(e) => return StepOutcome::Error(e),
+                }
                 self.pc += 1;
             }
             Op::Gt => {
                 let b = self.pop();
                 let a = self.pop();
-                self.stack.push(LispVal::Bool(Self::spec_num_cmp(
+                match Self::spec_cmp_anchor(
+                    ">",
                     &a,
                     &b,
                     |x, y| x > y,
                     |x, y| x > y,
-                )));
+                ) {
+                    Ok(r) => self.stack.push(LispVal::Bool(r)),
+                    Err(e) => return StepOutcome::Error(e),
+                }
                 self.pc += 1;
             }
             Op::Ge => {
                 let b = self.pop();
                 let a = self.pop();
-                self.stack.push(LispVal::Bool(Self::spec_num_cmp(
+                match Self::spec_cmp_anchor(
+                    ">=",
                     &a,
                     &b,
                     |x, y| x >= y,
                     |x, y| x >= y,
-                )));
+                ) {
+                    Ok(r) => self.stack.push(LispVal::Bool(r)),
+                    Err(e) => return StepOutcome::Error(e),
+                }
                 self.pc += 1;
             }
             Op::Not => {
@@ -2080,9 +2144,11 @@ fn test_regression_equality() {
 
 #[test]
 fn test_regression_empty_stack_pop_coercion() {
-    // Pop from empty stack should yield Nil (coerced to 0 by num_val)
-    //   0: Add  → pop Nil, pop Nil → 0+0=0
-    //   1: Return
+    // Anchor-aligned (2026-08-26): pop-from-empty yields Nil, and generic
+    // arith on non-numeric operands HARD-ERRORS (wasm trap semantics —
+    // GAPS.md: wasm is the semantic anchor). Old lenient 0-coercion retired.
+    //   0: Add  → pop Nil, pop Nil → type error: add expects numbers
+    //   1: Return (unreached)
     let code = vec![Op::Add, Op::Return];
     let slots = vec![];
 
@@ -2090,8 +2156,11 @@ fn test_regression_empty_stack_pop_coercion() {
     let rust_result = run_compiled_loop_test(&cl);
     let spec_result = SpecVm::new(code, slots).run(100);
 
-    assert_eq!(rust_result, Ok(LispVal::Num(0)));
-    assert_eq!(spec_result, SpecResult::Value(LispVal::Num(0)));
+    assert!(matches!(rust_result, Err(ref e) if e.contains("type error: add")));
+    assert!(matches!(
+        spec_result,
+        SpecResult::Error(ref e) if e.contains("type error: add")
+    ));
 }
 
 #[test]

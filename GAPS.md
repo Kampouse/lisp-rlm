@@ -444,3 +444,36 @@ closures-as-values, lists/map, try/catch, deep equality), 0 DIVERGE.
 - Post-fix scoreboard: 21 probes — 15 MATCH / 6 WASM_CERR (e06 e11 e12 e13
   e16 e18, all documented classes) / 0 DIVERGE. New probe e23-neq MATCH.
   cargo test 125 passed / 11 failed (sibling's known wasi_emit set).
+
+## 2026-08-26 — ANCHOR DECISION: wasm is the semantic reference
+
+**Decision (JP):** The wasm emission path (`src/wasm_emit/`) — what actually
+deploys and runs on NEAR — is the semantic anchor. The Rust interpreter and
+the differential-fuzz spec oracle must both be **trace-equivalent to wasm
+semantics** (trap-style: no silent coercion, explicit errors), not to
+Scheme/R7RS leniency.
+
+Consequences applied today:
+1. **Spec oracle hard-error alignment** (tests/test_differential_fuzz.rs):
+   generic Add/Sub/Mul/Div/Mod and Lt/Le/Gt/Ge now mirror
+   `num_arith_checked`/`num_cmp` exactly (U64×U64 wrapping/unsigned included)
+   via `spec_arith_anchor`/`spec_cmp_anchor`. Killed 10 of 17 fuzz reds.
+2. **Truthiness**: wasm `emit_is_truthy` treats Bool(false), Nil, and
+   TAGGED==0 (Num 0) as falsy → spec oracle aligned to Rust's `is_truthy`
+   (Num(0)/Float(0.0) falsy). Killed the JumpIfTrue divergence class.
+   ⚠️ OPEN SUB-GAP: Rust treats **Float(0.0)** as falsy, but a *boxed*
+   Float(0.0) would be truthy under the pure wasm tag check (only the raw
+   tagged-0 pattern is falsy in wasm). Decide: special-case Float(0.0) in
+   wasm emit, or accept Rust's rule as canonical. Low priority — Float
+   conditionals are rare in generated code.
+3. **Retired test**: `test_regression_empty_stack_pop_coercion` asserted the
+   OLD lenient `nil+nil → 0`; now asserts the trap (both VMs agree).
+
+**Result:** test_differential_fuzz 29/17 → **46/46**.
+
+Remaining divergence classes (documented, unfixed):
+- Fuzz mutation/long-program budget-boundary cases: Rust `eval_budget`
+  (max_steps × 3) can exhaust before the spec VM's step loop on jump-heavy
+  traces. Not a semantic divergence — an accounting mismatch between step
+  units and budget units. Consider charging Rust 1 budget unit per op
+  uniformly.
