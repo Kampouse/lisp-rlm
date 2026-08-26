@@ -460,11 +460,26 @@ impl WasmEmitter {
                     v.push(Self::host_call(28));
                     v.push(Instruction::End);
                     v.push(Instruction::Else);
+                    // ── array? ── render "(e0 e1 ...)" via __h_arr_to_str (no added quotes)
+                    v.push(Instruction::LocalGet(tagged)); v.push(Instruction::I64Const(7)); v.push(Instruction::I64And);
+                    v.push(Instruction::I64Const(TAG_ARRAY)); v.push(Instruction::I64Eq);
+                    v.push(Instruction::If(BlockType::Empty));
+                    {
+                        let h = self.ensure_arr_str_helper();
+                        v.push(Instruction::LocalGet(tagged)); v.push(Instruction::I64Const(TAG_BITS)); v.push(Instruction::I64ShrU);
+                        v.push(Instruction::Call(USER_BASE | h));
+                        v.push(Instruction::LocalSet(pt));
+                        v.push(Instruction::LocalGet(pt)); v.push(Instruction::I64Const(TAG_BITS)); v.push(Instruction::I64ShrU); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                        v.push(Instruction::LocalGet(pt)); v.push(Instruction::I64Const(TAG_BITS)); v.push(Instruction::I64ShrU); v.push(Instruction::I64Const(0xFFFF_FFFF)); v.push(Instruction::I64And); v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                        v.push(Self::host_call(28));
+                    }
+                    v.push(Instruction::Else);
                     // ── nil / anything else → "nil" ──
                     v.push(Instruction::I32Const(65536)); v.push(Instruction::I32Const(0x006c_696e)); v.push(Instruction::I32Store(ma4.clone())); // "nil"
                     v.push(Instruction::I64Const(3));
                     v.push(Instruction::I64Const(65536));
                     v.push(Self::host_call(28));
+                    v.push(Instruction::End); // array?
                     v.push(Instruction::End); // bool?
                     v.push(Instruction::End); // num?
                     v.push(Instruction::End); // string?

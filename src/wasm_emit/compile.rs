@@ -488,6 +488,7 @@ fn parse_and_compile_opts(source: &str, near: bool, typecheck: bool) -> Result<W
                             if !em.funcs.iter().any(|f| &f.name == name) {
                                 em.funcs.push(FuncDef { name: name.clone(), param_count: 0, local_count: 0, instrs: Vec::new(), local_entries: None });
                             }
+                            em.value_defines.insert(name.clone());
                         }
                     }
                 }
@@ -529,6 +530,7 @@ fn parse_and_compile_opts(source: &str, near: bool, typecheck: bool) -> Result<W
                                 if s2 == "define" {
                                     let value = &items[2];
                                     em.emit_define(name, &[], value)?;
+                                    em.value_defines.insert(name.clone());
                                 }
                             }
                             if let LispVal::Sym(s2) = &items[0] {

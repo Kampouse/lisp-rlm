@@ -1,6 +1,10 @@
-;; e09 — lists + higher-order fns
+;; e09 — lists + higher-order fns (wasm: homogeneous element types only —
+;; typechecker rejects mixed; heterogeneous lists are an interp-only surface)
 (define (main)
   (println (car (list 1 2 3)))
   (println (cdr (list 1 2 3)))
   (println (len (list 1 2 3)))
-  (println (map (lambda (x) (* x x)) (list 1 2 3))))
+  (println (map (lambda (x) (* x x)) (list 1 2 3)))
+  (println (list (list 2 3)))
+  (println (list "a" "b"))
+  (println (cons 1 (list 2 3))))

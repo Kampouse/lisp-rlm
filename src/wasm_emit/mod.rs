@@ -302,6 +302,13 @@ pub struct WasmEmitter {
     // Named function definitions (for compile-time inlining in map/filter/reduce)
     // name → (param_names, body_ast)
     pub(crate) func_defs: HashMap<String, (Vec<String>, LispVal)>,
+    // Top-level VALUE defines (define name value) — these compile to 0-param
+    // fns but their interpreter semantics is a VALUE binding: a bare Sym
+    // reference must CALL the fn (yield the value), not yield a TAG_FNREF
+    // (which println renders as nil — the silent-nil gap, GAPS.md)
+    pub(crate) value_defines: std::collections::HashSet<String>,
+    // Index of the synthesized __h_arr_to_str helper (array → "(e0 e1)" str)
+    pub(crate) arr_str_helper: Option<u32>,
 }
 
 impl WasmEmitter {
@@ -313,6 +320,8 @@ impl WasmEmitter {
             gas_local: None, needs_frame: false, heap_ptr: 0, lambda_counter: 0,
             list_ptr_counter: 0, str_cat_depth: 0, fuzz_mode: false, u128h: None, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), http_post_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false, borsh_schemas: HashMap::new(), storage_get_count: 0, http_post_call_count: 0,
             func_defs: HashMap::new(),
+            value_defines: std::collections::HashSet::new(),
+            arr_str_helper: None,
         }
     }
 
@@ -810,6 +819,13 @@ impl WasmEmitter {
                 }
                 if let Some(&i) = self.locals.get(n) {
                     Ok(vec![Instruction::LocalGet(i)])
+                } else if self.value_defines.contains(n) {
+                    // Top-level value define: interpreter semantics is a VALUE
+                    // binding — call the synthesized 0-param fn to get the value.
+                    // (Was TAG_FNREF → println rendered it as nil, silently.)
+                    let pos = self.funcs.iter().position(|f| &f.name == n)
+                        .ok_or_else(|| format!("internal: value define '{}' not registered", n))?;
+                    Ok(vec![Instruction::Call(USER_BASE | pos as u32)])
                 } else if let Some(pos) = self.funcs.iter().position(|func| &func.name == n) {
                     Ok(self.emit_tagged_const(pos as i64, TAG_FNREF))
                 } else {

@@ -1,0 +1,11 @@
+;; e14 — top-level value defines (silent-nil gap, fixed 2026-08-26)
+;; interp: value binding; wasm: bare Sym now CALLS the synthesized 0-param
+;; fn (was TAG_FNREF → println rendered nil SILENTLY)
+(define answer 42)
+(define greeting "hi")
+(define flag true)
+(define (main)
+  (println answer)
+  (println greeting)
+  (println flag)
+  (println (+ answer 1)))

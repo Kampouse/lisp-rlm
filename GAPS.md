@@ -393,3 +393,24 @@ closures-as-values, lists/map, try/catch, deep equality), 0 DIVERGE.
 - top-level program globals: interpreter has them; NEAR contract model
   compiles top-level defines as contract METHODS. Probes must use let
   locals (e07 pattern). PORTING HAZARD for corpus files.
+
+### Round 4 — equivalence-driven wasm fixes (2026-08-26, PM)
+1. **Value-define silent-nil** — bare Sym refs to top-level `(define i 7)`
+   now CALL the synthesized 0-param fn (value_defines registry on the
+   emitter; probe e14 MATCH). Was TAG_FNREF → println rendered nil.
+2. **__h_arr_to_str helper (NEW)** — println on lists now renders
+   "(e0 e1 ...)" per interpreter to_string: quoted strings, nested arrays
+   (recursive), bools, zeros, separators. First hand-written wasm helper —
+   bugs found & fixed en route: i64 consts fed to i32 stores (6), missing
+   *8 in elem address, align-3 on 4-byte stores, copy j=1 skipping the
+   nested '(' , quote w-advance off-by-one, plus cons/cdr missing
+   I64Const after heap_bump (5 sites — stack underflow at validation).
+3. **i64_to_str/h_to_str ZERO fast-path** — my round-3 PM fix OR'd 1<<32
+   AFTER the dst<<3 shift (len field at bit 32, not 35) → len extracted 0
+   → every zero rendered EMPTY ("(3 0 4)" → "(3  4)", println 0 → no LOG
+   at all). Payload-first-then-shift now. (Morning verification missed it:
+   4 printlns, only 3 LOGs — count your outputs.)
+- Scoreboard: 16 probes — 11 MATCH / 5 WASM_CERR (e06 closures, e11/e12
+  try-catch, e13 structural equality, + heterogeneous lists rejected by
+  wasm typechecker: interp-only surface, document in porting guide) /
+  0 DIVERGE. cargo test 125/11, torture sweep clean.

@@ -624,6 +624,7 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(n_tmp));
                 // Alloc new array
 let new_heap = self.heap_bump((1 + 64) * 8);
+                v.push(Instruction::I64Const(new_heap as i64));
                 v.push(Instruction::LocalSet(new_ptr));
                 // Store initial count 0
                 v.push(Instruction::LocalGet(new_ptr));
@@ -723,6 +724,7 @@ let new_heap = self.heap_bump((1 + 64) * 8);
                 v.push(Instruction::LocalSet(n_tmp));
                 // Alloc new
 let new_heap = self.heap_bump((1 + 64) * 8);
+                v.push(Instruction::I64Const(new_heap as i64));
                 v.push(Instruction::LocalSet(new_ptr));
                 // Store new_count
                 v.push(Instruction::LocalGet(new_ptr));
@@ -800,8 +802,9 @@ let new_heap = self.heap_bump((1 + 64) * 8);
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(ma));
                 v.push(Instruction::LocalSet(n_tmp));
-                // Alloc new: count + 1 elements
-let new_heap = self.heap_bump((1 + 64) * 8);
+                // Alloc new: count + 1 elements (heap_bump returns compile-time ptr; emit const for the local)
+                let new_heap = self.heap_bump((1 + 64) * 8);
+                v.push(Instruction::I64Const(new_heap as i64));
                 v.push(Instruction::LocalSet(new_ptr));
                 // Store new_count = old_count + 1
                 v.push(Instruction::LocalGet(new_ptr));
@@ -937,6 +940,7 @@ let new_heap = self.heap_bump((1 + 64) * 8);
                 v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(end_tmp));
 let new_heap = self.heap_bump((1 + 64) * 8);
+                v.push(Instruction::I64Const(new_heap as i64));
                 v.push(Instruction::LocalSet(new_ptr));
                 // count = 0
                 v.push(Instruction::LocalGet(new_ptr));
@@ -1007,6 +1011,7 @@ let new_heap = self.heap_bump((1 + 64) * 8);
                 v.push(Instruction::LocalSet(n_tmp));
                 // Alloc new
 let new_heap = self.heap_bump((1 + 64) * 8);
+                v.push(Instruction::I64Const(new_heap as i64));
                 v.push(Instruction::LocalSet(new_ptr));
                 // Store count
                 v.push(Instruction::LocalGet(new_ptr));
@@ -1141,6 +1146,7 @@ let new_heap = self.heap_bump((1 + 64) * 8);
                 v.push(Instruction::LocalSet(n2_tmp));
                 // Alloc new
 let new_heap = self.heap_bump((1 + 64) * 8);
+                v.push(Instruction::I64Const(new_heap as i64));
                 v.push(Instruction::LocalSet(new_ptr));
                 // Store total count
                 v.push(Instruction::LocalGet(new_ptr));
@@ -1228,5 +1234,148 @@ let new_heap = self.heap_bump((1 + 64) * 8);
             }
             _ => Err("__not_handled__".into()),
         }
+    }
+}
+
+impl WasmEmitter {
+    /// __h_arr_to_str(arr_ptr i64) -> tagged str — renders [count, e0, e1..]
+    /// arrays per interpreter LispVal::to_string(): "(e0 e1 ...)" with ' '
+    /// separators; strings quoted, nested arrays recursive, nil/bools/nums.
+    /// Self-recursive for TAG_ARRAY elements. Requires u128 str helpers first
+    /// (for num rendering).
+    pub(crate) fn ensure_arr_str_helper(&mut self) -> u32 {
+        if let Some(idx) = self.arr_str_helper {
+            return idx;
+        }
+        let h = self.ensure_u128_str_helpers();
+        let mem_limit = (self.memory_pages as i64) * 65536;
+        let idx = self.funcs.len();
+        let v = Self::h_arr_to_str(idx as u32, h.i64_to_str, mem_limit);
+        self.funcs.push(FuncDef {
+            name: "__h_arr_to_str".into(),
+            param_count: 1, local_count: 11,
+            instrs: v,
+            local_entries: None,
+        });
+        self.arr_str_helper = Some(idx as u32);
+        idx as u32
+    }
+
+    fn h_arr_to_str(self_idx: u32, i64_to_str: u32, mem_limit: i64) -> Vec<Instruction<'static>> {
+        use Instruction as I;
+        let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }; // 8-byte
+        let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }; // 4-byte
+        let ma1 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }; // byte
+        let mut v: Vec<Instruction<'static>> = Vec::new();
+        // locals: 0=arr 1=n 2=dst 3=w 4=i 5=elem 6=slen 7=sptr 8=stag 9=j
+        // n = load(arr)
+        v.push(I::LocalGet(0)); v.push(I::I32WrapI64); v.push(I::I64Load(ma8.clone())); v.push(I::LocalSet(1));
+        // dst = heap bump: n*24 + 32 (24 bytes per element is generous)
+        v.push(I::I64Const(56)); v.push(I::I32WrapI64); v.push(I::I64Load(ma8.clone())); v.push(I::LocalSet(2));
+        v.push(I::LocalGet(2)); v.push(I::LocalGet(1)); v.push(I::I64Const(24)); v.push(I::I64Mul); v.push(I::I64Add); v.push(I::I64Const(32)); v.push(I::I64Add); v.push(I::LocalSet(3)); // w = new heap top
+        v.push(I::LocalGet(3)); v.push(I::I64Const(mem_limit)); v.push(I::I64LtU);
+        v.push(I::If(BlockType::Empty));
+        v.push(I::I64Const(56)); v.push(I::I32WrapI64); v.push(I::LocalGet(3)); v.push(I::I64Store(ma8.clone()));
+        v.push(I::Else); v.push(I::Unreachable); v.push(I::End);
+        // w = dst; write '('
+        v.push(I::LocalGet(2)); v.push(I::LocalSet(3));
+        v.push(I::LocalGet(3)); v.push(I::I32WrapI64); v.push(I::I32Const(0x28)); v.push(I::I32Store8(ma1.clone())); v.push(I::LocalGet(3)); v.push(I::I64Const(1)); v.push(I::I64Add); v.push(I::LocalSet(3));
+        // i = 0
+        v.push(I::I64Const(0)); v.push(I::LocalSet(4));
+        // loop
+        v.push(I::Block(BlockType::Empty));
+        v.push(I::Loop(BlockType::Empty));
+        // if i >= n → break
+        v.push(I::LocalGet(4)); v.push(I::LocalGet(1)); v.push(I::I64GeU); v.push(I::BrIf(1));
+        // sep ' ' if i > 0
+        v.push(I::LocalGet(4)); v.push(I::I64Const(0)); v.push(I::I64GtU);
+        v.push(I::If(BlockType::Empty));
+        v.push(I::LocalGet(3)); v.push(I::I32WrapI64); v.push(I::I32Const(0x20)); v.push(I::I32Store8(ma1.clone())); v.push(I::LocalGet(3)); v.push(I::I64Const(1)); v.push(I::I64Add); v.push(I::LocalSet(3));
+        v.push(I::End);
+        // elem = load(arr + (i+1)*8)
+        v.push(I::LocalGet(0)); v.push(I::LocalGet(4)); v.push(I::I64Const(1)); v.push(I::I64Add); v.push(I::I64Const(8)); v.push(I::I64Mul); v.push(I::I64Add); v.push(I::I32WrapI64); v.push(I::I64Load(ma8.clone())); v.push(I::LocalSet(5));
+        // ── dispatch on tag ──
+        // TAG_ARRAY (6)? recurse
+        v.push(I::LocalGet(5)); v.push(I::I64Const(7)); v.push(I::I64And); v.push(I::I64Const(6)); v.push(I::I64Eq);
+        v.push(I::If(BlockType::Empty));
+        v.push(I::LocalGet(5)); v.push(I::I64Const(3)); v.push(I::I64ShrU); v.push(I::Call(USER_BASE | self_idx)); v.push(I::LocalSet(8));
+        v.push(I::LocalGet(8)); v.push(I::I64Const(3)); v.push(I::I64ShrU); v.push(I::I64Const(32)); v.push(I::I64ShrU); v.push(I::LocalSet(6));
+        v.push(I::LocalGet(8)); v.push(I::I64Const(3)); v.push(I::I64ShrU); v.push(I::I64Const(0xFFFF_FFFF)); v.push(I::I64And); v.push(I::LocalSet(7));
+        v.push(I::I64Const(0)); v.push(I::LocalSet(9));
+        v.push(I::Block(BlockType::Empty)); v.push(I::Loop(BlockType::Empty));
+        v.push(I::LocalGet(9)); v.push(I::LocalGet(6)); v.push(I::I64GeU); v.push(I::BrIf(1));
+        v.push(I::LocalGet(3)); v.push(I::LocalGet(9)); v.push(I::I64Add); v.push(I::I32WrapI64);
+        v.push(I::LocalGet(7)); v.push(I::LocalGet(9)); v.push(I::I64Add); v.push(I::I32WrapI64); v.push(I::I32Load8U(ma1.clone())); v.push(I::I32Store8(ma1.clone()));
+        v.push(I::LocalGet(9)); v.push(I::I64Const(1)); v.push(I::I64Add); v.push(I::LocalSet(9));
+        v.push(I::Br(0));
+        v.push(I::End); v.push(I::End);
+        v.push(I::LocalGet(3)); v.push(I::LocalGet(6)); v.push(I::I64Add); v.push(I::LocalSet(3));
+        v.push(I::Else);
+        // TAG_STR (5)?  "content"
+        v.push(I::LocalGet(5)); v.push(I::I64Const(7)); v.push(I::I64And); v.push(I::I64Const(5)); v.push(I::I64Eq);
+        v.push(I::If(BlockType::Empty));
+        v.push(I::LocalGet(5)); v.push(I::I64Const(3)); v.push(I::I64ShrU); v.push(I::I64Const(32)); v.push(I::I64ShrU); v.push(I::LocalSet(6));
+        v.push(I::LocalGet(5)); v.push(I::I64Const(3)); v.push(I::I64ShrU); v.push(I::I64Const(0xFFFF_FFFF)); v.push(I::I64And); v.push(I::LocalSet(7));
+        v.push(I::LocalGet(3)); v.push(I::I32WrapI64); v.push(I::I32Const(0x22)); v.push(I::I32Store8(ma1.clone())); v.push(I::LocalGet(3)); v.push(I::I64Const(1)); v.push(I::I64Add); v.push(I::LocalSet(3));
+        v.push(I::I64Const(0)); v.push(I::LocalSet(9));
+        v.push(I::Block(BlockType::Empty)); v.push(I::Loop(BlockType::Empty));
+        v.push(I::LocalGet(9)); v.push(I::LocalGet(6)); v.push(I::I64GeU); v.push(I::BrIf(1));
+        v.push(I::LocalGet(3)); v.push(I::LocalGet(9)); v.push(I::I64Add); v.push(I::I32WrapI64);
+        v.push(I::LocalGet(7)); v.push(I::LocalGet(9)); v.push(I::I64Add); v.push(I::I32WrapI64); v.push(I::I32Load8U(ma1.clone())); v.push(I::I32Store8(ma1.clone()));
+        v.push(I::LocalGet(9)); v.push(I::I64Const(1)); v.push(I::I64Add); v.push(I::LocalSet(9));
+        v.push(I::Br(0));
+        v.push(I::End); v.push(I::End);
+        // w = w + slen (past content); closing '"' AT w; then w++
+        v.push(I::LocalGet(3)); v.push(I::LocalGet(6)); v.push(I::I64Add); v.push(I::LocalSet(3));
+        v.push(I::LocalGet(3)); v.push(I::I32WrapI64); v.push(I::I32Const(0x22)); v.push(I::I32Store8(ma1.clone()));
+        v.push(I::LocalGet(3)); v.push(I::I64Const(1)); v.push(I::I64Add); v.push(I::LocalSet(3));
+        v.push(I::Else);
+        // TAG_NUM (0)? i64_to_str then copy
+        v.push(I::LocalGet(5)); v.push(I::I64Const(7)); v.push(I::I64And); v.push(I::I64Const(0)); v.push(I::I64Eq);
+        v.push(I::If(BlockType::Empty));
+        v.push(I::LocalGet(5)); v.push(I::I64Const(3)); v.push(I::I64ShrS); v.push(I::Call(USER_BASE | i64_to_str)); v.push(I::LocalSet(8));
+        v.push(I::LocalGet(8)); v.push(I::I64Const(3)); v.push(I::I64ShrU); v.push(I::I64Const(32)); v.push(I::I64ShrU); v.push(I::LocalSet(6));
+        v.push(I::LocalGet(8)); v.push(I::I64Const(3)); v.push(I::I64ShrU); v.push(I::I64Const(0xFFFF_FFFF)); v.push(I::I64And); v.push(I::LocalSet(7));
+        v.push(I::I64Const(0)); v.push(I::LocalSet(9));
+        v.push(I::Block(BlockType::Empty)); v.push(I::Loop(BlockType::Empty));
+        v.push(I::LocalGet(9)); v.push(I::LocalGet(6)); v.push(I::I64GeU); v.push(I::BrIf(1));
+        v.push(I::LocalGet(3)); v.push(I::LocalGet(9)); v.push(I::I64Add); v.push(I::I32WrapI64);
+        v.push(I::LocalGet(7)); v.push(I::LocalGet(9)); v.push(I::I64Add); v.push(I::I32WrapI64); v.push(I::I32Load8U(ma1.clone())); v.push(I::I32Store8(ma1.clone()));
+        v.push(I::LocalGet(9)); v.push(I::I64Const(1)); v.push(I::I64Add); v.push(I::LocalSet(9));
+        v.push(I::Br(0));
+        v.push(I::End); v.push(I::End);
+        v.push(I::LocalGet(3)); v.push(I::LocalGet(6)); v.push(I::I64Add); v.push(I::LocalSet(3));
+        v.push(I::Else);
+        // TAG_BOOL (1)? true/false
+        v.push(I::LocalGet(5)); v.push(I::I64Const(7)); v.push(I::I64And); v.push(I::I64Const(1)); v.push(I::I64Eq);
+        v.push(I::If(BlockType::Empty));
+        v.push(I::LocalGet(5)); v.push(I::I64Const(3)); v.push(I::I64ShrU); v.push(I::I64Eqz);
+        v.push(I::If(BlockType::Empty));
+        v.push(I::LocalGet(3)); v.push(I::I32WrapI64); v.push(I::I32Const(0x736c_6166)); v.push(I::I32Store(ma4.clone())); // "fals"
+        v.push(I::LocalGet(3)); v.push(I::I32WrapI64); v.push(I::I32Const(4)); v.push(I::I32Add); v.push(I::I32Const(0x65)); v.push(I::I32Store8(ma1.clone())); // 'e' at w+4
+        v.push(I::LocalGet(3)); v.push(I::I64Const(5)); v.push(I::I64Add); v.push(I::LocalSet(3));
+        v.push(I::Else);
+        v.push(I::LocalGet(3)); v.push(I::I32WrapI64); v.push(I::I32Const(0x6575_7274)); v.push(I::I32Store(ma4.clone())); // "true"
+        v.push(I::LocalGet(3)); v.push(I::I64Const(4)); v.push(I::I64Add); v.push(I::LocalSet(3));
+        v.push(I::End);
+        v.push(I::Else);
+        // TAG_NIL (4)? "nil"  (and FNREF/CLOSURE fallthrough → "nil" too)
+        v.push(I::LocalGet(3)); v.push(I::I32WrapI64); v.push(I::I32Const(0x006c_696e)); v.push(I::I32Store(ma4.clone())); // "nil"
+        v.push(I::LocalGet(3)); v.push(I::I64Const(3)); v.push(I::I64Add); v.push(I::LocalSet(3));
+        v.push(I::End); // bool
+        v.push(I::End); // num
+        v.push(I::End); // str
+        v.push(I::End); // array
+        // i += 1; br loop
+        v.push(I::LocalGet(4)); v.push(I::I64Const(1)); v.push(I::I64Add); v.push(I::LocalSet(4));
+        v.push(I::Br(0));
+        v.push(I::End); v.push(I::End); // loop/block
+        // ')'
+        v.push(I::LocalGet(3)); v.push(I::I32WrapI64); v.push(I::I32Const(0x29)); v.push(I::I32Store8(ma1.clone())); v.push(I::LocalGet(3)); v.push(I::I64Const(1)); v.push(I::I64Add); v.push(I::LocalSet(3));
+        // tagged = ((len<<32)|dst)<<TAG_BITS | TAG_STR ; len = w - dst
+        v.push(I::LocalGet(3)); v.push(I::LocalGet(2)); v.push(I::I64Sub); v.push(I::I64Const(32)); v.push(I::I64Shl);
+        v.push(I::LocalGet(2)); v.push(I::I64Or);
+        v.push(I::I64Const(3)); v.push(I::I64Shl); v.push(I::I64Const(5)); v.push(I::I64Or);
+        v
     }
 }

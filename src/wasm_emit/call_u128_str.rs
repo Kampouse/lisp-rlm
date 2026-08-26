@@ -189,8 +189,8 @@ impl WasmEmitter {
         e(&Instruction::If(BlockType::Result(ValType::I64)));
         e(&Instruction::LocalGet(3)); e(&Instruction::I32WrapI64); e(&Instruction::I32Const(48)); e(&Instruction::I32Store8(ma()));
         // tagged str = ((1<<32)|dst)<<TAG_BITS | TAG_STR  (payload layout: len<<32|ptr)
-        e(&Instruction::LocalGet(3)); e(&Instruction::I64Const(TAG_BITS)); e(&Instruction::I64Shl);
-        e(&Instruction::I64Const(1)); e(&Instruction::I64Const(32)); e(&Instruction::I64Shl); e(&Instruction::I64Or);
+        e(&Instruction::LocalGet(3)); e(&Instruction::I64Const(1)); e(&Instruction::I64Const(32)); e(&Instruction::I64Shl); e(&Instruction::I64Or);
+        e(&Instruction::I64Const(TAG_BITS)); e(&Instruction::I64Shl);
         e(&Instruction::I64Const(TAG_STR)); e(&Instruction::I64Or);
         e(&Instruction::Else);
         e(&Instruction::LocalGet(3)); e(&Instruction::I64Const(48)); e(&Instruction::I64Add); e(&Instruction::LocalSet(4));
@@ -469,8 +469,8 @@ impl WasmEmitter {
         e(&Instruction::If(BlockType::Result(ValType::I64)));
         e(&Instruction::LocalGet(3)); e(&Instruction::I32WrapI64); e(&Instruction::I32Const(48)); e(&Instruction::I32Store8(ma()));
         // tagged str = ((1<<32)|dst)<<TAG_BITS | TAG_STR
-        e(&Instruction::LocalGet(3)); e(&Instruction::I64Const(TAG_BITS)); e(&Instruction::I64Shl);
-        e(&Instruction::I64Const(1)); e(&Instruction::I64Const(32)); e(&Instruction::I64Shl); e(&Instruction::I64Or);
+        e(&Instruction::LocalGet(3)); e(&Instruction::I64Const(1)); e(&Instruction::I64Const(32)); e(&Instruction::I64Shl); e(&Instruction::I64Or);
+        e(&Instruction::I64Const(TAG_BITS)); e(&Instruction::I64Shl);
         e(&Instruction::I64Const(TAG_STR)); e(&Instruction::I64Or);
         e(&Instruction::Else);
         e(&Instruction::LocalGet(3)); e(&Instruction::I64Const(24)); e(&Instruction::I64Add); e(&Instruction::LocalSet(4));
