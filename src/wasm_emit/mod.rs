@@ -309,6 +309,8 @@ pub struct WasmEmitter {
     pub(crate) value_defines: std::collections::HashSet<String>,
     // Index of the synthesized __h_arr_to_str helper (array → "(e0 e1)" str)
     pub(crate) arr_str_helper: Option<u32>,
+    // Index of the synthesized __h_val_eq helper (structural equality)
+    pub(crate) val_eq_helper: Option<u32>,
 }
 
 impl WasmEmitter {
@@ -322,6 +324,7 @@ impl WasmEmitter {
             func_defs: HashMap::new(),
             value_defines: std::collections::HashSet::new(),
             arr_str_helper: None,
+            val_eq_helper: None,
         }
     }
 

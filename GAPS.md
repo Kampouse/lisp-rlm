@@ -414,3 +414,33 @@ closures-as-values, lists/map, try/catch, deep equality), 0 DIVERGE.
   try-catch, e13 structural equality, + heterogeneous lists rejected by
   wasm typechecker: interp-only surface, document in porting guide) /
   0 DIVERGE. cargo test 125/11, torture sweep clean.
+
+### Round 4b — more equivalence wins (2026-08-26 PM)
+6. **Variadic arithmetic** — typing env was binary-only; interpreter left-folds
+   (+ a b c ...). Added desugar in checker Call arm: + - * / min max fold
+   to nested binary when >2 args; mod takes first two (extras dropped —
+   interp semantics). Emitter was already n-ary (fold_binop).
+7. **Structural equality (=)** — was raw tagged-i64 compare → dynamically
+   built strings / fresh lists were never equal. NEW __h_val_eq helper
+   (sig 1: (i64,i64)->bool): str = len+bytes loop, array = count+elementwise
+   recursive, else raw. Typing: = special-cased reflexive (α→α→bool) —
+   was num-only, rejected strings.
+8. **!= on wasm — FIXED (was stale-binary artifact + non-structural)** —
+   `(!= x y)` dispatch was never missing: call_core.rs:247 routes `"!="`
+   → neq() (added in 0cb6d79), and NO parser desugar exists (lisp-run
+   parse dump shows `Sym("!=")` survives verbatim). The repro's silent
+   always-false came from a STALE target/debug binary: the round-4b WIP
+   (val_eq helper) didn't compile (phantom FuncDef `sig` field), so cargo
+   left the pre-0cb6d79 binary in place. Real fixes this round:
+   (a) __h_val_eq made i64-returning (uniform (i64×n)→i64 sig — no sig
+   field needed), returns I64Const, recursion via i64.eqz, local_count
+   9→11 (locals 2..10, convention highest+1); (b) neq caller I32Eqz→
+   I64Eqz; (c) typing: = and != special-cased reflexive α→α→bool (env
+   scheme was num-only — rejected strings/lists outright). != now
+   STRUCTURAL via __h_val_eq: strs, lists, dynamic strs all match interp.
+- e21-str-equality / e22-structural-list-eq written; e17/e20 flip to MATCH
+  once 8 is fixed; e16 (u128 try-based) & e18 (try/catch) stay CERR until
+  wasm try exists. Heterogeneous lists: wasm typechecker rejects (documented).
+- Post-fix scoreboard: 21 probes — 15 MATCH / 6 WASM_CERR (e06 e11 e12 e13
+  e16 e18, all documented classes) / 0 DIVERGE. New probe e23-neq MATCH.
+  cargo test 125 passed / 11 failed (sibling's known wasi_emit set).

@@ -908,6 +908,40 @@ fn infer(
                 LispVal::Sym(s) if s == "list" => {
                     infer_list_literal(&list[1..], env, supply, subst)
                 }
+                // Structural equality/inequality: reflexive α → α → bool.
+                // Interpreter compares (= / !=) structurally on any values
+                // (nums, bools, strings, lists); the num-only env scheme
+                // would reject (= "a" "b") / (!= (list 1) (list 1)).
+                LispVal::Sym(s) if (s == "=" || s == "!=") && list.len() == 3 => {
+                    let t1 = infer(&list[1], env, supply, subst)?;
+                    let t2 = infer(&list[2], env, supply, subst)?;
+                    let su = unify(&subst.apply(&t1), &subst.apply(&t2))
+                        .map_err(|e| format!("in call ({} ...): {}", s, e))?;
+                    *subst = su.compose(subst.clone());
+                    Ok(TcType::Con(TcCon::Bool))
+                }
+                // Variadic arithmetic desugar: interpreter left-folds
+                // (+ a b c ...) = (+ (+ a b) c) for + - * / min max; mod is
+                // binary (extras dropped). Typing env is binary-only, so
+                // rewrite n-ary calls to nested binaries BEFORE inference.
+                LispVal::Sym(op)
+                    if matches!(op.as_str(), "+" | "-" | "*" | "/" | "min" | "max")
+                        && list.len() > 3 =>
+                {
+                    let mut folded = list[1].clone();
+                    for next in &list[2..] {
+                        folded = LispVal::List(vec![list[0].clone(), folded, next.clone()]);
+                    }
+                    infer(&folded, env, supply, subst)
+                }
+                LispVal::Sym(op) if op == "mod" && list.len() > 3 => {
+                    infer(
+                        &LispVal::List(vec![list[0].clone(), list[1].clone(), list[2].clone()]),
+                        env,
+                        supply,
+                        subst,
+                    )
+                }
                 LispVal::Sym(s) if s == "dict" => {
                     // Variadic key-val pairs: infer each arg but don't enforce arity
                     for arg in &list[1..] {
