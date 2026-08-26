@@ -402,7 +402,9 @@ impl WasmEmitter {
                     v.push(Instruction::LocalGet(pt)); v.push(Instruction::I64Const(0xFFFF_FFFF)); v.push(Instruction::I64And); v.push(Instruction::LocalSet(p));
                     // heap alloc len+2 (quotes)
                     v.push(Instruction::I64Const(56)); v.push(Instruction::I32WrapI64); v.push(Instruction::I64Load(ma8q.clone())); v.push(Instruction::LocalSet(dst));
-                    v.push(Instruction::LocalGet(dst)); v.push(Instruction::LocalGet(l)); v.push(Instruction::I64Const(2)); v.push(Instruction::I64Add); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(np));
+                    v.push(Instruction::LocalGet(dst)); v.push(Instruction::LocalGet(l)); v.push(Instruction::I64Const(2)); v.push(Instruction::I64Add); v.push(Instruction::I64Add);
+                    v.push(Instruction::I64Const(7)); v.push(Instruction::I64Add); v.push(Instruction::I64Const(-8)); v.push(Instruction::I64And);
+                    v.push(Instruction::LocalSet(np));
                     v.push(Instruction::LocalGet(np)); v.push(Instruction::I64Const(mem_limit)); v.push(Instruction::I64LtU);
                     v.push(Instruction::If(BlockType::Empty));
                     v.push(Instruction::I64Const(56)); v.push(Instruction::I32WrapI64); v.push(Instruction::LocalGet(np)); v.push(Instruction::I64Store(ma8q.clone()));
@@ -424,7 +426,7 @@ impl WasmEmitter {
                     // dst[l+1] = '"'
                     v.push(Instruction::LocalGet(dst)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalGet(l)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64); v.push(Instruction::I32Const(0x22)); v.push(Instruction::I32Store8(ma8b.clone()));
                     // log_utf8(len+2, dst)
-                    v.push(Instruction::LocalGet(l)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add);
+                    v.push(Instruction::LocalGet(l)); v.push(Instruction::I64Const(2)); v.push(Instruction::I64Add);
                     v.push(Instruction::LocalGet(dst)); v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
                     v.push(Self::host_call(28));
                     v.push(Instruction::Else);

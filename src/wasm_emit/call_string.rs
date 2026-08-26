@@ -50,10 +50,15 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(ma8));
                 v.push(Instruction::LocalSet(rha_tmp));
-                // new_ptr = old + total_len
+                // new_ptr = old + total_len, rounded UP to 8 — tagged string
+                // pointers must be 8-aligned (low 3 bits carry the tag).
                 v.push(Instruction::LocalGet(rha_tmp));
                 v.push(Instruction::LocalGet(total_i));
                 v.push(Instruction::I64Add);
+                v.push(Instruction::I64Const(7));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Const(-8));
+                v.push(Instruction::I64And);
                 v.push(Instruction::LocalSet(rha_new));
                 // Guard: new_ptr < mem_limit
                 v.push(Instruction::LocalGet(rha_new));
