@@ -290,3 +290,44 @@ Tagged value scheme (3-bit tag in bottom bits):
   u128/div truncates like python3 //.
 - try/catch exists and catches hard errors; the caught value is a string
   that embeds the stack trace.
+
+## Round 3 — four silent-wrong-answer classes (2026-08-25, session status)
+
+Approved by JP 20:13. Order 1 → 3 → 4 → 2. Session ended early (parent steer 22:19);
+state per fix:
+
+### 1. 0-truthy → 0 is FALSY — ✅ LANDED (in commit a27b0b2)
+- `src/helpers.rs` `is_truthy`: `Num(0)` and `Float(0.0)` now falsy; `""` and `'()`
+  stay truthy per decision; `nil`/`Bool(false)` falsy as before.
+- t20 TRUTHINESS-PIN flipped and passing; full torture sweep (32 files) exits
+  with designed codes; cargo test 125/11 baseline intact.
+- NOTE: the change rode into the wasm-sibling's wip commit a27b0b2 (they
+  committed src/helpers.rs + t20 while both were dirty in my tree). Content is
+  correct and verified; just don't credit-blame the commit message.
+- wasm path: OUT OF SCOPE per task — branch-on-zero on wasm still treats 0 as
+  truthy. TODO: reconcile wasm emitter conditionals with interpreter semantics
+  when the wasm task lands (they own src/wasm_emit/*).
+
+### 3. User-fn arity validation — ❌ NOT STARTED (no code, no t21)
+Next session: find the user-fn call arm in bytecode.rs (define-compiled fn
+invocation), compare argc vs param count, hard error
+"arity mismatch: fn-name expects N args, got M". Flip ARITY-PIN in t20
+(two lines) + write t21-arity-and-types.lisp. Grep tests/ + corpus/ for
+wrong-arity calls that relied on nil→0.
+
+### 4. Arith type errors — ❌ NOT STARTED (no code, no t21)
+Next session: the lenient arms are `num_arith` (~src/bytecode.rs:4063),
+`num_arith_checked` (~:4087, comment "Non-numeric: coerce to 0" at :4100),
+and `num_cmp` (returns bool, non-numeric → false). num_arith/num_cmp don't
+return Result — needs caller refactor to propagate
+"type error: <op> expects numbers, got <type>". Decision recorded: bare
++ - * / mod < > <= >= are i64/f64 only; string numerics go through u128/*.
+
+### 2. T4 closure aliasing — ❌ NOT STARTED (deliberately last; riskiest)
+t20 T4-PIN and t4-closures.lisp still assert shared-cell (1,2,3,4) behavior.
+Architectural: clone captured env cells at closure instantiation
+(LoadCaptured/StoreCaptured in bytecode.rs). Run full battery after.
+
+Baseline at wrap: cargo test 125 passed / 11 failed (11 = sibling's known
+wasi_emit outlayer/wasmtime failures). Working tree left dirty ONLY with the
+sibling's uncommitted src/wasm_emit/* changes — do not stash/revert those.
