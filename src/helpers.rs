@@ -111,8 +111,23 @@ pub fn is_builtin_name(name: &str) -> bool {
     BUILTIN_NAMES.contains(&name)
 }
 
+/// Truthiness for the interpreter (bytecode VM + dispatch builtins).
+///
+/// Falsy: `nil`, `#f`, integer `0`, float `0.0`.
+/// Truthy: everything else — including `""` and `()` (deliberate: only
+/// numeric zero flips; empty string/list stay truthy. GAPS.md round 3, fix 1).
+///
+/// NOTE: the WASM runtime has its own `$is_truthy` WAT fragment (src/runtime.rs)
+/// with nil/bool-only semantics. Reconcile when the wasm branch-on-zero
+/// semantics are unified (see GAPS.md "wasm truthiness divergence").
 pub fn is_truthy(v: &LispVal) -> bool {
-    !matches!(v, LispVal::Nil | LispVal::Bool(false))
+    !matches!(
+        v,
+        LispVal::Nil
+            | LispVal::Bool(false)
+            | LispVal::Num(0)
+            | LispVal::Float(0.0)
+    )
 }
 
 /// Deep structural equality (Scheme's equal?).

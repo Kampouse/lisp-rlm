@@ -33,6 +33,10 @@ impl WasmEmitter {
                 if !reachable[idx] { reachable[idx] = true; queue.push_back(idx); }
             }
         }
+        if std::env::var("DEBUG_FUNCS").is_ok() {
+            eprintln!("SHAKE exports: {:?}", self.exports);
+            eprintln!("SHAKE calls[0]: {:?}", calls.get(0));
+        }
         // Also seed with lambda functions (called indirectly via CallIndirect)
         for &(func_idx, _) in &self.lambda_info {
             if func_idx < reachable.len() && !reachable[func_idx] {
@@ -42,7 +46,7 @@ impl WasmEmitter {
         }
         // If no exports, keep last user function (skip __ helpers)
         if self.exports.is_empty() && !self.funcs.is_empty() {
-            if let Some(idx) = (0..self.funcs.len()).rev().find(|&i| !self.funcs[i].name.starts_with("__")) {
+            if let Some(idx) = (0..self.funcs.len()).rev().find(|&i| !self.funcs[i].name.starts_with("__h_")) {
                 if !reachable[idx] { reachable[idx] = true; queue.push_back(idx); }
             }
         }
@@ -231,7 +235,9 @@ impl WasmEmitter {
         }
         // Wrappers
         if self.exports.is_empty() {
-            if let Some(f) = self.funcs.last() {
+            // Skip internal `__` helpers (u128 string family) — they are never
+            // meaningful entry points but can be pushed after __toplevel.
+            if let Some(f) = self.funcs.iter().rev().find(|f| !f.name.starts_with("__h_")) {
                 let idx = internal_base + (self.funcs.len()-1) as u32;
                 let mut fb = Function::new(vec![(1u32, ValType::I64)]); // local 0 for result swapping
                 // Pass default args: for each param, push 100000 (for tight loop benchmarking)
@@ -567,7 +573,7 @@ pub fn compile_pure(source: &str) -> Result<Vec<u8>, String> {
     let mut em = parse_and_compile(source, false)?;
     // Add a "run" export for the last defined function (or the implicit top-level begin)
     // so that the export wrapper (which calls value_return) is included.
-    if let Some(f) = em.funcs.last() {
+    if let Some(f) = em.funcs.iter().rev().find(|f| !f.name.starts_with("__h_")) {
         em.add_export(&f.name.clone(), "run", false);
     }
     Ok(em.finish("run"))
@@ -764,7 +770,7 @@ pub fn compile_fuzz(source: &str) -> Result<Vec<u8>, String> {
     // which may be a lambda added after the run function.
     if let Some(f) = em.funcs.iter().find(|f| f.name == "run") {
         em.add_export(&f.name.clone(), "run", false);
-    } else if let Some(f) = em.funcs.last() {
+    } else if let Some(f) = em.funcs.iter().rev().find(|f| !f.name.starts_with("__h_")) {
         em.add_export(&f.name.clone(), "run", false);
     }
     em.set_fuzz_mode(true);
@@ -775,12 +781,15 @@ pub fn compile_fuzz(source: &str) -> Result<Vec<u8>, String> {
 pub fn compile_near(source: &str) -> Result<Vec<u8>, String> {
     let resolved = resolve_modules(source, std::path::Path::new("."))?;
     let mut em = parse_and_compile(&resolved, true)?;
+    if std::env::var("DEBUG_FUNCS").is_ok() {
+        eprintln!("FUNCS: {:?}", em.funcs.iter().map(|f| f.name.clone()).collect::<Vec<_>>());
+    }
     // If no explicit exports, auto-export the "run" function as "_run"
     // so tree-shaking keeps it and all functions it calls.
     if em.exports.is_empty() {
         if let Some(f) = em.funcs.iter().find(|f| f.name == "run") {
             em.add_export(&f.name.clone(), "_run", false);
-        } else if let Some(f) = em.funcs.last() {
+        } else if let Some(f) = em.funcs.iter().rev().find(|f| !f.name.starts_with("__h_")) {
             em.add_export(&f.name.clone(), "_run", false);
         }
     }
@@ -808,7 +817,7 @@ pub fn compile_near_untyped(source: &str) -> Result<Vec<u8>, String> {
    if em.exports.is_empty() {
        if let Some(f) = em.funcs.iter().find(|f| f.name == "run") {
            em.add_export(&f.name.clone(), "_run", false);
-       } else if let Some(f) = em.funcs.last() {
+       } else if let Some(f) = em.funcs.iter().rev().find(|f| !f.name.starts_with("__h_")) {
            em.add_export(&f.name.clone(), "_run", false);
        }
    }

@@ -41,6 +41,8 @@ pub mod call_near_crypto;
 pub mod call_near_promise;
 pub mod call_near_iter;
 pub mod call_u128;
+pub mod call_u128_str;
+use call_u128_str::U128Helpers;
 pub mod call_fp;
 pub mod call_defi;
 pub mod call_bitwise;
@@ -277,6 +279,7 @@ pub struct WasmEmitter {
     pub(crate) list_ptr_counter: u32, // unique temp per (list ...) site — nested dynamic lists each need their OWN __lst_ptr local
     pub(crate) str_cat_depth: u32, // nesting depth for str-cat local isolation
     pub(crate) fuzz_mode: bool, // if true, export wrappers store tagged values (no untag, no value_return)
+    pub(crate) u128h: Option<U128Helpers>, // string-based u128 helper func indices (lazily synthesized)
     pub(crate) need_outlayer: bool, // true if outlayer/* dispatch forms are used
     pub(crate) need_wasi_http: bool, // true if http-get is used (for P2 wasi:http path)
     pub(crate) http_urls: Vec<(String, String)>, // (authority, path) per http-get call in p2_mode
@@ -306,7 +309,7 @@ impl WasmEmitter {
             while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 512, exports: Vec::new(),
             data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(),
             gas_local: None, needs_frame: false, heap_ptr: 0, lambda_counter: 0,
-            list_ptr_counter: 0, str_cat_depth: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), http_post_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false, borsh_schemas: HashMap::new(), storage_get_count: 0, http_post_call_count: 0,
+            list_ptr_counter: 0, str_cat_depth: 0, fuzz_mode: false, u128h: None, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), http_post_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false, borsh_schemas: HashMap::new(), storage_get_count: 0, http_post_call_count: 0,
             func_defs: HashMap::new(),
         }
     }

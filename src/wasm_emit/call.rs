@@ -2,12 +2,27 @@ use super::*;
 
 impl WasmEmitter {
     pub(crate) fn call(&mut self, op: &str, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
-        // ── u128 builtins (string-based): interpreter-only for now ──
-        // The decimal-string u128 family is not yet lowered to wasm limb math.
-        // Intercept BEFORE the domain dispatch: several of these names overlap
-        // the address-based limbs in call_u128 (different calling convention),
-        // which would silently miscompile string arguments as memory addresses.
-        if matches!(
+        // ── Domain dispatch helper (each returns Err("__not_handled__") if op doesn't match) ──
+        macro_rules! try_domain {
+            ($method:expr) => {
+                match $method {
+                    Ok(v) => return Ok(v),
+                    Err(e) if e == "__not_handled__" => {}
+                    Err(e) => return Err(e),
+                }
+            };
+        }
+
+        // ── u128 builtins (string-based): interpreter semantics on wasm ──
+        // Lowered by call_u128_str (parse → limb math → decimal render) with
+        // hard errors as unreachable traps. The overlapping address-based limb
+        // family in call_u128 keeps the string-semantics names shadowed — the
+        // interpreter ABI is the spec (commit 4b1403e).
+        try_domain!(self.call_u128_str(op, a));
+        // Legacy address-based limbs: only names that do NOT collide with the
+        // string-based family are reachable (u128/store, u128/load, u128/new,
+        // u128/from_yocto, bigint-*, ...).
+        if !matches!(
             op,
             "u128/add"
                 | "u128/sub"
@@ -21,19 +36,41 @@ impl WasmEmitter {
                 | "u128/to-i64"
                 | "u128/is-zero"
         ) {
-            return Err("u128 builtins not yet implemented for wasm target".into());
+            try_domain!(self.call_u128(op, a));
+        }
+
+        // ── error: hard error with message (interpreter: Err(msg)) ──
+        // NEAR mode: panic_utf8 with the string content (near-mock surfaces
+        // "PANIC: <msg>" on stderr, nonzero exit). Other modes: unreachable
+        // trap. Non-string args trap without message (documented deviation).
+        if op == "error" {
+            if a.len() != 1 { return Err("error: need 1 arg".into()); }
+            let av = self.expr(&a[0])?;
+            let va = self.local_idx("__err_v");
+            let mut v = Vec::new();
+            v.extend(av); v.push(Instruction::LocalSet(va));
+            if !self.wasi_mode {
+                self.need_host(27); // panic_utf8
+                v.push(Instruction::LocalGet(va)); v.push(Instruction::I64Const(7)); v.push(Instruction::I64And);
+                v.push(Instruction::I64Const(TAG_STR)); v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                // string: panic_utf8(len, ptr)
+                v.push(Instruction::LocalGet(va)); v.push(Instruction::I64Const(TAG_BITS)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(va));
+                v.push(Instruction::LocalGet(va)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalGet(va)); v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Self::host_call(27));
+                v.push(Instruction::I64Const(TAG_NIL));
+                v.push(Instruction::Else);
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
+            } else {
+                v.push(Instruction::Unreachable);
+            }
+            return Ok(v);
         }
 
         // ── Domain dispatch (each returns Err("__not_handled__") if op doesn't match) ──
-        macro_rules! try_domain {
-            ($method:expr) => {
-                match $method {
-                    Ok(v) => return Ok(v),
-                    Err(e) if e == "__not_handled__" => {}
-                    Err(e) => return Err(e),
-                }
-            };
-        }
         try_domain!(self.call_core(op, a));
         try_domain!(self.call_near_storage(op, a));
         try_domain!(self.call_near_io(op, a));

@@ -372,16 +372,100 @@ impl WasmEmitter {
                     }
                     v.push(Instruction::End); // if string/else
                 } else {
-                    // NEAR: use near/log (host func 28) for strings
+                    // NEAR: near/log_utf8 (host 28) — renders per interpreter
+                    // LispVal::to_string(): Str → "content" (quoted), Num →
+                    // decimal, Bool → true/false, else → "nil". (near-mock
+                    // prefixes each log with "  LOG: " and newline.)
                     self.need_host(28);
-                    // For now: if arg is string literal, log it
-                    v.extend(val.clone());
-                    v.push(Instruction::I64Const(32));
-                    v.push(Instruction::I64ShrU); // len
+                    let h = self.ensure_u128_str_helpers();
+                    let tagged = self.local_idx("__near_print_v");
+                    let pt = self.local_idx("__near_print_pt");
+                    let l = self.local_idx("__near_print_l");
+                    let p = self.local_idx("__near_print_p");
+                    let dst = self.local_idx("__near_print_dst");
+                    let np = self.local_idx("__near_print_np");
+                    let i_i = self.local_idx("__near_print_i");
+                    let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                    let ma8b = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+                    let ma8q = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                    let mem_limit = (self.memory_pages as i64) * 65536;
                     v.extend(val);
-                    v.push(Instruction::I32WrapI64); // ptr
-                    v.push(Instruction::I64ExtendI32U);
+                    v.push(Instruction::LocalSet(tagged));
+                    // ── string? ──
+                    v.push(Instruction::LocalGet(tagged));
+                    v.push(Instruction::I64Const(7)); v.push(Instruction::I64And);
+                    v.push(Instruction::I64Const(TAG_STR)); v.push(Instruction::I64Eq);
+                    v.push(Instruction::If(BlockType::Empty));
+                    // payload, len, ptr
+                    v.push(Instruction::LocalGet(tagged)); v.push(Instruction::I64Const(TAG_BITS)); v.push(Instruction::I64ShrU); v.push(Instruction::LocalSet(pt));
+                    v.push(Instruction::LocalGet(pt)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); v.push(Instruction::LocalSet(l));
+                    v.push(Instruction::LocalGet(pt)); v.push(Instruction::I64Const(0xFFFF_FFFF)); v.push(Instruction::I64And); v.push(Instruction::LocalSet(p));
+                    // heap alloc len+2 (quotes)
+                    v.push(Instruction::I64Const(56)); v.push(Instruction::I32WrapI64); v.push(Instruction::I64Load(ma8q.clone())); v.push(Instruction::LocalSet(dst));
+                    v.push(Instruction::LocalGet(dst)); v.push(Instruction::LocalGet(l)); v.push(Instruction::I64Const(2)); v.push(Instruction::I64Add); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(np));
+                    v.push(Instruction::LocalGet(np)); v.push(Instruction::I64Const(mem_limit)); v.push(Instruction::I64LtU);
+                    v.push(Instruction::If(BlockType::Empty));
+                    v.push(Instruction::I64Const(56)); v.push(Instruction::I32WrapI64); v.push(Instruction::LocalGet(np)); v.push(Instruction::I64Store(ma8q.clone()));
+                    v.push(Instruction::Else); v.push(Instruction::Unreachable); v.push(Instruction::End);
+                    // dst[0] = '"'
+                    v.push(Instruction::LocalGet(dst)); v.push(Instruction::I32WrapI64); v.push(Instruction::I32Const(0x22)); v.push(Instruction::I32Store8(ma8b.clone()));
+                    // copy content → dst+1+i
+                    v.push(Instruction::I64Const(0)); v.push(Instruction::LocalSet(i_i));
+                    v.push(Instruction::Block(BlockType::Empty));
+                    v.push(Instruction::Loop(BlockType::Empty));
+                    v.push(Instruction::LocalGet(i_i)); v.push(Instruction::LocalGet(l)); v.push(Instruction::I64GeU); v.push(Instruction::BrIf(1));
+                    v.push(Instruction::LocalGet(dst)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::LocalGet(p)); v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::I32Load8U(ma8b.clone()));
+                    v.push(Instruction::I32Store8(ma8b.clone()));
+                    v.push(Instruction::LocalGet(i_i)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalSet(i_i));
+                    v.push(Instruction::Br(0));
+                    v.push(Instruction::End); v.push(Instruction::End);
+                    // dst[l+1] = '"'
+                    v.push(Instruction::LocalGet(dst)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add); v.push(Instruction::LocalGet(l)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64); v.push(Instruction::I32Const(0x22)); v.push(Instruction::I32Store8(ma8b.clone()));
+                    // log_utf8(len+2, dst)
+                    v.push(Instruction::LocalGet(l)); v.push(Instruction::I64Const(1)); v.push(Instruction::I64Add);
+                    v.push(Instruction::LocalGet(dst)); v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
                     v.push(Self::host_call(28));
+                    v.push(Instruction::Else);
+                    // ── num? ──
+                    v.push(Instruction::LocalGet(tagged)); v.push(Instruction::I64Const(7)); v.push(Instruction::I64And);
+                    v.push(Instruction::I64Const(TAG_NUM)); v.push(Instruction::I64Eq);
+                    v.push(Instruction::If(BlockType::Empty));
+                    v.push(Instruction::LocalGet(tagged)); v.push(Instruction::I64Const(TAG_BITS)); v.push(Instruction::I64ShrS);
+                    v.push(Instruction::Call(USER_BASE | h.i64_to_str));
+                    v.push(Instruction::LocalSet(pt));
+                    v.push(Instruction::LocalGet(pt)); v.push(Instruction::I64Const(TAG_BITS)); v.push(Instruction::I64ShrU); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                    v.push(Instruction::LocalGet(pt)); v.push(Instruction::I64Const(TAG_BITS)); v.push(Instruction::I64ShrU); v.push(Instruction::I64Const(0xFFFF_FFFF)); v.push(Instruction::I64And); v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                    v.push(Self::host_call(28));
+                    v.push(Instruction::Else);
+                    // ── bool? ──
+                    v.push(Instruction::LocalGet(tagged)); v.push(Instruction::I64Const(7)); v.push(Instruction::I64And);
+                    v.push(Instruction::I64Const(TAG_BOOL)); v.push(Instruction::I64Eq);
+                    v.push(Instruction::If(BlockType::Empty));
+                    // "true" / "false" written at STDOUT_BUF (65536)
+                    v.push(Instruction::LocalGet(tagged)); v.push(Instruction::I64Const(TAG_BITS)); v.push(Instruction::I64ShrU); v.push(Instruction::I64Eqz);
+                    v.push(Instruction::If(BlockType::Empty));
+                    v.push(Instruction::I32Const(65536)); v.push(Instruction::I32Const(0x6573_6c61)); v.push(Instruction::I32Store(ma4.clone())); // "fals"
+                    v.push(Instruction::I32Const(65540)); v.push(Instruction::I32Const(0x65)); v.push(Instruction::I32Store8(ma8b.clone()));    // "e"
+                    v.push(Instruction::I64Const(5));
+                    v.push(Instruction::I64Const(65536));
+                    v.push(Self::host_call(28));
+                    v.push(Instruction::Else);
+                    v.push(Instruction::I32Const(65536)); v.push(Instruction::I32Const(0x6575_7274)); v.push(Instruction::I32Store(ma4.clone())); // "true"
+                    v.push(Instruction::I64Const(4));
+                    v.push(Instruction::I64Const(65536));
+                    v.push(Self::host_call(28));
+                    v.push(Instruction::End);
+                    v.push(Instruction::Else);
+                    // ── nil / anything else → "nil" ──
+                    v.push(Instruction::I32Const(65536)); v.push(Instruction::I32Const(0x006c_696e)); v.push(Instruction::I32Store(ma4.clone())); // "nil"
+                    v.push(Instruction::I64Const(3));
+                    v.push(Instruction::I64Const(65536));
+                    v.push(Self::host_call(28));
+                    v.push(Instruction::End); // bool?
+                    v.push(Instruction::End); // num?
+                    v.push(Instruction::End); // string?
                 }
                 v.push(Instruction::I64Const(TAG_NIL));
                 Ok(v)
