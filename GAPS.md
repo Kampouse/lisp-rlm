@@ -217,7 +217,76 @@ Tagged value scheme (3-bit tag in bottom bits):
   same-named let-captured mutable state in two instances of a factory.
 
 ### T6: str-cat missing from interpreter (surface divergence, 3rd of its class)
+- RESOLVED for the interpreter by dd0285d (corpus #1): str-cat now exists in
+  eval_builtin with STRINGS-ONLY semantics (matches wasm_emit call_string.rs;
+  see t6 header). The class itself (interpreter vs emitter surface drift)
+  remains open — round 2 found more instances (near/has_key, near/kv-get,
+  isqrt, wrap-add above).
 - `(str-cat "x" 42)` → unknown builtin in lisp-run; exists in the WASM
   emitter path (GAPS str-cat key-collision entry references it). Same class
   as while/dotimes divergence. Note: hard-error change is what surfaced it
   (pre-fix it would have silently returned the form as data).
+
+## 2026-08-25 — found by tests/compiler-torture round 2 (t10–t20)
+
+### FIXED during round 2 (see git log for full messages)
+- **max_call_depth guard was unreachable** (t11): dynamic-dispatch recursion
+  consumed ~60KB native stack per frame; the 8MB main-thread stack aborted
+  the process (SIGABRT, exit 134) around depth ~130 — before the 256 guard
+  could fire. lisp-run now runs the VM on a 512MB-stack thread (13227af);
+  "call depth exceeded" is reachable and clean (t11b pins the boundary:
+  254 OK / 255 errors).
+- **Cross-form forward references / mutual recursion** (t11): lisp-run
+  compiled forms one at a time, so `(define (my-even? ...) (my-odd? ...))`
+  above its partner was a hard compile error even though the library API
+  supports it. CLI now pre-seeds define names (4196858).
+- **abs(i64::MIN) panicked the process** (t18): exit 101 "attempt to negate
+  with overflow". Both abs sites now use checked_abs → clean
+  "integer overflow in abs" (9b98ae3).
+- **(to-float "3.5") silently returned 0.0** (t12): the eval_builtin inline
+  table had no Str arm; now parses like the (shadowed) dispatch impl
+  (e35c7c9).
+- **Dispatch-module errors were misreported as "unknown builtin"** (t13):
+  e.g. out-of-range str-substring said "unknown builtin 'str-substring'"
+  instead of "indices out of range". Errors now propagate (f79d26c).
+
+### KNOWN — pinned, not fixed (see t-file markers)
+- **User-fn arity: no validation (ARITY-PIN, t20).** `(f2 1)` with
+  (define (f2 a b) ...) runs with b = nil (arith-coerced to 0); `(f2 1 2 3)`
+  silently drops the extra arg. Should be a hard error. Fix needs agreement
+  between the inlining compiler path and vm_call_lambda — not a one-liner.
+- **Compiled arithmetic coerces non-numbers to 0** (found via t14):
+  `(+ "a" 1)` → 1, `(* (list 1 2) 10)` → 0 — silent wrong-answer class. The
+  dispatch path (do_arith/as_num) errors properly; the hot compiled ops use
+  num_val() which defaults to 0. Likely deliberate for the i64-only WASM tag
+  scheme; flagging for a deliberate decision.
+- **Division-by-zero message inconsistency** (t10): literal zero divisor
+  const-folds to "integer overflow in div"; computed zero gives
+  "division by zero". Same error, two messages.
+- **Inline builtin table shadows the dispatch modules with weaker
+  semantics** (t13): str-length counts BYTES ("héllo" → 6; dispatch impl
+  counts chars), str-split does NOT filter empty parts ("" → (""); dispatch
+  filters), to-int of an unparseable string → 0 (dispatch errors). The
+  dispatch versions are dead code for these names. Whichever semantics is
+  canonical, the two tables should agree.
+- **Recursion depth semantics** (t11, pinned as actual): direct
+  self-recursion compiles to iterative CallSelf frames — NO depth limit;
+  the 1M-op execution budget is the only ceiling (sum-to 10000 = 50005000
+  runs clean). Mutual recursion and value-dispatched calls DO cross
+  run_compiled_lambda each hop and are capped at max_call_depth=256 total
+  crossings (254-deep chain + body = 256 OK; 255 fails).
+- **lisp-run surface gaps vs this tracker** (t18/t19): near/has_key,
+  near/kv-get (write near/kv exists, read does not — asymmetric),
+  isqrt, wrap-add: all compile-error "unknown function or special form"
+  in the CLI despite being listed as implemented above (they exist only on
+  other paths).
+
+### Semantics pinned as ACTUAL (not bugs)
+- Floats print via Rust `{}`: 5.0 → "5" (no trailing .0); 2.5 → "2.5".
+- u128/from-i64 of a negative i64 yields the SIGNED decimal string
+  ("-9223372036854775808") — sign carried in the string representation.
+- nil and '() are distinct ((= nil '()) → false, (nil? '()) → false).
+- mod is euclidean ((mod -7 3) → 2); / truncates toward zero ((/ -7 2) → -3);
+  u128/div truncates like python3 //.
+- try/catch exists and catches hard errors; the caught value is a string
+  that embeds the stack trace.
