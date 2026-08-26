@@ -11,7 +11,11 @@ impl WasmEmitter {
     }
 
     pub(crate) fn emit_untag(&self) -> Vec<Instruction<'static>> {
-        vec![Instruction::I64Const(TAG_BITS), Instruction::I64ShrU]
+        // ARITHMETIC shift: TAG_NUM=0 means negative payloads (two's
+        // complement) have the sign bit set after tagging. I64ShrU zero-fills
+        // and corrupts them (e.g. -7 tagged 0xFF..FC9 → 2305843009213693945).
+        // Positive payloads (heap ptrs/offsets) are unaffected by ShrS.
+        vec![Instruction::I64Const(TAG_BITS), Instruction::I64ShrS]
     }
 
     pub(crate) fn emit_i32_to_i64(&self) -> Vec<Instruction<'static>> {
@@ -31,7 +35,7 @@ impl WasmEmitter {
             Instruction::If(BlockType::Empty),
             Instruction::LocalGet(tmp),
             Instruction::I64Const(TAG_BITS),
-            Instruction::I64ShrU, // untag payload
+            Instruction::I64ShrS, // untag payload (arithmetic — negatives!)
             Instruction::LocalSet(result),
             Instruction::Else,
             Instruction::I64Const(0), // non-numeric → 0
