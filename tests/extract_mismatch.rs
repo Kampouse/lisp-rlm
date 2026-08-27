@@ -54,7 +54,7 @@ impl Rng {
 
 fn is_slot_dependent(op: &Op) -> bool {
     matches!(op,
-        Op::LoadSlot | Op::StoreSlot | Op::Recur(_) | Op::RecurDirect(_)
+        Op::LoadSlot(_) | Op::StoreSlot(_) | Op::Recur(_) | Op::RecurDirect(_)
         | Op::SlotAddImm(_, _) | Op::SlotSubImm(_, _) | Op::SlotMulImm(_, _)
         | Op::SlotDivImm(_, _) | Op::SlotEqImm(_, _) | Op::SlotLtImm(_, _)
         | Op::SlotLeImm(_, _) | Op::SlotGtImm(_, _) | Op::SlotGeImm(_, _)
@@ -67,6 +67,10 @@ fn is_slot_dependent(op: &Op) -> bool {
 }
 
 #[test]
+// IGNORED scaffold (was Kampouse WIP swept into commit 4274439 by add -A).
+// Panics by design until generate_random_program is imported from the
+// differential fuzzer. Un-ignore + implement when that lands.
+#[ignore = "scaffold: needs generate_random_program from test_differential_fuzz"]
 fn extract_mismatch_1278() {
     let mut rng = Rng::new(12345);
     for i in 0..1279 {
