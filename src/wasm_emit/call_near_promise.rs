@@ -271,6 +271,48 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0));
                 Ok(v)
             }
+            "near/transfer_u128" => {
+                // (near/transfer_u128 receiver_id "amount_yocto") — u128
+                // variant of near/transfer. __u128_parse (strict decimal)
+                // writes the 16-byte LE limbs to TEMP_MEM; identical batch
+                // machinery (39 + 44). Real NEAR amounts (e.g. 1 N =
+                // 10^24 yocto ≈ 2^80) cannot ride the i64 path.
+                if a.len() != 2 {
+                    return Err("near/transfer_u128: need 2 args (receiver_id, amount_yocto_str)".into());
+                }
+                self.need_host(39);
+                self.need_host(44);
+                let h = self.ensure_u128_str_helpers();
+                let recv = self.expr(&a[0])?; // tagged Str
+                let amt = self.expr(&a[1])?;  // tagged Str (decimal)
+                let ra = self.local_idx("__tr128_recv");
+                let aa = self.local_idx("__tr128_amt");
+                let mut v = Vec::new();
+                v.extend(recv);
+                v.push(Instruction::LocalSet(ra));
+                v.extend(amt);
+                v.push(Instruction::LocalSet(aa));
+                // amount → 16 bytes at TEMP_MEM (strict parse: traps on garbage)
+                v.push(Instruction::LocalGet(aa));
+                v.push(Instruction::I64Const(TEMP_MEM as i64));
+                v.push(Self::call_user(h.parse));
+                v.push(Instruction::Drop);
+                // promise_batch_create(len, ptr)
+                v.push(Instruction::LocalGet(ra));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalGet(ra));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Self::host_call(39));
+                // promise_batch_action_transfer(batch_idx, amount_ptr)
+                v.push(Instruction::I64Const(TEMP_MEM as i64));
+                v.push(Self::host_call(44));
+                v.push(Instruction::I64Const(0));
+                Ok(v)
+            }
             "near/promise_return" => {
                 let idx = self.expr(&a[0])?;
                 let mut v = Vec::new();

@@ -844,6 +844,14 @@ impl TcEnv {
                 Box::new(nil_ty.clone()),
             ),
         );
+        // near/transfer_u128 : str → str → nil  (account_id, amount decimal)
+        env.insert_mono(
+            "near/transfer_u128".into(),
+            TcType::Arrow(
+                vec![str_ty.clone(), str_ty.clone()],
+                Box::new(nil_ty.clone()),
+            ),
+        );
         // near/block_timestamp : () → int
         // near/deposit-gte : int → bool (literal only)
         env.insert_mono("near/deposit-gte".into(), TcType::Arrow(vec![int_ty.clone()], Box::new(bool_ty.clone())));

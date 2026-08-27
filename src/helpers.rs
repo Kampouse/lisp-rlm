@@ -239,7 +239,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "tag-test", "get-field",
     // NEAR mock builtins
     "near-reset", "near-promises", "near-register", "near-register-source", "near-contracts",
-    "near/store", "near/load", "near/remove", "near/has", "near/kv", "near/storage_usage",
+    "near/store", "near/load", "near/remove", "near/has", "near/has_key", "near/kv", "near/storage_usage",
     "near/account_id", "near/signer_id", "near/predecessor_id", "near/block_height", "near/block_timestamp",
     "near/attached_deposit", "near/prepaid_gas", "near/random_seed", "near/input",
     "near/return", "near/return_str", "near/return_json", "near/json_return_str",
@@ -247,7 +247,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "near/log", "near/log_str",
     "near/promise_create", "near/promise_then", "near/promise_and",
     "near/promise_results_count", "near/promise_result", "near/promise_return",
-    "near/call", "near/transfer", "near/deploy_contract",
+    "near/call", "near/transfer", "near/transfer_u128", "near/deploy_contract",
     "near/batch_create", "near/batch_action_create", "near/batch_action_function_call",
     "near/batch_action_transfer", "near/batch_action_deploy_contract", "near/batch_action_stake",
     "near/batch_action_add_key", "near/batch_action_delete_key", "near/batch_action_delete_account",

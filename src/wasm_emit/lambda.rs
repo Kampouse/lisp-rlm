@@ -448,7 +448,7 @@ impl WasmEmitter {
             "near/promise_batch_action_deploy_contract" => self.need_host(42),
             "near/promise_batch_action_function_call" => self.need_host(43),
             "near/promise_batch_action_transfer" => self.need_host(44),
-            "near/transfer" => {
+            "near/transfer" | "near/transfer_u128" => {
                 self.need_host(39);
                 self.need_host(44);
             }

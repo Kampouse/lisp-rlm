@@ -4554,7 +4554,7 @@ fn eval_near_builtin_match(name: &str) -> bool {
         | "near/bls12381_p1_sum"
         | "near/random_seed"
         // ── near/* promises ──
-        | "near/call" | "near/transfer" | "near/deploy_contract"
+        | "near/call" | "near/transfer" | "near/transfer_u128" | "near/deploy_contract"
         | "near/promise_create" | "near/promise_then" | "near/promise_and"
         | "near/promise_results_count" | "near/promise_result" | "near/promise_return"
         | "near/promise_batch_create" | "near/promise_batch_then"
@@ -4940,6 +4940,30 @@ fn eval_near_builtin(
             m.insert("type".into(), LispVal::Str("transfer".into()));
             m.insert("target".into(), LispVal::Str(key_of(args, 0)));
             m.insert("amount".into(), args.get(1).cloned().unwrap_or(LispVal::Num(0)));
+            state.near_promises.push(LispVal::Map(m));
+            let idx = state.near_promise_idx;
+            state.near_promise_idx += 1;
+            state.near_returned_promise = Some(idx);
+            Some(Ok(LispVal::Num(idx)))
+        }
+        "near/transfer_u128" => {
+            // u128 twin of near/transfer — amount is a decimal STRING
+            // (mirrors wasm: __u128_parse → 16B limbs → batch transfer).
+            // Strict parse: malformed amounts are a hard error, never 0.
+            let amt_s = key_of(args, 1);
+            let amt_u: u128 = match amt_s.parse::<u128>() {
+                Ok(u) => u,
+                Err(_) => {
+                    return Some(Err(format!(
+                        "near/transfer_u128: amount {:?} is not a u128 decimal",
+                        amt_s
+                    )))
+                }
+            };
+            let mut m = im::HashMap::new();
+            m.insert("type".into(), LispVal::Str("transfer".into()));
+            m.insert("target".into(), LispVal::Str(key_of(args, 0)));
+            m.insert("amount".into(), LispVal::Str(amt_u.to_string()));
             state.near_promises.push(LispVal::Map(m));
             let idx = state.near_promise_idx;
             state.near_promise_idx += 1;

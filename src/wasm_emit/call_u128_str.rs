@@ -107,7 +107,7 @@ impl WasmEmitter {
         h
     }
 
-    fn call_user(idx: u32) -> Instruction<'static> {
+    pub(crate) fn call_user(idx: u32) -> Instruction<'static> {
         Instruction::Call(USER_BASE | idx)
     }
 
