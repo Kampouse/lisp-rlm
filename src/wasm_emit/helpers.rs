@@ -128,7 +128,7 @@ impl WasmEmitter {
     pub(crate) fn emit_safe_div(&mut self) -> Vec<Instruction<'static>> {
         let a = self.local_idx("__div_a");
         let b = self.local_idx("__div_b");
-        vec![
+        let mut v = vec![
             // Pop b then a into locals
             Instruction::LocalSet(b),
             Instruction::LocalSet(a),
@@ -144,14 +144,16 @@ impl WasmEmitter {
             Instruction::LocalGet(b),
             Instruction::I64DivS,
             Instruction::End,
-        ]
+        ];
+        self.guardify_traps(&mut v, "div: division by zero");
+        v
     }
 
     pub(crate) fn emit_safe_rem(&mut self) -> Vec<Instruction<'static>> {
         let a = self.local_idx("__rem_a");
         let b = self.local_idx("__rem_b");
         let result = self.local_idx("__rem_result");
-        vec![
+        let mut v = vec![
             Instruction::LocalSet(b),
             Instruction::LocalSet(a),
             Instruction::LocalGet(b),
@@ -185,7 +187,9 @@ impl WasmEmitter {
             Instruction::End,
             Instruction::End,
             Instruction::LocalGet(result),
-        ]
+        ];
+        self.guardify_traps(&mut v, "mod: division by zero");
+        v
     }
 
     pub(crate) fn emit_checked_add(&mut self) -> Vec<Instruction<'static>> {
@@ -193,7 +197,7 @@ impl WasmEmitter {
         let b = self.local_idx("__ck_add_b");
         let r = self.local_idx("__ck_add_r");
         // Overflow: (a ^ b) >= 0 && (r ^ a) < 0
-        vec![
+        let mut v = vec![
             Instruction::LocalSet(b),
             Instruction::LocalSet(a),
             Instruction::LocalGet(a),
@@ -214,11 +218,13 @@ impl WasmEmitter {
             Instruction::I64Const(0),
             Instruction::I64LtS, // (r^a) < 0 → overflow
             Instruction::If(BlockType::Empty),
-            Instruction::Unreachable, // trap on overflow
+            Instruction::Unreachable, // trap on overflow (or catch under try)
             Instruction::End,
             Instruction::End,
             Instruction::LocalGet(r),
-        ]
+        ];
+        self.guardify_traps(&mut v, "arith: overflow");
+        v
     }
 
     pub(crate) fn emit_checked_sub(&mut self) -> Vec<Instruction<'static>> {
@@ -226,7 +232,7 @@ impl WasmEmitter {
         let b = self.local_idx("__ck_sub_b");
         let r = self.local_idx("__ck_sub_r");
         // Overflow: (a ^ b) < 0 && (r ^ a) < 0
-        vec![
+        let mut v = vec![
             Instruction::LocalSet(b),
             Instruction::LocalSet(a),
             Instruction::LocalGet(a),
@@ -247,18 +253,20 @@ impl WasmEmitter {
             Instruction::I64Const(0),
             Instruction::I64LtS, // (r^a) < 0 → overflow
             Instruction::If(BlockType::Empty),
-            Instruction::Unreachable, // trap on overflow
+            Instruction::Unreachable, // trap on overflow (or catch under try)
             Instruction::End,
             Instruction::End,
             Instruction::LocalGet(r),
-        ]
+        ];
+        self.guardify_traps(&mut v, "arith: overflow");
+        v
     }
 
     pub(crate) fn emit_checked_mul(&mut self) -> Vec<Instruction<'static>> {
         let a = self.local_idx("__ck_mul_a");
         let b = self.local_idx("__ck_mul_b");
         let r = self.local_idx("__ck_mul_r");
-        vec![
+        let mut v = vec![
             Instruction::LocalSet(b),
             Instruction::LocalSet(a),
             // Special case: a == 0 or b == 0 → result is 0, no overflow
@@ -303,7 +311,9 @@ impl WasmEmitter {
             Instruction::LocalGet(r),
             Instruction::End,
             Instruction::End,
-        ]
+        ];
+        self.guardify_traps(&mut v, "arith: overflow");
+        v
     }
 
     pub(crate) fn emit_tag_bool(&self) -> Vec<Instruction<'static>> {

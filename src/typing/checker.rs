@@ -851,6 +851,30 @@ fn infer(
                     }
                     Ok(TcType::Con(TcCon::Nil))
                 }
+                LispVal::Sym(s) if s == "try" => {
+                    // (try body (catch var handler...)) — the body is inferred
+                    // LENIENTLY: a type error inside the body becomes a caught
+                    // runtime error on the wasm surface (guarded fallible op →
+                    // catch jump), so we type it Any instead of rejecting.
+                    // The catch var binds the error message (string); the whole
+                    // form types as Any (body and handler may differ).
+                    if list.len() == 3 {
+                        if let LispVal::List(cl) = &list[2] {
+                            if cl.len() >= 3 && cl[0] == LispVal::Sym("catch".into()) {
+                                if let LispVal::Sym(var) = &cl[1] {
+                                    let _ = infer(&list[1], env, supply, subst);
+                                    let mut henv = env.clone();
+                                    henv.insert_mono(var.clone(), TcType::Con(TcCon::Str));
+                                    for h in &cl[2..] {
+                                        let _ = infer(h, &henv, supply, subst);
+                                    }
+                                    let _ = var; // silence unused if bind is non-consuming
+                                }
+                            }
+                        }
+                    }
+                    Ok(TcType::Con(TcCon::Any))
+                }
                 LispVal::Sym(s) if s == "begin" => infer_begin(&list[1..], env, supply, subst),
                 LispVal::Sym(s) if s == "and" => infer_and(&list[1..], env, supply, subst),
                 LispVal::Sym(s) if s == "or" => infer_or(&list[1..], env, supply, subst),
@@ -1297,7 +1321,16 @@ fn infer_list_literal(
     for elem in &elems[1..] {
         let t = infer(elem, env, supply, subst)?;
         let t = subst.apply(&t);
-        let s = unify(&elem_type, &t).map_err(|e| format!("list: heterogeneous types — {}", e))?;
+        // Heterogeneous literals: the interpreter is dynamically typed and
+        // accepts mixed lists (e.g. (list 1 (list 2 3))). Downgrade to
+        // (list any) instead of rejecting — trace-equivalence principle: the
+        // wasm surface accepts what the interpreter accepts.
+        let s = match unify(&elem_type, &t) {
+            Ok(s) => s,
+            Err(_) => {
+                return Ok(TcType::Con(TcCon::List(Box::new(TcType::Con(TcCon::Any)))));
+            }
+        };
         *subst = s.compose(subst.clone());
         elem_type = subst.apply(&elem_type);
     }

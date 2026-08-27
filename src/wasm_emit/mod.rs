@@ -48,6 +48,8 @@ pub mod call_defi;
 pub mod call_bitwise;
 pub mod call_string;
 mod call_string_list;
+pub mod try_catch;
+use try_catch::TryFrame;
 pub mod call_outlayer;
 pub mod call_predicate;
 pub mod call_dict;
@@ -287,6 +289,7 @@ pub struct WasmEmitter {
     pub(crate) current_param_count: usize,
     /// Nesting depth inside tc() — 0 = directly in loop, 1 = inside tc_if's if, etc.
     pub(crate) tc_depth: u32,
+    pub(crate) try_stack: Vec<TryFrame>, // active try bodies (guarded fallible ops)
     pub(crate) while_id: Cell<usize>,
     pub(crate) funcs: Vec<FuncDef>,
     pub(crate) memory_pages: u32,
@@ -341,7 +344,7 @@ pub struct WasmEmitter {
 impl WasmEmitter {
     pub fn new() -> Self {
         Self {
-            locals: HashMap::new(), next_local: 0, free_locals: Vec::new(), local_type_map: Vec::new(), current_func: None, current_param_count: 0, tc_depth: 0,
+            locals: HashMap::new(), next_local: 0, free_locals: Vec::new(), local_type_map: Vec::new(), current_func: None, current_param_count: 0, tc_depth: 0, try_stack: Vec::new(),
             while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 64, exports: Vec::new(),
             data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(),
             gas_local: None, needs_frame: false, heap_ptr: 0, lambda_counter: 0, str_cat_depth: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), http_post_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false, u128h: None, borsh_schemas: HashMap::new(), storage_get_count: 0, http_post_call_count: 0, env_get_count: 0,

@@ -7,6 +7,7 @@ impl WasmEmitter {
         a: &[LispVal],
     ) -> Result<Vec<Instruction<'static>>, String> {
         match op {
+            "try" => self.emit_try_from(a),
             "lambda" | "fn" => {
                 if a.len() < 2 {
                     return Err("lambda: need params and body".into());
