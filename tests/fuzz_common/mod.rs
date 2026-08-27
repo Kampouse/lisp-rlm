@@ -1223,9 +1223,66 @@ impl SpecVm {
                 self.pc += 1;
             }
             // U64 field ops: spec VM doesn't fuzz these, return error
-            Op::U64MulHi | Op::U64And | Op::U64Or | Op::U64Xor
-            | Op::U64Shr | Op::U64Shl | Op::U64Not => {
-                return StepOutcome::Error("u64 op not supported in spec VM".into());
+            Op::U64MulHi => {
+                let b = self.pop();
+                let a = self.pop();
+                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
+                let bv = match &b { LispVal::U64(n) => *n, _ => 0u64 };
+                let prod = (av as u128) * (bv as u128);
+                self.stack.push(LispVal::U64((prod >> 64) as u64));
+                self.pc += 1;
+            }
+            Op::U64And => {
+                let b = self.pop();
+                let a = self.pop();
+                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
+                let bv = match &b { LispVal::U64(n) => *n, _ => 0u64 };
+                self.stack.push(LispVal::U64(av & bv));
+                self.pc += 1;
+            }
+            Op::U64Or => {
+                let b = self.pop();
+                let a = self.pop();
+                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
+                let bv = match &b { LispVal::U64(n) => *n, _ => 0u64 };
+                self.stack.push(LispVal::U64(av | bv));
+                self.pc += 1;
+            }
+            Op::U64Xor => {
+                let b = self.pop();
+                let a = self.pop();
+                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
+                let bv = match &b { LispVal::U64(n) => *n, _ => 0u64 };
+                self.stack.push(LispVal::U64(av ^ bv));
+                self.pc += 1;
+            }
+            Op::U64Shr => {
+                let sh = self.pop();
+                let a = self.pop();
+                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
+                let sv = match &sh { LispVal::Num(n) => *n, _ => 0 };
+                if sv < 0 || sv >= 64 {
+                    return StepOutcome::Error("u64 shift amount out of range".into());
+                }
+                self.stack.push(LispVal::U64(av >> sv));
+                self.pc += 1;
+            }
+            Op::U64Shl => {
+                let sh = self.pop();
+                let a = self.pop();
+                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
+                let sv = match &sh { LispVal::Num(n) => *n, _ => 0 };
+                if sv < 0 || sv >= 64 {
+                    return StepOutcome::Error("u64 shift amount out of range".into());
+                }
+                self.stack.push(LispVal::U64(av << sv));
+                self.pc += 1;
+            }
+            Op::U64Not => {
+                let a = self.pop();
+                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
+                self.stack.push(LispVal::U64(!av));
+                self.pc += 1;
             }
             Op::VecSlice => {
                 let end_val = self.pop();
@@ -1258,9 +1315,9 @@ impl SpecVm {
             // RecurIncAccum loop) can OOM the process before the step budget
             // expires. Periodically estimate the stack's total value size; if it
             // exceeds the cap, declare the program pathological.
-            if step % 16 == 0 {
+            {
                 let total: usize = self.stack.iter().map(lisp_val_size).sum();
-                if total > 1_000_000 {
+                if total > 100_000 {
                     self.ok = false;
                     return SpecResult::ResourceLimit;
                 }
@@ -1298,6 +1355,9 @@ fn lisp_val_size(v: &LispVal) -> usize {
                     .iter()
                     .map(|(k, val)| k.len() + go(val, depth - 1))
                     .sum::<usize>()
+            }
+            LispVal::Tagged { fields, .. } => {
+                1 + fields.iter().map(|f| go(f, depth - 1)).sum::<usize>()
             }
             _ => 1,
         }
@@ -1543,6 +1603,13 @@ pub enum FuzzOp {
     TypedBinOpI64,
     TypedBinOpF64,
     TypedBinOpU64,
+    U64MulHiOp,
+    U64AndOp,
+    U64OrOp,
+    U64XorOp,
+    U64ShrOp,
+    U64ShlOp,
+    U64NotOp,
     DictGet,
     DictSet,
     DictMutSet,
@@ -1609,6 +1676,13 @@ pub const FUZZ_OPS: &[FuzzOp] = &[
     FuzzOp::TypedBinOpI64,
     FuzzOp::TypedBinOpF64,
     FuzzOp::TypedBinOpU64,
+    FuzzOp::U64MulHiOp,
+    FuzzOp::U64AndOp,
+    FuzzOp::U64OrOp,
+    FuzzOp::U64XorOp,
+    FuzzOp::U64ShrOp,
+    FuzzOp::U64ShlOp,
+    FuzzOp::U64NotOp,
     FuzzOp::DictGet,
     FuzzOp::DictSet,
     FuzzOp::DictMutSet,
@@ -1835,6 +1909,13 @@ pub fn fuzz_op_to_op(rng: &mut Rng, fop: FuzzOp, max_pc: usize, num_slots: usize
             let op = BINOPS[rng.next_usize(BINOPS.len())].clone();
             Op::TypedBinOp(op, Ty::U64)
         }
+        FuzzOp::U64MulHiOp => Op::U64MulHi,
+        FuzzOp::U64AndOp => Op::U64And,
+        FuzzOp::U64OrOp => Op::U64Or,
+        FuzzOp::U64XorOp => Op::U64Xor,
+        FuzzOp::U64ShrOp => Op::U64Shr,
+        FuzzOp::U64ShlOp => Op::U64Shl,
+        FuzzOp::U64NotOp => Op::U64Not,
         FuzzOp::TypedBinOpF64 => {
             const BINOPS: &[BinOp] = &[
                 BinOp::Add,

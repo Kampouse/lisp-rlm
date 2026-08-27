@@ -573,7 +573,6 @@ fn test_differential_fuzz_short_programs() {
                 for _ in 0..num_slots {
                     init_slots.push(rng.next_lisp_val());
                 }
-
                 if let Some(desc) = differential_test_one(code, init_slots, 1000) {
                     mismatches += 1;
 
@@ -604,6 +603,7 @@ fn test_differential_fuzz_medium_programs() {
             let total = 8_000;
 
             for i in 0..total {
+                eprintln!("MED {}", i);
                 let num_slots = rng.next_usize(4) + 1; // 1-4 slots (at least 1 for loops)
                 let code_len = rng.next_usize(15) + 5; // 5-19 instructions
                 let code = generate_random_program(&mut rng, num_slots, code_len);

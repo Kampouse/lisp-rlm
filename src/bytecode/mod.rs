@@ -4016,15 +4016,73 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
             | Op::GetField(_)
             | Op::MapOp(_)
             | Op::FilterOp(_)
-            | Op::ReduceOp(_)
-            | Op::U64MulHi
-            | Op::U64And
-            | Op::U64Or
-            | Op::U64Xor
-            | Op::U64Shr
-            | Op::U64Shl
-            | Op::U64Not
-            | Op::TracePush(_)
+            | Op::ReduceOp(_) => {
+                return Err(
+                    "loop VM: CallCaptured/CallSelf/DictMutSet/GetDefaultSlot/ReturnSlot not supported in loop body".into(),
+                );
+            }
+            Op::U64MulHi => {
+                let b = stack.pop().unwrap_or(LispVal::Nil);
+                let a = stack.pop().unwrap_or(LispVal::Nil);
+                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
+                let bv = match &b { LispVal::U64(n) => *n, _ => 0u64 };
+                let prod = (av as u128) * (bv as u128);
+                stack.push(LispVal::U64((prod >> 64) as u64));
+                pc += 1;
+            }
+            Op::U64And => {
+                let b = stack.pop().unwrap_or(LispVal::Nil);
+                let a = stack.pop().unwrap_or(LispVal::Nil);
+                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
+                let bv = match &b { LispVal::U64(n) => *n, _ => 0u64 };
+                stack.push(LispVal::U64(av & bv));
+                pc += 1;
+            }
+            Op::U64Or => {
+                let b = stack.pop().unwrap_or(LispVal::Nil);
+                let a = stack.pop().unwrap_or(LispVal::Nil);
+                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
+                let bv = match &b { LispVal::U64(n) => *n, _ => 0u64 };
+                stack.push(LispVal::U64(av | bv));
+                pc += 1;
+            }
+            Op::U64Xor => {
+                let b = stack.pop().unwrap_or(LispVal::Nil);
+                let a = stack.pop().unwrap_or(LispVal::Nil);
+                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
+                let bv = match &b { LispVal::U64(n) => *n, _ => 0u64 };
+                stack.push(LispVal::U64(av ^ bv));
+                pc += 1;
+            }
+            Op::U64Shr => {
+                let sh = stack.pop().unwrap_or(LispVal::Nil);
+                let a = stack.pop().unwrap_or(LispVal::Nil);
+                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
+                let sv = match &sh { LispVal::Num(n) => *n, _ => 0 };
+                if sv < 0 || sv >= 64 {
+                    return Err("u64 shift amount out of range".into());
+                }
+                stack.push(LispVal::U64(av >> sv));
+                pc += 1;
+            }
+            Op::U64Shl => {
+                let sh = stack.pop().unwrap_or(LispVal::Nil);
+                let a = stack.pop().unwrap_or(LispVal::Nil);
+                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
+                let sv = match &sh { LispVal::Num(n) => *n, _ => 0 };
+                if sv < 0 || sv >= 64 {
+                    return Err("u64 shift amount out of range".into());
+                }
+                stack.push(LispVal::U64(av << sv));
+                pc += 1;
+            }
+            Op::U64Not => {
+                let a = stack.pop().unwrap_or(LispVal::Nil);
+                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
+                stack.push(LispVal::U64(!av));
+                pc += 1;
+            }
+            Op::TracePush(_)
             | Op::TracePop => {
                 return Err(
                     "loop VM: CallCaptured/CallSelf/DictMutSet/GetDefaultSlot/ReturnSlot not supported in loop body".into(),
@@ -8567,6 +8625,67 @@ fn run_compiled_lambda_inner(
                 } else {
                     return Ok(retval);
                 }
+            }
+            Op::U64MulHi => {
+                let b = stack.pop().unwrap_or(LispVal::Nil);
+                let a = stack.pop().unwrap_or(LispVal::Nil);
+                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
+                let bv = match &b { LispVal::U64(n) => *n, _ => 0u64 };
+                let prod = (av as u128) * (bv as u128);
+                stack.push(LispVal::U64((prod >> 64) as u64));
+                pc += 1;
+            }
+            Op::U64And => {
+                let b = stack.pop().unwrap_or(LispVal::Nil);
+                let a = stack.pop().unwrap_or(LispVal::Nil);
+                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
+                let bv = match &b { LispVal::U64(n) => *n, _ => 0u64 };
+                stack.push(LispVal::U64(av & bv));
+                pc += 1;
+            }
+            Op::U64Or => {
+                let b = stack.pop().unwrap_or(LispVal::Nil);
+                let a = stack.pop().unwrap_or(LispVal::Nil);
+                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
+                let bv = match &b { LispVal::U64(n) => *n, _ => 0u64 };
+                stack.push(LispVal::U64(av | bv));
+                pc += 1;
+            }
+            Op::U64Xor => {
+                let b = stack.pop().unwrap_or(LispVal::Nil);
+                let a = stack.pop().unwrap_or(LispVal::Nil);
+                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
+                let bv = match &b { LispVal::U64(n) => *n, _ => 0u64 };
+                stack.push(LispVal::U64(av ^ bv));
+                pc += 1;
+            }
+            Op::U64Shr => {
+                let sh = stack.pop().unwrap_or(LispVal::Nil);
+                let a = stack.pop().unwrap_or(LispVal::Nil);
+                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
+                let sv = match &sh { LispVal::Num(n) => *n, _ => 0 };
+                if sv < 0 || sv >= 64 {
+                    return Err("u64 shift amount out of range".into());
+                }
+                stack.push(LispVal::U64(av >> sv));
+                pc += 1;
+            }
+            Op::U64Shl => {
+                let sh = stack.pop().unwrap_or(LispVal::Nil);
+                let a = stack.pop().unwrap_or(LispVal::Nil);
+                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
+                let sv = match &sh { LispVal::Num(n) => *n, _ => 0 };
+                if sv < 0 || sv >= 64 {
+                    return Err("u64 shift amount out of range".into());
+                }
+                stack.push(LispVal::U64(av << sv));
+                pc += 1;
+            }
+            Op::U64Not => {
+                let a = stack.pop().unwrap_or(LispVal::Nil);
+                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
+                stack.push(LispVal::U64(!av));
+                pc += 1;
             }
             // Unsupported ops for lambda body — shouldn't appear but handle gracefully
             _ => return Err("compiled lambda: unsupported op".into()),
