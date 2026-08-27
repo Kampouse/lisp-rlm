@@ -847,7 +847,7 @@ impl TcEnv {
         // near/block_timestamp : () → int
         // near/deposit-gte : int → bool (literal only)
         env.insert_mono("near/deposit-gte".into(), TcType::Arrow(vec![int_ty.clone()], Box::new(bool_ty.clone())));
-        env.insert_mono("near/block_timestamp".into(), TcType::Arrow(vec![], Box::new(int_ty.clone())));
+        env.insert_mono("near/block_timestamp".into(), TcType::Arrow(vec![], Box::new(str_ty.clone())));
         // near/block_height : () → int
         env.insert_mono(
             "near/block_height".into(),
@@ -1149,7 +1149,7 @@ impl TcEnv {
         env.insert_mono("near/signer_to_buf".into(), TcType::Arrow(vec![], Box::new(int_ty.clone())));
         env.insert_mono("near/write_amount".into(), TcType::Arrow(vec![int_ty.clone()], Box::new(nil_ty.clone())));
         env.insert_mono("near/block_index".into(), TcType::Arrow(vec![], Box::new(int_ty.clone())));
-        env.insert_mono("near/block_timestamp".into(), TcType::Arrow(vec![], Box::new(int_ty.clone())));
+        env.insert_mono("near/block_timestamp".into(), TcType::Arrow(vec![], Box::new(str_ty.clone())));
         env.insert_mono("near/ed25519_verify".into(), TcType::Arrow(vec![str_ty.clone(), str_ty.clone(), str_ty.clone()], Box::new(int_ty.clone())));
         env.insert_mono("hex-encode".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())));
 

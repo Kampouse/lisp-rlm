@@ -144,7 +144,10 @@ fn eval_wasm(expr_src: &str) -> Result<i64, String> {
     linker.define(&store, "env", "predecessor_account_id", noop_i32_i64).unwrap();
     linker.define(&store, "env", "current_account_id", noop_i32_i64).unwrap();
     linker.define(&store, "env", "signer_account_id", noop_i32_i64).unwrap();
-    linker.define(&store, "env", "block_timestamp", noop_i64).unwrap();
+    // () -> i64 like the real NEAR host; ns scale (Option A: contract
+    // stringifies — a value ~2^60.55 that CAN'T be a tagged Num).
+    let block_ts = Func::wrap(&mut store, || -> i64 { 1_787_788_000_000_000_000 });
+    linker.define(&store, "env", "block_timestamp", block_ts).unwrap();
     linker.define(&store, "env", "block_height", noop_i64).unwrap();
     linker.define(&store, "env", "storage_read", noop_i32_i32_to_i32).unwrap();
     linker.define(&store, "env", "storage_write", storage_write).unwrap();
@@ -335,4 +338,44 @@ fn shl_shift_masking_survives() {
         "(define (id x) x) (define (main) (shl (id 123) (id 64)))",
     ).expect("shl by 64 masks to 0");
     assert_eq!(v, 123);
+}
+
+// ═══ near/block_timestamp — Option A: ns decimal string ═══
+// NEAR host ns (~2^60.4) exceeds the 61-bit payload: tagging wrapped
+// silently. Ruling 2026-08-26: return DECIMAL STRING like u128 amounts.
+
+/// The exact ns value must round-trip as a decimal string — no wrap.
+#[test]
+fn timestamp_ns_string_exact() {
+    let v = eval_wasm("(near/block_timestamp)").expect("timestamp must print");
+    assert_eq!(v, 1_787_788_000_000_000_000, "ns value must round-trip exactly");
+}
+
+/// It IS a string (19 digits), not a num.
+#[test]
+fn timestamp_is_string_not_num() {
+    let v = eval_wasm(
+        "(define (main) (str-len (near/block_timestamp)))",
+    ).expect("str-len on timestamp");
+    assert_eq!(v, 19, "1.78e18 ns = 19 decimal digits");
+}
+
+/// Blessed comparison idiom: u128/gt on the string form.
+#[test]
+fn timestamp_u128_comparison_works() {
+    let v = eval_wasm(
+        "(define (main) (u128/gt (near/block_timestamp) \"1700000000000000000\"))",
+    ).expect("u128/gt on timestamp");
+    assert_eq!(v, 1, "2026 ns > 2024 ns");
+}
+
+/// Riding fix: emit_itoa untag was ShrU (zero-fill) — negative numbers
+/// itoa'd to garbage. Now ShrS.
+#[test]
+fn itoa_negative_survives() {
+    let v = eval_wasm(
+        "(define (id x) x) (define (main) (to-string (id -5)))",
+    ).expect("to-string of negative");
+    // stdout "-5" parses back to -5
+    assert_eq!(v, -5, "negative num must stringify exactly");
 }

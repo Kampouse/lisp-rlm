@@ -500,7 +500,17 @@ fn translate_expr(expr: &pt::Expression, ctx: &Ctx) -> Result<LispVal, String> {
                     },
                     "block" => match f.as_str() {
                         "timestamp" => {
-                            return Ok(lisp_list(vec![LispVal::Sym("near/block_timestamp".into())]))
+                            // Solidity block.timestamp is SECONDS; lisp
+                            // near/block_timestamp is a ns decimal string.
+                            // Preserve solidity semantics at translation.
+                            return Ok(lisp_list(vec![
+                                LispVal::Sym("u128/to-i64".into()),
+                                lisp_list(vec![
+                                    LispVal::Sym("u128/div".into()),
+                                    lisp_list(vec![LispVal::Sym("near/block_timestamp".into())]),
+                                    LispVal::Str("1000000000".into()),
+                                ]),
+                            ]))
                         }
                         "number" => {
                             return Ok(lisp_list(vec![LispVal::Sym("near/block_height".into())]))

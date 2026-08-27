@@ -584,6 +584,17 @@ impl WasmEmitter {
     /// Input: TAGGED number on stack. Returns TAGGED string.
     /// Handles positive, negative, zero.
     pub(crate) fn emit_itoa(&mut self) -> Vec<Instruction<'static>> {
+        self.emit_itoa_impl(true)
+    }
+
+    /// Raw variant: input is an UNtagged i64 on the stack (e.g. host ns
+    /// timestamps ≈ 2^60.4 that the 61-bit payload can't represent).
+    /// Returns a tagged decimal string — Option A representation ruling.
+    pub(crate) fn emit_itoa_raw(&mut self) -> Vec<Instruction<'static>> {
+        self.emit_itoa_impl(false)
+    }
+
+    fn emit_itoa_impl(&mut self, tagged_input: bool) -> Vec<Instruction<'static>> {
         let n = self.local_idx("__itoa_n");
         let neg = self.local_idx("__itoa_neg");
         let tmp = self.local_idx("__itoa_tmp");
@@ -600,13 +611,20 @@ impl WasmEmitter {
         let buf_base = self.next_data_offset.max(3200);
         self.next_data_offset = (buf_base + 32 + 7) & !7;
 
-        vec![
-            // Pop tagged number, untag
+        let mut v: Vec<Instruction<'static>> = vec![
+            // Pop value into n
             Instruction::LocalSet(n),
-            Instruction::LocalGet(n),
-            Instruction::I64Const(TAG_BITS),
-            Instruction::I64ShrU,
-            Instruction::LocalSet(n),
+        ];
+        if tagged_input {
+            // untag (payload = n >> TAG_BITS)
+            v.extend([
+                Instruction::LocalGet(n),
+                Instruction::I64Const(TAG_BITS),
+                Instruction::I64ShrS,
+                Instruction::LocalSet(n),
+            ]);
+        }
+        v.extend([
             // Handle negative
             Instruction::LocalGet(n),
             Instruction::I64Const(0),
@@ -728,6 +746,7 @@ impl WasmEmitter {
             Instruction::I64Const(TAG_STR),
             Instruction::I64Or,
             Instruction::End, // if n==0
-        ]
+        ]);
+        v
     }
 }

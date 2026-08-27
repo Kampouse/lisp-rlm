@@ -16,8 +16,11 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/block_timestamp" => {
+                // Option A ruling (2026-08-26): NEAR ns timestamps (~2^60.4)
+                // can't fit the 61-bit tagged payload — return DECIMAL STRING
+                // (u128-string representation). Compare with u128/gt etc.
                 let mut v = vec![Self::host_call(9)];
-                v.extend(self.emit_tag_num());
+                v.extend(self.emit_itoa_raw());
                 Ok(v)
             }
             "near/epoch_height" => {

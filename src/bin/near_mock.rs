@@ -387,10 +387,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         FuncType::new(&engine, vec![], vec![ValType::I64]),
         |_, _, r| {
             r[0] = Val::I64(
+                // NEAR host returns NANoseconds — mock must match the real
+                // scale (was millis: silent 1e6x unit divergence).
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
-                    .as_millis() as i64,
+                    .as_nanos() as i64,
             );
             Ok(())
         },

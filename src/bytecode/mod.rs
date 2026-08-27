@@ -4709,7 +4709,8 @@ fn eval_near_builtin(
             Some(Ok(ctx_get(state, "block_index", LispVal::Num(42_000_000))))
         }
         "near/block_timestamp" | "block-timestamp" | "block_timestamp" => {
-            Some(Ok(ctx_get(state, "block_timestamp", LispVal::Num(1_714_000_000_000_000_000))))
+            // Option A: ns timestamps are decimal strings (2^60.4 > 61-bit payload)
+            Some(Ok(ctx_get(state, "block_timestamp", LispVal::Str(String::from("1714000000000000000")))))
         }
         "near/epoch_height" => {
             Some(Ok(ctx_get(state, "epoch_height", LispVal::Num(100))))

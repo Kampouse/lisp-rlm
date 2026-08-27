@@ -460,7 +460,7 @@ fn control_flow_cond_host_calls() {
     let src = r#"(memory 2)
 (define (test)
   (let ((ts (near/block_timestamp)))
-    (if (> ts 1000000)
+    (if (u128/gt ts "1000000000")
         (near/store "status" "new")
         (near/store "status" "old"))))
 (export "test" test true)"#;
