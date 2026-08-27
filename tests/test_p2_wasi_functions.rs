@@ -327,20 +327,18 @@ fn bug_deploy_contract_oob() {
     compile_near_untyped(src).unwrap();
 }
 
-/// [BUG] near/account_balance_high: not recognized in untyped mode.
+/// near/account_balance_high: implemented (read_u64_high(12)) — stale pin
+/// flipped 2026-08-27; it used to assert "unknown function" compiled-error.
 #[test]
-fn bug_account_balance_high_unknown() {
+fn near_account_balance_high() {
     let src = r#"(memory 1)
 (define (test) (near/account_balance_high))
 (export "test" test true)"#;
     let result = compile_near_untyped(src);
     assert!(
-        result.is_err(),
-        "Expected compile error for unknown near/account_balance_high"
-    );
-    assert!(
-        result.unwrap_err().contains("unknown function"),
-        "Expected 'unknown function' error"
+        result.is_ok(),
+        "near/account_balance_high should compile: {:?}",
+        result.err()
     );
 }
 

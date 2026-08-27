@@ -484,8 +484,10 @@ fn test_mod_zero_divisor() {
         result
     );
     assert!(
-        result.contains("mod by zero"),
-        "expected 'mod by zero', got: {}",
+        // t10 unification 2026-08-27: canonical message is "modulo by zero"
+        // (was "mod by zero" — same error, two messages across paths)
+        result.contains("modulo by zero"),
+        "expected 'modulo by zero', got: {}",
         result
     );
 }

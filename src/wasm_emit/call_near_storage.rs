@@ -8,6 +8,180 @@ impl WasmEmitter {
         a: &[LispVal],
     ) -> Result<Vec<Instruction<'static>>, String> {
 match op {
+            // ═══════════════════════════════════════════════════════════════
+            //  STRING-SAFE STORAGE FAMILY — near/storage_*
+            //  Bytes-in-bytes-out over the raw NEAR host fns: strings are
+            //  stored as their UTF-8 bytes (len from the register), so values
+            //  survive fresh-memory transactions. The tagged-word API
+            //  (near/store / near/load) keeps its 8-byte format for
+            //  Num/Bool/Nil — do NOT mix families on the same key.
+            //  Returns mirror the interpreter exactly: set→Num(0),
+            //  get→Str ("" on miss), has→Num(1|0), remove→Num(0).
+            // ═══════════════════════════════════════════════════════════════
+            "near/storage_set" | "near/storage_write" => {
+                if a.len() != 2 {
+                    return Err("near/storage_set: need exactly 2 args (key, value)".into());
+                }
+                self.need_host(17);
+                let key = self.expr(&a[0])?;
+                let val = self.expr(&a[1])?;
+                let k = self.local_idx("__sst_k");
+                let val_l = self.local_idx("__sst_v");
+                let mut v = Vec::new();
+                v.extend(key);
+                v.push(Instruction::LocalSet(k));
+                v.extend(val);
+                v.push(Instruction::LocalSet(val_l));
+                // Runtime tag guard: both operands must be Str. A Num value
+                // would untag to garbage ptr/len and silently write binary
+                // junk — the erc20 hazard class. Trap instead (interp
+                // hard-errors with the same rule).
+                Self::emit_assert_tag_str(&mut v, k);
+                Self::emit_assert_tag_str(&mut v, val_l);
+                // storage_write(key_len, key_ptr, val_len, val_ptr, register=0)
+                v.push(Instruction::LocalGet(k));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalGet(k));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalGet(val_l));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalGet(val_l));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(17));
+                v.push(Instruction::Drop); // evicted-length return is not the Lisp result
+                v.push(Instruction::I64Const(0));
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
+            "near/storage_get" | "near/storage_read" => {
+                if a.len() != 1 {
+                    return Err("near/storage_get: need exactly 1 arg (key)".into());
+                }
+                self.need_host(18);
+                self.need_host(1);
+                self.need_host(0);
+                let key = self.expr(&a[0])?;
+                let k = self.local_idx("__sg_k");
+                let len_l = self.local_idx("__sg_len");
+                let dst_l = self.local_idx("__sg_dst");
+                let tmp_l = self.local_idx("__sg_tmp");
+                let new_l = self.local_idx("__sg_new");
+                let ma8 = MemArg { offset: 0, align: 3, memory_index: 0 };
+                let mem_limit = (self.memory_pages as i64) * 65536;
+                let mut v = Vec::new();
+                v.extend(key);
+                v.push(Instruction::LocalSet(k));
+                Self::emit_assert_tag_str(&mut v, k);
+                // storage_read(key_len, key_ptr, register=0) → success flag
+                v.push(Instruction::LocalGet(k));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalGet(k));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(18));
+                // if flag == 0 → miss → Str("") ; else copy register → heap, tag Str
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.push(Instruction::I64Const(TEMP_MEM)); // ptr, len=0 — no bytes read
+                v.extend(self.emit_tag_str());
+                v.push(Instruction::Else);
+                // len = register_len(0)
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(1));
+                v.push(Instruction::LocalSet(len_l));
+                // bump-allocate len bytes (8-aligned) from RUNTIME_HEAP_PTR (addr 56)
+                v.push(Instruction::I64Const(56));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(ma8));
+                v.push(Instruction::LocalSet(tmp_l));
+                v.push(Instruction::LocalGet(tmp_l));
+                v.push(Instruction::LocalGet(len_l));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Const(7));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Const(-8));
+                v.push(Instruction::I64And);
+                v.push(Instruction::LocalSet(new_l));
+                v.push(Instruction::LocalGet(new_l));
+                v.push(Instruction::I64Const(mem_limit));
+                v.push(Instruction::I64LtU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::I64Const(56));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(new_l));
+                v.push(Instruction::I64Store(ma8));
+                v.push(Instruction::Else);
+                v.push(Instruction::Unreachable); // out of memory — hard error
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(tmp_l));
+                v.push(Instruction::LocalSet(dst_l));
+                // read_register(0, dst) — copies the value bytes (ptr is u64 in the host ABI)
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalGet(dst_l));
+                v.push(Self::host_call(0));
+                // packed = dst | len<<32, then tag as Str
+                v.push(Instruction::LocalGet(len_l));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalGet(dst_l));
+                v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
+                v.push(Instruction::End);
+                Ok(v)
+            }
+            "near/storage_has" | "near/storage_has_key" => {
+                if a.len() != 1 {
+                    return Err("near/storage_has: need exactly 1 arg (key)".into());
+                }
+                let key = self.expr(&a[0])?;
+                let k = self.local_idx("__ssh_k");
+                let mut v = Vec::new();
+                v.extend(key);
+                v.push(Instruction::LocalSet(k));
+                Self::emit_assert_tag_str(&mut v, k);
+                v.push(Instruction::LocalGet(k));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalGet(k));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Self::host_call(20));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64And);
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
+            "near/storage_remove" => {
+                if a.len() != 1 {
+                    return Err("near/storage_remove: need exactly 1 arg (key)".into());
+                }
+                let key = self.expr(&a[0])?;
+                let k = self.local_idx("__ssr_k");
+                let mut v = Vec::new();
+                v.extend(key);
+                v.push(Instruction::LocalSet(k));
+                Self::emit_assert_tag_str(&mut v, k);
+                v.push(Instruction::LocalGet(k));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalGet(k));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(19));
+                v.push(Instruction::Drop);
+                v.push(Instruction::I64Const(0));
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
+
             "near/store" => {
                 let key = self.expr(&a[0])?;
                 let val = self.expr(&a[1])?;

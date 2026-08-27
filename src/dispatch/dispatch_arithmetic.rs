@@ -16,22 +16,44 @@ pub fn handle(
             if any_float(args) {
                 let b = as_float(args.get(1).ok_or("/ needs 2 args")?)?;
                 if b == 0.0 {
-                    return Err("div by zero".into());
+                    return Err("division by zero".into());
                 }
                 Ok(Some(LispVal::Float(as_float(&args[0])? / b)))
             } else {
                 let b = as_num(args.get(1).ok_or("/ needs 2 args")?)?;
                 if b == 0 {
-                    return Err("div by zero".into());
+                    return Err("division by zero".into());
                 }
                 Ok(Some(LispVal::Num(as_num(&args[0])? / b)))
             }
         }
-        "mod" => Ok(Some(do_arith(
-            args,
-            |a, b| i64::rem_euclid(a, b),
-            |a, b| a % b,
-        )?)),
+        "mod" => {
+            // Zero divisor must hard-error, not panic: i64::rem_euclid(_, 0)
+            // aborts the process. Guard every divisor in the fold.
+            if args.len() < 2 {
+                if args.len() == 1 {
+                    return Ok(Some(args[0].clone()));
+                }
+                return Err("mod needs 1+ args".into());
+            }
+            if any_float(args) {
+                Ok(Some(do_arith(
+                    args,
+                    |a, b| i64::rem_euclid(a, b),
+                    |a, b| a % b,
+                )?))
+            } else {
+                let mut acc = as_num(&args[0])?;
+                for arg in &args[1..] {
+                    let b = as_num(arg)?;
+                    if b == 0 {
+                        return Err("modulo by zero".into());
+                    }
+                    acc = i64::rem_euclid(acc, b);
+                }
+                Ok(Some(LispVal::Num(acc)))
+            }
+        }
         "=" | "==" => {
             if any_float(args) {
                 Ok(Some(LispVal::Bool(

@@ -3645,12 +3645,18 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
                             BinOp::Mul => LispVal::Num(
                                 i64::checked_mul(av, bv).and_then(|r| check_num_range(r, "mul").ok()).ok_or("integer overflow in mul")?,
                             ),
-                            BinOp::Div => LispVal::Num(
-                                i64::checked_div(av, bv).and_then(|r| check_num_range(r, "div").ok()).ok_or("integer overflow in div")?,
-                            ),
-                            BinOp::Mod => LispVal::Num(
-                                i64::checked_rem(av, bv).ok_or("integer overflow in mod")?,
-                            ),
+                            BinOp::Div => {
+                                if bv == 0 { return Err("division by zero".into()); }
+                                LispVal::Num(
+                                    i64::checked_div(av, bv).and_then(|r| check_num_range(r, "div").ok()).ok_or("integer overflow in div")?,
+                                )
+                            }
+                            BinOp::Mod => {
+                                if bv == 0 { return Err("modulo by zero".into()); }
+                                LispVal::Num(
+                                    i64::checked_rem(av, bv).ok_or("integer overflow in mod")?,
+                                )
+                            },
                             BinOp::Lt => LispVal::Bool(av < bv),
                             BinOp::Le => LispVal::Bool(av <= bv),
                             BinOp::Gt => LispVal::Bool(av > bv),
@@ -3695,8 +3701,14 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
                             BinOp::Add => LispVal::U64(av.wrapping_add(bv)),
                             BinOp::Sub => LispVal::U64(av.wrapping_sub(bv)),
                             BinOp::Mul => LispVal::U64(av.wrapping_mul(bv)),
-                            BinOp::Div => LispVal::U64(av.wrapping_div(bv)),
-                            BinOp::Mod => LispVal::U64(av.wrapping_rem(bv)),
+                            BinOp::Div => {
+                                if bv == 0 { return Err("division by zero".into()); }
+                                LispVal::U64(av.wrapping_div(bv))
+                            }
+                            BinOp::Mod => {
+                                if bv == 0 { return Err("modulo by zero".into()); }
+                                LispVal::U64(av.wrapping_rem(bv))
+                            },
                             BinOp::Lt => LispVal::Bool(av < bv),
                             BinOp::Le => LispVal::Bool(av <= bv),
                             BinOp::Gt => LispVal::Bool(av > bv),
@@ -3775,6 +3787,7 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
                 }
             }
             Op::SlotDivImm(s, imm) => {
+                if *imm == 0 { return Err("division by zero".into()); }
                 let v = num_val_ref(safe_slot(&slots, *s));
                 match i64::checked_div(v, *imm).and_then(|r| check_num_range(r, "div").ok()) {
                     Some(result) => {
@@ -4611,19 +4624,71 @@ fn eval_near_builtin(
         // ═══════════════════════════════════════════════════════════════
         //  STORAGE — near/ namespace (matches WASM return types: Num, not Bool)
         // ═══════════════════════════════════════════════════════════════
-        "near/store" | "near/storage_write" | "near/storage_set" | "near/storage_has" => {
+        "near/store" => {
             let key = key_of(args, 0);
             if key.is_empty() { return Some(Err("near/store: need key".into())); }
             let val = args.get(1).cloned().unwrap_or(LispVal::Nil);
             state.near_storage.insert(key, val);
             Some(Ok(LispVal::Num(0)))
         }
-        "near/load" | "near/storage_read" | "near/storage_get" => {
+        "near/load" => {
             let key = key_of(args, 0);
             Some(Ok(state.near_storage.get(&key).cloned().unwrap_or(LispVal::Num(0))))
         }
-        "near/remove" | "near/storage_remove" | "near/storage_has" => {
+        "near/remove" => {
             let key = key_of(args, 0);
+            state.near_storage.remove(&key);
+            Some(Ok(LispVal::Num(0)))
+        }
+        // ── STRING-SAFE STORAGE FAMILY (near/storage_*) ──
+        // Bytes-in-bytes-out over raw host fns — strings stored as UTF-8
+        // bytes so values survive fresh-memory transactions (the erc20
+        // hazard). Keys AND values must be Str (hard error otherwise —
+        // mirrors the wasm TAG_STR trap). Do NOT mix with the tagged-word
+        // near/store|load family on the same key. Returns: set→Num(0),
+        // get→Str ("" on miss), has→Num(1|0), remove→Num(0).
+        "near/storage_set" | "near/storage_write" => {
+            let key = match args.get(0) {
+                Some(LispVal::Str(s)) if !s.is_empty() => s.clone(),
+                Some(LispVal::Str(_)) => return Some(Err("near/storage_set: need key".into())),
+                Some(other) => return Some(Err(format!("near/storage_set: expected string key, got {}", other))),
+                None => return Some(Err("near/storage_set: missing key".into())),
+            };
+            match args.get(1) {
+                Some(LispVal::Str(s)) => {
+                    state.near_storage.insert(key, LispVal::Str(s.clone()));
+                    Some(Ok(LispVal::Num(0)))
+                }
+                Some(other) => Some(Err(format!("near/storage_set: expected string value, got {}", other))),
+                None => Some(Err("near/storage_set: missing value".into())),
+            }
+        }
+        "near/storage_get" | "near/storage_read" => {
+            let key = match args.get(0) {
+                Some(LispVal::Str(s)) => s.clone(),
+                Some(other) => return Some(Err(format!("near/storage_get: expected string key, got {}", other))),
+                None => return Some(Err("near/storage_get: missing key".into())),
+            };
+            match state.near_storage.get(&key) {
+                Some(LispVal::Str(s)) => Some(Ok(LispVal::Str(s.clone()))),
+                Some(_) => Some(Err(format!("near/storage_get: key '{}' holds a non-string value (written by near/store?) — mixing storage families on one key is unsupported", key))),
+                None => Some(Ok(LispVal::Str(String::new()))),
+            }
+        }
+        "near/storage_has" | "near/storage_has_key" => {
+            let key = match args.get(0) {
+                Some(LispVal::Str(s)) => s.clone(),
+                Some(other) => return Some(Err(format!("near/storage_has: expected string key, got {}", other))),
+                None => return Some(Err("near/storage_has: missing key".into())),
+            };
+            Some(Ok(LispVal::Num(if state.near_storage.contains_key(&key) { 1 } else { 0 })))
+        }
+        "near/storage_remove" => {
+            let key = match args.get(0) {
+                Some(LispVal::Str(s)) => s.clone(),
+                Some(other) => return Some(Err(format!("near/storage_remove: expected string key, got {}", other))),
+                None => return Some(Err("near/storage_remove: missing key".into())),
+            };
             state.near_storage.remove(&key);
             Some(Ok(LispVal::Num(0)))
         }
@@ -5934,7 +5999,7 @@ pub fn eval_builtin(
         "mod" => {
             let b = num_val(args.get(1).cloned().unwrap_or(LispVal::Nil));
             if b == 0 {
-                return Err("mod by zero".into());
+                return Err("modulo by zero".into());
             } else {
                 let a = num_val(args.get(0).cloned().unwrap_or(LispVal::Nil));
                 Ok(LispVal::Num(a.rem_euclid(b)))
@@ -7581,12 +7646,18 @@ fn run_compiled_lambda_inner(
                             BinOp::Mul => LispVal::Num(
                                 i64::checked_mul(av, bv).and_then(|r| check_num_range(r, "mul").ok()).ok_or("integer overflow in mul")?,
                             ),
-                            BinOp::Div => LispVal::Num(
-                                i64::checked_div(av, bv).and_then(|r| check_num_range(r, "div").ok()).ok_or("integer overflow in div")?,
-                            ),
-                            BinOp::Mod => LispVal::Num(
-                                i64::checked_rem(av, bv).ok_or("integer overflow in mod")?,
-                            ),
+                            BinOp::Div => {
+                                if bv == 0 { return Err("division by zero".into()); }
+                                LispVal::Num(
+                                    i64::checked_div(av, bv).and_then(|r| check_num_range(r, "div").ok()).ok_or("integer overflow in div")?,
+                                )
+                            }
+                            BinOp::Mod => {
+                                if bv == 0 { return Err("modulo by zero".into()); }
+                                LispVal::Num(
+                                    i64::checked_rem(av, bv).ok_or("integer overflow in mod")?,
+                                )
+                            },
                             BinOp::Lt => LispVal::Bool(av < bv),
                             BinOp::Le => LispVal::Bool(av <= bv),
                             BinOp::Gt => LispVal::Bool(av > bv),
@@ -7631,8 +7702,14 @@ fn run_compiled_lambda_inner(
                             BinOp::Add => LispVal::U64(av.wrapping_add(bv)),
                             BinOp::Sub => LispVal::U64(av.wrapping_sub(bv)),
                             BinOp::Mul => LispVal::U64(av.wrapping_mul(bv)),
-                            BinOp::Div => LispVal::U64(av.wrapping_div(bv)),
-                            BinOp::Mod => LispVal::U64(av.wrapping_rem(bv)),
+                            BinOp::Div => {
+                                if bv == 0 { return Err("division by zero".into()); }
+                                LispVal::U64(av.wrapping_div(bv))
+                            }
+                            BinOp::Mod => {
+                                if bv == 0 { return Err("modulo by zero".into()); }
+                                LispVal::U64(av.wrapping_rem(bv))
+                            },
                             BinOp::Lt => LispVal::Bool(av < bv),
                             BinOp::Le => LispVal::Bool(av <= bv),
                             BinOp::Gt => LispVal::Bool(av > bv),
@@ -7674,6 +7751,7 @@ fn run_compiled_lambda_inner(
                 }
             }
             Op::SlotDivImm(s, imm) => {
+                if *imm == 0 { return Err("division by zero".into()); }
                 let v = num_val_ref(safe_slot(&slots, *s));
                 match i64::checked_div(v, *imm).and_then(|r| check_num_range(r, "div").ok()) {
                     Some(result) => {

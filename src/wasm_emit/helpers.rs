@@ -18,6 +18,23 @@ impl WasmEmitter {
         vec![Instruction::I64Const(TAG_BITS), Instruction::I64ShrS]
     }
 
+    /// Emit an inline runtime tag assertion into `v`: the given local must
+    /// hold a TAG_STR value, else trap (unreachable). Guards the string-safe
+    /// storage family (near/storage_*) against non-string operands that would
+    /// otherwise untag to a garbage ptr|len and silently write binary junk —
+    /// the erc20 string-storage hazard class. Mirrors the interpreter's
+    /// hard-error ("near/storage_set: expected string value, got ...").
+    pub(crate) fn emit_assert_tag_str(v: &mut Vec<Instruction<'static>>, local: u32) {
+        v.push(Instruction::LocalGet(local));
+        v.push(Instruction::I64Const(7)); // low TAG_BITS=3 bits = tag mask
+        v.push(Instruction::I64And);
+        v.push(Instruction::I64Const(TAG_STR));
+        v.push(Instruction::I64Ne);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Unreachable);
+        v.push(Instruction::End);
+    }
+
     pub(crate) fn emit_i32_to_i64(&self) -> Vec<Instruction<'static>> {
         vec![Instruction::I64ExtendI32U]
     }

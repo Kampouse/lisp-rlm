@@ -1639,14 +1639,14 @@ pub fn check_storage_schema(exprs: &[LispVal]) {
             LispVal::List(list) if !list.is_empty() => {
                 if let LispVal::Sym(op) = &list[0] {
                     // ── String-keyed storage ──
-                    if op == "near/storage_write" && list.len() >= 3 {
+                    if (op == "near/storage_write" || op == "near/storage_set") && list.len() >= 3 {
                         if let Some(key) = extract_str_key(&list[1]) {
                             schema
                                 .entry(key.clone())
                                 .or_insert_with(|| "written".into());
                             string_keys.insert(key, ());
                         }
-                    } else if op == "near/storage_read" && list.len() >= 2 {
+                    } else if (op == "near/storage_read" || op == "near/storage_get") && list.len() >= 2 {
                         if let Some(key) = extract_str_key(&list[1]) {
                             if !schema.contains_key(&key) {
                                 eprintln!(

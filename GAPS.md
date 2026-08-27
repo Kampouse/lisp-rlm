@@ -252,9 +252,15 @@ Tagged value scheme (3-bit tag in bottom bits):
 - **Compiled arithmetic coerces non-numbers to 0** — ✅ FIXED (round-3
   fix 4, 2026-08-26): bare arith/comparisons now hard-error on non-numeric
   operands; see round-3 section below. String numerics via u128/*.
-- **Division-by-zero message inconsistency** (t10): literal zero divisor
-  const-folds to "integer overflow in div"; computed zero gives
-  "division by zero". Same error, two messages.
+- **Division-by-zero message inconsistency** (t10): ✅ RESOLVED 2026-08-27 —
+  one canonical pair everywhere: "division by zero" / "modulo by zero".
+  Fixed sites: TypedBinOp I64 Div/Mod + SlotDivImm + builtin "mod" +
+  tree-walker `/` ("div by zero" → "division by zero"). Bonus kills found in
+  the sweep: (a) TypedBinOp U64 Div/Mod used `wrapping_div/rem` — a zero
+  divisor PANICKED the process (exit 101); now clean Err (wasm traps natively
+  via I64DivU, so interp-Err ≡ wasm-trap holds). (b) tree-walker `mod` used
+  `i64::rem_euclid` via do_arith — zero divisor panicked; now guarded (every
+  divisor in the fold). Stale pin updated: core_language test_mod_zero_divisor.
 - **Inline builtin table shadows the dispatch modules with weaker
   semantics** (t13): str-length counts BYTES ("héllo" → 6; dispatch impl
   counts chars), str-split does NOT filter empty parts ("" → (""); dispatch
@@ -477,3 +483,79 @@ Remaining divergence classes (documented, unfixed):
   traces. Not a semantic divergence — an accounting mismatch between step
   units and budget units. Consider charging Rust 1 budget unit per op
   uniformly.
+
+## 2026-08-27 — GAP SWEEP: t10 + near/storage_* family + promise_result
+
+**Scope (JP picked menu item 3):** t10 zero-guards, near/storage_* p2 family
+(kv asymmetry), string-storage builtin decision. Plus 2 bonus kills.
+
+### t10 — ✅ RESOLVED (details in the t10 entry above)
+Canonical pair "division by zero" / "modulo by zero" across all 6+ sites;
+U64 wrapping-div panic and tree-walker rem_euclid panic killed.
+
+### near/storage_* — ✅ LANDED: the string-safe storage family
+The old state: interp ALIASED near/storage_set/get/has/remove to
+near/store/load/remove wholesale (so `(near/storage_has k)` actually WROTE —
+first-match arm bug), and the wasm emitter knew none of the names ("unknown
+function"). New contract, both VMs:
+- **near/storage_set / storage_write** (key:Str, val:Str) → Num(0). Non-Str
+  key or value → hard error (interp message; wasm inline TAG_STR assert →
+  Unreachable trap — same event class).
+- **near/storage_get / storage_read** (key:Str) → Str; **"" on miss**.
+- **near/storage_has / storage_has_key** (key:Str) → Num(1|0).
+- **near/storage_remove** (key:Str) → Num(0).
+- wasm storage_get bumps the heap (str-cat alloc idiom) and read_register
+  copies the value bytes → returned Str is heap-stable; miss returns
+  (TEMP_MEM, len 0) tagged Str.
+- wasm returns bytes-in-bytes-out over raw host fns 17/18/19/20 — this is
+  the HONEST mapping (host storage IS bytes). The typed-mode path shares
+  call_near_storage via the try_domain chain; lambda.rs scan_host already
+  declared the family.
+- BUILTIN_NAMES (helpers.rs) + typing/checker.rs storage-schema tracker
+  (aliases) extended. gap_c1 in test_type_system_gaps remains red (typed
+  surface), unchanged from HEAD.
+
+**⚠️ NEW DOCUMENTED SEAM — do not mix families per key:**
+near/store writes the 8-byte TAGGED WORD (ptr|len for Str = heap garbage
+across fresh-memory transactions — the erc20 hazard); near/storage_set
+writes UTF-8 bytes. Both share the same on-chain key namespace. Reading a
+near/store-written key via near/storage_get: interp hard-errors loudly
+("non-string value ... mixing storage families"), wasm would decode the 8
+binary bytes as a string. NEVER mix on one key. Corpus convention: strings
+→ near/storage_*, Num/Bool/Nil → near/store|load.
+
+### String-storage DECISION — resolved by the above
+String values are legal ONLY through the near/storage_* family. erc20.lisp
+(stores u128 decimal STRINGS via near/store — reloads garbage on-chain)
+must MIGRATE to near/storage_set/get (NEXT; battery must stay 2/2).
+Never-deploy note stands until migrated.
+
+### near/promise_result — ✅ FIXED (2 bugs, found via near_cc_full_flow)
+1. host_call(34) returns the promise STATUS; the emitter left it on the
+   stack → invalid wasm ("values remaining on stack", func 6). Fixed: Drop.
+2. The packed (len<<32|TEMP_MEM) result was pushed UNTAGGED → low 3 bits of
+   an 8-aligned TEMP_MEM read as TAG_NUM → mistagged as a number. Interp
+   returns LispVal::Str — now emit_tag_str() so both VMs agree.
+   ⚠️ TEMP_MEM scratch exposure: like every register-to-buffer read, the
+   returned Str points at shared scratch — copy (str-cat it) before any
+   later host call if you need it to survive. Pre-existing convention.
+
+### Stale pins flipped
+- p2 bug_account_balance_high_unknown → near_account_balance_high
+  (positive test; the builtin exists since the u64/schnorr work).
+- core_language test_mod_zero_divisor → "modulo by zero" (t10 unification).
+
+### Test results (my tree)
+p2 87/87 · storage_family 5/5 (incl. fresh-memory persistence killer +
+on-chain bytes shape) · money 16/16 · core 160/160 · regression 51/51 ·
+safe 3/3 · differential fuzz 46/46 · u64 37/37.
+Pre-existing reds on HEAD (verified via stash): lib wasi/outlayer 10
+(infra/network), borsh_gaps 2, pure_types 1, schnorr 3, type_system_gaps 6,
+u128_memory_bounds 19 + u128_safe_arithmetic 11 + wallet_diff 5
+(near-compile PATH-not-found infra), wasm_fuzz 4 closure-family reds
+(overnight marathon 56/4+2i). No regressions from the sweep.
+
+### NEXT
+1. Migrate erc20.lisp to near/storage_* (closes the never-deploy hazard).
+2. Deploy target: safe.lisp (lisp5) or migrated erc20 to kampy.testnet.
+3. The 4 closure fuzz reds (T4-adjacent).

@@ -217,6 +217,11 @@ impl WasmEmitter {
                 v.extend(idx);
                 v.push(Instruction::I64Const(0)); // register_id
                 v.push(Self::host_call(34));
+                // promise_result returns the promise STATUS (u64: 0=NotReady,
+                // 1=Successful, 2=Failed) and writes the payload to the
+                // register. The status is not part of the Lisp-level result —
+                // drop it or the stack leaks a value (invalid wasm).
+                v.push(Instruction::Drop);
                 // Read register to TEMP_MEM, get length, return packed
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::I64Const(TEMP_MEM));
@@ -227,6 +232,9 @@ impl WasmEmitter {
                 v.push(Instruction::I64Shl);
                 v.push(Instruction::I64Const(TEMP_MEM as i64));
                 v.push(Instruction::I64Or);
+                // Interp returns LispVal::Str(result) — tag the packed
+                // ptr|len as TAG_STR so both VMs agree on the value type.
+                v.extend(self.emit_tag_str());
                 Ok(v)
             }
             "near/transfer" => {

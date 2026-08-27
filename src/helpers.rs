@@ -240,6 +240,8 @@ pub const BUILTIN_NAMES: &[&str] = &[
     // NEAR mock builtins
     "near-reset", "near-promises", "near-register", "near-register-source", "near-contracts",
     "near/store", "near/load", "near/remove", "near/has", "near/has_key", "near/kv", "near/storage_usage",
+    "near/storage_set", "near/storage_get", "near/storage_has", "near/storage_remove",
+    "near/storage_write", "near/storage_read", "near/storage_has_key",
     "near/account_id", "near/signer_id", "near/predecessor_id", "near/block_height", "near/block_timestamp",
     "near/attached_deposit", "near/prepaid_gas", "near/random_seed", "near/input",
     "near/return", "near/return_str", "near/return_json", "near/json_return_str",
