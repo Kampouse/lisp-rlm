@@ -13,7 +13,7 @@ near-vm-run oracle → sandbox (verify.sh)
 | arithmetic int     | e01, e12                  | ✅ / ⚠️(e12 uses try) |
 | arithmetic edges   | e18                       | ⚠️ try — interp-only form |
 | strings            | e02, e17                  | ✅ |
-| string builtins deep | e24 (NEW)               | ✅ |
+| string builtins deep | e24, e32 (NEW: upcase/downcase/trim/starts/ends/replace) | ✅ |
 | bool logic         | e03, e25 (NEW)            | ✅ |
 | truthiness         | e04                       | ✅ |
 | let / shadowing    | e05, e26 (NEW, deep)      | ✅ |
@@ -30,6 +30,21 @@ near-vm-run oracle → sandbox (verify.sh)
 | control flow       | e19                       | ✅ |
 | neq                | e23                       | ✅ |
 | `try` form         | e11/e12/e16/e18           | ❌ wasm checker rejects — form unimplemented in wasm_emit |
+
+### A.1 String builtin surface (3-way: checker ∩ interp ∩ wasm_emit)
+Round 2 (2026-08-27): str-upcase/downcase/trim/starts-with/ends-with/replace
+now wasm-emitted (e32). Divergences:
+- ASCII-bounded: wasm case/trim is ASCII-only; interp is Rust Unicode —
+  non-ASCII input diverges (probes stay ASCII).
+- str-replace: literal from/to only in wasm; empty pattern = wasm compile
+  error (interp inserts between chars).
+- println renders raw control bytes differently across surfaces (display
+  divergence only — assert via str-length for control-byte strings).
+- Parser unescapes now UNIFIED: n t r 0 bs quote xHH single-pass in
+  parser.rs, matching wasm_emit/helpers.rs (e32 finding: backslash-r was
+  2 chars interp / 1 wasm). v f are literal (no escape) on BOTH surfaces.
+Still interp-only (need emission): str-split*, str-chunk, str-join,
+string->list, list->string.
 | quasiquote         | —                         | ❌ no probe |
 | set! mutation      | —                         | ❌ no dedicated probe |
 | return in loops    | —                         | ❌ (torture t10 partial) |

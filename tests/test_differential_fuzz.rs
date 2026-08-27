@@ -147,6 +147,7 @@ impl SpecVm {
 
     /// Pop a value from the stack, or return Error if empty.
     /// Use for binary ops (Add/Sub/etc.) where the Rust VM panics on underflow.
+    #[allow(dead_code)]
     fn pop_or_err(&mut self, op_name: &str) -> Result<LispVal, StepOutcome> {
         match self.stack.pop() {
             Some(v) => Ok(v),
@@ -191,6 +192,7 @@ impl SpecVm {
 
     /// Convert any LispVal to f64 — matches Rust's num_arith promotion.
     /// Float → f, Num → n as f64, other → 0.0.
+    #[allow(dead_code)]
     fn spec_to_f64(v: &LispVal) -> f64 {
         match v {
             LispVal::Float(f) => *f,
@@ -200,6 +202,7 @@ impl SpecVm {
     }
 
     /// Pop + coerce to i64 (matches Rust: silent coercion to 0).
+    #[allow(dead_code)]
     fn pop_num(&mut self) -> i64 {
         let v = self.pop();
         Self::spec_num_val(&v)
@@ -339,6 +342,7 @@ impl SpecVm {
     }
 
     /// Spec num_cmp — mirrors the Rust num_cmp function.
+    #[allow(dead_code)]
     fn spec_num_cmp(
         a: &LispVal,
         b: &LispVal,
@@ -1312,6 +1316,7 @@ impl Rng {
     /// Slot index for fuzzing: returns [0, num_slots) when num_slots > 0,
     /// or 0 when num_slots == 0 (SpecVm handles OOB gracefully, Rust panics —
     /// but the differential_test_one catches panics so this is fine for edge testing).
+    #[allow(dead_code)]
     fn next_slot(&mut self, num_slots: usize) -> usize {
         if num_slots == 0 {
             0
@@ -1320,6 +1325,7 @@ impl Rng {
         }
     }
 
+    #[allow(dead_code)]
     fn next_i64(&mut self) -> i64 {
         self.next_u64() as i64
     }
@@ -2537,7 +2543,10 @@ fn test_differential_fuzz_short_programs() {
 
                 if let Some(desc) = differential_test_one(code, init_slots, 1000) {
                     mismatches += 1;
+
                     eprintln!("MISMATCH #{}: {}", i, desc);
+                    eprintln!("  code={:?}", code);
+                    eprintln!("  slots={:?}", init_slots);
                 }
             }
 

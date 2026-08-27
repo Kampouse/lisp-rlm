@@ -431,6 +431,39 @@ impl TcEnv {
                 Box::new(TcType::Con(TcCon::Int)),
             ),
         );
+        // Scalar string transforms (round 2, 2026-08-27): previously
+        // interp-only, now wasm-emitted (call_string.rs str_case/str_trim/
+        // str_starts_with/str_ends_with/str_replace). wasm is ASCII-bounded;
+        // interp is Rust Unicode — divergence documented in COVERAGE.md §D.
+        for name in &["str-upcase", "string-upcase", "str-downcase", "string-downcase", "str-trim"] {
+            env.insert_mono(
+                name.to_string(),
+                TcType::Arrow(
+                    vec![TcType::Con(TcCon::Str)],
+                    Box::new(TcType::Con(TcCon::Str)),
+                ),
+            );
+        }
+        for name in &["str-starts-with", "string-prefix?", "str-ends-with", "string-suffix?"] {
+            env.insert_mono(
+                name.to_string(),
+                TcType::Arrow(
+                    vec![TcType::Con(TcCon::Str), TcType::Con(TcCon::Str)],
+                    Box::new(TcType::Con(TcCon::Bool)),
+                ),
+            );
+        }
+        env.insert_mono(
+            "str-replace".to_string(),
+            TcType::Arrow(
+                vec![
+                    TcType::Con(TcCon::Str),
+                    TcType::Con(TcCon::Str),
+                    TcType::Con(TcCon::Str),
+                ],
+                Box::new(TcType::Con(TcCon::Str)),
+            ),
+        );
         // String builtins registered in the emitter/dispatch but previously
         // missing here (corpus e24 finding, 2026-08-27) — without these the
         // checker rejected valid wasm compilable programs.
