@@ -2,8 +2,12 @@
 //! Warms up wee_alloc by calling a cheap init method first.
 //!
 //! Usage:
-//!   cargo run --bin near-mock -- <wasm> <method> [args-json]
+//!   cargo run --bin near-mock -- <wasm> <method> [args-json] [--once] [--view] [--prepaid <TGAS>]
 //!   cargo run --bin near-mock -- <wasm> exports|imports|reset
+//!
+//! Gas model (v2, 2026-08-27): wasmtime fuel, 1 fuel = 1 gas unit.
+//! Host-call costs are indicative legacy NEAR fee-schedule values.
+//! --view enforces ProhibitedInView on storage writes (see VMLogic).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -20,6 +24,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
+    // Flags (parsed early — view/prepaid shape host fn construction)
+    let run_view = args.iter().any(|a| a == "--view");
+    let prepaid_tgas: f64 = args
+        .iter()
+        .position(|a| a == "--prepaid")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(200.0); // NEAR default prepaid gas per function call
+    let prepaid_g: u64 = (prepaid_tgas * 1e12) as u64;
+
     let wasm_path = &args[1];
     let method = &args[2];
     let args_json = args.get(3).cloned().unwrap_or_else(|| "{}".to_string());
@@ -33,7 +47,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let wasm_bytes = std::fs::read(wasm_path)?;
     println!("📦 {} ({} bytes)", wasm_path, wasm_bytes.len());
 
-    let engine = Engine::default();
+    let mut fuel_cfg = Config::new();
+    fuel_cfg.consume_fuel(true);
+    let engine = Engine::new(&fuel_cfg)?;
     let module = Module::from_binary(&engine, &wasm_bytes)?;
 
     if method == "exports" {
@@ -65,9 +81,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         storage: loaded_storage,
         registers: HashMap::new(),
         return_data: None,
+        view: run_view,
     }));
 
     let mut store = Store::new(&engine, ());
+    store.set_fuel(prepaid_g)?;
     // 1024 pages = 64MB initial memory. Enough that wee_alloc never needs memory_grow.
     let memory = Memory::new(&mut store, MemoryType::new(1024, None))?;
 
@@ -79,6 +97,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         FuncType::new(&engine, vec![ValType::I64; 2], vec![]),
         move |mut caller, args, _| {
             let (len, ptr) = (args[0].unwrap_i64() as usize, args[1].unwrap_i64() as usize);
+            // Indicative legacy fees: utf8 log base + per byte
+            let cost = 13_181_732u64 + 19_335_348u64 * len as u64;
+            caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 let data = mem.data(&caller);
                 if ptr + len <= data.len() {
@@ -97,6 +118,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         move |mut caller, args, _| {
             let (len, ptr) = (args[0].unwrap_i64() as usize, args[1].unwrap_i64() as usize);
             eprintln!("  → value_return(len={}, ptr={})", len, ptr);
+            // Indicative legacy fees: read_memory base + per byte
+            let cost = 4_141_250u64 + 3_574_166u64 * len as u64;
+            caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 let data = mem.data(&caller);
                 if ptr + len <= data.len() {
@@ -118,6 +142,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let (rid, ptr) = (args[0].unwrap_i64() as u64, args[1].unwrap_i64() as usize);
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 if let Some(data) = s3.lock().unwrap().registers.get(&rid).cloned() {
+                    // Indicative legacy fees: base + per byte
+                    let cost = 24_108_449u64 + 3_574_166u64 * data.len() as u64;
+                    caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
                     let md = mem.data_mut(&mut caller);
                     if ptr + data.len() <= md.len() {
                         md[ptr..ptr + data.len()].copy_from_slice(&data);
@@ -132,7 +159,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         );
                     }
                 } else {
-                    eprintln!("  ⚠ read_register({}): not found", rid);
+                    // near-core semantics: reading a missing register is a host
+                    // error (InvalidRegisterId) — the contract traps.
+                    eprintln!("  ⚠ read_register({}): not found → trap", rid);
+                    return Err(wasmtime::Error::msg(format!("InvalidRegisterId {{ register_id: {} }}", rid)));
                 }
             }
             Ok(())
@@ -143,15 +173,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let register_len_fn = Func::new(
         &mut store,
         FuncType::new(&engine, vec![ValType::I64], vec![ValType::I64]),
-        move |_, args, results| {
+        move |mut caller, args, results| {
             let rid = args[0].unwrap_i64() as u64;
+            // near-core: len of a missing register is u64::MAX sentinel
+            // (not an error). Returned as i64 == -1.
             let len = s4
                 .lock()
                 .unwrap()
                 .registers
                 .get(&rid)
                 .map(|d| d.len() as i64)
-                .unwrap_or(0);
+                .unwrap_or(-1);
+            // Indicative legacy fee
+            caller.set_fuel(caller.get_fuel()?.saturating_sub(21_165_243))?;
             eprintln!("  → register_len({}) = {}", rid, len);
             results[0] = Val::I64(len);
             Ok(())
@@ -163,15 +197,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input_fn = Func::new(
         &mut store,
         FuncType::new(&engine, vec![ValType::I64], vec![]),
-        move |_, args, _| {
+        move |mut caller, args, _| {
             let rid = args[0].unwrap_i64() as u64;
             eprintln!("  → input(reg={})", rid);
+            let bytes = input_src.as_bytes().to_vec();
+            // Indicative legacy fee: write_register base + per byte
+            let cost = 21_165_243u64 + 3_574_166u64 * bytes.len() as u64;
+            caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
             let mut st = s5.lock().unwrap();
             // Real NEAR semantics: input() ALWAYS writes the args into the
             // register, overwriting any prior value. The old contains_key
             // guard silently kept stale values (e.g. a predecessor_account_id
             // that had just used reg 0) — parsers then walked the wrong bytes.
-            st.registers.insert(rid, input_src.as_bytes().to_vec());
+            write_reg_checked(&mut st, rid, bytes).map_err(|e| wasmtime::Error::msg(e))?;
             Ok(())
         },
     );
@@ -188,6 +226,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 args[3].unwrap_i64() as usize,
                 args[4].unwrap_i64() as u64,
             );
+            if s6.lock().unwrap().view {
+                return Err(wasmtime::Error::msg("ProhibitedInView: storage_write"));
+            }
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 let md = mem.data(&caller);
                 if kp + kl <= md.len() && vp + vl <= md.len() {
@@ -198,10 +239,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         String::from_utf8_lossy(&key),
                         vl
                     );
-                    let old = s6.lock().unwrap().storage.insert(key, val);
+                    // Indicative legacy fees: base + key/value bytes
+                    let cost = 64_000_000u64
+                        + 90_563u64 * kl as u64
+                        + 3_548_576u64 * vl as u64;
+                    caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
+                    let mut st = s6.lock().unwrap();
+                    let old = st.storage.insert(key, val);
                     if rid != u64::MAX {
                         if let Some(old) = old {
-                            s6.lock().unwrap().registers.insert(rid, old);
+                            write_reg_checked(&mut st, rid, old)
+                                .map_err(|e| wasmtime::Error::msg(e))?;
                         }
                     }
                 }
@@ -239,8 +287,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let found = if let Some(key) = &key_from_mem {
                 let mut st = s7.lock().unwrap();
                 if let Some(val) = st.storage.get(key).cloned() {
-                    st.registers.insert(rid, val.clone());
                     eprintln!("  → storage_read found {}b", val.len());
+                    // Indicative legacy fees: base + key/value bytes
+                    let cost = 56_356_995u64
+                        + 81_569u64 * kl as u64
+                        + 3_574_166u64 * val.len() as u64;
+                    drop(st);
+                    caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
+                    let mut st = s7.lock().unwrap();
+                    write_reg_checked(&mut st, rid, val).map_err(|e| wasmtime::Error::msg(e))?;
                     true
                 } else {
                     eprintln!("  → storage_read not found");
@@ -265,13 +320,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 args[1].unwrap_i64() as usize,
                 args[2].unwrap_i64() as u64,
             );
+            if s8.lock().unwrap().view {
+                return Err(wasmtime::Error::msg("ProhibitedInView: storage_remove"));
+            }
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 let md = mem.data(&caller);
                 if kp + kl <= md.len() {
                     if let Some(val) = s8.lock().unwrap().storage.remove(&md[kp..kp + kl].to_vec())
                     {
+                        // Indicative legacy fees: base + key bytes
+                        let cost = 64_000_000u64 + 90_563u64 * kl as u64;
+                        caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
                         if rid != u64::MAX {
-                            s8.lock().unwrap().registers.insert(rid, val);
+                            let mut st = s8.lock().unwrap();
+                            write_reg_checked(&mut st, rid, val)
+                                .map_err(|e| wasmtime::Error::msg(e))?;
                         }
                         results[0] = Val::I64(1);
                         return Ok(());
@@ -292,13 +355,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 let md = mem.data(&caller);
                 if kp + kl <= md.len() {
-                    results[0] = Val::I64(
-                        if s9.lock().unwrap().storage.contains_key(&md[kp..kp + kl]) {
-                            1
-                        } else {
-                            0
-                        },
-                    );
+                    let has = s9.lock().unwrap().storage.contains_key(&md[kp..kp + kl]);
+                    // Indicative legacy fees: base + key bytes
+                    let cost = 56_356_995u64 + 81_569u64 * kl as u64;
+                    caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
+                    results[0] = Val::I64(if has { 1 } else { 0 });
                     return Ok(());
                 }
             }
@@ -432,6 +493,104 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Noop stubs with correct arities
+    // Real gas accounting: fuel consumed so far (used_gas)
+    let used_gas_fn = Func::new(
+        &mut store,
+        FuncType::new(&engine, vec![], vec![ValType::I64]),
+        move |mut caller, _, results| {
+            let remaining = caller.get_fuel().unwrap_or(prepaid_g);
+            results[0] = Val::I64(prepaid_g.saturating_sub(remaining) as i64);
+            Ok(())
+        },
+    );
+    let prepaid_gas_fn = Func::new(
+        &mut store,
+        FuncType::new(&engine, vec![], vec![ValType::I64]),
+        move |_, _, results| {
+            results[0] = Val::I64(prepaid_g as i64);
+            Ok(())
+        },
+    );
+
+    // sha256(len, ptr, rid) — real digest to register (was noop)
+    let sg1 = state.clone();
+    let sha256_fn = Func::new(
+        &mut store,
+        FuncType::new(&engine, vec![ValType::I64; 3], vec![]),
+        move |mut caller, args, _| {
+            use sha2::{Digest, Sha256};
+            let (len, ptr, rid) = (
+                args[0].unwrap_i64() as usize,
+                args[1].unwrap_i64() as usize,
+                args[2].unwrap_i64() as u64,
+            );
+            // Indicative legacy fees
+            let cost = 45_760_404u64 + 18_217u64 * len as u64;
+            caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
+            if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                let md = mem.data(&caller);
+                if ptr + len <= md.len() {
+                    let digest: Vec<u8> = Sha256::digest(&md[ptr..ptr + len]).to_vec();
+                    let mut st = sg1.lock().unwrap();
+                    write_reg_checked(&mut st, rid, digest).map_err(|e| wasmtime::Error::msg(e))?;
+                }
+            }
+            Ok(())
+        },
+    );
+    // keccak256(len, ptr, rid)
+    let sg2 = state.clone();
+    let keccak256_fn = Func::new(
+        &mut store,
+        FuncType::new(&engine, vec![ValType::I64; 3], vec![]),
+        move |mut caller, args, _| {
+            use sha3::Keccak256;
+            let (len, ptr, rid) = (
+                args[0].unwrap_i64() as usize,
+                args[1].unwrap_i64() as usize,
+                args[2].unwrap_i64() as u64,
+            );
+            // Indicative legacy fees
+            let cost = 45_760_404u64 + 18_217u64 * len as u64;
+            caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
+            if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                let md = mem.data(&caller);
+                if ptr + len <= md.len() {
+                    use sha3::digest::Digest;
+                    let digest: Vec<u8> = Keccak256::digest(&md[ptr..ptr + len]).to_vec();
+                    let mut st = sg2.lock().unwrap();
+                    write_reg_checked(&mut st, rid, digest).map_err(|e| wasmtime::Error::msg(e))?;
+                }
+            }
+            Ok(())
+        },
+    );
+    // write_register(len, ptr, rid) — real checked write (was noop)
+    let sg3 = state.clone();
+    let write_register_fn = Func::new(
+        &mut store,
+        FuncType::new(&engine, vec![ValType::I64; 3], vec![]),
+        move |mut caller, args, _| {
+            let (len, ptr, rid) = (
+                args[0].unwrap_i64() as usize,
+                args[1].unwrap_i64() as usize,
+                args[2].unwrap_i64() as u64,
+            );
+            // Indicative legacy fees
+            let cost = 21_165_243u64 + 3_574_166u64 * len as u64;
+            caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
+            if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                let md = mem.data(&caller);
+                if ptr + len <= md.len() {
+                    let data = md[ptr..ptr + len].to_vec();
+                    let mut st = sg3.lock().unwrap();
+                    write_reg_checked(&mut st, rid, data).map_err(|e| wasmtime::Error::msg(e))?;
+                }
+            }
+            Ok(())
+        },
+    );
+
     let noop1 = Func::new(
         &mut store,
         FuncType::new(&engine, vec![ValType::I64], vec![]),
@@ -568,10 +727,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     linker.define(&store, "env", "block_timestamp", block_ts_fn)?;
     linker.define(&store, "env", "account_balance", account_balance_fn)?;
     linker.define(&store, "env", "attached_deposit", attached_deposit_fn)?;
-    linker.define(&store, "env", "used_gas", noop0r.clone())?;
-    linker.define(&store, "env", "prepaid_gas", noop0r.clone())?;
+    linker.define(&store, "env", "used_gas", used_gas_fn)?;
+    linker.define(&store, "env", "prepaid_gas", prepaid_gas_fn)?;
     linker.define(&store, "env", "random_seed", noop1.clone())?;
-    linker.define(&store, "env", "sha256", noop1.clone())?;
+    linker.define(&store, "env", "sha256", sha256_fn)?;
     // schnorr_verify_bip340(pk_ptr: i32, sig_ptr: i32, msg_ptr: i32, msg_len: i32) -> i32
     let schnorr_fn = Func::new(
         &mut store,
@@ -603,7 +762,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     );
     linker.define(&store, "env", "schnorr_verify_bip340", schnorr_fn)?;
-    linker.define(&store, "env", "keccak256", noop1.clone())?;
+    linker.define(&store, "env", "keccak256", keccak256_fn)?;
     linker.define(&store, "env", "log", noop1.clone())?;
     linker.define(&store, "env", "validator_stake", noop_3i.clone())?;
     linker.define(&store, "env", "validator_total_stake", noop1.clone())?;
@@ -631,7 +790,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     linker.define(&store, "env", "storage_iter_prefix", noop_2i_1o.clone())?;
     linker.define(&store, "env", "storage_iter_range", noop_4i_1o.clone())?;
     linker.define(&store, "env", "storage_iter_next", noop_3i_1o.clone())?;
-    linker.define(&store, "env", "write_register", noop_3i.clone())?;
+    linker.define(&store, "env", "write_register", write_register_fn)?;
     linker.define(
         &store,
         "env",
@@ -731,6 +890,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    // Reset fuel for the measured run (warm-up, if any, burned fuel too)
+    store.set_fuel(prepaid_g)?;
     // Use a thread with timeout
     let result = func.call(&mut store, &[], &mut []);
 
@@ -773,7 +934,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        Err(e) => println!("❌ {}", e),
+        Err(e) => {
+            let msg = format!("{}", e);
+            if msg.contains("all fuel consumed") {
+                println!("❌ OutOfGas — exceeded {:.6} Tgas prepaid", prepaid_tgas);
+            } else {
+                println!("❌ {}", e);
+                // Surface the root host error (e.g. ProhibitedInView,
+                // InvalidRegisterId) — wasmtime's display leads with the
+                // backtrace and hides it.
+                for c in e.chain().skip(1) {
+                    println!("   ↳ caused by: {}", c);
+                }
+            }
+        }
+    }
+
+    // Gas report (1 fuel = 1 gas unit; host-call table is indicative-legacy)
+    if let Ok(remaining) = store.get_fuel() {
+        let burnt = prepaid_g.saturating_sub(remaining);
+        println!(
+            "⛽ gas: {:.6} Tgas burnt / {:.6} Tgas prepaid",
+            burnt as f64 / 1e12,
+            prepaid_tgas
+        );
     }
 
     // Persist storage
@@ -791,4 +975,26 @@ struct MockState {
     storage: HashMap<Vec<u8>, Vec<u8>>,
     registers: HashMap<u64, Vec<u8>>,
     return_data: Option<Vec<u8>>,
+    view: bool,
+}
+
+/// Register write with near-core limit semantics (logic/tests/registers.rs):
+/// max 100 registers, max 1MiB per register.
+fn write_reg_checked(st: &mut MockState, rid: u64, data: Vec<u8>) -> Result<(), String> {
+    const MAX_REGS: usize = 100;
+    const MAX_REG_SIZE: usize = 1 << 20;
+    if data.len() > MAX_REG_SIZE {
+        return Err(format!(
+            "MemoryAccessViolation: register {} value {}b exceeds max {}b",
+            rid, data.len(), MAX_REG_SIZE
+        ));
+    }
+    if rid != u64::MAX && !st.registers.contains_key(&rid) && st.registers.len() >= MAX_REGS {
+        return Err(format!(
+            "MemoryAccessViolation: register limit {} exceeded",
+            MAX_REGS
+        ));
+    }
+    st.registers.insert(rid, data);
+    Ok(())
 }

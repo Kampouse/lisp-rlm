@@ -13,3 +13,11 @@ opt-level = "z"
 lto = true
 panic = "abort"
 
+
+[workspace]
+
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+panic = "abort"
+lto = true

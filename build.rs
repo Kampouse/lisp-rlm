@@ -17,15 +17,18 @@ fn main() {
     println!("cargo::rerun-if-changed=schnorr-wasm/src");
     println!("cargo::rerun-if-changed=schnorr-wasm/Cargo.toml");
 
+    // schnorr-wasm is EXCLUDED from workspace members (0021a67: no_std +
+    // panic=abort needs its own profile root). Build it standalone from its
+    // own dir — `-p` from the root no longer resolves it.
+    let schnorr_dir = PathBuf::from(&manifest_dir).join("schnorr-wasm");
     let status = Command::new("cargo")
         .args([
             "build",
             "--profile=wasm-release",
             "--target=wasm32-unknown-unknown",
-            "-p=lisp-rlm-schnorr-wasm",
         ])
         .env("CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS", "-C target-cpu=mvp")
-        .current_dir(&manifest_dir)
+        .current_dir(&schnorr_dir)
         .status()
         .expect("failed to run cargo build for schnorr-wasm");
 
@@ -33,7 +36,7 @@ fn main() {
         panic!("schnorr-wasm build failed");
     }
 
-    let wasm_path = PathBuf::from(&manifest_dir)
+    let wasm_path = schnorr_dir
         .join("target/wasm32-unknown-unknown/wasm-release/lisp_rlm_schnorr_wasm.wasm");
 
     std::fs::copy(&wasm_path, &target).unwrap_or_else(|e| {
