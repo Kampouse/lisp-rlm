@@ -18,7 +18,9 @@ impl WasmEmitter {
                 if a.len() != 2 {
                     return Err("str-split: expected 2 args (s, delimiter)".into());
                 }
-                self.str_split_emit(a, false)
+                // bytecode interp = Rust split, empties KEPT (the filter in
+                // dispatch_strings.rs is a dead secondary surface)
+                self.str_split_emit(a, true)
             }
             "str-split-exact" => {
                 if a.len() != 2 {
@@ -437,7 +439,9 @@ impl WasmEmitter {
         // pass 1
         v.push(Instruction::I64Const(0));
         v.push(Instruction::LocalSet(i_i));
+        v.push(Instruction::I64Const(0));
         v.push(Instruction::LocalSet(start_i));
+        v.push(Instruction::I64Const(0));
         v.push(Instruction::LocalSet(m_i));
         v.extend(self.str_split_walk("ssl", dlen, d_base, !keep_empties, SplitAction::Count));
         // alloc + store count
@@ -456,7 +460,9 @@ impl WasmEmitter {
         // pass 2
         v.push(Instruction::I64Const(0));
         v.push(Instruction::LocalSet(i_i));
+        v.push(Instruction::I64Const(0));
         v.push(Instruction::LocalSet(start_i));
+        v.push(Instruction::I64Const(0));
         v.push(Instruction::LocalSet(w_i));
         v.extend(self.str_split_walk("ssl", dlen, d_base, !keep_empties, SplitAction::Fill));
         // result tag_array(lp)
@@ -506,24 +512,18 @@ impl WasmEmitter {
         v.push(Instruction::LocalGet(cs_i));
         v.push(Instruction::I64Eqz);
         v.push(Instruction::If(BlockType::Empty));
-        // then: m = min(n, len+1)
-        v.push(Instruction::LocalGet(n_i));
+        // then: m = min(n, len+1) — branch-free via temp local
         v.push(Instruction::LocalGet(len_i));
         v.push(Instruction::I64Const(1));
         v.push(Instruction::I64Add);
-        v.push(Instruction::LocalGet(n_i));
-        v.push(Instruction::LocalGet(len_i));
-        v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Add);
-        v.push(Instruction::I64GtU); // n > len+1 ?
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::LocalGet(len_i));
-        v.push(Instruction::I64Const(1));
-        v.push(Instruction::I64Add);
-        v.push(Instruction::Else);
-        v.push(Instruction::LocalGet(n_i));
-        v.push(Instruction::End);
         v.push(Instruction::LocalSet(m_i));
+        v.push(Instruction::LocalGet(n_i));
+        v.push(Instruction::LocalGet(m_i));
+        v.push(Instruction::I64LtU);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(n_i));
+        v.push(Instruction::LocalSet(m_i));
+        v.push(Instruction::End);
         v.push(Instruction::Else);
         // else: m = (len + cs - 1) / cs
         v.push(Instruction::LocalGet(len_i));
@@ -684,6 +684,7 @@ impl WasmEmitter {
         // pass 1: convert + sum lengths
         v.push(Instruction::I64Const(0));
         v.push(Instruction::LocalSet(i_i));
+        v.push(Instruction::I64Const(0));
         v.push(Instruction::LocalSet(tot_i));
         let ts_idx = self.ensure_to_string_func();
         v.push(Instruction::Block(BlockType::Empty));
@@ -748,6 +749,7 @@ impl WasmEmitter {
         // pass 2: copy elements + seps
         v.push(Instruction::I64Const(0));
         v.push(Instruction::LocalSet(i_i));
+        v.push(Instruction::I64Const(0));
         v.push(Instruction::LocalSet(o_i));
         v.push(Instruction::Block(BlockType::Empty));
         v.push(Instruction::Loop(BlockType::Empty));

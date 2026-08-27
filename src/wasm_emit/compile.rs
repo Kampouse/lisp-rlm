@@ -1021,9 +1021,21 @@ pub fn compile_near(source: &str) -> Result<Vec<u8>, String> {
     // If no explicit exports, auto-export the "run" function as "_run"
     // so tree-shaking keeps it and all functions it calls.
     if em.exports.is_empty() {
+        // Auto-export: prefer explicit run/main by NAME. The old "last
+        // non-__h_ func" heuristic grabbed helpers appended AFTER user code
+        // (e.g. __to_string ensured during main's body emission) — exporting
+        // the helper, tree-shaking main away, silently emitting an
+        // input-passthrough stub (found via str-join, round 3, 2026-08-27).
         if let Some(f) = em.funcs.iter().find(|f| f.name == "run") {
             em.add_export(&f.name.clone(), "_run", false);
-        } else if let Some(f) = em.funcs.iter().rev().find(|f| !f.name.starts_with("__h_")) {
+        } else if let Some(f) = em.funcs.iter().find(|f| f.name == "main") {
+            em.add_export(&f.name.clone(), "_run", false);
+        } else if let Some(f) = em
+            .funcs
+            .iter()
+            .rev()
+            .find(|f| !f.name.starts_with("__"))
+        {
             em.add_export(&f.name.clone(), "_run", false);
         }
     }
@@ -1049,9 +1061,13 @@ pub fn compile_near_untyped(source: &str) -> Result<Vec<u8>, String> {
    let resolved = resolve_modules(source, std::path::Path::new("."))?;
    let mut em = parse_and_compile_opts(&resolved, true, false)?;
    if em.exports.is_empty() {
+       // See compile_near: prefer run/main by name over "last func" —
+       // avoids exporting post-hoc helpers and tree-shaking main.
        if let Some(f) = em.funcs.iter().find(|f| f.name == "run") {
            em.add_export(&f.name.clone(), "_run", false);
-       } else if let Some(f) = em.funcs.iter().rev().find(|f| !f.name.starts_with("__h_")) {
+       } else if let Some(f) = em.funcs.iter().find(|f| f.name == "main") {
+           em.add_export(&f.name.clone(), "_run", false);
+       } else if let Some(f) = em.funcs.iter().rev().find(|f| !f.name.starts_with("__")) {
            em.add_export(&f.name.clone(), "_run", false);
        }
    }

@@ -2545,8 +2545,7 @@ fn test_differential_fuzz_short_programs() {
                     mismatches += 1;
 
                     eprintln!("MISMATCH #{}: {}", i, desc);
-                    eprintln!("  code={:?}", code);
-                    eprintln!("  slots={:?}", init_slots);
+                    
                 }
             }
 
@@ -4359,4 +4358,33 @@ fn test_specvm_fused_hof_placeholders() {
         "ReduceOp empty list should return init, got {:?}",
         spec5
     );
+}
+
+
+#[test]
+fn dump_mismatch_1278() {
+    let mut rng = Rng::new(12345);
+    for i in 0..1278 {
+        let num_slots = rng.next_usize(4) + 1;
+        let code_len = rng.next_usize(15) + 5;
+        let _ = generate_random_program(&mut rng, num_slots, code_len);
+        for _ in 0..num_slots {
+            let _ = rng.next_lisp_val();
+        }
+    }
+    let num_slots = rng.next_usize(4) + 1;
+    let code_len = rng.next_usize(15) + 5;
+    let code = generate_random_program(&mut rng, num_slots, code_len);
+    let mut init_slots = Vec::with_capacity(num_slots);
+    for _ in 0..num_slots {
+        init_slots.push(rng.next_lisp_val());
+    }
+    eprintln!("Program #1278: num_slots={}, code_len={}", num_slots, code_len);
+    eprintln!("  init_slots={:?}", init_slots);
+    for (pc, op) in code.iter().enumerate() {
+        eprintln!("  [{}] {:?}", pc, op);
+    }
+    let desc = differential_test_one(code, init_slots, 5000);
+    eprintln!("  mismatch={:?}", desc);
+    panic!("dumped");
 }
