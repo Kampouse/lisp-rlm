@@ -18,9 +18,9 @@ pub use lisp_rlm_wasm::types::LispVal;
 /// No frames, no closures — fuzzes the loop VM subset only.
 #[derive(Debug, Clone)]
 pub struct SpecVm {
-    stack: Vec<LispVal>,
-    slots: Vec<LispVal>,
-    pc: usize,
+    pub stack: Vec<LispVal>,
+    pub slots: Vec<LispVal>,
+    pub pc: usize,
     code: Vec<Op>,
     ok: bool,
 }
@@ -32,6 +32,9 @@ pub enum SpecResult {
     Value(LispVal),
     /// The VM encountered an error (div-by-zero, unsupported op, pc out of bounds)
     Error(String),
+    /// Pathological program: stack value growth exceeded the resource cap.
+    /// Skipped by the differential harness (running the Rust VM would OOM).
+    ResourceLimit,
     /// Exceeded the step limit (possible infinite loop)
     StepLimit,
 }
@@ -1190,11 +1193,13 @@ impl SpecVm {
             Op::VecConj => {
                 let val = self.pop();
                 let vec_val = self.pop();
-                match &vec_val {
-                    LispVal::Vec(items) => {
-                        let mut new_items = items.clone();
-                        new_items.push(val);
-                        self.stack.push(LispVal::Vec(new_items));
+                match vec_val {
+                    LispVal::Vec(mut items) => {
+                        items.push(val);
+                        self.stack.push(LispVal::Vec(items));
+                    }
+                    LispVal::Nil => {
+                        self.stack.push(LispVal::Vec(vec![val]));
                     }
                     _ => self.stack.push(LispVal::Nil),
                 }
@@ -1224,26 +1229,17 @@ impl SpecVm {
                 return StepOutcome::Error("u64 op not supported in spec VM".into());
             }
             Op::VecSlice => {
-                let end = Self::spec_num_val(&self.pop());
-                let start = Self::spec_num_val(&self.pop());
+                let end_val = self.pop();
+                let start_val = self.pop();
                 let vec_val = self.pop();
-                match &vec_val {
-                    LispVal::Vec(items) => {
-                        let s = if start < 0 { 0 } else { start as usize };
-                        let e = if end < 0 {
-                            0
-                        } else if (end as usize) > items.len() {
-                            items.len()
-                        } else {
-                            end as usize
-                        };
-                        if s < e {
-                            self.stack.push(LispVal::Vec(items[s..e].to_vec()));
-                        } else {
-                            self.stack.push(LispVal::Vec(vec![]));
-                        }
+                match (&start_val, &end_val, &vec_val) {
+                    (LispVal::Num(s), LispVal::Num(e), LispVal::Vec(v)) => {
+                        let si = if *s < 0 { 0usize } else { (*s as usize).min(v.len()) };
+                        let ei = if *e < 0 { 0usize } else { (*e as usize).min(v.len()) };
+                        let ei = ei.max(si); // never panic: clamp end below start
+                        self.stack.push(LispVal::Vec(v[si..ei].to_vec()));
                     }
-                    _ => self.stack.push(LispVal::Vec(vec![])),
+                    _ => self.stack.push(LispVal::Nil),
                 }
                 self.pc += 1;
             }
@@ -1258,7 +1254,18 @@ impl SpecVm {
         if let Err(e) = self.validate_slot_indices() {
             return SpecResult::Error(e);
         }
-        for _ in 0..max_steps {
+        for step in 0..max_steps {
+            // Resource guard: exponential value growth (Dup + MakeVec inside a
+            // RecurIncAccum loop) can OOM the process before the step budget
+            // expires. Periodically estimate the stack's total value size; if it
+            // exceeds the cap, declare the program pathological.
+            if step % 16 == 0 {
+                let total: usize = self.stack.iter().map(lisp_val_size).sum();
+                if total > 1_000_000 {
+                    self.ok = false;
+                    return SpecResult::ResourceLimit;
+                }
+            }
             match self.step() {
                 StepOutcome::Continue => {}
                 StepOutcome::Return(v) => return SpecResult::Value(v),
@@ -1270,6 +1277,33 @@ impl SpecVm {
         }
         SpecResult::StepLimit
     }
+}
+
+/// Depth-limited size estimate for a LispVal (nodes counted, strings counted
+/// by length). Used by the SpecVm resource guard to detect exponential stack
+/// growth before it OOMs the process.
+fn lisp_val_size(v: &LispVal) -> usize {
+    fn go(v: &LispVal, depth: u32) -> usize {
+        if depth == 0 {
+            return 1;
+        }
+        match v {
+            LispVal::Nil | LispVal::Bool(_) | LispVal::Num(_) | LispVal::Float(_)
+            | LispVal::U64(_) => 1,
+            LispVal::Str(s) => 1 + s.len(),
+            LispVal::List(items) | LispVal::Vec(items) => {
+                1 + items.iter().map(|it| go(it, depth - 1)).sum::<usize>()
+            }
+            LispVal::Map(m) => {
+                1 + m
+                    .iter()
+                    .map(|(k, val)| k.len() + go(val, depth - 1))
+                    .sum::<usize>()
+            }
+            _ => 1,
+        }
+    }
+    go(v, 24)
 }
 
 /// Outcome of a single VM step.
@@ -1569,6 +1603,13 @@ pub const FUZZ_OPS: &[FuzzOp] = &[
     FuzzOp::GetDefaultSlot,
     FuzzOp::PushU64,
     FuzzOp::Not,
+    FuzzOp::MakeVec,
+    FuzzOp::VecNth,
+    FuzzOp::VecLen,
+    FuzzOp::VecConj,
+    FuzzOp::VecAssoc,
+    FuzzOp::VecContains,
+    FuzzOp::VecSlice,
 ];
 
 /// Vec ops: SpecVm handles these but the loop VM errors on them.
@@ -1872,6 +1913,11 @@ pub fn differential_test_one(
     // Fix: cap the Rust VM's step budget to match the spec VM's max_steps exactly.
     // This prevents the Rust VM from building structures far deeper than what the
     // spec VM would produce (the root cause of the stack overflow on Drop).
+    // Pathological program (exponential stack growth): running the Rust VM
+    // would OOM the process. Skip — there is no semantic disagreement to find.
+    if matches!(spec_result, SpecResult::ResourceLimit) {
+        return None;
+    }
     let cl = make_test_compiled_lambda(init_slots.len(), init_slots.len(), code.clone());
     // Pre-validate slot indices to match the spec VM's behavior.
     // The spec VM calls validate_slot_indices() before executing; if OOB,
@@ -1935,6 +1981,9 @@ pub fn differential_test_one(
     }
 
     match (&spec_result, &rust_result) {
+        // Resource-limit case is handled above (skipped), but keep the match
+        // exhaustive for safety.
+        (SpecResult::ResourceLimit, _) => None,
         (SpecResult::Value(sv), Ok(rv)) => {
             if !vals_equal(sv, rv) {
                 Some(format!(

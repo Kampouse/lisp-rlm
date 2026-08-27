@@ -3912,6 +3912,83 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
                 stack.push(result);
                 pc += 1;
             }
+            Op::MakeVec(n) => {
+                let mut items = Vec::with_capacity(*n);
+                for _ in 0..*n {
+                    items.push(stack.pop().unwrap_or(LispVal::Nil));
+                }
+                items.reverse();
+                stack.push(LispVal::Vec(items));
+                pc += 1;
+            }
+            Op::VecNth => {
+                let idx = stack.pop().unwrap_or(LispVal::Nil);
+                let vec = stack.pop().unwrap_or(LispVal::Nil);
+                match (&idx, &vec) {
+                    (LispVal::Num(i), LispVal::Vec(v)) if *i >= 0 && (*i as usize) < v.len() => {
+                        stack.push(v[*i as usize].clone());
+                    }
+                    _ => stack.push(LispVal::Nil),
+                }
+                pc += 1;
+            }
+            Op::VecAssoc => {
+                let val = stack.pop().unwrap_or(LispVal::Nil);
+                let idx = stack.pop().unwrap_or(LispVal::Nil);
+                let vec = stack.pop().unwrap_or(LispVal::Nil);
+                match (&idx, &vec) {
+                    (LispVal::Num(i), LispVal::Vec(v)) if *i >= 0 && (*i as usize) < v.len() => {
+                        let mut new_v = v.clone();
+                        new_v[*i as usize] = val;
+                        stack.push(LispVal::Vec(new_v));
+                    }
+                    _ => stack.push(LispVal::Nil),
+                }
+                pc += 1;
+            }
+            Op::VecLen => {
+                match stack.pop() {
+                    Some(LispVal::Vec(v)) => stack.push(LispVal::Num(v.len() as i64)),
+                    _ => stack.push(LispVal::Num(0)),
+                }
+                pc += 1;
+            }
+            Op::VecConj => {
+                let val = stack.pop().unwrap_or(LispVal::Nil);
+                let vec = stack.pop().unwrap_or(LispVal::Nil);
+                match vec {
+                    LispVal::Vec(mut v) => {
+                        v.push(val);
+                        stack.push(LispVal::Vec(v));
+                    }
+                    LispVal::Nil => stack.push(LispVal::Vec(vec![val])),
+                    _ => stack.push(LispVal::Nil),
+                }
+                pc += 1;
+            }
+            Op::VecContains => {
+                let target = stack.pop().unwrap_or(LispVal::Nil);
+                let vec = stack.pop().unwrap_or(LispVal::Nil);
+                match &vec {
+                    LispVal::Vec(v) => stack.push(LispVal::Bool(v.contains(&target))),
+                    _ => stack.push(LispVal::Bool(false)),
+                }
+                pc += 1;
+            }
+            Op::VecSlice => {
+                let end = stack.pop().unwrap_or(LispVal::Nil);
+                let start = stack.pop().unwrap_or(LispVal::Nil);
+                let vec = stack.pop().unwrap_or(LispVal::Nil);
+                match (&start, &end, &vec) {
+                    (LispVal::Num(s), LispVal::Num(e), LispVal::Vec(v)) => {
+                        let si = (*s as usize).max(0).min(v.len());
+                        let ei = (*e as usize).max(si).min(v.len());
+                        stack.push(LispVal::Vec(v[si..ei].to_vec()));
+                    }
+                    _ => stack.push(LispVal::Nil),
+                }
+                pc += 1;
+            }
             Op::StoreAndLoadSlot(s) => {
                 let val = stack.pop().unwrap_or(LispVal::Nil);
                 slots[*s] = val;
@@ -3920,7 +3997,7 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
                     _ => stack.push(slots[*s].clone()),
                 }
                 pc += 1;
-            }
+ }
             Op::CallCaptured(_, _)
             | Op::CallCapturedRef(_, _)
             | Op::PushSelf
@@ -3940,13 +4017,6 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
             | Op::MapOp(_)
             | Op::FilterOp(_)
             | Op::ReduceOp(_)
-            | Op::MakeVec(_)
-            | Op::VecNth
-            | Op::VecAssoc
-            | Op::VecLen
-            | Op::VecConj
-            | Op::VecContains
-            | Op::VecSlice
             | Op::U64MulHi
             | Op::U64And
             | Op::U64Or
