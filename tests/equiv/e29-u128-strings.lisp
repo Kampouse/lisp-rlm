@@ -1,0 +1,13 @@
+;; e29 — u128 string numerics
+(define (main)
+  (println (u128/add "0" "0"))
+  (println (u128/add "99999999999999999999" "1"))
+  (println (u128/mul "4294967296" "4294967296"))
+  (println (u128/div "100" "7"))
+  (println (u128/lt "1" "2"))
+  (println (u128/gt "2" "1"))
+  (println (u128/eq "42" "42"))
+  (println (u128/eq "42" "43"))
+  (println (u128/is-zero "0"))
+  (println (u128/is-zero "7"))
+  (println (u128/from-i64 12345)))

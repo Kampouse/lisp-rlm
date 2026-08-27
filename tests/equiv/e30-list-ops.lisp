@@ -1,0 +1,10 @@
+;; e30 — homogeneous list ops
+(define (main)
+  (println (list 1 2 3))
+  (let ((xs (list 10 20 30)))
+    (println xs)
+    (println (len xs))
+    (println (car xs))
+    (println (cdr xs))
+    (println (cons 5 xs))
+    (println (len (cons 5 xs)))))

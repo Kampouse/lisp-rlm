@@ -431,6 +431,82 @@ impl TcEnv {
                 Box::new(TcType::Con(TcCon::Int)),
             ),
         );
+        // Scalar string transforms (round 2, 2026-08-27): previously
+        // interp-only, now wasm-emitted (call_string.rs str_case/str_trim/
+        // str_starts_with/str_ends_with/str_replace). wasm is ASCII-bounded;
+        // interp is Rust Unicode — divergence documented in COVERAGE.md §D.
+        for name in &["str-upcase", "string-upcase", "str-downcase", "string-downcase", "str-trim"] {
+            env.insert_mono(
+                name.to_string(),
+                TcType::Arrow(
+                    vec![TcType::Con(TcCon::Str)],
+                    Box::new(TcType::Con(TcCon::Str)),
+                ),
+            );
+        }
+        for name in &["str-starts-with", "string-prefix?", "str-ends-with", "string-suffix?"] {
+            env.insert_mono(
+                name.to_string(),
+                TcType::Arrow(
+                    vec![TcType::Con(TcCon::Str), TcType::Con(TcCon::Str)],
+                    Box::new(TcType::Con(TcCon::Bool)),
+                ),
+            );
+        }
+        env.insert_mono(
+            "str-replace".to_string(),
+            TcType::Arrow(
+                vec![
+                    TcType::Con(TcCon::Str),
+                    TcType::Con(TcCon::Str),
+                    TcType::Con(TcCon::Str),
+                ],
+                Box::new(TcType::Con(TcCon::Str)),
+            ),
+        );
+
+        // List-shaped string builtins (round 3, 2026-08-27): split/chunk/
+        // string->list return List(Str) as zero-copy views; str-join/
+        // list->string stringify elements via __to_string (interp parity).
+        let tstr = TcType::Con(TcCon::Str);
+        let list_str = TcType::Con(TcCon::List(Box::new(tstr.clone())));
+        for name in &["str-split", "str-split-exact"] {
+            env.insert_mono(
+                name.to_string(),
+                TcType::Arrow(
+                    vec![tstr.clone(), tstr.clone()],
+                    Box::new(list_str.clone()),
+                ),
+            );
+        }
+        env.insert_mono(
+            "str-chunk".to_string(),
+            TcType::Arrow(
+                vec![tstr.clone(), TcType::Con(TcCon::Int)],
+                Box::new(list_str.clone()),
+            ),
+        );
+        env.insert_mono(
+            "string->list".to_string(),
+            TcType::Arrow(vec![tstr.clone()], Box::new(list_str.clone())),
+        );
+        env.insert_mono(
+            "str-join".to_string(),
+            TcType::Arrow(
+                vec![tstr.clone(), list_str.clone()],
+                Box::new(TcType::Con(TcCon::Str)),
+            ),
+        );
+        env.insert_mono(
+            "list->string".to_string(),
+            TcType::Arrow(
+                vec![list_str.clone()],
+                Box::new(TcType::Con(TcCon::Str)),
+            ),
+        );
+        // String builtins registered in the emitter/dispatch but previously
+        // missing here (corpus e24 finding, 2026-08-27) — without these the
+        // checker rejected valid wasm compilable programs.
         env.insert_mono(
             "str-repeat".to_string(),
             TcType::Arrow(

@@ -240,12 +240,72 @@ fn parse(tokens: &[(String, usize)], pos: &mut usize, source: &str) -> Result<Li
         "false" => Ok(LispVal::Bool(false)),
         s if s.starts_with('"') => {
             let inner = if s.len() >= 2 { &s[1..s.len() - 1] } else { "" };
-            let processed = inner
-                .replace("\\n", "\n")
-                .replace("\\t", "\t")
-                .replace("\\\\", "\\")
-                .replace("\\\"", "\"");
-            Ok(LispVal::Str(processed))
+            // Single-pass unescape — must stay in lockstep with the wasm-side
+            // unescaper (src/wasm_emit/helpers.rs) or interp/wasm literals
+            // diverge (corpus e32 finding, 2026-08-27: "\r" was 2 chars in
+            // interp, 1 in wasm). Set: \n \t \r \0 \\ \" \xHH; unknown
+            // escapes pass through literally.
+            let input = inner.as_bytes();
+            let mut out: Vec<u8> = Vec::with_capacity(input.len());
+            let mut i = 0;
+            while i < input.len() {
+                if input[i] == b'\\' && i + 1 < input.len() {
+                    match input[i + 1] {
+                        b'n' => {
+                            out.push(b'\n');
+                            i += 2;
+                            continue;
+                        }
+                        b't' => {
+                            out.push(b'\t');
+                            i += 2;
+                            continue;
+                        }
+                        b'r' => {
+                            out.push(b'\r');
+                            i += 2;
+                            continue;
+                        }
+                        b'0' => {
+                            out.push(0);
+                            i += 2;
+                            continue;
+                        }
+                        b'\\' => {
+                            out.push(b'\\');
+                            i += 2;
+                            continue;
+                        }
+                        b'"' => {
+                            out.push(b'"');
+                            i += 2;
+                            continue;
+                        }
+                        b'x' => {
+                            let hex_val = |c: u8| -> Option<u8> {
+                                match c {
+                                    b'0'..=b'9' => Some(c - b'0'),
+                                    b'a'..=b'f' => Some(c - b'a' + 10),
+                                    b'A'..=b'F' => Some(c - b'A' + 10),
+                                    _ => None,
+                                }
+                            };
+                            if i + 3 < input.len() {
+                                let (hi, lo) = (input[i + 2], input[i + 3]);
+                                if let (Some(h), Some(l)) = (hex_val(hi), hex_val(lo)) {
+                                    out.push(h << 4 | l);
+                                    i += 4;
+                                    continue;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                out.push(input[i]);
+                i += 1;
+            }
+            Ok(LispVal::Str(String::from_utf8_lossy(&out).into_owned()))
         }
         s => {
             // Special float literals

@@ -467,14 +467,27 @@ impl WasmEmitter {
             }
             "let" | "let*" => {
                 let mut v = Vec::new();
+                // Each binding gets a FRESH local slot; outer mappings are
+                // saved and restored after the body. Without this, shadowing
+                // (let ((a ...)) inside a scope that already has a) clobbers
+                // the outer binding permanently — interp has proper lexical
+                // scope (e26 differential).
+                let mut saved: Vec<(String, Option<u32>)> = Vec::new();
                 if let LispVal::List(bs) = &a[0] {
                     for b in bs {
                         if let LispVal::List(p) = b {
                             if p.len() == 2 {
                                 if let LispVal::Sym(n) = &p[0] {
-                                    let idx = self.local_idx(n);
+                                    let old = self.locals.get(n).copied();
+                                    let i = self.free_locals.pop().unwrap_or(self.next_local);
+                                    if i == self.next_local {
+                                        self.next_local += 1;
+                                        self.local_type_map.push(ValType::I64);
+                                    }
+                                    self.locals.insert(n.clone(), i);
+                                    saved.push((n.clone(), old));
                                     v.extend(self.expr(&p[1])?);
-                                    v.push(Instruction::LocalSet(idx));
+                                    v.push(Instruction::LocalSet(i));
                                 }
                             }
                         }
@@ -490,6 +503,19 @@ impl WasmEmitter {
                         v.extend(self.expr(x)?);
                         if i < body_exprs.len() - 1 {
                             v.push(Instruction::Drop);
+                        }
+                    }
+                }
+                // restore outer scope mappings; release shadow slots
+                for (n, old) in saved.into_iter().rev() {
+                    match old {
+                        Some(prev) => {
+                            self.locals.insert(n, prev);
+                        }
+                        None => {
+                            if let Some(slot) = self.locals.remove(&n) {
+                                self.free_locals.push(slot);
+                            }
                         }
                     }
                 }

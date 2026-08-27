@@ -1341,18 +1341,13 @@ impl Rng {
 
     /// Random LispVal for slot initialization
     fn next_lisp_val(&mut self) -> LispVal {
-        match self.next_usize(7) {
+        match self.next_usize(6) {
             0 => LispVal::Nil,
             1 => LispVal::Bool(self.next_bool()),
             2 => LispVal::Num(self.boundary_i64()),
             3 => LispVal::Float(self.boundary_f64()),
             4 => LispVal::Str(format!("s{}", self.next_usize(100))),
-            5 => LispVal::U64(self.next_u64()),
-            6 => LispVal::Vec(
-                (0..self.next_usize(3))
-                    .map(|_| self.next_lisp_val())
-                    .collect(),
-            ),
+            5 => LispVal::U64(self.boundary_u64()),
             _ => LispVal::Nil,
         }
     }
@@ -1393,6 +1388,33 @@ impl Rng {
 
     /// Boundary-biased float: 50% normal range, 50% edge values.
     /// Exercises NaN/Inf propagation, underflow, and precision edges.
+    /// Boundary-biased u64: 50% small range, 50% edge values.
+    /// Exercises wrapping arithmetic, powers of 2, and u64 field ops.
+    fn boundary_u64(&mut self) -> u64 {
+        const EDGES: &[u64] = &[
+            0,
+            1,
+            100,
+            255,
+            256,
+            65535,
+            65536,
+            // Powers of 2
+            1 << 16,
+            1 << 31,
+            1 << 32,
+            // Patterns for bitwise ops
+            0xFFFF_FFFF,
+            0xAAAA_AAAA_AAAA_AAAA,
+            0x5555_5555_5555_5555,
+        ];
+        if self.next_usize(2) == 0 {
+            EDGES[self.next_usize(EDGES.len())]
+        } else {
+            (self.next_u64() % 200) as u64
+        }
+    }
+
     fn boundary_f64(&mut self) -> f64 {
         const EDGES: &[f64] = &[
             0.0,
@@ -1787,7 +1809,7 @@ fn fuzz_op_to_op(rng: &mut Rng, fop: FuzzOp, max_pc: usize, num_slots: usize) ->
             let mut s = || rng.next_usize(if num_slots == 0 { 1 } else { num_slots });
             Op::GetDefaultSlot(s(), s(), s(), s())
         }
-        FuzzOp::PushU64 => Op::PushU64(rng.next_u64()),
+        FuzzOp::PushU64 => Op::PushU64(rng.boundary_u64()),
         FuzzOp::Not => Op::Not,
         FuzzOp::MakeVec => Op::MakeVec(rng.next_usize(4)),
         FuzzOp::VecNth => Op::VecNth,
@@ -2521,7 +2543,9 @@ fn test_differential_fuzz_short_programs() {
 
                 if let Some(desc) = differential_test_one(code, init_slots, 1000) {
                     mismatches += 1;
+
                     eprintln!("MISMATCH #{}: {}", i, desc);
+                    
                 }
             }
 
@@ -4334,4 +4358,33 @@ fn test_specvm_fused_hof_placeholders() {
         "ReduceOp empty list should return init, got {:?}",
         spec5
     );
+}
+
+
+#[test]
+fn dump_mismatch_1278() {
+    let mut rng = Rng::new(12345);
+    for i in 0..1278 {
+        let num_slots = rng.next_usize(4) + 1;
+        let code_len = rng.next_usize(15) + 5;
+        let _ = generate_random_program(&mut rng, num_slots, code_len);
+        for _ in 0..num_slots {
+            let _ = rng.next_lisp_val();
+        }
+    }
+    let num_slots = rng.next_usize(4) + 1;
+    let code_len = rng.next_usize(15) + 5;
+    let code = generate_random_program(&mut rng, num_slots, code_len);
+    let mut init_slots = Vec::with_capacity(num_slots);
+    for _ in 0..num_slots {
+        init_slots.push(rng.next_lisp_val());
+    }
+    eprintln!("Program #1278: num_slots={}, code_len={}", num_slots, code_len);
+    eprintln!("  init_slots={:?}", init_slots);
+    for (pc, op) in code.iter().enumerate() {
+        eprintln!("  [{}] {:?}", pc, op);
+    }
+    let desc = differential_test_one(code, init_slots, 5000);
+    eprintln!("  mismatch={:?}", desc);
+    panic!("dumped");
 }

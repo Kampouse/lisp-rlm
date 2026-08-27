@@ -3871,8 +3871,13 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
                     pc = *exit_addr;
                 } else {
                     let av = num_val_ref(&slots[*accum]);
-                    slots[*accum] = LispVal::Num(av + cv);
-                    slots[*counter] = LispVal::Num(cv + step);
+                    let new_accum = i64::checked_add(av, cv)
+                        .and_then(|r| check_num_range(r, "add").ok())
+                        .ok_or("integer overflow in add (payload range ±2^60)")?;
+                    let new_counter = i64::checked_add(cv, *step)
+                        .ok_or("integer overflow in add")?;
+                    slots[*accum] = LispVal::Num(new_accum);
+                    slots[*counter] = LispVal::Num(new_counter);
                     pc = 0; // jump to loop start
                 }
             }
