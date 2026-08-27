@@ -1304,7 +1304,7 @@ fn test_differential_fuzz_float_edges() {
         .spawn(|| {
             let mut rng = Rng::new(16180);
             let mut mismatches = 0;
-            let total = 500;
+            let total = 1500;
 
             for i in 0..total {
                 let code_len = rng.next_usize(8) + 3;
@@ -1375,7 +1375,7 @@ fn test_differential_fuzz_overflow() {
         .spawn(|| {
             let mut rng = Rng::new(42);
             let mut mismatches = 0;
-            let total = 500;
+            let total = 1500;
 
             for i in 0..total {
                 let num_slots = rng.next_usize(3) + 1;
@@ -1698,7 +1698,7 @@ fn test_differential_fuzz_type_coercion() {
         .spawn(|| {
             let mut rng = Rng::new(16180); // golden ratio
             let mut mismatches = 0;
-            let total = 800;
+            let total = 2000;
 
             for i in 0..total {
                 // Generate a coercion-heavy program: push mixed types, do arithmetic/comparison
@@ -2391,4 +2391,49 @@ fn test_specvm_fused_hof_placeholders() {
         "ReduceOp empty list should return init, got {:?}",
         spec5
     );
+}
+
+#[test]
+fn test_differential_fuzz_live_torture() {
+    // Live-seeded torture: every `cargo test` run explores a FRESH random slice
+    // of program space (nanosecond entropy). On failure, prints the seed so the
+    // mismatch is reproducible: Rng::new(<printed seed>).
+    // Deterministic tests above remain the regression net for CI stability.
+    let child = std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            let seed = live_seed();
+            let mut rng = Rng::new(seed);
+            let mut mismatches = 0;
+            let total = 400;
+
+            for i in 0..total {
+                // Wider shape distribution than the fixed tests: 0-5 slots,
+                // 2-40 ops — deeper programs than edge_cases, more slots than medium.
+                let num_slots = rng.next_usize(6);
+                let code_len = rng.next_usize(38) + 2;
+                let code = generate_random_program(&mut rng, num_slots, code_len);
+
+                let mut init_slots = Vec::with_capacity(num_slots);
+                for _ in 0..num_slots {
+                    init_slots.push(rng.next_lisp_val());
+                }
+
+                if let Some(desc) = differential_test_one(code, init_slots, 2000) {
+                    mismatches += 1;
+                    eprintln!(
+                        "LIVE MISMATCH #{} (seed {}): {}",
+                        i, seed, desc
+                    );
+                }
+            }
+
+            assert_eq!(
+                mismatches, 0,
+                "Live torture found {} mismatches (seed {} — rerun with Rng::new({}) to reproduce)",
+                mismatches, seed, seed
+            );
+        })
+        .unwrap();
+    child.join().unwrap();
 }

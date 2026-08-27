@@ -750,14 +750,17 @@ impl SpecVm {
                         });
                     }
                     Ty::U64 => {
-                        let av = match &a { LispVal::U64(v) => *v, _ => 0u64 };
-                        let bv = match &b { LispVal::U64(v) => *v, _ => 0u64 };
-                        self.stack.push(match binop {
-                            BinOp::Add => LispVal::U64(av.wrapping_add(bv)),
-                            BinOp::Sub => LispVal::U64(av.wrapping_sub(bv)),
-                            BinOp::Mul => LispVal::U64(av.wrapping_mul(bv)),
-                            BinOp::Div => LispVal::U64(av.wrapping_div(bv)),
-                            BinOp::Mod => LispVal::U64(av.wrapping_rem(bv)),
+                    let av = match &a { LispVal::U64(v) => *v, _ => 0u64 };
+                    let bv = match &b { LispVal::U64(v) => *v, _ => 0u64 };
+                    if matches!(binop, BinOp::Div | BinOp::Mod) && bv == 0 {
+                        return StepOutcome::Error("division by zero".into());
+                    }
+                    self.stack.push(match binop {
+                        BinOp::Add => LispVal::U64(av.wrapping_add(bv)),
+                        BinOp::Sub => LispVal::U64(av.wrapping_sub(bv)),
+                        BinOp::Mul => LispVal::U64(av.wrapping_mul(bv)),
+                        BinOp::Div => LispVal::U64(av.wrapping_div(bv)),
+                        BinOp::Mod => LispVal::U64(av.wrapping_rem(bv)),
                             BinOp::Lt => LispVal::Bool(av < bv),
                             BinOp::Le => LispVal::Bool(av <= bv),
                             BinOp::Gt => LispVal::Bool(av > bv),
@@ -1150,14 +1153,12 @@ impl SpecVm {
             Op::VecNth => {
                 let idx = self.pop();
                 let vec_val = self.pop();
-                let idx_i = Self::spec_num_val(&idx);
-                match &vec_val {
-                    LispVal::Vec(items) => {
-                        if idx_i >= 0 && (idx_i as usize) < items.len() {
-                            self.stack.push(items[idx_i as usize].clone());
-                        } else {
-                            self.stack.push(LispVal::Nil);
-                        }
+                // Match Rust strictly: only LispVal::Num indexes a vec.
+                match (&idx, &vec_val) {
+                    (LispVal::Num(i), LispVal::Vec(items))
+                        if *i >= 0 && (*i as usize) < items.len() =>
+                    {
+                        self.stack.push(items[*i as usize].clone());
                     }
                     _ => self.stack.push(LispVal::Nil),
                 }
@@ -1167,15 +1168,13 @@ impl SpecVm {
                 let val = self.pop();
                 let idx = self.pop();
                 let vec_val = self.pop();
-                let idx_i = Self::spec_num_val(&idx);
-                match &vec_val {
-                    LispVal::Vec(items) => {
+                // Match Rust strictly: Num index, in-bounds update, everything else → Nil.
+                match (&idx, &vec_val) {
+                    (LispVal::Num(i), LispVal::Vec(items))
+                        if *i >= 0 && (*i as usize) < items.len() =>
+                    {
                         let mut new_items = items.clone();
-                        if idx_i >= 0 && (idx_i as usize) < new_items.len() {
-                            new_items[idx_i as usize] = val;
-                        } else if idx_i == items.len() as i64 {
-                            new_items.push(val);
-                        }
+                        new_items[*i as usize] = val;
                         self.stack.push(LispVal::Vec(new_items));
                     }
                     _ => self.stack.push(LispVal::Nil),
@@ -1316,6 +1315,21 @@ pub enum StepOutcome {
 // ---------------------------------------------------------------------------
 // Fuzz helpers — deterministic RNG for reproducibility
 // ---------------------------------------------------------------------------
+
+/// Live seed: nanosecond clock entropy mixed through xorshift. Gives every
+/// run a fresh exploration path (deterministic tests remain the regression net).
+pub fn live_seed() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0x9E3779B97F4A7C15);
+    let mut x = nanos ^ 0x9E3779B97F4A7C15;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    x
+}
 
 /// Simple Xorshift64 PRNG for deterministic test generation.
 pub struct Rng {
@@ -1528,6 +1542,7 @@ pub enum FuzzOp {
     MakeList,
     TypedBinOpI64,
     TypedBinOpF64,
+    TypedBinOpU64,
     DictGet,
     DictSet,
     DictMutSet,
@@ -1593,6 +1608,7 @@ pub const FUZZ_OPS: &[FuzzOp] = &[
     FuzzOp::MakeList,
     FuzzOp::TypedBinOpI64,
     FuzzOp::TypedBinOpF64,
+    FuzzOp::TypedBinOpU64,
     FuzzOp::DictGet,
     FuzzOp::DictSet,
     FuzzOp::DictMutSet,
@@ -1803,6 +1819,22 @@ pub fn fuzz_op_to_op(rng: &mut Rng, fop: FuzzOp, max_pc: usize, num_slots: usize
             let op = BINOPS[rng.next_usize(BINOPS.len())].clone();
             Op::TypedBinOp(op, Ty::I64)
         }
+        FuzzOp::TypedBinOpU64 => {
+            const BINOPS: &[BinOp] = &[
+                BinOp::Add,
+                BinOp::Sub,
+                BinOp::Mul,
+                BinOp::Div,
+                BinOp::Mod,
+                BinOp::Lt,
+                BinOp::Le,
+                BinOp::Gt,
+                BinOp::Ge,
+                BinOp::Eq,
+            ];
+            let op = BINOPS[rng.next_usize(BINOPS.len())].clone();
+            Op::TypedBinOp(op, Ty::U64)
+        }
         FuzzOp::TypedBinOpF64 => {
             const BINOPS: &[BinOp] = &[
                 BinOp::Add,
@@ -1975,6 +2007,21 @@ pub fn differential_test_one(
                 } else {
                     fa == fb
                 }
+            }
+            (LispVal::Vec(xs), LispVal::Vec(ys)) => {
+                xs.len() == ys.len()
+                    && xs.iter().zip(ys.iter()).all(|(x, y)| vals_equal(x, y))
+            }
+            (LispVal::List(xs), LispVal::List(ys)) => {
+                xs.len() == ys.len()
+                    && xs.iter().zip(ys.iter()).all(|(x, y)| vals_equal(x, y))
+            }
+            (LispVal::Map(ma), LispVal::Map(mb)) => {
+                ma.len() == mb.len()
+                    && ma.iter().all(|(k, va)| match mb.get(k) {
+                        Some(vb) => vals_equal(va, vb),
+                        None => false,
+                    })
             }
             _ => a == b,
         }
