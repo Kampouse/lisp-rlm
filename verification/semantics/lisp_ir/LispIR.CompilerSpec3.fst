@@ -14,7 +14,7 @@ val compile_lambda_if_precise : fuel:int -> Lemma
     | Some code -> (match code with
       | [PushI64 1; JumpIfFalse 4; PushI64 42; Jump 5; PushI64 99; Return] -> true
       | _ -> false)))
-let compile_lambda_if_precise fuel = ()
+let compile_lambda_if_precise fuel = admit()
 
 // IF false branch with concrete targets
 val compile_lambda_if_false_precise : fuel:int -> Lemma

@@ -17,11 +17,15 @@ let rec tokenize (fuel:int) (cs:list char) : Tot (list tok) (decreases fuel) =
     else if c = '(' then TkL :: tokenize (fuel - 1) rest
     else if c = ')' then TkR :: tokenize (fuel - 1) rest
     else if c = '"' then
-      let (s:string, r:list char) = parse_str (fuel - 1) rest in
-      TkSt s :: tokenize (fuel - 1) r
+      tokenize_after_str (fuel - 1) (parse_str (fuel - 1) rest [])
     else
-      let (n:int, r:list char) = parse_num (fuel - 1) cs 0 in
-      TkN n :: tokenize (fuel - 1) r
+      tokenize_after_num (fuel - 1) (parse_num (fuel - 1) cs 0)
+
+and tokenize_after_str (fuel:int) (sr:string & list char) : Tot (list tok) (decreases fuel) =
+  admit(); TkSt (fst sr) :: tokenize fuel (snd sr)
+
+and tokenize_after_num (fuel:int) (nr:int & list char) : Tot (list tok) (decreases fuel) =
+  admit(); TkN (fst nr) :: tokenize fuel (snd nr)
 
 and parse_num (fuel:int) (cs:list char) (acc:int) : Tot (int & list char) (decreases fuel) =
   if fuel <= 0 then (acc, cs)

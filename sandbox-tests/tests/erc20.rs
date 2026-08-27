@@ -8,6 +8,9 @@
 //! (safe 2-of-3), real receipts, real transaction gas on the full stack.
 
 use near_workspaces::types::Gas;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static TOTAL: AtomicU64 = AtomicU64::new(0);
 use serde_json::json;
 
 const ERC20_WASM: &str = "../deploy/erc20/target/erc20.wasm";
@@ -33,33 +36,54 @@ async fn erc20_lifecycle_on_sandbox() -> anyhow::Result<()> {
     let holder = contract.id().to_string();
     let r = call("ft_mint", json!({"to": holder, "amount": "1000"})).await?;
     assert!(r.is_success(), "mint failed");
+    let burnt = r.total_gas_burnt.as_gas();
+    TOTAL.fetch_add(burnt, Ordering::Relaxed);
+    assert!(burnt <= 2000000000000, "op blew gas budget: {burnt} gas");
     let out = String::from_utf8(r.into_result()?.raw_bytes()?)?;
     assert_eq!(out, r#"{"result": "1000"}"#);
 
     let r = call("ft_mint", json!({"to": "bob.near", "amount": "250"})).await?;
+    let burnt = r.total_gas_burnt.as_gas();
+    TOTAL.fetch_add(burnt, Ordering::Relaxed);
+    assert!(burnt <= 2000000000000, "op blew gas budget: {burnt} gas");
     let out = String::from_utf8(r.into_result()?.raw_bytes()?)?;
     assert_eq!(out, r#"{"result": "1250"}"#);
 
     // transfer (predecessor = contract account itself — it holds the 1000)
     let r = call("ft_transfer", json!({"to": "bob.near", "amount": "400"})).await?;
     assert!(r.is_success(), "transfer failed: {:?}", format!("{:?}", r.is_failure()));
+    let burnt = r.total_gas_burnt.as_gas();
+    TOTAL.fetch_add(burnt, Ordering::Relaxed);
+    assert!(burnt <= 2000000000000, "op blew gas budget: {burnt} gas");
     let out = String::from_utf8(r.into_result()?.raw_bytes()?)?;
     assert_eq!(out, r#"{"result": "1"}"#);
 
     // views
     let r = call("ft_balance_of", json!({"account": "bob.near"})).await?;
+    let burnt = r.total_gas_burnt.as_gas();
+    TOTAL.fetch_add(burnt, Ordering::Relaxed);
+    assert!(burnt <= 2000000000000, "op blew gas budget: {burnt} gas");
     let out = String::from_utf8(r.into_result()?.raw_bytes()?)?;
     assert_eq!(out, r#"{"result": "650"}"#);
 
     let r = call("ft_total_supply", json!({})).await?;
+    let burnt = r.total_gas_burnt.as_gas();
+    TOTAL.fetch_add(burnt, Ordering::Relaxed);
+    assert!(burnt <= 2000000000000, "op blew gas budget: {burnt} gas");
     let out = String::from_utf8(r.into_result()?.raw_bytes()?)?;
     assert_eq!(out, r#"{"result": "1250"}"#);
 
     // overspend refusal: predecessor balance 600, try 9999
     let r = call("ft_transfer", json!({"to": "bob.near", "amount": "9999"})).await?;
+    let burnt = r.total_gas_burnt.as_gas();
+    TOTAL.fetch_add(burnt, Ordering::Relaxed);
+    assert!(burnt <= 2000000000000, "op blew gas budget: {burnt} gas");
     let out = String::from_utf8(r.into_result()?.raw_bytes()?)?;
     assert_eq!(out, r#"{"result": ""}"#);
 
+        let total = TOTAL.load(Ordering::Relaxed);
+    assert!(total <= 15000000000000, "total gas {total} blew budget");
+    println!("⛽ total gas burnt: {:.6} Tgas", total as f64 / 1e12);
     println!("✅ erc20 lifecycle green on sandbox");
     Ok(())
 }

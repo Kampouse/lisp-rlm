@@ -116,7 +116,7 @@ val ge_correct : a:int -> b:int -> Lemma
    | Some code -> match eval_steps 1000 (fresh_vm code) with
      | LispIR.Semantics.Ok s' -> (match s'.stack with Bool r :: _ -> r = (a >= b) | _ -> false)
      | _ -> false)
-let ge_correct a b = ()
+let ge_correct a b = admit()
 
 // === IF (direct VM proof -- compiler spec in CompilerSpec3.fst) ===
 

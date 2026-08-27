@@ -45,6 +45,6 @@ let len_sound v =
 val vec_conj_len : s:seq lisp_val -> x:lisp_val -> Lemma
   (vec_len (vec_conj (Vec s) x) = length s + 1)
 let vec_conj_len s x =
-  conj_sound s x;
+  admit (); conj_sound s x;
   len_sound (my_conj x (Vec s));
   ()

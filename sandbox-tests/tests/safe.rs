@@ -6,6 +6,9 @@
 //! execute → payout. Plus refusal paths.
 
 use near_workspaces::types::Gas;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static TOTAL: AtomicU64 = AtomicU64::new(0);
 use serde_json::json;
 
 #[tokio::test]
@@ -51,6 +54,9 @@ async fn safe_two_of_three_happy_path() -> anyhow::Result<()> {
         .transact()
         .await?;
     assert!(r.is_success(), "init failed: {:?}", format!("{:?}", r.is_failure()));
+    let burnt = r.total_gas_burnt.as_gas();
+    TOTAL.fetch_add(burnt, Ordering::Relaxed);
+    assert!(burnt <= 5000000000000, "op blew gas budget: {burnt} gas");
     let out = String::from_utf8(r.into_result()?.raw_bytes()?)?;
     assert_eq!(out, r#"{"result": "1"}"#);
 
@@ -62,6 +68,9 @@ async fn safe_two_of_three_happy_path() -> anyhow::Result<()> {
         .transact()
         .await?;
     assert!(r.is_success(), "propose failed: {:?}", format!("{:?}", r.is_failure()));
+    let burnt = r.total_gas_burnt.as_gas();
+    TOTAL.fetch_add(burnt, Ordering::Relaxed);
+    assert!(burnt <= 5000000000000, "op blew gas budget: {burnt} gas");
     let out = String::from_utf8(r.into_result()?.raw_bytes()?)?;
     assert_eq!(out, r#"{"result": "500"}"#);
 
@@ -73,6 +82,9 @@ async fn safe_two_of_three_happy_path() -> anyhow::Result<()> {
         .transact()
         .await?;
     assert!(r.is_success());
+    let burnt = r.total_gas_burnt.as_gas();
+    TOTAL.fetch_add(burnt, Ordering::Relaxed);
+    assert!(burnt <= 5000000000000, "op blew gas budget: {burnt} gas");
     let out = String::from_utf8(r.into_result()?.raw_bytes()?)?;
     assert_eq!(out, r#"{"result": ""}"#);
 
@@ -84,6 +96,9 @@ async fn safe_two_of_three_happy_path() -> anyhow::Result<()> {
         .transact()
         .await?;
     assert!(r.is_success(), "approve failed: {:?}", format!("{:?}", r.is_failure()));
+    let burnt = r.total_gas_burnt.as_gas();
+    TOTAL.fetch_add(burnt, Ordering::Relaxed);
+    assert!(burnt <= 5000000000000, "op blew gas budget: {burnt} gas");
     let out = String::from_utf8(r.into_result()?.raw_bytes()?)?;
     assert_eq!(out, r#"{"result": "1"}"#);
 
@@ -95,6 +110,9 @@ async fn safe_two_of_three_happy_path() -> anyhow::Result<()> {
         .transact()
         .await?;
     assert!(r.is_success(), "execute failed: {:?}", format!("{:?}", r.is_failure()));
+    let burnt = r.total_gas_burnt.as_gas();
+    TOTAL.fetch_add(burnt, Ordering::Relaxed);
+    assert!(burnt <= 5000000000000, "op blew gas budget: {burnt} gas");
     let out = String::from_utf8(r.into_result()?.raw_bytes()?)?;
     assert_eq!(out, r#"{"result": "1"}"#);
 
@@ -105,9 +123,15 @@ async fn safe_two_of_three_happy_path() -> anyhow::Result<()> {
         .gas(Gas::from_tgas(300))
         .transact()
         .await?;
+    let burnt = r.total_gas_burnt.as_gas();
+    TOTAL.fetch_add(burnt, Ordering::Relaxed);
+    assert!(burnt <= 5000000000000, "op blew gas budget: {burnt} gas");
     let out = String::from_utf8(r.into_result()?.raw_bytes()?)?;
     assert_eq!(out, r#"{"result": "0"}"#);
 
+        let total = TOTAL.load(Ordering::Relaxed);
+    assert!(total <= 40000000000000, "total gas {total} blew budget");
+    println!("⛽ total gas burnt: {:.6} Tgas", total as f64 / 1e12);
     println!("✅ safe 2-of-3 happy path green on sandbox (propose→approve→execute→cleanup)");
     Ok(())
 }

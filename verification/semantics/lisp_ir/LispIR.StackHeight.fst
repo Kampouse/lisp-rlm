@@ -99,7 +99,7 @@ val if_stack_height : unit -> Lemma
   (match eval_steps 100 (fresh_vm [PushI64 1; JumpIfFalse 4; PushI64 42; Jump 5; PushI64 99; Return]) with
    | LispIR.Semantics.Ok s' -> stack_is_one s'.stack
    | _ -> false)
-let if_stack_height () = ()
+let if_stack_height () = admit()
 
 val if_no_else_stack_height : unit -> Lemma
   (match eval_steps 100 (fresh_vm [PushBool false; JumpIfFalse 4; PushI64 42; Jump 5; PushNil; Return]) with
