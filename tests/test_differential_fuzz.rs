@@ -1335,12 +1335,18 @@ impl Rng {
 
     /// Random LispVal for slot initialization
     fn next_lisp_val(&mut self) -> LispVal {
-        match self.next_usize(5) {
+        match self.next_usize(7) {
             0 => LispVal::Nil,
             1 => LispVal::Bool(self.next_bool()),
             2 => LispVal::Num(self.boundary_i64()),
             3 => LispVal::Float(self.boundary_f64()),
             4 => LispVal::Str(format!("s{}", self.next_usize(100))),
+            5 => LispVal::U64(self.next_u64()),
+            6 => LispVal::Vec(
+                (0..self.next_usize(3))
+                    .map(|_| self.next_lisp_val())
+                    .collect(),
+            ),
             _ => LispVal::Nil,
         }
     }
@@ -1473,6 +1479,15 @@ enum FuzzOp {
     TagTest,
     GetField,
     GetDefaultSlot,
+    PushU64,
+    Not,
+    MakeVec,
+    VecNth,
+    VecAssoc,
+    VecLen,
+    VecConj,
+    VecContains,
+    VecSlice,
 }
 
 const FUZZ_OPS: &[FuzzOp] = &[
@@ -1529,6 +1544,21 @@ const FUZZ_OPS: &[FuzzOp] = &[
     FuzzOp::TagTest,
     FuzzOp::GetField,
     FuzzOp::GetDefaultSlot,
+    FuzzOp::PushU64,
+    FuzzOp::Not,
+];
+
+/// Vec ops: SpecVm handles these but the loop VM errors on them.
+/// Kept in FuzzOp enum for potential future lambda-VM differential tests.
+/// Not in FUZZ_OPS since they can't be diff-tested against run_compiled_loop.
+const _FUZZ_OPS_VEC_ONLY: &[FuzzOp] = &[
+    FuzzOp::MakeVec,
+    FuzzOp::VecNth,
+    FuzzOp::VecAssoc,
+    FuzzOp::VecLen,
+    FuzzOp::VecConj,
+    FuzzOp::VecContains,
+    FuzzOp::VecSlice,
 ];
 
 /// Ops that access slots by index — invalid when num_slots == 0.
@@ -1751,6 +1781,15 @@ fn fuzz_op_to_op(rng: &mut Rng, fop: FuzzOp, max_pc: usize, num_slots: usize) ->
             let mut s = || rng.next_usize(if num_slots == 0 { 1 } else { num_slots });
             Op::GetDefaultSlot(s(), s(), s(), s())
         }
+        FuzzOp::PushU64 => Op::PushU64(rng.next_u64()),
+        FuzzOp::Not => Op::Not,
+        FuzzOp::MakeVec => Op::MakeVec(rng.next_usize(4)),
+        FuzzOp::VecNth => Op::VecNth,
+        FuzzOp::VecAssoc => Op::VecAssoc,
+        FuzzOp::VecLen => Op::VecLen,
+        FuzzOp::VecConj => Op::VecConj,
+        FuzzOp::VecContains => Op::VecContains,
+        FuzzOp::VecSlice => Op::VecSlice,
     }
 }
 
