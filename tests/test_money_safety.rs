@@ -294,3 +294,45 @@ fn runtime_no_overflow_agrees() {
         "runtime-add-normal",
     );
 }
+
+// ═══ shl retag — the only widening bitop ═══
+// band/bor/bnot/shr outputs stay within input range; shl·s can leave
+// [-2^60, 2^60). Before this fix the emitter re-tagged with a bare shl —
+// silent wrap. Now emit_tag_num_checked traps.
+
+/// wasm-only: shl isn't in the interp surface (drift class, GAPS).
+/// In-range shifts must work exactly as before.
+#[test]
+fn shl_in_range_returns_value() {
+    // 2^57 << 2 = 2^59 — inside payload range
+    let v = eval_wasm(
+        "(define (id x) x) (define (main) (shl (id 144115188075855872) (id 2)))",
+    ).expect("in-range shl must succeed");
+    assert_eq!(v, 576460752303423488, "2^57<<2 == 2^59");
+}
+
+/// wasm-only: shifted-out-of-payload-range must TRAP, never wrap.
+#[test]
+fn shl_out_of_range_traps() {
+    // 2^59 << 1 = 2^60: fits i64 but leaves [-2^60, 2^60) → trap
+    let r = eval_wasm(
+        "(define (id x) x) (define (main) (shl (id 576460752303423488) (id 1)))",
+    );
+    assert!(r.is_err(), "shl to 2^60 must trap, got {:?}", r);
+
+    // 2^55 << 10 = 2^65: overflows i64 entirely → trap
+    let r = eval_wasm(
+        "(define (id x) x) (define (main) (shl (id 36028797018963968) (id 10)))",
+    );
+    assert!(r.is_err(), "shl to 2^65 must trap, got {:?}", r);
+}
+
+/// wasm-only: negative shift / huge shift masks like raw wasm (s & 63).
+#[test]
+fn shl_shift_masking_survives() {
+    // shift 64 ≡ 0 (wasm masks k&63) → identity, must NOT trap
+    let v = eval_wasm(
+        "(define (id x) x) (define (main) (shl (id 123) (id 64)))",
+    ).expect("shl by 64 masks to 0");
+    assert_eq!(v, 123);
+}

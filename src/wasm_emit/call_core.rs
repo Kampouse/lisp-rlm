@@ -127,7 +127,10 @@ impl WasmEmitter {
                 v.extend(self.expr(&a[1])?);
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Shl);
-                v.extend(self.emit_tag_num());
+                // shl is the only bitop whose result can escape the 61-bit
+                // payload range (band/bor/bnot/shr outputs stay within input
+                // range). Trap instead of silently re-tagging a wrapped value.
+                v.extend(self.emit_tag_num_checked());
                 Ok(v)
             }
             "shr" if a.len() == 2 => {

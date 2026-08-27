@@ -79,6 +79,35 @@ impl WasmEmitter {
         self.emit_tag(TAG_NUM)
     }
 
+    /// Checked twin of emit_tag_num: tags the payload on the stack but TRAPS
+    /// if `val << TAG_BITS` overflows the 61-bit payload range. Use wherever
+    /// the value came from a widening op (shl, host reads) — a value the
+    /// tagged scheme can't represent must never deploy silently corrupt.
+    pub(crate) fn emit_tag_num_checked(&mut self) -> Vec<Instruction<'static>> {
+        let tmp = self.local_idx("__tagck");
+        vec![
+            // tmp = payload
+            Instruction::LocalSet(tmp),
+            // if (tmp << 3) >> 3 != tmp -> overflow
+            Instruction::LocalGet(tmp),
+            Instruction::LocalGet(tmp),
+            Instruction::I64Const(TAG_BITS),
+            Instruction::I64Shl,
+            Instruction::I64Const(TAG_BITS),
+            Instruction::I64ShrS,
+            Instruction::I64Ne,
+            Instruction::If(BlockType::Empty),
+            Instruction::Unreachable,
+            Instruction::End,
+            // push tagged
+            Instruction::LocalGet(tmp),
+            Instruction::I64Const(TAG_BITS),
+            Instruction::I64Shl,
+            Instruction::I64Const(TAG_NUM),
+            Instruction::I64Or,
+        ]
+    }
+
     pub(crate) fn emit_safe_div(&mut self) -> Vec<Instruction<'static>> {
         let a = self.local_idx("__div_a");
         let b = self.local_idx("__div_b");
