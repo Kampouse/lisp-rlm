@@ -1597,10 +1597,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lisp-rlm-schnorr-wasm"
-version = "0.1.0"
-
-[[package]]
 name = "lisp-rlm-wasm"
 version = "0.1.0"
 dependencies = [

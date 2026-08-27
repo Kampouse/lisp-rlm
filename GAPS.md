@@ -357,7 +357,10 @@ StoreCaptured arms unchanged).
 - Full battery: sweep clean, cargo test 125/11 exact baseline.
 
 Baseline at wrap: cargo test 125 passed / 11 failed (11 = sibling's known
-wasi_emit outlayer/wasmtime failures). Working tree left dirty ONLY with the
+wasi_emit outlayer/wasmtime failures).
+[2026-08-27 post-clean rebuild: 150 passed / 10 failed — same wasi outlayer/
+wasmtime family only; schnorr-wasm moved to workspace exclude so host
+`cargo build/test --workspace` works from scratch (panic=abort is wasm-only).] Working tree left dirty ONLY with the
 sibling's uncommitted src/wasm_emit/* changes — do not stash/revert those.
 
 ## Trace-Equivalence Harness (landed 2026-08-26)
