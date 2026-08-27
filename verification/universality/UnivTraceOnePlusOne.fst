@@ -1,4 +1,4 @@
-module UnivAdd11
+module UnivTraceOnePlusOne
 open Lisp.Types
 open Lisp.Values
 open LispIR.Semantics

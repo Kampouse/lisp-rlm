@@ -6,10 +6,7 @@ open FStar.String
 open LispIR.AST
 module U32 = FStar.UInt32
 
-type int_pair =
-  | IP of int
-  | IP of (list char)
-
+type string_pair = string * (list char)
 type tok =
   | TkL
   | TkR
@@ -18,8 +15,7 @@ type tok =
   | TkB of bool
   | TkSt of string
 
-let is_ws (c:char) : Tot bool = c = ' ' || c = '
-' || c = '	'
+let is_ws (c:char) : Tot bool = c = ' ' || c = '\n' || c = '\t'
 let is_digit (c:char) : Tot bool =
   let n = U32.v (u32_of_char c) in
   n >= U32.v (u32_of_char '0') && n <= U32.v (u32_of_char '9')
@@ -45,25 +41,25 @@ let rec tokenize (fuel:int) (cs:list char) : Tot (list tok) (decreases fuel) =
       let (sym, r) = parse_sym (fuel - 1) cs [] in
       TkS sym :: tokenize (fuel - 1) r
 
-and parse_num (fuel:int) (cs:list char) (acc:int) : Tot int_pair (decreases fuel) =
-  if fuel <= 0 then IP acc
+and parse_num (fuel:int) (cs:list char) (acc:int) : Tot (int * (list char)) (decreases fuel) =
+  if fuel <= 0 then (acc, cs)
   else match cs with
   | c :: rest ->
     if is_digit c then parse_num (fuel - 1) rest (Prims.op_Multiply acc 10 + dv c)
-    else IP acc
-  | [] -> IP acc
+    else (acc, cs)
+  | [] -> (acc, cs)
 
-and parse_sym (fuel:int) (cs:list char) (acc:list char) : Tot int_pair (decreases fuel) =
-  if fuel <= 0 then IP 0
+and parse_sym (fuel:int) (cs:list char) (acc:list char) : Tot string_pair (decreases fuel) =
+  if fuel <= 0 then ("", cs)
   else match cs with
-  | [] -> IP 0
+  | [] -> ("", cs)
   | c :: rest ->
     if is_sym_char c then parse_sym (fuel - 1) rest (c :: acc)
-    else IP 0
+    else ("", cs)
 
-and parse_str (fuel:int) (cs:list char) (acc:list char) : Tot int_pair (decreases fuel) =
-  if fuel <= 0 then IP 0
+and parse_str (fuel:int) (cs:list char) (acc:list char) : Tot string_pair (decreases fuel) =
+  if fuel <= 0 then ("", cs)
   else match cs with
-  | [] -> IP 0
-  | '"' :: rest -> IP 0
+  | [] -> ("", cs)
+  | '"' :: rest -> ("", rest)
   | c :: rest -> parse_str (fuel - 1) rest (c :: acc)

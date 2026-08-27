@@ -1,4 +1,4 @@
-module UnivTagTest
+module UnivTaggedTestDispatch
 open Lisp.Types
 open Lisp.Values
 open LispIR.Semantics

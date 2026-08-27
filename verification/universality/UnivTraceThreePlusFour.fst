@@ -1,4 +1,4 @@
-module UnivAdd34
+module UnivTraceThreePlusFour
 open Lisp.Types
 open Lisp.Values
 open LispIR.Semantics

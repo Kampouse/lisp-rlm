@@ -12,3 +12,6 @@ storage/
 deploy/*/target/
 deploy/*/main.lisp
 deploy/*/near.json
+near-vm-run/target/
+sandbox-tests/target/
+deploy/safe-sandbox/

@@ -240,3 +240,39 @@ let storage_no_overlap_return = storage_buf + storage_u128_buf < return_buf
 
 // Input buffer is separate from storage
 let input_no_overlap = input_buf + 16384 < storage_buf
+// ============================================================
+// i64 CHECKED ARITHMETIC (matches Rust checked_add/sub/mul)
+// ============================================================
+
+open FStar.Int64
+let i64_max : int = v 9223372036854775807L
+let i64_min : int = 0 - i64_max - 1
+
+let i64_add_safe (a:int) (b:int) : Tot (option int) =
+  let r = a + b in
+  // Overflow: same-sign inputs produce different-sign result
+  // Or: a>0, b>0, r<0  OR  a<0, b<0, r>0
+  // Also catch: r > i64_max or r < i64_min
+  if (a > 0 && b > 0 && r <= 0) ||
+     (a < 0 && b < 0 && r >= 0) ||
+     r > i64_max || r < i64_min
+  then None
+  else Some r
+
+let i64_sub_safe (a:int) (b:int) : Tot (option int) =
+  let r = a - b in
+  // Underflow: a>=0, b<0, r<0  OR  a<0, b>0, r>0
+  if (a >= 0 && b < 0 && r < 0) ||
+     (a < 0 && b > 0 && r > 0) ||
+     r > i64_max || r < i64_min
+  then None
+  else Some r
+
+let i64_mul_safe (a:int) (b:int) : Tot (option int) =
+  if a = 0 || b = 0 then Some 0
+  else if a = i64_min && b = -1 then None
+  else if b = i64_min && a = -1 then None
+  else
+    let r = Prims.op_Multiply a b in
+    if r > i64_max || r < i64_min then None
+    else Some r

@@ -36,8 +36,8 @@ let test_i64_add_overflow_max_plus_1 : bool =
 
 // Large positive + large positive overflows
 let test_i64_add_overflow_large : bool =
-  let a = 5000000000000000000L in  // 5 * 10^18
-  let b = 5000000000000000000L in  // 5 * 10^18
+  let a = 5000000000000000000 in  // 5 * 10^18
+  let b = 5000000000000000000 in  // 5 * 10^18
   match i64_add_safe a b with
   | None -> true   // Overflow detected
   | Some _ -> false
@@ -49,8 +49,8 @@ let test_i64_add_overflow_large : bool =
 // MIN + (-1) would overflow if we could, but MIN is already negative
 // Instead: two large negatives sum to below MIN
 let test_i64_add_overflow_negative : bool =
-  let a = -5000000000000000000L in
-  let b = -5000000000000000000L in
+  let a = -5000000000000000000 in
+  let b = -5000000000000000000 in
   match i64_add_safe a b with
   | None -> true   // Underflow detected
   | Some _ -> false
@@ -74,7 +74,7 @@ let test_i64_sub_underflow_min : bool =
 
 // Negative - positive can underflow
 let test_i64_sub_underflow_neg_pos : bool =
-  match i64_sub_safe (-100) 9223372036854775807L with
+  match i64_sub_safe (-100) 9223372036854775807 with
   | None -> true   // Underflow detected
   | Some _ -> false
 
@@ -96,8 +96,8 @@ let test_i64_mul_overflow_max_times_2 : bool =
 
 // Large value * large value overflows
 let test_i64_mul_overflow_large : bool =
-  let a = 1000000000L in  // 10^9
-  let b = 10000000000L in // 10^10
+  let a = 1000000000 in  // 10^9
+  let b = 10000000000 in // 10^10
   match i64_mul_safe a b with
   | None -> true   // Overflow detected (10^19 > 2^63)
   | Some _ -> false

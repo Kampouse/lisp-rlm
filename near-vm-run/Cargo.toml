@@ -1,0 +1,12 @@
+[package]
+name = "near-vm-run"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+near-vm-runner = "0.37.3"
+near-parameters = "0.37.3"
+near-primitives-core = "0.37.3"
+bincode = "1"
+
+[workspace]
