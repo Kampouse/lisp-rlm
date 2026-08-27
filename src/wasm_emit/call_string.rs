@@ -603,17 +603,20 @@ impl WasmEmitter {
                     v.extend(self.expr(&a[2])?);
                     v.extend(self.emit_untag());
                     v.push(Instruction::LocalSet(end_i));
+                    // Clamp semantics (matches interp; see NEAR path note)
                     v.push(Instruction::LocalGet(end_i));
                     v.push(Instruction::LocalGet(orig_len_i));
                     v.push(Instruction::I64GtU);
                     v.push(Instruction::If(BlockType::Empty));
-                    v.push(Instruction::Unreachable);
+                    v.push(Instruction::LocalGet(orig_len_i));
+                    v.push(Instruction::LocalSet(end_i));
                     v.push(Instruction::End);
                     v.push(Instruction::LocalGet(start_i));
                     v.push(Instruction::LocalGet(end_i));
                     v.push(Instruction::I64GtU);
                     v.push(Instruction::If(BlockType::Empty));
-                    v.push(Instruction::Unreachable);
+                    v.push(Instruction::LocalGet(end_i));
+                    v.push(Instruction::LocalSet(start_i));
                     v.push(Instruction::End);
                     v.push(Instruction::LocalGet(raw_i));
                     v.push(Instruction::I32WrapI64);
@@ -663,27 +666,34 @@ impl WasmEmitter {
                 v.extend(self.expr(&a[2])?);
                 v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(end_i));
-                // new_len = end - start
-                v.push(Instruction::LocalGet(end_i));
-                v.push(Instruction::LocalGet(start_i));
-                v.push(Instruction::I64Sub);
-                v.push(Instruction::LocalSet(new_len_i));
-                // Bounds check: end > (raw >> 32) → trap
+                // Clamp semantics (UTF-8 round, 2026-08-27) — matches the
+                // interpreter: end = min(end, len); start = min(start, end).
+                // start >= end yields new_len 0 → empty string, no trap.
+                // end = min(end, len)
                 v.push(Instruction::LocalGet(end_i));
                 v.push(Instruction::LocalGet(raw_i));
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64GtU);
                 v.push(Instruction::If(BlockType::Empty));
-                v.push(Instruction::Unreachable);
+                v.push(Instruction::LocalGet(raw_i));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(end_i));
                 v.push(Instruction::End);
-                // Bounds check: start > end → trap
+                // start = min(start, end)
                 v.push(Instruction::LocalGet(start_i));
                 v.push(Instruction::LocalGet(end_i));
                 v.push(Instruction::I64GtU);
                 v.push(Instruction::If(BlockType::Empty));
-                v.push(Instruction::Unreachable);
+                v.push(Instruction::LocalGet(end_i));
+                v.push(Instruction::LocalSet(start_i));
                 v.push(Instruction::End);
+                // new_len = end - start
+                v.push(Instruction::LocalGet(end_i));
+                v.push(Instruction::LocalGet(start_i));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::LocalSet(new_len_i));
                 // src_ptr = (raw & 0xFFFFFFFF) + start
                 v.push(Instruction::LocalGet(raw_i));
                 v.push(Instruction::I32WrapI64);

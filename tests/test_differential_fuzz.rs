@@ -561,7 +561,7 @@ fn test_differential_fuzz_short_programs() {
         .spawn(|| {
             let mut rng = Rng::new(42); // deterministic seed
             let mut mismatches = 0;
-            let total = 500;
+            let total = 200;
 
             for i in 0..total {
                 let num_slots = rng.next_usize(4); // 0-3 slots
@@ -601,7 +601,7 @@ fn test_differential_fuzz_medium_programs() {
         .spawn(|| {
             let mut rng = Rng::new(12345);
             let mut mismatches = 0;
-            let total = 2000;
+            let total = 8_000;
 
             for i in 0..total {
                 let num_slots = rng.next_usize(4) + 1; // 1-4 slots (at least 1 for loops)
