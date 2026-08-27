@@ -29,7 +29,11 @@
 ;; corpus/erc20.lisp — corpus contract #1: ERC-20-semantics fungible token
 ;; (NEAR/NEP-141-flavored naming, ERC-20 semantics)
 ;;
-;; STATE MODEL — all state in mock storage as u128 decimal STRINGS:
+;; STATE MODEL — all state in storage as u128 decimal STRINGS via the
+;; STRING-SAFE family (near/storage_set/get — bytes-in-bytes-out over raw
+;; host fns; values survive fresh-memory transactions). Migrated
+;; 2026-08-27 off near/store|load, whose 8-byte tagged-word payload is
+;; heap garbage across txs (GAPS erc20 hazard, now closed):
 ;;   "supply"            → total supply          (missing = "0")
 ;;   "bal:<account>"     → account balance        (missing = "0")
 ;;   "allow:<from>:<to>" → owner→spender allowance (missing = "0")
@@ -71,17 +75,20 @@
 ;; ═══════════════════════════════════════════════════════════════════
 
 ;; ── storage helpers (missing key normalizes to "0") ──────────────
+;; near/storage_get returns Str("") on miss — the ONLY values ever stored
+;; are non-empty decimal strings, so empty ⇔ missing ⇔ "0". Explicit
+;; str-length compare (never truthiness — see landmine notes).
 (define (load-str key)
-  (let ((v (near/load key)))
-    (if (string? v) v "0")))
+  (let ((v (near/storage_get key)))
+    (if (= (str-length v) 0) "0" v)))
 
 (define (balance-of acct)      (load-str (str-cat "bal:" acct)))
 (define (total-supply)         (load-str "supply"))
 (define (allowance-of o s)     (load-str (str-cat "allow:" (str-cat o (str-cat ":" s)))))
 
-(define (set-balance! acct amt)     (near/store (str-cat "bal:" acct) amt))
-(define (set-supply! amt)           (near/store "supply" amt))
-(define (set-allowance! o s amt)    (near/store (str-cat "allow:" (str-cat o (str-cat ":" s))) amt))
+(define (set-balance! acct amt)     (near/storage_set (str-cat "bal:" acct) amt))
+(define (set-supply! amt)           (near/storage_set "supply" amt))
+(define (set-allowance! o s amt)    (near/storage_set (str-cat "allow:" (str-cat o (str-cat ":" s))) amt))
 
 ;; ── error model ───────────────────────────────────────────────────
 (define (fail? v) (= (str-length v) 0))   ; "" = failure; explicit compare
@@ -223,7 +230,13 @@
 ;; 4 mutating ops; conservation is asserted after EVERY op.
 ;; ═══════════════════════════════════════════════════════════════════
 
-(define (next-seed s) (mod (+ (* s 1103515245) 12345) 2147483648))
+;; LCG via u128 string math: 1103515245·s can reach ~2^61 — i64-safe but
+;; OVER the 2^60 tagged-payload range guard on bare mul (money-safety,
+;; 2026-08-26). Same exact modular sequence, u128 intermediates.
+(define (next-seed s)
+  (u128/to-i64
+   (u128/mod (u128/add (u128/mul (u128/from-i64 s) "1103515245") "12345")
+             "2147483648")))
 (define (acct i)
   (cond ((= i 0) "alice")
         ((= i 1) "bob")

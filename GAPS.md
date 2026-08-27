@@ -555,7 +555,15 @@ u128_memory_bounds 19 + u128_safe_arithmetic 11 + wallet_diff 5
 (near-compile PATH-not-found infra), wasm_fuzz 4 closure-family reds
 (overnight marathon 56/4+2i). No regressions from the sweep.
 
+### erc20 migration — ✅ LANDED 2026-08-27 (same day, next session block)
+corpus/erc20.lisp + erc20-battery.lisp now on near/storage_set/get. load-str
+normalize flipped: miss = Str("") → "0" via explicit str-length compare.
+Bonus fix: the battery fuzz LCG (1103515245·s up to 2^61) tripped the 2^60
+tagged-payload mul guard (money-safety range check, landed 8/26 — pre-existing
+red, verified via stash). Rewritten as u128 string ops — SAME exact modular
+sequence (fuzz final balances byte-match the python3 pins), FUZZ-OK n=200,
+9/9 scripted blocks, zero errors. **erc20 is now deploy-safe.**
+
 ### NEXT
-1. Migrate erc20.lisp to near/storage_* (closes the never-deploy hazard).
-2. Deploy target: safe.lisp (lisp5) or migrated erc20 to kampy.testnet.
-3. The 4 closure fuzz reds (T4-adjacent).
+1. Deploy to kampy.testnet: safe.lisp (lisp5) and/or migrated erc20 (lisp5/6).
+2. The 4 closure fuzz reds (T4-adjacent).
