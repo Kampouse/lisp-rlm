@@ -91,6 +91,7 @@ impl WasmEmitter {
         try_domain!(self.call_defi(op, a));
         try_domain!(self.call_bitwise(op, a));
         try_domain!(self.call_string(op, a));
+        try_domain!(self.call_string_list(op, a));
         try_domain!(self.call_outlayer(op, a));
         try_domain!(self.call_predicate(op, a));
         try_domain!(self.call_dict(op, a));

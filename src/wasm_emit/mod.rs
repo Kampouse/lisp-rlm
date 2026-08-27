@@ -47,6 +47,7 @@ pub mod call_fp;
 pub mod call_defi;
 pub mod call_bitwise;
 pub mod call_string;
+mod call_string_list;
 pub mod call_outlayer;
 pub mod call_predicate;
 pub mod call_dict;
