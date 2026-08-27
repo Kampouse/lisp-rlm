@@ -431,6 +431,9 @@ impl TcEnv {
                 Box::new(TcType::Con(TcCon::Int)),
             ),
         );
+        // String builtins registered in the emitter/dispatch but previously
+        // missing here (corpus e24 finding, 2026-08-27) — without these the
+        // checker rejected valid wasm compilable programs.
         env.insert_mono(
             "str-repeat".to_string(),
             TcType::Arrow(

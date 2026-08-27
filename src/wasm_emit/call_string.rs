@@ -3356,6 +3356,8 @@ impl WasmEmitter {
         let hay_len_i = self.local_idx("__sct_hlen");
         let hay_ptr_i = self.local_idx("__sct_hptr");
         let idx_i = self.local_idx("__sct_idx");
+        let j_i = self.local_idx("__sct_j");
+        let match_i = self.local_idx("__sct_match");
         let found_i = self.local_idx("__sct_found");
         let mut v = Vec::new();
 
@@ -3363,17 +3365,15 @@ impl WasmEmitter {
         v.extend(self.expr(&a[0])?);
         v.extend(self.emit_untag());
         v.push(Instruction::LocalSet(hay_i));
-        // Extract len and ptr
         v.push(Instruction::LocalGet(hay_i));
         v.push(Instruction::I64Const(32));
         v.push(Instruction::I64ShrU);
         v.push(Instruction::LocalSet(hay_len_i));
         v.push(Instruction::LocalGet(hay_i));
-        v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::I64Const(0xFFFF_FFFF));
+        v.push(Instruction::I64And);
         v.push(Instruction::LocalSet(hay_ptr_i));
 
-        // Get needle string literal bytes
         let needle_str = match &a[1] {
             LispVal::Str(s) => s.clone(),
             _ => return Err("str-contains: needle must be a string literal".into()),
@@ -3381,115 +3381,104 @@ impl WasmEmitter {
         let needle_bytes = needle_str.as_bytes();
         let needle_len = needle_bytes.len() as i64;
 
-        // If needle is empty, return 1
         if needle_len == 0 {
             v.push(Instruction::I64Const(1));
             v.extend(self.emit_tag_num());
             return Ok(v);
         }
 
-        // Pre-store needle bytes in memory at compile-time offset
+        // Pre-store needle bytes at compile-time offset
         let needle_base = self.next_data_offset.max(4096);
         self.next_data_offset = ((needle_base as u64 + needle_bytes.len() as u64 + 8) & !7) as u32;
-        // We'll store needle at needle_base at runtime via memory.init or just hardcode the bytes
-        // Actually for simplicity, store each byte
         for (j, &b) in needle_bytes.iter().enumerate() {
             v.push(Instruction::I64Const(needle_base as i64 + j as i64));
             v.push(Instruction::I32WrapI64);
             v.push(Instruction::I64Const(b as i64));
             v.push(Instruction::I32WrapI64);
-            v.push(Instruction::I32Store8(ma));
+            v.push(Instruction::I32Store8(ma.clone()));
         }
 
-        // found = 0, idx = 0
         v.push(Instruction::I64Const(0));
         v.push(Instruction::LocalSet(found_i));
         v.push(Instruction::I64Const(0));
         v.push(Instruction::LocalSet(idx_i));
 
-        // Outer loop: idx from 0 to hay_len - needle_len
+        // Block A { Loop L1 { ... } }
         v.push(Instruction::Block(BlockType::Empty));
         v.push(Instruction::Loop(BlockType::Empty));
-        // if found != 0, break
-        v.push(Instruction::LocalGet(found_i));
-        v.push(Instruction::I64Const(0));
-        v.push(Instruction::I64Ne);
-        v.push(Instruction::BrIf(1));
-        // if idx > hay_len - needle_len, break (not found)
+        // idx + needle_len > hay_len → exit (not found)
         v.push(Instruction::LocalGet(idx_i));
-        v.push(Instruction::LocalGet(hay_len_i));
         v.push(Instruction::I64Const(needle_len));
-        v.push(Instruction::I64Sub);
+        v.push(Instruction::I64Add);
+        v.push(Instruction::LocalGet(hay_len_i));
         v.push(Instruction::I64GtU);
         v.push(Instruction::BrIf(1));
-        // Inner loop: compare needle[0..needle_len] with hay[idx..idx+needle_len]
-        let match_i = self.local_idx("__sct_match");
+        // match = 1; j = 0
         v.push(Instruction::I64Const(1));
         v.push(Instruction::LocalSet(match_i));
-        v.push(Instruction::Block(BlockType::Empty));
-        v.push(Instruction::Loop(BlockType::Empty));
-        let j_i = self.local_idx("__sct_j");
         v.push(Instruction::I64Const(0));
         v.push(Instruction::LocalSet(j_i));
+        // Block B { Loop L2 { ... } }
+        v.push(Instruction::Block(BlockType::Empty));
         v.push(Instruction::Loop(BlockType::Empty));
-        // if j >= needle_len or !match, break inner-inner
+        // j >= needle_len → done comparing
         v.push(Instruction::LocalGet(j_i));
         v.push(Instruction::I64Const(needle_len));
         v.push(Instruction::I64GeU);
         v.push(Instruction::BrIf(1));
-        v.push(Instruction::LocalGet(match_i));
-        v.push(Instruction::I64Const(0));
-        v.push(Instruction::I64Eq);
-        v.push(Instruction::BrIf(1));
-        // Compare byte: hay[idx+j] vs needle[j]
+        // hay[idx+j] != needle[j] → match = 0
         v.push(Instruction::LocalGet(hay_ptr_i));
-        v.push(Instruction::I32WrapI64);
         v.push(Instruction::LocalGet(idx_i));
         v.push(Instruction::I64Add);
         v.push(Instruction::LocalGet(j_i));
         v.push(Instruction::I64Add);
         v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I32Load8U(ma));
+        v.push(Instruction::I32Load8U(ma.clone()));
         v.push(Instruction::I64ExtendI32U);
         v.push(Instruction::I64Const(needle_base as i64));
+        v.push(Instruction::LocalGet(j_i));
         v.push(Instruction::I64Add);
         v.push(Instruction::I32WrapI64);
-        v.push(Instruction::LocalGet(j_i));
-        v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I32Add);
-        v.push(Instruction::I32Load8U(ma));
+        v.push(Instruction::I32Load8U(ma.clone()));
         v.push(Instruction::I64ExtendI32U);
         v.push(Instruction::I64Ne);
         v.push(Instruction::If(BlockType::Empty));
         v.push(Instruction::I64Const(0));
         v.push(Instruction::LocalSet(match_i));
         v.push(Instruction::End);
-        // j++
+        // !match → done comparing
+        v.push(Instruction::LocalGet(match_i));
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::BrIf(1));
+        // j++; continue L2
         v.push(Instruction::LocalGet(j_i));
         v.push(Instruction::I64Const(1));
         v.push(Instruction::I64Add);
         v.push(Instruction::LocalSet(j_i));
         v.push(Instruction::Br(0));
-        v.push(Instruction::End); // inner loop
-        v.push(Instruction::End); // block
-                                  // if match, set found=1
+        v.push(Instruction::End); // L2
+        v.push(Instruction::End); // B
+        // match → found = 1, exit A   (Br depth: If=0, L1=1, A=2)
         v.push(Instruction::LocalGet(match_i));
+        v.push(Instruction::I32WrapI64);
         v.push(Instruction::If(BlockType::Empty));
         v.push(Instruction::I64Const(1));
         v.push(Instruction::LocalSet(found_i));
+        v.push(Instruction::Br(2));
         v.push(Instruction::End);
-        // idx++
+        // idx++; continue L1
         v.push(Instruction::LocalGet(idx_i));
         v.push(Instruction::I64Const(1));
         v.push(Instruction::I64Add);
         v.push(Instruction::LocalSet(idx_i));
         v.push(Instruction::Br(0));
-        v.push(Instruction::End); // outer loop
-        v.push(Instruction::End); // outer block
+        v.push(Instruction::End); // L1
+        v.push(Instruction::End); // A
 
-        // Return found as tagged number
         v.push(Instruction::LocalGet(found_i));
-        v.extend(self.emit_tag_num());
+        // interp returns LispVal::Bool — match it (e24 differential)
+        v.extend(self.emit_tag_bool());
         Ok(v)
     }
 
@@ -3504,10 +3493,11 @@ impl WasmEmitter {
         let hay_len_i = self.local_idx("__stio_hlen");
         let hay_ptr_i = self.local_idx("__stio_hptr");
         let idx_i = self.local_idx("__stio_idx");
+        let j_i = self.local_idx("__stio_j");
+        let match_i = self.local_idx("__stio_match");
         let result_i = self.local_idx("__stio_result");
         let mut v = Vec::new();
 
-        // Eval haystack, untag
         v.extend(self.expr(&a[0])?);
         v.extend(self.emit_untag());
         v.push(Instruction::LocalSet(hay_i));
@@ -3516,8 +3506,8 @@ impl WasmEmitter {
         v.push(Instruction::I64ShrU);
         v.push(Instruction::LocalSet(hay_len_i));
         v.push(Instruction::LocalGet(hay_i));
-        v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::I64Const(0xFFFF_FFFF));
+        v.push(Instruction::I64And);
         v.push(Instruction::LocalSet(hay_ptr_i));
 
         let needle_str = match &a[1] {
@@ -3527,7 +3517,12 @@ impl WasmEmitter {
         let needle_bytes = needle_str.as_bytes();
         let needle_len = needle_bytes.len() as i64;
 
-        // Store needle bytes in memory
+        if needle_len == 0 {
+            v.push(Instruction::I64Const(0));
+            v.extend(self.emit_tag_num());
+            return Ok(v);
+        }
+
         let needle_base = self.next_data_offset.max(4096);
         self.next_data_offset = ((needle_base as u64 + needle_bytes.len() as u64 + 8) & !7) as u32;
         for (j, &b) in needle_bytes.iter().enumerate() {
@@ -3535,97 +3530,88 @@ impl WasmEmitter {
             v.push(Instruction::I32WrapI64);
             v.push(Instruction::I64Const(b as i64));
             v.push(Instruction::I32WrapI64);
-            v.push(Instruction::I32Store8(ma));
+            v.push(Instruction::I32Store8(ma.clone()));
         }
 
-        // Default result = -1
-        v.push(Instruction::I64Const(-1i64 as u64 as i64));
+        // result = -1 (not found), idx = 0
+        v.push(Instruction::I64Const(-1));
         v.push(Instruction::LocalSet(result_i));
         v.push(Instruction::I64Const(0));
         v.push(Instruction::LocalSet(idx_i));
 
+        // Block A { Loop L1 { ... } }
         v.push(Instruction::Block(BlockType::Empty));
         v.push(Instruction::Loop(BlockType::Empty));
-        // if result != -1, break (found)
-        v.push(Instruction::LocalGet(result_i));
-        v.push(Instruction::I64Const(-1i64 as u64 as i64));
-        v.push(Instruction::I64Ne);
-        v.push(Instruction::BrIf(1));
-        // if idx > hay_len - needle_len, break (not found)
+        // idx + needle_len > hay_len → exit (not found)
         v.push(Instruction::LocalGet(idx_i));
-        v.push(Instruction::LocalGet(hay_len_i));
         v.push(Instruction::I64Const(needle_len));
-        v.push(Instruction::I64Sub);
+        v.push(Instruction::I64Add);
+        v.push(Instruction::LocalGet(hay_len_i));
         v.push(Instruction::I64GtU);
         v.push(Instruction::BrIf(1));
-        // Compare bytes
-        let match_i = self.local_idx("__stio_match");
+        // match = 1; j = 0
         v.push(Instruction::I64Const(1));
         v.push(Instruction::LocalSet(match_i));
-        let j_i = self.local_idx("__stio_j");
         v.push(Instruction::I64Const(0));
         v.push(Instruction::LocalSet(j_i));
+        // Block B { Loop L2 { ... } }
         v.push(Instruction::Block(BlockType::Empty));
         v.push(Instruction::Loop(BlockType::Empty));
         v.push(Instruction::LocalGet(j_i));
         v.push(Instruction::I64Const(needle_len));
         v.push(Instruction::I64GeU);
         v.push(Instruction::BrIf(1));
-        v.push(Instruction::LocalGet(match_i));
-        v.push(Instruction::I64Const(0));
-        v.push(Instruction::I64Eq);
-        v.push(Instruction::BrIf(1));
         v.push(Instruction::LocalGet(hay_ptr_i));
-        v.push(Instruction::I32WrapI64);
         v.push(Instruction::LocalGet(idx_i));
         v.push(Instruction::I64Add);
         v.push(Instruction::LocalGet(j_i));
         v.push(Instruction::I64Add);
         v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I32Load8U(ma));
+        v.push(Instruction::I32Load8U(ma.clone()));
         v.push(Instruction::I64ExtendI32U);
         v.push(Instruction::I64Const(needle_base as i64));
+        v.push(Instruction::LocalGet(j_i));
         v.push(Instruction::I64Add);
         v.push(Instruction::I32WrapI64);
-        v.push(Instruction::LocalGet(j_i));
-        v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I32Add);
-        v.push(Instruction::I32Load8U(ma));
+        v.push(Instruction::I32Load8U(ma.clone()));
         v.push(Instruction::I64ExtendI32U);
         v.push(Instruction::I64Ne);
         v.push(Instruction::If(BlockType::Empty));
         v.push(Instruction::I64Const(0));
         v.push(Instruction::LocalSet(match_i));
         v.push(Instruction::End);
+        v.push(Instruction::LocalGet(match_i));
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::BrIf(1));
         v.push(Instruction::LocalGet(j_i));
         v.push(Instruction::I64Const(1));
         v.push(Instruction::I64Add);
         v.push(Instruction::LocalSet(j_i));
         v.push(Instruction::Br(0));
-        v.push(Instruction::End);
-        v.push(Instruction::End);
-        // If match, result = idx
+        v.push(Instruction::End); // L2
+        v.push(Instruction::End); // B
+        // match → result = idx, exit A
         v.push(Instruction::LocalGet(match_i));
+        v.push(Instruction::I32WrapI64);
         v.push(Instruction::If(BlockType::Empty));
         v.push(Instruction::LocalGet(idx_i));
         v.push(Instruction::LocalSet(result_i));
+        v.push(Instruction::Br(2));
         v.push(Instruction::End);
-        // idx++
+        // idx++; continue L1
         v.push(Instruction::LocalGet(idx_i));
         v.push(Instruction::I64Const(1));
         v.push(Instruction::I64Add);
         v.push(Instruction::LocalSet(idx_i));
         v.push(Instruction::Br(0));
-        v.push(Instruction::End);
-        v.push(Instruction::End);
+        v.push(Instruction::End); // L1
+        v.push(Instruction::End); // A
 
         v.push(Instruction::LocalGet(result_i));
         v.extend(self.emit_tag_num());
         Ok(v)
     }
-
-    /// (string->number str) → tagged number
-    /// Parses a decimal string to an i64 number.
     fn str_to_num(&mut self, arg: &LispVal) -> Result<Vec<Instruction<'static>>, String> {
         let ma = wasm_encoder::MemArg {
             offset: 0,

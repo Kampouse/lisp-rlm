@@ -1341,7 +1341,7 @@ impl Rng {
             2 => LispVal::Num(self.boundary_i64()),
             3 => LispVal::Float(self.boundary_f64()),
             4 => LispVal::Str(format!("s{}", self.next_usize(100))),
-            5 => LispVal::U64(self.next_u64()),
+            5 => LispVal::U64(self.boundary_u64()),
             6 => LispVal::Vec(
                 (0..self.next_usize(3))
                     .map(|_| self.next_lisp_val())
@@ -1387,6 +1387,33 @@ impl Rng {
 
     /// Boundary-biased float: 50% normal range, 50% edge values.
     /// Exercises NaN/Inf propagation, underflow, and precision edges.
+    /// Boundary-biased u64: 50% small range, 50% edge values.
+    /// Exercises wrapping arithmetic, powers of 2, and u64 field ops.
+    fn boundary_u64(&mut self) -> u64 {
+        const EDGES: &[u64] = &[
+            0,
+            1,
+            100,
+            255,
+            256,
+            65535,
+            65536,
+            // Powers of 2
+            1 << 16,
+            1 << 31,
+            1 << 32,
+            // Patterns for bitwise ops
+            0xFFFF_FFFF,
+            0xAAAA_AAAA_AAAA_AAAA,
+            0x5555_5555_5555_5555,
+        ];
+        if self.next_usize(2) == 0 {
+            EDGES[self.next_usize(EDGES.len())]
+        } else {
+            (self.next_u64() % 200) as u64
+        }
+    }
+
     fn boundary_f64(&mut self) -> f64 {
         const EDGES: &[f64] = &[
             0.0,
@@ -1781,7 +1808,7 @@ fn fuzz_op_to_op(rng: &mut Rng, fop: FuzzOp, max_pc: usize, num_slots: usize) ->
             let mut s = || rng.next_usize(if num_slots == 0 { 1 } else { num_slots });
             Op::GetDefaultSlot(s(), s(), s(), s())
         }
-        FuzzOp::PushU64 => Op::PushU64(rng.next_u64()),
+        FuzzOp::PushU64 => Op::PushU64(rng.boundary_u64()),
         FuzzOp::Not => Op::Not,
         FuzzOp::MakeVec => Op::MakeVec(rng.next_usize(4)),
         FuzzOp::VecNth => Op::VecNth,

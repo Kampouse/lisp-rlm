@@ -1417,6 +1417,28 @@ pub fn type_check_program(exprs: &[LispVal], near: bool) -> Result<(), String> {
     };
     let mut supply = VarSupply::new();
 
+    // Pre-register every top-level function-define name as a fully
+    // polymorphic placeholder so forward references (mutual recursion like
+    // even?/odd?) type-check. The ordered pass below re-registers each name
+    // with its precise inferred type, shadowing the placeholder.
+    for expr in exprs {
+        if let LispVal::List(items) = expr {
+            if matches!(items.first(), Some(LispVal::Sym(s)) if s == "define") {
+                if let Some(LispVal::List(header)) = items.get(1) {
+                    if let Some(LispVal::Sym(name)) = header.first() {
+                        env.insert(
+                            name.clone(),
+                            Scheme {
+                                vars: vec![0],
+                                ty: TcType::Var(0),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     for expr in exprs {
         let list = match expr {
             LispVal::List(l) => l,
