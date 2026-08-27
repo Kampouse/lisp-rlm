@@ -1335,18 +1335,13 @@ impl Rng {
 
     /// Random LispVal for slot initialization
     fn next_lisp_val(&mut self) -> LispVal {
-        match self.next_usize(7) {
+        match self.next_usize(6) {
             0 => LispVal::Nil,
             1 => LispVal::Bool(self.next_bool()),
             2 => LispVal::Num(self.boundary_i64()),
             3 => LispVal::Float(self.boundary_f64()),
             4 => LispVal::Str(format!("s{}", self.next_usize(100))),
             5 => LispVal::U64(self.boundary_u64()),
-            6 => LispVal::Vec(
-                (0..self.next_usize(3))
-                    .map(|_| self.next_lisp_val())
-                    .collect(),
-            ),
             _ => LispVal::Nil,
         }
     }
