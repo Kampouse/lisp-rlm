@@ -1,0 +1,5 @@
+# safe single-signer smoke (multi-signer 2-of-3 lives in sandbox-tests/tests/safe.rs)
+init|{}
+propose|{"id":"tx1","recipient":"dan.near","amount":"500"}
+execute|{"id":"tx1","recipient":"dan.near"}
+tx_amount|{"id":"tx1"}

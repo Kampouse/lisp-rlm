@@ -1,0 +1,9 @@
+# erc20 full lifecycle — one call per line: method|args-json
+# $HOLDER = the contract's own account (sandbox: predecessor of contract.call)
+ft_mint|{"to":"$HOLDER","amount":"1000"}
+ft_mint|{"to":"bob.near","amount":"250"}
+ft_transfer|{"to":"bob.near","amount":"400"}
+ft_balance_of|{"account":"bob.near"}
+ft_balance_of|{"account":"$HOLDER"}
+ft_total_supply|{}
+ft_transfer|{"to":"bob.near","amount":"9999999"}
