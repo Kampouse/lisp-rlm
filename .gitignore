@@ -9,3 +9,6 @@ near.json
 /fuzz_*.py
 /gen_*.py
 storage/
+deploy/*/target/
+deploy/*/main.lisp
+deploy/*/near.json

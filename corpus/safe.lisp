@@ -35,16 +35,16 @@
 
 (define (store-amount! id a)
   (begin
-    (near/store (str-cat "tx:" id ":lo") (u128/to-i64 (u128/mod a AMT_BASE)))
-    (near/store (str-cat "tx:" id ":hi") (u128/to-i64 (u128/div a AMT_BASE)))
+    (near/store (str-cat "tx:" (str-cat id ":lo")) (u128/to-i64 (u128/mod a AMT_BASE)))
+    (near/store (str-cat "tx:" (str-cat id ":hi")) (u128/to-i64 (u128/div a AMT_BASE)))
     "1"))
 
 ;; recombine — words are Nums; all summation in u128-string space
 (define (num->u128 n) (u128/from-i64 n))
 (define (load-amount id)
   (u128/add
-    (u128/mul (num->u128 (near/load (str-cat "tx:" id ":hi"))) AMT_BASE)
-    (num->u128 (near/load (str-cat "tx:" id ":lo")))))
+    (u128/mul (num->u128 (near/load (str-cat "tx:" (str-cat id ":hi")))) AMT_BASE)
+    (num->u128 (near/load (str-cat "tx:" (str-cat id ":lo"))))))
 
 ;; ── identity via storage keys ──────────────────────────────────
 (define (is-owner? acct)
@@ -73,43 +73,43 @@
 (define (propose id recipient amount)
   (if (not (signer-is-owner?)) ""
   (if (not (amount-ok? amount)) ""
-  (if (near/has_key (str-cat "ap:" id ":" (near/signer_account_id)))
+  (if (near/has_key (str-cat "ap:" (str-cat id (str-cat ":" (near/signer_account_id)))))
       "" ; id already used by this owner
       (begin
-        (near/store (str-cat "tx:" id ":to:" recipient) 1)
+        (near/store (str-cat "tx:" (str-cat id (str-cat ":to:" recipient))) 1)
         (store-amount! id amount)
-        (near/store (str-cat "ap:" id ":" (near/signer_account_id)) 1)
+        (near/store (str-cat "ap:" (str-cat id (str-cat ":" (near/signer_account_id)))) 1)
         amount)))))
 
 ;; ── approve ────────────────────────────────────────────────────
 ;; idempotent per owner: re-approval is a no-op success (slot already 1)
 (define (approve id recipient)
   (if (not (signer-is-owner?)) ""
-  (if (not (near/has_key (str-cat "tx:" id ":to:" recipient)))
+  (if (not (near/has_key (str-cat "tx:" (str-cat id (str-cat ":to:" recipient)))))
       "" ; tx unknown OR recipient mismatch — same refusal
       (begin
-        (near/store (str-cat "ap:" id ":" (near/signer_account_id)) 1)
+        (near/store (str-cat "ap:" (str-cat id (str-cat ":" (near/signer_account_id)))) 1)
         "1"))))
 
 (define (approval-count id)
-  (+ (near/load (str-cat "ap:" id ":" O1))
-     (+ (near/load (str-cat "ap:" id ":" O2))
-        (near/load (str-cat "ap:" id ":" O3)))))
+  (+ (near/load (str-cat "ap:" (str-cat id (str-cat ":" O1))))
+     (+ (near/load (str-cat "ap:" (str-cat id (str-cat ":" O2))))
+        (near/load (str-cat "ap:" (str-cat id (str-cat ":" O3)))))))
 
 ;; ── execute (≥2 slots) ─────────────────────────────────────────
 (define (cleanup! id recipient)
   (begin
-    (near/remove (str-cat "tx:" id ":lo"))
-    (near/remove (str-cat "tx:" id ":hi"))
-    (near/remove (str-cat "ap:" id ":" O1))
-    (near/remove (str-cat "ap:" id ":" O2))
-    (near/remove (str-cat "ap:" id ":" O3))
-    (near/remove (str-cat "tx:" id ":to:" recipient))
+    (near/remove (str-cat "tx:" (str-cat id ":lo")))
+    (near/remove (str-cat "tx:" (str-cat id ":hi")))
+    (near/remove (str-cat "ap:" (str-cat id (str-cat ":" O1))))
+    (near/remove (str-cat "ap:" (str-cat id (str-cat ":" O2))))
+    (near/remove (str-cat "ap:" (str-cat id (str-cat ":" O3))))
+    (near/remove (str-cat "tx:" (str-cat id (str-cat ":to:" recipient))))
     "1"))
 
 (define (execute id recipient)
   (if (not (signer-is-owner?)) ""
-  (if (not (near/has_key (str-cat "tx:" id ":to:" recipient)))
+  (if (not (near/has_key (str-cat "tx:" (str-cat id (str-cat ":to:" recipient)))))
       ""
   (if (< (approval-count id) 2)
       ""
@@ -120,7 +120,7 @@
 ;; ── cancel (unanimous 3/3) ─────────────────────────────────────
 (define (cancel id recipient)
   (if (not (signer-is-owner?)) ""
-  (if (not (near/has_key (str-cat "tx:" id ":to:" recipient)))
+  (if (not (near/has_key (str-cat "tx:" (str-cat id (str-cat ":to:" recipient)))))
       ""
   (if (< (approval-count id) 3)
       ""

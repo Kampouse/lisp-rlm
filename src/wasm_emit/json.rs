@@ -3565,6 +3565,11 @@ impl WasmEmitter {
         let prefix_len = prefix.len() as i64; // 12
         let prefix_off = self.alloc_data(prefix);
 
+        // [order-fix 2026-08-27] Evaluate val_expr FIRST (json_get_* in the
+        // expression re-reads input into INPUT_BUF and would wipe the prefix).
+        v.extend(val_expr);
+        v.push(Instruction::LocalSet(abs_val));
+
         // Copy prefix to INPUT_BUF
         let ci = self.local_idx("__jri_ci");
         v.push(Instruction::I64Const(0));
@@ -3598,8 +3603,6 @@ impl WasmEmitter {
         v.push(Instruction::End);
 
         // Write integer digits backwards from ib + prefix_len + 20
-        v.extend(val_expr);
-        v.push(Instruction::LocalSet(abs_val));
 
         // Check negative
         v.push(Instruction::LocalGet(abs_val));
@@ -3788,6 +3791,25 @@ impl WasmEmitter {
         let prefix_len = prefix.len() as i64; // 12
         let prefix_off = self.alloc_data(prefix);
 
+        // [order-fix 2026-08-27] Evaluate the arg expression FIRST:
+        // it may contain near/json_get_* which re-reads the input JSON
+        // into INPUT_BUF — executing it after the prefix write would
+        // wipe the prefix (observed: {"x":"XYZ"}"XYZ"} garbage).
+        // Unpack string (untag first — expr() returns tagged values)
+        v.extend(packed_expr);
+        v.push(Instruction::LocalSet(packed));
+        v.push(Instruction::LocalGet(packed));
+        v.extend(self.emit_untag()); // >> 3 to get packed (len<<32|ptr)
+        v.push(Instruction::LocalSet(packed)); // store untagged packed
+        v.push(Instruction::LocalGet(packed));
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::LocalSet(str_ptr));
+        v.push(Instruction::LocalGet(packed));
+        v.push(Instruction::I64Const(32));
+        v.push(Instruction::I64ShrU);
+        v.push(Instruction::LocalSet(str_len));
+
         // Copy prefix
         v.push(Instruction::I64Const(0));
         v.push(Instruction::LocalSet(ci));
@@ -3816,21 +3838,6 @@ impl WasmEmitter {
         v.push(Instruction::Br(0));
         v.push(Instruction::End);
         v.push(Instruction::End);
-
-        // Unpack string (untag first — expr() returns tagged values)
-        v.extend(packed_expr);
-        v.push(Instruction::LocalSet(packed));
-        v.push(Instruction::LocalGet(packed));
-        v.extend(self.emit_untag()); // >> 3 to get packed (len<<32|ptr)
-        v.push(Instruction::LocalSet(packed)); // store untagged packed
-        v.push(Instruction::LocalGet(packed));
-        v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I64ExtendI32U);
-        v.push(Instruction::LocalSet(str_ptr));
-        v.push(Instruction::LocalGet(packed));
-        v.push(Instruction::I64Const(32));
-        v.push(Instruction::I64ShrU);
-        v.push(Instruction::LocalSet(str_len));
 
         // Copy string bytes to ib + prefix_len
         v.push(Instruction::I64Const(0));

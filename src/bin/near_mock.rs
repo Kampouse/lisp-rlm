@@ -167,9 +167,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let rid = args[0].unwrap_i64() as u64;
             eprintln!("  → input(reg={})", rid);
             let mut st = s5.lock().unwrap();
-            if !st.registers.contains_key(&rid) {
-                st.registers.insert(rid, input_src.as_bytes().to_vec());
-            }
+            // Real NEAR semantics: input() ALWAYS writes the args into the
+            // register, overwriting any prior value. The old contains_key
+            // guard silently kept stale values (e.g. a predecessor_account_id
+            // that had just used reg 0) — parsers then walked the wrong bytes.
+            st.registers.insert(rid, input_src.as_bytes().to_vec());
             Ok(())
         },
     );

@@ -567,6 +567,24 @@ red, verified via stash). Rewritten as u128 string ops — SAME exact modular
 sequence (fuzz final balances byte-match the python3 pins), FUZZ-OK n=200,
 9/9 scripted blocks, zero errors. **erc20 is now deploy-safe.**
 
+### Deploy-readiness pass 2026-08-27 (pre-deploy wasm smoke found 3 real bugs)
+1. json_return_str/int ORDER BUG (wasm_emit/json.rs): prefix was written to
+   INPUT_BUF before the arg expression evaluated — any arg containing
+   json_get_* re-read input over the prefix (garbled {"x":"XYZ"}"XYZ"}).
+   Fixed: arg expr first, then prefix. Proven via bisect minis A-I.
+2. near-mock input() FIDELITY BUG: refused to overwrite a non-empty register;
+   real NEAR always writes. predecessor+json_get in one contract left stale
+   reg 0 -> parser walked "owner.test.near" hunting "amount" -> empty string
+   -> u128 hard-trap. Fixed to always-write; ft_transfer un-trapped.
+3. safe.lisp used variadic 3-arg str-cat (interpreter-only); wasm emitter is
+   strict 2-ary. Nested via scripts/nest_strcat.py (assoc-preserving).
+Deploy surface: corpus stays pristine; deploy/<name>/main.lisp GENERATED
+(corpus + deploy/shims/<name>-shims.lisp) by scripts/gen_deploy.py. Full
+lifecycle smokes green on wasm (erc20: mint/transfer/approve/transfer-from/
+views/conservation; safe: init/propose/approve/refusals/views). Only untested
+on-chain: safe 2-of-3 happy path (needs 2 distinct signers).
+
 ### NEXT
-1. Deploy to kampy.testnet: safe.lisp (lisp5) and/or migrated erc20 (lisp5/6).
+1. Deploy to kampy.testnet: safe.lisp (lisp5) and/or migrated erc20 (lisp5/6)
+   — wasm's are built + smoke-proven (deploy/*/target/*.wasm).
 2. The 4 closure fuzz reds (T4-adjacent).
