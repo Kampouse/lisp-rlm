@@ -28,19 +28,23 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             Ok(Some(LispVal::Num(s.chars().count() as i64)))
         }
         "str-substring" => {
+            // Byte-indexed (UTF-8 decision, 2026-08-27): indices are BYTE
+            // offsets to match the wasm surface (which slices raw bytes).
+            // Out-of-range clamps; a slice mid-codepoint round-trips lossily
+            // (String::from_utf8_lossy) — same bytes wasm prints.
             let s = as_str(&args[0])?;
             let start = as_num(args.get(1).ok_or("str-substring: need start")?)? as usize;
             let end = as_num(args.get(2).ok_or("str-substring: need end")?)? as usize;
-            let chars: Vec<char> = s.chars().collect();
-            if start > end || end > chars.len() {
-                return Err(format!(
-                    "str-substring: indices out of range ({}..{} for len {})",
-                    start,
-                    end,
-                    chars.len()
-                ));
+            let len = s.len();
+            let start = start.min(len);
+            let end = end.min(len);
+            if start >= end {
+                return Ok(Some(LispVal::Str(String::new())));
             }
-            Ok(Some(LispVal::Str(chars[start..end].iter().collect())))
+            let bytes = &s.as_bytes()[start..end];
+            Ok(Some(LispVal::Str(
+                String::from_utf8_lossy(bytes).into_owned(),
+            )))
         }
         "str-split" => {
             let s = as_str(&args[0])?;
@@ -65,21 +69,45 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             Ok(Some(LispVal::List(parts)))
         }
         "str-trim" => {
-            let s = as_str(&args[0])?;
-            Ok(Some(LispVal::Str(s.trim().to_string())))
+            // ASCII whitespace only (UTF-8 decision, 2026-08-27) — Rust's
+            // trim() also strips Unicode spaces (NBSP etc.) which the wasm
+            // byte-scan does not. Byte semantics everywhere.
+            let is_ws = |b: u8| matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c);
+            let sv = as_str(&args[0])?;
+            let bytes = sv.as_bytes();
+            let start = bytes.iter().position(|b| !is_ws(*b)).unwrap_or(bytes.len());
+            let end = bytes
+                .iter()
+                .rposition(|b| !is_ws(*b))
+                .map(|i| i + 1)
+                .unwrap_or(start);
+            Ok(Some(LispVal::Str(
+                String::from_utf8_lossy(&bytes[start..end]).into_owned(),
+            )))
         }
         "str-index-of" => {
             let haystack = as_str(&args[0])?;
             let needle = as_str(args.get(1).ok_or("str-index-of: need needle")?)?;
-            // Return character offset (not byte offset) for consistency with str-substring
-            let idx = haystack
-                .find(&needle)
-                .map(|byte_pos| haystack[..byte_pos].chars().count() as i64)
-                .unwrap_or(-1);
+            // BYTE offset (UTF-8 decision, 2026-08-27) — consistent with
+            // byte-indexed str-substring and the wasm scan.
+            let idx = haystack.find(&needle).map(|byte_pos| byte_pos as i64).unwrap_or(-1);
             Ok(Some(LispVal::Num(idx)))
         }
-        "str-upcase" => Ok(Some(LispVal::Str(as_str(&args[0])?.to_uppercase()))),
-        "str-downcase" => Ok(Some(LispVal::Str(as_str(&args[0])?.to_lowercase()))),
+        // ASCII-only case mapping (UTF-8 decision, 2026-08-27): the wasm
+        // surface maps a-z/A-Z bytes only; non-ASCII passes through
+        // unchanged on BOTH surfaces.
+        "str-upcase" => Ok(Some(LispVal::Str(
+            as_str(&args[0])?
+                .chars()
+                .map(|c| if c.is_ascii_lowercase() { c.to_ascii_uppercase() } else { c })
+                .collect(),
+        ))),
+        "str-downcase" => Ok(Some(LispVal::Str(
+            as_str(&args[0])?
+                .chars()
+                .map(|c| if c.is_ascii_uppercase() { c.to_ascii_lowercase() } else { c })
+                .collect(),
+        ))),
         "str-starts-with" => {
             let s = as_str(&args[0])?;
             let prefix = as_str(args.get(1).ok_or("str-starts-with: need prefix")?)?;

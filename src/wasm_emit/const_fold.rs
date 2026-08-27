@@ -118,6 +118,25 @@ impl WasmEmitter {
             .iter()
             .map(|x| self.const_eval(x).unwrap_or_else(|| x.clone()))
             .collect();
+        // Non-numeric literal operand, ONLY under an active try (the checker
+        // is lenient inside try bodies, so these reach the emitter): emit a
+        // catch jump. Outside try, behavior is unchanged — applications
+        // (List-of-Sym forms) are runtime values, never literals here.
+        if !self.try_stack.is_empty() {
+            let literal_nonnum = |x: &LispVal| match x {
+                LispVal::Str(_) | LispVal::Bool(_) | LispVal::Nil | LispVal::Vec(_) => true,
+                // List: literal data only when head is not a symbol (i.e. not
+                // an application form like (fib (- n 1)))
+                LispVal::List(l) => !l.first().map(|h| matches!(h, LispVal::Sym(_))).unwrap_or(true),
+                _ => false,
+            };
+            if folded_args.iter().any(|x| literal_nonnum(x)) {
+                let mut v = Vec::new();
+                if self.try_guard(&mut v, "arith: non-numeric operand") {
+                    return Ok(v);
+                }
+            }
+        }
         // If all args folded to constants, compute at compile time (checked!)
         let all_const = folded_args.iter().all(|x| matches!(x, LispVal::Num(_)));
         if all_const {
@@ -141,8 +160,27 @@ impl WasmEmitter {
                 _ => None,
             };
             match folded {
-                Some(result) => return self.emit_tagged_const(result, TAG_NUM),
-                None => return Err("arithmetic overflow at compile time".into()),
+                Some(result) => match self.emit_tagged_const(result, TAG_NUM) {
+                    Ok(v) => return Ok(v),
+                    // tagged-range overflow (|result| >= 2^60): under try this
+                    // is a catchable runtime overflow for the interpreter —
+                    // emit a catch jump; otherwise propagate the loud error.
+                    Err(msg) => {
+                        let mut v = Vec::new();
+                        if self.try_guard(&mut v, "arith: overflow") {
+                            return Ok(v);
+                        }
+                        return Err(msg);
+                    }
+                },
+                None => {
+                    // compile-time overflow: same try handling
+                    let mut v = Vec::new();
+                    if self.try_guard(&mut v, "arith: overflow") {
+                        return Ok(v);
+                    }
+                    return Err("arithmetic overflow at compile time".into());
+                }
             }
         }
         // Runtime path. Add/Sub operate on TAGGED operands directly:

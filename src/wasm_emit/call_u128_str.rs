@@ -31,6 +31,14 @@ pub(crate) struct U128Helpers {
     pub(crate) mul: u32,
     pub(crate) divmod: u32,
     pub(crate) i64_to_str: u32,
+    // Checked variants (try/catch, round 4): same math, but every error trap
+    // returns TAGGED_FALSE instead of trapping. Call sites under an active
+    // try guard on that sentinel and catch-jump.
+    pub(crate) parse_ck: u32,
+    pub(crate) add_ck: u32,
+    pub(crate) sub_ck: u32,
+    pub(crate) mul_ck: u32,
+    pub(crate) divmod_ck: u32,
 }
 
 fn ma() -> wasm_encoder::MemArg {
@@ -102,9 +110,52 @@ impl WasmEmitter {
             instrs: Self::h_i64_to_str(mem_limit),
             local_entries: None, custom_type: None,
         });
-        let h = U128Helpers { parse: parse as u32, to_str: to_str as u32, add: add as u32, sub: sub as u32, mul: mul as u32, divmod: divmod as u32, i64_to_str: i64_to_str as u32 };
+        // Checked variants: Unreachable → return TAGGED_FALSE(1). Legit
+        // returns from these helpers are nil(4) or tagged strings (tag 5) —
+        // never 1, so the sentinel is unambiguous.
+        let parse_ck = self.funcs.len();
+        self.funcs.push(FuncDef { name: "__h_u128_parse_ck".into(), param_count: 2, local_count: 13,
+            instrs: Self::to_checked(Self::h_parse()), local_entries: None, custom_type: None });
+        let add_ck = self.funcs.len();
+        self.funcs.push(FuncDef { name: "__h_u128_add_ck".into(), param_count: 2, local_count: 10,
+            instrs: Self::to_checked(Self::h_add()), local_entries: None, custom_type: None });
+        let sub_ck = self.funcs.len();
+        self.funcs.push(FuncDef { name: "__h_u128_sub_ck".into(), param_count: 2, local_count: 10,
+            instrs: Self::to_checked(Self::h_sub()), local_entries: None, custom_type: None });
+        let mul_ck = self.funcs.len();
+        self.funcs.push(FuncDef { name: "__h_u128_mul_ck".into(), param_count: 2, local_count: 16,
+            instrs: Self::to_checked(Self::h_mul()), local_entries: None, custom_type: None });
+        let divmod_ck = self.funcs.len();
+        self.funcs.push(FuncDef { name: "__h_u128_divmod_ck".into(), param_count: 3, local_count: 14,
+            instrs: Self::to_checked(Self::h_divmod()), local_entries: None, custom_type: None });
+        let h = U128Helpers { parse: parse as u32, to_str: to_str as u32, add: add as u32, sub: sub as u32, mul: mul as u32, divmod: divmod as u32, i64_to_str: i64_to_str as u32,
+            parse_ck: parse_ck as u32, add_ck: add_ck as u32, sub_ck: sub_ck as u32, mul_ck: mul_ck as u32, divmod_ck: divmod_ck as u32 };
         self.u128h = Some(h);
         h
+    }
+
+    /// Convert an error-trapping helper body into a checked body: every
+    /// `unreachable` becomes `return TAGGED_FALSE`. Fall-through returns are
+    /// unchanged (nil / tagged string).
+    fn to_checked(v: Vec<Instruction<'static>>) -> Vec<Instruction<'static>> {
+        let mut out: Vec<Instruction<'static>> = Vec::with_capacity(v.len() + 8);
+        let mut pending_return = false;
+        for instr in v {
+            if pending_return {
+                out.push(Instruction::Return);
+                pending_return = false;
+            }
+            if matches!(instr, Instruction::Unreachable) {
+                out.push(Instruction::I64Const(1)); // TAGGED_FALSE (0 << 3 | TAG_BOOL)
+                pending_return = true;
+            } else {
+                out.push(instr);
+            }
+        }
+        if pending_return {
+            out.push(Instruction::Return);
+        }
+        out
     }
 
     pub(crate) fn call_user(idx: u32) -> Instruction<'static> {
@@ -517,10 +568,16 @@ impl WasmEmitter {
                 let mut v = Vec::new();
                 v.extend(av); v.push(Instruction::LocalSet(va));
                 v.extend(bv); v.push(Instruction::LocalSet(vb));
-                v.push(Instruction::LocalGet(va)); v.push(Instruction::I64Const(U128_A)); v.push(Self::call_user(h.parse)); v.push(Instruction::Drop);
-                v.push(Instruction::LocalGet(vb)); v.push(Instruction::I64Const(U128_B)); v.push(Self::call_user(h.parse)); v.push(Instruction::Drop);
-                let hf = match op { "u128/add" => h.add, "u128/sub" => h.sub, _ => h.mul };
-                v.push(Instruction::I64Const(U128_A)); v.push(Instruction::I64Const(U128_B)); v.push(Self::call_user(hf)); v.push(Instruction::Drop);
+                self.u128_parse_call(&mut v, va, U128_A, &h);
+                self.u128_parse_call(&mut v, vb, U128_B, &h);
+                let (hf, hf_ck) = match op { "u128/add" => (h.add, h.add_ck), "u128/sub" => (h.sub, h.sub_ck), _ => (h.mul, h.mul_ck) };
+                if self.try_stack.is_empty() {
+                    v.push(Instruction::I64Const(U128_A)); v.push(Instruction::I64Const(U128_B)); v.push(Self::call_user(hf)); v.push(Instruction::Drop);
+                } else {
+                    v.push(Instruction::I64Const(U128_A)); v.push(Instruction::I64Const(U128_B));
+                    let call = Self::call_user(hf_ck);
+                    self.ck_guarded(&mut v, call, "u128: overflow/underflow");
+                }
                 v.push(Instruction::I64Const(U128_A)); v.push(Self::call_user(h.to_str));
                 Ok(v)
             }
@@ -534,9 +591,15 @@ impl WasmEmitter {
                 let mut v = Vec::new();
                 v.extend(av); v.push(Instruction::LocalSet(va));
                 v.extend(bv); v.push(Instruction::LocalSet(vb));
-                v.push(Instruction::LocalGet(va)); v.push(Instruction::I64Const(U128_A)); v.push(Self::call_user(h.parse)); v.push(Instruction::Drop);
-                v.push(Instruction::LocalGet(vb)); v.push(Instruction::I64Const(U128_B)); v.push(Self::call_user(h.parse)); v.push(Instruction::Drop);
-                v.push(Instruction::I64Const(U128_A)); v.push(Instruction::I64Const(U128_B)); v.push(Instruction::I64Const(U128_R)); v.push(Self::call_user(h.divmod)); v.push(Instruction::Drop);
+                self.u128_parse_call(&mut v, va, U128_A, &h);
+                self.u128_parse_call(&mut v, vb, U128_B, &h);
+                if self.try_stack.is_empty() {
+                    v.push(Instruction::I64Const(U128_A)); v.push(Instruction::I64Const(U128_B)); v.push(Instruction::I64Const(U128_R)); v.push(Self::call_user(h.divmod)); v.push(Instruction::Drop);
+                } else {
+                    v.push(Instruction::I64Const(U128_A)); v.push(Instruction::I64Const(U128_B)); v.push(Instruction::I64Const(U128_R));
+                    let call = Self::call_user(h.divmod_ck);
+                    self.ck_guarded(&mut v, call, "u128: division by zero");
+                }
                 let src = if op == "u128/div" { U128_A } else { U128_R };
                 v.push(Instruction::I64Const(src)); v.push(Self::call_user(h.to_str));
                 Ok(v)
@@ -647,6 +710,36 @@ impl WasmEmitter {
                 Ok(v)
             }
             _ => Err("__not_handled__".into()),
+        }
+    }
+
+    /// Guarded helper call (try-aware): call a _ck helper, and if it returns
+    /// TAGGED_FALSE, emit a catch jump. Emits nothing extra when no try is
+    /// active (caller should then use the trapping variant instead).
+    fn ck_guarded(
+        &mut self,
+        v: &mut Vec<Instruction<'static>>,
+        call: Instruction<'static>,
+        msg: &str,
+    ) {
+        v.push(call);
+        v.push(Instruction::I64Const(1)); // TAGGED_FALSE
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        self.try_guard(v, msg);
+        v.push(Instruction::End);
+    }
+
+    /// parse call — trapping or checked depending on try context.
+    fn u128_parse_call(&mut self, v: &mut Vec<Instruction<'static>>, val_local: u32, dst: i64, h: &U128Helpers) {
+        let val = Instruction::LocalGet(val_local);
+        let dstc = Instruction::I64Const(dst);
+        if self.try_stack.is_empty() {
+            v.push(val); v.push(dstc); v.push(Self::call_user(h.parse)); v.push(Instruction::Drop);
+        } else {
+            v.push(val); v.push(dstc);
+            let call = Self::call_user(h.parse_ck);
+            self.ck_guarded(v, call, "u128: parse/overflow error");
         }
     }
 }

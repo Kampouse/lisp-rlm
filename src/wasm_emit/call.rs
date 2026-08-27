@@ -204,8 +204,8 @@ impl WasmEmitter {
                     op
                 )
             })?;
-        let func = &self.funcs[pos];
-        if func.param_count == 0 && !a.is_empty() {
+        let func_param_count = self.funcs[pos].param_count;
+        if func_param_count == 0 && !a.is_empty() {
             let ma = wasm_encoder::MemArg {
                 offset: 0,
                 align: 3,
@@ -280,6 +280,19 @@ impl WasmEmitter {
             }
             Ok(v)
         } else {
+            // Static arity check (call site vs definition). Reachable when the
+            // checker is lenient inside a try body; under try it becomes a
+            // catch jump, otherwise a loud compile error.
+            if func_param_count != a.len() {
+                let mut v = Vec::new();
+                if self.try_guard(&mut v, &format!("arity: {} expects {} args, got {}", op, func_param_count, a.len())) {
+                    return Ok(v);
+                }
+                return Err(format!(
+                    "call '{}': expects {} args, got {}",
+                    op, func_param_count, a.len()
+                ));
+            }
             let mut v = Vec::new();
             for x in a {
                 v.extend(self.expr(x)?);
