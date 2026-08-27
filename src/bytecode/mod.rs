@@ -7837,14 +7837,11 @@ fn run_compiled_lambda_inner(
                     pc = *exit_addr;
                 } else {
                     let av = num_val_ref(safe_slot(&slots, *accum));
-                    let new_accum = match i64::checked_add(av, cv) {
-                        Some(r) => r,
-                        None => return Err("integer overflow in add".into()),
-                    };
-                    let new_counter = match i64::checked_add(cv, *step) {
-                        Some(r) => r,
-                        None => return Err("integer overflow in add".into()),
-                    };
+                    let new_accum = i64::checked_add(av, cv)
+                        .and_then(|r| check_num_range(r, "add").ok())
+                        .ok_or("integer overflow in add (payload range ±2^60)")?;
+                    let new_counter =
+                        i64::checked_add(cv, *step).ok_or("integer overflow in add")?;
                     while slots.len() <= *accum {
                         slots.push(LispVal::Nil);
                     }
