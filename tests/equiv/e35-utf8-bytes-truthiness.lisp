@@ -2,6 +2,18 @@
 ;; rulings: bytes-everywhere; Num(0) falsy — both surfaces already agreed
 ;; on the latter, this pins it).
 (define (main)
+  ;; str-chunk byte semantics (wasm-fuzz find #3, 2026-08-27):
+  ;; ceil(len_bytes/n) windows, lossy per chunk, ("") on empty input
+  ;; str-contains empty needle → BOOL (wasm-fuzz find #6): the fast path
+  ;; tagged NUM (printed "1") while interp prints true
+  (println (str-contains "42" ""))
+  (println (str-contains "" ""))
+  (if (str-contains "42" "") (println "contains-empty-needle-true") (println "no"))
+  (println (str-chunk "" 3))
+  (println (str-chunk "abc" 2))
+  (println (str-chunk "aüb" 2))
+  (println (str-chunk "ümlaut" 2))
+  (println (str-chunk "a:b:c0ümlaut0" 5))
   ;; byte lengths (both surfaces: UTF-8 bytes, not chars)
   (println (str-length "héllo"))
   (println (str-length "日本語"))

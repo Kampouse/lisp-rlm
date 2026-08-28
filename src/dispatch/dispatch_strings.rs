@@ -140,20 +140,21 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             if n == 0 {
                 return Err("str-chunk: n must be > 0".into());
             }
-            let chars: Vec<char> = s.chars().collect();
-            let total = chars.len();
+            // Byte semantics (2026-08-27 ruling; wasm-fuzz find #3):
+            // windows of ceil(len_bytes / n), lossy per chunk — mirrors
+            // wasm_emit exactly, incl. mid-codepoint boundaries.
+            let b = s.as_bytes();
+            let total = b.len();
             let chunk_size = (total + n - 1) / n; // ceil division
             if chunk_size == 0 {
-                return Ok(Some(LispVal::List(vec![
-                    LispVal::Str(String::new());
-                    n.min(total + 1)
-                ])));
+                // empty input → single empty chunk (wasm parity)
+                return Ok(Some(LispVal::List(vec![LispVal::Str(String::new())])));
             }
             let mut chunks: Vec<LispVal> = Vec::new();
             let mut i = 0;
             while i < total {
                 let end = (i + chunk_size).min(total);
-                let chunk: String = chars[i..end].iter().collect();
+                let chunk = String::from_utf8_lossy(&b[i..end]).into_owned();
                 chunks.push(LispVal::Str(chunk));
                 i += chunk_size;
             }

@@ -16,6 +16,12 @@
   (println (try (u128/add "abc" "1") (catch e "err-parse")))
   (println (try (u128/sub "1" "2") (catch e "err-under")))
   (println (try (u128/div "1" "0") (catch e "err-div0")))
+  ;; u128 COMPARISON ops under try (wasm-fuzz find #5, 2026-08-27):
+  ;; lt/gt/eq inlined their parse calls and TRAPPED uncatchably on invalid
+  ;; operands while add/sub/mul caught — now all catch.
+  (println (try (u128/gt "1" "") (catch e "g-empty")))
+  (println (try (u128/lt "" "1") (catch e "l-empty")))
+  (println (try (u128/eq "x" "1") (catch e "e-x")))
   ;; int div/mod by zero (runtime guards)
   (println (try (/ 10 0) (catch e "err-div0")))
   (println (try (mod 10 0) (catch e "err-mod0")))

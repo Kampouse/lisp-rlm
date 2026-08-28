@@ -771,6 +771,15 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(arr_tmp));
                 v.push(Instruction::I64Eqz);
                 v.push(Instruction::BrIf(0)); // skip if nil
+                // Guard: allocated-but-empty list (count == 0) → nil.
+                // Found by wasm-fuzz 2026-08-27: without this, car reads
+                // arr+8 (past the count word of an empty header) — silent
+                // garbage with heap headroom, OOB fault without.
+                v.push(Instruction::LocalGet(arr_tmp));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(ma));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::BrIf(0));
                 // ptr + 8 (skip count word) → first element
                 v.push(Instruction::LocalGet(arr_tmp));
                 v.push(Instruction::I64Const(8));
@@ -1023,6 +1032,13 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(ma));
                 v.push(Instruction::LocalSet(n_tmp));
+                // Guard: count == 0 (empty allocated list) → nil.
+                // Found by wasm-fuzz 2026-08-27: without this, count-1
+                // underflows and the unsigned loop bound runs the copy
+                // past the heap (OOB fault, or silent garbage with headroom).
+                v.push(Instruction::LocalGet(n_tmp));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::BrIf(0));
                 // new_count = count - 1
                 v.push(Instruction::LocalGet(n_tmp));
                 v.push(Instruction::I64Const(1));

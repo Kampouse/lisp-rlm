@@ -614,8 +614,12 @@ impl WasmEmitter {
                 let mut v = Vec::new();
                 v.extend(av); v.push(Instruction::LocalSet(va));
                 v.extend(bv); v.push(Instruction::LocalSet(vb));
-                v.push(Instruction::LocalGet(va)); v.push(Instruction::I64Const(U128_A)); v.push(Self::call_user(h.parse)); v.push(Instruction::Drop);
-                v.push(Instruction::LocalGet(vb)); v.push(Instruction::I64Const(U128_B)); v.push(Self::call_user(h.parse)); v.push(Instruction::Drop);
+                // Round-4 CERR sweep miss (wasm-fuzz find #5, 2026-08-27):
+                // these inlined parse calls bypassed u128_parse_call, so
+                // invalid operands TRAPPED uncatchably under try instead of
+                // raising a catchable error (interp catches).
+                self.u128_parse_call(&mut v, va, U128_A, &h);
+                self.u128_parse_call(&mut v, vb, U128_B, &h);
                 // compare (A) vs (B)
                 match op {
                     "u128/lt" => {

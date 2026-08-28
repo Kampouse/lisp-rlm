@@ -419,9 +419,14 @@ impl TcEnv {
         );
         env.insert_mono(
             "str-contains".to_string(),
+            // Bool, not Int (wasm-fuzz find #4, 2026-08-27): the emitted
+            // code pushes a tagged bool at runtime and println shows
+            // true/false, but the checker signature said Int — so
+            // (if (str-contains ...) 1 2) failed branch unification
+            // with int ≠ bool while the interp accepted it.
             TcType::Arrow(
                 vec![TcType::Con(TcCon::Str), TcType::Con(TcCon::Str)],
-                Box::new(TcType::Con(TcCon::Int)),
+                Box::new(TcType::Con(TcCon::Bool)),
             ),
         );
         env.insert_mono(

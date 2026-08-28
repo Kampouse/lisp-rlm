@@ -3428,8 +3428,11 @@ impl WasmEmitter {
         let needle_len = needle_bytes.len() as i64;
 
         if needle_len == 0 {
+            // Empty needle → always-contains (interp: true). Must tag BOOL
+            // to match both the interp and the general path below — was
+            // tagged NUM, printing "1" (wasm-fuzz find #6, 2026-08-27).
             v.push(Instruction::I64Const(1));
-            v.extend(self.emit_tag_num());
+            v.extend(self.emit_tag_bool());
             return Ok(v);
         }
 

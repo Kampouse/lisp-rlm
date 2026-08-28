@@ -60,7 +60,10 @@ def interp_trace(path: str):
         lines = lines[:-1]
     err = None
     if p.returncode != 0 or "ERROR" in p.stdout:
-        m = re.search(r"ERROR at form \d+: (.*)", p.stdout)
+        # Compile-stage failures print "ERROR at form" to stdout, but when
+        # compilation of a top-level define aborts, the message may land on
+        # stderr — search both (stdout wins; first hit).
+        m = re.search(r"ERROR at form \d+: (.*)", p.stdout + "\n" + p.stderr)
         err = m.group(1).strip() if m else (p.stderr.strip()[:200] or "nonzero exit")
     return lines, err
 
