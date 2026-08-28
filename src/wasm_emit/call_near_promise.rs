@@ -54,7 +54,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
-                v.extend(acct);
+                v.extend(acct.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
@@ -109,7 +109,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
-                v.extend(method);
+                v.extend(method.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
@@ -118,13 +118,13 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
-                v.extend(args);
+                v.extend(args.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
                 // amount: untag, store at mem[0], pass ptr=0
                 v.push(Instruction::I32Const(0));
-                v.extend(amount);
+                v.extend(amount.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Store(wasm_encoder::MemArg {
                     offset: 0,
@@ -161,7 +161,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
-                v.extend(method);
+                v.extend(method.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
@@ -169,12 +169,12 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
-                v.extend(args);
+                v.extend(args.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I32Const(0));
-                v.extend(amount);
+                v.extend(amount.clone());
                 v.push(Instruction::I64Store(wasm_encoder::MemArg {
                     offset: 0,
                     align: 3,
@@ -215,6 +215,7 @@ impl WasmEmitter {
                 let idx = self.expr(&a[0])?;
                 let mut v = Vec::new();
                 v.extend(idx);
+                v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(0)); // register_id
                 v.push(Self::host_call(34));
                 // promise_result returns the promise STATUS (u64: 0=NotReady,
@@ -325,34 +326,51 @@ impl WasmEmitter {
                 let idx = self.expr(&a[0])?;
                 let mut v = Vec::new();
                 v.extend(idx);
+                v.extend(self.emit_untag());
                 v.push(Self::host_call(35));
                 v.push(Instruction::I64Const(0));
                 Ok(v)
             }
             "near/promise_batch_create" => {
-                if a.len() != 2 {
-                    return Err("near/promise_batch_create: need 2 args (ptr, len)".into());
+                // String-arg convention (matches interpreter):
+                // (near/promise_batch_create "account.id") → host 39 (len, ptr)
+                if a.len() != 1 {
+                    return Err("near/promise_batch_create: need 1 arg (account str)".into());
                 }
-                let ptr = self.expr(&a[0])?;
-                let len = self.expr(&a[1])?;
+                let acct = self.expr(&a[0])?;
                 let mut v = Vec::new();
-                v.extend(len);
-                v.extend(ptr);
+                // len: untag str → raw >> 32
+                v.extend(acct.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                // ptr: untag str → low 32 bits
+                v.extend(acct.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
                 v.push(Self::host_call(39));
                 v.extend(self.emit_tag_num()); // return tagged promise idx
                 Ok(v)
             }
             "near/promise_batch_then" => {
-                if a.len() != 3 {
-                    return Err("near/promise_batch_then: need 3 args (idx, ptr, len)".into());
+                // (near/promise_batch_then idx "account.id") → host 40 (idx, len, ptr)
+                if a.len() != 2 {
+                    return Err("near/promise_batch_then: need 2 args (idx, account str)".into());
                 }
                 let idx = self.expr(&a[0])?;
-                let ptr = self.expr(&a[1])?;
-                let len = self.expr(&a[2])?;
+                let acct = self.expr(&a[1])?;
                 let mut v = Vec::new();
                 v.extend(idx);
-                v.extend(len);
-                v.extend(ptr);
+                v.extend(self.emit_untag());
+                v.extend(acct.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.extend(acct.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
                 v.push(Self::host_call(40));
                 v.extend(self.emit_tag_num()); // return tagged promise idx
                 Ok(v)
@@ -386,24 +404,53 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/promise_batch_action_function_call" => {
-                if a.len() != 7 {
-                    return Err("near/promise_batch_action_function_call: need 7 args (idx, method_ptr, method_len, args_ptr, args_len, amount_ptr, gas)".into());
+                // (near/promise_batch_action_function_call idx "method" "args_json" "deposit_le16" gas)
+                // deposit is a 16-byte little-endian u128 string (str-ptr of it is amount_ptr)
+                if a.len() != 5 {
+                    return Err("near/promise_batch_action_function_call: need 5 args (idx, method str, args str, deposit str, gas)".into());
                 }
                 let idx = self.expr(&a[0])?;
-                let method_ptr = self.expr(&a[1])?;
-                let method_len = self.expr(&a[2])?;
-                let args_ptr = self.expr(&a[3])?;
-                let args_len = self.expr(&a[4])?;
-                let amount_ptr = self.expr(&a[5])?;
-                let gas = self.expr(&a[6])?;
+                let method = self.expr(&a[1])?;
+                let args = self.expr(&a[2])?;
+                let amount = self.expr(&a[3])?;
+                let gas = self.expr(&a[4])?;
                 let mut v = Vec::new();
+                let h = self.ensure_u128_str_helpers();
+                let amt_local = self.local_idx("__fc_amt");
+                // amount decimal-str → u128 LE bytes at TEMP_MEM (strict parse,
+                // same machinery as near/transfer_u128)
+                v.extend(amount.clone());
+                v.push(Instruction::LocalSet(amt_local));
+                v.push(Instruction::LocalGet(amt_local));
+                v.push(Instruction::I64Const(TEMP_MEM as i64));
+                v.push(Self::call_user(h.parse));
+                v.push(Instruction::Drop);
+                // idx (untag)
                 v.extend(idx);
-                v.extend(method_len);
-                v.extend(method_ptr);
-                v.extend(args_len);
-                v.extend(args_ptr);
-                v.extend(amount_ptr);
+                v.extend(self.emit_untag());
+                // method (str → len, ptr)
+                v.extend(method.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.extend(method.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
+                // args (str → len, ptr)
+                v.extend(args.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.extend(args.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
+                // amount_ptr = TEMP_MEM
+                v.push(Instruction::I64Const(TEMP_MEM as i64));
+                // gas (untag)
                 v.extend(gas);
+                v.extend(self.emit_untag());
                 v.push(Self::host_call(43));
                 v.push(Instruction::I64Const(0));
                 Ok(v)
@@ -591,7 +638,7 @@ impl WasmEmitter {
                 v.extend(idx);
                 v.extend(self.emit_untag());
                 // amount_ptr: untag the tagged string, then mask to low 32 bits
-                v.extend(amount);
+                v.extend(amount.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
@@ -619,7 +666,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU); // method_len
                                               // method_name_ptr
-                v.extend(method);
+                v.extend(method.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U); // method_ptr
@@ -629,7 +676,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU); // args_len
                                               // arguments_ptr
-                v.extend(args);
+                v.extend(args.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U); // args_ptr
@@ -702,7 +749,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU); // len
-                v.extend(acct);
+                v.extend(acct.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U); // ptr
@@ -747,7 +794,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
-                v.extend(acct);
+                v.extend(acct.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
@@ -805,7 +852,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
-                v.extend(method);
+                v.extend(method.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
@@ -813,11 +860,11 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
-                v.extend(args);
+                v.extend(args.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
-                v.extend(amount);
+                v.extend(amount.clone());
                 v.extend(gas);
                 v.extend(weight);
                 v.push(Self::host_call(74));
@@ -902,7 +949,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
-                v.extend(acct);
+                v.extend(acct.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
@@ -1014,7 +1061,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
-                v.extend(method);
+                v.extend(method.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
@@ -1022,7 +1069,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
-                v.extend(args);
+                v.extend(args.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
@@ -1111,7 +1158,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
-                v.extend(acct);
+                v.extend(acct.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
