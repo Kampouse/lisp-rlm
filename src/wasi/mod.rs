@@ -654,6 +654,10 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
     }
     functions.function(layout.start_type);
     functions.function(layout.realloc_type);
+    // fd_write shim (println support): same type as cabi_realloc.
+    // Index = user_fn_base + user_count + 2 — MUST match the ol_map
+    // WASI_FD_WRITE sentinel mapping below.
+    functions.function(layout.realloc_type);
     module.section(&functions);
 
     // ═══ Table + Element Section ═══
@@ -981,6 +985,10 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
         codes.function(&realloc);
     }
 
+    // ── fd_write shim (println support) ──
+    // Index: user_fn_base + user_count + 2 — matches ol_map WASI_FD_WRITE.
+    emit_fd_write_shim(&mut codes, FN_GET_STDOUT, FN_OUTPUT_STREAM_WRITE);
+
     module.section(&codes);
 
     // ═══ Data Section (string literals + URL data segments) ═══
@@ -1203,7 +1211,7 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     let (ol, ol_sentinel_map_p1, ol_count) = if skip_outlayer {
         (vec![], std::collections::HashMap::new(), 0u32)
     } else {
-        let used_ol_indices = scan_used_outlayer_indices(em);
+        let mut used_ol_indices = scan_used_outlayer_indices(em);
         let (filtered, smap, count) = build_filtered_outlayer(&used_ol_indices, wasi.len() as u32);
         (filtered, smap, count)
     };
@@ -2007,6 +2015,68 @@ fn near_host_type_for(
 // Combined P2 Component: wasi:http + outlayer in one component
 // ═══════════════════════════════════════════════════════════════
 
+
+/// Emit the P1-style fd_write shim: (fd, iovs_ptr, iovs_count, nwritten_ptr) -> errno.
+/// Translates println's fd_write into get-stdout() + blocking-write-and-flush per iov.
+/// get_stdout / stream_write are core-module import indices (FN_GET_STDOUT / FN_OUTPUT_STREAM_WRITE).
+pub(crate) fn emit_fd_write_shim(
+    codes: &mut wasm_encoder::CodeSection,
+    get_stdout: u32,
+    stream_write: u32,
+) {
+    use wasm_encoder::{BlockType, Function, Instruction, MemArg, ValType};
+    let ma4 = MemArg { offset: 0, align: 2, memory_index: 0 };
+    // params: 0 fd, 1 iovs_ptr, 2 iovs_count, 3 nwritten_ptr
+    // locals: 4 stdout, 5 i, 6 total, 7 ptr, 8 len, 9 tmp
+    let mut fw = Function::new([(6u32, ValType::I32)]);
+    fw.instruction(&Instruction::Call(get_stdout));
+    fw.instruction(&Instruction::LocalSet(4));
+    fw.instruction(&Instruction::I32Const(0));
+    fw.instruction(&Instruction::LocalSet(5)); // i
+    fw.instruction(&Instruction::I32Const(0));
+    fw.instruction(&Instruction::LocalSet(6)); // total
+    fw.instruction(&Instruction::Block(BlockType::Empty));
+    fw.instruction(&Instruction::Loop(BlockType::Empty));
+    fw.instruction(&Instruction::LocalGet(5));
+    fw.instruction(&Instruction::LocalGet(2));
+    fw.instruction(&Instruction::I32GeU);
+    fw.instruction(&Instruction::BrIf(1));
+    fw.instruction(&Instruction::LocalGet(1));
+    fw.instruction(&Instruction::LocalGet(5));
+    fw.instruction(&Instruction::I32Const(3));
+    fw.instruction(&Instruction::I32Shl);
+    fw.instruction(&Instruction::I32Add);
+    fw.instruction(&Instruction::LocalSet(9));
+    fw.instruction(&Instruction::LocalGet(9));
+    fw.instruction(&Instruction::I32Load(ma4.clone()));
+    fw.instruction(&Instruction::LocalSet(7));
+    fw.instruction(&Instruction::LocalGet(9));
+    fw.instruction(&Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
+    fw.instruction(&Instruction::LocalSet(8));
+    fw.instruction(&Instruction::LocalGet(4));
+    fw.instruction(&Instruction::LocalGet(7));
+    fw.instruction(&Instruction::LocalGet(8));
+    fw.instruction(&Instruction::I32Const(0));
+    fw.instruction(&Instruction::Call(stream_write));
+    fw.instruction(&Instruction::LocalGet(6));
+    fw.instruction(&Instruction::LocalGet(8));
+    fw.instruction(&Instruction::I32Add);
+    fw.instruction(&Instruction::LocalSet(6));
+    fw.instruction(&Instruction::LocalGet(5));
+    fw.instruction(&Instruction::I32Const(1));
+    fw.instruction(&Instruction::I32Add);
+    fw.instruction(&Instruction::LocalSet(5));
+    fw.instruction(&Instruction::Br(0));
+    fw.instruction(&Instruction::End); // loop
+    fw.instruction(&Instruction::End); // block
+    fw.instruction(&Instruction::LocalGet(3));
+    fw.instruction(&Instruction::LocalGet(6));
+    fw.instruction(&Instruction::I32Store(ma4));
+    fw.instruction(&Instruction::I32Const(0));
+    fw.instruction(&Instruction::End);
+    codes.function(&fw);
+}
+
 fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), String> {
     use crate::wasi_http::*;
 
@@ -2022,8 +2092,17 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     let post_sentinel_base = 200u32;
 
     // Tree-shake: only import outlayer functions that are actually used
-    let used_ol_indices = scan_used_outlayer_indices(em);
-    eprintln!("[DEBUG] used_ol_indices: {:?}", used_ol_indices);
+    let mut used_ol_indices = scan_used_outlayer_indices(em);
+    // Native wasi:http POST bridge: when every http-post call has a literal
+    // URL (all hoisted into http_post_urls), sentinel 143 can resolve to an
+    // internal wasi:http POST fn instead of the outlayer:api/host import —
+    // letting the component run under plain wasi:http runtimes.
+    let bridge_native_post = em.http_post_call_count > 0
+        && em.http_post_urls.len() as u32 == em.http_post_call_count;
+    if bridge_native_post {
+        used_ol_indices.remove(&21); // http-post-dynamic import no longer needed
+    }
+    eprintln!("[DEBUG] used_ol_indices: {:?} (bridge_native_post={})", used_ol_indices, bridge_native_post);
     let ol_import_base = HTTP_IMPORT_COUNT + 1; // 29
     let (ol, ol_sentinel_map, ol_count) = build_filtered_outlayer(&used_ol_indices, ol_import_base);
 
@@ -2060,7 +2139,8 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     let http_get_fn_idx = internal_fn_base;
     let http_post_fn_idx = http_get_fn_idx + get_fn_count;
     let memcpy_fn_idx = http_post_fn_idx + post_fn_count;
-    let user_fn_base = memcpy_fn_idx + 1;
+    let fd_write_shim_idx = memcpy_fn_idx + 1;
+    let user_fn_base = fd_write_shim_idx + 1;
     let start_fn_idx = user_fn_base + em.funcs.len() as u32;
     let realloc_fn_idx = start_fn_idx + 1;
 
@@ -2143,11 +2223,16 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         functions.function(http_post_type);
     }
     functions.function(memcpy_type); // shared memcpy helper
+    functions.function(realloc_type); // fd_write shim (println support)
     for f in &em.funcs {
         functions.function(user_type_base + f.param_count as u32);
     }
     functions.function(start_type);
     functions.function(realloc_type);
+    if bridge_native_post {
+        // 143 bridge: (i32*7) -> () — same type as http-post-dynamic import
+        functions.function(ol_type_7);
+    }
     module.section(&functions);
 
     // ═══ Memory ═══
@@ -2310,6 +2395,11 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         codes.function(&fb);
     }
 
+    // ── fd_write shim (println support) at fd_write_shim_idx ──
+    // Position MUST match the function-section entry (right after memcpy).
+    emit_fd_write_shim(&mut codes, crate::wasi_http::FN_GET_STDOUT, crate::wasi_http::FN_OUTPUT_STREAM_WRITE);
+
+
 
     // ── User functions ──
     let name_map: std::collections::HashMap<&str, u32> = em.funcs.iter()
@@ -2342,7 +2432,10 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
             for i in 0..http_post_count {
                 ol_map.insert(post_sentinel_base + i, http_post_fn_idx + i * 2);
             }
-            ol_map.insert(crate::wasm_emit::WASI_FD_WRITE, realloc_fn_idx);
+            ol_map.insert(crate::wasm_emit::WASI_FD_WRITE, fd_write_shim_idx);
+            if bridge_native_post {
+                ol_map.insert(143, realloc_fn_idx + 1); // → wasi:http POST bridge
+            }
             ol_map.insert(crate::wasm_emit::MEMCPY_SENTINEL, memcpy_fn_idx);
             WasmEmitter::resolve_static_pub_ex(
                 &f.instrs, &std::collections::HashMap::new(), &name_map, &em.funcs, &ol_map, &std::collections::HashMap::new(),
@@ -2520,6 +2613,45 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         realloc.instruction(&Instruction::End); // end new_size check
         realloc.instruction(&Instruction::End); // end function body
         codes.function(&realloc);
+    }
+
+    // ── 143 → wasi:http POST bridge (appended after realloc body; section
+    //    entry likewise appended) ──
+    // Call site: (url_ptr, url_len, body_ptr, body_len, ct_ptr, ct_len, ret_area) -> ()
+    // Contract: ret_area+0 err(0=ok), +4 body ptr, +8 body len.
+    if bridge_native_post {
+        let ma4 = MemArg { offset: 0, align: 2, memory_index: 0 };
+        let sbuf = crate::wasi_http::SENTINEL_BUF;
+        let sbuf_size = crate::wasi_http::SENTINEL_BUF_SIZE;
+        // params 0-6 as above; local 7: status
+        let mut bridge = Function::new([(1u32, ValType::I32)]);
+        // __wasi_http_post(url_ptr, url_len, body_ptr, body_len, buf, buf_len, len_ptr=ret_area+12)
+        bridge.instruction(&Instruction::LocalGet(0));
+        bridge.instruction(&Instruction::LocalGet(1));
+        bridge.instruction(&Instruction::LocalGet(2));
+        bridge.instruction(&Instruction::LocalGet(3));
+        bridge.instruction(&Instruction::I32Const(sbuf));
+        bridge.instruction(&Instruction::I32Const(sbuf_size));
+        bridge.instruction(&Instruction::LocalGet(6));
+        bridge.instruction(&Instruction::I32Const(12));
+        bridge.instruction(&Instruction::I32Add);
+        bridge.instruction(&Instruction::Call(http_post_fn_idx));
+        bridge.instruction(&Instruction::LocalSet(7));
+        // ret_area+8 = len (written by POST at ret_area+12)
+        bridge.instruction(&Instruction::LocalGet(6));
+        bridge.instruction(&Instruction::LocalGet(6));
+        bridge.instruction(&Instruction::I32Load(MemArg { offset: 12, align: 2, memory_index: 0 }));
+        bridge.instruction(&Instruction::I32Store(MemArg { offset: 8, align: 2, memory_index: 0 }));
+        // ret_area+4 = SENTINEL_BUF
+        bridge.instruction(&Instruction::LocalGet(6));
+        bridge.instruction(&Instruction::I32Const(sbuf));
+        bridge.instruction(&Instruction::I32Store(MemArg { offset: 4, align: 2, memory_index: 0 }));
+        // ret_area+0 = status (0=ok)
+        bridge.instruction(&Instruction::LocalGet(6));
+        bridge.instruction(&Instruction::LocalGet(7));
+        bridge.instruction(&Instruction::I32Store(ma4));
+        bridge.instruction(&Instruction::End);
+        codes.function(&bridge);
     }
 
     module.section(&codes);

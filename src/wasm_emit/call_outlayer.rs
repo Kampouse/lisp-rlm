@@ -85,6 +85,20 @@ impl WasmEmitter {
                     return self.call_outlayer("http-post-dynamic", a);
                 }
 
+                // Register literal URL for wasi:http POST helper generation (P2
+                // native bridge) + count the call so the builder knows all POSTs
+                // are literal-URL and can skip the outlayer host import.
+                self.http_post_call_count += 1;
+                if self.need_wasi_http {
+                    if let crate::types::LispVal::Str(url) = &a[0] {
+                        if let Some((auth, path)) = Self::split_url(url) {
+                            if !self.http_post_urls.iter().any(|(a, p)| a == &auth && p == &path) {
+                                self.http_post_urls.push((auth, path));
+                            }
+                        }
+                    }
+                }
+
                 let url_expr = self.expr(&a[0])?;
                 let body_expr = self.expr(&a[1])?;
                 let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };

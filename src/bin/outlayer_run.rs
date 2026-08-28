@@ -15,6 +15,9 @@ fn main() {
 
     let wasm = compile_outlayer(&src).unwrap_or_else(|e| panic!("compile: {e}"));
     println!("📦 {} → {} bytes of wasm", path, wasm.len());
+    if let Ok(dump) = std::env::var("OUTLAYER_DUMP") {
+        std::fs::write(&dump, &wasm).expect("dump");
+    }
 
     let engine = Engine::default();
     let module = Module::new(&engine, &wasm).expect("validate");
