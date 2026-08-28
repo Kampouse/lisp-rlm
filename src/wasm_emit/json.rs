@@ -359,9 +359,16 @@ impl WasmEmitter {
         close!();
         close!();
 
+        // Not found: the scan loop exits when scan_i + pat_len > json_len
+        // (or scan_i >= json_len) — either way, if the remaining bytes
+        // cannot hold the pattern, there is no match → return 0. The old
+        // `scan_i >= json_len` guard missed the mid-range exit and fell
+        // through to value extraction, producing garbage (len-0 spans).
         ins.push(Instruction::LocalGet(scan_i));
+        ins.push(Instruction::LocalGet(pat_len));
+        ins.push(Instruction::I32Add);
         ins.push(Instruction::LocalGet(json_len));
-        ins.push(Instruction::I32GeS);
+        ins.push(Instruction::I32GtS);
         open_if!();
         ins.push(Instruction::I64Const(0));
         ins.push(Instruction::Return);

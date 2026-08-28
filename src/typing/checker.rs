@@ -938,6 +938,17 @@ fn infer(
                     }
                     Ok(TcType::Con(TcCon::Nil))
                 }
+                // json-get 1-arg form: (json-get "key") scans the input
+                // buffer (NEAR input() / outlayer stdin). The emitter
+                // supports both arities; the typing env only carries the
+                // 2-arg signature. Result is dynamic (num or str) → Any.
+                LispVal::Sym(s) if s == "json-get" && list.len() == 2 => {
+                    let t = infer(&list[1], env, supply, subst)?;
+                    let su = unify(&subst.apply(&t), &TcType::Con(TcCon::Str))
+                        .map_err(|e| format!("in call (json-get ...): {}", e))?;
+                    *subst = su.compose(subst.clone());
+                    Ok(TcType::Con(TcCon::Any))
+                }
                 LispVal::Sym(s) if s == "list" => {
                     infer_list_literal(&list[1..], env, supply, subst)
                 }
