@@ -1,4 +1,6 @@
 module LispIR.CompilerCorrectnessExtended
+
+#set-options "--z3rlimit 2000"
 (** Extended Compiler Correctness — F* Formal Verification
 
     Language: Num, Add, Sub, Neg, IfGt, Let
@@ -31,6 +33,12 @@ open FStar.Pervasives
 
 val list_length : list 'a -> int
 let rec list_length l = match l with [] -> 0 | _ :: rest -> 1 + list_length rest
+
+val list_length_nonneg : l:list 'a -> Lemma (ensures list_length l >= 0)
+  (decreases l)
+let rec list_length_nonneg l = match l with
+  | [] -> ()
+  | _ :: rest -> list_length_nonneg rest
 
 val tl_drop : n:int -> l:list 'a -> list 'a
 let rec tl_drop n l =
@@ -116,6 +124,7 @@ let rec vmt fuel code stack slots =
      | _ -> { vr_stack = stack; vr_slots = slots; vr_fuel = 0 })
   | LoadSlot :: rest -> vmt (fuel - 1) rest (load_slot slots :: stack) slots
 
+// Executing a code list never consumes more than one fuel per instruction.
 val vmt_run_then : fuel:int -> c1:list aop -> c2:list aop -> stack:list int ->
   slots:list (string * int) -> Tot vmt_result
 let vmt_run_then fuel c1 c2 stack slots =
@@ -134,32 +143,51 @@ val vmt_sequential : c1:list aop -> fuel:int -> c2:list aop ->
   (requires jump_free c1)
   (ensures vmt fuel (c1 @ c2) stack slots
            == vmt_run_then fuel c1 c2 stack slots)
-  (decreases c1)
+  (decreases fuel)
 let rec vmt_sequential c1 fuel c2 stack slots _ =
+  if fuel <= 0 then () else begin
+  list_length_nonneg c1;
   match c1 with
   | [] -> ()
-  | Push n :: rest -> vmt_sequential rest (fuel - 1) c2 (n :: stack) slots ()
+  | Push n :: rest -> list_length_nonneg rest; vmt_sequential rest (fuel - 1) c2 (n :: stack) slots ()
   | OpAdd :: rest ->
+    list_length_nonneg rest;
     (match stack with
      | a :: b :: s' -> vmt_sequential rest (fuel - 1) c2 ((b + a) :: s') slots ()
      | _ -> ())
   | OpSub :: rest ->
+    list_length_nonneg rest;
     (match stack with
      | a :: b :: s' -> vmt_sequential rest (fuel - 1) c2 ((b - a) :: s') slots ()
      | _ -> ())
   | OpNeg :: rest ->
+    list_length_nonneg rest;
     (match stack with
      | a :: s' -> vmt_sequential rest (fuel - 1) c2 ((0 - a) :: s') slots ()
      | _ -> ())
   | GtCmp :: rest ->
+    list_length_nonneg rest;
     (match stack with
      | a :: b :: s' -> vmt_sequential rest (fuel - 1) c2 ((if b > a then 1 else 0) :: s') slots ()
      | _ -> ())
+  | JmpF n :: rest ->
+    (match stack with
+     | c :: s' ->
+       if c <> 0 then begin
+         list_length_nonneg rest;
+         vmt_sequential rest (fuel - 1) c2 s' slots ()
+       end else ()
+     | _ -> ())
+  | Jmp n :: rest -> ()
   | StoreSlot :: rest ->
+    list_length_nonneg rest;
     (match stack with
      | v :: s' -> vmt_sequential rest (fuel - 1) c2 s' (store_slot v slots) ()
      | _ -> ())
-  | LoadSlot :: rest -> vmt_sequential rest (fuel - 1) c2 (load_slot slots :: stack) slots ()
+  | LoadSlot :: rest ->
+    list_length_nonneg rest;
+    vmt_sequential rest (fuel - 1) c2 (load_slot slots :: stack) slots ()
+  end
 
 
 // ============================================================
