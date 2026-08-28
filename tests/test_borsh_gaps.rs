@@ -122,3 +122,18 @@ fn test_vec_string_full_roundtrip() {
         offset += len;
     }
 }
+
+// ── Test 7: F64 bit-cast roundtrip (values, not just lengths) ──
+// f64 fields carry raw-bit i64s (bit-cast). Tagged nums cap at 2^60, so
+// only bit patterns < 2^60 are addressable as literals (documented
+// constraint) — e.g. bits=1 is the minimum positive denormal
+// (5e-324): struct.pack('<d', 5e-324) → 01 00 00 00 00 00 00 00.
+#[test]
+fn test_f64_bitcast_roundtrip() {
+    let src = ser_program("(PointF64 (x f64) (y f64))", "1 0");
+    let mut runner = WasmRunner::new(&src).unwrap();
+    runner.run().unwrap();
+    let bytes = runner.read_borsh_bytes(16);
+    assert_eq!(&bytes[0..8], &[1, 0, 0, 0, 0, 0, 0, 0], "x must be min-denormal wire bytes");
+    assert_eq!(&bytes[8..16], &[0, 0, 0, 0, 0, 0, 0, 0], "y must be +0.0 wire bytes");
+}

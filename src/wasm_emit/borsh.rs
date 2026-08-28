@@ -252,7 +252,23 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(pos));
             }
             BorshType::F64 => {
-                return Err("borsh-serialize: F64 not yet supported".into());
+                // F64 values are carried as raw-bit i64s (bit-cast): write
+                // the 8 LE bytes of the untagged field value directly — this
+                // is exactly the borsh wire format for f64.
+                v.push(Instruction::LocalGet(pos));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(tmp));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                // pos += 8
+                v.push(Instruction::LocalGet(pos));
+                v.push(Instruction::I64Const(8));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(pos));
             }
             BorshType::String | BorshType::Bytes => {
                 // Untag tmp to get raw: (heap_off | (len << 32))
@@ -678,7 +694,16 @@ impl WasmEmitter {
                 v.extend(self.emit_tag(TAG_ARRAY));
             }
             BorshType::F64 => {
-                return Err("borsh-deserialize: F64 not yet supported".into());
+                // Read 8 LE bytes as the raw-bit i64 (bit-cast, mirror of
+                // the serialize side) and return it tagged as a Num.
+                v.push(Instruction::LocalGet(src));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                v.extend(self.emit_tag_num());
             }
             BorshType::String | BorshType::Bytes => {
                 let len = self.local_idx("__borsh_len");
@@ -730,9 +755,10 @@ impl WasmEmitter {
             }
             BorshType::Vec(inner) => {
                 let elem_sz = Self::borsh_type_size(inner);
-                if elem_sz == 0 {
+                let var_len = matches!(inner.as_ref(), BorshType::String | BorshType::Bytes);
+                if elem_sz == 0 && !var_len {
                     return Err(
-                        "borsh-deserialize: Vec of variable-length element types not yet supported"
+                        "borsh-deserialize: Vec of this variable-length element type not yet supported"
                             .into(),
                     );
                 }
@@ -836,11 +862,28 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64); // addr as i32
                 v.push(Instruction::LocalGet(store_tmp)); // tagged value
                 v.push(Instruction::I64Store(ma)); // [i32 addr, i64 val]
-                                                   // Advance elem_src by elem_sz
-                v.push(Instruction::LocalGet(elem_src));
-                v.push(Instruction::I64Const(elem_sz as i64));
-                v.push(Instruction::I64Add);
-                v.push(Instruction::LocalSet(elem_src));
+                                                   // Advance elem_src: fixed-size elements advance by elem_sz;
+                // String/Bytes elements are [u32 len][len bytes] → 4 + len
+                if var_len {
+                    v.push(Instruction::LocalGet(elem_src));
+                    v.push(Instruction::I64Const(4));
+                    v.push(Instruction::I64Add);
+                    v.push(Instruction::LocalGet(elem_src));
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::I32Load(wasm_encoder::MemArg {
+                        offset: 0,
+                        align: 2,
+                        memory_index: 0,
+                    }));
+                    v.push(Instruction::I64ExtendI32U);
+                    v.push(Instruction::I64Add);
+                    v.push(Instruction::LocalSet(elem_src));
+                } else {
+                    v.push(Instruction::LocalGet(elem_src));
+                    v.push(Instruction::I64Const(elem_sz as i64));
+                    v.push(Instruction::I64Add);
+                    v.push(Instruction::LocalSet(elem_src));
+                }
                 // elem_idx += 1
                 v.push(Instruction::LocalGet(elem_idx));
                 v.push(Instruction::I64Const(1));
