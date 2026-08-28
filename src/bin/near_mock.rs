@@ -36,7 +36,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let wasm_path = &args[1];
     let method = &args[2];
-    let args_json = args.get(3).cloned().unwrap_or_else(|| "{}".to_string());
+    // args: literal JSON, or "@file" to read raw bytes from a file (input
+    // fuzzing needs NUL bytes / invalid UTF-8 / >100KB payloads that cannot
+    // ride argv safely). Raw bytes: file content is passed through to the
+    // input register EXACTLY as-is (no UTF-8 validation, unlike argv).
+    let args_bytes: Vec<u8> = match args.get(3) {
+        Some(s) if s.starts_with('@') => {
+            std::fs::read(&s[1..]).unwrap_or_else(|e| {
+                eprintln!("failed to read args file {}: {}", &s[1..], e);
+                std::process::exit(2);
+            })
+        }
+        other => other
+            .cloned()
+            .unwrap_or_else(|| "{}".to_string())
+            .into_bytes(),
+    };
 
     if method == "reset" {
         let _ = std::fs::remove_file(STATE_FILE);
@@ -193,7 +208,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     );
 
-    let input_src = args_json.clone();
+    let input_src = args_bytes.clone();
     let s5 = state.clone();
     let input_fn = Func::new(
         &mut store,
@@ -201,7 +216,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         move |mut caller, args, _| {
             let rid = args[0].unwrap_i64() as u64;
             eprintln!("  → input(reg={})", rid);
-            let bytes = input_src.as_bytes().to_vec();
+            let bytes = input_src.clone();
             // Indicative legacy fee: write_register base + per byte
             let cost = 21_165_243u64 + 3_574_166u64 * bytes.len() as u64;
             caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
@@ -888,11 +903,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let func = instance
         .get_func(&mut store, method)
         .ok_or_else(|| format!("Method '{}' not found", method))?;
-    println!(
-        "▶ {}({})",
-        method,
-        if args_json == "{}" { "" } else { &args_json }
-    );
+    let args_display = if args_bytes == b"{}" {
+        String::new()
+    } else {
+        String::from_utf8_lossy(&args_bytes).into_owned()
+    };
+    println!("▶ {}({})", method, args_display);
     // Single execution ONLY. The old warm-up call double-applied storage
     // effects (a mint persisted twice → supply 2000 after one 1000-mint).
     // JIT warm-up is pointless here since fuel resets before the measured

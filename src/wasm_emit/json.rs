@@ -2452,11 +2452,15 @@ impl WasmEmitter {
         self.need_host(7);
         self.need_host(0);
         self.need_host(1);
+        // I1 fix (2026-08-27): bare quoted key; colon required at match
+        // time (see json_get_str) — glued colon broke `{"k": v}` spacing.
         let mut pattern = vec![b'"'];
         pattern.extend(key.as_bytes());
-        pattern.extend_from_slice(b"\":");
+        pattern.push(b'"');
         let pat_off = self.alloc_data(&pattern);
         let pat_len = pattern.len() as i64;
+        let ks = self.local_idx("__js_ks");
+        let cok = self.local_idx("__js_cok");
         let pos = self.local_idx("__js_pos");
         let ilen = self.local_idx("__js_ilen");
         let mi = self.local_idx("__js_mi");
@@ -2640,12 +2644,81 @@ impl WasmEmitter {
         v.push(Instruction::End);
         v.push(Instruction::End); // end pos > 0 check
         v.push(Instruction::End); // end mi==1 check
-                                  // Now check mi again — if still 1, break outer
+                                  // Now check mi again — if still 1, try the colon
         v.push(Instruction::LocalGet(mi));
         v.push(Instruction::I64Const(1));
         v.push(Instruction::I64Eq);
         v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::Br(2));
+        {
+            // I1 fix: skip ws after `"key"`, then REQUIRE ':'.
+            v.push(Instruction::LocalGet(pos));
+            v.push(Instruction::LocalSet(ks));
+            v.push(Instruction::LocalGet(pos));
+            v.push(Instruction::I64Const(pat_len));
+            v.push(Instruction::I64Add);
+            v.push(Instruction::LocalSet(pos));
+            v.push(Instruction::I64Const(0));
+            v.push(Instruction::LocalSet(cok));
+            v.push(Instruction::Block(BlockType::Empty));
+            v.push(Instruction::Loop(BlockType::Empty));
+            v.push(Instruction::LocalGet(pos));
+            v.push(Instruction::LocalGet(ilen));
+            v.push(Instruction::I64GeS);
+            v.push(Instruction::If(BlockType::Empty));
+            v.push(Instruction::Br(2));
+            v.push(Instruction::End);
+            v.push(Instruction::I64Const(ib));
+            v.push(Instruction::LocalGet(pos));
+            v.push(Instruction::I64Add);
+            v.push(Instruction::I32WrapI64);
+            v.push(Instruction::I32Load8U(ma8.clone()));
+            v.push(Instruction::I64ExtendI32U);
+            v.push(Instruction::LocalSet(ws_byte));
+            v.push(Instruction::LocalGet(ws_byte));
+            v.push(Instruction::I64Const(0x20));
+            v.push(Instruction::I64Eq);
+            v.push(Instruction::LocalGet(ws_byte));
+            v.push(Instruction::I64Const(0x09));
+            v.push(Instruction::I64Eq);
+            v.push(Instruction::I32Or);
+            v.push(Instruction::LocalGet(ws_byte));
+            v.push(Instruction::I64Const(0x0A));
+            v.push(Instruction::I64Eq);
+            v.push(Instruction::I32Or);
+            v.push(Instruction::LocalGet(ws_byte));
+            v.push(Instruction::I64Const(0x0D));
+            v.push(Instruction::I64Eq);
+            v.push(Instruction::I32Or);
+            v.push(Instruction::If(BlockType::Empty));
+            v.push(Instruction::LocalGet(pos));
+            v.push(Instruction::I64Const(1));
+            v.push(Instruction::I64Add);
+            v.push(Instruction::LocalSet(pos));
+            v.push(Instruction::Br(1));
+            v.push(Instruction::End);
+            v.push(Instruction::LocalGet(ws_byte));
+            v.push(Instruction::I64Const(0x3A));
+            v.push(Instruction::I64Eq);
+            v.push(Instruction::If(BlockType::Empty));
+            v.push(Instruction::I64Const(1));
+            v.push(Instruction::LocalSet(cok));
+            v.push(Instruction::End);
+            v.push(Instruction::Br(1));
+            v.push(Instruction::End);
+            v.push(Instruction::End);
+            v.push(Instruction::LocalGet(cok));
+            v.push(Instruction::I64Const(1));
+            v.push(Instruction::I64Eq);
+            v.push(Instruction::If(BlockType::Empty));
+            v.push(Instruction::LocalGet(pos));
+            v.push(Instruction::I64Const(1));
+            v.push(Instruction::I64Add);
+            v.push(Instruction::LocalSet(pos));
+            v.push(Instruction::Br(3));
+            v.push(Instruction::End);
+            v.push(Instruction::LocalGet(ks));
+            v.push(Instruction::LocalSet(pos));
+        }
         v.push(Instruction::End);
         // pos++
         v.push(Instruction::LocalGet(pos));
@@ -2662,11 +2735,7 @@ impl WasmEmitter {
         v.push(Instruction::I64LtS);
         v.push(Instruction::If(BlockType::Empty)); // if pos < ilen → parse
 
-        // pos at match. Value at pos + pat_len
-        v.push(Instruction::LocalGet(pos));
-        v.push(Instruction::I64Const(pat_len));
-        v.push(Instruction::I64Add);
-        v.push(Instruction::LocalSet(pos));
+        // (I1 fix: pos already points past the colon)
 
         // Skip whitespace (space, tab, LF, CR)
         v.push(Instruction::Block(BlockType::Empty));
@@ -3249,11 +3318,18 @@ impl WasmEmitter {
         self.need_host(7);
         self.need_host(0);
         self.need_host(1);
+        // Input-fuzz fix I1 (2026-08-27): the pattern used to glue the colon
+        // onto the key (`"key":`), so ANY whitespace between key-string and
+        // colon — `{"name": "x"}` and every pretty-printed JSON — failed to
+        // match and silently defaulted to "". Pattern is now the bare quoted
+        // key; whitespace is skipped and the colon REQUIRED at match time.
         let mut pattern = vec![b'"'];
         pattern.extend(key.as_bytes());
-        pattern.extend_from_slice(b"\":");
+        pattern.push(b'"');
         let pat_off = self.alloc_data(&pattern) as i32;
         let pat_len = pattern.len() as i32;
+        let ks = self.local_idx_i32("__jss_ks");
+        let cok = self.local_idx_i32("__jss_cok");
         let pos = self.local_idx_i32("__jss_pos");
         let ilen = self.local_idx_i32("__jss_ilen");
         let mi = self.local_idx_i32("__jss_mi");
@@ -3418,7 +3494,79 @@ impl WasmEmitter {
         v.push(Instruction::I32Const(1));
         v.push(Instruction::I32Eq);
         v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::Br(2));
+        {
+            // candidate `"key"` at pos. Skip ws, then REQUIRE ':'.
+            v.push(Instruction::LocalGet(pos));
+            v.push(Instruction::LocalSet(ks));
+            v.push(Instruction::LocalGet(pos));
+            v.push(Instruction::I32Const(pat_len));
+            v.push(Instruction::I32Add);
+            v.push(Instruction::LocalSet(pos));
+            v.push(Instruction::I32Const(0));
+            v.push(Instruction::LocalSet(cok));
+            v.push(Instruction::Block(BlockType::Empty));
+            v.push(Instruction::Loop(BlockType::Empty));
+            // pos >= ilen → fail
+            v.push(Instruction::LocalGet(pos));
+            v.push(Instruction::LocalGet(ilen));
+            v.push(Instruction::I32GeS);
+            v.push(Instruction::If(BlockType::Empty));
+            v.push(Instruction::Br(2));
+            v.push(Instruction::End);
+            v.push(Instruction::I32Const(ib));
+            v.push(Instruction::LocalGet(pos));
+            v.push(Instruction::I32Add);
+            v.push(Instruction::I32Load8U(ma8.clone()));
+            v.push(Instruction::LocalSet(ws_byte));
+            // ws → advance, loop
+            v.push(Instruction::LocalGet(ws_byte));
+            v.push(Instruction::I32Const(0x20));
+            v.push(Instruction::I32Eq);
+            v.push(Instruction::LocalGet(ws_byte));
+            v.push(Instruction::I32Const(0x09));
+            v.push(Instruction::I32Eq);
+            v.push(Instruction::I32Or);
+            v.push(Instruction::LocalGet(ws_byte));
+            v.push(Instruction::I32Const(0x0A));
+            v.push(Instruction::I32Eq);
+            v.push(Instruction::I32Or);
+            v.push(Instruction::LocalGet(ws_byte));
+            v.push(Instruction::I32Const(0x0D));
+            v.push(Instruction::I32Eq);
+            v.push(Instruction::I32Or);
+            v.push(Instruction::If(BlockType::Empty));
+            v.push(Instruction::LocalGet(pos));
+            v.push(Instruction::I32Const(1));
+            v.push(Instruction::I32Add);
+            v.push(Instruction::LocalSet(pos));
+            v.push(Instruction::Br(1));
+            v.push(Instruction::End);
+            // non-ws: ':' → ok; anything else → fail
+            v.push(Instruction::LocalGet(ws_byte));
+            v.push(Instruction::I32Const(0x3A));
+            v.push(Instruction::I32Eq);
+            v.push(Instruction::If(BlockType::Empty));
+            v.push(Instruction::I32Const(1));
+            v.push(Instruction::LocalSet(cok));
+            v.push(Instruction::End);
+            v.push(Instruction::Br(1));
+            v.push(Instruction::End);
+            v.push(Instruction::End);
+            // colon_ok && pos at ':' → skip colon, exit scan (success)
+            v.push(Instruction::LocalGet(cok));
+            v.push(Instruction::I32Const(1));
+            v.push(Instruction::I32Eq);
+            v.push(Instruction::If(BlockType::Empty));
+            v.push(Instruction::LocalGet(pos));
+            v.push(Instruction::I32Const(1));
+            v.push(Instruction::I32Add);
+            v.push(Instruction::LocalSet(pos));
+            v.push(Instruction::Br(3));
+            v.push(Instruction::End);
+            // fail: restore key start for the outer scan continuation
+            v.push(Instruction::LocalGet(ks));
+            v.push(Instruction::LocalSet(pos));
+        }
         v.push(Instruction::End);
         v.push(Instruction::LocalGet(pos));
         v.push(Instruction::I32Const(1));
@@ -3434,11 +3582,9 @@ impl WasmEmitter {
         v.push(Instruction::I32LtS);
         v.push(Instruction::If(BlockType::Result(ValType::I64)));
 
-        // Value at pos + pat_len
-        v.push(Instruction::LocalGet(pos));
-        v.push(Instruction::I32Const(pat_len));
-        v.push(Instruction::I32Add);
-        v.push(Instruction::LocalSet(pos));
+        // (I1 fix: pos already points at the first byte after the colon —
+        // the old `pos += pat_len` jump is gone with the colon out of the
+        // pattern.)
 
         // Skip whitespace (space, tab, LF, CR)
         v.push(Instruction::Block(BlockType::Empty));
@@ -3485,9 +3631,19 @@ impl WasmEmitter {
         v.push(Instruction::I32Add);
         v.push(Instruction::LocalSet(pos));
 
-        // Measure string length (scan until closing quote)
+        // Measure string length (scan until closing quote).
+        // Input-fuzz fix I2 (2026-08-27): the close-quote test ignored
+        // backslash escapes, so any value containing \" truncated at the
+        // first escaped quote (silent corruption). Now tracks backslash-run
+        // parity: a 0x22 closes only when the preceding backslash run is
+        // EVEN (\\" is a real quote, \\" is not). Escapes are NOT
+        // decoded — the raw byte slice is returned (documented semantics).
+        let bs = self.local_idx_i32("__jss_bs");
+        let bcur = self.local_idx_i32("__jss_bcur");
         v.push(Instruction::I32Const(0));
         v.push(Instruction::LocalSet(slen));
+        v.push(Instruction::I32Const(0));
+        v.push(Instruction::LocalSet(bs));
         v.push(Instruction::Block(BlockType::Empty));
         v.push(Instruction::Loop(BlockType::Empty));
         v.push(Instruction::LocalGet(pos));
@@ -3504,10 +3660,36 @@ impl WasmEmitter {
         v.push(Instruction::I32Add);
         v.push(Instruction::I32Add);
         v.push(Instruction::I32Load8U(ma8.clone()));
+        v.push(Instruction::LocalSet(bcur));
+        v.push(Instruction::LocalGet(bcur));
         v.push(Instruction::I32Const(0x22));
         v.push(Instruction::I32Eq);
         v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::Br(2));
+        // quote — real close iff backslash run is even
+        v.push(Instruction::LocalGet(bs));
+        v.push(Instruction::I32Const(1));
+        v.push(Instruction::I32And);
+        v.push(Instruction::I32Eqz);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Br(3));
+        v.push(Instruction::End);
+        // escaped quote — the escape is consumed by it
+        v.push(Instruction::I32Const(0));
+        v.push(Instruction::LocalSet(bs));
+        v.push(Instruction::Else);
+        // not a quote: extend or reset the backslash run
+        v.push(Instruction::LocalGet(bcur));
+        v.push(Instruction::I32Const(0x5C));
+        v.push(Instruction::I32Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(bs));
+        v.push(Instruction::I32Const(1));
+        v.push(Instruction::I32Add);
+        v.push(Instruction::LocalSet(bs));
+        v.push(Instruction::Else);
+        v.push(Instruction::I32Const(0));
+        v.push(Instruction::LocalSet(bs));
+        v.push(Instruction::End);
         v.push(Instruction::End);
         v.push(Instruction::LocalGet(slen));
         v.push(Instruction::I32Const(1));
