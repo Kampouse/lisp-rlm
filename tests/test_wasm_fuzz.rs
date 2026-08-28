@@ -65,10 +65,18 @@ fn lispval_to_tagged(val: &LispVal) -> Option<i64> {
 /// Set up wasmtime with all NEAR host function stubs, run the WASM module,
 /// and return the tagged i64 stored at TEMP_MEM.
 #[cfg(not(target_arch = "wasm32"))]
+/// Shared wasmtime Engine — creation + JIT setup is expensive; reuse it
+/// across every fuzz case instead of paying per-case.
+static SHARED_ENGINE: std::sync::OnceLock<wasmtime::Engine> = std::sync::OnceLock::new();
+
+fn shared_engine() -> &'static wasmtime::Engine {
+    SHARED_ENGINE.get_or_init(wasmtime::Engine::default)
+}
+
 fn run_wasm_fuzz(wasm: &[u8]) -> Result<i64, String> {
     use wasmtime::*;
 
-    let engine = Engine::default();
+    let engine = shared_engine();
     let module = Module::new(&engine, wasm).map_err(|e| format!("module: {}", e))?;
     let mut store = Store::new(&engine, ());
     let mut linker = Linker::new(&engine);
@@ -692,12 +700,18 @@ mod prop {
         inner.prop_map(|e| format!("(define (run) {})", e))
     }
 
-    /// How many random cases to generate per property test.
-    /// Override at runtime with PROPTEST_CASES=NNN (e.g. for quick local runs).
-    const FUZZ_CASES: u32 = 10_000;
+    /// Cases per property for the proptest gate. Small by default so the
+    /// normal suite stays fast; the deep pass is parallel_torture below.
+    /// Override at runtime with PROPTEST_CASES=NNN.
+    fn fuzz_cases() -> u32 {
+        std::env::var("PROPTEST_CASES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(256)
+    }
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(FUZZ_CASES))]
+        #![proptest_config(ProptestConfig::with_cases(fuzz_cases()))]
         /// Differential fuzz: random leaf expressions.
         #[test]
         fn prop_leaf(expr in program(leaf_expr())) {
@@ -1010,6 +1024,124 @@ mod prop {
             if let Err(e) = fuzz_one(&expr) {
                 panic!("value-define mismatch: {}\nsource: {}", e, expr);
             }
+        }
+    }
+
+    /// Parallel differential torture — same generator space as the proptest gate
+    /// above, but cases are spread across all cores (rayon chunks) and the
+    /// wasmtime Engine is shared. This is the "run more tests" path:
+    ///
+    ///   WASM_TORTURE_CASES=50000 cargo test --test test_wasm_fuzz parallel_torture
+    ///   WASM_TORTURE_SKIP=1 cargo test            # skip it in quick runs
+    ///
+    /// Defaults to 10_000 total cases split across the property mix.
+    /// On mismatch: prints the property name, full source, and error; re-run the
+    /// source through fuzz_one / the ddmin shrinker for minimization.
+    mod torture {
+        use super::super::*;
+        use super::{
+            arith_op, begin_expr, binary_expr, closure_expr, fn_call_expr, if_expr,
+            leaf_expr, let_expr, loop_expr, multi_let_expr, nested_let_expr, num_leaf,
+            program, recursive_fn_expr, safe_int, set_expr,
+        };
+        use proptest::prelude::*;
+        use proptest::test_runner::{Config as RunnerConfig, TestRunner};
+
+        #[test]
+        fn parallel_torture() {
+            use rayon::prelude::*;
+
+            if std::env::var("WASM_TORTURE_SKIP").is_ok() {
+                eprintln!("parallel_torture: skipped (WASM_TORTURE_SKIP set)");
+                return;
+            }
+            let total: usize = std::env::var("WASM_TORTURE_CASES")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10_000);
+
+            type Ctor = fn() -> BoxedStrategy<String>;
+            let props: Vec<(&'static str, Ctor)> = vec![
+                ("leaf", || program(leaf_expr()).boxed()),
+                ("binary", || program(binary_expr()).boxed()),
+                ("if", || program(if_expr()).boxed()),
+                ("let", || program(let_expr()).boxed()),
+                ("begin", || program(begin_expr()).boxed()),
+                (
+                    "chained",
+                    || {
+                        (arith_op(), num_leaf())
+                            .prop_map(|(op, val)| {
+                                let args: Vec<String> = (0..4).map(|_| val.to_string()).collect();
+                                format!("(define (run) ({} {}))", op, args.join(" "))
+                            })
+                            .boxed()
+                    },
+                ),
+                ("recursive_fn", || recursive_fn_expr().boxed()),
+                ("closure", || program(closure_expr()).boxed()),
+                ("set_bang", || program(set_expr()).boxed()),
+                ("multi_let", || program(multi_let_expr()).boxed()),
+                ("nested_let", || program(nested_let_expr()).boxed()),
+                ("loop", || program(loop_expr()).boxed()),
+                ("fn_call", || fn_call_expr().boxed()),
+                (
+                    "cond",
+                    || {
+                        (safe_int(), safe_int(), safe_int(), safe_int())
+                            .prop_map(|(a, b, c, d)| {
+                                format!("(define (run) (if (> {a} {b}) (+ {c} {d}) (- {c} {d})))")
+                            })
+                            .boxed()
+                    },
+                ),
+            ];
+
+            let per_prop = (total / props.len()).max(1);
+            let chunk = 64usize;
+            let t0 = std::time::Instant::now();
+
+            let mut failures: Vec<(String, String)> = Vec::new();
+            for (name, ctor) in &props {
+                let name = *name;
+                let n_chunks = (per_prop + chunk - 1) / chunk;
+                let mut prop_fails: Vec<(String, String)> = (0..n_chunks)
+                    .into_par_iter()
+                    .filter_map(|ci| {
+                        // Each rayon task builds its own strategy (not Sync-shareable)
+                        let strat = ctor();
+                        let mut runner = TestRunner::new(RunnerConfig::default());
+                        let remaining = per_prop.saturating_sub(ci * chunk).min(chunk);
+                        for _ in 0..remaining {
+                            let tree = match strat.new_tree(&mut runner) {
+                                Ok(t) => t,
+                                Err(e) => {
+                                    return Some((name.to_string(), format!("generator reject: {e}")))
+                                }
+                            };
+                            let source = tree.current().clone();
+                            if let Err(e) = fuzz_one(&source) {
+                                return Some((name.to_string(), format!("{e}\nsource: {source}")));
+                            }
+                        }
+                        None
+                    })
+                    .collect();
+                failures.append(&mut prop_fails);
+            }
+
+            let dt = t0.elapsed().as_secs_f64();
+            let n = per_prop * props.len();
+            eprintln!(
+                "parallel_torture: {n} cases across {} properties in {dt:.1}s ({:.0} cases/s)",
+                props.len(),
+                n as f64 / dt
+            );
+            assert!(
+                failures.is_empty(),
+                "differential mismatches:\n{:#?}",
+                failures
+            );
         }
     }
 }
