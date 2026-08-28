@@ -12,14 +12,14 @@ module LispIR.CompilerCorrectnessExtended
     - if_gt_false: requires eval ca <= eval cb → ensures result = eval el
     SMT uses `requires` as ground assumption → determines JmpF path
 
-    Trusted axioms: 10
-    - 3 sequential composition (Add, Sub, Neg)
-    - 1 sequential composition (IfGt condition)
-    - 2 code layout (jump targets)
-    - 2 sequential composition (Let bind + body)
-    - 1 store slot semantics
-    - 1 GtCmp result
-    Admits: 0
+    Trusted axioms: 10 (being eliminated - see below)
+    Admits: 9 inline squash axioms (2026-08-27: elimination underway)
+
+    Elimination plan (in progress):
+    - vmt: fuel-threaded VM added; underflow halts with fuel 0
+    - vmt_sequential: composition for jump-free c1 PROVEN (no admits)
+    - next: jump-aware composition (targets within c1, by compiler
+      construction), then rewrite the theorem's split points to use it
 *)
 
 open FStar.List.Tot
@@ -71,6 +71,96 @@ type aop =
   | Jmp of int
   | StoreSlot
   | LoadSlot
+
+// ============================================================
+// FUEL-THREADED VM (vmt) — returns remaining fuel; underflow halts with
+// fuel 0. Sequential composition is provable for vmt by structural
+// induction on c1 (jumps fold c2 into the continuation).
+// ============================================================
+
+type vmt_result = { vr_stack : list int; vr_slots : list (string * int); vr_fuel : int }
+
+val vmt : fuel:int -> code:list aop -> stack:list int ->
+  slots:list (string * int) -> Tot vmt_result (decreases fuel)
+let rec vmt fuel code stack slots =
+  if fuel <= 0 then { vr_stack = stack; vr_slots = slots; vr_fuel = fuel }
+  else match code with
+  | [] -> { vr_stack = stack; vr_slots = slots; vr_fuel = fuel }
+  | Push n :: rest -> vmt (fuel - 1) rest (n :: stack) slots
+  | OpAdd :: rest ->
+    (match stack with
+     | a :: b :: s' -> vmt (fuel - 1) rest ((b + a) :: s') slots
+     | _ -> { vr_stack = stack; vr_slots = slots; vr_fuel = 0 })
+  | OpSub :: rest ->
+    (match stack with
+     | a :: b :: s' -> vmt (fuel - 1) rest ((b - a) :: s') slots
+     | _ -> { vr_stack = stack; vr_slots = slots; vr_fuel = 0 })
+  | OpNeg :: rest ->
+    (match stack with
+     | a :: s' -> vmt (fuel - 1) rest ((0 - a) :: s') slots
+     | _ -> { vr_stack = stack; vr_slots = slots; vr_fuel = 0 })
+  | GtCmp :: rest ->
+    (match stack with
+     | a :: b :: s' -> vmt (fuel - 1) rest ((if b > a then 1 else 0) :: s') slots
+     | _ -> { vr_stack = stack; vr_slots = slots; vr_fuel = 0 })
+  | JmpF n :: rest ->
+    (match stack with
+     | c :: s' ->
+       if c <> 0 then vmt (fuel - 1) rest s' slots
+       else vmt (fuel - 1) (tl_drop n rest) s' slots
+     | _ -> { vr_stack = stack; vr_slots = slots; vr_fuel = 0 })
+  | Jmp n :: rest -> vmt (fuel - 1) (tl_drop n rest) stack slots
+  | StoreSlot :: rest ->
+    (match stack with
+     | v :: s' -> vmt (fuel - 1) rest s' (store_slot v slots)
+     | _ -> { vr_stack = stack; vr_slots = slots; vr_fuel = 0 })
+  | LoadSlot :: rest -> vmt (fuel - 1) rest (load_slot slots :: stack) slots
+
+val vmt_run_then : fuel:int -> c1:list aop -> c2:list aop -> stack:list int ->
+  slots:list (string * int) -> Tot vmt_result
+let vmt_run_then fuel c1 c2 stack slots =
+  let r1 = vmt fuel c1 stack slots in
+  vmt r1.vr_fuel c2 r1.vr_stack r1.vr_slots
+
+val jump_free : list aop -> Tot bool
+let rec jump_free c = match c with
+  | [] -> true
+  | JmpF _ :: rest -> false
+  | Jmp _ :: rest -> false
+  | _ :: rest -> jump_free rest
+
+val vmt_sequential : c1:list aop -> fuel:int -> c2:list aop ->
+  stack:list int -> slots:list (string * int) -> unit -> Lemma
+  (requires jump_free c1)
+  (ensures vmt fuel (c1 @ c2) stack slots
+           == vmt_run_then fuel c1 c2 stack slots)
+  (decreases c1)
+let rec vmt_sequential c1 fuel c2 stack slots _ =
+  match c1 with
+  | [] -> ()
+  | Push n :: rest -> vmt_sequential rest (fuel - 1) c2 (n :: stack) slots ()
+  | OpAdd :: rest ->
+    (match stack with
+     | a :: b :: s' -> vmt_sequential rest (fuel - 1) c2 ((b + a) :: s') slots ()
+     | _ -> ())
+  | OpSub :: rest ->
+    (match stack with
+     | a :: b :: s' -> vmt_sequential rest (fuel - 1) c2 ((b - a) :: s') slots ()
+     | _ -> ())
+  | OpNeg :: rest ->
+    (match stack with
+     | a :: s' -> vmt_sequential rest (fuel - 1) c2 ((0 - a) :: s') slots ()
+     | _ -> ())
+  | GtCmp :: rest ->
+    (match stack with
+     | a :: b :: s' -> vmt_sequential rest (fuel - 1) c2 ((if b > a then 1 else 0) :: s') slots ()
+     | _ -> ())
+  | StoreSlot :: rest ->
+    (match stack with
+     | v :: s' -> vmt_sequential rest (fuel - 1) c2 s' (store_slot v slots) ()
+     | _ -> ())
+  | LoadSlot :: rest -> vmt_sequential rest (fuel - 1) c2 (load_slot slots :: stack) slots ()
+
 
 // ============================================================
 // FUEL-BASED VM
