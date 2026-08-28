@@ -47,35 +47,60 @@ let opt_lisp_eq a b =
   | _ -> false
 
 // ============================================================
-// TRUSTED BRIDGE LEMMAS (5 admits)
-// All trivially true by definition. Admitted due to cross-module
-// opacity of FStar.Seq operations and noeq on lisp_val.
+// BRIDGE LEMMAS (5, fully proven)
+//
+// lisp_eq x x is provable when x is a scalar (Num/Bool/Str/Nil/Float):
+// each of those match arms uses a reflexive comparison. It is FALSE for
+// Vec/List/Map elements — lisp_eq currently returns false for containers
+// (its Rust counterpart vals_equal does deep comparison; the F* spec lags).
+// The lemmas therefore carry a scalar-element requirement, which is the
+// strongest true statement available without deep equality.
 // ============================================================
 
+val eqable : lisp_val -> Tot bool
+let eqable v = match v with
+  | Num _ | Bool _ | Str _ | Nil | Float _ -> true
+  | _ -> false
+
+val lisp_eq_refl_eqable : x:lisp_val -> Lemma (requires eqable x) (ensures lisp_eq x x)
+let lisp_eq_refl_eqable x = match x with
+  | Num _ -> ()
+  | Bool _ -> ()
+  | Str _ -> ()
+  | Nil -> ()
+  | Float f -> ff_eq_refl f
+  | _ -> ()
+
 val append_preserves_left : a:seq lisp_val -> b:seq lisp_val -> i:int ->
-  Lemma (requires i >= 0 && i < length a)
+  Lemma (requires i >= 0 && i < length a && eqable (index a i))
          (ensures lisp_eq (index a i) (index (append a b) i))
-let append_preserves_left _ _ _ = admit ()
+let append_preserves_left a b i =
+  lisp_eq_refl_eqable (index a i)  // seq theory: index (append a b) i == index a i
 
 val append_reaches_right : a:seq lisp_val -> b:seq lisp_val -> i:int ->
-  Lemma (requires i >= length a && i < length a + length b)
+  Lemma (requires i >= length a && i < length a + length b && eqable (index b (i - length a)))
          (ensures lisp_eq (index b (i - length a)) (index (append a b) i))
-let append_reaches_right _ _ _ = admit ()
+let append_reaches_right a b i =
+  lisp_eq_refl_eqable (index b (i - length a))
 
 val vec_nth_some_index : s:seq lisp_val -> n:int ->
-  Lemma (requires n >= 0 && n < length s)
+  Lemma (requires n >= 0 && n < length s && eqable (index s n))
          (ensures opt_lisp_eq (vec_nth (Vec s) n) (Some (index s n)))
-let vec_nth_some_index _ _ = admit ()
+let vec_nth_some_index s n =
+  lisp_eq_refl_eqable (index s n)
 
 val upd_at_idx : s:seq lisp_val -> idx:int -> x:lisp_val ->
-  Lemma (requires idx >= 0 && idx < length s)
+  Lemma (requires idx >= 0 && idx < length s && eqable x)
          (ensures lisp_eq (index (upd s idx x) idx) x)
-let upd_at_idx _ _ _ = admit ()
+let upd_at_idx s idx x =
+  lisp_eq_refl_eqable x
 
 val upd_other_idx : s:seq lisp_val -> idx:int -> x:lisp_val -> i:int ->
-  Lemma (requires idx >= 0 && idx < length s && i >= 0 && i < length s && i <> idx)
+  Lemma (requires idx >= 0 && idx < length s && i >= 0 && i < length s && i <> idx
+         && eqable (index s i))
          (ensures lisp_eq (index (upd s idx x) i) (index s i))
-let upd_other_idx _ _ _ _ = admit ()
+let upd_other_idx s idx x i =
+  lisp_eq_refl_eqable (index s i)
 
 // ============================================================
 // SECTION 1: VEC_LEN (pure SMT)
@@ -124,7 +149,7 @@ val vec_conj_len_diff : s:seq lisp_val -> x:lisp_val -> Lemma
 let vec_conj_len_diff s x = ()
 
 val vec_conj_prefix : s:seq lisp_val -> x:lisp_val -> i:int -> Lemma
-  (requires i >= 0 && i < length s)
+  (requires i >= 0 && i < length s && eqable (index s i))
   (ensures opt_lisp_eq (vec_nth (vec_conj x (Vec s)) i) (vec_nth (Vec s) i))
 let vec_conj_prefix s x i =
   append_preserves_left s (create 1 x) i;
@@ -132,14 +157,14 @@ let vec_conj_prefix s x i =
   vec_nth_some_index (append s (create 1 x)) i
 
 val vec_conj_last_elem : s:seq lisp_val -> x:lisp_val -> Lemma
-  (requires length s >= 0)
+  (requires length s >= 0 && eqable x)
   (ensures opt_lisp_eq (vec_nth (vec_conj x (Vec s)) (length s)) (Some x))
 let vec_conj_last_elem s x =
   append_reaches_right s (create 1 x) (length s);
   vec_nth_some_index (append s (create 1 x)) (length s)
 
 val vec_conj2_preserves : s:seq lisp_val -> a:lisp_val -> b:lisp_val -> i:int -> Lemma
-  (requires i >= 0 && i < length s)
+  (requires i >= 0 && i < length s && eqable (index s i))
   (ensures opt_lisp_eq (vec_nth (vec_conj b (vec_conj a (Vec s))) i) (vec_nth (Vec s) i))
 let vec_conj2_preserves s a b i =
   append_preserves_left s (create 1 a) i;
@@ -150,7 +175,7 @@ let vec_conj2_preserves s a b i =
   vec_nth_some_index (append sa (create 1 b)) i
 
 val vec_conj2_ordering : s:seq lisp_val -> a:lisp_val -> b:lisp_val -> Lemma
-  (requires length s >= 0)
+  (requires length s >= 0 && eqable a && eqable b)
   (ensures opt_lisp_eq (vec_nth (vec_conj b (vec_conj a (Vec s))) (length s)) (Some a) /\
            opt_lisp_eq (vec_nth (vec_conj b (vec_conj a (Vec s))) (length s + 1)) (Some b))
 let vec_conj2_ordering s a b =
@@ -209,7 +234,8 @@ val vec_assoc_updates : s:seq lisp_val -> idx:int -> x:lisp_val -> Lemma
 let vec_assoc_updates s idx x = ()
 
 val vec_assoc_preserves_other : s:seq lisp_val -> idx:int -> x:lisp_val -> i:int -> Lemma
-  (requires idx >= 0 && idx < length s && i >= 0 && i < length s && i <> idx)
+  (requires idx >= 0 && idx < length s && i >= 0 && i < length s && i <> idx
+            && eqable (index s i))
   (ensures opt_lisp_eq (vec_nth (vec_assoc idx x (Vec s)) i) (vec_nth (Vec s) i))
 let vec_assoc_preserves_other s idx x i =
   upd_other_idx s idx x i;
@@ -217,14 +243,15 @@ let vec_assoc_preserves_other s idx x i =
   vec_nth_some_index (upd s idx x) i
 
 val vec_assoc_overwrite : s:seq lisp_val -> idx:int -> a:lisp_val -> b:lisp_val -> Lemma
-  (requires idx >= 0 && idx < length s)
+  (requires idx >= 0 && idx < length s && eqable b)
   (ensures opt_lisp_eq (vec_nth (vec_assoc idx b (vec_assoc idx a (Vec s))) idx) (Some b))
 let vec_assoc_overwrite s idx a b =
   upd_at_idx (upd s idx a) idx b;
   vec_nth_some_index (upd (upd s idx a) idx b) idx
 
 val vec_assoc_independent : s:seq lisp_val -> i:int -> j:int -> a:lisp_val -> b:lisp_val -> Lemma
-  (requires i >= 0 && i < length s && j >= 0 && j < length s && i <> j)
+  (requires i >= 0 && i < length s && j >= 0 && j < length s && i <> j
+            && eqable a && eqable b)
   (ensures opt_lisp_eq (vec_nth (vec_assoc j b (vec_assoc i a (Vec s))) i) (Some a) /\
            opt_lisp_eq (vec_nth (vec_assoc j b (vec_assoc i a (Vec s))) j) (Some b))
 let vec_assoc_independent s i j a b =
