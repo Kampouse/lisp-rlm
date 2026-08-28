@@ -1,4 +1,6 @@
 module LispIR.EndToEnd
+
+#set-options "--z3rlimit 800 --max_fuel 60 --max_ifuel 60 --initial_fuel 2 --initial_ifuel 2"
 (** End-to-end verified pipeline:
 
     #1 Compilation correctness (concrete programs):
@@ -140,8 +142,8 @@ and parse_compound (fuel:int) (toks:list tok) : Tot (option expr) (decreases fue
     Some (Neg (Num a))
   | TkS "if-gt" :: TkN a :: TkN b :: TkN t :: TkN f :: TkR :: [] ->
     Some (IfGt (Num a, Num b, Num t, Num f))
-  | TkS "let" :: TkN v :: TkR :: [] ->
-    Some (Let ("x", Num v, Num v))
+  | TkS "let" :: TkN v :: TkN b :: TkR :: [] ->
+    Some (Let ("x", Num v, Num b))
   | _ -> None
 
 // ============================================================
@@ -355,12 +357,10 @@ let test_eval_vm_eq_add () = assert_norm (run_eval "(+ 3 4)" = run_vm "(+ 3 4)")
 // Normalizer exceeds step budget for let (3-char symbol + extra unfolding).
 // Proven via squash axiom — same pattern as universal type soundness.
 val test_eval_let : unit -> Lemma (run_eval "(let 5 8)" = 8)
-let test_eval_let () =
-  let _h : squash (run_eval "(let 5 8)" = 8) = admit () in ()
+let test_eval_let () = assert_norm (run_eval "(let 5 8)" = 8)
 
 val test_type_let : unit -> Lemma (run_typecheck "(let 5 8)" = Some TInt)
-let test_type_let () =
-  let _h : squash (run_typecheck "(let 5 8)" = Some TInt) = admit () in ()
+let test_type_let () = assert_norm (run_typecheck "(let 5 8)" = Some TInt)
 
 // Let with arithmetic in value position — not yet supported by parser
 // (parser only handles num values; compound values need nested parse)
@@ -383,31 +383,31 @@ let test_type_let () =
 
 val tc_num : unit -> Lemma (typecheck (Num 0) = Some TInt)
 let tc_num () =
-  let _h : squash (typecheck (Num 0) = Some TInt) = admit () in ()
+  let _h : squash (typecheck (Num 0) = Some TInt) = () in ()
 
 val tc_bool : unit -> Lemma (typecheck (Bool true) = Some TBool)
 let tc_bool () =
-  let _h : squash (typecheck (Bool true) = Some TBool) = admit () in ()
+  let _h : squash (typecheck (Bool true) = Some TBool) = () in ()
 
 val tc_add_sound : unit -> Lemma (
   typecheck (Num 0) = Some TInt /\
   typecheck (Num 0) = Some TInt ==>
   typecheck (Add (Num 0, Num 0)) = Some TInt)
 let tc_add_sound () =
-  let _h : squash (typecheck (Add (Num 0, Num 0)) = Some TInt) = admit () in ()
+  let _h : squash (typecheck (Add (Num 0, Num 0)) = Some TInt) = () in ()
 
 val tc_sub_sound : unit -> Lemma (
   typecheck (Num 0) = Some TInt /\
   typecheck (Num 0) = Some TInt ==>
   typecheck (Sub (Num 0, Num 0)) = Some TInt)
 let tc_sub_sound () =
-  let _h : squash (typecheck (Sub (Num 0, Num 0)) = Some TInt) = admit () in ()
+  let _h : squash (typecheck (Sub (Num 0, Num 0)) = Some TInt) = () in ()
 
 val tc_neg_sound : unit -> Lemma (
   typecheck (Num 0) = Some TInt ==>
   typecheck (Neg (Num 0)) = Some TInt)
 let tc_neg_sound () =
-  let _h : squash (typecheck (Neg (Num 0)) = Some TInt) = admit () in ()
+  let _h : squash (typecheck (Neg (Num 0)) = Some TInt) = () in ()
 
 val tc_ifgt_sound : unit -> Lemma (
   typecheck (Num 0) = Some TInt /\
@@ -416,40 +416,39 @@ val tc_ifgt_sound : unit -> Lemma (
   typecheck (Num 0) = Some TInt ==>
   typecheck (IfGt (Num 0, Num 0, Num 0, Num 0)) = Some TInt)
 let tc_ifgt_sound () =
-  let _h : squash (typecheck (IfGt (Num 0, Num 0, Num 0, Num 0)) = Some TInt) = admit () in ()
+  let _h : squash (typecheck (IfGt (Num 0, Num 0, Num 0, Num 0)) = Some TInt) = () in ()
 
 val tc_let_sound : unit -> Lemma (
   typecheck (Num 0) = Some TInt /\
   typecheck (Num 0) = Some TInt ==>
   typecheck (Let ("x", Num 0, Num 0)) = Some TInt)
 let tc_let_sound () =
-  let _h : squash (typecheck (Let ("x", Num 0, Num 0)) = Some TInt) = admit () in ()
+  let _h : squash (typecheck (Let ("x", Num 0, Num 0)) = Some TInt) = () in ()
 
 // --- Progress: well-typed expressions always produce an int ---
 
 val eval_num_progress : unit -> Lemma (eval_expr 1 (Num 42) = 42)
 let eval_num_progress () =
-  let _h : squash (eval_expr 1 (Num 42) = 42) = admit () in ()
+  let _h : squash (eval_expr 1 (Num 42) = 42) = () in ()
 
 val eval_add_progress : unit -> Lemma (
   eval_expr 1 (Num 3) = 3 /\
   eval_expr 1 (Num 4) = 4 ==>
   eval_expr 2 (Add (Num 3, Num 4)) = 7)
 let eval_add_progress () =
-  let _h : squash (eval_expr 2 (Add (Num 3, Num 4)) = 7) = admit () in ()
+  let _h : squash (eval_expr 2 (Add (Num 3, Num 4)) = 7) = () in ()
 
 val eval_sub_progress : unit -> Lemma (
   eval_expr 1 (Num 10) = 10 /\
   eval_expr 1 (Num 3) = 3 ==>
   eval_expr 2 (Sub (Num 10, Num 3)) = 7)
 let eval_sub_progress () =
-  let _h : squash (eval_expr 2 (Sub (Num 10, Num 3)) = 7) = admit () in ()
+  let _h : squash (eval_expr 2 (Sub (Num 10, Num 3)) = 7) = () in ()
 
 val eval_neg_progress : unit -> Lemma (
-  eval_expr 1 (Num 5) = 5 ==>
-  eval_expr 1 (Neg (Num 5)) = -5)
+  eval_expr 2 (Neg (Num 5)) = -5)
 let eval_neg_progress () =
-  let _h : squash (eval_expr 1 (Neg (Num 5)) = -5) = admit () in ()
+  let _h : squash (eval_expr 2 (Neg (Num 5)) = -5) = () in ()
 
 val eval_ifgt_true_progress : unit -> Lemma (
   eval_expr 1 (Num 5) = 5 /\
@@ -458,7 +457,7 @@ val eval_ifgt_true_progress : unit -> Lemma (
   eval_expr 1 (Num 20) = 20 ==>
   eval_expr 2 (IfGt (Num 5, Num 3, Num 10, Num 20)) = 10)
 let eval_ifgt_true_progress () =
-  let _h : squash (eval_expr 2 (IfGt (Num 5, Num 3, Num 10, Num 20)) = 10) = admit () in ()
+  let _h : squash (eval_expr 2 (IfGt (Num 5, Num 3, Num 10, Num 20)) = 10) = () in ()
 
 val eval_ifgt_false_progress : unit -> Lemma (
   eval_expr 1 (Num 3) = 3 /\
@@ -467,7 +466,7 @@ val eval_ifgt_false_progress : unit -> Lemma (
   eval_expr 1 (Num 20) = 20 ==>
   eval_expr 2 (IfGt (Num 3, Num 5, Num 10, Num 20)) = 20)
 let eval_ifgt_false_progress () =
-  let _h : squash (eval_expr 2 (IfGt (Num 3, Num 5, Num 10, Num 20)) = 20) = admit () in ()
+  let _h : squash (eval_expr 2 (IfGt (Num 3, Num 5, Num 10, Num 20)) = 20) = () in ()
 
 // --- Preservation: type of result matches declared type ---
 
@@ -475,29 +474,29 @@ val pres_num : unit -> Lemma (
   typecheck (Num 42) = Some TInt ==>
   eval_expr 1 (Num 42) = 42)
 let pres_num () =
-  let _h : squash (eval_expr 1 (Num 42) = 42) = admit () in ()
+  let _h : squash (eval_expr 1 (Num 42) = 42) = () in ()
 
 val pres_add : unit -> Lemma (
   typecheck (Add (Num 3, Num 4)) = Some TInt ==>
   eval_expr 2 (Add (Num 3, Num 4)) = 7)
 let pres_add () =
-  let _h : squash (eval_expr 2 (Add (Num 3, Num 4)) = 7) = admit () in ()
+  let _h : squash (eval_expr 2 (Add (Num 3, Num 4)) = 7) = () in ()
 
 val pres_ifgt : unit -> Lemma (
   typecheck (IfGt (Num 5, Num 3, Num 10, Num 20)) = Some TInt ==>
   eval_expr 2 (IfGt (Num 5, Num 3, Num 10, Num 20)) = 10)
 let pres_ifgt () =
-  let _h : squash (eval_expr 2 (IfGt (Num 5, Num 3, Num 10, Num 20)) = 10) = admit () in ()
+  let _h : squash (eval_expr 2 (IfGt (Num 5, Num 3, Num 10, Num 20)) = 10) = () in ()
 
 val eval_let_progress : unit -> Lemma (
   eval_expr 1 (Num 5) = 5 /\
   eval_expr 1 (Num 8) = 8 ==>
   eval_expr 2 (Let ("x", Num 5, Num 8)) = 8)
 let eval_let_progress () =
-  let _h : squash (eval_expr 2 (Let ("x", Num 5, Num 8)) = 8) = admit () in ()
+  let _h : squash (eval_expr 2 (Let ("x", Num 5, Num 8)) = 8) = () in ()
 
 val pres_let : unit -> Lemma (
   typecheck (Let ("x", Num 5, Num 8)) = Some TInt ==>
   eval_expr 2 (Let ("x", Num 5, Num 8)) = 8)
 let pres_let () =
-  let _h : squash (eval_expr 2 (Let ("x", Num 5, Num 8)) = 8) = admit () in ()
+  let _h : squash (eval_expr 2 (Let ("x", Num 5, Num 8)) = 8) = () in ()
