@@ -693,6 +693,7 @@ impl WasmEmitter {
                 let off = self.local_idx("__u128_off");
                 let mut v = Vec::new();
                 v.extend(offset_expr);
+                v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(off));
                 v.push(Instruction::LocalGet(off));
                 v.push(Instruction::I32WrapI64);
@@ -713,6 +714,7 @@ impl WasmEmitter {
                     memory_index: 0,
                 }));
                 v.push(Instruction::LocalGet(off));
+                v.extend(self.emit_tag_num());
                 Ok(v)
             }
             "u128/new" => {
@@ -725,26 +727,30 @@ impl WasmEmitter {
                 let off = self.local_idx("__u128_off");
                 let mut v = Vec::new();
                 v.extend(off_e);
+                v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(off));
-                v.extend(lo_e);
                 v.push(Instruction::LocalGet(off));
                 v.push(Instruction::I32WrapI64);
+                v.extend(lo_e);
+                v.extend(self.emit_untag());
                 v.push(Instruction::I64Store(wasm_encoder::MemArg {
                     offset: 0,
                     align: 3,
                     memory_index: 0,
                 }));
-                v.extend(hi_e);
                 v.push(Instruction::LocalGet(off));
                 v.push(Instruction::I64Const(8));
                 v.push(Instruction::I64Add);
                 v.push(Instruction::I32WrapI64);
+                v.extend(hi_e);
+                v.extend(self.emit_untag());
                 v.push(Instruction::I64Store(wasm_encoder::MemArg {
                     offset: 0,
                     align: 3,
                     memory_index: 0,
                 }));
                 v.push(Instruction::LocalGet(off));
+                v.extend(self.emit_tag_num());
                 Ok(v)
             }
             "u128/from_i64" => {
@@ -756,10 +762,12 @@ impl WasmEmitter {
                 let off = self.local_idx("__u128_off");
                 let mut v = Vec::new();
                 v.extend(off_e);
+                v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(off));
-                v.extend(n_e);
                 v.push(Instruction::LocalGet(off));
                 v.push(Instruction::I32WrapI64);
+                v.extend(n_e);
+                v.extend(self.emit_untag());
                 v.push(Instruction::I64Store(wasm_encoder::MemArg {
                     offset: 0,
                     align: 3,
@@ -776,6 +784,7 @@ impl WasmEmitter {
                     memory_index: 0,
                 }));
                 v.push(Instruction::LocalGet(off));
+                v.extend(self.emit_tag_num());
                 Ok(v)
             }
             "u128/to_i64" => {
@@ -783,12 +792,14 @@ impl WasmEmitter {
                     return Err("u128/to_i64: need 1 arg (addr)".into());
                 }
                 let mut v = self.expr(&a[0])?;
+                v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(wasm_encoder::MemArg {
                     offset: 0,
                     align: 3,
                     memory_index: 0,
                 }));
+                v.extend(self.emit_tag_num());
                 Ok(v)
             }
             "u128/fit_i64" => {
@@ -798,6 +809,7 @@ impl WasmEmitter {
                     return Err("u128/fit_i64: need 1 arg (addr)".into());
                 }
                 let mut v = self.expr(&a[0])?;
+                v.extend(self.emit_untag());
                 let addr_i = self.local_idx("__u128fit");
                 v.push(Instruction::LocalSet(addr_i));
                 // Check: hi == 0 AND lo < 2^63 (sign bit is 0)
@@ -827,6 +839,7 @@ impl WasmEmitter {
                 // hi != 0, doesn't fit
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::End);
+                v.extend(self.emit_tag_num());
                 Ok(v)
             }
             "u128/checked_to_i64" => {
@@ -835,6 +848,7 @@ impl WasmEmitter {
                     return Err("u128/checked_to_i64: need 1 arg (addr)".into());
                 }
                 let mut v = self.expr(&a[0])?;
+                v.extend(self.emit_untag());
                 let addr_i = self.local_idx("__u128cti64");
                 v.push(Instruction::LocalSet(addr_i));
                 // Check: hi == 0
@@ -867,6 +881,7 @@ impl WasmEmitter {
                     align: 3,
                     memory_index: 0,
                 }));
+                v.extend(self.emit_tag_num());
                 v.push(Instruction::Return);
                 v.push(Instruction::End);
                 // lo >= 2^63, trap
@@ -1135,6 +1150,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(str_i));
                 v.extend(dst_off);
+                v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(dst_i));
                 v.push(Instruction::LocalGet(str_i));
                 v.push(Instruction::I64Const(32));

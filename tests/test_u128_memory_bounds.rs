@@ -24,7 +24,7 @@ fn run_near_mock(lisp: &str) -> (i32, String, String) {
     // Compile
     let compile_out = Command::new("cargo")
         .args(["run", "--bin", "near-compile", "--", &tmp_path, &wasm_path])
-        .current_dir("/Users/asil/lisp-rlm")
+        .current_dir("/Users/asil/.openclaw/workspace/lisp-rlm")
         .output()
         .expect("near-compile failed");
 
@@ -39,7 +39,7 @@ fn run_near_mock(lisp: &str) -> (i32, String, String) {
     // Run via near-mock
     let run_out = Command::new("cargo")
         .args(["run", "--bin", "near-mock", "--", &wasm_path, "check"])
-        .current_dir("/Users/asil/lisp-rlm")
+        .current_dir("/Users/asil/.openclaw/workspace/lisp-rlm")
         .output()
         .expect("near-mock failed");
 
@@ -194,31 +194,42 @@ fn u128_load_partial_overlap() {
 
 #[test]
 fn u128_add_same_address() {
-    let lisp = r#"
+    // 4b1403e spec: u128/add is STRING-based. Address args now hard-error.
+    // Pin both sides: string add succeeds end-to-end on wasm, address arg traps.
+    let lisp_ok = r#"
 (define (check)
-  (let ((a 100))
-    (u128/store a 1000 0)
-    (u128/add a a)
-    (u128/load a)))
+  (near/log (u128/add "1000" "1000")))
 (export "check" check)
 "#;
-    let (_code, stdout, stderr) = run_near_mock(lisp);
+    let (_c, stdout, stderr) = run_near_mock(lisp_ok);
     assert!(
         stdout.contains("Success"),
-        "add to same address should succeed: stdout={}, stderr={}",
-        stdout,
-        stderr
+        "string add should succeed: stdout={}, stderr={}", stdout, stderr
+    );
+    let lisp_addr = r#"
+(define (check)
+  (u128/add 100 100))
+(export "check" check)
+"#;
+    let (_c, stdout, stderr) = run_near_mock(lisp_addr);
+    assert!(
+        !stdout.contains("Success"),
+        "u128/add on addresses must hard-error under string ABI: stdout={}, stderr={}",
+        stdout, stderr
     );
 }
 
+
 #[test]
 fn u128_add_overlapping() {
+    // Overlapping-address in-place add is retired; equivalent live coverage:
+    // string add of overlapping values + raw store/load overlap sanity.
     let lisp = r#"
 (define (check)
   (let ((a 100) (b 105))
     (u128/store a 1000 0)
     (u128/store b 100 0)
-    (u128/add a b)
+    (near/log (u128/add "1000" "100"))
     (u128/load a)))
 (export "check" check)
 "#;
@@ -230,6 +241,7 @@ fn u128_add_overlapping() {
         stderr
     );
 }
+
 
 // ═══════════════════════════════════════════════════════════════════════
 // MAX VALUE TESTS
@@ -317,58 +329,49 @@ fn u128_to_str_one() {
 fn u128_div_by_small() {
     let lisp = r#"
 (define (check)
-  (let ((a 100))
-    (u128/store a 1000000000000 0)
-    (u128/div a 10)
-    (u128/load a)))
+  (near/log (u128/div "1000000000000" "10")))
 (export "check" check)
 "#;
     let (_code, stdout, stderr) = run_near_mock(lisp);
     assert!(
         stdout.contains("Success"),
         "div by small should succeed: stdout={}, stderr={}",
-        stdout,
-        stderr
+        stdout, stderr
     );
 }
+
 
 #[test]
 fn u128_div_by_large() {
     let lisp = r#"
 (define (check)
-  (let ((a 100))
-    (u128/store a 1000 0)
-    (u128/div a 999)
-    (u128/load a)))
+  (near/log (u128/div "1000" "340282366920938463463374607431768211455")))
 (export "check" check)
 "#;
     let (_code, stdout, stderr) = run_near_mock(lisp);
     assert!(
         stdout.contains("Success"),
         "div by large should succeed: stdout={}, stderr={}",
-        stdout,
-        stderr
+        stdout, stderr
     );
 }
+
 
 #[test]
 fn u128_div_result_zero() {
     let lisp = r#"
 (define (check)
-  (let ((a 100))
-    (u128/store a 5 0)
-    (u128/div a 100)
-    (u128/load a)))
+  (near/log (u128/div "5" "340282366920938463463374607431768211455")))
 (export "check" check)
 "#;
     let (_code, stdout, stderr) = run_near_mock(lisp);
     assert!(
         stdout.contains("Success"),
         "div result zero should succeed: stdout={}, stderr={}",
-        stdout,
-        stderr
+        stdout, stderr
     );
 }
+
 
 // ═══════════════════════════════════════════════════════════════════════
 // FROM_STR SKIP - requires string building API
@@ -399,48 +402,35 @@ fn u128_multiple_stores_same_address() {
 
 #[test]
 fn u128_chain_underflow_traps() {
-    // Chain ending in underflow should trap
+    // String-ABI chain that underflows must hard-error (wasm trap).
     let lisp = r#"
 (define (check)
-  (let ((a 100) (b 200))
-    (u128/store a 1000 0)
-    (u128/store b 500 0)
-    (u128/add a b)
-    (u128/div a 10)
-    (u128/mul a 2)
-    (u128/sub a b)
-    (u128/load a)))
+  (let ((x (u128/sub "5" "10")))
+    (near/log x)))
 (export "check" check)
 "#;
     let (_code, stdout, stderr) = run_near_mock(lisp);
     assert!(
-        stderr.contains("trap") || stderr.contains("❌"),
-        "chain ending in underflow should trap: stdout={}, stderr={}",
-        stdout,
-        stderr
+        !stdout.contains("Success"),
+        "underflow should trap: stdout={}, stderr={}", stdout, stderr
     );
 }
 
+
 #[test]
 fn u128_chain_success() {
-    // Chain of operations that succeeds
+    // Arithmetic chain via string ABI (t19 covers the interpreter side at
+    // depth; this pins the wasm side end-to-end).
     let lisp = r#"
 (define (check)
-  (let ((a 100) (b 200))
-    (u128/store a 1000 0)
-    (u128/store b 100 0)
-    (u128/add a b)
-    (u128/div a 10)
-    (u128/mul a 2)
-    (u128/sub a b)
-    (u128/load a)))
+  (let ((x (u128/div (u128/add (u128/mul "1000" "2") "100") "10")))
+    (near/log (u128/sub x "200"))))
 (export "check" check)
 "#;
     let (_code, stdout, stderr) = run_near_mock(lisp);
     assert!(
         stdout.contains("Success"),
-        "successful chain should succeed: stdout={}, stderr={}",
-        stdout,
-        stderr
+        "chain should succeed: stdout={}, stderr={}", stdout, stderr
     );
 }
+

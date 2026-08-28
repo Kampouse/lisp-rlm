@@ -5952,6 +5952,154 @@ pub fn eval_builtin(
                 _ => unreachable!(),
             }
         }
+        // ── u128 address family (raw limbs in linear memory) ──
+        // Mirrors wasm_emit/call_u128.rs: LE i64 limbs at addr, addr+8.
+        // Scratch memory: 64 pages (4 MiB) cap, zero-filled, grown on demand —
+        // same default as the emitted wasm module. OOB → hard error (wasm traps).
+        // NOTE the ABI split (commit 4b1403e): arithmetic NAMES (add/sub/...)
+        // are string-based above; only these non-colliding names are address ops.
+        "u128/store" | "u128/load" | "u128/load_high" | "u128/new"
+        | "u128/from_yocto" | "u128/to_str" | "u128/from_str"
+        | "u128/fit_i64" | "u128/checked_to_i64" | "u128/to_i64"
+        | "u128/from_i64" => {
+            const U128_MEM_CAP: usize = 64 * 64 * 1024; // 64 pages = 4 MiB
+            let state = state.ok_or_else(|| format!("{}: requires mutable state", name))?;
+            fn num_arg(name: &str, args: &[LispVal], i: usize) -> Result<i64, String> {
+                match args.get(i) {
+                    Some(LispVal::Num(n)) => Ok(*n),
+                    Some(other) => Err(format!("{}: expected number arg {}, got {}", name, i, other)),
+                    None => Err(format!("{}: missing arg {}", name, i)),
+                }
+            }
+            fn mem_grow(state: &mut EvalState, addr: usize, need: usize) -> Result<(), String> {
+                let end = addr.checked_add(need).ok_or("u128: address overflow")?;
+                if end > U128_MEM_CAP {
+                    return Err(format!(
+                        "u128: out of bounds (addr {}, need {} bytes, cap {} bytes)",
+                        addr, need, U128_MEM_CAP
+                    ));
+                }
+                if state.u128_mem.len() < end {
+                    state.u128_mem.resize(end, 0);
+                }
+                Ok(())
+            }
+            fn write_u128(state: &mut EvalState, addr: usize, lo: u64, hi: u64) -> Result<(), String> {
+                mem_grow(state, addr, 16)?;
+                state.u128_mem[addr..addr + 8].copy_from_slice(&lo.to_le_bytes());
+                state.u128_mem[addr + 8..addr + 16].copy_from_slice(&hi.to_le_bytes());
+                Ok(())
+            }
+            fn read_u128(state: &mut EvalState, addr: usize) -> Result<(u64, u64), String> {
+                mem_grow(state, addr, 16)?;
+                let lo = u64::from_le_bytes(state.u128_mem[addr..addr + 8].try_into().unwrap());
+                let hi = u64::from_le_bytes(state.u128_mem[addr + 8..addr + 16].try_into().unwrap());
+                Ok((lo, hi))
+            }
+            match name {
+                "u128/store" => {
+                    if args.len() != 3 { return Err("u128/store: need 3 args (addr, lo, hi)".into()); }
+                    let addr = num_arg(name, args, 0)? as u64 as usize;
+                    let lo = num_arg(name, args, 1)? as u64;
+                    let hi = num_arg(name, args, 2)? as u64;
+                    write_u128(state, addr, lo, hi)?;
+                    Ok(LispVal::Nil)
+                }
+                "u128/new" => {
+                    if args.len() != 3 { return Err("u128/new: expected (hi, lo, offset)".into()); }
+                    let hi = num_arg(name, args, 0)? as u64;
+                    let lo = num_arg(name, args, 1)? as u64;
+                    let off = num_arg(name, args, 2)? as u64 as usize;
+                    write_u128(state, off, lo, hi)?;
+                    Ok(LispVal::Num(off as i64))
+                }
+                "u128/load" => {
+                    if args.len() != 1 { return Err("u128/load: need 1 arg (addr)".into()); }
+                    let addr = num_arg(name, args, 0)? as u64 as usize;
+                    let (lo, _) = read_u128(state, addr)?;
+                    Ok(LispVal::Num(lo as i64))
+                }
+                "u128/load_high" => {
+                    if args.len() != 1 { return Err("u128/load_high: need 1 arg (addr)".into()); }
+                    let addr = num_arg(name, args, 0)? as u64 as usize;
+                    let (_, hi) = read_u128(state, addr)?;
+                    Ok(LispVal::Num(hi as i64))
+                }
+                "u128/from_yocto" => {
+                    if args.len() != 2 { return Err("u128/from_yocto: expected (\"amount\", offset)".into()); }
+                    let s = match args.get(0) {
+                        Some(LispVal::Str(s)) => s.clone(),
+                        Some(other) => return Err(format!("u128/from_yocto: expected string, got {}", other)),
+                        None => return Err("u128/from_yocto: missing arg".into()),
+                    };
+                    let v: u128 = s.parse().map_err(|_| format!("u128/from_yocto: invalid u128 string '{}'", s))?;
+                    let off = num_arg(name, args, 1)? as u64 as usize;
+                    write_u128(state, off, v as u64, (v >> 64) as u64)?;
+                    Ok(LispVal::Num(off as i64))
+                }
+                "u128/to_str" => {
+                    if args.len() != 2 { return Err("u128/to_str: expected (addr, buffer addr)".into()); }
+                    let addr = num_arg(name, args, 0)? as u64 as usize;
+                    let buf = num_arg(name, args, 1)? as u64 as usize;
+                    let (lo, hi) = read_u128(state, addr)?;
+                    let digits = ((hi as u128) << 64 | lo as u128).to_string();
+                    // wasm writes digits right-aligned ending at buf+39 (40-byte
+                    // window) and returns a pointer-string; the interpreter has
+                    // no pointer strings — write the same window, return Str.
+                    let bytes = digits.as_bytes();
+                    if bytes.len() > 40 { return Err("u128/to_str: >40 digits".into()); }
+                    mem_grow(state, buf, 40)?;
+                    let start = buf + 40 - bytes.len();
+                    state.u128_mem[start..buf + 40].copy_from_slice(bytes);
+                    Ok(LispVal::Str(digits))
+                }
+                "u128/from_str" => {
+                    if args.len() != 2 { return Err("u128/from_str: expected (str, dst offset)".into()); }
+                    // wasm takes a pointer-string in memory; interpreter takes
+                    // a real string (documented deviation — no pointer strings).
+                    let s = match args.get(0) {
+                        Some(LispVal::Str(s)) => s.clone(),
+                        Some(other) => return Err(format!("u128/from_str: expected string, got {}", other)),
+                        None => return Err("u128/from_str: missing arg".into()),
+                    };
+                    let v: u128 = s.parse().map_err(|_| format!("u128/from_str: invalid u128 string '{}'", s))?;
+                    let off = num_arg(name, args, 1)? as u64 as usize;
+                    write_u128(state, off, v as u64, (v >> 64) as u64)?;
+                    Ok(LispVal::Num(off as i64))
+                }
+                "u128/from_i64" => {
+                    if args.len() != 2 { return Err("u128/from_i64: expected (n, offset)".into()); }
+                    let n = num_arg(name, args, 0)? as u64;
+                    let off = num_arg(name, args, 1)? as u64 as usize;
+                    write_u128(state, off, n, 0)?;
+                    Ok(LispVal::Num(off as i64))
+                }
+                "u128/to_i64" => {
+                    // Unchecked low 64 bits (mirrors wasm — use checked_to_i64 for safety)
+                    if args.len() != 1 { return Err("u128/to_i64: need 1 arg (addr)".into()); }
+                    let addr = num_arg(name, args, 0)? as u64 as usize;
+                    let (lo, _) = read_u128(state, addr)?;
+                    Ok(LispVal::Num(lo as i64))
+                }
+                "u128/fit_i64" => {
+                    if args.len() != 1 { return Err("u128/fit_i64: need 1 arg (addr)".into()); }
+                    let addr = num_arg(name, args, 0)? as u64 as usize;
+                    let (lo, hi) = read_u128(state, addr)?;
+                    Ok(LispVal::Num(if hi == 0 && (lo >> 63) == 0 { 1 } else { 0 }))
+                }
+                "u128/checked_to_i64" => {
+                    if args.len() != 1 { return Err("u128/checked_to_i64: need 1 arg (addr)".into()); }
+                    let addr = num_arg(name, args, 0)? as u64 as usize;
+                    let (lo, hi) = read_u128(state, addr)?;
+                    if hi != 0 || (lo >> 63) != 0 {
+                        let v = (hi as u128) << 64 | lo as u128;
+                        return Err(format!("u128/checked_to_i64: value {} exceeds i64::MAX", v));
+                    }
+                    Ok(LispVal::Num(lo as i64))
+                }
+                _ => unreachable!(),
+            }
+        }
         "to-json" => {
             fn to_json(val: &LispVal) -> String {
                 match val {

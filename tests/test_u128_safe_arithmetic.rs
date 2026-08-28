@@ -26,21 +26,25 @@ fn eval(code: &str) -> Result<String, String> {
 
 #[test]
 fn u128_add_normal_interp() {
-    let code = "(let ((a 100) (b 200)) (u128/store a 1000 0) (u128/store b 200 0) (u128/add a b) (u128/load a))";
+    // String ABI (4b1403e) + address store/load memory roundtrip
+    let code = "(let ((a 100) (b 200)) (u128/store a 1000 0) (u128/store b 200 0) (u128/add \"1000\" \"200\") (u128/load a))";
     assert!(eval(code).is_ok(), "normal add should succeed");
 }
 
+
 #[test]
 fn u128_sub_normal_interp() {
-    let code = "(let ((a 100) (b 200)) (u128/store a 1000 0) (u128/store b 200 0) (u128/sub a b) (u128/load a))";
+    let code = "(let ((a 100) (b 200)) (u128/store a 1000 0) (u128/store b 200 0) (u128/sub \"1000\" \"200\") (u128/load a))";
     assert!(eval(code).is_ok(), "normal sub should succeed");
 }
 
+
 #[test]
 fn u128_mul_normal_interp() {
-    let code = "(let ((a 100)) (u128/store a 100 0) (u128/mul a 50) (u128/load a))";
+    let code = "(let ((a 100)) (u128/store a 100 0) (u128/mul \"100\" \"50\") (u128/load a))";
     assert!(eval(code).is_ok(), "normal mul should succeed");
 }
+
 
 // ═══════════════════════════════════════════════════════════════════════
 // WASM TRAP TESTS (via near-mock binary)
@@ -85,76 +89,67 @@ fn run_near_mock(lisp: &str) -> (i32, String, String) {
 
 #[test]
 fn u128_add_overflow_traps_wasm() {
-    // max u128 + 1 should trap
+    // max u128 + 1 must hard-error (string ABI)
     let lisp = r#"
 (define (check)
-  (let ((a 100) (b 200))
-    (u128/store a -1 -1) ;; max u128
-    (u128/store b 1 0)
-    (u128/add a b)))
+  (near/log (u128/add "340282366920938463463374607431768211455" "1")))
 (export "check" check)
 "#;
     let (_code, stdout, stderr) = run_near_mock(lisp);
-    // Should fail with trap message
     assert!(
-        stderr.contains("trap") || stderr.contains("error") || stderr.contains("❌"),
-        "overflow should trap: stderr={}",
-        stderr
+        !stdout.contains("Success"),
+        "overflow must trap: stdout={}, stderr={}", stdout, stderr
     );
 }
+
 
 #[test]
 fn u128_sub_underflow_traps_wasm() {
-    // 100 - 200 = underflow
     let lisp = r#"
 (define (check)
-  (let ((a 100) (b 200))
-    (u128/store a 100 0)
-    (u128/store b 200 0)
-    (u128/sub a b)))
+  (near/log (u128/sub "5" "10")))
 (export "check" check)
 "#;
     let (_code, stdout, stderr) = run_near_mock(lisp);
     assert!(
-        stderr.contains("trap") || stderr.contains("error") || stderr.contains("❌"),
-        "underflow should trap: stderr={}",
-        stderr
+        !stdout.contains("Success"),
+        "underflow must trap: stdout={}, stderr={}", stdout, stderr
     );
 }
+
 
 #[test]
 fn u128_mul_by_zero_traps_wasm() {
+    // Under the string ABI mul by zero is LEGAL (result "0") — pin the
+    // semantic: the old address-ABI trap premise is retired (4b1403e).
     let lisp = r#"
 (define (check)
-  (let ((a 100))
-    (u128/store a 1000 0)
-    (u128/mul a 0)))
+  (near/log (u128/mul "1000" "0")))
 (export "check" check)
 "#;
     let (_code, stdout, stderr) = run_near_mock(lisp);
     assert!(
-        stderr.contains("trap") || stderr.contains("error") || stderr.contains("❌"),
-        "mul by zero should trap: stderr={}",
-        stderr
+        stdout.contains("Success"),
+        "mul by zero should succeed (result 0): stdout={}, stderr={}", stdout, stderr
     );
 }
 
+
 #[test]
 fn u128_mul_by_negative_traps_wasm() {
+    // "-5" is not a u128 decimal — hard parse error
     let lisp = r#"
 (define (check)
-  (let ((a 100))
-    (u128/store a 1000 0)
-    (u128/mul a -5)))
+  (near/log (u128/mul "1000" "-5")))
 (export "check" check)
 "#;
     let (_code, stdout, stderr) = run_near_mock(lisp);
     assert!(
-        stderr.contains("trap") || stderr.contains("error") || stderr.contains("❌"),
-        "mul by negative should trap: stderr={}",
-        stderr
+        !stdout.contains("Success"),
+        "mul by negative must trap: stdout={}, stderr={}", stdout, stderr
     );
 }
+
 
 #[test]
 fn u128_checked_to_i64_overflow_traps_wasm() {
@@ -168,74 +163,66 @@ fn u128_checked_to_i64_overflow_traps_wasm() {
 "#;
     let (_code, stdout, stderr) = run_near_mock(lisp);
     assert!(
-        stderr.contains("trap") || stderr.contains("error") || stderr.contains("❌"),
-        "checked_to_i64 overflow should trap: stderr={}",
-        stderr
+        !stdout.contains("Success"),
+        "checked_to_i64 overflow should trap: stdout={}, stderr={}",
+        stdout, stderr
     );
 }
 
 #[test]
 fn u128_add_normal_wasm() {
-    // 1000 + 200 = 1200 (should succeed)
     let lisp = r#"
 (define (check)
   (let ((a 100) (b 200))
     (u128/store a 1000 0)
     (u128/store b 200 0)
-    (u128/add a b)
+    (near/log (u128/add "1000" "200"))
     (u128/load a)))
 (export "check" check)
 "#;
     let (_code, stdout, stderr) = run_near_mock(lisp);
-    // Should succeed (exit 0, "Success" in stdout)
     assert!(
         stdout.contains("Success"),
-        "normal add should succeed: stdout={}, stderr={}",
-        stdout,
-        stderr
+        "normal add should succeed: stdout={}, stderr={}", stdout, stderr
     );
 }
+
 
 #[test]
 fn u128_sub_normal_wasm() {
-    // 1000 - 200 = 800 (should succeed)
     let lisp = r#"
 (define (check)
-  (let ((a 100) (b 200))
+  (let ((a 100))
     (u128/store a 1000 0)
-    (u128/store b 200 0)
-    (u128/sub a b)
+    (near/log (u128/sub "1000" "200"))
     (u128/load a)))
 (export "check" check)
 "#;
     let (_code, stdout, stderr) = run_near_mock(lisp);
     assert!(
         stdout.contains("Success"),
-        "normal sub should succeed: stdout={}, stderr={}",
-        stdout,
-        stderr
+        "normal sub should succeed: stdout={}, stderr={}", stdout, stderr
     );
 }
 
+
 #[test]
 fn u128_mul_normal_wasm() {
-    // 100 * 50 = 5000 (should succeed)
     let lisp = r#"
 (define (check)
   (let ((a 100))
     (u128/store a 100 0)
-    (u128/mul a 50)
+    (near/log (u128/mul "100" "50"))
     (u128/load a)))
 (export "check" check)
 "#;
     let (_code, stdout, stderr) = run_near_mock(lisp);
     assert!(
         stdout.contains("Success"),
-        "normal mul should succeed: stdout={}, stderr={}",
-        stdout,
-        stderr
+        "normal mul should succeed: stdout={}, stderr={}", stdout, stderr
     );
 }
+
 
 #[test]
 fn u128_fit_i64_small_wasm() {
@@ -271,4 +258,63 @@ fn u128_checked_to_i64_small_wasm() {
         stdout,
         stderr
     );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ADDRESS FAMILY (interpreter runtime — scratch linear memory, mirrors wasm)
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn u128_addr_store_load_roundtrip_interp() {
+    let code = "(let ((a 100)) (u128/store a 42 0) (u128/load a))";
+    let r = eval(code);
+    assert!(r.is_ok(), "store/load roundtrip: {:?}", r.err());
+    assert!(r.unwrap().contains("42"), "load must return 42");
+}
+
+#[test]
+fn u128_addr_store_load_high_interp() {
+    let code = "(let ((a 100)) (u128/store a 42 7) (u128/load_high a))";
+    let r = eval(code);
+    assert!(r.is_ok());
+    assert!(r.unwrap().contains("7"), "load_high must return 7");
+}
+
+#[test]
+fn u128_addr_to_str_interp() {
+    let code = "(let ((a 100) (buf 200)) (u128/store a 1000000000000 0) (u128/to_str a buf))";
+    let r = eval(code);
+    assert!(r.is_ok());
+    assert!(r.unwrap().contains("1000000000000"), "to_str must render decimal");
+}
+
+#[test]
+fn u128_addr_fit_and_checked_interp() {
+    assert!(eval("(let ((a 100)) (u128/store a 42 0) (u128/fit_i64 a))")
+        .unwrap().contains("1"), "42 fits i64");
+    assert!(eval("(let ((a 100)) (u128/store a 42 1) (u128/fit_i64 a))")
+        .unwrap().contains("0"), "2^64+42 does not fit");
+    assert!(eval("(let ((a 100)) (u128/store a 42 0) (u128/checked_to_i64 a))").is_ok(),
+        "checked_to_i64 fits path ok");
+    assert!(eval("(let ((a 100)) (u128/store a 42 1) (u128/checked_to_i64 a))").is_err(),
+        "checked_to_i64 overflow must hard-error");
+}
+
+#[test]
+fn u128_addr_new_from_i64_from_yocto_interp() {
+    let r = eval("(let ((b 200)) (u128/new 7 8 b) (+ (u128/load b) (* (u128/load_high b) 1000)))");
+    assert!(r.is_ok());
+    assert!(r.unwrap().contains("7008"), "new stores (hi=7, lo=8)");
+    let r = eval("(let ((a 100)) (u128/from_i64 5 a) (u128/load a))");
+    assert!(r.unwrap().contains("5"), "from_i64 stores 5 low");
+    let r = eval("(let ((a 100)) (u128/from_yocto \"18446744073709551616\" a) (u128/load_high a))");
+    assert!(r.unwrap().contains("1"), "from_yocto 2^64 → hi=1");
+}
+
+#[test]
+fn u128_addr_out_of_bounds_interp() {
+    // 4 MiB cap (64 wasm pages) — store at the edge must hard-error
+    assert!(eval("(u128/store 4194304 1 0)").is_err(), "OOB store must err");
+    assert!(eval("(u128/store 4194288 1 0)").is_ok(), "last in-bounds 16B window at cap-16");
+    assert!(eval("(u128/load 4194296)").is_err(), "window crossing cap must err");
 }

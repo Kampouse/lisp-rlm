@@ -264,6 +264,11 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "u128/add", "u128/sub", "u128/mul", "u128/div", "u128/mod",
     "u128/lt", "u128/gt", "u128/eq",
     "u128/from-i64", "u128/to-i64", "u128/is-zero",
+    // u128 address family (raw limbs in linear memory — wasm_emit/call_u128.rs;
+    // names that don't collide with the string-based spec, commit 4b1403e)
+    "u128/store", "u128/load", "u128/load_high", "u128/new",
+    "u128/from_yocto", "u128/to_str", "u128/from_str",
+    "u128/fit_i64", "u128/checked_to_i64", "u128/to_i64", "u128/from_i64",
     "tag-test",
     "get-field",
     "sha256",

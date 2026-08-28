@@ -320,6 +320,10 @@ pub struct EvalState {
     /// Try/catch handler stack: list of (catch_pc) for PushTry/PopTry.
     /// When an error occurs, we pop the top handler and jump to its PC.
     pub try_stack: Vec<usize>,
+    /// Scratch linear memory for the address-based u128 family
+    /// (u128/store, u128/load, ...) — mirrors the wasm module's memory
+    /// (default 64 pages = 4 MiB cap). Grown on demand, zero-filled.
+    pub u128_mem: Vec<u8>,
 }
 
 impl EvalState {
@@ -357,6 +361,7 @@ impl EvalState {
             near_return_value: None,
             global_env: None,
             try_stack: Vec::new(),
+            u128_mem: Vec::new(),
         }
     }
 
@@ -409,6 +414,7 @@ impl EvalState {
             near_return_value: None,
             global_env: None,
             try_stack: Vec::new(),
+            u128_mem: Vec::new(),
         }
     }
 
@@ -495,6 +501,7 @@ impl Clone for EvalState {
             near_contracts: im::HashMap::new(),
             near_return_value: None,
             try_stack: Vec::new(),
+            u128_mem: Vec::new(),
         }
     }
 }
