@@ -5952,6 +5952,101 @@ pub fn eval_builtin(
                 _ => unreachable!(),
             }
         }
+        // ── wallet-factory byte/string builtins (mirror wasm call_string.rs) ──
+        "str-len" | "str-contains-byte" | "str-repeat" | "hex-encode"
+        | "base64-decode" | "near/store-bytes" | "near/load-bytes" => {
+            fn str_arg(name: &str, args: &[LispVal], i: usize) -> Result<String, String> {
+                match args.get(i) {
+                    Some(LispVal::Str(s)) => Ok(s.clone()),
+                    Some(other) => Err(format!("{}: expected string arg {}, got {}", name, i, other)),
+                    None => Err(format!("{}: missing arg {}", name, i)),
+                }
+            }
+            match name {
+                "str-len" => {
+                    if args.len() != 1 { return Err("str-len: expected 1 arg".into()); }
+                    Ok(LispVal::Num(str_arg(name, args, 0)?.len() as i64))
+                }
+                "str-contains-byte" => {
+                    if args.len() != 2 { return Err("str-contains-byte: expected 2 args".into()); }
+                    let s = str_arg(name, args, 0)?;
+                    let b = match args.get(1) {
+                        Some(LispVal::Num(n)) if (0..=255).contains(n) => *n as u8,
+                        Some(other) => return Err(format!("str-contains-byte: expected byte 0-255, got {}", other)),
+                        None => return Err("str-contains-byte: missing arg".into()),
+                    };
+                    Ok(LispVal::Bool(s.as_bytes().contains(&b)))
+                }
+                "str-repeat" => {
+                    if args.len() != 2 { return Err("str-repeat: expected 2 args".into()); }
+                    let s = str_arg(name, args, 0)?;
+                    let n = match args.get(1) {
+                        Some(LispVal::Num(n)) if *n >= 0 => *n as usize,
+                        Some(other) => return Err(format!("str-repeat: expected non-negative count, got {}", other)),
+                        None => return Err("str-repeat: missing arg".into()),
+                    };
+                    if s.len().saturating_mul(n) > 1 << 20 {
+                        return Err("str-repeat: result too large".into());
+                    }
+                    Ok(LispVal::Str(s.repeat(n)))
+                }
+                "hex-encode" => {
+                    if args.len() != 1 { return Err("hex-encode: expected 1 arg".into()); }
+                    let s = str_arg(name, args, 0)?;
+                    let mut out = String::with_capacity(s.len() * 2);
+                    for b in s.as_bytes() {
+                        out.push_str(&format!("{:02x}", b));
+                    }
+                    Ok(LispVal::Str(out))
+                }
+                "base64-decode" => {
+                    if args.len() != 1 { return Err("base64-decode: expected 1 arg".into()); }
+                    let s = str_arg(name, args, 0)?;
+                    // standard alphabet, '=' padding — mirrors the wasm table
+                    const TBL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+                    let mut vals: Vec<u8> = Vec::with_capacity(s.len());
+                    for ch in s.bytes() {
+                        if ch == b'=' { continue; }
+                        match TBL.iter().position(|&t| t == ch) {
+                            Some(i) => vals.push(i as u8),
+                            None => return Err(format!("base64-decode: invalid character '{}'", ch as char)),
+                        }
+                    }
+                    let mut out: Vec<u8> = Vec::with_capacity(vals.len() * 3 / 4 + 3);
+                    for quad in vals.chunks(4) {
+                        let n = quad.len();
+                        let v: u32 = quad.iter().fold(0u32, |a, &x| (a << 6) | x as u32);
+                        // n sextets = 6n bits, MSB-aligned; byte k occupies
+                        // bits [6n-8(k+1), 6n-8k)
+                        let nbytes = if n == 4 { 3 } else { n - 1 };
+                        for k in 0..nbytes {
+                            let shift = 6 * n as i32 - 8 * (k as i32 + 1);
+                            out.push(((v >> shift) & 0xFF) as u8);
+                        }
+                    }
+                    // wasm returns a pointer-string of raw bytes; the
+                    // interpreter has no byte strings — lossy UTF-8 (documented
+                    // deviation; ASCII payloads are exact)
+                    Ok(LispVal::Str(String::from_utf8_lossy(&out).into_owned()))
+                }
+                "near/store-bytes" => {
+                    if args.len() != 2 { return Err("near/store-bytes: expected 2 args".into()); }
+                    let key = str_arg(name, args, 0)?;
+                    if key.is_empty() { return Err("near/store-bytes: need key".into()); }
+                    let val = str_arg(name, args, 1)?;
+                    let st = state.ok_or_else(|| "near/store-bytes: requires mutable state".to_string())?;
+                    st.near_storage.insert(key, LispVal::Str(val));
+                    Ok(LispVal::Nil)
+                }
+                "near/load-bytes" => {
+                    if args.len() != 1 { return Err("near/load-bytes: expected 1 args".into()); }
+                    let key = str_arg(name, args, 0)?;
+                    let st = state.ok_or_else(|| "near/load-bytes: requires mutable state".to_string())?;
+                    Ok(st.near_storage.get(&key).cloned().unwrap_or(LispVal::Str(String::new())))
+                }
+                _ => unreachable!(),
+            }
+        }
         // ── u128 address family (raw limbs in linear memory) ──
         // Mirrors wasm_emit/call_u128.rs: LE i64 limbs at addr, addr+8.
         // Scratch memory: 64 pages (4 MiB) cap, zero-filled, grown on demand —

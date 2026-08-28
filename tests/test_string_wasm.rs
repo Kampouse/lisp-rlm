@@ -68,9 +68,11 @@ fn test_string_length_alias_compiles() {
 
 #[test]
 fn test_str_contains_with_dynamic_haystack() {
+    // str-returns Bool (wasm-fuzz find #4, 2026-08-27) — branch on it
+    // directly instead of the stale (= ... 1) int comparison.
     let src = r#"
 (define (check-hello s)
-    (if (= (str-contains s "hello") 1) 1 0))
+    (if (str-contains s "hello") 1 0))
 "#;
     let wasm = compile_pure(src).expect("str-contains in if should compile");
     assert!(!wasm.is_empty());

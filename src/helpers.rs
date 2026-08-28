@@ -269,6 +269,9 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "u128/store", "u128/load", "u128/load_high", "u128/new",
     "u128/from_yocto", "u128/to_str", "u128/from_str",
     "u128/fit_i64", "u128/checked_to_i64", "u128/to_i64", "u128/from_i64",
+    // wallet-factory byte/string builtins (wasm_emit/call_string.rs, commit fb825ba)
+    "str-len", "str-contains-byte", "str-repeat", "hex-encode", "base64-decode",
+    "near/store-bytes", "near/load-bytes",
     "tag-test",
     "get-field",
     "sha256",

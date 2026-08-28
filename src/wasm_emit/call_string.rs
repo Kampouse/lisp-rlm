@@ -863,7 +863,10 @@ impl WasmEmitter {
                 v.push(Instruction::If(BlockType::Empty));
                 v.push(Instruction::I64Const(1));
                 v.push(Instruction::LocalSet(found_i));
-                v.push(Instruction::Br(1)); // break outer block (found)
+                // NB: inside this If the label stack is [If=0, Loop=1, Block=2]
+                // — Br(2) breaks the outer Block (was Br(1): infinite loop,
+                // it branched to the Loop without advancing idx).
+                v.push(Instruction::Br(2)); // break outer block (found)
                 v.push(Instruction::End);
                 // idx++
                 v.push(Instruction::LocalGet(idx_i));

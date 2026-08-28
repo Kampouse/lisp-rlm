@@ -1047,6 +1047,46 @@ impl TcEnv {
             "str-len".into(),
             TcType::Arrow(vec![str_ty.clone()], Box::new(int_ty.clone())),
         );
+        // ── wallet-factory byte/string builtins (wasm call_string.rs, fb825ba) ──
+        // hex-encode : str → str
+        env.insert_mono(
+            "hex-encode".into(),
+            TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())),
+        );
+        // base64-decode : str → str (raw bytes as string)
+        env.insert_mono(
+            "base64-decode".into(),
+            TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())),
+        );
+        // str-contains-byte : str → int → bool
+        env.insert_mono(
+            "str-contains-byte".into(),
+            TcType::Arrow(
+                vec![str_ty.clone(), int_ty.clone()],
+                Box::new(bool_ty.clone()),
+            ),
+        );
+        // str-repeat : str → int → str
+        env.insert_mono(
+            "str-repeat".into(),
+            TcType::Arrow(
+                vec![str_ty.clone(), int_ty.clone()],
+                Box::new(str_ty.clone()),
+            ),
+        );
+        // near/store-bytes : str → str → nil
+        env.insert_mono(
+            "near/store-bytes".into(),
+            TcType::Arrow(
+                vec![str_ty.clone(), str_ty.clone()],
+                Box::new(TcType::Con(TcCon::Nil)),
+            ),
+        );
+        // near/load-bytes : str → str
+        env.insert_mono(
+            "near/load-bytes".into(),
+            TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())),
+        );
         env.insert_mono(
             "str-slice".into(),
             TcType::Arrow(
