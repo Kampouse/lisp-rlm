@@ -3440,6 +3440,72 @@ fn remap_jump_target(op: &mut Op, index_map: &[usize]) {
 }
 
 /// Run a compiled loop. Returns the result.
+// ── Lockstep trace sink (differential harness) ─────────────────────
+// Enabled only via vm_trace_start(); off-cost is one relaxed atomic load
+// per op. Events record machine state ENTERING each op, so event k of the
+// Rust VM aligns with event k of the SpecVm for lockstep diffing.
+#[derive(Debug, Clone)]
+pub struct VmStepEv {
+    pub pc: usize,
+    pub op: String,
+    pub stack_len: usize,
+    pub top: Option<String>,
+    pub slots: Vec<String>,
+}
+
+static VM_TRACE_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+fn vm_trace_buf() -> &'static std::sync::Mutex<Vec<VmStepEv>> {
+    static B: std::sync::OnceLock<std::sync::Mutex<Vec<VmStepEv>>> = std::sync::OnceLock::new();
+    B.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+/// Owning thread — the sink is process-global, so concurrent tests running
+/// this VM on other threads must not interleave events into our buffer.
+fn vm_trace_owner() -> &'static std::sync::Mutex<Option<std::thread::ThreadId>> {
+    static O: std::sync::OnceLock<std::sync::Mutex<Option<std::thread::ThreadId>>> =
+        std::sync::OnceLock::new();
+    O.get_or_init(|| std::sync::Mutex::new(None))
+}
+/// Enable per-op tracing (owned by the calling thread) and clear the buffer.
+pub fn vm_trace_start() {
+    *vm_trace_owner().lock().unwrap() = Some(std::thread::current().id());
+    vm_trace_buf().lock().unwrap().clear();
+    VM_TRACE_ON.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+/// Disable tracing and take the collected events.
+pub fn vm_trace_stop() -> Vec<VmStepEv> {
+    VM_TRACE_ON.store(false, std::sync::atomic::Ordering::Relaxed);
+    *vm_trace_owner().lock().unwrap() = None;
+    std::mem::take(&mut *vm_trace_buf().lock().unwrap())
+}
+#[inline]
+fn vm_trace_record(pc: usize, op: &Op, stack: &[LispVal], slots: &[LispVal]) {
+    if !VM_TRACE_ON.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    // Foreign threads (concurrent tests) never record into our trace.
+    {
+        let owner = vm_trace_owner().lock().unwrap();
+        if *owner != Some(std::thread::current().id()) {
+            return;
+        }
+    }
+    let trunc = |s: String| {
+        if s.chars().count() > 100 {
+            let cut: String = s.chars().take(100).collect();
+            format!("{cut}…")
+        } else {
+            s
+        }
+    };
+    vm_trace_buf().lock().unwrap().push(VmStepEv {
+        pc,
+        op: format!("{op:?}"),
+        stack_len: stack.len(),
+        top: stack.last().map(|v| trunc(format!("{v:?}"))),
+        slots: slots.iter().map(|v| trunc(format!("{v:?}"))).collect(),
+    });
+}
+
 fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
     // Slot-based env: binding slots + captured env slots, direct index access
     let mut slots: Vec<LispVal> = cl.init_vals.clone();
@@ -7506,6 +7572,7 @@ fn run_compiled_lambda_inner(
                 ops
             ));
         }
+        vm_trace_record(pc, &code[pc], &stack, &slots);
         match &code[pc] {
             Op::LoadSlot(s) => {
                 let slot_ref = safe_slot(&slots, *s);

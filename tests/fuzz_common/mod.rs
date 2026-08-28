@@ -356,6 +356,14 @@ impl SpecVm {
         }
     }
 
+    /// Code length / op accessor for the lockstep tracer.
+    pub fn code_len(&self) -> usize {
+        self.code.len()
+    }
+    pub fn op_at(&self, pc: usize) -> &Op {
+        &self.code[pc]
+    }
+
     /// Execute one step. Returns false if the step failed (pc out of bounds, error op).
     pub fn step(&mut self) -> StepOutcome {
         if !self.ok {
@@ -2306,4 +2314,169 @@ pub fn report_mismatch(
     eprintln!("=== SHRUNK ({} ops → {}) ===", code.len(), code2.len());
     eprint!("{}", format_program(&code2, &slots2));
     eprintln!("--- shrunk mismatch: {desc2}");
+    eprintln!("--- lockstep on shrunk form ---");
+    match lockstep_first_divergence(code2.clone(), slots2.clone(), max_steps) {
+        Some(diag) => eprintln!("{diag}"),
+        None => eprintln!("(no op-level divergence on shared prefix — terminal handling only)"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Lockstep compare — run both VMs op-aligned, report the FIRST diverging
+// machine state (pc / op / stack / slots), not just final values.
+// ---------------------------------------------------------------------------
+
+use lisp_rlm_wasm::bytecode::VmStepEv;
+
+fn spec_trace(mut vm: SpecVm, max_steps: usize) -> (Vec<VmStepEv>, Option<String>) {
+    let mut evs = Vec::new();
+    if let Err(e) = vm.validate_slot_indices() {
+        return (evs, Some(e));
+    }
+    let trunc = |s: String| {
+        if s.chars().count() > 100 {
+            format!("{}…", s.chars().take(100).collect::<String>())
+        } else {
+            s
+        }
+    };
+    let mut err = None;
+    let mut capped = false;
+    for _ in 0..max_steps {
+        if vm.pc >= vm.code_len() {
+            err = Some(format!("pc {} out of bounds", vm.pc));
+            break;
+        }
+        let op_str = format!("{:?}", vm.op_at(vm.pc));
+        evs.push(VmStepEv {
+            pc: vm.pc,
+            op: op_str,
+            stack_len: vm.stack.len(),
+            top: vm.stack.last().map(|v| trunc(format!("{v:?}"))),
+            slots: vm.slots.iter().map(|v| trunc(format!("{v:?}"))).collect(),
+        });
+        match vm.step() {
+            StepOutcome::Continue => {}
+            StepOutcome::Return(_) => break,
+            StepOutcome::Error(e) => {
+                err = Some(e);
+                break;
+            }
+        }
+    }
+    if err.is_none() && evs.len() >= max_steps {
+        capped = true;
+        err = Some(format!("step limit ({max_steps})"));
+    }
+    let _ = capped;
+    (evs, err)
+}
+
+/// Run the Rust VM under the trace sink, exactly mirroring
+/// differential_test_one's construction (EvalState budget, catch_unwind).
+fn rust_trace(cl: &lisp_rlm_wasm::bytecode::CompiledLambda, init_slots: &[LispVal], max_steps: usize)
+    -> (Vec<VmStepEv>, Option<String>)
+{
+    lisp_rlm_wasm::bytecode::vm_trace_start();
+    let mut state = lisp_rlm_wasm::types::EvalState::new();
+    state.eval_budget = (max_steps * 3) as u64;
+    let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_compiled_lambda(cl, init_slots, &mut lisp_rlm_wasm::types::Env::new(), &mut state)
+    }));
+    let evs = lisp_rlm_wasm::bytecode::vm_trace_stop();
+    let err = match out {
+        Ok(Ok(_)) => None,
+        Ok(Err(e)) => Some(e),
+        Err(p) => Some(format!("PANIC: {}", panic_msg(&p))),
+    };
+    (evs, err)
+}
+
+fn panic_msg(p: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = p.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = p.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "<non-string panic>".into()
+    }
+}
+
+/// First index where the two event streams disagree on machine state.
+pub fn first_divergence(spec: &[VmStepEv], rust: &[VmStepEv]) -> Option<(usize, VmStepEv, VmStepEv)> {
+    let n = spec.len().min(rust.len());
+    for k in 0..n {
+        let (a, b) = (&spec[k], &rust[k]);
+        if a.pc != b.pc || a.op != b.op || a.stack_len != b.stack_len
+            || a.top != b.top || a.slots != b.slots
+        {
+            return Some((k, a.clone(), b.clone()));
+        }
+    }
+    // Common prefix agrees — divergence only if one side continues where the
+    // other stopped for a DIFFERENT reason. Length mismatch alone is handled
+    // by the caller (err strings) since both VMs may legitimately end at
+    // the same final op with different terminal outcomes (value vs error).
+    None
+}
+
+/// Full lockstep diagnostic for a program. Returns None when the VMs agree
+/// op-by-op all the way (possible even when final values differ via terminal
+/// handling — the mismatch report covers that case).
+pub fn lockstep_first_divergence(
+    code: Vec<Op>,
+    init_slots: Vec<LispVal>,
+    max_steps: usize,
+) -> Option<String> {
+    let spec_vm = SpecVm::new(code.clone(), init_slots.clone());
+    let (spec_evs, spec_err) = spec_trace(spec_vm, max_steps);
+    let cl = make_test_compiled_lambda(init_slots.len(), init_slots.len(), code);
+    let (rust_evs, rust_err) = rust_trace(&cl, &init_slots, max_steps);
+
+    if let Some((k, a, b)) = first_divergence(&spec_evs, &rust_evs) {
+        let mut s = format!("first divergence at step {k}:\n");
+        s.push_str(&format!("  op    : {}\n", a.op));
+        s.push_str(&format!("  pc    : spec={} rust={}\n", a.pc, b.pc));
+        if a.op != b.op {
+            s.push_str(&format!("  (!) op mismatch — spec executed {}, rust executed {}\n", a.op, b.op));
+        }
+        s.push_str(&format!(
+            "  stack : spec len={} top={:?} | rust len={} top={:?}\n",
+            a.stack_len, a.top, b.stack_len, b.top
+        ));
+        s.push_str(&format!(
+            "  slots : spec={:?}\n          rust={:?}\n",
+            a.slots, b.slots
+        ));
+        if k > 0 {
+            let p = &spec_evs[k - 1];
+            s.push_str(&format!(
+                "  (step {} agreed: op {} at pc {})\n",
+                k - 1, p.op, p.pc
+            ));
+        }
+        return Some(s);
+    }
+    // Streams agree on the shared prefix. Length mismatch is only a real
+    // divergence when a side ended with a TERMINAL outcome (return/error);
+    // budget/step-cap exhaustion is an accounting artifact (the differential
+    // deliberately gives the Rust VM 3x the spec budget) — not a divergence.
+    if spec_evs.len() != rust_evs.len() {
+        let budgetish = |e: &Option<String>| {
+            e.as_deref().map_or(false, |e| {
+                e.contains("budget") || e.contains("step limit") || e.contains("iterations")
+            })
+        };
+        if !(budgetish(&spec_err) && budgetish(&rust_err)) {
+            return Some(format!(
+                "op-aligned for {} steps, then lengths diverged (spec {} events [{}], rust {} events [{}]) — terminal handling differs",
+                spec_evs.len().min(rust_evs.len()),
+                spec_evs.len(),
+                spec_err.as_deref().unwrap_or("returned"),
+                rust_evs.len(),
+                rust_err.as_deref().unwrap_or("returned"),
+            ));
+        }
+    }
+    None
 }

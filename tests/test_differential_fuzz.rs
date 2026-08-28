@@ -2505,3 +2505,65 @@ fn test_shrinker_never_accepting_returns_input() {
     assert_eq!(a, b, "no acceptable reduction → input unchanged");
     assert!(slots.is_empty());
 }
+
+#[test]
+fn test_lockstep_first_divergence_synthetic() {
+    use lisp_rlm_wasm::bytecode::VmStepEv;
+    let ev = |pc: usize, top: Option<&str>| VmStepEv {
+        pc,
+        op: format!("Op{pc}"),
+        stack_len: 1,
+        top: top.map(|s| s.to_string()),
+        slots: vec!["Num(1)".into()],
+    };
+    // identical streams → None
+    let a = vec![ev(0, Some("Num(1)")), ev(1, Some("Num(2)")), ev(2, None)];
+    let b = a.clone();
+    assert!(fuzz_common::first_divergence(&a, &b).is_none());
+
+    // top-of-stack differs at step 1 → Some(1)
+    let c = vec![ev(0, Some("Num(1)")), ev(1, Some("Num(9)")), ev(2, None)];
+    let (k, sa, sb) = fuzz_common::first_divergence(&a, &c).expect("diverges");
+    assert_eq!(k, 1);
+    assert_eq!(sa.top.as_deref(), Some("Num(2)"));
+    assert_eq!(sb.top.as_deref(), Some("Num(9)"));
+
+    // pc differs at step 2
+    let d = vec![ev(0, Some("Num(1)")), ev(1, Some("Num(2)")), ev(7, None)];
+    let (k2, _, _) = fuzz_common::first_divergence(&a, &d).expect("diverges");
+    assert_eq!(k2, 2);
+
+    // prefix agrees, lengths differ → None (caller handles via err strings)
+    let e = vec![ev(0, Some("Num(1)"))];
+    assert!(fuzz_common::first_divergence(&a, &e).is_none());
+}
+
+#[test]
+fn test_lockstep_clean_programs_agree_op_by_op() {
+    let child = std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            let mut benign = 0usize;
+            let mut rng = Rng::new(777);
+            for i in 0..200 {
+                let num_slots = 1 + rng.next_usize(3);
+                let code_len = 6 + rng.next_usize(20);
+                let code = generate_random_program(&mut rng, num_slots, code_len);
+                let init_slots: Vec<lisp_rlm_wasm::types::LispVal> =
+                    (0..num_slots).map(|_| rng.next_lisp_val()).collect();
+                // Green tree: lockstep must find no op-level divergence
+                // (barring programs that error/limit-out early — those return
+                // divergence=None with equal prefixes too).
+                if let Some(diag) = fuzz_common::lockstep_first_divergence(code, init_slots, 1000) {
+                    if std::env::var("LOCKSTEP_DEBUG").is_ok() {
+                        eprintln!("--- program #{i} ---\n{diag}");
+                    }
+                    benign += 1; // count, decide semantics after inspection
+                }
+            }
+            benign
+        })
+        .unwrap();
+    let benign = child.join().unwrap();
+    assert_eq!(benign, 0, "op-level divergence on a green tree = real bug (run with LOCKSTEP_DEBUG=1 for diagnostics)");
+}
