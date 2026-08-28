@@ -40,6 +40,7 @@ let rec do_tok (fuel:int) (cs:list char) : Tot (list tok) (decreases fuel) =
     else if is_digit c then
       let (n, r) = do_pn (fuel - 1) cs 0 in
       TkN n :: do_tok (fuel - 1) r
+    else if c = '+' then TkS "+" :: do_tok (fuel - 1) rest
     else do_tok (fuel - 1) rest
 
 and do_pn (fuel:int) (cs:list char) (acc:int) : Tot (int * (list char)) (decreases fuel) =
@@ -76,7 +77,8 @@ val t1 : unit -> Lemma (run "42" = 42)
 let t1 () = assert_norm (run "42" = 42)
 
 val t2 : unit -> Lemma (run "(+ 3 4)" = 7)
-let t2 () = admit()
+let t2 () = assert_norm (run "(+ 3 4)" = 7)
 
-val t3 : unit -> Lemma (run "42" = 999)
-let t3 () = admit()
+// Note: the "run \"42\" = 999" negative case was removed — it duplicated
+// TestFalse.test_wrong on the real pipeline, and as a false postcondition in
+// a must-pass file it could only be "verified" vacuously via admit().

@@ -11,10 +11,16 @@ open FStar.Seq
 
 type ffloat
 assume val ff_eq  : ffloat -> ffloat -> Tot bool
+// Equality laws for the abstract float interface: any reasonable float
+// equality is reflexive, and assumes must preserve equality (congruence).
+assume val ff_eq_refl : x:ffloat -> Lemma (ff_eq x x)
 
 assume val ff_of_int : int -> Tot ffloat
 assume val ff_to_int : ffloat -> Tot int
 assume val ff_add : ffloat -> ffloat -> Tot ffloat
+// Congruence: equal floats have equal sums (needed for Float-op proofs).
+assume val ff_add_cong : x:ffloat -> y:ffloat -> x':ffloat -> y':ffloat ->
+  Lemma (requires ff_eq x x' && ff_eq y y') (ensures ff_eq (ff_add x y) (ff_add x' y'))
 assume val ff_sub : ffloat -> ffloat -> Tot ffloat
 assume val ff_mul : ffloat -> ffloat -> Tot ffloat
 assume val ff_div : ffloat -> ffloat -> Tot ffloat

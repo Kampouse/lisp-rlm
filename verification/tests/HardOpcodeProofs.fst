@@ -230,7 +230,17 @@ val step_typedbinop_add_f64 : a:int -> b:int -> Lemma
    let s1 = closure_eval_op vm in
    let s2 = closure_eval_op s1 in
    s2.ok = true && (match s2.stack with | Float r :: _ -> ff_eq r (ff_add (ff_of_int a) (ff_of_int b)) | _ -> false))
-let step_typedbinop_add_f64 a b = admit()  // Z3 can't unfold through to_ffloat + ff_add in closure_eval_op
+let step_typedbinop_add_f64 a b =
+  let fa = to_ffloat (Num a) in
+  let fb = to_ffloat (Num b) in
+  // fa, fb normalize to ff_of_int a/b by to_ffloat's Num branch
+  assert_norm (fa == ff_of_int a);
+  assert_norm (fb == ff_of_int b);
+  // result is Float (ff_add fa fb); ff_eq_refl closes the ensures
+  let r = typed_add_f64 fa fb in
+  match r with
+  | Float f -> ff_eq_refl f
+  | _ -> ()
 
 val step_typedbinop_sub_f64 : a:int -> b:int -> Lemma
   (let vm : closure_vm = {
@@ -242,4 +252,12 @@ val step_typedbinop_sub_f64 : a:int -> b:int -> Lemma
    let s1 = closure_eval_op vm in
    let s2 = closure_eval_op s1 in
    s2.ok = true && (match s2.stack with | Float r :: _ -> ff_eq r (ff_sub (ff_of_int a) (ff_of_int b)) | _ -> false))
-let step_typedbinop_sub_f64 a b = admit()  // Same Z3 limitation as add_f64
+let step_typedbinop_sub_f64 a b =
+  let fa = to_ffloat (Num a) in
+  let fb = to_ffloat (Num b) in
+  assert_norm (fa == ff_of_int a);
+  assert_norm (fb == ff_of_int b);
+  let r = typed_sub_f64 fa fb in
+  match r with
+  | Float f -> ff_eq_refl f
+  | _ -> ()

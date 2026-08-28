@@ -1,4 +1,6 @@
 module TestAlias
+
+#set-options "--z3rlimit 100"
 open FStar.List.Tot
 open FStar.Pervasives
 open FStar.Char
@@ -22,10 +24,12 @@ let rec tokenize (fuel:int) (cs:list char) : Tot (list tok) (decreases fuel) =
       tokenize_after_num (fuel - 1) (parse_num (fuel - 1) cs 0)
 
 and tokenize_after_str (fuel:int) (sr:string & list char) : Tot (list tok) (decreases fuel) =
-  admit(); TkSt (fst sr) :: tokenize fuel (snd sr)
+  if fuel <= 0 then []
+  else TkSt (fst sr) :: tokenize (fuel - 1) (snd sr)
 
 and tokenize_after_num (fuel:int) (nr:int & list char) : Tot (list tok) (decreases fuel) =
-  admit(); TkN (fst nr) :: tokenize fuel (snd nr)
+  if fuel <= 0 then []
+  else TkN (fst nr) :: tokenize (fuel - 1) (snd nr)
 
 and parse_num (fuel:int) (cs:list char) (acc:int) : Tot (int & list char) (decreases fuel) =
   if fuel <= 0 then (acc, cs)
