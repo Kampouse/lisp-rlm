@@ -360,8 +360,7 @@ let test_eval_vm_agree () = assert_norm (run_eval "(+ 3 4)" = run_vm "(+ 3 4)")
 // ============================================================
 
 val coerce_nil : unit -> Lemma (num_coerce (make_nil ()) = 0)
-let coerce_nil () =
-  let _h : squash (num_coerce (make_nil ()) = 0) = admit () in ()
+let coerce_nil () = assert_norm (num_coerce (make_nil ()) = 0)
 
 // ============================================================
 // MEMORY SAFETY: TAG/UNTAG ARE INVERSES

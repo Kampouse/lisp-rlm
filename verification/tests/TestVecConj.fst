@@ -43,8 +43,9 @@ let len_sound v =
 
 // vec_conj increases length by 1
 val vec_conj_len : s:seq lisp_val -> x:lisp_val -> Lemma
-  (vec_len (vec_conj (Vec s) x) = length s + 1)
+  (vec_len (vec_conj x (Vec s)) = length s + 1)
 let vec_conj_len s x =
-  admit (); conj_sound s x;
+  assert_norm (vec_len (vec_conj x (Vec s)) == length s + 1);
+  conj_sound s x;
   len_sound (my_conj x (Vec s));
   ()
