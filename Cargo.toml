@@ -61,6 +61,10 @@ wat = "1.0"
 proptest = "1.6"
 
 [[bin]]
+name = "outlayer-run"
+path = "src/bin/outlayer_run.rs"
+
+[[bin]]
 name = "lisp-run"
 path = "src/bin/lisp_run.rs"
 
