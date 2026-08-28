@@ -573,11 +573,9 @@ fn test_differential_fuzz_short_programs() {
                 for _ in 0..num_slots {
                     init_slots.push(rng.next_lisp_val());
                 }
-                if let Some(desc) = differential_test_one(code, init_slots, 1000) {
+                if let Some(desc) = differential_test_one(code.clone(), init_slots.clone(), 1000) {
                     mismatches += 1;
-
-                    eprintln!("MISMATCH #{}: {}", i, desc);
-                    
+                    fuzz_common::report_mismatch("", i, &desc, &code, &init_slots, 1000);
                 }
             }
 
@@ -613,7 +611,7 @@ fn test_differential_fuzz_medium_programs() {
                     init_slots.push(rng.next_lisp_val());
                 }
 
-                if let Some(desc) = differential_test_one(code, init_slots, 5000) {
+                if let Some(desc) = differential_test_one(code.clone(), init_slots.clone(), 5000) {
                     mismatches += 1;
                     eprintln!("MISMATCH #{}: {}", i, desc);
                 }
@@ -688,9 +686,9 @@ fn test_differential_fuzz_slot_imm_ops() {
             init_slots.push(LispVal::Num(rng.next_range(-10, 10)));
         }
 
-        if let Some(desc) = differential_test_one(code, init_slots, 5000) {
+        if let Some(desc) = differential_test_one(code.clone(), init_slots.clone(), 5000) {
             mismatches += 1;
-            eprintln!("SLOT_IMM MISMATCH #{}: {}", i, desc);
+            eprintln!("SLOT_IMM MISMATCH #{i}: {desc}"); fuzz_common::report_mismatch("SLOT_IMM", i, &desc, &code, &init_slots, 5000);
         }
     }
 
@@ -724,9 +722,9 @@ fn test_differential_fuzz_edge_cases() {
                     init_slots.push(rng.next_lisp_val());
                 }
 
-                if let Some(desc) = differential_test_one(code, init_slots, 1000) {
+                if let Some(desc) = differential_test_one(code.clone(), init_slots.clone(), 1000) {
                     mismatches += 1;
-                    eprintln!("EDGE MISMATCH #{}: {}", i, desc);
+                    eprintln!("EDGE MISMATCH #{i}: {desc}"); fuzz_common::report_mismatch("EDGE", i, &desc, &code, &init_slots, 1000);
                 }
             }
 
@@ -786,9 +784,9 @@ fn test_differential_fuzz_recur_patterns() {
                     init_slots.push(LispVal::Num(rng.next_range(0, 5)));
                 }
 
-                if let Some(desc) = differential_test_one(code, init_slots, 10000) {
+                if let Some(desc) = differential_test_one(code.clone(), init_slots.clone(), 10000) {
                     mismatches += 1;
-                    eprintln!("RECUR MISMATCH #{}: {}", i, desc);
+                    eprintln!("RECUR MISMATCH #{i}: {desc}"); fuzz_common::report_mismatch("RECUR", i, &desc, &code, &init_slots, 10000);
                 }
             }
 
@@ -1195,9 +1193,9 @@ fn test_differential_fuzz_tagged_values() {
                     init_slots.push(rng.next_lisp_val());
                 }
 
-                if let Some(desc) = differential_test_one(code, init_slots, 10000) {
+                if let Some(desc) = differential_test_one(code.clone(), init_slots.clone(), 10000) {
                     mismatches += 1;
-                    eprintln!("TAG MISMATCH #{}: {}", i, desc);
+                    eprintln!("TAG MISMATCH #{i}: {desc}"); fuzz_common::report_mismatch("TAG", i, &desc, &code, &init_slots, 10000);
                 }
             }
 
@@ -1277,9 +1275,9 @@ fn test_differential_fuzz_dict_ops() {
                     }
                 }
 
-                if let Some(desc) = differential_test_one(code, init_slots, 10000) {
+                if let Some(desc) = differential_test_one(code.clone(), init_slots.clone(), 10000) {
                     mismatches += 1;
-                    eprintln!("DICT MISMATCH #{}: {}", i, desc);
+                    eprintln!("DICT MISMATCH #{i}: {desc}"); fuzz_common::report_mismatch("DICT", i, &desc, &code, &init_slots, 10000);
                 }
             }
 
@@ -1348,9 +1346,9 @@ fn test_differential_fuzz_float_edges() {
                     }
                 }
 
-                if let Some(desc) = differential_test_one(code, init_slots, 10000) {
+                if let Some(desc) = differential_test_one(code.clone(), init_slots.clone(), 10000) {
                     mismatches += 1;
-                    eprintln!("FLOAT MISMATCH #{}: {}", i, desc);
+                    eprintln!("FLOAT MISMATCH #{i}: {desc}"); fuzz_common::report_mismatch("FLOAT", i, &desc, &code, &init_slots, 10000);
                 }
             }
 
@@ -1406,9 +1404,9 @@ fn test_differential_fuzz_overflow() {
                     init_slots.push(LispVal::Num(rng.boundary_i64()));
                 }
 
-                if let Some(desc) = differential_test_one(code, init_slots, 10000) {
+                if let Some(desc) = differential_test_one(code.clone(), init_slots.clone(), 10000) {
                     mismatches += 1;
-                    eprintln!("OVERFLOW MISMATCH #{}: {}", i, desc);
+                    eprintln!("OVERFLOW MISMATCH #{i}: {desc}"); fuzz_common::report_mismatch("OVERFLOW", i, &desc, &code, &init_slots, 10000);
                 }
             }
 
@@ -1447,7 +1445,7 @@ fn test_differential_fuzz_multi_seed() {
                         init_slots.push(rng.next_lisp_val());
                     }
 
-                    if let Some(desc) = differential_test_one(code, init_slots, 5000) {
+                    if let Some(desc) = differential_test_one(code.clone(), init_slots.clone(), 5000) {
                         mismatches += 1;
                         eprintln!("SEED {} MISMATCH #{}: {}", seed, i, desc);
                     }
@@ -1667,9 +1665,9 @@ fn test_differential_fuzz_mutation() {
                         code.push(Op::Return);
                     }
 
-                    if let Some(desc) = differential_test_one(code, base_slots.clone(), 5000) {
+                    if let Some(desc) = differential_test_one(code.clone(), base_slots.clone(), 5000) {
                         mismatches += 1;
-                        eprintln!("MUTATION MISMATCH #{}: {}", m, desc);
+                        eprintln!("MUTATION MISMATCH #{m}: {desc}"); fuzz_common::report_mismatch("MUTATION", m, &desc, &code, &base_slots, 5000);
                     }
                 }
             }
@@ -1780,9 +1778,9 @@ fn test_differential_fuzz_type_coercion() {
                     }
                 }
 
-                if let Some(desc) = differential_test_one(code, init_slots, 1000) {
+                if let Some(desc) = differential_test_one(code.clone(), init_slots.clone(), 1000) {
                     mismatches += 1;
-                    eprintln!("COERCION MISMATCH #{}: {}", i, desc);
+                    eprintln!("COERCION MISMATCH #{i}: {desc}"); fuzz_common::report_mismatch("COERCION", i, &desc, &code, &init_slots, 1000);
                 }
             }
 
@@ -1824,7 +1822,7 @@ fn test_differential_fuzz_long_programs() {
                     }
 
                     // Longer programs need more steps
-                    if let Some(desc) = differential_test_one(code, init_slots, 5000) {
+                    if let Some(desc) = differential_test_one(code.clone(), init_slots.clone(), 5000) {
                         mismatches += 1;
                         eprintln!("LONG PROG MISMATCH seed={} prog={}: {}", seed, i, desc);
                     }
@@ -1905,9 +1903,9 @@ fn test_differential_fuzz_recur_stress() {
                     }
                 }
 
-                if let Some(desc) = differential_test_one(code, init_slots, 5000) {
+                if let Some(desc) = differential_test_one(code.clone(), init_slots.clone(), 5000) {
                     mismatches += 1;
-                    eprintln!("RECUR STRESS MISMATCH #{}: {}", i, desc);
+                    eprintln!("RECUR STRESS MISMATCH #{i}: {desc}"); fuzz_common::report_mismatch("RECUR STRESS", i, &desc, &code, &init_slots, 5000);
                 }
             }
 
@@ -2079,7 +2077,7 @@ fn test_differential_fuzz_stack_depth() {
                     let init_slots: Vec<LispVal> =
                         (0..num_slots).map(|_| rng.next_lisp_val()).collect();
 
-                    if let Some(desc) = differential_test_one(code, init_slots, 5000) {
+                    if let Some(desc) = differential_test_one(code.clone(), init_slots.clone(), 5000) {
                         mismatches += 1;
                         eprintln!("STACK DEPTH MISMATCH seed={} prog={}: {}", seed, i, desc);
                     }
@@ -2296,9 +2294,9 @@ fn test_differential_fuzz_dangerous_sequences() {
                 let init_slots: Vec<LispVal> =
                     (0..num_slots).map(|_| rng.next_lisp_val()).collect();
 
-                if let Some(desc) = differential_test_one(code, init_slots, 1000) {
+                if let Some(desc) = differential_test_one(code.clone(), init_slots.clone(), 1000) {
                     mismatches += 1;
-                    eprintln!("DANGEROUS RANDOM MISMATCH #{}: {}", i, desc);
+                    eprintln!("DANGEROUS RANDOM MISMATCH #{i}: {desc}"); fuzz_common::report_mismatch("DANGEROUS RANDOM", i, &desc, &code, &init_slots, 1000);
                 }
             }
 
@@ -2419,7 +2417,7 @@ fn test_differential_fuzz_live_torture() {
                     init_slots.push(rng.next_lisp_val());
                 }
 
-                if let Some(desc) = differential_test_one(code, init_slots, 2000) {
+                if let Some(desc) = differential_test_one(code.clone(), init_slots.clone(), 2000) {
                     mismatches += 1;
                     eprintln!(
                         "LIVE MISMATCH #{} (seed {}): {}",
@@ -2436,4 +2434,74 @@ fn test_differential_fuzz_live_torture() {
         })
         .unwrap();
     child.join().unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// Shrinker tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_shrinker_repatch_maps_jump_targets() {
+    let code = vec![
+        Op::PushI64(1),          // 0 — deleted
+        Op::PushI64(2),          // 1 — deleted
+        Op::PushI64(3),          // 2 — deleted
+        Op::JumpIfTrue(5),       // 3 → jumps to old 5; after deletion → 2
+        Op::PushNil,             // 4 — deleted
+        Op::Jump(7),             // 5 → old 7 == len (halt) → new len 4
+        Op::PushI64(9),          // 6
+        Op::Return,              // 7
+    ];
+    let keep = [false, false, false, true, false, true, true, true];
+    let out = fuzz_common::repatch_kept(&code, &keep).expect("repatch ok");
+    assert_eq!(out.len(), 4);
+    // kept layout: JumpIfTrue@0, Jump@1, PushI64(9)@2, Return@3
+    assert_eq!(format!("{:?}", out[0]), format!("{:?}", Op::JumpIfTrue(1)));
+    assert_eq!(format!("{:?}", out[1]), format!("{:?}", Op::Jump(3)));
+    assert_eq!(format!("{:?}", out[2]), format!("{:?}", Op::PushI64(9)));
+    assert_eq!(format!("{:?}", out[3]), format!("{:?}", Op::Return));
+
+    // Dangling target (into a deleted run) must be rejected.
+    let bad_keep = [true, false, true, false];
+    let code2 = vec![Op::Jump(1), Op::PushNil, Op::PushNil, Op::Return];
+    assert!(fuzz_common::repatch_kept(&code2, &bad_keep).is_none());
+}
+
+#[test]
+fn test_shrinker_ddmin_strips_junk_preserves_error() {
+    use lisp_rlm_wasm::types::LispVal;
+    // Gate: the SPEC VM errors (SlotDivImm ÷0) — synthetic, deterministic,
+    // independent of the Rust VM.
+    // Gate must be SPECIFIC: a degenerate empty/short program also "errors"
+    // (pc out of bounds), which ddmin would happily shrink to. Pin the
+    // div-by-zero error message.
+    let gate = |code: &[Op], _slots: &[LispVal]| -> bool {
+        let vm = fuzz_common::SpecVm::new(code.to_vec(), vec![LispVal::Nil; 1]);
+        matches!(vm.run(1000), fuzz_common::SpecResult::Error(ref e) if e.contains("div"))
+    };
+    let junk = || Op::PushI64(0xdead);
+    let code = vec![
+        junk(), junk(), junk(), junk(),
+        Op::SlotDivImm(0, 0), // the erroring op (÷0)
+        junk(), junk(), junk(), junk(),
+        junk(), junk(), junk(), junk(),
+        Op::Return,
+    ];
+    let (out, _) = fuzz_common::shrink_with(&code, &[LispVal::Nil; 1], &gate);
+    assert!(out.len() < code.len() / 2, "should strip most junk, got {:?}", out);
+    assert!(
+        out.iter().any(|op| format!("{:?}", op) == format!("{:?}", Op::SlotDivImm(0, 0))),
+        "must keep the erroring op"
+    );
+    assert!(gate(&out, &[]), "shrunk program still errors");
+}
+
+#[test]
+fn test_shrinker_never_accepting_returns_input() {
+    let code = vec![Op::PushI64(1), Op::PushI64(2), Op::Add, Op::Return];
+    let never = |_: &[Op], _: &[lisp_rlm_wasm::types::LispVal]| false;
+    let (out, slots) = fuzz_common::shrink_with(&code, &[], &never);
+    let (a, b) = (format!("{:?}", out), format!("{:?}", code));
+    assert_eq!(a, b, "no acceptable reduction → input unchanged");
+    assert!(slots.is_empty());
 }

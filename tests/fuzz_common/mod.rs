@@ -2151,3 +2151,159 @@ pub fn differential_test_one(
 // Regression tests — known-good programs from F* verification
 // ---------------------------------------------------------------------------
 
+
+// ---------------------------------------------------------------------------
+// Mismatch shrinker — ddmin over op runs with jump-target repatching
+//
+// Acceptance criterion: the candidate still produces ANY differential
+// mismatch (class-preserving, not string-preserving — values legitimately
+// change as ops disappear). Repatch remaps absolute jump targets for the
+// deleted-run layout; candidates whose jump targets land inside a deleted
+// run are rejected (treated as failed candidates), which ddmin handles
+// naturally.
+// ---------------------------------------------------------------------------
+
+/// Ops whose trailing usize is an absolute pc: repatch under a keep-mask.
+pub fn repatch_kept(code: &[Op], keep: &[bool]) -> Option<Vec<Op>> {
+    debug_assert_eq!(code.len(), keep.len());
+    // old_pc -> new_pc for kept ops; deleted ops map to None.
+    let mut new_pc = Vec::with_capacity(code.len() + 1);
+    let mut next = 0usize;
+    for &k in keep {
+        new_pc.push(if k { Some(next) } else { None });
+        if k {
+            next += 1;
+        }
+    }
+    new_pc.push(Some(next)); // sentinel: target == code.len() (halt) → new len
+
+    let map = |t: usize| -> Option<usize> { *new_pc.get(t).unwrap_or(&None) };
+
+    let mut out = Vec::with_capacity(next);
+    for (op, &k) in code.iter().zip(keep) {
+        if !k {
+            continue;
+        }
+        let patched = match op {
+            Op::Jump(t) => map(*t).map(Op::Jump),
+            Op::JumpIfTrue(t) => map(*t).map(Op::JumpIfTrue),
+            Op::JumpIfFalse(t) => map(*t).map(Op::JumpIfFalse),
+            Op::JumpIfSlotLtImm(s, i, t) => map(*t).map(|t| Op::JumpIfSlotLtImm(*s, *i, t)),
+            Op::JumpIfSlotLeImm(s, i, t) => map(*t).map(|t| Op::JumpIfSlotLeImm(*s, *i, t)),
+            Op::JumpIfSlotGtImm(s, i, t) => map(*t).map(|t| Op::JumpIfSlotGtImm(*s, *i, t)),
+            Op::JumpIfSlotGeImm(s, i, t) => map(*t).map(|t| Op::JumpIfSlotGeImm(*s, *i, t)),
+            Op::JumpIfSlotEqImm(s, i, t) => map(*t).map(|t| Op::JumpIfSlotEqImm(*s, *i, t)),
+            Op::RecurIncAccum(c, a, st, l, e) => map(*e).map(|e| Op::RecurIncAccum(*c, *a, *st, *l, e)),
+            // Recur(n) / RecurDirect(n): n = slot arity, pc always resets to 0 — no patch.
+            other => Some(other.clone()),
+        };
+        out.push(patched?);
+    }
+    Some(out)
+}
+
+/// ddmin op-run deletion while `accept(code, slots)` holds.
+fn ddmin_ops(code: &[Op], slots: &[LispVal], accept: &dyn Fn(&[Op]) -> bool) -> Vec<Op> {
+    let mut keep: Vec<bool> = vec![true; code.len()];
+    let mut n = 2usize;
+    'outer: loop {
+        let kept_count = keep.iter().filter(|&&k| k).count();
+        if kept_count <= 1 {
+            break;
+        }
+        let chunk = (kept_count + n - 1) / n;
+        // Build kept-index list, then delete chunk i of that list.
+        let idx: Vec<usize> = keep
+            .iter()
+            .enumerate()
+            .filter(|(_, &k)| k)
+            .map(|(i, _)| i)
+            .collect();
+        for start in (0..idx.len()).step_by(chunk) {
+            let mut cand = keep.clone();
+            for &i in &idx[start..(start + chunk).min(idx.len())] {
+                cand[i] = false;
+            }
+            if let Some(patched) = repatch_kept(code, &cand) {
+                if accept(&patched) {
+                    keep = cand;
+                    n = std::cmp::max(n - 1, 2);
+                    continue 'outer;
+                }
+            }
+        }
+        if n >= kept_count {
+            break;
+        }
+        n = std::cmp::min(kept_count, n * 2);
+    }
+    repatch_kept(code, &keep).unwrap_or_else(|| code.to_vec())
+}
+
+/// Shrink a mismatching program: ddmin over ops, then simplify slot values.
+/// Acceptance gate = any differential mismatch. (Run in a big-stack thread —
+/// deep LispVal drops can overflow the default test stack.)
+pub fn shrink_mismatch(
+    code: &[Op],
+    init_slots: &[LispVal],
+    max_steps: usize,
+) -> (Vec<Op>, Vec<LispVal>) {
+    let gate = |c: &[Op], s: &[LispVal]| -> bool {
+        differential_test_one(c.to_vec(), s.to_vec(), max_steps).is_some()
+    };
+    shrink_with(code, init_slots, &gate)
+}
+
+/// Same, with an injectable acceptance gate (tests use synthetic gates —
+/// on a green tree there is no real divergence to preserve by definition).
+pub fn shrink_with(
+    code: &[Op],
+    init_slots: &[LispVal],
+    gate: &dyn Fn(&[Op], &[LispVal]) -> bool,
+) -> (Vec<Op>, Vec<LispVal>) {
+    let accept_code = |c: &[Op]| gate(c, init_slots);
+    let shrunk_code = ddmin_ops(code, init_slots, &accept_code);
+
+    // Slot value simplification: try Nil first (cheap, often sufficient).
+    let mut slots: Vec<LispVal> = init_slots.to_vec();
+    for i in 0..slots.len() {
+        let original = std::mem::replace(&mut slots[i], LispVal::Nil);
+        if !gate(&shrunk_code, &slots) {
+            slots[i] = original; // revert — Nil killed the mismatch
+        }
+    }
+    (shrunk_code, slots)
+}
+
+/// Pretty-print a program for mismatch reports: pc: Op, grouped by lines.
+pub fn format_program(code: &[Op], slots: &[LispVal]) -> String {
+    let mut s = String::new();
+    for (i, v) in slots.iter().enumerate() {
+        s.push_str(&format!("  slot[{i}] = {v:?}\n"));
+    }
+    for (pc, op) in code.iter().enumerate() {
+        s.push_str(&format!("  {pc}: {op:?}\n"));
+    }
+    s
+}
+
+/// Report a mismatch, auto-shrunk: prints the original description plus the
+/// minimized program (ddmin ops + Nil-slot simplification) and re-states the
+/// shrunk program's own mismatch description. Call from big-stack threads.
+pub fn report_mismatch(
+    label: &str,
+    index: usize,
+    desc: &str,
+    code: &[Op],
+    init_slots: &[LispVal],
+    max_steps: usize,
+) {
+    eprintln!("{label} MISMATCH #{index}: {desc}");
+    eprintln!("--- shrinking ---");
+    let (code2, slots2) = shrink_mismatch(code, init_slots, max_steps);
+    let desc2 = differential_test_one(code2.clone(), slots2.clone(), max_steps)
+        .unwrap_or_else(|| "(shrunk form no longer mismatches)".to_string());
+    eprintln!("=== SHRUNK ({} ops → {}) ===", code.len(), code2.len());
+    eprint!("{}", format_program(&code2, &slots2));
+    eprintln!("--- shrunk mismatch: {desc2}");
+}
