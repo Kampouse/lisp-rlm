@@ -71,9 +71,16 @@ impl WasmEmitter {
         v.push(Instruction::LocalSet(lambda_id_local));
         v.push(Instruction::End);
 
-        // Sequential if/else dispatch — use Block+Br instead of Return
-        // so dynamic calls can be used as sub-expressions
-        v.push(Instruction::Block(BlockType::Result(ValType::I64)));
+        // Sequential if/else dispatch. Every branch is void-typed: each arm
+        // stores the call result to a dedicated local, the fallback default
+        // is set before the chain, and the value is read once at the end.
+        // (The old Block+Br(1)+i64.const form was invalid wasm: it pushed a
+        // value into a void else-branch and mis-targeted br depth when
+        // lambda_info.len() >= 2.)
+        let result_local = self.next_local;
+        self.next_local += 1;
+        v.push(Instruction::I64Const(-1)); // fallback default: no matching lambda
+        v.push(Instruction::LocalSet(result_local));
         for (lid, &(func_idx, _cap_count)) in self.lambda_info.iter().enumerate() {
             v.push(Instruction::LocalGet(lambda_id_local));
             v.push(Instruction::I64Const(lid as i64));
@@ -84,14 +91,13 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(al));
             }
             v.push(Instruction::Call(USER_BASE | func_idx as u32));
-            v.push(Instruction::Br(1)); // break out of Block with result
+            v.push(Instruction::LocalSet(result_local));
             v.push(Instruction::Else);
         }
-        v.push(Instruction::I64Const(-1)); // unreachable fallback
         for _ in 0..n_lambdas {
             v.push(Instruction::End);
         }
-        v.push(Instruction::End); // end Block
+        v.push(Instruction::LocalGet(result_local));
 
         Ok(v)
     }
