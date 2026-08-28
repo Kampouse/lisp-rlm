@@ -263,11 +263,20 @@ impl WasmEmitter {
                     v.push(Instruction::Drop);
                     // If println, write newline
                     if op == "println" {
-                        v.push(Instruction::I32Const(64));
+                        // newline byte at 72, its own iov at 80 — the old code
+                        // stored '\n' at 64, clobbering iov[0].buf's low byte,
+                        // then re-wrote the corrupted iov (garbage output)
+                        v.push(Instruction::I32Const(72));
                         v.push(Instruction::I32Const(0x0A)); // '\n'
                         v.push(Instruction::I32Store8(ma8.clone()));
+                        v.push(Instruction::I32Const(80));
+                        v.push(Instruction::I32Const(72));
+                        v.push(Instruction::I32Store(ma4.clone()));
+                        v.push(Instruction::I32Const(84));
                         v.push(Instruction::I32Const(1));
-                        v.push(Instruction::I32Const(64));
+                        v.push(Instruction::I32Store(ma4.clone()));
+                        v.push(Instruction::I32Const(1));
+                        v.push(Instruction::I32Const(80));
                         v.push(Instruction::I32Const(1));
                         v.push(Instruction::I32Const(98308));
                         v.push(Instruction::Call(WASI_FD_WRITE));
@@ -384,13 +393,20 @@ impl WasmEmitter {
                     v.push(Instruction::I32Const(98308));
                     v.push(Instruction::Call(WASI_FD_WRITE));
                     v.push(Instruction::Drop);
-                    // If println, newline
+                    // If println, newline (byte at 72, own iov at 80 —
+                    // 64 still holds the digit-string iov we just wrote)
                     if op == "println" {
-                        v.push(Instruction::I32Const(64));
+                        v.push(Instruction::I32Const(72));
                         v.push(Instruction::I32Const(0x0A));
                         v.push(Instruction::I32Store8(ma8.clone()));
+                        v.push(Instruction::I32Const(80));
+                        v.push(Instruction::I32Const(72));
+                        v.push(Instruction::I32Store(ma4.clone()));
+                        v.push(Instruction::I32Const(84));
                         v.push(Instruction::I32Const(1));
-                        v.push(Instruction::I32Const(64));
+                        v.push(Instruction::I32Store(ma4.clone()));
+                        v.push(Instruction::I32Const(1));
+                        v.push(Instruction::I32Const(80));
                         v.push(Instruction::I32Const(1));
                         v.push(Instruction::I32Const(98308));
                         v.push(Instruction::Call(WASI_FD_WRITE));

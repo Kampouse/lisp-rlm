@@ -20,6 +20,11 @@ fn main() {
     let module = Module::new(&engine, &wasm).expect("validate");
     let mut store = Store::new(&engine, ());
 
+    // HTTP body scratch (mirrors wasi_http::SENTINEL_BUF): 128MB - 4KB - 1MB.
+    // The wasm-side shim copies the body from wherever body_ptr points, so
+    // hosting large bodies here avoids the 4KB ret-area truncation.
+    const HTTP_SBUF: usize = 2048 * 65536 - 4096 - 1_048_576;
+
     // ── WASI stubs ──
     let sd = stdin_data.clone().into_bytes();
     let fd_read_fn = Func::new(&mut store,
@@ -42,19 +47,27 @@ fn main() {
     let fd_write_fn = Func::new(&mut store,
         FuncType::new(&engine, vec![ValType::I32; 4], vec![ValType::I32]),
         |mut caller, args, results| {
-            // Echo stdout to the console
+            // Echo stdout to the console: iterate ALL iov entries
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 let data = mem.data(&caller);
                 let iov_ptr = args[1].unwrap_i32() as usize;
-                if iov_ptr + 8 <= data.len() {
-                    let p = u32::from_le_bytes(data[iov_ptr..iov_ptr+4].try_into().unwrap()) as usize;
-                    let l = u32::from_le_bytes(data[iov_ptr+4..iov_ptr+8].try_into().unwrap()) as usize;
+                let iov_count = args[2].unwrap_i32().max(0) as usize;
+                let mut total: u32 = 0;
+                for i in 0..iov_count {
+                    let base = iov_ptr + i * 8;
+                    if base + 8 > data.len() { break; }
+                    let p = u32::from_le_bytes(data[base..base+4].try_into().unwrap()) as usize;
+                    let l = u32::from_le_bytes(data[base+4..base+8].try_into().unwrap()) as usize;
                     if p + l <= data.len() {
                         print!("{}", String::from_utf8_lossy(&data[p..p+l]));
+                        total += l as u32;
                     }
                 }
+                results[0] = Val::I32(total as i32);
+            } else {
+                results[0] = Val::I32(0);
             }
-            results[0] = Val::I32(args[2].unwrap_i32()); Ok(())
+            Ok(())
         });
     let proc_exit_fn = Func::new(&mut store, FuncType::new(&engine, vec![ValType::I32], vec![]),
         |_, args, _| Err(wasmtime::Error::msg(format!("proc_exit({})", args[0].unwrap_i32()))));
@@ -81,7 +94,7 @@ fn main() {
                         Ok(o) if o.status.success() => o.stdout,
                         _ => Vec::new(),
                     };
-                    let dst = ret_area + 16;
+                    let dst = HTTP_SBUF;
                     let n = body.len().min(data.len().saturating_sub(dst));
                     if n > 0 { data[dst..dst+n].copy_from_slice(&body[..n]); }
                     data[ret_area+4..ret_area+8].copy_from_slice(&(dst as u32).to_le_bytes());
@@ -102,7 +115,48 @@ fn main() {
                 |_, _, _| Ok(()))
         }
     };
-    let http_post_fn = stub(&mut store, 7, false);
+    // ── REAL http-post (canonical ABI: url, body, content_type, ret_area) ──
+    // ret_area layout: +0 error flag (0 = ok), +4 body ptr, +8 body len
+    let http_post_fn = Func::new(&mut store,
+        FuncType::new(&engine, vec![ValType::I32; 7], vec![]),
+        |mut caller, args, _| {
+            let (up, ul, bp, bl, cp, cl, ra) = (
+                args[0].unwrap_i32() as usize, args[1].unwrap_i32() as usize,
+                args[2].unwrap_i32() as usize, args[3].unwrap_i32() as usize,
+                args[4].unwrap_i32() as usize, args[5].unwrap_i32() as usize,
+                args[6].unwrap_i32() as usize,
+            );
+            if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                let data = mem.data_mut(&mut caller);
+                let ok = up + ul <= data.len() && bp + bl <= data.len() && cp + cl <= data.len() && ra + 16 <= data.len();
+                if ok {
+                    let url = String::from_utf8_lossy(&data[up..up+ul]).to_string();
+                    let body = data[bp..bp+bl].to_vec();
+                    let ct = String::from_utf8_lossy(&data[cp..cp+cl]).to_string();
+                    eprintln!("🌐 http-post {url} ({ct}, {} bytes)", body.len());
+                    use std::io::Write as _;
+                    let body_path = format!("/tmp/__outlayer_post_body_{}", std::process::id());
+                    std::fs::write(&body_path, &body).ok();
+                    let resp = std::process::Command::new("curl")
+                        .args(["-s", "--max-time", "10", "-X", "POST", "-H", &format!("Content-Type: {ct}"), "--data-binary", &format!("@{body_path}"), &url])
+                        .output();
+                    std::fs::remove_file(&body_path).ok();
+                    let (err, out): (u32, Vec<u8>) = match resp {
+                        Ok(o) if o.status.success() => (0, o.stdout),
+                        _ => (1, Vec::new()),
+                    };
+                    let dst = HTTP_SBUF;
+                    let n = out.len().min(data.len().saturating_sub(dst));
+                    if n > 0 { data[dst..dst+n].copy_from_slice(&out[..n]); }
+                    data[ra..ra+4].copy_from_slice(&err.to_le_bytes());
+                    data[ra+4..ra+8].copy_from_slice(&(dst as u32).to_le_bytes());
+                    data[ra+8..ra+12].copy_from_slice(&(n as u32).to_le_bytes());
+                } else {
+                    data[ra..ra+4].copy_from_slice(&1u32.to_le_bytes());
+                }
+            }
+            Ok(())
+        });
     let view_fn = stub(&mut store, 9, false);
     let call_fn = stub(&mut store, 17, false);
     let transfer_fn = stub(&mut store, 11, false);
