@@ -10,7 +10,7 @@
 
 module MapFilterReduce
 
-#set-options "--z3rlimit 5000"
+#set-options "--z3rlimit 5000 --initial_fuel 4 --max_fuel 10 --initial_ifuel 2 --max_ifuel 4"
 
 open Lisp.Types
 open Lisp.Values
@@ -154,7 +154,12 @@ val score_dictset_step : unit -> Lemma
        | Num v -> v = 42
        | _ -> false)
     | _ -> false))
-let score_dictset_step () = admit()  // Z3 quantifier trigger failure through closure_eval_op — pure dict chain proves in isolation
+let score_dictset_step () = admit()
+(* Why admit: closure_eval_op + dict_set/dict_get chain is closed-term and
+   normalizes, but Z3's encoding of fst_string is uninterpreted — it cannot
+   decide ("score" = "score") for a key extracted from a computed entry, so
+   the dict_get lookup step is unprovable in SMT. A proper fix needs a string
+   decision procedure or lifting keys to an inductive key type. 2026-08-27. *)
 
 // ============================================================
 // PART 5: FILTER — (lambda (x) (> x 3))

@@ -9,9 +9,11 @@
     
     Proof technique: assert_norm with concrete fuel (100) lets the F*
     normalizer evaluate compile_lambda + eval_steps.
-    Parametric fuel breaks the normalizer — it can't unfold compile_lambda
-    when fuel is symbolic. Those proofs use admit().
-    
+    Note: list_rev in LispIR.Semantics was buggy for n>=3 (double-reversed
+    tail); fixed to accumulator form on 2026-08-27 — the old 3-element
+    admits were hiding that divergence from the Rust VM. All proofs here
+    are real now.
+
     Note: Source evaluator (Lisp.Source) does not model (list) as a special
     form — it's a builtin function, not available in the pure source eval env.
     So we only test compiler+VM correctness, not source eval consistency.
@@ -67,15 +69,14 @@ val vm_makelist_two : a:int -> b:int -> Lemma
    | _ -> false)
 let vm_makelist_two a b = ()
 
-// MakeList 3: three elements (admit — normalizer can't unfold pop_n+list_rev 3 deep)
+// MakeList 3: three elements
 val vm_makelist_three : a:int -> b:int -> c:int -> Lemma
   (match eval_steps 10 (fresh_vm [PushI64 a; PushI64 b; PushI64 c; MakeList 3; Return]) with
    | Ok s' -> (match s'.stack with
      | List [Num x; Num y; Num z] :: _ -> x = a && y = b && z = c
      | _ -> false)
    | _ -> false)
-let vm_makelist_three a b c = admit()
-
+let vm_makelist_three a b c = ()
 // ============================================================
 // LAYER 2: Compiler output structure (assert_norm, concrete fuel)
 // ============================================================
@@ -201,17 +202,26 @@ let cc_list_two a b =
    | None -> false)
 
 // (list a b c) → VM produces List [Num a; Num b; Num c]
-// Admit — 3-deep list construction exceeds normalizer capacity
 val cc_list_three : a:int -> b:int -> c:int -> Lemma
   (match compile_lambda 100 [] (List [Sym "list"; Num a; Num b; Num c]) with
    | Some code ->
-     (match eval_steps 100 (fresh_vm code) with
+     (match eval_steps 5 (fresh_vm code) with
       | Ok s' -> (match s'.stack with
         | List [Num x; Num y; Num z] :: _ -> x = a && y = b && z = c
         | _ -> false)
       | _ -> false)
    | None -> false)
-let cc_list_three a b c = admit()
+let cc_list_three a b c =
+  vm_makelist_three a b c;
+  assert_norm (
+    match compile_lambda 100 [] (List [Sym "list"; Num a; Num b; Num c]) with
+    | Some code ->
+      (match eval_steps 5 (fresh_vm code) with
+       | Ok s' -> (match s'.stack with
+         | List [Num x; Num y; Num z] :: [] -> x = a && y = b && z = c
+         | _ -> false)
+       | _ -> false)
+    | None -> false)
 
 // ============================================================
 // LAYER 4: List truthiness

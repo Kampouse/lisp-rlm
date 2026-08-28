@@ -11,6 +11,8 @@
 *)
 module LispIR.StackHeight
 
+#set-options "--z3rlimit 50 --initial_fuel 3 --max_fuel 6 --initial_ifuel 1 --max_ifuel 2"
+
 open Lisp.Types
 open Lisp.Values
 open Lisp.Source
@@ -96,10 +98,10 @@ let sym_stack_height n = ()
 // === IF (direct VM proof) ===
 
 val if_stack_height : unit -> Lemma
-  (match eval_steps 100 (fresh_vm [PushI64 1; JumpIfFalse 4; PushI64 42; Jump 5; PushI64 99; Return]) with
+  (match eval_steps 6 (fresh_vm [PushI64 1; JumpIfFalse 4; PushI64 42; Jump 5; PushI64 99; Return]) with
    | LispIR.Semantics.Ok s' -> stack_is_one s'.stack
    | _ -> false)
-let if_stack_height () = admit()
+let if_stack_height () = ()
 
 val if_no_else_stack_height : unit -> Lemma
   (match eval_steps 100 (fresh_vm [PushBool false; JumpIfFalse 4; PushI64 42; Jump 5; PushNil; Return]) with

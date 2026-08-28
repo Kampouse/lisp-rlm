@@ -107,9 +107,7 @@ let rec list_rev_append l1 l2 =
 
 val list_rev : list 'a -> Tot (list 'a)
 let rec list_rev l =
-  match l with
-  | [] -> []
-  | x :: rest -> list_rev_append (list_rev rest) [x]
+  list_rev_append l []
 
 // Convert list of values to field pairs: [("0", v0); ("1", v1); ...]
 val items_to_fields : list lisp_val -> int -> Tot (list (string * lisp_val))
