@@ -39,6 +39,62 @@ impl WasmEmitter {
         // which gets overwritten by subsequent __json_get calls.
         // Uses runtime bump allocator (RUNTIME_HEAP_PTR at addr 56) — grows
         // dynamically based on actual string length, not fixed 64KB slots.
+        //
+        // "auto" mode: __json_get returns a TAGGED value (TAG_STR or TAG_NUM).
+        // TAG_STR payloads point at the scratch stdout_buf and must be
+        // heap-copied too; TAG_NUM is already self-contained.
+        if value_type == "auto" {
+            let jga_tmp = self.local_idx("__jga_tmp");
+            v.push(Instruction::LocalSet(jga_tmp));
+            // if (tmp & 7) == TAG_STR → heap copy; else push tagged num as-is
+            v.push(Instruction::LocalGet(jga_tmp));
+            v.push(Instruction::I64Const(7));
+            v.push(Instruction::I64And);
+            v.push(Instruction::I64Const(crate::wasm_emit::TAG_STR as i64));
+            v.push(Instruction::I64Eq);
+            v.push(Instruction::If(wasm_encoder::BlockType::Result(ValType::I64)));
+            {
+                let jga_len = self.local_idx_i32("__jga_len");
+                let jga_ptr = self.local_idx_i32("__jga_ptr");
+                let heap_dst = self.heap_bump(65536);
+                // payload = tmp >> 3
+                v.push(Instruction::LocalGet(jga_tmp));
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(jga_tmp)); // reuse as payload
+                // len = payload >> 32
+                v.push(Instruction::LocalGet(jga_tmp));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalSet(jga_len));
+                // ptr = payload & 0xFFFFFFFF
+                v.push(Instruction::LocalGet(jga_tmp));
+                v.push(Instruction::I64Const(0xFFFFFFFF));
+                v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalSet(jga_ptr));
+                // copy scratch → heap, repack (len << 32 | heap), tag as STR
+                v.push(Instruction::I32Const(heap_dst as i32));
+                v.push(Instruction::LocalGet(jga_ptr));
+                v.push(Instruction::LocalGet(jga_len));
+                v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+                v.push(Instruction::LocalGet(jga_len));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I32Const(heap_dst as i32));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(crate::wasm_emit::TAG_STR as i64));
+                v.push(Instruction::I64Or);
+            }
+            v.push(Instruction::Else);
+            v.push(Instruction::LocalGet(jga_tmp)); // tagged num
+            v.push(Instruction::End);
+        }
         if value_type == "str" {
             let _rhp: i32 = 56; // RUNTIME_HEAP_PTR
             let jgs_tmp = self.local_idx("__jgw_tmp");

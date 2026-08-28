@@ -178,7 +178,7 @@ impl WasmEmitter {
                             v.extend(self.emit_tag_str());
                             v
                         } else if self.wasi_mode {
-                            self.json_get_wasi(key, "str")?
+                            self.json_get_wasi(key, "auto")?
                         } else {
                             self.json_get_with_scanner(key, "auto")?
                         };

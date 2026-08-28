@@ -1622,8 +1622,24 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
         if param_count == 0 {
             fb.instruction(&Instruction::Call(last_idx));
         } else if param_count == 1 {
-            // Single-param: pass the tagged input string from local 2
+            // Single-param: if stdin is exactly 8 bytes, treat it as a raw
+            // i64 numeric arg (same slot convention as the multi-param path,
+            // value must fit the tagged payload range). Otherwise pass the
+            // tagged string (e.g. JSON bodies consumed by json-get).
+            fb.instruction(&Instruction::I32Const(STDIN_LEN as i32));
+            fb.instruction(&Instruction::I32Load(ma4));
+            fb.instruction(&Instruction::I32Const(8));
+            fb.instruction(&Instruction::I32Eq);
+            fb.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
+            // numeric: load 8-byte slot, tag as Num (<< 3, tag 0)
+            fb.instruction(&Instruction::I64Const(STDIN_BUF));
+            fb.instruction(&Instruction::I32WrapI64);
+            fb.instruction(&Instruction::I64Load(ma));
+            fb.instruction(&Instruction::I64Const(3));
+            fb.instruction(&Instruction::I64Shl);
+            fb.instruction(&Instruction::Else);
             fb.instruction(&Instruction::LocalGet(2)); // tagged stdin string
+            fb.instruction(&Instruction::End);
             fb.instruction(&Instruction::Call(last_idx));
         } else {
             // Multi-param: load each 8-byte slot from STDIN_BUF as raw tagged i64s
@@ -1637,6 +1653,16 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
             fb.instruction(&Instruction::Call(last_idx));
         }
         fb.instruction(&Instruction::LocalSet(1)); // result
+
+        // ── Result contract: store untagged payload at RESULT_BUF ──
+        // Numeric results → raw value; string results → (len << 32 | ptr).
+        // The outlayer runner (and the test harness) reads this slot after
+        // _start to recover the program's return value.
+        fb.instruction(&Instruction::I32Const(RESULT_BUF as i32));
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::I64Const(3));
+        fb.instruction(&Instruction::I64ShrU);
+        fb.instruction(&Instruction::I64Store(ma));
 
         // Check tag for fd_write output
         fb.instruction(&Instruction::LocalGet(1));
@@ -3080,19 +3106,19 @@ fn run_outlayer_wasm_with_http(wasm: &[u8], stdin_data: &[u8]) -> i64 {
     let environ_get_fn = Func::wrap(&mut store, |_: i32, _: i32| -> i32 { 0 });
     let fd_seek_fn = Func::wrap(&mut store, |_: i32, _: i64, _: i32, _: i32| -> i32 { 0 });
 
-    // REAL http_get: reads URL from WASM memory, does actual HTTP request, writes response back
+    // REAL http-get: canonical ABI (url_ptr, url_len, ret_area) -> ().
+    // Writes the response body at ret_area+16 and the (ptr, len) pair the
+    // wasm-side __wasi_http_get shim expects at ret_area+4 / ret_area+8.
     let ol_http_get_fn = Func::new(&mut store,
-        FuncType::new(&engine, vec![ValType::I32; 5], vec![ValType::I32]),
-        move |mut caller, args, results| {
+        FuncType::new(&engine, vec![ValType::I32; 3], vec![]),
+        move |mut caller, args, _results| {
             let url_ptr = args[0].unwrap_i32() as usize;
             let url_len = args[1].unwrap_i32() as usize;
-            let resp_buf = args[2].unwrap_i32() as usize;
-            let resp_buf_len = args[3].unwrap_i32() as usize;
-            let resp_len_ptr = args[4].unwrap_i32() as usize;
+            let ret_area = args[2].unwrap_i32() as usize;
 
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 let data = mem.data_mut(&mut caller);
-                if url_ptr + url_len <= data.len() {
+                if url_ptr + url_len <= data.len() && ret_area + 16 <= data.len() {
                     let url = String::from_utf8_lossy(&data[url_ptr..url_ptr+url_len]).to_string();
 
                     // Make real HTTP request (blocking)
@@ -3100,30 +3126,18 @@ fn run_outlayer_wasm_with_http(wasm: &[u8], stdin_data: &[u8]) -> i64 {
                         .args(["-s", "--max-time", "10", &url])
                         .output();
 
-                    match response {
-                        Ok(output) if output.status.success() => {
-                            let body = &output.stdout;
-                            let copy_len = body.len().min(resp_buf_len);
-                            if resp_buf + copy_len <= data.len() {
-                                data[resp_buf..resp_buf+copy_len].copy_from_slice(&body[..copy_len]);
-                            }
-                            if resp_len_ptr + 4 <= data.len() {
-                                data[resp_len_ptr..resp_len_ptr+4].copy_from_slice(&(copy_len as u32).to_le_bytes());
-                            }
-                            results[0] = Val::I32(0); // errno = 0 (success)
-                        }
-                        Ok(_output) => {
-                            results[0] = Val::I32(1); // errno = error
-                        }
-                        Err(_e) => {
-                            results[0] = Val::I32(1);
-                        }
+                    let body: Vec<u8> = match response {
+                        Ok(output) if output.status.success() => output.stdout,
+                        _ => Vec::new(),
+                    };
+                    let dst = ret_area + 16;
+                    let copy_len = body.len().min(data.len().saturating_sub(dst));
+                    if copy_len > 0 {
+                        data[dst..dst+copy_len].copy_from_slice(&body[..copy_len]);
                     }
-                } else {
-                    results[0] = Val::I32(1);
+                    data[ret_area+4..ret_area+8].copy_from_slice(&(dst as u32).to_le_bytes());
+                    data[ret_area+8..ret_area+12].copy_from_slice(&(copy_len as u32).to_le_bytes());
                 }
-            } else {
-                results[0] = Val::I32(1);
             }
             Ok(())
         },
@@ -3150,10 +3164,11 @@ fn run_outlayer_wasm_with_http(wasm: &[u8], stdin_data: &[u8]) -> i64 {
     linker.define(&store, "wasi_snapshot_preview1", "environ_sizes_get", environ_sizes_fn).unwrap();
     linker.define(&store, "wasi_snapshot_preview1", "environ_get", environ_get_fn).unwrap();
     linker.define(&store, "wasi_snapshot_preview1", "fd_seek", fd_seek_fn).unwrap();
-    linker.define(&store, "outlayer", "view", ol_view_fn).unwrap();
-    linker.define(&store, "outlayer", "call", ol_call_fn).unwrap();
-    linker.define(&store, "outlayer", "transfer", ol_transfer_fn).unwrap();
-    linker.define(&store, "outlayer", "http_get", ol_http_get_fn).unwrap();
+    // Canonical split-interface names (match the P1 emitter's import table)
+    linker.define(&store, "near:rpc/api@0.1.0", "view", ol_view_fn).unwrap();
+    linker.define(&store, "near:rpc/api@0.1.0", "call", ol_call_fn).unwrap();
+    linker.define(&store, "near:rpc/api@0.1.0", "transfer", ol_transfer_fn).unwrap();
+    linker.define(&store, "outlayer:api/host@0.1.0", "http-get", ol_http_get_fn).unwrap();
     linker.define(&store, "outlayer", "storage_set", stub_4).unwrap();
     linker.define(&store, "outlayer", "storage_get", stub_5).unwrap();
     linker.define(&store, "outlayer", "storage_has", stub_2).unwrap();
