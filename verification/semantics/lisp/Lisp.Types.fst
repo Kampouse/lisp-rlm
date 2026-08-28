@@ -24,8 +24,12 @@ assume val ff_lt  : ffloat -> ffloat -> Tot bool
 assume val ff_ge  : ffloat -> ffloat -> Tot bool
 assume val ff_le  : ffloat -> ffloat -> Tot bool
 
+// === u64 (refined int: mirrors Rust u64) ===
+let u64ty = x:int{ x >= 0 /\ x < 18446744073709551616 }
+
 // === LispVal ===
 noeq type lisp_val =
+  | U64v   of u64ty
   | Num    of int
   | Float  of ffloat
   | Bool   of bool
@@ -49,6 +53,7 @@ type binop =
 type ty =
   | I64
   | F64
+  | U64
 
 // === Op (bytecode opcodes) ===
 noeq type opcode =
@@ -165,6 +170,14 @@ noeq type opcode =
   | VecConj             (* pop val, pop vec, push vec+[val] *)
   | VecContains         (* pop val, pop vec, push Bool *)
   | VecSlice            (* pop end, pop start, pop vec, push sub-vec *)
+
+  // U64 field arithmetic (mirrors src/bytecode/types.rs Op::U64*)
+  | U64And | U64Or | U64Xor | U64Shl | U64Shr | U64Not | U64MulHi
+  | PushU64      of u64ty
+  | Not                 (* pop, push logical/arithmetic NOT *)
+  | PushSelf
+  | TracePush    of string
+  | TracePop
 
 // === VM State ===
 noeq type vm_state = {

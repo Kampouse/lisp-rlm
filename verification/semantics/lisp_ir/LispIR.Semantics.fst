@@ -15,6 +15,24 @@ open Lisp.Values
 open LispIR.Memory
 open FStar.String
 
+// === U64 helpers (mirror Rust u64 semantics; non-U64 operands coerce to 0) ===
+let u64_of (v:lisp_val) : u64ty = match v with Num n -> (if n >= 0 then n else 0) % 18446744073709551616 | _ -> 0
+// Bitwise ops are abstract: F* ints lack native bitwise. The u64ty refinement
+// (0 <= r < 2^64) is what downstream proofs consume.
+assume val u64_and : u64ty -> u64ty -> Tot u64ty
+assume val u64_or  : u64ty -> u64ty -> Tot u64ty
+assume val u64_xor : u64ty -> u64ty -> Tot u64ty
+let u64_not (a:u64ty) : u64ty = 18446744073709551615 - a
+assume val u64_shl : u64ty -> n:nat{n < 64} -> Tot u64ty
+assume val u64_shr : u64ty -> n:nat{n < 64} -> Tot u64ty
+let u64_mulhi (a:u64ty) (b:u64ty) : u64ty =
+  Prims.op_Multiply a b / 18446744073709551616
+let sh_amt (v:lisp_val) : int = num_val v
+val sh_amt64 (v:lisp_val) : Tot (option (n:nat{n < 64}))
+let sh_amt64 v =
+  let n = sh_amt v in
+  if n >= 0 && n < 64 then Some n else None
+
 let op_int_add (x:int) (y:int) : int = x + y
 let op_int_sub (x:int) (y:int) : int = x - y
 let int_mul (x:int) (y:int) : Tot int = Prims.op_Multiply x y
@@ -393,6 +411,65 @@ let eval_op op s =
   // SAFETY: Untag addresses before memory access!
   // See LispIR.Memory for u128_add_safe, u128_sub_safe, u128_mul_safe proofs
   
+  // === U64 field arithmetic (mirrors run_compiled_loop / SpecVm) ===
+  | U64And -> (match s.stack with
+    | b :: a :: rest ->
+      Ok {s with stack = Num (u64_and (u64_of a) (u64_of b)) :: rest; pc = s.pc + 1}
+    | _ -> Err "U64And: stack underflow")
+
+  | U64Or -> (match s.stack with
+    | b :: a :: rest ->
+      Ok {s with stack = Num (u64_or (u64_of a) (u64_of b)) :: rest; pc = s.pc + 1}
+    | _ -> Err "U64Or: stack underflow")
+
+  | U64Xor -> (match s.stack with
+    | b :: a :: rest ->
+      Ok {s with stack = Num (u64_xor (u64_of a) (u64_of b)) :: rest; pc = s.pc + 1}
+    | _ -> Err "U64Xor: stack underflow")
+
+  | U64Not -> (match s.stack with
+    | a :: rest ->
+      Ok {s with stack = Num (u64_not (u64_of a)) :: rest; pc = s.pc + 1}
+    | _ -> Err "U64Not: stack underflow")
+
+  | U64MulHi -> (match s.stack with
+    | b :: a :: rest ->
+      Ok {s with stack = Num (u64_mulhi (u64_of a) (u64_of b)) :: rest; pc = s.pc + 1}
+    | _ -> Err "U64MulHi: stack underflow")
+
+  | U64Shl -> (match s.stack with
+    | sh :: a :: rest ->
+      (match sh_amt64 sh with
+       | Some n -> Ok {s with stack = Num (u64_shl (u64_of a) n) :: rest; pc = s.pc + 1}
+       | None -> Err "shift amount out of range")
+    | _ -> Err "U64Shl: stack underflow")
+
+  | U64Shr -> (match s.stack with
+    | sh :: a :: rest ->
+      (match sh_amt64 sh with
+       | Some n -> Ok {s with stack = Num (u64_shr (u64_of a) n) :: rest; pc = s.pc + 1}
+       | None -> Err "shift amount out of range")
+    | _ -> Err "U64Shr: stack underflow")
+
+  | PushU64 w ->
+    Ok {s with stack = Num w :: s.stack; pc = s.pc + 1}
+
+  | Not -> (match s.stack with
+    | a :: rest ->
+      Ok {s with stack = Bool (not (is_truthy a)) :: rest; pc = s.pc + 1}
+    | _ -> Err "Not: stack underflow")
+
+  | PushSelf ->
+    (match s.slots with
+     | self_v :: _ -> Ok {s with stack = self_v :: s.stack; pc = s.pc + 1}
+     | [] -> Err "PushSelf: no self")
+
+  | TracePush _msg ->
+    Ok {s with pc = s.pc + 1}
+
+  | TracePop ->
+    Ok {s with pc = s.pc + 1}
+
   | U128Load -> (match s.stack with
     | addr_val :: rest ->
       // Untag address to get raw pointer

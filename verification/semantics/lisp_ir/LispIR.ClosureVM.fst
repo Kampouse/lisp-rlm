@@ -355,6 +355,31 @@ let typedbinop_result binop ty a b =
      | Le -> typed_le_f64 fa fb
      | Gt -> typed_gt_f64 fa fb
      | Ge -> typed_ge_f64 fa fb)
+  | U64 ->
+    // Matches Rust: U64 operands (coerce to 0), wrapping via mod 2^64
+    (match a, b with
+     | U64v av, U64v bv ->
+       (match binop with
+        | Add -> U64v ((av + bv) % 18446744073709551616)
+        | Sub -> U64v ((av - bv + 18446744073709551616) % 18446744073709551616)
+        | Mul -> U64v ((Prims.op_Multiply av bv) % 18446744073709551616)
+        | Div -> if bv = 0 then Nil else U64v (av / bv)
+        | Mod -> if bv = 0 then Nil else U64v (av % bv)
+        | Eq -> Bool (av = bv)
+        | Lt -> Bool (av < bv)
+        | Le -> Bool (av <= bv)
+        | Gt -> Bool (av > bv)
+        | Ge -> Bool (av >= bv))
+     | _ ->
+       // Rust: non-U64 operands coerce to 0
+       (match binop with
+        | Add -> U64v 0
+        | Sub -> U64v 0
+        | Mul -> U64v 0
+        | Div -> Nil      // 0/0 → error in Rust ("division by zero")
+        | Mod -> Nil      // 0%0 → error in Rust
+        | Eq -> Bool true // 0 = 0
+        | _ -> Bool false))
 
 // Pure builtin computation — extracted for Z3-friendliness
 val builtin_result : name:string -> args:list lisp_val -> lisp_val
@@ -456,7 +481,32 @@ let closure_eval_op s =
                 | Lt -> { s with stack = Bool (ff_lt fa fb) :: rest; pc = pc }
                 | Le -> { s with stack = Bool (ff_le fa fb) :: rest; pc = pc }
                 | Gt -> { s with stack = Bool (ff_gt fa fb) :: rest; pc = pc }
-                | Ge -> { s with stack = Bool (ff_ge fa fb) :: rest; pc = pc })))
+                | Ge -> { s with stack = Bool (ff_ge fa fb) :: rest; pc = pc }))
+           | U64 ->
+             (match a, b with
+              | U64v av, U64v bv ->
+                (match binop with
+                 | Add -> { s with stack = U64v ((av + bv) % 18446744073709551616) :: rest; pc = pc }
+                 | Sub -> { s with stack = U64v ((av - bv + 18446744073709551616) % 18446744073709551616) :: rest; pc = pc }
+                 | Mul -> { s with stack = U64v ((Prims.op_Multiply av bv) % 18446744073709551616) :: rest; pc = pc }
+                 | Div -> if bv = 0 then { s with ok = false }
+                          else { s with stack = U64v (av / bv) :: rest; pc = pc }
+                 | Mod -> if bv = 0 then { s with ok = false }
+                          else { s with stack = U64v (av % bv) :: rest; pc = pc }
+                 | Eq -> { s with stack = Bool (av = bv) :: rest; pc = pc }
+                 | Lt -> { s with stack = Bool (av < bv) :: rest; pc = pc }
+                 | Le -> { s with stack = Bool (av <= bv) :: rest; pc = pc }
+                 | Gt -> { s with stack = Bool (av > bv) :: rest; pc = pc }
+                 | Ge -> { s with stack = Bool (av >= bv) :: rest; pc = pc })
+              | _ ->
+                (match binop with
+                 | Add -> { s with stack = U64v 0 :: rest; pc = pc }
+                 | Sub -> { s with stack = U64v 0 :: rest; pc = pc }
+                 | Mul -> { s with stack = U64v 0 :: rest; pc = pc }
+                 | Div -> { s with ok = false }
+                 | Mod -> { s with ok = false }
+                 | Eq -> { s with stack = Bool true :: rest; pc = pc }
+                 | _ -> { s with stack = Bool false :: rest; pc = pc })))
        | _ -> { s with ok = false })
 
     // Division and modulo
