@@ -588,3 +588,25 @@ on-chain: safe 2-of-3 happy path (needs 2 distinct signers).
 1. Deploy to kampy.testnet: safe.lisp (lisp5) and/or migrated erc20 (lisp5/6)
    — wasm's are built + smoke-proven (deploy/*/target/*.wasm).
 2. The 4 closure fuzz reds (T4-adjacent).
+
+## Nested u128/* calls collide on shared scratch (found 2026-08-28, outlayer-oracle v2)
+
+`(u128/gt (u128/sub A B) (u128/mul C D))` miscompares: both u128 argument
+calls write 16-byte LE results at the same TEMP_MEM scratch; the outer call
+reads whichever landed last. Verified via near-mock: `u128/gt age (u128/mul
+"0" "1e9")` returned false when age was 70565540093 (should be true).
+Primitives in isolation are correct; only NESTING breaks.
+
+**Rule:** ALWAYS let-bind intermediate u128 results before feeding them to
+another u128 call:
+```lisp
+(let ((limit (u128/mul ttl "1000000000"))
+      (age   (u128/sub now ts)))
+  (u128/gt age limit))   ; correct
+```
+
+Also confirmed today (same project): `to-string` on a value that is ALREADY
+a str (e.g. `near/block_timestamp`, which returns an exact decimal string
+per the 2026-08-26 Option A ruling) untags as NUM and emits heap-pointer
+garbage ("81604381827"). Never to-string/str->num near/block_timestamp —
+keep it in the u128 string family end to end.
