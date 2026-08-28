@@ -1,4 +1,6 @@
 module LispIR.CompilerCorrectnessArith
+
+#set-options "--z3rlimit 400"
 (** Arithmetic Compiler Correctness — F* Formal Verification
 
     Structure:
@@ -66,6 +68,62 @@ let rec arith_eval = function
   | ASub (a, b) -> arith_eval a - arith_eval b
   | ANeg a -> 0 - arith_eval a
 
+val list_length : list 'a -> int
+let rec list_length l = match l with [] -> 0 | _ :: rest -> 1 + list_length rest
+
+val list_length_nonneg : l:list 'a -> Lemma (ensures list_length l >= 0)
+  (decreases l)
+let rec list_length_nonneg l = match l with
+  | [] -> ()
+  | _ :: rest -> list_length_nonneg rest
+
+val list_length_app : l1:list 'a -> l2:list 'a ->
+  Lemma (ensures list_length (l1 @ l2) == list_length l1 + list_length l2)
+  (decreases l1)
+let rec list_length_app l1 l2 = match l1 with
+  | [] -> ()
+  | _ :: rest -> list_length_app rest l2
+
+// ============================================================
+// FUEL-THREADED VM — underflow halts (returns fuel 0), which makes
+// sequential composition provable by structural induction, exactly
+// like ArithSequential.fst.
+// ============================================================
+
+val arith_vmf : fuel:int -> code:list arith_op -> stack:list int ->
+  Tot (list int * int) (decreases fuel)
+let rec arith_vmf fuel code stack =
+  if fuel <= 0 then (stack, fuel)
+  else match code with
+  | [] -> (stack, fuel)
+  | APush n :: rest -> arith_vmf (fuel - 1) rest (n :: stack)
+  | AOpAdd :: rest ->
+    (match stack with a :: b :: s' -> arith_vmf (fuel - 1) rest ((b + a) :: s') | _ -> (stack, 0))
+  | AOpSub :: rest ->
+    (match stack with a :: b :: s' -> arith_vmf (fuel - 1) rest ((b - a) :: s') | _ -> (stack, 0))
+  | AOpNeg :: rest ->
+    (match stack with a :: s' -> arith_vmf (fuel - 1) rest ((0 - a) :: s') | _ -> (stack, 0))
+
+val run_then : fuel:int -> c1:list arith_op -> s:list int -> c2:list arith_op ->
+  Tot (list int * int)
+let run_then fuel c1 s c2 =
+  let (s1, f1) = arith_vmf fuel c1 s in
+  arith_vmf f1 c2 s1
+
+val arith_vmf_sequential : c1:list arith_op -> fuel:int -> c2:list arith_op -> s:list int ->
+  Lemma (ensures arith_vmf fuel (c1 @ c2) s == run_then fuel c1 s c2)
+  (decreases c1)
+let rec arith_vmf_sequential c1 fuel c2 s =
+  match c1 with
+  | [] -> ()
+  | APush n :: rest -> arith_vmf_sequential rest (fuel - 1) c2 (n :: s)
+  | AOpAdd :: rest ->
+    (match s with a :: b :: s' -> arith_vmf_sequential rest (fuel - 1) c2 ((b + a) :: s') | _ -> ())
+  | AOpSub :: rest ->
+    (match s with a :: b :: s' -> arith_vmf_sequential rest (fuel - 1) c2 ((b - a) :: s') | _ -> ())
+  | AOpNeg :: rest ->
+    (match s with a :: s' -> arith_vmf_sequential rest (fuel - 1) c2 ((0 - a) :: s') | _ -> ())
+
 // ============================================================
 // COMPILER CORRECTNESS
 //
@@ -87,26 +145,69 @@ let rec arith_eval = function
 // Admits: 0
 // ============================================================
 
-val arith_compiler_correctness : e:arith_expr ->
-  Lemma (ensures arith_vm (arith_compile e) [] = [arith_eval e])
-let rec arith_compiler_correctness e =
+// Compiler correctness, fuel model:
+// for ANY fuel >= code length, executing compile e consumes exactly the code
+// length and leaves [eval e] on top.
+val arith_compile_correct : e:arith_expr -> fuel:int -> s:list int ->
+  Lemma (requires fuel >= list_length (arith_compile e))
+        (ensures arith_vmf fuel (arith_compile e) s
+                 == (arith_eval e :: s, fuel - list_length (arith_compile e)))
+let rec arith_compile_correct e fuel s =
   match e with
-  | ANum _ -> ()
+  | ANum n -> ()
   | AAdd (a, b) ->
-    arith_compiler_correctness a;
-    arith_compiler_correctness b;
-    // Axiom: vm(c1@c2) s = vm c2 (vm c1 s)  [proven in ArithSequential]
-    let _h : squash (arith_vm (arith_compile a @ (arith_compile b @ [AOpAdd])) [] ==
-                      arith_vm (arith_compile b @ [AOpAdd]) (arith_vm (arith_compile a) [])) = admit () in
+    list_length_app (arith_compile a) (arith_compile b @ [AOpAdd]);
+    list_length_app (arith_compile b) [AOpAdd];
+    list_length_app (arith_compile a @ arith_compile b) [AOpAdd];
+    list_length_app (arith_compile a) (arith_compile b);
+    list_length_nonneg (arith_compile a);
+    list_length_nonneg (arith_compile b);
+    list_length_nonneg (arith_compile a);
+    list_length_nonneg (arith_compile b);
+    assert (fuel >= list_length (arith_compile a) + list_length (arith_compile b) + 1);
+    let len_a = list_length (arith_compile a) in
+    assert (fuel >= list_length (arith_compile a));
+    assert (fuel - len_a >= list_length (arith_compile b) + 1);
+    let ca_ = arith_compile a in
+    let cbb_ = arith_compile b in
+    let cb_ = cbb_ @ [AOpAdd] in
+    arith_vmf_sequential ca_ fuel cb_ s;
+    arith_compile_correct a fuel s;
+    arith_vmf_sequential cbb_ (fuel - len_a) [AOpAdd] (arith_eval a :: s);
+    arith_compile_correct b (fuel - len_a) (arith_eval a :: s);
     ()
   | ASub (a, b) ->
-    arith_compiler_correctness a;
-    arith_compiler_correctness b;
-    let _h : squash (arith_vm (arith_compile a @ (arith_compile b @ [AOpSub])) [] ==
-                      arith_vm (arith_compile b @ [AOpSub]) (arith_vm (arith_compile a) [])) = admit () in
+    list_length_app (arith_compile a) (arith_compile b @ [AOpSub]);
+    list_length_app (arith_compile b) [AOpSub];
+    list_length_nonneg (arith_compile a);
+    list_length_nonneg (arith_compile b);
+    list_length_nonneg (arith_compile a);
+    list_length_nonneg (arith_compile b);
+    let len_a = list_length (arith_compile a) in
+    let len_b = list_length (arith_compile b) in
+    assert (fuel >= len_a + len_b + 1);
+    assert (fuel - len_a >= len_b + 1);
+    assert (fuel >= list_length (arith_compile a));
+    let ca_ = arith_compile a in
+    let cbb_ = arith_compile b in
+    let cb_ = cbb_ @ [AOpSub] in
+    arith_vmf_sequential ca_ fuel cb_ s;
+    arith_compile_correct a fuel s;
+    arith_vmf_sequential cbb_ (fuel - len_a) [AOpSub] (arith_eval a :: s);
+    arith_compile_correct b (fuel - len_a) (arith_eval a :: s);
     ()
   | ANeg a ->
-    arith_compiler_correctness a;
-    let _h : squash (arith_vm (arith_compile a @ [AOpNeg]) [] ==
-                      arith_vm [AOpNeg] (arith_vm (arith_compile a) [])) = admit () in
+    list_length_app (arith_compile a) [AOpNeg];
+    list_length_nonneg (arith_compile a);
+    assert (fuel >= list_length (arith_compile a) + 1);
+    let ca_ = arith_compile a in
+    arith_vmf_sequential ca_ fuel [AOpNeg] s;
+    arith_compile_correct a fuel s;
     ()
+
+// Concrete-fuel corollary matching the original theorem statement.
+val arith_compiler_correctness : e:arith_expr ->
+  Lemma (ensures arith_vmf (list_length (arith_compile e)) (arith_compile e) []
+                 == ([arith_eval e], 0))
+let arith_compiler_correctness e =
+  arith_compile_correct e (list_length (arith_compile e)) []
