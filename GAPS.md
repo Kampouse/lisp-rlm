@@ -610,3 +610,18 @@ a str (e.g. `near/block_timestamp`, which returns an exact decimal string
 per the 2026-08-26 Option A ruling) untags as NUM and emits heap-pointer
 garbage ("81604381827"). Never to-string/str->num near/block_timestamp —
 keep it in the u128 string family end to end.
+
+## Promise surface hardening round (2026-08-28 evening, shipped cd58444→)
+
+- `near/promise_result` is now FAIL-CLOSED: on non-Successful status (0/2) it
+  returns the EMPTY STRING instead of reading the unwritten register (old emit
+  dropped the status byte and read register 0 unconditionally → stale-bytes
+  corruption when a callee traps). Matches the bytecode VM (missing → "").
+  Handlers detect failure via `(= (str-length res) 0)`.
+- `near/call-await` is 7-arg: + cb_args JSON passed to the callback as INPUT
+  (tag/correlation). Callback name must be a string literal resolving to an
+  exported function — compile-time typo guard (needs the export pre-pass in
+  compile.rs; exports are validated before bodies emit).
+- Verified on-chain (lisp5.kampy.testnet): success path stores
+  `pull-1|{"hyperliquid":...}`; nonexistent-method path stores `pull-bad|FAIL`
+  (fail-closed + tag correlation in one proof).

@@ -5051,6 +5051,33 @@ fn eval_near_builtin(
         // ═══════════════════════════════════════════════════════════════
         //  PROMISES
         // ═══════════════════════════════════════════════════════════════
+        "near/call-await" => {
+            // (near/call-await target method args gas callback cb_gas cb_args)
+            // VM: same promise bookkeeping as near/call (callback + cb_args are
+            // receipt-level concepts; the VM does not auto-execute callbacks).
+            // Recorded on the promise for debugging/inspection.
+            let target = key_of(args, 0);
+            let method = key_of(args, 1);
+            let call_args = key_of(args, 2);
+            let gas = extract_num(args, 3).unwrap_or(20_000_000_000_000);
+            let callback = key_of(args, 4);
+            let cb_gas = extract_num(args, 5).unwrap_or(20_000_000_000_000);
+            let cb_args = key_of(args, 6);
+            let idx = state.near_promise_idx;
+            state.near_promise_idx += 1;
+            let mut m = im::HashMap::new();
+            m.insert("type".into(), LispVal::Str("call_await".into()));
+            m.insert("idx".into(), LispVal::Num(idx));
+            m.insert("target".into(), LispVal::Str(target.clone()));
+            m.insert("method".into(), LispVal::Str(method));
+            m.insert("args".into(), LispVal::Str(call_args));
+            m.insert("gas".into(), LispVal::Num(gas));
+            m.insert("callback".into(), LispVal::Str(callback));
+            m.insert("cb_gas".into(), LispVal::Num(cb_gas));
+            m.insert("cb_args".into(), LispVal::Str(cb_args));
+            state.near_promises.push(LispVal::Map(m));
+            Some(Ok(LispVal::Num(idx)))
+        }
         "near/call" => {
             // (near/call target method args gas deposit) → auto promise_return
             let target = key_of(args, 0);

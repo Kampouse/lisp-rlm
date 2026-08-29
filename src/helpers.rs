@@ -249,7 +249,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "near/log", "near/log_str",
     "near/promise_create", "near/promise_then", "near/promise_and",
     "near/promise_results_count", "near/promise_result", "near/promise_return",
-    "near/call", "near/transfer", "near/transfer_u128", "near/deploy_contract",
+    "near/call", "near/call-await", "near/transfer", "near/transfer_u128", "near/deploy_contract",
     "near/batch_create", "near/batch_action_create", "near/batch_action_function_call",
     "near/batch_action_transfer", "near/batch_action_deploy_contract", "near/batch_action_stake",
     "near/batch_action_add_key", "near/batch_action_delete_key", "near/batch_action_delete_account",

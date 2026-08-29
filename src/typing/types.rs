@@ -925,8 +925,8 @@ impl TcEnv {
                 Box::new(nil_ty.clone()),
             ),
         );
-        // near/call-await : str → str → str → int → str → int → nil
-        // (target, method, args_json, gas, callback_name, cb_gas)
+        // near/call-await : str → str → str → int → str → int → str → nil
+        // (target, method, args_json, gas, callback_name, cb_gas, cb_args_json)
         env.insert_mono(
             "near/call-await".into(),
             TcType::Arrow(
@@ -937,6 +937,7 @@ impl TcEnv {
                     int_ty.clone(),
                     str_ty.clone(),
                     int_ty.clone(),
+                    str_ty.clone(),
                 ],
                 Box::new(nil_ty.clone()),
             ),

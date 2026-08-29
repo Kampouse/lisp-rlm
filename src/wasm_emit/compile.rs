@@ -609,6 +609,24 @@ fn parse_and_compile_opts(
 
     let mut em = WasmEmitter::new();
 
+    // Pre-scan: register export names so near/call-await callback
+    // validation sees the full export table BEFORE any function body emits
+    // (export forms commonly sit at the bottom of the file).
+    for e in &exprs {
+        if let LispVal::List(items) = e {
+            if items.len() >= 3 {
+                if let (LispVal::Sym(s), LispVal::Str(en), LispVal::Sym(fn_)) =
+                    (&items[0], &items[1], &items[2])
+                {
+                    if s == "export" {
+                        let view = items.len() > 3 && matches!(&items[3], LispVal::Bool(true));
+                        em.add_export(fn_, en, view);
+                    }
+                }
+            }
+        }
+    }
+
     // Pre-scan: register all function names for forward references (mutual recursion)
     for e in &exprs {
         if let LispVal::List(items) = e {

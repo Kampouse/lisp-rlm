@@ -87,20 +87,35 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/call-await" => {
-                // (near/call-await "target.id" "method" "args_json" gas "callback" cb_gas)
+                // (near/call-await "target.id" "method" "args_json" gas "callback" cb_gas "cb_args_json")
                 // Full callback sugar — expands to:
                 //   idx = promise_batch_create(target)
                 //   promise_batch_action_function_call(idx, method, args, 0, gas)
                 //   cb  = promise_batch_then(idx, current_account_id)
-                //   promise_batch_action_function_call(cb, callback, "", 0, cb_gas)
+                //   promise_batch_action_function_call(cb, callback, cb_args, 0, cb_gas)
                 //   promise_return(cb)
                 // → NIL. The callback runs as a normal exported method on SELF;
                 // read the callee's return value there via (near/promise_result 0).
                 // Deposit fixed at 0 (view/read calls; use the raw batch API for
                 // payable calls). Zero-deposit re-parsed per action (scratch
                 // discipline: TEMP_MEM is shared, never assume it survives).
-                if a.len() != 6 {
-                    return Err("near/call-await: need 6 args (target str, method str, args str, gas, callback str, cb_gas)".into());
+                if a.len() != 7 {
+                    return Err("near/call-await: need 7 args (target str, method str, args str, gas, callback str, cb_gas, cb_args str)".into());
+                }
+                // Compile-time typo protection: callback must be a string
+                // literal that resolves to an exported function.
+                let cbname_lit = match &a[4] {
+                    LispVal::Str(s) => s.clone(),
+                    _ => {
+                        return Err(
+                            "near/call-await: callback name must be a string literal".into(),
+                        )
+                    }
+                };
+                if !self.exports.iter().any(|(_, e, _)| *e == cbname_lit) {
+                    return Err(format!(
+                        "near/call-await: callback \"{cbname_lit}\" is not exported — define (export \"{cbname_lit}\" <fn> #f) (typo?)"
+                    ));
                 }
                 let target = self.expr(&a[0])?;
                 let method = self.expr(&a[1])?;
@@ -108,13 +123,13 @@ impl WasmEmitter {
                 let gas = self.expr(&a[3])?;
                 let cbname = self.expr(&a[4])?;
                 let cbgas = self.expr(&a[5])?;
+                let cbargs = self.expr(&a[6])?;
                 let mut v = Vec::new();
                 let h = self.ensure_u128_str_helpers();
                 let idx_l = self.local_idx("__ca_idx");
                 let cb_l = self.local_idx("__ca_cb");
                 let amt_l = self.local_idx("__ca_amt");
                 let zero_str = LispVal::Str("0".into());
-                let empty_str = LispVal::Str(String::new());
 
                 // — idx = promise_batch_create(target) —
                 v.extend(target.clone());
@@ -192,11 +207,11 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
-                v.extend(self.expr(&empty_str)?);
+                v.extend(cbargs.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
-                v.extend(self.expr(&empty_str)?);
+                v.extend(cbargs);
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
@@ -346,10 +361,17 @@ impl WasmEmitter {
                 v.push(Self::host_call(34));
                 // promise_result returns the promise STATUS (u64: 0=NotReady,
                 // 1=Successful, 2=Failed) and writes the payload to the
-                // register. The status is not part of the Lisp-level result —
-                // drop it or the stack leaks a value (invalid wasm).
-                v.push(Instruction::Drop);
-                // Read register to TEMP_MEM, get length, return packed
+                // register ONLY on success. FAIL-CLOSED (2026-08-28): on any
+                // non-success status return the EMPTY STRING — reading the
+                // unwritten register yields stale bytes (silent corruption).
+                // Matches the bytecode VM (missing → ""). Handlers detect
+                // failure via (str-length ...).
+                let st = self.local_idx("__pr_st");
+                v.push(Instruction::LocalSet(st));
+                v.push(Instruction::LocalGet(st));
+                v.push(Instruction::I64Const(1)); // Successful
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::I64Const(TEMP_MEM));
                 v.push(Self::host_call(0)); // read_register(0, TEMP_MEM)
@@ -359,9 +381,11 @@ impl WasmEmitter {
                 v.push(Instruction::I64Shl);
                 v.push(Instruction::I64Const(TEMP_MEM as i64));
                 v.push(Instruction::I64Or);
-                // Interp returns LispVal::Str(result) — tag the packed
-                // ptr|len as TAG_STR so both VMs agree on the value type.
                 v.extend(self.emit_tag_str());
+                v.push(Instruction::Else);
+                v.push(Instruction::I64Const(0)); // packed empty str
+                v.extend(self.emit_tag_str());
+                v.push(Instruction::End);
                 Ok(v)
             }
             "near/transfer" => {
