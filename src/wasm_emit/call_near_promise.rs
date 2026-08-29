@@ -86,6 +86,132 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(TAG_NIL));
                 Ok(v)
             }
+            "near/call-await" => {
+                // (near/call-await "target.id" "method" "args_json" gas "callback" cb_gas)
+                // Full callback sugar — expands to:
+                //   idx = promise_batch_create(target)
+                //   promise_batch_action_function_call(idx, method, args, 0, gas)
+                //   cb  = promise_batch_then(idx, current_account_id)
+                //   promise_batch_action_function_call(cb, callback, "", 0, cb_gas)
+                //   promise_return(cb)
+                // → NIL. The callback runs as a normal exported method on SELF;
+                // read the callee's return value there via (near/promise_result 0).
+                // Deposit fixed at 0 (view/read calls; use the raw batch API for
+                // payable calls). Zero-deposit re-parsed per action (scratch
+                // discipline: TEMP_MEM is shared, never assume it survives).
+                if a.len() != 6 {
+                    return Err("near/call-await: need 6 args (target str, method str, args str, gas, callback str, cb_gas)".into());
+                }
+                let target = self.expr(&a[0])?;
+                let method = self.expr(&a[1])?;
+                let args = self.expr(&a[2])?;
+                let gas = self.expr(&a[3])?;
+                let cbname = self.expr(&a[4])?;
+                let cbgas = self.expr(&a[5])?;
+                let mut v = Vec::new();
+                let h = self.ensure_u128_str_helpers();
+                let idx_l = self.local_idx("__ca_idx");
+                let cb_l = self.local_idx("__ca_cb");
+                let amt_l = self.local_idx("__ca_amt");
+                let zero_str = LispVal::Str("0".into());
+                let empty_str = LispVal::Str(String::new());
+
+                // — idx = promise_batch_create(target) —
+                v.extend(target.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.extend(target);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Self::host_call(39));
+                v.extend(self.emit_tag_num());
+                v.push(Instruction::LocalSet(idx_l));
+
+                // — action 1: (idx, method, args, 0, gas) —
+                v.extend(self.expr(&zero_str)?);
+                v.push(Instruction::LocalSet(amt_l));
+                v.push(Instruction::LocalGet(amt_l));
+                v.push(Instruction::I64Const(TEMP_MEM as i64));
+                v.push(Self::call_user(h.parse));
+                v.push(Instruction::Drop);
+                v.push(Instruction::LocalGet(idx_l));
+                v.extend(self.emit_untag());
+                v.extend(method.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.extend(method);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
+                v.extend(args.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.extend(args);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(TEMP_MEM as i64));
+                v.extend(gas);
+                v.extend(self.emit_untag());
+                v.push(Self::host_call(43));
+
+                // — cb = promise_batch_then(idx, current_account_id) —
+                let self_id = self.read_to_register(3, &[])?;
+                v.push(Instruction::LocalGet(idx_l));
+                v.extend(self.emit_untag());
+                v.extend(self_id.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.extend(self_id);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Self::host_call(40));
+                v.extend(self.emit_tag_num());
+                v.push(Instruction::LocalSet(cb_l));
+
+                // — action 2: (cb, callback, "", 0, cb_gas) —
+                v.extend(self.expr(&zero_str)?);
+                v.push(Instruction::LocalSet(amt_l));
+                v.push(Instruction::LocalGet(amt_l));
+                v.push(Instruction::I64Const(TEMP_MEM as i64));
+                v.push(Self::call_user(h.parse));
+                v.push(Instruction::Drop);
+                v.push(Instruction::LocalGet(cb_l));
+                v.extend(self.emit_untag());
+                v.extend(cbname.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.extend(cbname);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
+                v.extend(self.expr(&empty_str)?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.extend(self.expr(&empty_str)?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(TEMP_MEM as i64));
+                v.extend(cbgas);
+                v.extend(self.emit_untag());
+                v.push(Self::host_call(43));
+
+                // — promise_return(cb) → NIL —
+                v.push(Instruction::LocalGet(cb_l));
+                v.extend(self.emit_untag());
+                v.push(Self::host_call(35));
+                v.push(Instruction::I64Const(TAG_NIL));
+                Ok(v)
+            }
             "near/promise_create" => {
                 // promise_create(account_id_len, account_id_ptr, method_name_len, method_name_ptr,
                 //                arguments_len, arguments_ptr, amount_ptr, gas) → i64  (idx 30)

@@ -437,6 +437,18 @@ impl WasmEmitter {
                 self.need_host(30);
                 self.need_host(35);
             }
+            "near/call-await" => {
+                // batch_create(39) + action_function_call(43) ×2
+                // + batch_then(40) + promise_return(35)
+                // + current_account_id(3) + read_register(0)/register_len(1)
+                self.need_host(39);
+                self.need_host(40);
+                self.need_host(43);
+                self.need_host(35);
+                self.need_host(3);
+                self.need_host(0);
+                self.need_host(1);
+            }
             "near/promise_result" => {
                 self.need_host(34);
                 self.need_host(0);

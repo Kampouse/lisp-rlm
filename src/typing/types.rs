@@ -925,6 +925,22 @@ impl TcEnv {
                 Box::new(nil_ty.clone()),
             ),
         );
+        // near/call-await : str → str → str → int → str → int → nil
+        // (target, method, args_json, gas, callback_name, cb_gas)
+        env.insert_mono(
+            "near/call-await".into(),
+            TcType::Arrow(
+                vec![
+                    str_ty.clone(),
+                    str_ty.clone(),
+                    str_ty.clone(),
+                    int_ty.clone(),
+                    str_ty.clone(),
+                    int_ty.clone(),
+                ],
+                Box::new(nil_ty.clone()),
+            ),
+        );
         // near/transfer_u128 : str → str → nil  (account_id, amount decimal)
         env.insert_mono(
             "near/transfer_u128".into(),
