@@ -951,8 +951,8 @@ impl TcEnv {
             ),
         );
         // near/block_timestamp : () → int
-        // near/deposit-gte : int → bool (literal only)
-        env.insert_mono("near/deposit-gte".into(), TcType::Arrow(vec![int_ty.clone()], Box::new(bool_ty.clone())));
+        // near/deposit-gte : int → int → bool (lo, hi literal only; emitter takes 1-2)
+        env.insert_mono("near/deposit-gte".into(), TcType::Arrow(vec![int_ty.clone(), int_ty.clone()], Box::new(bool_ty.clone())));
         env.insert_mono("near/block_timestamp".into(), TcType::Arrow(vec![], Box::new(str_ty.clone())));
         // near/block_height : () → int
         env.insert_mono(
@@ -995,6 +995,11 @@ impl TcEnv {
         // near/sha256 : str → str
         env.insert_mono(
             "near/sha256".into(),
+            TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())),
+        );
+        // sha256-hash : str → str (raw 32-byte digest string; wasm call_near_crypto.rs)
+        env.insert_mono(
+            "sha256-hash".into(),
             TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())),
         );
         // near/keccak256 : str → str
@@ -1068,6 +1073,11 @@ impl TcEnv {
         // hex-encode : str → str
         env.insert_mono(
             "hex-encode".into(),
+            TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())),
+        );
+        // hex-decode : str → str (raw bytes as string; wasm call_string.rs)
+        env.insert_mono(
+            "hex-decode".into(),
             TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())),
         );
         // base64-decode : str → str (raw bytes as string)

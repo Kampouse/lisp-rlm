@@ -1949,6 +1949,7 @@ dependencies = [
  "near-parameters",
  "near-primitives-core",
  "near-vm-runner",
+ "serde_json",
 ]
 
 [[package]]

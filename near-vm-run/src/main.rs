@@ -48,6 +48,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|v| v.parse::<f64>().ok())
         .unwrap_or(300.0);
     let prepaid: u64 = (prepaid_tgas * 1e12) as u64;
+    // --deposit <NEAR> (decimal NEAR) and --ts <ns> override context values.
+    let deposit_yocto: u128 = args
+        .iter()
+        .position(|a| a == "--deposit")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|n| (n * 1e24) as u128)
+        .unwrap_or(0);
+    let ts_override: u64 = args
+        .iter()
+        .position(|a| a == "--ts")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(42);
 
     let wasm_path = &args[1];
     let method = args[2].clone();
@@ -85,13 +99,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         input: Rc::from(args_json.as_bytes()),
         promise_results: Vec::new().into(),
         block_height: 1,
-        block_timestamp: 42,
+        block_timestamp: ts_override,
         epoch_height: 0,
         account_balance: near_primitives_core::types::Balance::from_near(100),
         account_locked_balance: near_primitives_core::types::Balance::ZERO,
         storage_usage: 100,
         account_contract: near_primitives_core::account::AccountContract::None,
-        attached_deposit: near_primitives_core::types::Balance::ZERO,
+        attached_deposit: near_primitives_core::types::Balance::from_yoctonear(deposit_yocto),
         prepaid_gas: near_primitives_core::gas::Gas::from_gas(prepaid),
         random_seed: vec![0, 1, 2],
         view_config: if run_view {
@@ -104,6 +118,79 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let wasm_bytes = std::fs::read(wasm_path)?;
     println!("📦 {} ({} bytes)", wasm_path, wasm_bytes.len());
+
+    // Config: default = latest in-crate schedule; --config <file> = live
+    // protocol config JSON from EXPERIMENTAL_protocol_config RPC (exact
+    // chain schedule — gas tables evolve, the crate line may not).
+    let config_store = RuntimeConfigStore::new(None);
+    let runtime_config = config_store.get_config(u32::MAX);
+    let mut wasm_config = (*runtime_config.wasm_config).clone();
+    let mut fees = RuntimeFeesConfig::test();
+    if let Some(i) = args.iter().position(|a| a == "--config") {
+        let path = args.get(i + 1).ok_or("--config needs a path")?;
+        let raw: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
+        let rc = &raw["result"]["runtime_config"];
+        let wcj = &rc["wasm_config"];
+        // Hand-apply the fields that matter for VM gas (VMConfig has no serde).
+        if let Some(v) = wcj["fix_contract_loading_cost"].as_bool() {
+            wasm_config.fix_contract_loading_cost = v;
+        }
+        if let Some(v) = wcj["grow_mem_cost"].as_u64() {
+            wasm_config.grow_mem_cost = v as u32;
+        }
+        if let Some(v) = wcj["regular_op_cost"].as_u64() {
+            wasm_config.regular_op_cost = v as u32;
+        }
+        if let Some(v) = wcj["linear_op_base_cost"].as_u64() {
+            wasm_config.linear_op_base_cost = v;
+        }
+        if let Some(v) = wcj["linear_op_unit_cost"].as_u64() {
+            wasm_config.linear_op_unit_cost = v;
+        }
+        // Live action fees — VMLogic charges promise actions from this table.
+        // test() inflates function_call_base to 2.32 Tgas (send+exec), live is
+        // 0.78 exec / 0.2 send → overstates promise-carrying calls ~8x.
+        let mut live_fees = RuntimeFeesConfig::test();
+        let ac = &rc["transaction_costs"]["action_creation_config"];
+        fn fee_of(v: &serde_json::Value) -> Option<near_parameters::Fee> {
+            Some(near_parameters::Fee::new(
+                v.get("send_sir")?.as_u64()?,
+                v.get("send_not_sir")?.as_u64()?,
+                v.get("execution")?.as_u64()?,
+            ))
+        }
+        if let Some(f) = fee_of(&ac["function_call_cost"]) {
+            live_fees.action_fees[near_parameters::ActionCosts::function_call_base] = f;
+        }
+        if let Some(pb) = ac["function_call_cost_per_byte"].as_u64() {
+            live_fees.action_fees[near_parameters::ActionCosts::function_call_byte] =
+                near_parameters::Fee::new(pb, pb, pb);
+        }
+        if let Some(f) = fee_of(&ac["deploy_contract_cost"]) {
+            live_fees.action_fees[near_parameters::ActionCosts::deploy_contract_base] = f;
+        }
+        if let Some(f) = fee_of(&ac["transfer_cost"]) {
+            live_fees.action_fees[near_parameters::ActionCosts::transfer] = f;
+        }
+        // .then() registers data receivers → VMLogic charges new_data_receipt_base
+        // (+byte) from this table. test() has the ancient 4.3 Tgas base; live is 0.0365.
+        let drc = &rc["transaction_costs"]["data_receipt_creation_config"];
+        if let Some(f) = fee_of(&drc["base_cost"]) {
+            live_fees.action_fees[near_parameters::ActionCosts::new_data_receipt_base] = f;
+        }
+        if let (Some(s), Some(n), Some(e)) = (
+            drc["cost_per_byte"]["send_sir"].as_u64(),
+            drc["cost_per_byte"]["send_not_sir"].as_u64(),
+            drc["cost_per_byte"]["execution"].as_u64(),
+        ) {
+            live_fees.action_fees[near_parameters::ActionCosts::new_data_receipt_byte] =
+                near_parameters::Fee::new(s, n, e);
+        }
+        fees = live_fees;
+        println!("🔧 live protocol config: v{} (fix_contract_loading_cost={})", raw["result"]["protocol_version"], wasm_config.fix_contract_loading_cost);
+    }
+    let fees = Arc::new(fees);
+
     // Wrap ContractCode in the Contract trait the runner expects.
     struct CodeWrap(std::sync::Arc<ContractCode>);
     impl near_vm_runner::Contract for CodeWrap {
@@ -116,12 +203,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let contract = CodeWrap(std::sync::Arc::new(ContractCode::new(wasm_bytes, None)));
 
-    // Latest protocol version's runtime config
-    let config_store = RuntimeConfigStore::new(None);
-    let runtime_config = config_store.get_config(u32::MAX);
-    let wasm_config = runtime_config.wasm_config.clone();
-    let fees = Arc::new(RuntimeFeesConfig::test());
-
     let gas_counter = context.make_gas_counter(&wasm_config);
 
     // Ensure the wasmtime backend is the configured VM kind.
@@ -129,7 +210,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("▶ {}({})", method, if args_json == "{}" { "" } else { &args_json });
 
-    let prepared = prepare(&contract, wasm_config.clone(), None, gas_counter, &method);
+    let prepared = prepare(&contract, std::sync::Arc::new(wasm_config.clone()), None, gas_counter, &method);
     let outcome = run(prepared, &mut ext, &context, fees)
         .map_err(|e| format!("execution error: {e:?}"))?;
 
