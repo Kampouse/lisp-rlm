@@ -87,6 +87,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     );
 
+    let storage_usage: u64 = persisted
+        .iter()
+        .map(|(k, v)| (k.len() + v.len()) as u128)
+        .sum::<u128>()
+        .max(100) as u64;
     let mut ext = MockedExternal::new();
     ext.fake_trie.extend(persisted);
 
@@ -103,7 +108,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         epoch_height: 0,
         account_balance: near_primitives_core::types::Balance::from_near(100),
         account_locked_balance: near_primitives_core::types::Balance::ZERO,
-        storage_usage: 100,
+        // storage_usage must cover the loaded trie, else the storage meter
+        // underflows on eviction of a longer value (IntegerOverflow).
+        storage_usage,
         account_contract: near_primitives_core::account::AccountContract::None,
         attached_deposit: near_primitives_core::types::Balance::from_yoctonear(deposit_yocto),
         prepaid_gas: near_primitives_core::gas::Gas::from_gas(prepaid),

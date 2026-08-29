@@ -510,7 +510,19 @@ impl WasmEmitter {
 
     fn local_idx(&mut self, name: &str) -> u32 {
         if let Some(&i) = self.locals.get(name) { return i; }
-        let i = self.free_locals.pop().unwrap_or(self.next_local);
+        // Take from the free list, but NEVER reuse an index that is still
+        // live in the locals map or outside the allocated range. Guards
+        // against free-list bookkeeping bugs (double-push / stale entries),
+        // which previously aliased e.g. __sst_v with __str_a and corrupted
+        // storage_set operands (host IntegerOverflow).
+        let mut taken: Option<u32> = None;
+        while let Some(i) = self.free_locals.pop() {
+            if i < self.next_local && !self.locals.values().any(|&v| v == i) {
+                taken = Some(i);
+                break;
+            }
+        }
+        let i = taken.unwrap_or(self.next_local);
         if i == self.next_local {
             self.next_local += 1;
             self.local_type_map.push(ValType::I64);
