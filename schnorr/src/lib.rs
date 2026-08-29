@@ -42,19 +42,38 @@ const SHA_IV: [u32; 8] = [0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f
 #[inline(always)] fn sha_sig0(x: u32) -> u32 { x.rotate_right(7) ^ x.rotate_right(18) ^ (x >> 3) }
 #[inline(always)] fn sha_sig1(x: u32) -> u32 { x.rotate_right(17) ^ x.rotate_right(19) ^ (x >> 10) }
 
+// Streaming SHA-256 (2026-08-29): the old version copied input into a fixed
+// [u8; 192] buffer — fine for BIP-340's internal ≤96-byte tagged hashes, but
+// the sha256_hash FFI entry shares it, so any input ≥192 bytes panicked
+// (in-wasm: slice OOB → rust_begin_unwind → busy-wait spin), and lengths
+// 184-191 silently hashed with wrong padding. Reference vectors for
+// 183/190/300 verified vs python hashlib.
+fn sha256_compress(h: &mut [u32; 8], block: &[u8; 64], w: &mut [u32; 64]) {
+    for i in 0..16 { w[i] = u32::from_be_bytes([block[i * 4], block[i * 4 + 1], block[i * 4 + 2], block[i * 4 + 3]]); }
+    for i in 16..64 { w[i] = sha_sig1(w[i - 2]).wrapping_add(w[i - 7]).wrapping_add(sha_sig0(w[i - 15])).wrapping_add(w[i - 16]); }
+    let [mut a, mut b2, mut c, mut d, mut e, mut f, mut g, mut hh] = *h;
+    for i in 0..64 { let t1 = hh.wrapping_add(sha_ep1(e)).wrapping_add(sha_ch(e, f, g)).wrapping_add(SHA_K[i]).wrapping_add(w[i]); let t2 = sha_ep0(a).wrapping_add(sha_maj(a, b2, c)); hh = g; g = f; f = e; e = d.wrapping_add(t1); d = c; c = b2; b2 = a; a = t1.wrapping_add(t2); }
+    h[0] = h[0].wrapping_add(a); h[1] = h[1].wrapping_add(b2); h[2] = h[2].wrapping_add(c); h[3] = h[3].wrapping_add(d);
+    h[4] = h[4].wrapping_add(e); h[5] = h[5].wrapping_add(f); h[6] = h[6].wrapping_add(g); h[7] = h[7].wrapping_add(hh);
+}
+
 pub fn compute_sha256(data: &[u8]) -> [u8; 32] {
-    let len = data.len(); let blocks = if len < 56 { 1 } else if len < 120 { 2 } else { 3 };
-    let mut msg = [0u8; 192]; msg[..len].copy_from_slice(data); msg[len] = 0x80;
-    let bits = (len as u64) * 8; msg[blocks * 64 - 8..blocks * 64].copy_from_slice(&bits.to_be_bytes());
-    let mut h = SHA_IV;
-    for b in 0..blocks {
-        let off = b * 64; let mut w = [0u32; 64];
-        for i in 0..16 { w[i] = u32::from_be_bytes([msg[off + i * 4], msg[off + i * 4 + 1], msg[off + i * 4 + 2], msg[off + i * 4 + 3]]); }
-        for i in 16..64 { w[i] = sha_sig1(w[i - 2]).wrapping_add(w[i - 7]).wrapping_add(sha_sig0(w[i - 15])).wrapping_add(w[i - 16]); }
-        let [mut a, mut b2, mut c, mut d, mut e, mut f, mut g, mut hh] = h;
-        for i in 0..64 { let t1 = hh.wrapping_add(sha_ep1(e)).wrapping_add(sha_ch(e, f, g)).wrapping_add(SHA_K[i]).wrapping_add(w[i]); let t2 = sha_ep0(a).wrapping_add(sha_maj(a, b2, c)); hh = g; g = f; f = e; e = d.wrapping_add(t1); d = c; c = b2; b2 = a; a = t1.wrapping_add(t2); }
-        h[0] = h[0].wrapping_add(a); h[1] = h[1].wrapping_add(b2); h[2] = h[2].wrapping_add(c); h[3] = h[3].wrapping_add(d);
-        h[4] = h[4].wrapping_add(e); h[5] = h[5].wrapping_add(f); h[6] = h[6].wrapping_add(g); h[7] = h[7].wrapping_add(hh);
+    let len = data.len(); let mut h = SHA_IV; let mut w = [0u32; 64];
+    let mut off = 0;
+    while off + 64 <= len {
+        let block: [u8; 64] = data[off..off + 64].try_into().unwrap();
+        sha256_compress(&mut h, &block, &mut w); off += 64;
+    }
+    let rem = len - off; let mut tail = [0u8; 64];
+    tail[..rem].copy_from_slice(&data[off..]); tail[rem] = 0x80;
+    let bits = (len as u64) * 8;
+    if rem < 56 {
+        tail[56..64].copy_from_slice(&bits.to_be_bytes());
+        sha256_compress(&mut h, &tail, &mut w);
+    } else {
+        sha256_compress(&mut h, &tail, &mut w);
+        let mut z = [0u8; 64]; z[56..64].copy_from_slice(&bits.to_be_bytes());
+        sha256_compress(&mut h, &z, &mut w);
     }
     let mut out = [0u8; 32]; for i in 0..8 { out[i * 4..i * 4 + 4].copy_from_slice(&h[i].to_be_bytes()); } out
 }
