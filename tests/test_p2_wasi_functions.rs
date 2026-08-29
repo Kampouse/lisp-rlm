@@ -273,21 +273,25 @@ fn bug_iter_next_oob() {
     compile_near_untyped(src).unwrap();
 }
 
-/// [BUG] near/promise_batch_create: dispatch expects 2 args (ptr, len) raw pointer
-/// but takes 1 string arg at Lisp level.
+/// [FIXED] near/promise_batch_create: string-arg surface compiles cleanly
+/// (was raw-ptr era: string args panicked the compiler). The deployed
+/// outlayer-oracle uses exactly this form. Bug memorialized by
+/// bug_promise_batch_create_oob, fixed by the string-arg promise surface
+/// (e479914 lineage) — test flipped to a positive assertion.
 #[test]
-#[should_panic]
-fn bug_promise_batch_create_oob() {
+fn promise_batch_create_str_arg_compiles() {
     let src = r#"(memory 1)
 (define (test) (near/promise_batch_create "account.near"))
 (export "test" test true)"#;
     compile_near_untyped(src).unwrap();
 }
 
-/// [BUG] near/promise_batch_then: expects 3 raw args (batch_id, ptr, len).
+/// [BUG-STILL] near/promise_batch_then: emitter takes 2 args (batch_id,
+/// account) — this call passes a 3rd "callback" arg, a genuine arity
+/// mismatch that must stay an error.
 #[test]
 #[should_panic]
-fn bug_promise_batch_then_oob() {
+fn promise_batch_then_wrong_arity_panics() {
     let src = r#"(memory 1)
 (define (test) (let ((b (near/promise_batch_create "a.near")))
        (near/promise_batch_then b "b.near" "callback")))
@@ -295,10 +299,11 @@ fn bug_promise_batch_then_oob() {
     compile_near_untyped(src).unwrap();
 }
 
-/// [BUG] near/promise_batch_action_function_call: expects 7 raw args.
+/// [FIXED] near/promise_batch_action_function_call: string+num surface
+/// (id, method, args, deposit, gas) compiles — same form the oracle
+/// deploys. Was raw-7-arg era.
 #[test]
-#[should_panic]
-fn bug_promise_batch_action_function_call_oob() {
+fn promise_batch_action_function_call_compiles() {
     let src = r#"(memory 1)
 (define (test) (let ((b (near/promise_batch_create "a.near")))
        (near/promise_batch_action_function_call b "method" "args" 0 0)))
@@ -306,10 +311,10 @@ fn bug_promise_batch_action_function_call_oob() {
     compile_near_untyped(src).unwrap();
 }
 
-/// [BUG] near/promise_batch_action_transfer: expects 3 raw args.
+/// [FIXED] near/promise_batch_action_transfer: (id, amount) compiles.
+/// Was raw-3-arg era.
 #[test]
-#[should_panic]
-fn bug_promise_batch_action_transfer_oob() {
+fn promise_batch_action_transfer_compiles() {
     let src = r#"(memory 1)
 (define (test) (let ((b (near/promise_batch_create "a.near")))
        (near/promise_batch_action_transfer b 1000000)))
