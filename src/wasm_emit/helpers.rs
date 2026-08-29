@@ -924,10 +924,41 @@ impl WasmEmitter {
             Instruction::LocalSet(b_off),
         ]);
 
-        // --- Copy A to dst ---
+        // --- Select dst: site buffer for short concats (loop-friendly reuse),
+        //     runtime-heap allocation when the result can't fit (a_len+b_len > site).
+        //     BUG FIX 2026-08-29: the fixed 128-byte site overflowed for longer
+        //     results (e.g. ~150B JSON value folds), clobbering whatever was
+        //     allocated at next_data_offset AFTER the site (literals, other
+        //     sites) — approve's log literal printed the JSON fold's tail bytes.
+        //     Heap path is monotonic (results safely escape); site path keeps
+        //     per-call reuse semantics for the common small-concat case. ---
         v.extend(vec![
+            // total = a_len + b_len
+            Instruction::LocalGet(a_len),
+            Instruction::LocalGet(b_len),
+            Instruction::I64Add,
+            Instruction::LocalSet(total),
+            // block $dst_done
+            Instruction::Block(BlockType::Empty),
+            // if total <=u 128 → dst = site; br $dst_done
+            Instruction::LocalGet(total),
+            Instruction::I64Const(128),
+            Instruction::I64LeU,
+            Instruction::If(BlockType::Empty),
             Instruction::I64Const(alloc_base as i64),
             Instruction::LocalSet(dst),
+            Instruction::Br(1),
+            Instruction::End,
+        ]);
+        // else: dst = rtheap_alloc(total) — bumps RUNTIME_HEAP_PTR (mem[56]),
+        // traps past mem limit. Inline (label-free) so it can live in the block.
+        v.extend(self.emit_rtheap_alloc(dst, total));
+        v.extend(vec![
+            Instruction::End, // block $dst_done
+        ]);
+
+        // --- Copy A to dst ---
+        v.extend(vec![
             Instruction::I64Const(0),
             Instruction::LocalSet(i),
             // block $exit_a
