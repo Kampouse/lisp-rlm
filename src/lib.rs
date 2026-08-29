@@ -40,6 +40,7 @@ pub mod p2_wasi_bridge;
 pub mod parser;
 pub mod program;
 pub mod tagged_value;
+pub mod ts_frontend;
 pub mod types;
 mod typing;
 pub mod verifier;

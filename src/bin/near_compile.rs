@@ -1805,6 +1805,24 @@ fn run_compile(args: &[String]) {
     let src_path = positional.get(0).expect("need input file");
     let src = fs::read_to_string(src_path).expect("read input");
 
+    // TS frontend: lower TypeScript source to lisp before the normal pipeline
+    let src = if src_path.ends_with(".ts") || src_path.ends_with(".mts") {
+        match lisp_rlm_wasm::ts_frontend::ts_to_lisp_source(&src) {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("❌ TS lowering error: {}", e);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        src
+    };
+
+    if args.iter().any(|a| a == "--dump-lisp") {
+        println!("{}", src);
+        std::process::exit(0);
+    }
+
     let src = strip_test_forms(&src);
 
     // CLI --target overrides config
