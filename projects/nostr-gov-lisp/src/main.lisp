@@ -7,8 +7,8 @@
 ;;;
 ;;; WIRE COMPATIBILITY (signatures valid in the Rust original are
 ;;; valid here — differential-tested):
-;;;   owner msg  = "expires {exp}.000000000: {action} | nonce: {n} | contract: {id}"
-;;;   pause msg  = "expires {exp}.000000000: pause | contract: {id}"   (no nonce!)
+;;;   owner msg  = 'expires {exp}.000000000: {action} | nonce: {n} | contract: {id}'
+;;;   pause msg  = 'expires {exp}.000000000: pause | contract: {id}'   (no nonce!)
 ;;;   auth       = BIP-340 verify(pk32, sig64, SHA256(msg))
 ;;;
 ;;; Phase 1 scope (of the phased port plan):
@@ -22,10 +22,10 @@
 ;;;   - block_timestamp is a decimal STRING (Option A: ns > 61-bit
 ;;;     tagged payload) — compared via u128/gt, never str->num
 ;;;   - u128 intermediates are let-bound (TEMP_MEM scratch collision)
-;;;   - guarded str->num (never "" into arithmetic)
+;;;   - guarded str->num (never '' into arithmetic)
 ;;;   - owner bitmap is u64 → split into lo(b0..31)/hi(b32..63) pairs;
 ;;;     each half ≤ 2^32-1, far inside the 61-bit tagged payload.
-;;;   - guard pattern: (if bad (die "..") 0) as a STATEMENT,
+;;;   - guard pattern: (if bad (die '..') 0) as a STATEMENT,
 ;;;     side effects after — never abort mixed into value branches
 ;;;     (near/abort is int-typed; storage_set/json_return are nil).
 ;;;
@@ -37,6 +37,29 @@
 ;;   = hi<<64 | lo  → (near/deposit-gte 1001882102603448320 27105)
 (define DEP_LO 1001882102603448320)
 (define DEP_HI 27105)
+
+;;;
+;;; Phase 1.5: EVENT AUTH (NIP-46-compatible, kind 37500)
+;;;
+;;; Problem: nostr signers (NIP-07 extensions, NIP-46 bunkers) sign
+;;; EVENTS only — never arbitrary clear-sign strings. The webapp
+;;; therefore had to hold the raw secret key (schnorrSign in-browser).
+;;;
+;;; Fix: owner ops now ALSO authenticate via a governance event:
+;;;   id  = SHA256(compact-json([0,pk,created_at,kind,tags,content]))
+;;;   sig = BIP-340(pk, sk, id)          (standard nostr event sig)
+;;; Contract reconstructs the serialization from the arg fields and
+;;; verifies sig over sha256(serialized) — equivalent to the id-binding
+;;; + sig check of Rust verify_event (nostr_event.rs), stronger than
+;;; comparing claimed ids: no string-equality on 64-hex needed.
+;;;
+;;; Required tags (charset: no ''', no '\', values quote-free):
+;;;   ['action','create_wallet:<name>']  ['nonce','<n>']
+;;;   ['expires','<ns>']                 ['contract','<account>']
+;;; content is free-form (signed, not parsed).
+;;;
+;;; The legacy clear-sign path REMAINS (bots/API clients); dispatch on
+;;; args: non-empty 'event_id_hex' ⇒ event path, else legacy.
 
 ;; allowed wallet-name chars (ASCII subset of Rust's is_alphanumeric)
 (define NAME_CHARS "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
@@ -112,12 +135,11 @@
               (slide-window (bit-set k lo hi)
                             (bit-set-hi k hi))))))))
 
-
 ;; ── auth ─────────────────────────────────────────────────────────
 
 ;; (verify-owner action sig expires nonce) — aborts on any failure.
 ;; Wire format (Rust parity):
-;;   "expires {exp}.000000000: {action} | nonce: {n} | contract: {id}"
+;;   'expires {exp}.000000000: {action} | nonce: {n} | contract: {id}'
 ;;   BIP-340 over SHA256(msg), hex pk + hex sig.
 (define (verify-owner action sig expires nonce)
   (let ((ts (near/block_timestamp)))
@@ -146,7 +168,7 @@
             (die "ERR_INVALID_OWNER_SIGNATURE"))))))
 
 ;; pause has NO nonce slot (Rust: owner-or-guardian, no consume_nonce)
-(define (pause)
+(define (pause-legacy)
   (let ((sig (near/json_get_str "signature"))
         (expires (near/json_get_str "expires_at"))
         (ts (near/block_timestamp)))
@@ -168,6 +190,146 @@
             0
             (die "ERR_NOT_AUTHORIZED_TO_PAUSE"))
         (near/storage_set "paused" "1")))))
+
+(define (pause)
+  (if (= (str-length (near/json_get_str "ev")) 0)
+      (pause-legacy)
+      (let ((ok (verify-guardian-event "pause")))
+        (near/storage_set "paused" "1"))))
+
+;; ── Phase 1.5: event auth ────────────────────────────────────────
+
+;; tag parsing with LITERAL needles only (landmine: str-index-of /
+;; str-contains needles must be source literals). index-of miss = -1.
+;; tag-rest: substring after the literal, EMPTY if absent.
+;; tag extractors — LITERAL needles inlined per landmine (index-of
+(memory 48)
+
+(define (tag-action tags)
+  (let ((i (str-index-of tags "[\"action\",\"")))
+    (if (= i -1)
+        EMPTY
+        (let ((rest (str-slice tags (+ i (str-length "[\"action\",\"")) (str-length tags))))
+          (if (= (str-length rest) 0)
+              EMPTY
+              (str-slice rest 0 (str-index-of rest "\"")))))))
+
+(define (tag-contract tags)
+  (let ((i (str-index-of tags "[\"contract\",\"")))
+    (if (= i -1)
+        EMPTY
+        (let ((rest (str-slice tags (+ i (str-length "[\"contract\",\"")) (str-length tags))))
+          (if (= (str-length rest) 0)
+              EMPTY
+              (str-slice rest 0 (str-index-of rest "\"")))))))
+
+(define (tag-nonce tags)
+  (let ((i (str-index-of tags "[\"nonce\",\"")))
+    (if (= i -1)
+        EMPTY
+        (let ((rest (str-slice tags (+ i (str-length "[\"nonce\",\"")) (str-length tags))))
+          (if (= (str-length rest) 0)
+              EMPTY
+              (str-slice rest 0 (str-index-of rest "\"")))))))
+
+(define (tag-expires tags)
+  (let ((i (str-index-of tags "[\"expires\",\"")))
+    (if (= i -1)
+        EMPTY
+        (let ((rest (str-slice tags (+ i (str-length "[\"expires\",\"")) (str-length tags))))
+          (if (= (str-length rest) 0)
+              EMPTY
+              (str-slice rest 0 (str-index-of rest "\"")))))))
+
+(define (event-serialize pk cat kind tags content)
+  (str-cat "[0,\""
+    (str-cat pk (str-cat "\","
+      (str-cat cat (str-cat ","
+        (str-cat kind (str-cat ","
+          (str-cat tags (str-cat ",\""
+            (str-cat content "\"]")))))))))))
+
+(define (verify-owner-event action-str)
+  (let ((pk (near/json_get_str "pk"))
+        (kind (near/json_get_str "kind"))
+        (tags (near/json_get_str "tags"))
+        (content (near/json_get_str "ct"))
+        (sig (near/json_get_str "sig"))
+        (cat (near/json_get_str "cat")))
+    (if (!= (str-length pk) 64)
+        (die "ERR_EVENT_PK_LEN")
+        0)
+    (if (!= (str-length sig) 128)
+        (die "ERR_EVENT_SIG_LEN")
+        0)
+    (if (!= kind "37500")
+        (die "ERR_EVENT_KIND")
+        0)
+    (if (= pk (get-str "owner_npub0"))
+        0
+        (die "ERR_EVENT_PK_MISMATCH"))
+    (let ((ta (tag-action tags))
+          (tc (tag-contract tags))
+          (tn (tag-nonce tags))
+          (te (tag-expires tags)))
+      (let ((ts (near/block_timestamp)))
+      (if (u128/gt ts te)
+          (die "ERR_SIG_EXPIRED")
+          0))
+      (if (= ta action-str)
+          0
+          (die "ERR_EVENT_ACTION"))
+      (if (= tc (near/current_account_id))
+          0
+          (die "ERR_EVENT_CONTRACT"))
+      (let ((serialized (event-serialize pk cat kind tags content)))
+        (let ((ok (schnorr-verify (hex-decode pk)
+                                  (hex-decode sig)
+                                  (sha256-hash serialized))))
+          (if (= ok 1)
+              (consume-nonce (str->num tn))
+              (die "ERR_EVENT_SIG_INVALID")))))))
+
+;; guardian variant: pause/unpause carry NO nonce (mirrors legacy)
+(define (verify-guardian-event action-str)
+  (let ((pk (near/json_get_str "pk"))
+        (kind (near/json_get_str "kind"))
+        (tags (near/json_get_str "tags"))
+        (content (near/json_get_str "ct"))
+        (sig (near/json_get_str "sig"))
+        (cat (near/json_get_str "cat")))
+    (if (!= (str-length pk) 64)
+        (die "ERR_EVENT_PK_LEN")
+        0)
+    (if (!= (str-length sig) 128)
+        (die "ERR_EVENT_SIG_LEN")
+        0)
+    (if (!= kind "37500")
+        (die "ERR_EVENT_KIND")
+        0)
+    (if (= pk (get-str "owner_npub0"))
+        0
+        (die "ERR_EVENT_PK_MISMATCH"))
+    (let ((ta (tag-action tags))
+          (tc (tag-contract tags))
+          (te (tag-expires tags)))
+      (let ((ts (near/block_timestamp)))
+      (if (u128/gt ts te)
+          (die "ERR_SIG_EXPIRED")
+          0))
+      (if (= ta action-str)
+          0
+          (die "ERR_EVENT_ACTION"))
+      (if (= tc (near/current_account_id))
+          0
+          (die "ERR_EVENT_CONTRACT"))
+      (let ((serialized (event-serialize pk cat kind tags content)))
+        (let ((ok (schnorr-verify (hex-decode pk)
+                                  (hex-decode sig)
+                                  (sha256-hash serialized))))
+          (if (= ok 1)
+              0
+              (die "ERR_EVENT_SIG_INVALID")))))))
 
 ;; ── name validation ──────────────────────────────────────────────
 
@@ -213,7 +375,7 @@
   0)
 
 ;; ── create_wallet ─────────────────────────────────────────────────
-;; Rust: assert_not_paused, verify_owner("create_wallet:{name}"),
+;; Rust: assert_not_paused, verify_owner('create_wallet:{name}'),
 ;; deposit ≥ 0.5N, name checks, wallet insert + event.
 
 (define (create_wallet)
@@ -230,7 +392,9 @@
     (if (!= (str-length (get-str "paused")) 0)
         (die "ERR_PAUSED")
         0)
-    (verify-owner (str-cat "create_wallet:" name) sig expires nonce))
+    (if (= (str-length (near/json_get_str "ev")) 0)
+      (verify-owner (str-cat "create_wallet:" name) sig expires nonce)
+      (verify-owner-event (str-cat "create_wallet:" name))))
   (let ((name (near/json_get_str "name")))
     (if (near/deposit-gte 1001882102603448320 27105)
         0
@@ -259,13 +423,16 @@
   (let ((sig (near/json_get_str "signature"))
         (expires (near/json_get_str "expires_at"))
         (nonce (near/json_get_str "nonce")))
-    (if (= (str-length expires) 0)
-        (die "ERR_ARG_EXPIRES")
-        0)
-    (if (= (str-length nonce) 0)
-        (die "ERR_ARG_NONCE")
-        0)
-    (verify-owner "unpause" sig expires nonce))
+    (if (= (str-length (near/json_get_str "ev")) 0)
+        (begin
+          (if (= (str-length expires) 0)
+              (die "ERR_ARG_EXPIRES")
+              0)
+          (if (= (str-length nonce) 0)
+              (die "ERR_ARG_NONCE")
+              0)
+          (verify-owner "unpause" sig expires nonce))
+        (verify-owner-event "unpause")))
   (near/storage_remove "paused")
   0)
 
@@ -289,7 +456,7 @@
 (define (test_verify_nostr)
   (let ((msg (near/json_get_str "message"))
         (pk (near/json_get_str "pubkey_hex"))
-        (sig (near/json_get_str "signature")))
+        (sig (near/json_get_str "sig_hex")))
     (let ((ok (schnorr-verify (hex-decode pk)
                               (hex-decode sig)
                               (sha256-hash msg))))
@@ -312,6 +479,11 @@
              (str-cat (str-cat " lo=" (num-str "obm_lo"))
                       (str-cat " hi=" (num-str "obm_hi"))))))
 
+;; BENCH-ONLY: probe json_get_str absent-key semantics
+
+;; BENCH-ONLY: index-returning probes (discriminate needle vs hay corruption)
+
+;; BENCH-ONLY: does the SCAN see backslashes the slice doesn't?
 (export "init" init #f)
 ;; BENCH-ONLY: post-auth half of create_wallet (no signature)
 (define (dbg_cw)
@@ -336,7 +508,6 @@
           "\"}"))))
   (near/log (str-cat "wallet created: " (near/json_get_str "name")))
   0)
-
 (export "dbg_nonce" dbg_nonce #f)
 (export "dbg_cw" dbg_cw #f)
 (export "dbg_state" dbg_state #t)
@@ -348,3 +519,6 @@
 (export "get_owner_nonce" get_owner_nonce #t)
 (export "is_paused" is_paused #t)
 (export "get_version" get_version #t)
+
+;; BENCH-ONLY: tag extractor probes
+

@@ -85,3 +85,46 @@ if __name__ == "__main__":
     pk2 = i2b(mul(b2i(sk2))[0])
     assert pk2.hex() == "6a04ab98d9e4774ad806e302dddeb63bea16b5cb5f223ee77478e861bb583eb3", pk2.hex()
     print("nostr-gov pk match ok")
+
+
+# ── NIP-01 governance events (kind 37500) ──────────────────────────
+import json as _json
+
+GOV_KIND = 37500
+
+def canonical_event(pubkey, created_at, kind, tags, content):
+    """Exact nostr serialization: [0,pk,created_at,kind,tags,content]"""
+    return _json.dumps([0, pubkey, created_at, kind, tags, content],
+                       separators=(",", ":"))
+
+def event_id(pubkey, created_at, kind, tags, content):
+    return sha(canonical_event(pubkey, created_at, kind, tags, content).encode()).hex()
+
+def sign_event(sk, pubkey, created_at, kind, tags, content):
+    """BIP-340 sig over the event id (32 raw bytes)"""
+    eid = sha(canonical_event(pubkey, created_at, kind, tags, content).encode())
+    return sign(sk, eid).hex()
+
+def gov_event(sk, pubkey, action, nonce, expires_ns, contract, created_at=1,
+              content="nostr-gov owner action", kind=GOV_KIND,
+              action_override=None, contract_override=None):
+    """Build a signed governance event arg-dict for the contract."""
+    tags = [
+        ["t", "nostr-gov"],
+        ["action", action_override if action_override is not None else action],
+        ["nonce", str(nonce)],
+        ["expires", str(expires_ns)],
+        ["contract", contract_override if contract_override is not None else contract],
+    ]
+    sig = sign_event(sk, pubkey, created_at, kind, tags, content)
+    return {
+        "pk": pubkey,
+        "ev": event_id(pubkey, created_at, kind, tags, content),
+        "event_id_hex": event_id(pubkey, created_at, kind, tags, content),
+        "ev": event_id(pubkey, created_at, kind, tags, content),
+        "cat": str(created_at),
+        "kind": str(kind),
+        "tags": _json.dumps(tags, separators=(",", ":")),
+        "ct": content,
+        "sig": sig,
+    }
