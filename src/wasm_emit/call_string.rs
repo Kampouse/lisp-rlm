@@ -701,30 +701,12 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(start_i));
                 v.push(Instruction::I64Add);
                 v.push(Instruction::LocalSet(src_ptr_i));
-                // Allocate dst from FP_GLOBAL
-                v.push(Instruction::GlobalGet(FP_GLOBAL));
-                v.push(Instruction::LocalSet(dst_i));
+                // Allocate dst from the runtime heap (U-fix 2, 2026-08-29):
+                // was FP_GLOBAL — restored per function exit, so slice results
+                // escaped into buffers the next callee would overwrite.
+                v.extend(self.emit_rtheap_alloc(dst_i, new_len_i));
                 v.push(Instruction::LocalGet(dst_i));
                 v.push(Instruction::LocalSet(dst_save_i)); // save original dst
-                                                           // Bounds check: FP + new_len ≤ mem_limit
-                let mem_limit = (self.memory_pages as i64) * 65536;
-                v.push(Instruction::LocalGet(dst_i));
-                v.push(Instruction::LocalGet(new_len_i));
-                v.push(Instruction::I64Add);
-                v.push(Instruction::I64Const(mem_limit));
-                v.push(Instruction::I64GtU);
-                v.push(Instruction::If(BlockType::Empty));
-                v.push(Instruction::Unreachable);
-                v.push(Instruction::End);
-                // Advance FP: aligned up to 8
-                v.push(Instruction::GlobalGet(FP_GLOBAL));
-                v.push(Instruction::LocalGet(new_len_i));
-                v.push(Instruction::I64Add);
-                v.push(Instruction::I64Const(7));
-                v.push(Instruction::I64Add);
-                v.push(Instruction::I64Const(-8i64 as u64 as i64));
-                v.push(Instruction::I64And);
-                v.push(Instruction::GlobalSet(FP_GLOBAL));
                 // Word copy: qwords = new_len / 8, remain = new_len & 7
                 v.push(Instruction::LocalGet(new_len_i));
                 v.push(Instruction::I64Const(3));
@@ -1343,30 +1325,11 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(b_len_i));
                 v.push(Instruction::I64Add);
                 v.push(Instruction::LocalSet(total_len_i));
-                // Allocate dst at FP_GLOBAL (frame pointer)
-                v.push(Instruction::GlobalGet(FP_GLOBAL));
-                v.push(Instruction::LocalSet(dst_i));
+                // Allocate dst from the runtime heap (U-fix 2, 2026-08-29 —
+                // was FP_GLOBAL; see emit_rtheap_alloc for why that clobbered)
+                v.extend(self.emit_rtheap_alloc(dst_i, total_len_i));
                 v.push(Instruction::LocalGet(dst_i));
                 v.push(Instruction::LocalSet(dst_save_i));
-                // Bounds check: FP + total_len ≤ mem_limit
-                let mem_limit = (self.memory_pages as i64) * 65536;
-                v.push(Instruction::LocalGet(dst_i));
-                v.push(Instruction::LocalGet(total_len_i));
-                v.push(Instruction::I64Add);
-                v.push(Instruction::I64Const(mem_limit));
-                v.push(Instruction::I64GtU);
-                v.push(Instruction::If(BlockType::Empty));
-                v.push(Instruction::Unreachable);
-                v.push(Instruction::End);
-                // Round up FP advance to 8-byte boundary for safe word copies
-                v.push(Instruction::GlobalGet(FP_GLOBAL));
-                v.push(Instruction::LocalGet(total_len_i));
-                v.push(Instruction::I64Add);
-                v.push(Instruction::I64Const(7));
-                v.push(Instruction::I64Add);
-                v.push(Instruction::I64Const(-8i64 as u64 as i64));
-                v.push(Instruction::I64And); // align up to 8
-                v.push(Instruction::GlobalSet(FP_GLOBAL));
                 // ── Copy A: word-copy loop (I64Load/I64Store) ──
                 // qwords = a_len / 8, remain = a_len & 7
                 v.push(Instruction::LocalGet(a_len_i));
@@ -3189,23 +3152,13 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(TAG_NIL));
                 v.push(Instruction::Else);
                 if !self.p2_mode && !self.wasi_mode {
-                    // NEAR: allocate from FP_GLOBAL (bump by max storage value size)
-                    v.push(Instruction::GlobalGet(FP_GLOBAL));
-                    v.push(Instruction::LocalSet(buf_i));
+                    // NEAR: allocate from the runtime heap (U-fix 2, 2026-08-29 —
+                    // was FP_GLOBAL; storage strings must survive later calls)
+                    v.extend(self.emit_rtheap_alloc(buf_i, len_i));
                     // read_register(1, buf)
                     v.push(Instruction::I64Const(1));
                     v.push(Instruction::LocalGet(buf_i));
                     v.push(Self::host_call(0));
-                    // Bump FP by actual length (rounded up to 8) so next allocs don't overlap
-                    // FP += (len + 7) & ~7
-                    v.push(Instruction::GlobalGet(FP_GLOBAL));
-                    v.push(Instruction::LocalGet(len_i));
-                    v.push(Instruction::I64Const(7));
-                    v.push(Instruction::I64Add);
-                    v.push(Instruction::I64Const(-8));
-                    v.push(Instruction::I64And);
-                    v.push(Instruction::I64Add);
-                    v.push(Instruction::GlobalSet(FP_GLOBAL));
                     // Return tagged string: (len << 32) | buf
                     v.push(Instruction::LocalGet(len_i));
                     v.push(Instruction::I64Const(32));
@@ -3276,17 +3229,9 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(1));
                 v.push(Instruction::I64ShrU);
                 v.push(Instruction::LocalSet(out_len_i));
-                // Allocate output from FP_GLOBAL
-                v.push(Instruction::GlobalGet(FP_GLOBAL));
-                v.push(Instruction::LocalSet(out_ptr_i));
-                v.push(Instruction::GlobalGet(FP_GLOBAL));
-                v.push(Instruction::LocalGet(out_len_i));
-                v.push(Instruction::I64Const(7));
-                v.push(Instruction::I64Add);
-                v.push(Instruction::I64Const(-8i64 as u64 as i64));
-                v.push(Instruction::I64And);
-                v.push(Instruction::I64Add);
-                v.push(Instruction::GlobalSet(FP_GLOBAL));
+                // Allocate output from the runtime heap (U-fix 2, 2026-08-29 —
+                // was FP_GLOBAL; decoded bytes must survive later calls)
+                v.extend(self.emit_rtheap_alloc(out_ptr_i, out_len_i));
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::LocalSet(i_i));
                 // block/loop

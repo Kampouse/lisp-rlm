@@ -139,6 +139,21 @@ impl WasmEmitter {
     }
 
     pub fn finish(&mut self, default_export: &str) -> Vec<u8> {
+        // Hard-error invariant: data literals must never reach the pinned heap
+        // start (see ensure_heap_init). >1MiB of literals = layout overlap.
+        self.ensure_heap_init();
+        // Hard-error invariant (U-fix 3): literals+slots share ONE bump
+        // region (heap_bump advances next_data_offset), so the old
+        // data/heap overlap check is meaningless — the unified allocator
+        // can't self-overlap. The real ceiling is the STITCHED module at
+        // 1MiB: keep the bump region below it or the stitch corrupts.
+        if self.next_data_offset as u64 >= 1_048_576 {
+            panic!(
+                "unified data/heap region reached {} bytes — must stay below the \
+stitched module region at 1MiB. Split literals or shrink allocations",
+                self.next_data_offset
+            );
+        }
         // Tree-shake before emitting
         self.tree_shake();
         // Ensure host functions needed by export wrappers are included
@@ -494,6 +509,17 @@ impl WasmEmitter {
                 data.active(0, &ConstExpr::i32_const(*off as i32), bytes.iter().copied());
             }
             m.section(&data);
+        }
+
+        // LAYOUT DEBUG (2026-08-29) — env LISPLM_DEBUG_LAYOUT=1
+        if std::env::var("LISPLM_DEBUG_LAYOUT").is_ok() {
+            let mut offs: Vec<(u32, usize)> =
+                self.data_segments.iter().map(|(o, b)| (*o, b.len())).collect();
+            offs.sort();
+            eprintln!("== LAYOUT: heap_ptr={} next_data_offset={}", self.heap_ptr, self.next_data_offset);
+            eprintln!("== segments: {} (first 8, last 8):", offs.len());
+            for (o, l) in offs.iter().take(8) { eprintln!("   seg @{o} len {l}"); }
+            for (o, l) in offs.iter().rev().take(8).rev() { eprintln!("   seg @{o} len {l}"); }
         }
 
         let bytes = m.finish();

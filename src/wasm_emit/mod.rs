@@ -362,8 +362,26 @@ impl WasmEmitter {
     pub(crate) fn ensure_heap_init(&mut self) {
         if self.heap_ptr == 0 {
             let data_end = (self.next_data_offset as u64 + 7) & !7u64;
-            // Floor: must be above fixed buffers (BORSH_BUF=36864 + 4096 scratch)
-            let min_heap = 40_960u64;
+            // Floor: must be above fixed buffers (BORSH_BUF=36864 + 4096 scratch).
+            // BUG FIX (2026-08-29, nostr-gov event-auth investigation): the heap
+            // start was pinned at data_end at FIRST USE, which happens mid-compile
+            // — literals allocated later in emission landed past the pin, INSIDE
+            // the runtime heap region, and runtime allocations (json_get_str
+            // buffers, FP bump) corrupted them. Symptoms were position-dependent
+            // (function order changed which literals broke): json key patterns
+            // matching garbage, str-contains needles misfiring, FP-global
+            // corruption traps. Constant 1MiB floor keeps all literals below the
+            // heap as long as total literal bytes stay under 1MiB (finish()
+            // asserts the invariant; >1MiB of literals = compile error).
+            // Constant 256KiB floor: clears every NEAR runtime buffer
+            // (INPUT_BUF 16K, BORSH 36864, STDOUT 64K+) with margin, while
+            // staying far BELOW the stitched module region ([1MiB, …) — its
+            // data sits at 1MiB and its code panics on pointers past its
+            // baked-in data_end). Together with heap_bump's unified bump
+            // (U-fix 3), literals + slots + runtime heap all live in
+            // [floor, 1MiB): ~768KB, allocations are KB-scale.
+            // finish() asserts the literal invariant.
+            let min_heap = 262_144u64;
             self.heap_ptr = std::cmp::max(data_end, min_heap) as u32;
         }
     }
@@ -374,13 +392,79 @@ impl WasmEmitter {
         self.heap_ptr as i32
     }
 
+    /// Allocate (len_local + 7) & ~7 bytes from the runtime heap
+    /// (RUNTIME_HEAP_PTR, mem addr 56), leaving the block start in dst_local.
+    /// Monotonic — never restored — so results can safely escape the
+    /// allocating function. (FP_GLOBAL is save/restored per function in
+    /// emit_define, so FP-based results landed at the SAME address in every
+    /// callee: sequential calls returning strings clobbered each other's
+    /// buffers — the event-auth tag extractors all returned garbage from
+    /// overlapping copies. 2026-08-29.) Traps if the bump passes mem_limit.
+    /// NOTE: the FP region (heap_ptr + 64K) still exists for tiny scratch
+    /// allocs; the runtime heap growing >64K would overlap it — fine for
+    /// current contracts (allocations are tens of bytes).
+    pub(crate) fn emit_rtheap_alloc(
+        &mut self,
+        dst_local: u32,
+        len_local: u32,
+    ) -> Vec<Instruction<'static>> {
+        let ma = wasm_encoder::MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 0,
+        };
+        let mem_limit = (self.memory_pages as i64) * 65536;
+        vec![
+            // dst = mem[56]
+            Instruction::I32Const(RUNTIME_HEAP_PTR as i32),
+            Instruction::I64Load(ma.clone()),
+            Instruction::LocalSet(dst_local),
+            // guard: dst + ((len+7)&~7) ≤ mem_limit
+            Instruction::LocalGet(dst_local),
+            Instruction::LocalGet(len_local),
+            Instruction::I64Const(7),
+            Instruction::I64Add,
+            Instruction::I64Const(-8i64 as u64 as i64),
+            Instruction::I64And,
+            Instruction::I64Add,
+            Instruction::I64Const(mem_limit),
+            Instruction::I64GtU,
+            Instruction::If(BlockType::Empty),
+            Instruction::Unreachable,
+            Instruction::End,
+            // mem[56] = old + aligned(len)
+            // (bottom i32 56 = store addr; second i32 56 = addr consumed by the load)
+            Instruction::I32Const(RUNTIME_HEAP_PTR as i32),
+            Instruction::I32Const(RUNTIME_HEAP_PTR as i32),
+            Instruction::I64Load(ma.clone()),
+            Instruction::LocalGet(len_local),
+            Instruction::I64Const(7),
+            Instruction::I64Add,
+            Instruction::I64Const(-8i64 as u64 as i64),
+            Instruction::I64And,
+            Instruction::I64Add,
+            Instruction::I64Store(ma),
+        ]
+    }
+
     /// Bump heap_ptr by `bytes`, return old position.
     /// In P2 mode, returns None (callers must use heap_bump_runtime for runtime allocation).
     /// In NEAR mode, returns compile-time address.
     pub(crate) fn heap_bump(&mut self, bytes: u32) -> u32 {
         self.ensure_heap_init();
-        let old = self.heap_ptr;
+        // U-fix 3b (2026-08-29): bidirectional sync. Slots start at
+        // max(heap_ptr, next_data_offset) so they never land inside regions
+        // reserved by the ~25 manual scratch sites (needles, str buffers —
+        // they bump next_data_offset only). Observed failure: seg@284000
+        // (64B literal) inside slot@[283904,284160) → the "pk" value's
+        // unescape dst was covered by a literal written at instantiation;
+        // every json read after that returned fragment garbage ("ewew=").
+        let old = std::cmp::max(self.heap_ptr, self.next_data_offset);
         self.heap_ptr = old + bytes;
+        self.next_data_offset = self.heap_ptr;
+        if std::env::var("LISPLM_DEBUG_LAYOUT").is_ok() {
+            eprintln!("   slot @{old} len {bytes}");
+        }
         old
     }
 

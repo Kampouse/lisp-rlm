@@ -7,8 +7,8 @@ impl WasmEmitter {
         _a: &[LispVal],
     ) -> Result<Vec<Instruction<'static>>, String> {
         if !self.wasi_mode && !self.p2_mode {
-            // NEAR mode: allocate from FP_GLOBAL (avoids overwriting data segment for large inputs)
-            self.needs_frame = true;
+            // NEAR mode: allocate from the runtime heap (U-fix 2, 2026-08-29 —
+            // was FP_GLOBAL; register strings must survive later calls)
             let buf_i = self.local_idx("__rr_buf");
             let len_i = self.local_idx("__rr_len");
             let mut v = Vec::new();
@@ -19,22 +19,12 @@ impl WasmEmitter {
             v.push(Instruction::I64Const(0));
             v.push(Self::host_call(1));
             v.push(Instruction::LocalSet(len_i));
-            // Allocate buf from FP_GLOBAL
-            v.push(Instruction::GlobalGet(FP_GLOBAL));
-            v.push(Instruction::LocalSet(buf_i));
+            // Allocate buf from mem[56] runtime heap
+            v.extend(self.emit_rtheap_alloc(buf_i, len_i));
             // read_register(0, buf)
             v.push(Instruction::I64Const(0));
             v.push(Instruction::LocalGet(buf_i));
             v.push(Self::host_call(0));
-            // Bump FP by actual length rounded up to 8
-            v.push(Instruction::GlobalGet(FP_GLOBAL));
-            v.push(Instruction::LocalGet(len_i));
-            v.push(Instruction::I64Const(7));
-            v.push(Instruction::I64Add);
-            v.push(Instruction::I64Const(-8i64 as u64 as i64));
-            v.push(Instruction::I64And);
-            v.push(Instruction::I64Add);
-            v.push(Instruction::GlobalSet(FP_GLOBAL));
             // Pack: (len << 32) | buf — tag as Str
             v.push(Instruction::LocalGet(len_i));
             v.push(Instruction::I64Const(32));

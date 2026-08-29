@@ -298,31 +298,31 @@ impl TcEnv {
         );
 
         // ── Linear memory struct intrinsics ──
-        // malloc : num → ptr  (allocates n bytes, returns raw pointer)
+        // malloc : num → num  (allocates n bytes, returns tagged handle)
         env.insert_mono(
             "malloc".to_string(),
             TcType::Arrow(
                 vec![TcType::Con(TcCon::Num)],
-                Box::new(TcType::Con(TcCon::Ptr)),
+                Box::new(TcType::Con(TcCon::Num)),
             ),
         );
-        // store_i64 : ptr → num → num → nil  (ptr, byte_offset, value)
+        // store_i64 : num → num → num → nil  (handle, byte_offset, value)
         env.insert_mono(
             "store_i64".to_string(),
             TcType::Arrow(
                 vec![
-                    TcType::Con(TcCon::Ptr),
+                    TcType::Con(TcCon::Num),
                     TcType::Con(TcCon::Num),
                     TcType::Con(TcCon::Num),
                 ],
                 Box::new(TcType::Con(TcCon::Nil)),
             ),
         );
-        // load_i64 : ptr → num → num  (ptr, byte_offset → value)
+        // load_i64 : num → num → num  (handle, byte_offset → value)
         env.insert_mono(
             "load_i64".to_string(),
             TcType::Arrow(
-                vec![TcType::Con(TcCon::Ptr), TcType::Con(TcCon::Num)],
+                vec![TcType::Con(TcCon::Num), TcType::Con(TcCon::Num)],
                 Box::new(TcType::Con(TcCon::Num)),
             ),
         );

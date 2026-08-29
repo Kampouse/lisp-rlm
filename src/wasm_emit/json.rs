@@ -3762,19 +3762,24 @@ impl WasmEmitter {
         v.push(Instruction::End);
         v.push(Instruction::End);
 
-        // Copy to compile-time heap area above all static buffers
+        // Copy to compile-time heap area above all static buffers.
+        // U-fix (2026-08-29): was a bare memory.copy of the ESCAPED slice —
+        // values with embedded quotes (`[\"action\",...`) shipped with
+        // backslashes intact (len 155 vs 135), so any needle containing a
+        // quote missed inside escaped hay (12 event-auth vectors failed).
+        // Now decodes JSON escapes; see emit_unescape_copy.
+        // NOTE: heap slot is a fixed 256 bytes — values longer than that
+        // overflow into the next slot (pre-existing, unchanged).
         let heap_dst = self.heap_bump(256);
-        v.push(Instruction::I32Const(heap_dst as i32)); // dst
+        let src_addr = self.local_idx_i32("__jss_sa");
+        let out_len = self.local_idx_i32("__jss_ulen");
         v.push(Instruction::I32Const(ib));
         v.push(Instruction::LocalGet(pos));
-        v.push(Instruction::I32Add); // src
-        v.push(Instruction::LocalGet(slen)); // len
-        v.push(Instruction::MemoryCopy {
-            src_mem: 0,
-            dst_mem: 0,
-        });
-        // Return packed: (slen << 32) | heap_dst
-        v.push(Instruction::LocalGet(slen));
+        v.push(Instruction::I32Add);
+        v.push(Instruction::LocalSet(src_addr));
+        v.extend(self.emit_unescape_copy(heap_dst as i32, src_addr, slen, out_len));
+        // Return packed: (out_len << 32) | heap_dst
+        v.push(Instruction::LocalGet(out_len));
         v.push(Instruction::I64ExtendI32U);
         v.push(Instruction::I64Const(32));
         v.push(Instruction::I64Shl);
@@ -3785,6 +3790,162 @@ impl WasmEmitter {
         v.push(Instruction::I64Const(0));
         v.push(Instruction::End); // end if pos < ilen
         Ok(v)
+    }
+
+    /// Unescape-copy [src_addr_local .. +len_local) → dst_const.
+    /// Decodes the standard single-char JSON escapes (\" \\ \/ \b \f \n \r \t);
+    /// \uXXXX is passed through verbatim (6 bytes — NOT decoded; governance
+    /// inputs are ASCII. Revisit with a corpus before shipping unicode args).
+    /// Writes the decoded byte count to out_len_local. Decoded is always
+    /// shorter than the escaped source, so dst needs only len bytes of room.
+    pub(crate) fn emit_unescape_copy(
+        &mut self,
+        dst_const: i32,
+        src_addr_local: u32,
+        len_local: u32,
+        out_len_local: u32,
+    ) -> Vec<Instruction<'static>> {
+        let k = self.local_idx_i32("__un_k");
+        let b = self.local_idx_i32("__un_b");
+        let e = self.local_idx_i32("__un_e");
+        let w = self.local_idx_i32("__un_w");
+        let ma8 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 0,
+            memory_index: 0,
+        };
+        let mut v = Vec::new();
+        v.push(Instruction::I32Const(0));
+        v.push(Instruction::LocalSet(k));
+        v.push(Instruction::I32Const(0));
+        v.push(Instruction::LocalSet(out_len_local));
+        v.push(Instruction::Block(BlockType::Empty));
+        v.push(Instruction::Loop(BlockType::Empty));
+        // if k >= len: exit
+        v.push(Instruction::LocalGet(k));
+        v.push(Instruction::LocalGet(len_local));
+        v.push(Instruction::I32GeS);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Br(2)); // out of block
+        v.push(Instruction::End);
+        // b = load8(src + k)
+        v.push(Instruction::LocalGet(src_addr_local));
+        v.push(Instruction::LocalGet(k));
+        v.push(Instruction::I32Add);
+        v.push(Instruction::I32Load8U(ma8.clone()));
+        v.push(Instruction::LocalSet(b));
+        v.push(Instruction::LocalGet(b));
+        v.push(Instruction::I32Const(0x5C)); // '\'
+        v.push(Instruction::I32Eq);
+        v.push(Instruction::LocalGet(k));
+        v.push(Instruction::I32Const(1));
+        v.push(Instruction::I32Add);
+        v.push(Instruction::LocalGet(len_local));
+        v.push(Instruction::I32LtS);
+        v.push(Instruction::I32And);
+        v.push(Instruction::If(BlockType::Empty));
+        // escape pair: k += 1; e = load8(src + k)
+        v.push(Instruction::LocalGet(k));
+        v.push(Instruction::I32Const(1));
+        v.push(Instruction::I32Add);
+        v.push(Instruction::LocalSet(k));
+        v.push(Instruction::LocalGet(src_addr_local));
+        v.push(Instruction::LocalGet(k));
+        v.push(Instruction::I32Add);
+        v.push(Instruction::I32Load8U(ma8.clone()));
+        v.push(Instruction::LocalSet(e));
+        // \u → verbatim 2-byte passthrough ('\','u'); hex digits copy as ordinary bytes
+        v.push(Instruction::LocalGet(e));
+        v.push(Instruction::I32Const(0x75)); // 'u'
+        v.push(Instruction::I32Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::I32Const(dst_const));
+        v.push(Instruction::LocalGet(out_len_local));
+        v.push(Instruction::I32Add);
+        v.push(Instruction::I32Const(0x5C));
+        v.push(Instruction::I32Store8(ma8.clone()));
+        v.push(Instruction::I32Const(dst_const));
+        v.push(Instruction::LocalGet(out_len_local));
+        v.push(Instruction::I32Const(1));
+        v.push(Instruction::I32Add);
+        v.push(Instruction::I32Add);
+        v.push(Instruction::I32Const(0x75));
+        v.push(Instruction::I32Store8(ma8.clone()));
+        v.push(Instruction::LocalGet(out_len_local));
+        v.push(Instruction::I32Const(2));
+        v.push(Instruction::I32Add);
+        v.push(Instruction::LocalSet(out_len_local));
+        v.push(Instruction::Else);
+        // translate: w = e, then remap the 5 non-self escapes
+        v.push(Instruction::LocalGet(e));
+        v.push(Instruction::LocalSet(w));
+        v.push(Instruction::LocalGet(e));
+        v.push(Instruction::I32Const(0x6E)); // 'n' → LF
+        v.push(Instruction::I32Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::I32Const(0x0A));
+        v.push(Instruction::LocalSet(w));
+        v.push(Instruction::End);
+        v.push(Instruction::LocalGet(e));
+        v.push(Instruction::I32Const(0x74)); // 't' → TAB
+        v.push(Instruction::I32Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::I32Const(0x09));
+        v.push(Instruction::LocalSet(w));
+        v.push(Instruction::End);
+        v.push(Instruction::LocalGet(e));
+        v.push(Instruction::I32Const(0x72)); // 'r' → CR
+        v.push(Instruction::I32Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::I32Const(0x0D));
+        v.push(Instruction::LocalSet(w));
+        v.push(Instruction::End);
+        v.push(Instruction::LocalGet(e));
+        v.push(Instruction::I32Const(0x62)); // 'b' → BS
+        v.push(Instruction::I32Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::I32Const(0x08));
+        v.push(Instruction::LocalSet(w));
+        v.push(Instruction::End);
+        v.push(Instruction::LocalGet(e));
+        v.push(Instruction::I32Const(0x66)); // 'f' → FF
+        v.push(Instruction::I32Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::I32Const(0x0C));
+        v.push(Instruction::LocalSet(w));
+        v.push(Instruction::End);
+        // store8(dst + out, w); out += 1
+        v.push(Instruction::I32Const(dst_const));
+        v.push(Instruction::LocalGet(out_len_local));
+        v.push(Instruction::I32Add);
+        v.push(Instruction::LocalGet(w));
+        v.push(Instruction::I32Store8(ma8.clone()));
+        v.push(Instruction::LocalGet(out_len_local));
+        v.push(Instruction::I32Const(1));
+        v.push(Instruction::I32Add);
+        v.push(Instruction::LocalSet(out_len_local));
+        v.push(Instruction::End);
+        v.push(Instruction::Else);
+        // ordinary byte
+        v.push(Instruction::I32Const(dst_const));
+        v.push(Instruction::LocalGet(out_len_local));
+        v.push(Instruction::I32Add);
+        v.push(Instruction::LocalGet(b));
+        v.push(Instruction::I32Store8(ma8.clone()));
+        v.push(Instruction::LocalGet(out_len_local));
+        v.push(Instruction::I32Const(1));
+        v.push(Instruction::I32Add);
+        v.push(Instruction::LocalSet(out_len_local));
+        v.push(Instruction::End);
+        // k += 1; loop
+        v.push(Instruction::LocalGet(k));
+        v.push(Instruction::I32Const(1));
+        v.push(Instruction::I32Add);
+        v.push(Instruction::LocalSet(k));
+        v.push(Instruction::Br(0));
+        v.push(Instruction::End);
+        v.push(Instruction::End);
+        v
     }
 
     pub(crate) fn json_return_int(
