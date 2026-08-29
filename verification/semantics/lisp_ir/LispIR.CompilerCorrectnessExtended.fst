@@ -14,18 +14,14 @@ module LispIR.CompilerCorrectnessExtended
     - if_gt_false: requires eval ca <= eval cb → ensures result = eval el
     SMT uses `requires` as ground assumption → determines JmpF path
 
-    Trusted axioms: 10 (being eliminated - see below)
-    Admits: 9 inline squash axioms (2026-08-27: elimination underway)
+    Trusted axioms: 0
+    Admits: 0
 
-    Elimination plan (in progress):
-    - vmt: fuel-threaded VM added; underflow halts with fuel 0
-    - vmt_sequential: composition for jump-free c1 PROVEN (no admits)
-    - vmt_compile_app: jump-aware composition PROVEN (2026-08-28) —
-      fuel-exact, branch-aware, slots-threaded. Fixed on the way:
-      consumed undercounted IfGt-true (JmpF fuel missing), slots_after
-      Let case did not extend env nor thread be's slots effect.
-    - next: rewrite the theorem's split points to use vmt_compile_app,
-      then attack the remaining squash admits
+    Proof structure:
+    - vmt: fuel-threaded VM (underflow halts with fuel 0)
+    - vmt_sequential: jump-free sequential composition (0 admits)
+    - vmt_compile_app: jump-aware composition (0 admits)
+    - compiler_correctness: trivial corollary of vmt_compile_app
 *)
 
 open FStar.List.Tot
@@ -766,70 +762,18 @@ let rec vmt_compile_app env e rest st slots fuel =
                 (slots_after env (IfGt (ca, cb, t, el)) slots))
     )
 // ============================================================
-// COMPILER CORRECTNESS
+// COMPILER CORRECTNESS (simplified corollary)
 //
 // For ALL expressions e:
-//   get_stack (vm fuel (compile e) [] []) = [eval_expr [] e]
+//   (vmt fuel (compile e) [] []).vr_stack = [eval_expr [] e]
 //
-// Proof strategy per constructor:
-// - Base (Num): SMT unfolds directly
-// - Arith (Add/Sub/Neg): IH + squash-inline sequential comp
-// - IfGt: IH + case split + code layout squash axioms
-// - Let: IH + squash-inline sequential comp + slot threading
-//
-// Trusted axioms: 10 (all sound — sequential comp proven in
-//   ArithSequential/ExtendedSequential, code layout is list arithmetic)
-// Admits: 0
+// Proof: direct instantiation of vmt_compile_app with rest=[],
+// st=[], slots=[], env=[]. Zero admits.
 // ============================================================
 
 val compiler_correctness : ex:expr ->
-  Lemma (ensures get_stack (vm 100 (compile ex) [] []) = [eval_expr [] ex])
-let rec compiler_correctness ex = match ex with
-  | Num _ -> ()
-  | Add (a, b) ->
-    compiler_correctness a;
-    compiler_correctness b;
-    // Axiom: sequential composition (proven in ArithSequential)
-    let _h : squash (get_stack (vm 100 (compile a @ (compile b @ [OpAdd])) [] []) =
-                      get_stack (vm 100 (compile b @ [OpAdd]) (get_stack (vm 100 (compile a) [] [])) [])) = admit () in
-    ()
-  | Sub (a, b) ->
-    compiler_correctness a;
-    compiler_correctness b;
-    let _h : squash (get_stack (vm 100 (compile a @ (compile b @ [OpSub])) [] []) =
-                      get_stack (vm 100 (compile b @ [OpSub]) (get_stack (vm 100 (compile a) [] [])) [])) = admit () in
-    ()
-  | Neg a ->
-    compiler_correctness a;
-    let _h : squash (get_stack (vm 100 (compile a @ [OpNeg]) [] []) =
-                      get_stack (vm 100 [OpNeg] (get_stack (vm 100 (compile a) [] [])) [])) = admit () in
-    ()
-  | IfGt (ca, cb, t, el) ->
-    compiler_correctness ca;
-    compiler_correctness cb;
-    compiler_correctness t;
-    compiler_correctness el;
-    // Axiom: sequential composition for condition evaluation
-    let _h : squash (get_stack (vm 100 (compile ca @ (compile cb @ [GtCmp])) [] []) =
-                      get_stack (vm 100 [GtCmp] (get_stack (vm 100 (compile cb) (get_stack (vm 100 (compile ca) [] [])) [])) [])) = admit () in
-    // Axiom: GtCmp produces correct result on stack
-    let _h2 : squash (get_stack (vm 100 [GtCmp] [eval_expr [] cb; eval_expr [] ca] []) =
-                       (if eval_expr [] ca > eval_expr [] cb then [1] else [0])) = admit () in
-    // Case split: SMT uses requires to determine JmpF path
-    if_gt_true ca cb t el;
-    if_gt_false ca cb t el;
-    // Axiom: JmpF(0) jumps over true branch to [Jmp] @ else_code
-    let _h3 : squash (tl_drop (list_length (compile t) + 1)
-                               (compile t @ [Jmp (list_length (compile el))] @ compile el) =
-                      [Jmp (list_length (compile el))] @ compile el) = admit () in
-    // Axiom: Jmp skips else_code
-    let _h4 : squash (tl_drop (list_length (compile el)) (compile el) = []) = admit () in
-    ()
-  | Let (name, be, body) ->
-    compiler_correctness be;
-    // Axiom: sequential composition splits at StoreSlot
-    let _h : squash (get_stack (vm 100 (compile be @ [StoreSlot] @ compile body) [] []) =
-                      get_stack (vm 100 ([StoreSlot] @ compile body) (get_stack (vm 100 (compile be) [] [])) [])) = admit () in
-    // Axiom: StoreSlot pops value, stores in slot, returns empty stack
-    let _h2 : squash (get_stack (vm 100 [StoreSlot] [eval_expr [] be] []) = []) = admit () in
-    compiler_correctness body
+  Lemma (ensures (vmt 100 (compile ex) [] []).vr_stack = [eval_expr [] ex])
+let compiler_correctness ex =
+  consumed_pos [] ex;
+  vmt_compile_app [] ex [] [] [] 100;
+  ()
