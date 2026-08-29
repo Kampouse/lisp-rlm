@@ -223,6 +223,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Report — same shapes as near-mock
     if let Some(err) = &outcome.aborted {
+        // Logs BEFORE the abort are the die() message — always surface them
+        for log in &outcome.logs {
+            println!("  LOG: {}", log);
+        }
         println!("❌ {}", err);
     } else {
         println!("✅ Success");
