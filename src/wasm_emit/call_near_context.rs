@@ -10,7 +10,8 @@ impl WasmEmitter {
             "near/current_account_id" => self.read_to_register(3, a),
             "near/predecessor_account_id" => self.read_to_register(6, a),
             "near/input" => self.read_to_register(7, a),
-            "near/block_index" => {
+            "near/block_index" | "near/block_height" => {
+                self.need_host(8);
                 let mut v = vec![Self::host_call(8)];
                 v.extend(self.emit_tag_num());
                 Ok(v)

@@ -1327,8 +1327,44 @@ fn map_global_fn(name: &str) -> String {
 
 /// Object.method(...) → object/method_snake (near.* passthrough + snake).
 fn map_member_fn(obj: &str, prop: &str) -> String {
-    if obj == "near" && prop == "depositGte" {
-        return "near/deposit-gte".into();
+    if obj == "near" {
+        return match prop {
+            // Storage
+            "storageGet" => "near/storage_get".into(),
+            "storageSet" => "near/storage_set".into(),
+            "storageRemove" => "near/storage_remove".into(),
+            "storageHas" => "near/storage_has_key".into(),
+            "storageGetBytes" => "near/load-bytes".into(),
+            "storageSetBytes" => "near/store-bytes".into(),
+            // Context
+            "predecessorAccountId" => "near/predecessor_account_id".into(),
+            "currentAccountId" => "near/current_account_id".into(),
+            "blockTimestamp" => "near/block_timestamp".into(),
+            "blockHeight" => "near/block_height".into(),
+            "blockIndex" => "near/block_index".into(),
+            "attachedDeposit" => "near/attached_deposit".into(),
+            "prepaidGas" => "near/prepaid_gas".into(),
+            "usedGas" => "near/used_gas".into(),
+            // Crypto
+            "ed25519Verify" => "near/ed25519_verify".into(),
+            "sha256" => "near/sha256".into(),
+            "promiseResult" => "near/promise_result".into(),
+            "promiseResultsCount" => "near/promise_results_count".into(),
+            // Cross-contract
+            "call" => "near/call".into(),
+            "callAwait" => "near/call-await".into(),
+            "transfer" => "near/transfer".into(),
+            "transferU128" => "near/transfer_u128".into(),
+            // Misc
+            "depositGte" => "near/deposit-gte".into(),
+            "log" => "near/log".into(),
+            "input" => "near/input".into(),
+            "panic" => "near/panic".into(),
+            "jsonReturnStr" => "near/json_return_str".into(),
+            "jsonGetStr" => "near/json_get_str".into(),
+            "loadU128" => "near/load_u128".into(),
+            _ => format!("near/{}", snake(prop)),
+        };
     }
     // String instance methods -> lisp string builtins
     match prop {
