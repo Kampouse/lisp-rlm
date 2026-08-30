@@ -965,6 +965,15 @@ impl TcEnv {
             "near/load_u128".into(),
             TcType::Arrow(vec![str_ty.clone()], Box::new(int_ty.clone())),
         );
+        // near/call : str → str → str → int → int → nil
+        // (target, method, args_json, gas, deposit)
+        env.insert_mono(
+            "near/call".into(),
+            TcType::Arrow(
+                vec![str_ty.clone(), str_ty.clone(), str_ty.clone(), int_ty.clone(), int_ty.clone()],
+                Box::new(nil_ty.clone()),
+            ),
+        );
         // near/transfer : str → int → nil  (account_id, amount_yocto)
         env.insert_mono(
             "near/transfer".into(),

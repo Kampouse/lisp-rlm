@@ -528,6 +528,7 @@ fn is_nil_call(v: &LispVal) -> bool {
     matches!(
         head.as_str(),
         "near/storage_set" | "near/storage_remove" | "near/abort" | "near/value_return"
+        | "near/call" | "near/call-await" | "near/transfer" | "near/transfer_u128"
     )
 }
 
@@ -1359,6 +1360,11 @@ fn map_builtin_call(name: &str) -> String {
         "hexDecode" => "hex-decode",
         "sha256Hash" => "sha256-hash",
         "schnorrVerify" => "schnorr-verify",
+        // Cross-contract calls
+        "nearCall" => "near/call",
+        "nearCallAwait" => "near/call-await",
+        "nearTransfer" => "near/transfer",
+        "nearTransferU128" => "near/transfer_u128",
         _ => return name.to_string(),
     }
     .to_string()
