@@ -419,6 +419,44 @@ impl TcEnv {
             ),
         );
         env.insert_mono(
+            "limb-sub".to_string(),
+            TcType::Arrow(
+                vec![
+                    TcType::Con(TcCon::Str),
+                    TcType::Con(TcCon::Str),
+                    TcType::Con(TcCon::Str),
+                    TcType::Con(TcCon::Int),
+                    TcType::Con(TcCon::Int),
+                ],
+                Box::new(TcType::Con(TcCon::Int)),
+            ),
+        );
+        env.insert_mono(
+            "limb-mul".to_string(),
+            TcType::Arrow(
+                vec![
+                    TcType::Con(TcCon::Str),
+                    TcType::Con(TcCon::Str),
+                    TcType::Con(TcCon::Str),
+                    TcType::Con(TcCon::Int),
+                    TcType::Con(TcCon::Int),
+                ],
+                Box::new(TcType::Con(TcCon::Int)),
+            ),
+        );
+        env.insert_mono(
+            "limb-cmp".to_string(),
+            TcType::Arrow(
+                vec![
+                    TcType::Con(TcCon::Str),
+                    TcType::Con(TcCon::Str),
+                    TcType::Con(TcCon::Int),
+                    TcType::Con(TcCon::Int),
+                ],
+                Box::new(TcType::Con(TcCon::Int)),
+            ),
+        );
+        env.insert_mono(
             "limb-get".to_string(),
             TcType::Arrow(
                 vec![TcType::Con(TcCon::Str), TcType::Con(TcCon::Int)],

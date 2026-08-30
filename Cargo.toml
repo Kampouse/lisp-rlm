@@ -60,11 +60,17 @@ reqwest = { version = "0.12", features = ["json"] }
 rustyline = "14"
 libc = "0.2"
 
+[patch.crates-io]
+near-vm-runner = { path = "vendor/near-vm-runner" }
+
 [dev-dependencies]
 tempfile = "3.27.0"
 rayon = "1.10"
 wat = "1.0"
 proptest = "1.6"
+near-vm-runner = "=0.37.3"
+near-parameters = "=0.37.3"
+near-primitives-core = "=0.37.3"
 
 [[bin]]
 name = "outlayer-run"

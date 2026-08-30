@@ -966,6 +966,592 @@ impl WasmEmitter {
                 v.extend(self.emit_tag_num());
                 Ok(v)
             }
+            // limb-sub (a b r la lb) → tagged lr: r = a − b, base-1e9 limbs.
+            // Checked: a < b traps (final borrow ≠ 0 → unreachable), same
+            // hard-error policy as u128 builtins. Result length strips high
+            // zero limbs (1000000000 − 1 → one limb). Same shared-scratch
+            // caveat as limb-add: no limb-call nesting inside another limb
+            // call's ARGS in one function (sequential calls are fine).
+            "limb-sub" => {
+                if a.len() != 5 {
+                    return Err(
+                        "limb-sub: expected 5 args (a, b, r, la, lb)".into()
+                    );
+                }
+                let ra = self.local_idx("__lsb_ra");
+                let rb = self.local_idx("__lsb_rb");
+                let rr = self.local_idx("__lsb_rr");
+                let la = self.local_idx("__lsb_la");
+                let lb = self.local_idx("__lsb_lb");
+                let m = self.local_idx("__lsb_m");
+                let i = self.local_idx("__lsb_i");
+                let borrow = self.local_idx("__lsb_borrow");
+                let d = self.local_idx("__lsb_d");
+                let ia = self.local_idx("__lsb_ia");
+                let ib = self.local_idx("__lsb_ib");
+                let lr = self.local_idx("__lsb_lr");
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(ra));
+                v.extend(self.expr(&a[1])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(rb));
+                v.extend(self.expr(&a[2])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(rr));
+                v.extend(self.expr(&a[3])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(la));
+                v.extend(self.expr(&a[4])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(lb));
+                // m = max(la, lb) — select: [v1][v2][cond], cond≠0 → v1.
+                // Stack: lb, la, cond(la<lb) → picks lb when la<lb, la else.
+                v.push(Instruction::LocalGet(lb));
+                v.push(Instruction::LocalGet(la));
+                v.push(Instruction::LocalGet(la));
+                v.push(Instruction::LocalGet(lb));
+                v.push(Instruction::I64LtU);
+                v.push(Instruction::Select);
+                v.push(Instruction::LocalSet(m));
+                // guards: la*4 ≤ alloc(a); lb*4 ≤ alloc(b); m*4 ≤ alloc(r)
+                let guards: [(u32, u32); 2] = [(la, ra), (lb, rb)];
+                for (lvar, rvar) in guards.iter() {
+                    v.push(Instruction::LocalGet(*lvar));
+                    v.push(Instruction::I64Const(2));
+                    v.push(Instruction::I64Shl);
+                    v.push(Instruction::LocalGet(*rvar));
+                    v.push(Instruction::I64Const(32));
+                    v.push(Instruction::I64ShrU);
+                    v.push(Instruction::I64GtU);
+                    v.push(Instruction::If(BlockType::Empty));
+                    v.push(Instruction::Unreachable);
+                    v.push(Instruction::End);
+                }
+                v.push(Instruction::LocalGet(m));
+                v.push(Instruction::I64Const(2));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalGet(rr));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64GtU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalSet(i));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalSet(borrow));
+                let ma32 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                v.push(Instruction::Block(BlockType::Result(ValType::I64)));
+                v.push(Instruction::Loop(BlockType::Empty));
+                // if i >= m → underflow trap check + strip + lr
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::LocalGet(m));
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::If(BlockType::Empty));
+                //   borrow ≠ 0 → a < b → trap (checked policy)
+                v.push(Instruction::LocalGet(borrow));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64GtU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
+                //   lr = m; while lr > 1 && r[lr-1] == 0: lr -= 1
+                v.push(Instruction::LocalGet(m));
+                v.push(Instruction::LocalSet(lr));
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(lr));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64LeU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Br(2));
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(rr));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(lr));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(2));
+                v.push(Instruction::I32Shl);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I64Load32U(ma32.clone()));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Ne);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Br(2));
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(lr));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::LocalSet(lr));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End);
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(lr));
+                v.push(Instruction::Br(2));
+                v.push(Instruction::End);
+                // else body: ia = (i<la)?i:0 ; ib = (i<lb)?i:0
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::LocalGet(la));
+                v.push(Instruction::I64LtU);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::Else);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::End);
+                v.push(Instruction::LocalSet(ia));
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::LocalGet(lb));
+                v.push(Instruction::I64LtU);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::Else);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::End);
+                v.push(Instruction::LocalSet(ib));
+                // d = a[ia]−sel − b[ib]−sel − borrow (value-selects to 0 out
+                // of range — index clamps alone leak stale limbs)
+                v.push(Instruction::LocalGet(ra));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(ia));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(2));
+                v.push(Instruction::I32Shl);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I64Load32U(ma32.clone()));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::LocalGet(la));
+                v.push(Instruction::I64LtU);
+                v.push(Instruction::Select);
+                v.push(Instruction::LocalGet(rb));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(ib));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(2));
+                v.push(Instruction::I32Shl);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I64Load32U(ma32.clone()));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::LocalGet(lb));
+                v.push(Instruction::I64LtU);
+                v.push(Instruction::Select);
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::LocalGet(borrow));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::LocalSet(d));
+                // if d < 0 { d += 1e9; borrow = 1 } else { borrow = 0 }
+                v.push(Instruction::LocalGet(d));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64LtS);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(d));
+                v.push(Instruction::I64Const(1_000_000_000));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(d));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::LocalSet(borrow));
+                v.push(Instruction::Else);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalSet(borrow));
+                v.push(Instruction::End);
+                // r[i] = d
+                v.push(Instruction::LocalGet(rr));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(2));
+                v.push(Instruction::I32Shl);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::LocalGet(d));
+                v.push(Instruction::I64Store32(ma32.clone()));
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End);
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
+            // limb-cmp (a b la lb) → tagged −1/0/1: a>b → 1, a<b → −1, a=b → 0.
+            // Scans from the MOST significant limb down (descending).
+            "limb-cmp" => {
+                if a.len() != 4 {
+                    return Err(
+                        "limb-cmp: expected 4 args (a, b, la, lb)".into()
+                    );
+                }
+                let ra = self.local_idx("__lc_ra");
+                let rb = self.local_idx("__lc_rb");
+                let la = self.local_idx("__lc_la");
+                let lb = self.local_idx("__lc_lb");
+                let m = self.local_idx("__lc_m");
+                let i = self.local_idx("__lc_i");
+                let da = self.local_idx("__lc_da");
+                let db = self.local_idx("__lc_db");
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(ra));
+                v.extend(self.expr(&a[1])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(rb));
+                v.extend(self.expr(&a[2])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(la));
+                v.extend(self.expr(&a[3])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(lb));
+                v.push(Instruction::LocalGet(lb));
+                v.push(Instruction::LocalGet(la));
+                v.push(Instruction::LocalGet(la));
+                v.push(Instruction::LocalGet(lb));
+                v.push(Instruction::I64LtU);
+                v.push(Instruction::Select);
+                v.push(Instruction::LocalSet(m));
+                // guards: la*4 ≤ alloc(a); lb*4 ≤ alloc(b) (read-only)
+                let guards: [(u32, u32); 2] = [(la, ra), (lb, rb)];
+                for (lvar, rvar) in guards.iter() {
+                    v.push(Instruction::LocalGet(*lvar));
+                    v.push(Instruction::I64Const(2));
+                    v.push(Instruction::I64Shl);
+                    v.push(Instruction::LocalGet(*rvar));
+                    v.push(Instruction::I64Const(32));
+                    v.push(Instruction::I64ShrU);
+                    v.push(Instruction::I64GtU);
+                    v.push(Instruction::If(BlockType::Empty));
+                    v.push(Instruction::Unreachable);
+                    v.push(Instruction::End);
+                }
+                // i = m − 1; while i ≥ 0 { compare limbs top-down }
+                v.push(Instruction::LocalGet(m));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::LocalSet(i));
+                let ma32 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                v.push(Instruction::Block(BlockType::Result(ValType::I64)));
+                v.push(Instruction::Loop(BlockType::Empty));
+                // if i < 0 → equal → 0
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64LtS);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::Br(2));
+                v.push(Instruction::End);
+                // da = (i<la)? a[i] : 0 (clamped load + value select)
+                v.push(Instruction::LocalGet(ra));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(2));
+                v.push(Instruction::I32Shl);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I64Load32U(ma32.clone()));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::LocalGet(la));
+                v.push(Instruction::I64LtU);
+                v.push(Instruction::Select);
+                v.push(Instruction::LocalSet(da));
+                v.push(Instruction::LocalGet(rb));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(2));
+                v.push(Instruction::I32Shl);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I64Load32U(ma32.clone()));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::LocalGet(lb));
+                v.push(Instruction::I64LtU);
+                v.push(Instruction::Select);
+                v.push(Instruction::LocalSet(db));
+                // da > db → 1 ; da < db → −1
+                v.push(Instruction::LocalGet(da));
+                v.push(Instruction::LocalGet(db));
+                v.push(Instruction::I64GtU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::Br(2));
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(da));
+                v.push(Instruction::LocalGet(db));
+                v.push(Instruction::I64LtU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::I64Const(-1));
+                v.push(Instruction::Br(2));
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::LocalSet(i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End);
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
+            // limb-mul (a b r la lb) → tagged lr: r = a × b, schoolbook
+            // O(la·lb), base 1e9. r is ZEROED for la+lb limbs first; every
+            // intermediate fits i64 (a·b ≤ (1e9−1)² + carry + limb < 2^63).
+            // The `r[i+lb] += carry` write always lands on a still-zero
+            // slot (position k first receives inner-loop stores only from
+            // outer iteration k−lb+1 onward), so limbs stay normalized
+            // (< 1e9) throughout. Result length = la+lb, stripped.
+            "limb-mul" => {
+                if a.len() != 5 {
+                    return Err(
+                        "limb-mul: expected 5 args (a, b, r, la, lb)".into()
+                    );
+                }
+                let ra = self.local_idx("__lm_ra");
+                let rb = self.local_idx("__lm_rb");
+                let rr = self.local_idx("__lm_rr");
+                let la = self.local_idx("__lm_la");
+                let lb = self.local_idx("__lm_lb");
+                let i = self.local_idx("__lm_i");
+                let j = self.local_idx("__lm_j");
+                let carry = self.local_idx("__lm_c");
+                let t = self.local_idx("__lm_t");
+                let lr = self.local_idx("__lm_lr");
+                let z = self.local_idx("__lm_z");
+                let addr32 = self.local_idx_i32("__lm_addr");
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(ra));
+                v.extend(self.expr(&a[1])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(rb));
+                v.extend(self.expr(&a[2])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(rr));
+                v.extend(self.expr(&a[3])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(la));
+                v.extend(self.expr(&a[4])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(lb));
+                // guards: la*4 ≤ alloc(a); lb*4 ≤ alloc(b); (la+lb)*4 ≤ alloc(r)
+                let guards: [(u32, u32); 2] = [(la, ra), (lb, rb)];
+                for (lvar, rvar) in guards.iter() {
+                    v.push(Instruction::LocalGet(*lvar));
+                    v.push(Instruction::I64Const(2));
+                    v.push(Instruction::I64Shl);
+                    v.push(Instruction::LocalGet(*rvar));
+                    v.push(Instruction::I64Const(32));
+                    v.push(Instruction::I64ShrU);
+                    v.push(Instruction::I64GtU);
+                    v.push(Instruction::If(BlockType::Empty));
+                    v.push(Instruction::Unreachable);
+                    v.push(Instruction::End);
+                }
+                v.push(Instruction::LocalGet(la));
+                v.push(Instruction::LocalGet(lb));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Const(2));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalGet(rr));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64GtU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
+                let ma32 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                // zero r[0 .. la+lb)
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalSet(z));
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(z));
+                v.push(Instruction::LocalGet(la));
+                v.push(Instruction::LocalGet(lb));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Br(2));
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(rr));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(z));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(2));
+                v.push(Instruction::I32Shl);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Store32(ma32.clone()));
+                v.push(Instruction::LocalGet(z));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(z));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End);
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
+                // i = 0
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalSet(i));
+                v.push(Instruction::Block(BlockType::Result(ValType::I64)));
+                v.push(Instruction::Loop(BlockType::Empty));
+                // if i >= la → strip lr = la+lb down while top limb 0
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::LocalGet(la));
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(la));
+                v.push(Instruction::LocalGet(lb));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(lr));
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(lr));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64LeU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Br(2));
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(rr));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(lr));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(2));
+                v.push(Instruction::I32Shl);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I64Load32U(ma32.clone()));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Ne);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Br(2));
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(lr));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Sub);
+                v.push(Instruction::LocalSet(lr));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End);
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(lr));
+                v.push(Instruction::Br(2));
+                v.push(Instruction::End);
+                // body: carry = 0; j = 0
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalSet(carry));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalSet(j));
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                //   if j >= lb → r[i+lb] += carry; exit inner
+                //   (address materialized once — the load consumes it)
+                v.push(Instruction::LocalGet(j));
+                v.push(Instruction::LocalGet(lb));
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(rr));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::LocalGet(lb));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(2));
+                v.push(Instruction::I32Shl);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::LocalSet(addr32));
+                v.push(Instruction::LocalGet(addr32));
+                v.push(Instruction::LocalGet(addr32));
+                v.push(Instruction::I64Load32U(ma32.clone()));
+                v.push(Instruction::LocalGet(carry));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Store32(ma32.clone()));
+                v.push(Instruction::Br(2));
+                v.push(Instruction::End);
+                //   t = r[i+j] + a[i]*b[j] + carry
+                v.push(Instruction::LocalGet(rr));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(j));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Const(2));
+                v.push(Instruction::I32Shl);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I64Load32U(ma32.clone()));
+                v.push(Instruction::LocalGet(ra));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(2));
+                v.push(Instruction::I32Shl);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I64Load32U(ma32.clone()));
+                v.push(Instruction::LocalGet(rb));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(j));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(2));
+                v.push(Instruction::I32Shl);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I64Load32U(ma32.clone()));
+                v.push(Instruction::I64Mul);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalGet(carry));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(t));
+                //   r[i+j] = t % 1e9 ; carry = t / 1e9
+                v.push(Instruction::LocalGet(rr));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(j));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Const(2));
+                v.push(Instruction::I32Shl);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::LocalGet(t));
+                v.push(Instruction::I64Const(1_000_000_000));
+                v.push(Instruction::I64RemU);
+                v.push(Instruction::I64Store32(ma32.clone()));
+                v.push(Instruction::LocalGet(t));
+                v.push(Instruction::I64Const(1_000_000_000));
+                v.push(Instruction::I64DivU);
+                v.push(Instruction::LocalSet(carry));
+                v.push(Instruction::LocalGet(j));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(j));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End);
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
+                // i += 1; br outer
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End);
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
             "limb-get" => {
                 if a.len() != 2 {
                     return Err("limb-get: expected 2 args (buf, limb-idx)".into());
