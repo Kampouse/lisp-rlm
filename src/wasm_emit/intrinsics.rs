@@ -634,8 +634,12 @@ impl WasmEmitter {
             Instruction::LocalGet(neg),
             Instruction::I32WrapI64,
             Instruction::If(BlockType::Empty),
-            Instruction::LocalGet(n),
+            // FIX (2026-08-29): operand order was (n, 0) → I64Sub computes n - 0 = n,
+            // so the absolute value was never taken; rem_u/div_u then produced
+            // digits of 2^64-|n| with a '-' prefix ("itoa -45" = -18446744073709551571).
+            // Stack order for I64Sub is (rhs first, lhs second): 0 - n.
             Instruction::I64Const(0),
+            Instruction::LocalGet(n),
             Instruction::I64Sub,
             Instruction::LocalSet(n),
             Instruction::End,
