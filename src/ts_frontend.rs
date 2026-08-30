@@ -1338,6 +1338,58 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                                 lower_expr(&sm.object)?,
                             ]));
                         }
+                        // xs.map(f)    → (map f xs)        — f: arrow, 1 param
+                        // xs.filter(f) → (filter f xs)     — f: arrow, 1 param (truthy)
+                        // xs.reduce(f, init) → (reduce f init xs) — f: arrow, 2 params
+                        "map" | "filter" => {
+                            let op = sm.property.name.as_str();
+                            if c.arguments.len() != 1 {
+                                return Err(format!(
+                                    "ts_frontend: {} takes exactly one callback",
+                                    op
+                                ));
+                            }
+                            let cb = c.arguments[0]
+                                .as_expression()
+                                .ok_or("ts_frontend: unsupported callback (M1)")?;
+                            if !matches!(cb, Expression::ArrowFunctionExpression(_)) {
+                                return Err(format!(
+                                    "ts_frontend: .{} callback must be an arrow function (M1)",
+                                    op
+                                ));
+                            }
+                            return Ok(list(vec![
+                                Sym(op),
+                                lower_expr(cb)?,
+                                lower_expr(&sm.object)?,
+                            ]));
+                        }
+                        "reduce" => {
+                            if c.arguments.len() != 2 {
+                                return Err(
+                                    "ts_frontend: reduce takes a callback and an initial value"
+                                        .into(),
+                                );
+                            }
+                            let cb = c.arguments[0]
+                                .as_expression()
+                                .ok_or("ts_frontend: unsupported reduce callback (M1)")?;
+                            if !matches!(cb, Expression::ArrowFunctionExpression(_)) {
+                                return Err(
+                                    "ts_frontend: .reduce callback must be an arrow function (M1)"
+                                        .into(),
+                                );
+                            }
+                            let init = c.arguments[1]
+                                .as_expression()
+                                .ok_or("ts_frontend: unsupported reduce initial value (M1)")?;
+                            return Ok(list(vec![
+                                Sym("reduce"),
+                                lower_expr(cb)?,
+                                lower_expr(init)?,
+                                lower_expr(&sm.object)?,
+                            ]));
+                        }
                         _ => {} // fall through to the generic path
                     }
                 }
@@ -1379,6 +1431,36 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
             lower_expr(&c.alternate)?,
         ])),
         Expression::ParenthesizedExpression(p) => lower_expr(&p.expression),
+        // Arrow functions (2026-08-30): expression-bodied or single-return
+        // block bodies. Used by .map/.filter/.reduce callbacks. The body is
+        // inlined by the wasm emitters (resolve_lambda_1/2) with the param
+        // bound, so outer consts stay visible.
+        Expression::ArrowFunctionExpression(a) => {
+            let mut params: Vec<LispVal> = Vec::new();
+            for p in &a.params.items {
+                params.push(Sym(binding_name(&p.pattern)?));
+            }
+            // body: expression form (x => e) or { return e; } / { e; }
+            let body_expr: &Expression<'_> = if let Some(e) = a.get_expression() {
+                e
+            } else if let Some(fb) = a.get_function_body() {
+                match fb.statements.as_slice() {
+                    [Statement::ExpressionStatement(es)] => &es.expression,
+                    [Statement::ReturnStatement(r)] => r
+                        .argument
+                        .as_ref()
+                        .ok_or("ts_frontend: bare return in arrow not in M1")?,
+                    _ => return Err("ts_frontend: arrow body must be a single expression or return (M1)".into()),
+                }
+            } else {
+                return Err("ts_frontend: empty arrow body not in M1".into());
+            };
+            Ok(list(vec![
+                Sym("lambda"),
+                list(params),
+                lower_expr(body_expr)?,
+            ]))
+        }
         _ => Err(format!(
             "ts_frontend: expression `{}` not in M1 subset",
             expr_kind(e)

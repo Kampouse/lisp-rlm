@@ -24,6 +24,12 @@ declare interface LispArr<T> {
   [index: number]: T;
   push(v: T): void;
   join(separator: string): string;
+  // 2026-08-30: arrow callbacks — expression-bodied or single-return
+  // blocks (M1). Lower to (map f xs) / (filter f xs) / (reduce f init xs).
+  // Same emitters as lisp source → same ~115K-element runtime ceiling.
+  map<U>(f: (x: T) => U): LispArr<U>;
+  filter(f: (x: T) => boolean): LispArr<T>;
+  reduce<U>(f: (acc: U, x: T) => U, init: U): U;
 }
 declare function strSplit(s: string, delimiter: string): LispArr<string>;
 declare function strJoin(separator: string, parts: LispArr<string>): string;
