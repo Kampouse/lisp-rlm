@@ -1295,7 +1295,7 @@ impl WasmEmitter {
             v.push(Instruction::LocalGet(addr));
             v.push(Instruction::I64Const(end));
             v.push(Instruction::I64LtU); // addr < end
-            v.push(Instruction::I64And);
+            v.push(Instruction::I32And); // comparisons yield i32 (wasm spec)
             v.push(Instruction::If(BlockType::Empty));
             v.push(Instruction::Unreachable); // protected region write — trap
             v.push(Instruction::End);

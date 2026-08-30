@@ -221,7 +221,7 @@ const FP_GLOBAL: u32 = 1;  // mutable i64 global for frame pointer (NEAR mode)
 
 // ── Memory safety constants ──
 const DEPTH_COUNTER: i64 = 40;  // 8-byte slot: recursion depth counter. MUST live below HEAP_START — the runtime heap grows upward unboundedly and would stomp a high address (e.g. old 999980) once allocation volume grows.
-const MAX_DEPTH: i64 = 512;     // max call depth before trap
+const MAX_DEPTH: i64 = 16384;   // max call depth before trap (2026-08-29: 512 was exhausted by meta-circular interpreters — every nested my-eval/eval-form call is a lisp call; ~11 wasm frames per interpreted recursion level left user code only ~45 levels)
 // Protected memory regions: [start, end) — store_i64/load_i64/mem-set!/mem-get may NOT write here
 // Covers: TEMP_MEM(64), AMOUNT_MEM(256), STORAGE_BUF(8192), STORAGE_U128_BUF(8208),
 //         HANDLE_COUNT_ADDR(48), RUNTIME_HEAP_PTR(56), DEPTH_COUNTER(999980), BORSH_BUF(36864)
@@ -241,8 +241,11 @@ const TAG_INVALID: i64 = 7;
 
 // ── Handle table for memory-safe struct access ──
 const HANDLE_COUNT_ADDR: i64 = 48;   // 8-byte slot: number of allocated handles
-const HANDLE_TABLE_BASE: i64 = 49152; // base of handle table (256 entries × 16 bytes = 4096 bytes)
-const MAX_HANDLES: i64 = 256;         // max concurrent allocations
+const HANDLE_TABLE_BASE: i64 = 49152; // base of handle table (1024 entries × 16 bytes = 16KB)
+const MAX_HANDLES: i64 = 1024;        // max concurrent allocations
+// 1024 entries occupy [49152, 65536). STDOUT_BASE is 65536 — table end exactly
+// meets it, no overlap (2026-08-29: was 256 entries; recursive Lisp interpreters
+// heap-allocating per eval node exhausted 256 handles and trapped 'unreachable').
 
 pub(crate) struct FuncDef {
     pub name: String,
@@ -679,8 +682,10 @@ impl WasmEmitter {
 
         // Build prologue: frame save (NEAR mode + function uses FP-allocating builtins)
         let mut prologue = Vec::new();
-        // Recursion depth guard: DISABLED for debugging (max_depth issue)
-        // prologue.extend(self.emit_depth_inc());
+        // Recursion depth guard: enabled (2026-08-29). Traps with a clean depth-exceeded
+        // instead of wasting the guest's native wasm stack, whose exhaustion (call stack
+        // exhausted) is indistinguishable from interpreter bugs.
+        prologue.extend(self.emit_depth_inc());
         let fp_save = if !self.p2_mode && !self.wasi_mode && self.needs_frame {
             let fp_save = self.local_idx("__fp_save");
             prologue.push(Instruction::GlobalGet(FP_GLOBAL));

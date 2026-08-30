@@ -343,6 +343,18 @@ impl TcEnv {
                 Box::new(TcType::Con(TcCon::Num)),
             ),
         );
+        // ptr-add : ptr → anyint → ptr  (pointer arithmetic for raw-memory arena
+        // addressing; the offset may be an untyped int literal). (2026-08-29)
+        // Also accepts num → ptr → ptr. HashMap insert_mono is last-wins, so the
+        // most generic signature must be inserted LAST.
+        env.insert_mono(
+            "ptr-add".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Ptr), TcType::Con(TcCon::Any)],
+                Box::new(TcType::Con(TcCon::Ptr)),
+            ),
+        );
+
 
         // itoa : num → str
         env.insert_mono(

@@ -746,6 +746,22 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(TAG_NIL));
                 Ok(v)
             }
+            "ptr-add" => {
+                if a.len() != 2 {
+                    return Err("ptr-add: expected 2 args".into());
+                }
+                // Raw addition of two values returned as a tagged num. At the type
+                // level one side is Ptr, but values are untagged i64 at runtime —
+                // plain addition in both (ptr, num) and (num, ptr) orders.
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.extend(self.expr(&a[1])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Add);
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
             "mem-get8" => {
                 let mut v = self.expr(&a[0])?;
                 v.extend(self.emit_untag());

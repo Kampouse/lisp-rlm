@@ -150,6 +150,11 @@ fn unify_con(c1: &TcCon, c2: &TcCon) -> UnifyResult {
         (TcCon::Str, TcCon::Str) => Ok(Subst::new()),
         (TcCon::Sym, TcCon::Sym) => Ok(Subst::new()),
         (TcCon::Ptr, TcCon::Ptr) => Ok(Subst::new()),
+        // Ptr and Num are the same i64 at runtime (raw untagged) — unifiable so
+        // address literals/offsets can flow into mem-get/mem-set!/ptr-add, which
+        // validate protected regions at runtime. (2026-08-29)
+        (TcCon::Ptr, TcCon::Num) | (TcCon::Num, TcCon::Ptr) => Ok(Subst::new()),
+        (TcCon::Ptr, TcCon::Int) | (TcCon::Int, TcCon::Ptr) => Ok(Subst::new()),
         (TcCon::Any, _) | (_, TcCon::Any) => Ok(Subst::new()),
         (TcCon::Num, TcCon::Int) | (TcCon::Int, TcCon::Num) => Ok(Subst::new()),
         (TcCon::Num, TcCon::Float) | (TcCon::Float, TcCon::Num) => Ok(Subst::new()),

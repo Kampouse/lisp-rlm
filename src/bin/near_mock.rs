@@ -64,6 +64,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut fuel_cfg = Config::new();
     fuel_cfg.consume_fuel(true);
+    // 2026-08-29: default wasm stack (~8MB) exhausts around 900 nested interpreted calls in
+    // meta-circular interpreters; NEAR host allows much deeper. 64MB keeps near-mock from
+    // being the bottleneck while validating real programs.
+    fuel_cfg.max_wasm_stack(64 * 1024 * 1024);
+    fuel_cfg.async_stack_size(64 * 1024 * 1024);
     let engine = Engine::new(&fuel_cfg)?;
     let module = Module::from_binary(&engine, &wasm_bytes)?;
 
