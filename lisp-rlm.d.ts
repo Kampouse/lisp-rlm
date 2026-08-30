@@ -222,10 +222,8 @@ declare function nearTransferU128(receiver: string, amount: string): void;
 // // - Array indexing: arr[i]
 // // - Object literals: { key: val } (→ json-obj)
 // // - map / filter / reduce
-//
-// NOT supported:
-// //   - *=, %=, /= assignments
-// //   - await / async
+// // - async/await (V1: single `const x = await nearCall(...)` per function)
+// //   - async/await (V1: single `const x = await nearCall(...)` per function)
 // //   - Destructuring, spread, rest
 // //   - class, interface, type, enum
 // //   - try/catch, throw

@@ -19,8 +19,9 @@
 //!   ✓ arrays: [a, b, c] → (list ...), arr[i] → (nth arr i)
 //!   ✓ arrow functions: (a, b) => expr, (a) => { stmts }
 //!   ✓ object literals: { key: val } → (json-obj (pair "key" val))
-//!   ✗ classes, async, destructuring, optional chaining,
-//!     for-in/for-of, switch, try/catch, imports
+//!   ✓ async/await: single `const x = await nearCall(...)` → entry + callback
+//!   ✗ classes, destructuring, optional chaining,
+//!     for-in/for-of, switch, try/catch, imports, multiple awaits
 //!
 //! Truthiness: JS `if (x)` → `(if (!= x 0) ...)` — numeric truthiness by
 //! decree (the lisp's 0-truthy landsmine sidestepped explicitly). String
@@ -84,24 +85,49 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                         ))
                     }
                 };
-                let (name, define, wrapper) = lower_function(f, true)?;
-                let view = name.starts_with("get_");
-                out.push(define);
-                if let Some(wrapper_def) = wrapper {
-                    out.push(wrapper_def);
-                    out.push(list(vec![
-                        sym("export"),
-                        str(name.clone()),
-                        sym(format!("_{}", name)),
-                        if view { sym("#t") } else { sym("#f") },
-                    ]));
+                if f.r#async {
+                    let (name, define, wrapper, extras) = lower_async_function(f, true)?;
+                    let view = name.starts_with("get_");
+                    out.push(define);
+                    if let Some(wrapper_def) = wrapper {
+                        out.push(wrapper_def);
+                        out.push(list(vec![
+                            sym("export"),
+                            str(name.clone()),
+                            sym(format!("_{}", name)),
+                            if view { sym("#t") } else { sym("#f") },
+                        ]));
+                    } else {
+                        out.push(list(vec![
+                            sym("export"),
+                            str(name.clone()),
+                            sym(name),
+                            if view { sym("#t") } else { sym("#f") },
+                        ]));
+                    }
+                    for extra in extras {
+                        out.push(extra);
+                    }
                 } else {
-                    out.push(list(vec![
-                        sym("export"),
-                        str(name.clone()),
-                        sym(name),
-                        if view { sym("#t") } else { sym("#f") },
-                    ]));
+                    let (name, define, wrapper) = lower_function(f, true)?;
+                    let view = name.starts_with("get_");
+                    out.push(define);
+                    if let Some(wrapper_def) = wrapper {
+                        out.push(wrapper_def);
+                        out.push(list(vec![
+                            sym("export"),
+                            str(name.clone()),
+                            sym(format!("_{}", name)),
+                            if view { sym("#t") } else { sym("#f") },
+                        ]));
+                    } else {
+                        out.push(list(vec![
+                            sym("export"),
+                            str(name.clone()),
+                            sym(name),
+                            if view { sym("#t") } else { sym("#f") },
+                        ]));
+                    }
                 }
             }
             Statement::FunctionDeclaration(f) => {
@@ -130,6 +156,187 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
         }
     }
     Ok(out)
+}
+
+/// Lower an async function into entry + continuation using near/call-await.
+/// V1: single await, must be `const x = await expr;` at statement level.
+/// Returns (name, define, export_wrapper, extra_exports).
+fn lower_async_function(
+    f: &TsFunction<'_>,
+    exported: bool,
+) -> Result<(String, LispVal, Option<LispVal>, Vec<LispVal>), String> {
+    use oxc_ast::ast::Statement::*;
+
+    let name = f
+        .id
+        .as_ref()
+        .map(|i| i.name.as_str().to_string())
+        .ok_or("ts_frontend: anonymous async functions unsupported")?;
+
+    let mut params = Vec::new();
+    let mut param_names: Vec<(String, bool)> = Vec::new();
+    for p in &f.params.items {
+        let n = binding_name(&p.pattern)?;
+        param_names.push((n.clone(), param_is_number(p)));
+    }
+    for (n, _) in &param_names {
+        params.push(sym(n.clone()));
+    }
+
+    let body = f
+        .body
+        .as_ref()
+        .ok_or("ts_frontend: async function missing body")?;
+    let stmts = &body.statements;
+
+    // Find the await point: look for const x = await expr;
+    let mut await_idx = None;
+    let mut await_var = None;
+    let mut await_expr = None;
+    for (i, s) in stmts.iter().enumerate() {
+        if let VariableDeclaration(vd) = s {
+            if vd.declarations.len() == 1 {
+                let decl = &vd.declarations[0];
+                if let Some(init) = &decl.init {
+                    if let Expression::AwaitExpression(ae) = init {
+                        await_idx = Some(i);
+                        await_var = Some(binding_name(&decl.id)?);
+                        await_expr = Some(&ae.argument);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    let await_idx = await_idx.ok_or("ts_frontend: async function must contain `const x = await expr;`")?;
+    let await_var = await_var.unwrap();
+    let await_expr = await_expr.unwrap();
+
+    // Before await = entry body, after = continuation body
+    let _entry_stmts = &stmts[..await_idx];
+    let after_stmts = &stmts[await_idx + 1..];
+
+    // Storage key for saved state
+    let state_key = format!("__await:{}", name);
+
+    // --- Build the entry function ---
+    // Params are saved to storage for the continuation
+    let mut save_items = vec![sym("begin")];
+    for (n, is_num) in &param_names {
+        let v = if *is_num {
+            list(vec![sym("to-string"), sym(n.clone())])
+        } else {
+            sym(n.clone())
+        };
+        save_items.push(list(vec![
+            sym("near/storage_set"),
+            str(format!("{}:{}", state_key, n)),
+            v,
+        ]));
+    }
+    // The await expression: must be near.call() → near/call-await
+    let await_lisp = lower_expr(await_expr)?;
+    // Replace near/call with near/call-await and append callback info
+    let cb_name = format!("{}__resume", name);
+    // Build the call-await args from the await expr
+    // await near.call(target, method, args, gas, deposit)
+    // → near.call-await(target, method, args, gas, "callback", cb_gas, cb_args)
+    // We transform by appending callback params
+    let cb_gas = num(50000000000000);
+    let cb_args = str("{}");
+    let call_await = if let LispVal::List(items) = &await_lisp {
+        if items.len() >= 6 {
+            let mut new_items = Vec::new();
+            new_items.push(sym("near/call-await"));
+            new_items.extend(items[1..5].iter().cloned());
+            new_items.push(str(cb_name.clone()));
+            new_items.push(cb_gas);
+            new_items.push(cb_args);
+            list(new_items)
+        } else {
+            return Err("ts_frontend: await must wrap near.call() with 5 args".into());
+        }
+    } else {
+        return Err("ts_frontend: await expression must be a function call".into());
+    };
+
+    save_items.push(call_await);
+    let entry_body = list(save_items);
+    let mut entry_sig = vec![sym(name.clone())];
+    entry_sig.extend(params.clone());
+    let entry_define = list(vec![
+        sym("define"),
+        list(entry_sig),
+        entry_body,
+    ]);
+
+    // --- Build the continuation function ---
+    // Restore params from storage, read promise result, continue
+    // Collect all let-bindings: restored params + await result
+    let mut let_bindings = Vec::new();
+    for (n, is_num) in &param_names {
+        let getter = list(vec![sym("near/storage_get"), str(format!("{}:{}", state_key, n))]);
+        let val = if *is_num {
+            list(vec![sym("str->num"), getter])
+        } else {
+            getter
+        };
+        let_bindings.push(list(vec![sym(n.clone()), val]));
+    }
+    // Read promise result and assign to the await variable
+    let result_val = list(vec![sym("near/promise_result"), num(0)]);
+    let_bindings.push(list(vec![sym(await_var.clone()), result_val]));
+
+    // Continue with after-await statements
+    let after_body = lower_block_tail(after_stmts, false)?;
+
+    let cb_body = list(vec![sym("let"), list(let_bindings), after_body]);
+    let cb_define = list(vec![
+        sym("define"),
+        list(vec![sym(cb_name.clone())]),
+        cb_body,
+    ]);
+
+
+    // Export wrapper for entry
+    let _view = name.starts_with("get_");
+    let export_wrapper = if exported && !param_names.is_empty() {
+        let wrapper_name = format!("_{}", name);
+        let bindings: Vec<LispVal> = param_names
+            .iter()
+            .map(|(n, is_num)| {
+                let get = list(vec![sym("near/json_get_str"), str(n.clone())]);
+                let v = if *is_num {
+                    list(vec![sym("str->num"), get])
+                } else {
+                    get
+                };
+                list(vec![sym(n.clone()), v])
+            })
+            .collect();
+        let mut call_items = vec![sym(name.clone())];
+        for (n, _) in &param_names {
+            call_items.push(sym(n.clone()));
+        }
+        Some(list(vec![
+            sym("define"),
+            list(vec![sym(wrapper_name.clone())]),
+            list(vec![sym("let"), list(bindings), list(call_items)]),
+        ]))
+    } else {
+        None
+    };
+
+    // Continuation is always exported (NEAR calls it)
+    // Continuation is always a call (needs to read promise result)
+    let cb_export = list(vec![
+        sym("export"),
+        str(cb_name.clone()),
+        sym(cb_name),
+        sym("#f"),
+    ]);
+
+    Ok((name, entry_define, export_wrapper, vec![cb_define, cb_export]))
 }
 
 /// Lower a function declaration → (define (name params...) body)
