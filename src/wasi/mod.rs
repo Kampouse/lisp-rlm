@@ -557,7 +557,8 @@ pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
     let bytes = if em.need_outlayer && em.need_wasi_http {
         // Combined P2 path: wasi:http + outlayer in one component.
         let (core_bytes, has_outlayer) = build_combined_p2_core(&mut em)?;
-        std::fs::write("/tmp/p2_core_debug.wasm", &core_bytes).ok();
+        let dump = format!("/tmp/p2_core_debug.{}.wasm", std::process::id());
+        std::fs::write(&dump, &core_bytes).ok();
         build_combined_p2_component(&core_bytes, has_outlayer, true)?
     } else if em.need_outlayer {
         // Outlayer without HTTP — use combined P2 core + outlayer-nohttp WIT metadata.

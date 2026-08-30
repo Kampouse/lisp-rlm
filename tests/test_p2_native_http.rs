@@ -7,9 +7,16 @@
 // wasi:http runtimes. These pins keep both regressions out.
 use lisp_rlm_wasm::wasi::compile_outlayer_p2;
 
+static P2_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn core_wat(src: &str) -> String {
+    // Serialize: the combined path dumps a core we then read — two tests
+    // compiling concurrently would race on the dump file (seen flaky 9:17,
+    // 9:46 runs). Path is per-pid so parallel test BINARIES can't collide.
+    let _g = P2_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     compile_outlayer_p2(src).expect("compile");
-    let core = std::fs::read("/tmp/p2_core_debug.wasm").expect("core dump written by combined path");
+    let dump = format!("/tmp/p2_core_debug.{}.wasm", std::process::id());
+    let core = std::fs::read(&dump).expect("core dump written by combined path");
     wasmprinter::print_bytes(&core).expect("wasmprinter")
 }
 

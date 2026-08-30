@@ -818,7 +818,23 @@ impl WasmEmitter {
     /// - I64Const(0) + I64Or → noop (x | 0 = x)
     /// - I64Const(0) + I64Add → noop (x + 0 = x)
 
-    pub fn set_memory(&mut self, p: u32) { self.memory_pages = p; }
+    pub fn set_memory(&mut self, p: u32) {
+        // The runtime heap (RUNTIME_HEAP_PTR) starts at max(data_end, 256KiB)
+        // = the page-4 boundary. A module with exactly 4 pages traps on the
+        // FIRST runtime alloc (dst+len > mem_limit guard → Unreachable).
+        // Floor at 6 pages: heap floor + 128KiB working headroom. (Corpus
+        // safe.lisp hit this 2026-08-30: `(memory 4)` + str-join slots.)
+        const MIN_PAGES: u32 = 6;
+        if p < MIN_PAGES {
+            eprintln!(
+                "⚠ (memory {}) raised to {} pages — runtime heap starts at 256KiB (page 4)",
+                p, MIN_PAGES
+            );
+            self.memory_pages = MIN_PAGES;
+        } else {
+            self.memory_pages = p;
+        }
+    }
     pub fn add_export(&mut self, fn_: &str, en: &str, is_view: bool) {
         // Replace existing export with same name to avoid duplicate export errors
         if let Some(pos) = self.exports.iter().position(|(_, e, _)| e == en) {

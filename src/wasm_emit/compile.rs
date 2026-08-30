@@ -1304,34 +1304,12 @@ pub(crate) fn elide_tag_roundtrips(code: &mut Vec<Instruction<'static>>) -> usiz
     let mut i = 0;
     let mut removed = 0usize;
     while i < code.len() {
-        // P1: Const(0); Or → ∅
-        if i + 1 < code.len() {
-            if let (Instruction::I64Const(0), Instruction::I64Or) = (&code[i], &code[i + 1]) {
-                code.drain(i..i + 2);
-                removed += 2;
-                if i > 0 {
-                    i -= 1;
-                }
-                continue;
-            }
-        }
-        // P2: Const(TAG_BITS); Shl; Const(TAG_BITS); ShrS → ∅
-        if i + 3 < code.len() {
-            if let (
-                Instruction::I64Const(TB),
-                Instruction::I64Shl,
-                Instruction::I64Const(TB),
-                Instruction::I64ShrS,
-            ) = (&code[i], &code[i + 1], &code[i + 2], &code[i + 3])
-            {
-                code.drain(i..i + 4);
-                removed += 4;
-                if i > 0 {
-                    i -= 1;
-                }
-                continue;
-            }
-        }
+        // P1/P2 (retag↔untag cancel, or-0) REMOVED 2026-08-30: their
+        // instruction sequences are ambiguous with USER shift/bor seams —
+        // `(>> (<< x 3) 3)` and `(bor x 0)` emit identical pairs, and P1
+        // could eat half a retag leaving a dangling Shl 3 (trapped
+        // wasm_shared_storage_lifecycle). P3/P4 const folds stay: folding a
+        // constant shift is value-correct no matter who emitted it.
         // P3: Const(k); Const(3); ShrS → Const(k >> 3)   (fold untag of pre-tagged literal)
         if i + 2 < code.len() {
             if let (Instruction::I64Const(k), Instruction::I64Const(sh), Instruction::I64ShrS) =

@@ -923,6 +923,12 @@ fn infer(
                 LispVal::Sym(s) if s == "quote" => Ok(TcType::Con(TcCon::Any)), // quoted data is opaque
                 LispVal::Sym(s) if s == "set!" => {
                     // (set! var value) — mutation, infer the value but return nil
+                    if env.pure_mode {
+                        return Err(
+                            "effect error: cannot call 'set!' inside pure — it has side effects"
+                                .into(),
+                        );
+                    }
                     if list.len() >= 3 {
                         let _ = infer(&list[2], env, supply, subst)?;
                     }
