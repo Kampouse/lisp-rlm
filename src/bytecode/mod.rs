@@ -6398,6 +6398,28 @@ pub fn eval_builtin(
                 Ok(LispVal::Num(best))
             }
         }
+        "json-quote" => match args.get(0) {
+        Some(LispVal::Str(s)) => {
+                let mut out = String::with_capacity(s.len() + 2);
+                out.push('"');
+                for ch in s.chars() {
+                    match ch {
+                        '"' => out.push_str("\\\""),
+                        '\\' => out.push_str("\\\\"),
+                        '\n' => out.push_str("\\n"),
+                        '\t' => out.push_str("\\t"),
+                        '\r' => out.push_str("\\r"),
+                        c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+                        c => out.push(c),
+                    }
+                }
+                out.push('"');
+                Ok(LispVal::Str(out))
+            }
+            Some(LispVal::Num(n)) => Ok(LispVal::Str(n.to_string())),
+            Some(LispVal::Bool(b)) => Ok(LispVal::Str((if *b { "true" } else { "false" }).to_string())),
+            _ => Ok(LispVal::Str("null".to_string())),
+            },
         "to-string" => Ok(LispVal::Str(format!(
             "{}",
             args.get(0).unwrap_or(&LispVal::Nil)

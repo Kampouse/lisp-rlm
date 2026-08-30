@@ -1298,6 +1298,104 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
             _ => Err("ts_frontend: unary operator not in M1".into()),
         },
         Expression::CallExpression(c) => {
+            // ── JS std shims (2026-08-30): console.log / Math / JSON ──
+            if let Expression::StaticMemberExpression(sm) = &c.callee {
+                if let Expression::Identifier(oid) = &sm.object {
+                    match (oid.name.as_str(), sm.property.name.as_str()) {
+                        ("console", "log") => {
+                            if c.arguments.is_empty() {
+                                return Ok(list(vec![
+                                    Sym("near/log"),
+                                    LispVal::Str(String::new()),
+                                ]));
+                            }
+                            // checker types str-cat as BINARY — fold args with
+                            // space separators into nested (str-cat a b) forms
+                            let mut acc: Option<LispVal> = None;
+                            for (idx, a) in c.arguments.iter().enumerate() {
+                                if let Argument::SpreadElement(_) = a {
+                                    return Err("ts_frontend: spread not in M1".into());
+                                }
+                                let e2 = a.as_expression()
+                                    .ok_or("ts_frontend: unsupported console.log argument (M1)")?;
+                                let piece = list(vec![Sym("to-string"), lower_expr(e2)?]);
+                                acc = Some(match acc {
+                                    None => piece,
+                                    Some(prev) => list(vec![
+                                        Sym("str-cat"),
+                                        list(vec![Sym("str-cat"), prev, LispVal::Str(" ".into())]),
+                                        piece,
+                                    ]),
+                                });
+                                let _ = idx;
+                            }
+                            let joined = acc.unwrap_or(LispVal::Str(String::new()));
+                            return Ok(list(vec![Sym("near/log"), joined]));
+                        }
+                        ("Math", "abs") | ("Math", "max") | ("Math", "min") => {
+                            let op = sm.property.name.as_str();
+                            if c.arguments.is_empty() {
+                                return Err(format!(
+                                    "ts_frontend: Math.{} needs at least one argument",
+                                    op
+                                ));
+                            }
+                            let mut items = vec![Sym(op)];
+                            for a in &c.arguments {
+                                let e2 = a.as_expression()
+                                    .ok_or("ts_frontend: unsupported Math argument (M1)")?;
+                                items.push(lower_expr(e2)?);
+                            }
+                            return Ok(list(items));
+                        }
+                        ("JSON", "stringify") => {
+                            if c.arguments.len() != 1 {
+                                return Err("ts_frontend: JSON.stringify takes exactly one value (M1)".into());
+                            }
+                            let e2 = c.arguments[0].as_expression()
+                                .ok_or("ts_frontend: unsupported JSON.stringify argument (M1)")?;
+                            return Ok(list(vec![Sym("json-quote"), lower_expr(e2)?]));
+                        }
+                        ("JSON", "stringifyArr") => {
+                            if c.arguments.len() != 1 {
+                                return Err("ts_frontend: JSON.stringifyArr takes exactly one array (M1)".into());
+                            }
+                            let e2 = c.arguments[0].as_expression()
+                                .ok_or("ts_frontend: unsupported JSON.stringifyArr argument (M1)")?;
+                            // "[" + join(",", map(json-quote, arr)) + "]" —
+                            // nested binary str-cat (checker constraint)
+                            return Ok(list(vec![
+                                Sym("str-cat"),
+                                list(vec![
+                                    Sym("str-cat"),
+                                    LispVal::Str("[".into()),
+                                    list(vec![
+                                        Sym("str-join"),
+                                        LispVal::Str(",".into()),
+                                        list(vec![
+                                            Sym("map"),
+                                            list(vec![
+                                                Sym("lambda"),
+                                                list(vec![Sym("__jv")]),
+                                                list(vec![Sym("json-quote"), Sym("__jv")]),
+                                            ]),
+                                            lower_expr(e2)?,
+                                        ]),
+                                    ]),
+                                ]),
+                                LispVal::Str("]".into()),
+                            ]));
+                        }
+                        ("JSON", "parse") => {
+                            return Err(
+                                "ts_frontend: JSON.parse not needed — tx args arrive parsed (use near.jsonGet(key) / typed params)"
+                                    .into(),
+                            );
+                        }
+                        _ => {} // fall through
+                    }
+                }
+            }
             // Array method calls first: xs.push(v) → (vec-push xs v),
             // xs.join(sep) → (str-join sep xs) — note the arg reordering.
             // Pipeline members (join/map/filter/reduce, 2026-08-30) accept

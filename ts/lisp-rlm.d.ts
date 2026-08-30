@@ -112,3 +112,20 @@ declare const near: {
   // exists at the lisp level but is not TS-declared yet — add typed
   // entries here in the same commit you first use one from TS.
 };
+
+// ── JS std shims (2026-08-30) ─────────────────────────────────────────
+// console.log → near/log (args space-joined, auto to-string'd)
+declare const console: { log(...parts: (string | number | boolean)[]): void };
+// Math.abs/max/min → abs/max/min (variadic, integer math)
+declare const Math: {
+  abs(x: number): number;
+  max(...xs: number[]): number;
+  min(...xs: number[]): number;
+};
+// JSON.stringify(scalar) → json-quote (str → "…" with escapes, num → decimal)
+// JSON.stringifyArr(arr) → JSON array text via map(json-quote)
+// JSON.parse: NOT NEEDED — tx args arrive parsed; use typed params / near.jsonGet
+declare const JSON: {
+  stringify(v: string | number | boolean): string;
+  stringifyArr(arr: LispArr<string | number>): string;
+};

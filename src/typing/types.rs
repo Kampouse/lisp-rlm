@@ -872,6 +872,16 @@ impl TcEnv {
             );
         }
 
+        // json-quote : 'a → str (tag-aware JSON scalar encoder)
+        let aq = TcType::Var(0);
+        env.insert(
+            "json-quote".to_string(),
+            Scheme {
+                vars: vec![0],
+                ty: TcType::Arrow(vec![aq], Box::new(TcType::Con(TcCon::Str))),
+            },
+        );
+
         // to-string : 'a → str
         let a9 = TcType::Var(0);
         env.insert(
