@@ -405,6 +405,13 @@ impl TcEnv {
             ),
         );
         env.insert_mono(
+            "str-ptr".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Str)],
+                Box::new(TcType::Con(TcCon::Int)),
+            ),
+        );
+        env.insert_mono(
             "str-length".to_string(),
             TcType::Arrow(
                 vec![TcType::Con(TcCon::Str)],

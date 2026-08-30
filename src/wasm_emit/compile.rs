@@ -270,10 +270,13 @@ stitched module region at 1MiB. Split literals or shrink allocations",
             &ConstExpr::i64_const(0),
         );
         // Global 1: frame pointer (bump allocator for str-slice in NEAR mode)
-        // MUST NOT overlap with RUNTIME_HEAP_PTR region (addr 56 holds heap start).
-        // FP_GLOBAL sits 64KB above max heap — safely disjoint.
+        // FP_GLOBAL owns [heap_ptr-64K, heap_ptr): BELOW the monotonic
+        // runtime heap's start (mem[56] inits to heap_ptr), so the heap
+        // growing up can never overwrite FP scratch. (Old layout put FP at
+        // heap_ptr+64K — squarely in the heap's growth path; >64K of runtime
+        // string allocation corrupted FP users. 2026-08-30.)
         if !self.wasi_mode && !self.p2_mode {
-            let fp_base = self.heap_ptr_i32() as i64 + 65_536; // +64KB above heap
+            let fp_base = self.heap_ptr_i32() as i64 - 65_536; // 64K BELOW heap start
             globals.global(
                 GlobalType {
                     val_type: ValType::I64,

@@ -388,7 +388,14 @@ impl WasmEmitter {
             // [floor, 1MiB): ~768KB, allocations are KB-scale.
             // finish() asserts the literal invariant.
             let min_heap = 262_144u64;
-            self.heap_ptr = std::cmp::max(data_end, min_heap) as u32;
+            // +64K: the FP scratch region lives at [heap_ptr-64K, heap_ptr)
+            // (see compile.rs FP_GLOBAL init). Reserving it BELOW the heap
+            // start makes the monotonic runtime heap (and compile-time
+            // slots) physically unable to grow into FP scratch — the old
+            // layout had FP at heap_ptr+64K, directly in the growth path,
+            // and any contract allocating >64K of strings corrupted every
+            // FP user (bignum fib died at fib(600) exactly there).
+            self.heap_ptr = (std::cmp::max(data_end, min_heap) + 65_536) as u32;
         }
     }
 
