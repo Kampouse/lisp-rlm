@@ -765,6 +765,309 @@ impl WasmEmitter {
                 v.push(Instruction::I64Or);
                 Ok(v)
             }
+            // ── Limb arithmetic (wasm-only): buffer as u32 LE limbs, base 1e9 ──
+            // limb-add emits the ENTIRE add loop inline (no call frame):
+            // for i in 0..max(la,lb): s = a[i]+b[i]+carry; r[i] = s % 1e9;
+            // carry = s / 1e9. Out-of-range limb indices select limb 0
+            // (always in-bounds → no OOB load; value discarded by select).
+            // Returns tagged result limb count. Traps if la/lb/(max+1)
+            // exceed the buffers' allocated length (hard-error policy).
+            "limb-add" => {
+                if a.len() != 5 {
+                    return Err(
+                        "limb-add: expected 5 args (a, b, r, la, lb)".into()
+                    );
+                }
+                let ra = self.local_idx("__la_ra");
+                let rb = self.local_idx("__la_rb");
+                let rr = self.local_idx("__la_rr");
+                let la = self.local_idx("__la_la");
+                let lb = self.local_idx("__la_lb");
+                let m = self.local_idx("__la_m");
+                let i = self.local_idx("__la_i");
+                let carry = self.local_idx("__la_c");
+                let s = self.local_idx("__la_s");
+                let ia = self.local_idx("__la_ia");
+                let ib = self.local_idx("__la_ib");
+                let mut v = Vec::new();
+                // eval buffers → untagged raw (len<<32|ptr)
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(ra));
+                v.extend(self.expr(&a[1])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(rb));
+                v.extend(self.expr(&a[2])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(rr));
+                v.extend(self.expr(&a[3])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(la));
+                v.extend(self.expr(&a[4])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(lb));
+                // m = max(la, lb) — select: [v1][v2][cond], cond≠0 → v1.
+                // Stack: lb, la, cond(la<lb) → picks lb when la<lb, la else.
+                v.push(Instruction::LocalGet(lb));
+                v.push(Instruction::LocalGet(la));
+                v.push(Instruction::LocalGet(la));
+                v.push(Instruction::LocalGet(lb));
+                v.push(Instruction::I64LtU);
+                v.push(Instruction::Select);
+                v.push(Instruction::LocalSet(m));
+                // guards: la*4 ≤ alloc(a); lb*4 ≤ alloc(b); (m+1)*4 ≤ alloc(r)
+                let guards: [(u32, u32); 2] = [(la, ra), (lb, rb)];
+                for (lvar, rvar) in guards.iter() {
+                    v.push(Instruction::LocalGet(*lvar));
+                    v.push(Instruction::I64Const(2));
+                    v.push(Instruction::I64Shl);
+                    v.push(Instruction::LocalGet(*rvar));
+                    v.push(Instruction::I64Const(32));
+                    v.push(Instruction::I64ShrU);
+                    v.push(Instruction::I64GtU);
+                    v.push(Instruction::If(BlockType::Empty));
+                    v.push(Instruction::Unreachable);
+                    v.push(Instruction::End);
+                }
+                v.push(Instruction::LocalGet(m));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Const(2));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalGet(rr));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64GtU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
+                // i = 0; carry = 0; block(result i64){ loop { if(i>=m){
+                //   [final carry store; lr; br 2] } body; br 0 } unreachable }
+                // → lr lands on stack, tagged. (No Return: this is an inline
+                // expression — Return would exit the whole caller.)
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalSet(i));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalSet(carry));
+                let ma32 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                v.push(Instruction::Block(BlockType::Result(ValType::I64)));
+                v.push(Instruction::Loop(BlockType::Empty));
+                // if i >= m → exit branch computes lr & final carry limb
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::LocalGet(m));
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::If(BlockType::Empty));
+                //   carry > 0 ? r[m] = carry : nop
+                v.push(Instruction::LocalGet(carry));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64GtU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(rr));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(m));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(2));
+                v.push(Instruction::I32Shl);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::LocalGet(carry));
+                v.push(Instruction::I64Store32(ma32.clone()));
+                v.push(Instruction::End);
+                //   result = m + (carry>0 ? 1 : 0), tagged
+                v.push(Instruction::LocalGet(m));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalGet(carry));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64GtU);
+                v.push(Instruction::Select);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::Br(2));
+                v.push(Instruction::End);
+                // else body: ia = (i<la)?i:0 ; ib = (i<lb)?i:0
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::LocalGet(la));
+                v.push(Instruction::I64LtU);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::Else);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::End);
+                v.push(Instruction::LocalSet(ia));
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::LocalGet(lb));
+                v.push(Instruction::I64LtU);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::Else);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::End);
+                v.push(Instruction::LocalSet(ib));
+                // s = load32(a_ptr + ia*4) + load32(b_ptr + ib*4) + carry
+                // out-of-range legs load limb 0 (index clamp keeps the load
+                // in-bounds) but the VALUE is selected to 0 — ia/ib clamps
+                // alone are not enough (fib(46) bug: stale A[0] leaked in).
+                v.push(Instruction::LocalGet(ra));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(ia));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(2));
+                v.push(Instruction::I32Shl);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I64Load32U(ma32.clone()));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::LocalGet(la));
+                v.push(Instruction::I64LtU);
+                v.push(Instruction::Select);
+                v.push(Instruction::LocalGet(rb));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(ib));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(2));
+                v.push(Instruction::I32Shl);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I64Load32U(ma32.clone()));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::LocalGet(lb));
+                v.push(Instruction::I64LtU);
+                v.push(Instruction::Select);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalGet(carry));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(s));
+                // r[i] = s % 1e9
+                v.push(Instruction::LocalGet(rr));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(2));
+                v.push(Instruction::I32Shl);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::LocalGet(s));
+                v.push(Instruction::I64Const(1_000_000_000));
+                v.push(Instruction::I64RemU);
+                v.push(Instruction::I64Store32(ma32.clone()));
+                // carry = s / 1e9
+                v.push(Instruction::LocalGet(s));
+                v.push(Instruction::I64Const(1_000_000_000));
+                v.push(Instruction::I64DivU);
+                v.push(Instruction::LocalSet(carry));
+                // i += 1; br loop; (loop falls through never) → unreachable
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End);
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
+                // stack: lr (i64) → tag
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
+            "limb-get" => {
+                if a.len() != 2 {
+                    return Err("limb-get: expected 2 args (buf, limb-idx)".into());
+                }
+                let raw_i = self.local_idx("__lg_raw");
+                let idx_i = self.local_idx("__lg_idx");
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(raw_i));
+                v.extend(self.expr(&a[1])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(idx_i));
+                // bounds: idx*4 ≥ len(raw) → unreachable
+                v.push(Instruction::LocalGet(idx_i));
+                v.push(Instruction::I64Const(2));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalGet(raw_i));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(raw_i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(idx_i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(2));
+                v.push(Instruction::I32Shl);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I64Load32U(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 2,
+                    memory_index: 0,
+                }));
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
+            "limb-set!" => {
+                if a.len() != 3 {
+                    return Err("limb-set!: expected 3 args (buf, limb-idx, value)".into());
+                }
+                let raw_i = self.local_idx("__ls_raw");
+                let idx_i = self.local_idx("__ls_idx");
+                let val_i = self.local_idx("__ls_val");
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(raw_i));
+                v.extend(self.expr(&a[1])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(idx_i));
+                v.extend(self.expr(&a[2])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(val_i));
+                // bounds + literal-region guard (same policy as buf-set!)
+                v.push(Instruction::LocalGet(idx_i));
+                v.push(Instruction::I64Const(2));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalGet(raw_i));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(raw_i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(262_144));
+                v.push(Instruction::I64LtU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(raw_i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(idx_i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(2));
+                v.push(Instruction::I32Shl);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::LocalGet(val_i));
+                v.push(Instruction::I64Store32(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 2,
+                    memory_index: 0,
+                }));
+                // value must be a valid u32 limb — trap on overflow (policy)
+                v.push(Instruction::LocalGet(val_i));
+                v.push(Instruction::I64Const(0xFFFF_FFFF));
+                v.push(Instruction::I64GtU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
+                // return the buffer
+                v.push(Instruction::LocalGet(raw_i));
+                v.extend(self.emit_tag_num());
+                v.push(Instruction::I64Const(5));
+                v.push(Instruction::I64Or);
+                Ok(v)
+            }
             "str-slice" => {
                 if a.len() != 3 {
                     return Err("str-slice: expected 3 args (string, start, end)".into());
