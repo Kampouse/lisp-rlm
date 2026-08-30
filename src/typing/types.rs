@@ -404,6 +404,32 @@ impl TcEnv {
                 Box::new(TcType::Con(TcCon::Str)),
             ),
         );
+        // Mutable byte buffers (wasm-only surface; repr = tagged string)
+        env.insert_mono(
+            "buf-alloc".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Int)],
+                Box::new(TcType::Con(TcCon::Str)),
+            ),
+        );
+        env.insert_mono(
+            "buf-get".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Str), TcType::Con(TcCon::Int)],
+                Box::new(TcType::Con(TcCon::Int)),
+            ),
+        );
+        env.insert_mono(
+            "buf-set!".to_string(),
+            TcType::Arrow(
+                vec![
+                    TcType::Con(TcCon::Str),
+                    TcType::Con(TcCon::Int),
+                    TcType::Con(TcCon::Int),
+                ],
+                Box::new(TcType::Con(TcCon::Str)),
+            ),
+        );
         env.insert_mono(
             "str-ptr".to_string(),
             TcType::Arrow(

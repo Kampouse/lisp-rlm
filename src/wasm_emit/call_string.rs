@@ -639,6 +639,132 @@ impl WasmEmitter {
                 v.extend(self.emit_tag_num());
                 Ok(v)
             }
+            // ── Mutable byte buffers (wasm-only; interp: not implemented) ──
+            // A buffer IS a tagged string (len<<32|ptr, tag 5) whose bytes live
+            // on the monotonic runtime heap — zero copy, in-place writes. This
+            // is the stdlib escape hatch for O(L²) string-concat workloads
+            // (bignum fib: str-cat acc copies the whole accumulator per digit;
+            // buf-set! writes one byte). Guard policy: buf-set! traps if the
+            // target pointer is below the literal region (262144) — string
+            // literals are static data and must never be mutated.
+            "buf-alloc" => {
+                if a.len() != 1 {
+                    return Err("buf-alloc: expected 1 arg (len)".into());
+                }
+                let len_i = self.local_idx("__ba_len");
+                let dst_i = self.local_idx("__ba_dst");
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(len_i));
+                // emit_rtheap_alloc: guards mem_limit; negative len becomes a
+                // huge unsigned add → guard traps ✓. Fresh pages are zeroed.
+                v.extend(self.emit_rtheap_alloc(dst_i, len_i));
+                // result: tag5( (len << 32) | ptr )  — ptr is 8-aligned
+                v.push(Instruction::LocalGet(len_i));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalGet(dst_i));
+                v.push(Instruction::I64Add);
+                v.extend(self.emit_tag_num());
+                v.push(Instruction::I64Const(5));
+                v.push(Instruction::I64Or);
+                Ok(v)
+            }
+            "buf-get" => {
+                if a.len() != 2 {
+                    return Err("buf-get: expected 2 args (buf, idx)".into());
+                }
+                let raw_i = self.local_idx("__bg_raw");
+                let idx_i = self.local_idx("__bg_idx");
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(raw_i));
+                v.extend(self.expr(&a[1])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(idx_i));
+                // bounds: idx >= len(raw) → unreachable (hard-error policy)
+                v.push(Instruction::LocalGet(idx_i));
+                v.push(Instruction::LocalGet(raw_i));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
+                // load8_u (ptr + idx), tag int
+                v.push(Instruction::LocalGet(raw_i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(idx_i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }));
+                v.push(Instruction::I64ExtendI32U);
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
+            "buf-set!" => {
+                if a.len() != 3 {
+                    return Err("buf-set!: expected 3 args (buf, idx, byte)".into());
+                }
+                let raw_i = self.local_idx("__bs_raw");
+                let idx_i = self.local_idx("__bs_idx");
+                let val_i = self.local_idx("__bs_val");
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(raw_i));
+                v.extend(self.expr(&a[1])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(idx_i));
+                v.extend(self.expr(&a[2])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(val_i));
+                // bounds: idx >= len → unreachable
+                v.push(Instruction::LocalGet(idx_i));
+                v.push(Instruction::LocalGet(raw_i));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
+                // literal-region write guard: ptr < 262144 → unreachable
+                v.push(Instruction::LocalGet(raw_i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(262_144));
+                v.push(Instruction::I64LtU);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
+                // store8 (ptr + idx) ← val & 0xff ; return the buffer
+                v.push(Instruction::LocalGet(raw_i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(idx_i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
+                v.push(Instruction::LocalGet(val_i));
+                v.push(Instruction::I64Const(255));
+                v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Store8(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }));
+                // return original tagged buffer (tag was 5 by construction)
+                v.push(Instruction::LocalGet(raw_i));
+                v.extend(self.emit_tag_num());
+                v.push(Instruction::I64Const(5));
+                v.push(Instruction::I64Or);
+                Ok(v)
+            }
             "str-slice" => {
                 if a.len() != 3 {
                     return Err("str-slice: expected 3 args (string, start, end)".into());
