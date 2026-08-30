@@ -1295,7 +1295,75 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
         Expression::CallExpression(c) => {
             // Array method calls first: xs.push(v) → (vec-push xs v),
             // xs.join(sep) → (str-join sep xs) — note the arg reordering.
+            // Pipeline members (join/map/filter/reduce, 2026-08-30) accept
+            // ARBITRARY receivers — xs.filter(f).map(g).join(",") stacks —
+            // push stays identifier-only (it rebinds via set!).
             if let Expression::StaticMemberExpression(sm) = &c.callee {
+                match sm.property.name.as_str() {
+                    "join" => {
+                        if c.arguments.len() != 1 {
+                            return Err("ts_frontend: join takes exactly one separator".into());
+                        }
+                        let e2 = c.arguments[0]
+                            .as_expression()
+                            .ok_or("ts_frontend: unsupported join argument (M1)")?;
+                        return Ok(list(vec![
+                            Sym("str-join"),
+                            lower_expr(e2)?,
+                            lower_expr(&sm.object)?,
+                        ]));
+                    }
+                    "map" | "filter" => {
+                        let op = sm.property.name.as_str();
+                        if c.arguments.len() != 1 {
+                            return Err(format!(
+                                "ts_frontend: {} takes exactly one callback",
+                                op
+                            ));
+                        }
+                        let cb = c.arguments[0]
+                            .as_expression()
+                            .ok_or("ts_frontend: unsupported callback (M1)")?;
+                        if !matches!(cb, Expression::ArrowFunctionExpression(_)) {
+                            return Err(format!(
+                                "ts_frontend: .{} callback must be an arrow function (M1)",
+                                op
+                            ));
+                        }
+                        return Ok(list(vec![
+                            Sym(op),
+                            lower_expr(cb)?,
+                            lower_expr(&sm.object)?,
+                        ]));
+                    }
+                    "reduce" => {
+                        if c.arguments.len() != 2 {
+                            return Err(
+                                "ts_frontend: reduce takes a callback and an initial value"
+                                    .into(),
+                            );
+                        }
+                        let cb = c.arguments[0]
+                            .as_expression()
+                            .ok_or("ts_frontend: unsupported reduce callback (M1)")?;
+                        if !matches!(cb, Expression::ArrowFunctionExpression(_)) {
+                            return Err(
+                                "ts_frontend: .reduce callback must be an arrow function (M1)"
+                                    .into(),
+                            );
+                        }
+                        let init = c.arguments[1]
+                            .as_expression()
+                            .ok_or("ts_frontend: unsupported reduce initial value (M1)")?;
+                        return Ok(list(vec![
+                            Sym("reduce"),
+                            lower_expr(cb)?,
+                            lower_expr(init)?,
+                            lower_expr(&sm.object)?,
+                        ]));
+                    }
+                    _ => {} // fall through
+                }
                 if matches!(&sm.object, Expression::Identifier(_)) {
                     match sm.property.name.as_str() {
                         "push" => {
@@ -1325,71 +1393,7 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                                 "ts_frontend: push target must be a plain variable".into(),
                             );
                         }
-                        "join" => {
-                            if c.arguments.len() != 1 {
-                                return Err("ts_frontend: join takes exactly one separator".into());
-                            }
-                            let e2 = c.arguments[0]
-                                .as_expression()
-                                .ok_or("ts_frontend: unsupported join argument (M1)")?;
-                            return Ok(list(vec![
-                                Sym("str-join"),
-                                lower_expr(e2)?,
-                                lower_expr(&sm.object)?,
-                            ]));
-                        }
-                        // xs.map(f)    → (map f xs)        — f: arrow, 1 param
-                        // xs.filter(f) → (filter f xs)     — f: arrow, 1 param (truthy)
-                        // xs.reduce(f, init) → (reduce f init xs) — f: arrow, 2 params
-                        "map" | "filter" => {
-                            let op = sm.property.name.as_str();
-                            if c.arguments.len() != 1 {
-                                return Err(format!(
-                                    "ts_frontend: {} takes exactly one callback",
-                                    op
-                                ));
-                            }
-                            let cb = c.arguments[0]
-                                .as_expression()
-                                .ok_or("ts_frontend: unsupported callback (M1)")?;
-                            if !matches!(cb, Expression::ArrowFunctionExpression(_)) {
-                                return Err(format!(
-                                    "ts_frontend: .{} callback must be an arrow function (M1)",
-                                    op
-                                ));
-                            }
-                            return Ok(list(vec![
-                                Sym(op),
-                                lower_expr(cb)?,
-                                lower_expr(&sm.object)?,
-                            ]));
-                        }
-                        "reduce" => {
-                            if c.arguments.len() != 2 {
-                                return Err(
-                                    "ts_frontend: reduce takes a callback and an initial value"
-                                        .into(),
-                                );
-                            }
-                            let cb = c.arguments[0]
-                                .as_expression()
-                                .ok_or("ts_frontend: unsupported reduce callback (M1)")?;
-                            if !matches!(cb, Expression::ArrowFunctionExpression(_)) {
-                                return Err(
-                                    "ts_frontend: .reduce callback must be an arrow function (M1)"
-                                        .into(),
-                                );
-                            }
-                            let init = c.arguments[1]
-                                .as_expression()
-                                .ok_or("ts_frontend: unsupported reduce initial value (M1)")?;
-                            return Ok(list(vec![
-                                Sym("reduce"),
-                                lower_expr(cb)?,
-                                lower_expr(init)?,
-                                lower_expr(&sm.object)?,
-                            ]));
-                        }
+                        _ => {} // push handled; pipeline members were matched above
                         _ => {} // fall through to the generic path
                     }
                 }
