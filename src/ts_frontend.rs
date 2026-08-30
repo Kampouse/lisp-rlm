@@ -14,8 +14,13 @@
 //!   ✓ && || (short-circuit, boolean-valued 0/1 — NOT JS value semantics)
 //!   ✓ ! - unary
 //!   ✓ calls: bare identifiers + member calls via builtin mapping
-//!   ✗ classes, async, closures/arrow fns (T4 landmine), destructuring,
-//!     optional chaining, assignment/mutation, early returns, imports
+//!   ✓ arrow fns (2026-08-30): expression/single-return bodies, as
+//!     .map/.filter/.reduce callbacks — inlined by resolve_lambda_1/2,
+//!     so the T4 closure-aliasing landmine never triggers
+//!   ✓ array pipeline chaining (2026-08-30): join/map/filter/reduce take
+//!     any receiver — xs.filter(f).map(g).join(s) stacks
+//!   ✗ classes, async, general closures (non-callback position),
+//!     destructuring, optional chaining, early returns, imports
 //!
 //! Truthiness: JS `if (x)` → `(if (!= x 0) ...)` — numeric truthiness by
 //! decree (the lisp's 0-truthy landsmine sidestepped explicitly). String
