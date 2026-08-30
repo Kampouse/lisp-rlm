@@ -96,6 +96,7 @@ const KNOWN_NEAR_FUNCS: &[&str] = &[
     "promise_batch_action_add_key_with_function_call",
     "promise_batch_action_delete_key",
     "promise_batch_action_delete_account",
+    "call",
     "log_utf8", "log_utf16",
     "signer_to_buf",
     "write_amount",
