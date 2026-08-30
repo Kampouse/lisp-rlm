@@ -723,8 +723,13 @@ impl WasmEmitter {
                     };
                     eprintln!("⚡ raw twin: {} ({} params, untagged)", name, params.len());
                 } else {
-                    // Not in the int subset — drop the twin, keep generic only.
-                    // (Leave the placeholder; tree_shake removes unreferenced funcs.)
+                    // Not in the int subset — kill the twin ENTIRELY: drop the
+                    // raw_twins entry so call sites route to the tagged fn (they
+                    // are emitted after this point), leaving the placeholder
+                    // unreferenced for tree_shake. (Leaving the entry live once
+                    // routed real calls into an empty body — near-vm PrepareError,
+                    // though wasmtime tolerated it. 2026-08-30.)
+                    self.raw_twins.remove(name);
                     eprintln!("ℹ️ {} not in raw-int subset — tagged only", name);
                 }
             }
