@@ -83,6 +83,8 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Self::host_call(30)); // promise_create → promise_idx on stack
                 v.push(Self::host_call(35)); // promise_return(promise_idx) — forward result to caller
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::GlobalSet(RETURN_FLAG)); // skip wrapper's value_return
                 v.push(Instruction::I64Const(TAG_NIL));
                 Ok(v)
             }

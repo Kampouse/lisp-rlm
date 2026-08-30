@@ -51,18 +51,6 @@ fn load_project_config(dir: &str) -> Result<ProjectConfig, String> {
 
 // ── MAIN ──
 
-/// Default output path for single-file compiles. Never the input path:
-/// extension swapped (.lisp/.ts/.mts → .wasm), else `<input>.wasm` appended.
-fn default_wasm_out(src_path: &str) -> String {
-    let p = std::path::Path::new(src_path);
-    match p.extension().and_then(|e| e.to_str()) {
-        Some("lisp") | Some("ts") | Some("mts") => {
-            p.with_extension("wasm").to_string_lossy().into_owned()
-        }
-        _ => format!("{}.wasm", src_path),
-    }
-}
-
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
@@ -193,20 +181,6 @@ fn run_init(name: &str) {
 fn do_build(project_dir: &str) -> Result<(ProjectConfig, Vec<u8>), String> {
     let config = load_project_config(project_dir)?;
 
-    // Prebuilt escape hatch: `"src": "src/main.wasm"` (or any .wasm path)
-    // skips lisp compilation entirely and deploys the bytes as-is — used for
-    // hand-rolled/native contract comparisons (e.g. the Rust fib twin).
-    if config.src.ends_with(".wasm") {
-        let pre_path = Path::new(project_dir).join(&config.src);
-        let bytes = fs::read(&pre_path).map_err(|e| format!("read {}: {}", config.src, e))?;
-        let out_path = Path::new(project_dir).join(&config.output);
-        if let Some(parent) = out_path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        let _ = fs::write(&out_path, &bytes);
-        return Ok((config, bytes));
-    }
-
     let src_path = Path::new(project_dir).join(&config.src);
     let source =
         fs::read_to_string(&src_path).map_err(|e| format!("read {}: {}", config.src, e))?;
@@ -220,13 +194,6 @@ fn do_build(project_dir: &str) -> Result<(ProjectConfig, Vec<u8>), String> {
             .map(|v| v.to_string())
             .collect::<Vec<_>>()
             .join("\n")
-    } else if config.src.ends_with(".ts") || config.src.ends_with(".mts") {
-        // TS projects build/deploy through the same lowering as the
-        // single-file CLI path (build/deploy used to fail with
-        // 'read src/main.lisp' — the TS branch was missing here, and the
-        // `main` vs `src` config key confusion made it look random).
-        lisp_rlm_wasm::ts_frontend::ts_to_lisp_source(&source)
-            .map_err(|e| format!("TS lowering: {}", e))?
     } else {
         source.clone()
     };
@@ -1820,22 +1787,44 @@ fn run_test(args: &[String]) {
 
 fn run_compile(args: &[String]) {
     if args.len() < 2 {
-        eprintln!("Usage: near-compile [--repl] <input.lisp> [output.wasm]");
+        eprintln!("Usage: near-compile [--repl] <input.lisp|.ts> [-o output.wasm] [--target near|outlayer|outlayer-p2]");
         eprintln!();
-        eprintln!("  near-compile file.lisp           Compile to WASM (validated)");
-        eprintln!("  near-compile file.lisp --target=outlayer   Compile for OutLayer WASI");
-        eprintln!("  near-compile --repl              Interactive REPL (WASM + wasmtime)");
-        eprintln!("  near-compile test file.lisp       Run inline tests");
+        eprintln!("  near-compile file.lisp               Compile to WASM (validated)");
+        eprintln!("  near-compile file.ts                 Compile TypeScript to WASM");
+        eprintln!("  near-compile file.lisp -o out.wasm  Write to specific path");
+        eprintln!("  near-compile file.lisp --target outlayer  Compile for OutLayer WASI");
+        eprintln!("  near-compile --dump-lisp file.ts   Show lowered lisp, don't compile");
+        eprintln!("  near-compile --repl                Interactive REPL (WASM + wasmtime)");
+        eprintln!("  near-compile test file.lisp         Run inline tests");
         std::process::exit(1);
     }
 
-    let positional: Vec<&str> = args
-        .iter()
-        .skip(1)
-        .filter(|a| !a.starts_with('-'))
-        .map(String::as_str)
-        .collect();
-    let src_path = positional.get(0).expect("need input file");
+    // Parse flags: -o/--output <path>, --target <target|near>, --dump-lisp, --repl, test
+    let mut cli_output: Option<String> = None;
+    let mut cli_target_flag: Option<String> = None;
+    let mut positional: Vec<String> = Vec::new();
+    let mut i = 1;
+    while i < args.len() {
+        let a = &args[i].clone();
+        match a.as_str() {
+            "-o" | "--output" => {
+                i += 1;
+                cli_output = Some(args.get(i).expect("-o requires a path").clone());
+            }
+            "--target" => {
+                i += 1;
+                cli_target_flag = Some(args.get(i).expect("--target requires a value").clone());
+            }
+            _ if a.starts_with("--target=") => {
+                cli_target_flag = Some(a.strip_prefix("--target=").unwrap().to_string());
+            }
+            _ => {
+                positional.push(a.clone());
+            }
+        }
+        i += 1;
+    }
+    let src_path = &positional[0];
     let src = fs::read_to_string(src_path).expect("read input");
 
     // TS frontend: lower TypeScript source to lisp before the normal pipeline
@@ -1858,8 +1847,8 @@ fn run_compile(args: &[String]) {
 
     let src = strip_test_forms(&src);
 
-    // CLI --target overrides config
-    let cli_target = args.iter().find_map(|a| a.strip_prefix("--target="));
+    // CLI --target overrides config (already parsed into cli_target_flag above)
+    let cli_target = cli_target_flag.as_deref();
     
     // Try to load project config if no explicit target
     let target = if let Some(t) = cli_target {
@@ -1932,21 +1921,40 @@ fn run_compile(args: &[String]) {
                 Some(name) => eprintln!("❌ WASM error in `{}`: {}", name, err_str),
                 None => eprintln!("❌ WASM validation: {}", err_str),
             }
-            let out = positional
-                .get(1)
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| default_wasm_out(src_path));
+            let out = resolve_output_path(&cli_output, positional.get(1).map(String::as_str), src_path);
             let _ = fs::write(&out, &wasm_bytes);
             std::process::exit(1);
         }
     }
 
-    let out = positional
-        .get(1)
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| default_wasm_out(src_path));
+    let out = resolve_output_path(&cli_output, positional.get(1).map(String::as_str), src_path);
     fs::write(&out, &wasm_bytes).expect("write WASM");
     println!("✅ {} ({} bytes) — validated", out, wasm_bytes.len());
+}
+
+/// Resolve output path: -o flag > 2nd positional arg > input with extension replaced.
+/// Handles both .lisp and .ts/.mts source files.
+fn resolve_output_path(
+    cli_output: &Option<String>,
+    positional_second: Option<&str>,
+    src_path: &str,
+) -> String {
+    if let Some(out) = cli_output {
+        return out.clone();
+    }
+    if let Some(out) = positional_second {
+        return out.to_string();
+    }
+    // Replace source extension with .wasm
+    if src_path.ends_with(".lisp") {
+        src_path.replace(".lisp", ".wasm")
+    } else if src_path.ends_with(".ts") {
+        src_path.replace(".ts", ".wasm")
+    } else if src_path.ends_with(".mts") {
+        src_path.replace(".mts", ".wasm")
+    } else {
+        format!("{}.wasm", src_path)
+    }
 }
 
 /// Remove (test ...) forms from source so they don't interfere with compilation

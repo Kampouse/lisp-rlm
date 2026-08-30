@@ -111,6 +111,9 @@ fn unify(t1: &TcType, t2: &TcType) -> UnifyResult {
             }
         }
 
+        // Nil is bottom — unifies with anything (early-return guard pattern)
+        (TcType::Con(TcCon::Nil), _) | (_, TcType::Con(TcCon::Nil)) => Ok(Subst::new()),
+
         // Constructor matching
         (TcType::Con(c1), TcType::Con(c2)) => unify_con(c1, c2),
 

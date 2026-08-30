@@ -96,6 +96,7 @@ const KNOWN_NEAR_FUNCS: &[&str] = &[
     "promise_batch_action_add_key_with_function_call",
     "promise_batch_action_delete_key",
     "promise_batch_action_delete_account",
+    "call",
     "log_utf8", "log_utf16",
     "signer_to_buf",
     "write_amount",
@@ -556,6 +557,16 @@ impl TcEnv {
                 Box::new(TcType::Con(TcCon::Num)),
             ),
         );
+        // str= / str!= : string equality (TS frontend M2)
+        for name in &["str=", "str!="] {
+            env.insert_mono(
+                name.to_string(),
+                TcType::Arrow(
+                    vec![TcType::Con(TcCon::Str), TcType::Con(TcCon::Str)],
+                    Box::new(TcType::Con(TcCon::Bool)),
+                ),
+            );
+        }
         env.insert_mono(
             "str-contains".to_string(),
             // Bool, not Int (wasm-fuzz find #4, 2026-08-27): the emitted
@@ -1067,6 +1078,15 @@ impl TcEnv {
             "near/load_u128".into(),
             TcType::Arrow(vec![str_ty.clone()], Box::new(int_ty.clone())),
         );
+        // near/call : str → str → str → int → int → nil
+        // (target, method, args_json, gas, deposit)
+        env.insert_mono(
+            "near/call".into(),
+            TcType::Arrow(
+                vec![str_ty.clone(), str_ty.clone(), str_ty.clone(), int_ty.clone(), int_ty.clone()],
+                Box::new(nil_ty.clone()),
+            ),
+        );
         // near/transfer : str → int → nil  (account_id, amount_yocto)
         env.insert_mono(
             "near/transfer".into(),
@@ -1098,6 +1118,24 @@ impl TcEnv {
             TcType::Arrow(
                 vec![str_ty.clone(), str_ty.clone()],
                 Box::new(nil_ty.clone()),
+            ),
+        );
+        // near/promise_yield_create : str → str → int → int → int
+        // (method, args_json, gas, weight) → data_id (u64 as int)
+        env.insert_mono(
+            "near/promise_yield_create".into(),
+            TcType::Arrow(
+                vec![str_ty.clone(), str_ty.clone(), int_ty.clone(), int_ty.clone()],
+                Box::new(int_ty.clone()),
+            ),
+        );
+        // near/promise_yield_resume : int → str → int
+        // (data_id, payload) → data_id
+        env.insert_mono(
+            "near/promise_yield_resume".into(),
+            TcType::Arrow(
+                vec![int_ty.clone(), str_ty.clone()],
+                Box::new(int_ty.clone()),
             ),
         );
         // near/block_timestamp : () → int
@@ -1409,6 +1447,19 @@ impl TcEnv {
         env.insert_mono("vec-push".into(), TcType::Arrow(vec![any_arr_ty.clone(), TcType::Con(TcCon::Any)], Box::new(any_arr_ty.clone())));
         env.insert_mono("vec-set!".into(), TcType::Arrow(vec![any_arr_ty.clone(), int_ty.clone(), TcType::Con(TcCon::Any)], Box::new(TcType::Con(TcCon::Nil))));
         env.insert_mono("near/json_get_arr".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(any_arr_ty.clone())));
+        // lisp-rlm list builtins (emitter: call_list.rs)
+        env.insert_mono("list".into(), TcType::Arrow(vec![any_ty.clone(), any_ty.clone(), any_ty.clone()], Box::new(any_arr_ty.clone())));
+        env.insert_mono("nth".into(), TcType::Arrow(vec![any_arr_ty.clone(), int_ty.clone()], Box::new(TcType::Con(TcCon::Any))));
+        env.insert_mono("len".into(), TcType::Arrow(vec![any_arr_ty.clone()], Box::new(int_ty.clone())));
+        env.insert_mono("car".into(), TcType::Arrow(vec![any_arr_ty.clone()], Box::new(TcType::Con(TcCon::Any))));
+        env.insert_mono("cdr".into(), TcType::Arrow(vec![any_arr_ty.clone()], Box::new(any_arr_ty.clone())));
+        env.insert_mono("cons".into(), TcType::Arrow(vec![TcType::Con(TcCon::Any), any_arr_ty.clone()], Box::new(any_arr_ty.clone())));
+        env.insert_mono("append".into(), TcType::Arrow(vec![any_arr_ty.clone(), any_arr_ty.clone()], Box::new(any_arr_ty.clone())));
+        env.insert_mono("array".into(), TcType::Arrow(vec![any_ty.clone(), any_ty.clone(), any_ty.clone()], Box::new(any_arr_ty.clone())));
+        // HOFs on heap arrays (emitter: call_list.rs)
+        env.insert_mono("map".into(), TcType::Arrow(vec![any_ty.clone(), any_arr_ty.clone()], Box::new(any_arr_ty.clone())));
+        env.insert_mono("filter".into(), TcType::Arrow(vec![any_ty.clone(), any_arr_ty.clone()], Box::new(any_arr_ty.clone())));
+        env.insert_mono("reduce".into(), TcType::Arrow(vec![any_ty.clone(), any_ty.clone(), any_arr_ty.clone()], Box::new(TcType::Con(TcCon::Any))));
 
         // NEAR storage (emitter names)
         env.insert_mono(
