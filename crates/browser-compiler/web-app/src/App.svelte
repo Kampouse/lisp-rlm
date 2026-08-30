@@ -1,6 +1,10 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import * as monaco from 'monaco-editor';
+  // Ambient dialect surface for the TS worker — same file local editors
+  // reference via /// <reference path>. Canonical copy lives at ts/.
+  // @ts-ignore -- vite ?raw (no vite-env.d.ts typing needed at runtime)
+  import lispRlmDts from '../../../../ts/lisp-rlm.d.ts?raw';
   import { initCompiler, compile, runPure, runNear, compileP2Core, toHexDump, getNearStorage, clearNearStorage, getNearContext, setNearContext, resetNearContext, decodeReturnValue, formatGas, lowerTs, type CompileTarget, type CompileResult, type NearContext, type SourceLang } from './lib/compiler.ts';
   import { runWasiWithWorker } from './lib/runWasiWithWorker.ts';
   import { examples } from './lib/examples.ts';
@@ -800,6 +804,16 @@
 
   function setupMonaco() {
     if (!editorContainer) return;
+
+    // Dialect surface for the TS worker: autocomplete + typo squiggles for
+    // strCat/near.* etc. Without this every valid builtin shows red and
+    // real typos are invisible (the LSP knows nothing about our globals).
+    const tsDefaults = monaco.languages.typescript.typescriptDefaults;
+    tsDefaults.addExtraLib(lispRlmDts as string, 'ts:lisp-rlm/lisp-rlm.d.ts');
+    tsDefaults.setDiagnosticsOptions({
+      noSemanticValidation: false,
+      noSyntaxValidation: false,
+    });
 
     // Use Monaco's built-in Clojure tokenizer — same Lisp family,
     // handles defn, defmacro, let, if, cond, ns, require, etc.

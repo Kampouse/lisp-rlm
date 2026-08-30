@@ -1,3 +1,4 @@
+/// <reference path="../../../ts/lisp-rlm.d.ts" />
 // nostr-gov Phase-1 — TypeScript port (differential twin of main.lisp)
 // Scope: legacy (owner-key) auth path. Event-auth (`ev` param) paths stub out.
 // Helpers are internal; `export function` = contract method. `get_*` = view.

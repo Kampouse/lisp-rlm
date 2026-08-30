@@ -72,7 +72,7 @@ function getCounter(): number {
 // Dialect notes:
 // - near.storageGet/Set, near.log, near.abort (host bindings)
 // - toStr / strToNum / strLength (stdlib bridge)
-// - storageGet returns str-or-nil; `x ?? fallback` handles the nil
+// - storageGet returns str-or-nil; x ?? fallback handles the nil
 // - new_ exports as NEAR's "new" constructor (reserved word in TS)
 // - get_* functions are views (auto value_return)
 // - values stored as strings, numbers are i64`,
