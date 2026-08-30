@@ -193,6 +193,20 @@ fn run_init(name: &str) {
 fn do_build(project_dir: &str) -> Result<(ProjectConfig, Vec<u8>), String> {
     let config = load_project_config(project_dir)?;
 
+    // Prebuilt escape hatch: `"src": "src/main.wasm"` (or any .wasm path)
+    // skips lisp compilation entirely and deploys the bytes as-is — used for
+    // hand-rolled/native contract comparisons (e.g. the Rust fib twin).
+    if config.src.ends_with(".wasm") {
+        let pre_path = Path::new(project_dir).join(&config.src);
+        let bytes = fs::read(&pre_path).map_err(|e| format!("read {}: {}", config.src, e))?;
+        let out_path = Path::new(project_dir).join(&config.output);
+        if let Some(parent) = out_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let _ = fs::write(&out_path, &bytes);
+        return Ok((config, bytes));
+    }
+
     let src_path = Path::new(project_dir).join(&config.src);
     let source =
         fs::read_to_string(&src_path).map_err(|e| format!("read {}: {}", config.src, e))?;
