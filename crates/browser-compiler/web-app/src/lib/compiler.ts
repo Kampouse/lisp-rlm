@@ -1,9 +1,10 @@
-import init, { compile_p1, compile_p2, compile_p2_core, compile_pure, disassemble_wasm } from '../../public/wasm/lisp_rlm_browser.js';
+import init, { compile_p1, compile_p2, compile_p2_core, compile_pure, compile_ts, ts_to_lisp, disassemble_wasm } from '../../public/wasm/lisp_rlm_browser.js';
 
 let initialized = false;
 let initPromise: Promise<void> | null = null;
 
 export type CompileTarget = 'p1' | 'p2' | 'pure';
+export type SourceLang = 'lisp' | 'ts';
 
 export interface CompileResult {
   success: boolean;
@@ -31,16 +32,22 @@ export function isInitialized(): boolean {
   return initialized;
 }
 
-export function compile(source: string, target: CompileTarget): CompileResult {
+export function compile(source: string, target: CompileTarget, lang: SourceLang = 'lisp'): CompileResult {
   const start = performance.now();
 
   try {
+    if (lang === 'ts') {
+      // TS dialect currently targets NEAR (P1) only.
+      if (target !== 'p1') {
+        throw new Error(`TS dialect currently supports the P1 (NEAR) target only, got "${target}"`);
+      }
+    }
     let wasmBytes: Uint8Array;
     switch (target) {
-      case 'p1': wasmBytes = compile_p1(source); break;
+      case 'p1': wasmBytes = lang === 'ts' ? compile_ts(source) : compile_p1(source); break;
       case 'p2': wasmBytes = compile_p2_core(source); break;
       case 'pure': wasmBytes = compile_pure(source); break;
-      default: wasmBytes = compile_p1(source); break;
+      default: wasmBytes = lang === 'ts' ? compile_ts(source) : compile_p1(source); break;
     }
     const timeMs = performance.now() - start;
 
@@ -84,6 +91,11 @@ export function compile(source: string, target: CompileTarget): CompileResult {
 /** Compile P2 as core WASM (browser-runnable, before component wrapping). */
 export function compileP2Core(source: string): Uint8Array {
   return compile_p2_core(source);
+}
+
+/** Lower TS source to the intermediate Lisp representation. */
+export function lowerTs(source: string): string {
+  return ts_to_lisp(source);
 }
 
 /** Build a minimal `env` import object with stubs for all NEAR host functions.

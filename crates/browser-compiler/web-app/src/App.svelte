@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import * as monaco from 'monaco-editor';
-  import { initCompiler, compile, runPure, runNear, compileP2Core, toHexDump, getNearStorage, clearNearStorage, getNearContext, setNearContext, resetNearContext, decodeReturnValue, formatGas, type CompileTarget, type CompileResult, type NearContext } from './lib/compiler.ts';
+  import { initCompiler, compile, runPure, runNear, compileP2Core, toHexDump, getNearStorage, clearNearStorage, getNearContext, setNearContext, resetNearContext, decodeReturnValue, formatGas, lowerTs, type CompileTarget, type CompileResult, type NearContext, type SourceLang } from './lib/compiler.ts';
   import { runWasiWithWorker } from './lib/runWasiWithWorker.ts';
   import { examples } from './lib/examples.ts';
   import { connectWallet, disconnectWallet, deployP1, deployP2, getWalletState, type WalletState, type DeployResult, type Network } from './lib/wallet.ts';
@@ -403,6 +403,8 @@
   let compiling: boolean = $state(false);
   let deploying: boolean = $state(false);
   let result: CompileResult | null = $state(null);
+  let sourceLang: SourceLang = $state('lisp');
+  let lispIr: string | null = $state(null);
   let deployResult: DeployResult | null = $state(null);
   let walletState: WalletState = $state({ connected: false, accountId: null, network: 'mainnet' });
   let activeExample: number = $state(0);
@@ -1009,7 +1011,12 @@
     clearMonacoMarkers();
     await new Promise(r => setTimeout(r, 50));
     try {
-      result = compile(source, target);
+      result = compile(source, target, sourceLang);
+      if (result.success && sourceLang === 'ts') {
+        try { lispIr = lowerTs(source); } catch { lispIr = null; }
+      } else {
+        lispIr = null;
+      }
       
       // Populate NEAR methods list from compiled exports
       if (result.success && target === 'p1' && result.exports) {
@@ -1196,10 +1203,25 @@
   // ============================================
   // Example selection
   // ============================================
+  function setSourceLang(lang: SourceLang) {
+    if (sourceLang === lang) return;
+    sourceLang = lang;
+    lispIr = null;
+    const model = editorInstance?.getModel();
+    if (model) {
+      monaco.editor.setModelLanguage(model, lang === 'ts' ? 'typescript' : 'lisp-rlm');
+    }
+    if (lang === 'ts') {
+      // TS dialect targets NEAR contracts only.
+      target = 'p1';
+    }
+  }
+
   function selectExample(index: number) {
     activeExample = index;
     source = examples[index].source;
     target = examples[index].target;
+    setSourceLang(examples[index].lang ?? 'lisp');
     if (editorInstance) editorInstance.setValue(source);
     result = null;
     deployResult = null;
@@ -1328,9 +1350,15 @@
       const ex = examples[urlState.example];
       source = ex.source;
       target = urlState.target || ex.target;
+      sourceLang = ex.lang ?? 'lisp';
+      const fileLang: SourceLang = sourceLang;
       activeExample = urlState.example;
-      if (editorInstance) editorInstance.setValue(source);
-      const file: VFile = { id: generateId(), name: 'main.lisp', source, target, updatedAt: Date.now() };
+      if (editorInstance) {
+        editorInstance.setValue(source);
+        const model = editorInstance.getModel();
+        if (model) monaco.editor.setModelLanguage(model, fileLang === 'ts' ? 'typescript' : 'lisp-rlm');
+      }
+      const file: VFile = { id: generateId(), name: fileLang === 'ts' ? 'main.ts' : 'main.lisp', source, target, updatedAt: Date.now() };
       files = [file];
       activeFileId = file.id;
       saveFiles();
@@ -1579,6 +1607,21 @@
       </button>
     {/if}
 
+    <div class="lang-toggle" role="group" aria-label="Source language">
+      <button
+        class="lang-btn"
+        class:active={sourceLang === 'lisp'}
+        onclick={() => setSourceLang('lisp')}
+        title="Lisp source"
+      >LISP</button>
+      <button
+        class="lang-btn"
+        class:active={sourceLang === 'ts'}
+        onclick={() => setSourceLang('ts')}
+        title="TypeScript dialect → lowered to Lisp"
+      >TS</button>
+    </div>
+
     <button
       class="header-compile-btn"
       class:compiling={compiling}
@@ -1609,8 +1652,8 @@
     <button
       class="header-test-btn"
       onclick={handleRunTests}
-      disabled={!wasmReady || testing}
-      title="Run tests"
+      disabled={!wasmReady || testing || sourceLang === 'ts'}
+      title={sourceLang === 'ts' ? 'Test runner supports Lisp sources only' : 'Run tests'}
     >
       {#if testing}
         <Loader2 size={16} class="spinner-icon" />
@@ -2270,6 +2313,16 @@
                         </div>
                       {/if}
                     </div>
+                  {/if}
+
+                  <!-- Lowered Lisp IR (TS mode) -->
+                  {#if lispIr}
+                    <details class="hex-details">
+                      <summary class="hex-summary">
+                        Lowered Lisp IR
+                      </summary>
+                      <pre class="wat-output">{lispIr}</pre>
+                    </details>
                   {/if}
 
                   <!-- WAT Disassembly -->

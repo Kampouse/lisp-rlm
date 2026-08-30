@@ -66,7 +66,12 @@ pub fn parse_ts(src: &str) -> Result<Vec<LispVal>, String> {
 // ── Program / statements ──────────────────────────────────────────────────
 
 fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
-    let mut out = Vec::new();
+    // TypeScript hoists function declarations: a call may textually precede
+    // the helper's definition. Lisp requires define-before-use, so non-exported
+    // functions are collected and emitted first (source order preserved);
+    // everything else (consts, exports, top-level exprs) follows in order.
+    let mut hoisted: Vec<LispVal> = Vec::new();
+    let mut out: Vec<LispVal> = Vec::new();
     for stmt in &p.body {
         match stmt {
             Statement::ExportDeclaration(decl) => {
@@ -82,15 +87,18 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                 let (name, define) = lower_function(f, true)?;
                 let view = name.starts_with("get_");
                 out.push(define);
+                // `new` is a reserved word in TypeScript — `new_` is the
+                // dialect's spelling for NEAR's `new` constructor export.
+                let export_name = if name == "new_" { "new".to_string() } else { name.clone() };
                 out.push(list(vec![
                     Sym("export"),
-                    Str(name.clone()),
+                    Str(export_name),
                     Sym(name),
                     if view { Sym("#t") } else { Sym("#f") },
                 ]));
             }
             Statement::FunctionDeclaration(f) => {
-                out.push(lower_function(f, false)?.1);
+                hoisted.push(lower_function(f, false)?.1);
             }
             Statement::VariableDeclaration(v) => {
                 for d in &v.declarations {
@@ -114,7 +122,8 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
             }
         }
     }
-    Ok(out)
+    hoisted.extend(out);
+    Ok(hoisted)
 }
 
 /// Lower a function declaration → (define (name params...) body)

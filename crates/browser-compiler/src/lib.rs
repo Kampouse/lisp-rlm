@@ -49,6 +49,28 @@ pub fn compile_pure(source: &str) -> Result<Vec<u8>, JsValue> {
         .map_err(|e| JsValue::from_str(&format!("Compile error: {}", e)))
 }
 
+/// Compile TypeScript source (lisp-rlm TS dialect) to a NEAR smart contract
+/// WASM binary (P1 target). Lowers TS → Lisp first.
+/// Returns the raw WASM bytes as a Uint8Array.
+#[wasm_bindgen]
+pub fn compile_ts(source: &str) -> Result<Vec<u8>, JsValue> {
+    let lisp_src = lisp_rlm_wasm::ts_frontend::ts_to_lisp_source(source)
+        .map_err(|e| JsValue::from_str(&format!("TS lowering error: {}", e)))?;
+    let mut exprs = lisp_rlm_wasm::parse_all(&lisp_src)
+        .map_err(|e| JsValue::from_str(&format!("Parse error: {}", e)))?;
+    lisp_rlm_wasm::clojure::desugar(&mut exprs);
+    lisp_rlm_wasm::compile_near_from_exprs(&exprs)
+        .map_err(|e| JsValue::from_str(&format!("Compile error: {}", e)))
+}
+
+/// Lower TypeScript source (lisp-rlm TS dialect) to Lisp source text.
+/// Useful for showing the intermediate representation in the UI.
+#[wasm_bindgen]
+pub fn ts_to_lisp(source: &str) -> Result<String, JsValue> {
+    lisp_rlm_wasm::ts_frontend::ts_to_lisp_source(source)
+        .map_err(|e| JsValue::from_str(&format!("TS lowering error: {}", e)))
+}
+
 /// Disassemble WASM bytes to WAT (WebAssembly Text format).
 /// Returns a human-readable string representation of the WASM module.
 #[wasm_bindgen]

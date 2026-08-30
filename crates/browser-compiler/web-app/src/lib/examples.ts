@@ -3,6 +3,7 @@ export interface Example {
   icon: string;
   source: string;
   target: 'p1' | 'p2' | 'pure';
+  lang?: 'ts';
 }
 
 export const examples: Example[] = [
@@ -43,6 +44,38 @@ export const examples: Example[] = [
 (export "new" new false)
 (export "increment" increment false)
 (export "get" get true)`,
+  },
+  {
+    name: 'Counter TS',
+    icon: '🟦',
+    target: 'p1',
+    lang: 'ts',
+    source: `// TypeScript dialect — lowered to Lisp, compiled to NEAR wasm.
+// Same counter contract as the Lisp example, written in TS.
+
+export function new_(): void {
+  near.storageSet("c", "0");
+}
+
+export function increment(): void {
+  near.storageSet("c", toStr(getCounter() + 1));
+}
+
+export function get_value(): string {
+  return toStr(getCounter());
+}
+
+function getCounter(): number {
+  const v = near.storageGet("c");
+  return strToNum(strLength(v) === 0 ? "0" : v);
+}
+
+// Dialect notes:
+// - near.storageGet/Set, near.log, near.abort (host bindings)
+// - toStr / strToNum / strLength (stdlib bridge)
+// - new_ exports as NEAR's "new" constructor (reserved word in TS)
+// - get_* functions are views (auto value_return)
+// - values stored as strings, numbers are i64`,
   },
   {
     name: 'CC View',
