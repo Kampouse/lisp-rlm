@@ -3688,11 +3688,27 @@ impl WasmEmitter {
         v.push(Instruction::End);
         v.push(Instruction::End);
 
-        // Skip opening quote (the quote before the string value)
+        // Value shape fix (2026-08-30): JSON values may be bare tokens
+        // ({"by": 5}). The old code unconditionally skipped an "opening
+        // quote" — eating the first token byte and scanning to EOF for a
+        // close quote that never came (json_get_str "by" on {"by": 3}
+        // returned "}"). cok now flags string (1) vs bare token (0);
+        // bare tokens keep pos on the first value byte.
+        v.push(Instruction::I32Const(ib));
+        v.push(Instruction::LocalGet(pos));
+        v.push(Instruction::I32Add);
+        v.push(Instruction::I32Load8U(ma8.clone()));
+        v.push(Instruction::I32Const(0x22));
+        v.push(Instruction::I32Eq);
+        v.push(Instruction::LocalSet(cok));
+        // if string value: pos += 1 (skip the opening quote)
+        v.push(Instruction::LocalGet(cok));
+        v.push(Instruction::If(BlockType::Empty));
         v.push(Instruction::LocalGet(pos));
         v.push(Instruction::I32Const(1));
         v.push(Instruction::I32Add);
         v.push(Instruction::LocalSet(pos));
+        v.push(Instruction::End);
 
         // Measure string length (scan until closing quote).
         // Input-fuzz fix I2 (2026-08-27): the close-quote test ignored
@@ -3724,6 +3740,27 @@ impl WasmEmitter {
         v.push(Instruction::I32Add);
         v.push(Instruction::I32Load8U(ma8.clone()));
         v.push(Instruction::LocalSet(bcur));
+        // bare token: the value ends at the next , } ] (JSON grammar —
+        // bare tokens are numbers/true/false/null; trailing whitespace
+        // before the delimiter rides along, harmless for str->num)
+        v.push(Instruction::LocalGet(cok));
+        v.push(Instruction::I32Eqz);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(bcur));
+        v.push(Instruction::I32Const(0x2C));
+        v.push(Instruction::I32Eq);
+        v.push(Instruction::LocalGet(bcur));
+        v.push(Instruction::I32Const(0x7D));
+        v.push(Instruction::I32Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalGet(bcur));
+        v.push(Instruction::I32Const(0x5D));
+        v.push(Instruction::I32Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Br(3));
+        v.push(Instruction::End);
+        v.push(Instruction::End);
         v.push(Instruction::LocalGet(bcur));
         v.push(Instruction::I32Const(0x22));
         v.push(Instruction::I32Eq);

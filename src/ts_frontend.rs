@@ -1035,7 +1035,12 @@ fn ts_ann_to_lisp(t: Option<&oxc_ast::ast::TSTypeAnnotation<'_>>) -> Option<&'st
     match &a.type_annotation {
         TSType::TSNumberKeyword(_) => Some("int"),
         TSType::TSStringKeyword(_) => Some("str"),
-        TSType::TSBooleanKeyword(_) => Some("bool"),
+        // TS booleans lower as 0/1 ints (JS numeric semantics — see
+        // BooleanLiteral → Num(1|0) in lower_expr), so the annotation
+        // must agree: `:: ... int`. `:: bool` would make every annotated
+        // boolean function a type error (found on the first annotated
+        // `: boolean` return, Counter TS demo 2026-08-30).
+        TSType::TSBooleanKeyword(_) => Some("int"),
         _ => None,
     }
 }
