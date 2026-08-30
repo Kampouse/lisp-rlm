@@ -205,6 +205,21 @@ impl WasmEmitter {
                 )
             })?;
         let func_param_count = self.funcs[pos].param_count;
+        // Raw-twin fast path: annotated int fns get an untagged twin. Call it
+        // with boundary conversion (untag args / retag result) — same
+        // semantics, raw speed inside.
+        if a.len() == func_param_count {
+            if let Some(&twin) = self.raw_twins.get(op) {
+                let mut v = Vec::new();
+                for x in a {
+                    v.extend(self.expr(x)?);
+                    v.extend(self.emit_untag());
+                }
+                v.push(Instruction::Call(USER_BASE | twin));
+                v.extend(self.emit_tag_num());
+                return Ok(v);
+            }
+        }
         if func_param_count == 0 && !a.is_empty() {
             let ma = wasm_encoder::MemArg {
                 offset: 0,

@@ -156,6 +156,14 @@ stitched module region at 1MiB. Split literals or shrink allocations",
         }
         // Tree-shake before emitting
         self.tree_shake();
+        // Peephole: elide tag round-trips (retag→untag cancels, or-0 no-ops)
+        let mut elided = 0usize;
+        for f in &mut self.funcs {
+            elided += elide_tag_roundtrips(&mut f.instrs);
+        }
+        if elided > 0 {
+            eprintln!("⚡ elided {} tag instructions", elided);
+        }
         // Ensure host functions needed by export wrappers are included
         if !self.exports.is_empty() {
             self.need_host(7); // input
@@ -732,7 +740,26 @@ fn parse_and_compile_opts(
                                         } else {
                                             body_items2.first().cloned().unwrap_or(LispVal::Nil)
                                         };
-                                        em.emit_define(name, &params, &body)?;
+                                        
+                        // Collect `::` int annotations for the raw-twin path
+                        if let LispVal::List(sig2) = &items[1] {
+                            if let Some(LispVal::Sym(n2)) = sig2.first() {
+                                let (ann, _b) = crate::helpers::split_define_annotation(&items[2..]);
+                                if let Some(parts) = ann {
+                                    if let Ok(arrow) = crate::typing::parse_type_list(&parts) {
+                                        if let crate::typing::TcType::Arrow(args, ret) = arrow {
+                                            let all_int = !args.is_empty()
+                                                && args.iter().all(|t| matches!(t, crate::typing::TcType::Con(crate::typing::TcCon::Int)))
+                                                && matches!(ret.as_ref(), crate::typing::TcType::Con(crate::typing::TcCon::Int));
+                                            if all_int {
+                                                em.fn_int_annotations.insert(n2.clone(), (args.len(), true));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                            em.emit_define(name, &params, &body)?;
                                     }
                                 }
                             }
@@ -1161,6 +1188,25 @@ pub fn compile_near_from_exprs(exprs: &[LispVal]) -> Result<Vec<u8>, String> {
                             } else {
                                 body_items.first().cloned().unwrap_or(LispVal::Nil)
                             };
+                            
+                        // Collect `::` int annotations for the raw-twin path
+                        if let LispVal::List(sig2) = &items[1] {
+                            if let Some(LispVal::Sym(n2)) = sig2.first() {
+                                let (ann, _b) = crate::helpers::split_define_annotation(&items[2..]);
+                                if let Some(parts) = ann {
+                                    if let Ok(arrow) = crate::typing::parse_type_list(&parts) {
+                                        if let crate::typing::TcType::Arrow(args, ret) = arrow {
+                                            let all_int = !args.is_empty()
+                                                && args.iter().all(|t| matches!(t, crate::typing::TcType::Con(crate::typing::TcCon::Int)))
+                                                && matches!(ret.as_ref(), crate::typing::TcType::Con(crate::typing::TcCon::Int));
+                                            if all_int {
+                                                em.fn_int_annotations.insert(n2.clone(), (args.len(), true));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                             em.emit_define(name, &params, &body)?;
                         }
                     }
@@ -1239,4 +1285,82 @@ fn resolve_modules_inner(
         }
     }
     Ok(resolved)
+}
+
+/// Peephole pass: delete tag round-trips from a straight-line stream.
+///
+/// Matched patterns are strict stack producer→consumer pairs, so basic-block
+/// boundaries (If/Else/End/branches/calls/returns) break adjacency naturally
+/// and no CFG analysis is needed:
+///   P1  `I64Const(0), I64Or`                      → ∅   (x|0 = x)
+///   P2  `I64Const(3), I64Shl, I64Const(3), I64ShrS` → ∅  (tag;untag = id)
+///
+/// P2 fires after checked retags (range-checked payloads — exact identity)
+/// and after plain num retags feeding a comparison/mul untag. On values past
+/// the 61-bit payload range, the old round-trip silently corrupted; sites that
+/// can widen use the checked retag, which traps first.
+pub(crate) fn elide_tag_roundtrips(code: &mut Vec<Instruction<'static>>) -> usize {
+    use crate::wasm_emit::TAG_BITS as TB;
+    let mut i = 0;
+    let mut removed = 0usize;
+    while i < code.len() {
+        // P1: Const(0); Or → ∅
+        if i + 1 < code.len() {
+            if let (Instruction::I64Const(0), Instruction::I64Or) = (&code[i], &code[i + 1]) {
+                code.drain(i..i + 2);
+                removed += 2;
+                if i > 0 {
+                    i -= 1;
+                }
+                continue;
+            }
+        }
+        // P2: Const(TAG_BITS); Shl; Const(TAG_BITS); ShrS → ∅
+        if i + 3 < code.len() {
+            if let (
+                Instruction::I64Const(TB),
+                Instruction::I64Shl,
+                Instruction::I64Const(TB),
+                Instruction::I64ShrS,
+            ) = (&code[i], &code[i + 1], &code[i + 2], &code[i + 3])
+            {
+                code.drain(i..i + 4);
+                removed += 4;
+                if i > 0 {
+                    i -= 1;
+                }
+                continue;
+            }
+        }
+        // P3: Const(k); Const(3); ShrS → Const(k >> 3)   (fold untag of pre-tagged literal)
+        if i + 2 < code.len() {
+            if let (Instruction::I64Const(k), Instruction::I64Const(sh), Instruction::I64ShrS) =
+                (&code[i], &code[i + 1], &code[i + 2])
+            {
+                if sh == &TB {
+                    let folded = k.wrapping_shr(3);
+                    code.drain(i..i + 3);
+                    code.insert(i, Instruction::I64Const(folded));
+                    removed += 2;
+                    continue;
+                }
+            }
+        }
+        // P4: Const(k); Const(3); Shl → Const(k << 3)   (fold retag of literal)
+        if i + 2 < code.len() {
+            if let (Instruction::I64Const(k), Instruction::I64Const(sh), Instruction::I64Shl) =
+                (&code[i], &code[i + 1], &code[i + 2])
+            {
+                if sh == &TB {
+                    let folded = k.wrapping_shl(3);
+                    code.drain(i..i + 3);
+                    code.insert(i, Instruction::I64Const(folded));
+                    removed += 2;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    removed
 }

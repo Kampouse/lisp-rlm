@@ -55,6 +55,7 @@ pub mod call_predicate;
 pub mod call_dict;
 pub mod wasm_link;
 pub mod compile;
+pub mod int_emit;
 
 // Re-exports: public API lives in compile.rs
 pub use compile::{compile_pure, compile_standalone, compile_standalone_opts, compile_fuzz, compile_near, compile_near_untyped, compile_near_from_exprs, compile_near_to_wat_from_exprs, compile_pure_to_wat, compile_near_to_wat, resolve_modules};
@@ -209,7 +210,7 @@ const TAG_CLOSURE: i64 = 3; // payload = heap pointer
 pub const TAG_NIL:     i64 = 4;
 pub const TAG_STR:     i64 = 5; // payload = (heap_off | (len << 32))
 const TAG_ARRAY:   i64 = 6; // payload = ((heap_ptr << TAG_BITS) | TAG_ARRAY), heap layout: [count, elem0, elem1, ...]
-const TAG_BITS: i64 = 3;
+pub(crate) const TAG_BITS: i64 = 3;
 const RUNTIME_HEAP_PTR: i64 = 56; // 8-byte memory slot holding runtime bump-allocator ptr (initialized from heap_ptr)
 // Sentinel falsy values (used for truthiness check)
 const TAGGED_FALSE: i64 = TAG_BOOL;       // 1
@@ -308,6 +309,8 @@ pub struct WasmEmitter {
     pub(crate) str_cat_depth: u32, // nesting depth for str-cat local isolation
     pub(crate) fuzz_mode: bool, // if true, export wrappers store tagged values (no untag, no value_return)
     pub(crate) u128h: Option<U128Helpers>, // string-based u128 helper func indices (lazily synthesized)
+    pub(crate) fn_int_annotations: std::collections::HashMap<String, (usize, bool)>, // name → (n int params, ret int)
+    pub(crate) raw_twins: std::collections::HashMap<String, u32>, // fn name → raw twin func idx
     pub(crate) need_outlayer: bool, // true if outlayer/* dispatch forms are used
     pub(crate) need_wasi_http: bool, // true if http-get is used (for P2 wasi:http path)
     pub(crate) http_urls: Vec<(String, String)>, // (authority, path) per http-get call in p2_mode
@@ -350,7 +353,7 @@ impl WasmEmitter {
             locals: HashMap::new(), next_local: 0, free_locals: Vec::new(), local_type_map: Vec::new(), current_func: None, current_param_count: 0, tc_depth: 0, try_stack: Vec::new(),
             while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 64, exports: Vec::new(),
             data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(),
-            gas_local: None, needs_frame: false, heap_ptr: 0, lambda_counter: 0, str_cat_depth: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), http_post_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false, u128h: None, borsh_schemas: HashMap::new(), storage_get_count: 0, http_post_call_count: 0, env_get_count: 0,
+            gas_local: None, needs_frame: false, heap_ptr: 0, lambda_counter: 0, str_cat_depth: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), http_post_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false, u128h: None, fn_int_annotations: std::collections::HashMap::new(), raw_twins: std::collections::HashMap::new(), borsh_schemas: HashMap::new(), storage_get_count: 0, http_post_call_count: 0, env_get_count: 0,
             func_defs: HashMap::new(),
             wasm_imports: Vec::new(),
             list_ptr_counter: 0,
@@ -679,6 +682,53 @@ impl WasmEmitter {
         };
 
         let tc = self.has_tc(body);
+
+        // Raw-i64 twin for fully-annotated int functions: `__raw_<name>` runs
+        // the body on untagged payloads (zero tag shifts). The definition
+        // below still emits as the generic tagged shim — exports and generic
+        // call sites are unchanged; annotated callers + self-recursion hit
+        // the twin. Bail on any form outside the int subset → tagged only.
+        if let Some(&(np, ret_int)) = self.fn_int_annotations.get(name) {
+            if np == params.len() && ret_int {
+                // Pre-register the twin so self-recursion resolves during body compile
+                let twin_idx = match self.raw_twins.get(name) {
+                    Some(i) => *i,
+                    None => {
+                        let i = self.funcs.len() as u32;
+                        self.funcs.push(FuncDef {
+                            name: format!("__raw_{}", name),
+                            param_count: params.len(),
+                            local_count: 0,
+                            instrs: Vec::new(),
+                            local_entries: None,
+                            custom_type: None,
+                        });
+                        self.raw_twins.insert(name.to_string(), i);
+                        i
+                    }
+                };
+                if let Ok((instrs, total)) = self.try_raw_int_fn(name, params, body) {
+                    let twin_entries: Vec<(u32, ValType)> = if total > params.len() {
+                        vec![((total - params.len()) as u32, ValType::I64)]
+                    } else {
+                        vec![]
+                    };
+                    self.funcs[twin_idx as usize] = FuncDef {
+                        name: format!("__raw_{}", name),
+                        param_count: params.len(),
+                        local_count: total,
+                        instrs,
+                        local_entries: Some(twin_entries),
+                        custom_type: None,
+                    };
+                    eprintln!("⚡ raw twin: {} ({} params, untagged)", name, params.len());
+                } else {
+                    // Not in the int subset — drop the twin, keep generic only.
+                    // (Leave the placeholder; tree_shake removes unreferenced funcs.)
+                    eprintln!("ℹ️ {} not in raw-int subset — tagged only", name);
+                }
+            }
+        }
 
         // Build prologue: frame save (NEAR mode + function uses FP-allocating builtins)
         let mut prologue = Vec::new();

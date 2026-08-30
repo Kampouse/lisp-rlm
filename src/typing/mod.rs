@@ -10,4 +10,6 @@ pub use checker::type_check_program;
 #[allow(unused_imports)]
 pub use probe::{format_signature, probe_function};
 #[allow(unused_imports)]
-pub use types::{Scheme, TcType};
+
+pub use checker::parse_type_list;
+pub use types::{TcCon, TcType};

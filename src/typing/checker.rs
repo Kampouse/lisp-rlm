@@ -278,7 +278,7 @@ fn parse_type_sym(s: &str) -> Result<TcType, String> {
     })
 }
 
-fn parse_type_list(elems: &[LispVal]) -> Result<TcType, String> {
+pub fn parse_type_list(elems: &[LispVal]) -> Result<TcType, String> {
     if elems.is_empty() {
         return Err("empty type annotation".into());
     }
