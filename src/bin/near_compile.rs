@@ -220,6 +220,13 @@ fn do_build(project_dir: &str) -> Result<(ProjectConfig, Vec<u8>), String> {
             .map(|v| v.to_string())
             .collect::<Vec<_>>()
             .join("\n")
+    } else if config.src.ends_with(".ts") || config.src.ends_with(".mts") {
+        // TS projects build/deploy through the same lowering as the
+        // single-file CLI path (build/deploy used to fail with
+        // 'read src/main.lisp' — the TS branch was missing here, and the
+        // `main` vs `src` config key confusion made it look random).
+        lisp_rlm_wasm::ts_frontend::ts_to_lisp_source(&source)
+            .map_err(|e| format!("TS lowering: {}", e))?
     } else {
         source.clone()
     };
