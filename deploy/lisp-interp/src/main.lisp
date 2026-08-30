@@ -14,7 +14,7 @@
 (define (pair? p) (if (null? p) 0 (if (= (cell-type p) 2) 1 0)))
 (define (sym? p) (if (null? p) 0 (if (= (cell-type p) 3) 1 0)))
 (define (truthy x) (if (null? x) 0 (if (num? x) (if (= (cell-val x) 0) 0 1) 1)))
-(define (lookup e k) (if (null? e) 0 (if (= (cell-val (cell-val (cell-val e))) k) (cell-cdr (cell-val e)) (lookup (cell-cdr e) k))))
+(define (lookup e k) (if (null? e) (near/panic (str_cat "unbound symbol: " (itoa k))) (if (= (cell-val (cell-val (cell-val e))) k) (cell-cdr (cell-val e)) (lookup (cell-cdr e) k))))
 (define (ext e k v) (my-cons (my-cons (sym-box k) v) e))
 (define (my-eval x env) (if (null? x) x (if (sym? x) (lookup env (cell-val x)) (if (pair? x) (eval-form x env) x))))
 (define (is-op2 code) (if (>= code 1006) (if (<= code 1012) 1 0) 0))
