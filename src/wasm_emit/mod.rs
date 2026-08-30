@@ -682,10 +682,12 @@ impl WasmEmitter {
 
         // Build prologue: frame save (NEAR mode + function uses FP-allocating builtins)
         let mut prologue = Vec::new();
-        // Recursion depth guard: enabled (2026-08-29). Traps with a clean depth-exceeded
-        // instead of wasting the guest's native wasm stack, whose exhaustion (call stack
-        // exhausted) is indistinguishable from interpreter bugs.
-        prologue.extend(self.emit_depth_inc());
+        // Depth guard: DISABLED on-chain (2026-08-29) — NEAR's runtime already bounds the
+        // native wasm stack ("call stack exhausted" trap), and on-chain measurements show the
+        // 4 mem-ops per call here burn ~8% of gas while never firing before the stack does.
+        // Mock runs keep their higher ceiling via near-mock's 64MB stack. Re-enable only if a
+        // deployment needs an explicit depth cap smaller than the native limit.
+        // prologue.extend(self.emit_depth_inc());
         let fp_save = if !self.p2_mode && !self.wasi_mode && self.needs_frame {
             let fp_save = self.local_idx("__fp_save");
             prologue.push(Instruction::GlobalGet(FP_GLOBAL));
@@ -701,8 +703,8 @@ impl WasmEmitter {
         // Epilogue: save return, restore FP if needed, restore return
         let mut epilogue = Vec::new();
         epilogue.push(Instruction::LocalSet(ret_local));
-        // Recursion depth guard: decrement on exit
-        epilogue.extend(self.emit_depth_dec());
+        // Recursion depth guard: decrement on exit — disabled with the inc (2026-08-29)
+        // epilogue.extend(self.emit_depth_dec());
         if let Some(fp_save) = fp_save {
             epilogue.push(Instruction::LocalGet(fp_save));
             epilogue.push(Instruction::GlobalSet(FP_GLOBAL));
