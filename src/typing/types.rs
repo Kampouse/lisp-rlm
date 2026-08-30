@@ -1314,6 +1314,10 @@ impl TcEnv {
         env.insert_mono("cons".into(), TcType::Arrow(vec![TcType::Con(TcCon::Any), any_arr_ty.clone()], Box::new(any_arr_ty.clone())));
         env.insert_mono("append".into(), TcType::Arrow(vec![any_arr_ty.clone(), any_arr_ty.clone()], Box::new(any_arr_ty.clone())));
         env.insert_mono("array".into(), TcType::Arrow(vec![any_ty.clone(), any_ty.clone(), any_ty.clone()], Box::new(any_arr_ty.clone())));
+        // HOFs on heap arrays (emitter: call_list.rs)
+        env.insert_mono("map".into(), TcType::Arrow(vec![any_ty.clone(), any_arr_ty.clone()], Box::new(any_arr_ty.clone())));
+        env.insert_mono("filter".into(), TcType::Arrow(vec![any_ty.clone(), any_arr_ty.clone()], Box::new(any_arr_ty.clone())));
+        env.insert_mono("reduce".into(), TcType::Arrow(vec![any_ty.clone(), any_ty.clone(), any_arr_ty.clone()], Box::new(TcType::Con(TcCon::Any))));
 
         // NEAR storage (emitter names)
         env.insert_mono(
