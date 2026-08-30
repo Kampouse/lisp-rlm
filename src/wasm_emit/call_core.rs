@@ -484,6 +484,20 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(TAG_NIL));
                 Ok(v)
             }
+            "quote" => {
+                // (quote datum) — self-evaluating literal data. Only
+                // literal datums (nil/bool/num/str) — quoted structures
+                // would need runtime construction (not M1).
+                if a.len() != 1 {
+                    return Err("quote: exactly one datum".into());
+                }
+                match &a[0] {
+                    LispVal::Nil | LispVal::Bool(_) | LispVal::Num(_) | LispVal::Str(_) => {
+                        self.expr(&a[0])
+                    }
+                    _ => Err("quote: only literal data (nil/bool/num/str)".into()),
+                }
+            }
             "let" | "let*" => {
                 let mut v = Vec::new();
                 // Each binding gets a FRESH local slot; outer mappings are

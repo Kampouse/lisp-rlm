@@ -1397,6 +1397,7 @@ impl TcEnv {
         env.insert_mono("vec-nth".into(), TcType::Arrow(vec![any_arr_ty.clone(), int_ty.clone()], Box::new(TcType::Con(TcCon::Any))));
         env.insert_mono("vec-length".into(), TcType::Arrow(vec![any_arr_ty.clone()], Box::new(int_ty.clone())));
         env.insert_mono("vec-push".into(), TcType::Arrow(vec![any_arr_ty.clone(), TcType::Con(TcCon::Any)], Box::new(any_arr_ty.clone())));
+        env.insert_mono("vec-set!".into(), TcType::Arrow(vec![any_arr_ty.clone(), int_ty.clone(), TcType::Con(TcCon::Any)], Box::new(TcType::Con(TcCon::Nil))));
 
         // NEAR storage (emitter names)
         env.insert_mono(

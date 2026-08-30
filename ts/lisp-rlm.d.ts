@@ -17,6 +17,17 @@
 
 // ── free function builtins (camelCase → snake_case lisp builtins) ──────
 
+// ── arrays (lisp TAG_ARRAY values; `arr[i]`, `arr.length`, `arr.push`,
+// `for (const x of arr)` all lower to vec-nth/vec-length/vec-push/while) ──
+declare interface LispArr<T> {
+  readonly length: number;
+  [index: number]: T;
+  push(v: T): void;
+  join(separator: string): string;
+}
+declare function strSplit(s: string, delimiter: string): LispArr<string>;
+declare function strJoin(separator: string, parts: LispArr<string>): string;
+
 declare function strCat(...parts: string[]): string;
 declare function strLength(s: string): number;
 declare function strSlice(s: string, start: number, end: number): string;
