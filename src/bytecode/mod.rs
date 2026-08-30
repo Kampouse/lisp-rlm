@@ -5536,7 +5536,9 @@ fn eval_near_builtin(
             Some(Ok(LispVal::Num(0)))
         }
         "near/attached_deposit_u128" => {
-            Some(Ok(LispVal::Num(0)))
+            // no VM context in the interpreter — decimal-string zero keeps the
+            // () → str signature honest (wasm renders the real u128)
+            Some(Ok(LispVal::Str("0".into())))
         }
 
         // ═══════════════════════════════════════════════════════════════

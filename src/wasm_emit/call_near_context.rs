@@ -104,13 +104,16 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/attached_deposit_u128" => {
-                // attached_deposit(balance_ptr) writes 16 bytes directly to memory
-                // No register involved - writes u128 directly to the pointer
+                // attached_deposit(balance_ptr) writes 16 bytes directly to memory.
+                // Render as a decimal u128 STRING via the shared helper — the old
+                // emit_tag_num read the pointer as an i64 and tagged garbage
+                // ("64" in the differential; lisp twin str-cat rendered it as "").
                 let mut v = Vec::new();
                 v.push(Instruction::I64Const(TEMP_MEM as i64)); // balance_ptr
-                v.push(Self::host_call(14)); // attached_deposit -> writes to memory at TEMP_MEM
-                v.push(Instruction::I64Const(TEMP_MEM));
-                v.extend(self.emit_tag_num());
+                v.push(Self::host_call(14)); // attached_deposit -> writes u128 LE at TEMP_MEM
+                let h = self.ensure_u128_str_helpers();
+                v.push(Instruction::I64Const(TEMP_MEM as i64)); // lo@0, hi@8 — helper's layout
+                v.push(Self::call_user(h.to_str));
                 Ok(v)
             }
             "near/account_balance" => self.read_u128_low(12),

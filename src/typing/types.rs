@@ -935,10 +935,11 @@ impl TcEnv {
             "near/attached_deposit".into(),
             TcType::Arrow(vec![], Box::new(int_ty.clone())),
         );
-        // near/attached_deposit_u128 : () → int (returns tagged pointer to TEMP_MEM with u128)
+        // near/attached_deposit_u128 : () → str (decimal u128 string,
+        // rendered via the shared __h_u128_to_str helper)
         env.insert_mono(
             "near/attached_deposit_u128".into(),
-            TcType::Arrow(vec![], Box::new(int_ty.clone())),
+            TcType::Arrow(vec![], Box::new(TcType::Con(TcCon::Str))),
         );
         // near/store_u128 : str → int → nil  (key, tagged pointer)
         env.insert_mono(
