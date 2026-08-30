@@ -239,7 +239,7 @@ fn lower_block_tail(stmts: &[Statement<'_>], view: bool) -> Result<LispVal, Stri
                         let v = lower_expr(e)?;
                         if view { list(vec![sym("near/json_return_str"), v]) } else { v }
                     }
-                    None => num(0),
+                    None => sym("nil"),
                 },
                 _ => unreachable!(),
             };
@@ -249,18 +249,15 @@ fn lower_block_tail(stmts: &[Statement<'_>], view: bool) -> Result<LispVal, Stri
 
     if has_early_return {
         let tail = lower_tail_stmt(&last[0], view)?;
-        let guarded_tail = list(vec![
-            sym("if"),
-            list(vec![sym("="), sym("__fn_done"), num(0)]),
-            tail,
-            sym("__fn_res"),
-        ]);
-        let body = lower_prefix_around_with_return(init, guarded_tail, view)?;
+        // Always assign tail to __fn_res so the return type is consistent.
+        // This avoids if-else branch type mismatch (str vs nil).
+        let assign_tail = list(vec![sym("set!"), sym("__fn_res"), tail]);
+        let body = lower_prefix_around_with_return(init, assign_tail, view)?;
         Ok(list(vec![
             sym("let"),
             list(vec![
                 list(vec![sym("__fn_done"), num(0)]),
-                list(vec![sym("__fn_res"), num(0)]),
+                list(vec![sym("__fn_res"), sym("nil")]),
             ]),
             body,
         ]))
@@ -357,13 +354,13 @@ fn lower_prefix_around_with_return(stmts: &[Statement<'_>], tail: LispVal, view:
             let then_e = lower_block_tail(stmts_of(&i.consequent), view)?;
             let else_e = match &i.alternate {
                 Some(alt) => lower_block_tail(stmts_of(alt), view)?,
-                None => num(0),
+                None => sym("nil"),
             };
             let guarded = list(vec![
                 sym("if"),
                 list(vec![sym("="), sym("__fn_done"), num(0)]),
                 list(vec![sym("if"), truthy(&i.test)?, then_e, else_e]),
-                num(0),
+                sym("nil"),
             ]);
             list(vec![sym("begin"), guarded, tail])
         }
@@ -373,7 +370,7 @@ fn lower_prefix_around_with_return(stmts: &[Statement<'_>], tail: LispVal, view:
                     let v = lower_expr(e)?;
                     if view { list(vec![sym("near/json_return_str"), v]) } else { v }
                 }
-                None => num(0),
+                None => sym("nil"),
             };
             list(vec![
                 sym("begin"),
@@ -487,7 +484,7 @@ fn lower_prefix_around(stmts: &[Statement<'_>], tail: LispVal, view: bool) -> Re
             let then_e = lower_block_tail(stmts_of(&i.consequent), view)?;
             let else_e = match &i.alternate {
                 Some(alt) => lower_block_tail(stmts_of(alt), view)?,
-                None => num(0),
+                None => sym("nil"),
             };
             list(vec![
                 sym("begin"),
@@ -562,7 +559,7 @@ fn lower_tail_stmt(s: &Statement<'_>, view: bool) -> Result<LispVal, String> {
             let then_e = lower_block_tail(stmts_of(&i.consequent), view)?;
             let else_e = match &i.alternate {
                 Some(alt) => lower_block_tail(stmts_of(alt), view)?,
-                None => num(0),
+                None => sym("nil"),
             };
             Ok(list(vec![sym("if"), truthy(&i.test)?, then_e, else_e]))
         }
@@ -696,7 +693,7 @@ fn lower_while_value(w: &Statement<'_>) -> Result<LispVal, String> {
             Statement::ReturnStatement(r) => {
                 let val = match &r.argument {
                     Some(e) => lower_expr(e)?,
-                    None => num(0),
+                    None => sym("nil"),
                 };
                 list(vec![
                     sym("begin"),
@@ -792,7 +789,7 @@ fn tail_stmt_as_expr(s: &Statement<'_>) -> Result<LispVal, String> {
         Statement::ReturnStatement(r) => {
             let val = match &r.argument {
                 Some(e) => lower_expr(e)?,
-                None => num(0),
+                None => sym("nil"),
             };
             Ok(list(vec![
                 sym("begin"),
@@ -813,7 +810,7 @@ fn tail_stmt_as_expr(s: &Statement<'_>) -> Result<LispVal, String> {
             let then_e = loop_body_expr(stmts_of(&i.consequent))?;
             let else_e = match &i.alternate {
                 Some(alt) => loop_body_expr(stmts_of(alt))?,
-                None => num(0),
+                None => sym("nil"),
             };
             Ok(list(vec![sym("if"), truthy(&i.test)?, then_e, else_e]))
         }
@@ -1315,6 +1312,10 @@ fn snake(name: &str) -> String {
 
 /// Bare global functions with special lisp names.
 fn map_global_fn(name: &str) -> String {
+    // near_storage_get → near/storage_get (namespace prefix convention)
+    if let Some(rest) = name.strip_prefix("near_") {
+        return format!("near/{}", snake(rest));
+    }
     match name {
         "strToNum" => "str->num".into(),
         "toStr" | "toString" => "to-string".into(),
