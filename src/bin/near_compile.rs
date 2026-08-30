@@ -1281,8 +1281,8 @@ async fn run_create_async(args: &[String]) {
     // CreateAccount (0) + Transfer (3) + AddKey (5) = 3 actions
     tx_body.extend_from_slice(&3u32.to_le_bytes()); // action count
     tx_body.push(0x00); // CreateAccount
-    tx_body.push(0x03); // Transfer (5 NEAR = 5_000_000_000_000_000_000_000_000 yocto)
-    tx_body.extend_from_slice(&5_000_000_000_000_000_000_000_000u128.to_le_bytes());
+    tx_body.push(0x03); // Transfer (1 NEAR — 5N exceeded funder free balance + state stake)
+    tx_body.extend_from_slice(&1_000_000_000_000_000_000_000_000u128.to_le_bytes());
     tx_body.push(0x05); // AddKey
                         // PublicKey: ED25519 tag + 32 bytes
     tx_body.push(0x00);

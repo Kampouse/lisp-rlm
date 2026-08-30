@@ -52,5 +52,8 @@
 (define (read-atom s pos) (let* ((e (atom-end s pos))) (let* ((tok (str-slice s pos e))) (if (= (str-to-num tok) 0) (if (str_eq tok "0") (my-cons (num-box 0) (my-cons e 0)) (my-cons (sym-box (sym-code tok)) (my-cons e 0))) (my-cons (num-box (str-to-num tok)) (my-cons e 0))))))
 (define (read-list s pos) (let* ((p (skip-ws s pos))) (if (>= p (str-len s)) 0 (if (str_eq (char-at s p) ")") (my-cons 0 (my-cons (+ p 1) 0)) (let* ((r (read-form s p))) (if (null? r) 0 (let* ((fst (cell-val r))) (let* ((rst (cell-cdr r))) (let* ((np (cell-val rst))) (let* ((rr (read-list s np))) (if (null? rr) 0 (my-cons (my-cons fst (cell-val rr)) (cell-cdr rr)))))))))))))
 (define (read-form s pos) (let* ((p (skip-ws s pos))) (if (>= p (str-len s)) 0 (if (str_eq (char-at s p) "(")  (read-list s (+ p 1)) (read-atom s p)))))
-(define (do-eval) (let* ((e (heap-init))) (let* ((src (near/input))) (let* ((r (read-form src 0))) (let* ((ast (cell-val r))) (let* ((env (setup-env))) (near/return_str (itoa (+ (cell-val (my-eval ast env)) 0)))))))))
+;; JSON args unwrap: near-cli sends {"program":"..."} — extract the raw program
+;; if the input is wrapped, else treat input as the program itself.
+(define (json-prog s) (let* ((l (str-len s))) (if (str_eq (str-slice s 0 1) "{") (str-slice s 12 (- l 2)) s)))
+(define (do-eval) (let* ((e (heap-init))) (let* ((srcrev (near/input))) (let* ((src (json-prog srcrev))) (let* ((r (read-form src 0))) (let* ((ast (cell-val r))) (let* ((env (setup-env))) (near/return_str (itoa (+ (cell-val (my-eval ast env)) 0))))))))))
 (export "eval" do-eval true)
