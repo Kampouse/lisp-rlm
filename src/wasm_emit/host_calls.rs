@@ -133,17 +133,14 @@ impl WasmEmitter {
         v.push(Instruction::LocalSet(neg_i));
         v.push(Instruction::I64Const(0));
         v.push(Instruction::LocalSet(len_i));
-        // In P2/WASI mode, allocate from runtime heap to avoid fixed buffer corruption in recursive calls.
-        // In NEAR mode, use compile-time fixed buffer (backward compatible).
-        if self.p2_mode || self.wasi_mode {
-            v.extend(self.heap_bump_runtime(64, "__its2_dst"));
-            // dst already set by heap_bump_runtime
-        } else {
-            let alloc_base = self.next_data_offset.max(3072);
-            self.next_data_offset = (alloc_base + 64) & !7;
-            v.push(Instruction::I64Const(alloc_base as i64));
-            v.push(Instruction::LocalSet(dst_i));
-        }
+        // ALWAYS allocate from the runtime heap (2026-08-30): the old NEAR-mode
+        // compile-time site (next_data_offset.max(3072)) collided with other
+        // static-site allocators (str-concat sites at .max(3072), str-split
+        // delimiter data at .max(4096)) — layout-dependent heap corruption:
+        // a to-string result stored in an array came back as tagged-byte
+        // garbage (run_g '10,21,8590263846'). Site reuse was also unsound for
+        // any result that OUTLIVES the call (array slots, later joins).
+        v.extend(self.heap_bump_runtime(64, "__its2_dst"));
         // Handle negative
         v.push(Instruction::LocalGet(n_i));
         v.push(Instruction::I64Const(0));

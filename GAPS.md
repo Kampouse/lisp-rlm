@@ -625,3 +625,44 @@ keep it in the u128 string family end to end.
 - Verified on-chain (lisp5.kampy.testnet): success path stores
   `pull-1|{"hyperliquid":...}`; nonexistent-method path stores `pull-bad|FAIL`
   (fail-closed + tag correlation in one proof).
+
+## OPEN (2026-08-30): layout-dependent heap corruption in str-join/let paths (TS arrays)
+
+**Status**: real, reproducible, NOT yet root-caused. Blocks on-chain array-storage
+patterns (ballot-style vote loops) until fixed. Pure-array tests (args in → filter
+→ join out) pass; corruption appears when join results are let-bound or modules
+grow past a layout threshold.
+
+**Repros** (all post to-string-rtheap fix, commit pending):
+1. `/tmp/mini3.ts` `vote2` — `const j = counts.join(","); storageSet(k, j)` →
+   storage becomes `,,,,,,,,,,,,,,,,` while the IDENTICAL `vote1` (join inline in
+   storageSet + second inline join as return) → `2,0,1,0,0,0,0,0` ✓
+2. `/tmp/mini.ts` `run_g` — `10,21,nil` (slot-3 view becomes TAG_NIL) — before
+   the to-string fix it was `10,21,8590263846` (tagged bytes as string)
+3. `/tmp/ballot` vote loop → counts corrupt on read-back
+
+**Ruled out**:
+- pure-lisp equivalent of run_g compiles+runs CLEAN (same IR shape, small module)
+  → TS-lowered module layout is a factor
+- every single-sibling module (run_a+run_g+X) CLEAN — needs cumulative layout
+- `int_to_str_clean` NEAR static-site (fixed 2026-08-30: now always rtheap —
+  that fix changed the failure mode garbage→nil, proving residual overlap)
+- heap_bump_runtime / emit_runtime_alloc_dyn / storage_get allocs individually
+  (aligned, guard-checked, verified by reading)
+
+**Prime suspects** (static-site allocator class — `.max(FLOOR)` bases sharing
+next_data_offset across DIFFERENT floors, and one "advance later" that may never
+advance):
+- `call_string.rs:316` — site advance by 8 for an 8-byte use ✓ probably fine
+- `call_string.rs:1872` — 16-byte site, advance 16 ✓
+- `call_string.rs:2635` — `alloc_base = next_data_offset.max(3072); // advance
+  next_data_offset LATER` — VERIFY the later advance actually happens on all
+  paths; if the reservation size at runtime exceeds the advanced amount →
+  clobbers the NEXT static allocation (literals/delimiters)
+- `str_join_emit` separator at `.max(4096)` vs concat sites at `.max(3072)` —
+  two floors over one counter: any site that forgets to advance makes the other
+  floor's base collide with it
+
+**Next step**: instrument or disassemble a minimal repro (wasm-tools print),
+watch mem[56] + the array region; or convert the remaining static-site
+allocators (2635 class) to rtheap unconditionally and re-test vote2/run_g/ballot.
