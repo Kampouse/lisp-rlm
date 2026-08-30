@@ -78,10 +78,28 @@ impl WasmEmitter {
                         if a.len() < 2 {
                             return Err(());
                         }
-                        // Condition must itself be a raw comparison — it may
-                        // reference raw locals, so the generic path is unsafe.
-                        let mut v = self.int_cond(&a[0], int_locals, depth + 1)?;
-                        v.extend(self.emit_cond_branch());
+                        // Condition must be a raw comparison: cmp leaves an
+                        // i32, and wasm `If` consumes i32 natively — no
+                        // bool-tag round-trip needed at all.
+                        let LispVal::List(cl) = &a[0] else {
+                            return Err(());
+                        };
+                        if cl.len() != 3 {
+                            return Err(());
+                        }
+                        let LispVal::Sym(cop) = &cl[0] else {
+                            return Err(());
+                        };
+                        let cmp_op = match cop.as_str() {
+                            "<" => Instruction::I64LtS,
+                            ">" => Instruction::I64GtS,
+                            "<=" => Instruction::I64LeS,
+                            ">=" => Instruction::I64GeS,
+                            _ => return Err(()),
+                        };
+                        let mut v = self.int_expr(&cl[1], int_locals, depth + 1)?;
+                        v.extend(self.int_expr(&cl[2], int_locals, depth + 1)?);
+                        v.push(cmp_op); // i32 condition
                         v.push(Instruction::If(BlockType::Result(ValType::I64)));
                         v.extend(self.int_expr(&a[1], int_locals, depth + 1)?);
                         v.push(Instruction::Else);
