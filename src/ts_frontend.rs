@@ -181,9 +181,34 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, LispVal
 
     let mut define_items = Vec::new();
     let mut sig = vec![Sym(name.clone())];
+    let lisp_param_count = params.len();
     sig.extend(params);
     define_items.push(Sym("define"));
     define_items.push(list(sig));
+
+    // Emit a `::` annotation when every TS param maps 1:1 onto the lowered
+    // lisp params (helpers) or the function takes no params (exported fns
+    // read args from JSON, so their lisp arity is 0), and the return is
+    // annotated with a supported type. `void` returns skip the annotation.
+    let param_anns: Vec<Option<&str>> = f
+        .params
+        .items
+        .iter()
+        .map(|p| ts_ann_to_lisp(p.type_annotation.as_ref().map(|v| &**v)))
+        .collect();
+    let ret_ann = ts_ann_to_lisp(f.return_type.as_ref().map(|v| &**v));
+    let complete = param_anns.len() == lisp_param_count // lisp params == TS params
+        && param_anns.iter().all(|a| a.is_some())
+        && ret_ann.is_some();
+    if complete {
+        define_items.push(Sym("::".to_string()));
+        for a in param_anns.iter().map(|a| a.unwrap()) {
+            define_items.push(Sym(a.to_string()));
+        }
+        define_items.push(Sym("->".to_string()));
+        define_items.push(Sym(ret_ann.unwrap().to_string()));
+    }
+
     define_items.push(expr);
     Ok((name, list(define_items)))
 }
@@ -993,6 +1018,18 @@ fn param_is_number(p: &FormalParameter<'_>) -> bool {
     match &p.type_annotation {
         Some(a) => matches!(&a.type_annotation, TSType::TSNumberKeyword(_)),
         None => false,
+    }
+}
+
+/// Map a TS type annotation to the lisp IR's annotation vocabulary.
+/// Returns None for `void` / missing / unsupported annotations.
+fn ts_ann_to_lisp(t: Option<&oxc_ast::ast::TSTypeAnnotation<'_>>) -> Option<&'static str> {
+    let a = t?;
+    match &a.type_annotation {
+        TSType::TSNumberKeyword(_) => Some("int"),
+        TSType::TSStringKeyword(_) => Some("str"),
+        TSType::TSBooleanKeyword(_) => Some("bool"),
+        _ => None,
     }
 }
 

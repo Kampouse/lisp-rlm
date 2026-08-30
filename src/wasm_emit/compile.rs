@@ -721,14 +721,16 @@ fn parse_and_compile_opts(
                                                 _ => Err("param must be symbol".into()),
                                             })
                                             .collect::<Result<_, String>>()?;
-                                        let body = if items.len() > 3 {
+                                        let (_ann2, body_items2) =
+                                            crate::helpers::split_define_annotation(&items[2..]);
+                                        let body = if body_items2.len() > 1 {
                                             LispVal::List(
                                                 std::iter::once(LispVal::Sym("begin".into()))
-                                                    .chain(items[2..].iter().cloned())
+                                                    .chain(body_items2.iter().cloned())
                                                     .collect(),
                                             )
                                         } else {
-                                            items[2].clone()
+                                            body_items2.first().cloned().unwrap_or(LispVal::Nil)
                                         };
                                         em.emit_define(name, &params, &body)?;
                                     }
@@ -1150,12 +1152,14 @@ pub fn compile_near_from_exprs(exprs: &[LispVal]) -> Result<Vec<u8>, String> {
                                     _ => Err("param must be symbol".into()),
                                 })
                                 .collect::<Result<_, String>>()?;
-                            let body = if items.len() > 3 {
+                            let (_ann, body_items) =
+                                crate::helpers::split_define_annotation(&items[2..]);
+                            let body = if body_items.len() > 1 {
                                 let mut b = vec![LispVal::Sym("begin".into())];
-                                b.extend(items[2..].iter().cloned());
+                                b.extend(body_items.iter().cloned());
                                 LispVal::List(b)
                             } else {
-                                items[2].clone()
+                                body_items.first().cloned().unwrap_or(LispVal::Nil)
                             };
                             em.emit_define(name, &params, &body)?;
                         }

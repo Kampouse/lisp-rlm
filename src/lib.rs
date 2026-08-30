@@ -42,7 +42,7 @@ pub mod program;
 pub mod tagged_value;
 pub mod ts_frontend;
 pub mod types;
-mod typing;
+pub mod typing;
 pub mod verifier;
 pub mod wasi;
 pub mod wasm_emit;
@@ -52,7 +52,7 @@ pub use bytecode::{exec_compiled_loop, run_compiled_lambda, try_compile_lambda, 
 pub use dispatch::lisp_eval;
 #[cfg(not(target_arch = "wasm32"))]
 pub use dispatch::llm_provider::{GenericProvider, LlmProvider, LlmResponse};
-pub use helpers::{is_builtin_name, is_truthy};
+pub use helpers::{is_builtin_name, is_truthy, split_define_annotation};
 pub use parser::parse_all;
 pub use parser::parse_all_spanned;
 pub use parser::Spanned;

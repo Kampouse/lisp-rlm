@@ -336,7 +336,9 @@ fn parse_type_list(elems: &[LispVal]) -> Result<TcType, String> {
         .collect();
 
     let args = args?;
-    if args.is_empty() {
+    if args.is_empty() && last_arrow != 0 {
+        // nilary arrow `-> ret` is fine (last_arrow == 0);
+        // otherwise there were stray types before a leading ->
         return Err("arrow type: missing argument types".into());
     }
 
@@ -1539,21 +1541,49 @@ pub fn type_check_program(exprs: &[LispVal], near: bool) -> Result<(), String> {
                                 })
                                 .collect();
 
-                            // Build body (handle multi-body defines)
-                            let body = if list.len() > 3 {
+                            // Build body (handle multi-body defines; skip `::` annotations)
+                            let (ann_parts, body_items) =
+                                crate::helpers::split_define_annotation(&list[2..]);
+                            let annotated_type = match &ann_parts {
+                                Some(parts) => Some(parse_type_annotation(&LispVal::List(
+                                    parts.clone(),
+                                ))?),
+                                None => None,
+                            };
+                            let body = if body_items.len() > 1 {
                                 LispVal::List(
                                     std::iter::once(LispVal::Sym("begin".into()))
-                                        .chain(list[2..].iter().cloned())
+                                        .chain(body_items.iter().cloned())
                                         .collect(),
                                 )
                             } else {
-                                list[2].clone()
+                                body_items.first().cloned().unwrap_or(LispVal::Nil)
                             };
+
+                            // Annotation drives param types when present
+                            if let Some(TcType::Arrow(args, _ret)) = &annotated_type {
+                                if args.len() != params.len() {
+                                    return Err(format!(
+                                        "define {}: annotation has {} params, function has {}",
+                                        name,
+                                        args.len(),
+                                        params.len()
+                                    ));
+                                }
+                            } else if let Some(other) = &annotated_type {
+                                return Err(format!(
+                                    "define {}: expected arrow type annotation, got {}",
+                                    name, other
+                                ));
+                            }
 
                             // Create fresh type vars for params
                             let mut check_env = env.clone();
                             let mut subst = Subst::new();
-                            let ret_var = supply.fresh();
+                            let ret_var = match &annotated_type {
+                                Some(TcType::Arrow(_, ret)) => (**ret).clone(),
+                                _ => supply.fresh(),
+                            };
                             let any_ty = TcType::Con(TcCon::Any);
                             let mut param_types: Vec<TcType> = Vec::with_capacity(params.len());
 
@@ -1566,6 +1596,8 @@ pub fn type_check_program(exprs: &[LispVal], near: bool) -> Result<(), String> {
                             for (i, _p) in params.iter().enumerate() {
                                 if i == 0 && is_self_param {
                                     param_types.push(any_ty.clone());
+                                } else if let Some(TcType::Arrow(args, _)) = &annotated_type {
+                                    param_types.push(args[i].clone());
                                 } else {
                                     param_types.push(supply.fresh());
                                 }
@@ -1596,6 +1628,15 @@ pub fn type_check_program(exprs: &[LispVal], near: bool) -> Result<(), String> {
 
                             // Infer body — errors propagate as compile errors
                             let _body_type = infer(&body, &check_env, &mut supply, &mut subst)?;
+
+                            // Verify body against the annotation's return type
+                            if let Some(TcType::Arrow(_, ann_ret)) = &annotated_type {
+                                let inferred_ret = subst.apply(&_body_type);
+                                let declared_ret = subst.apply(ann_ret);
+                                unify(&inferred_ret, &declared_ret).map_err(|e| {
+                                    format!("define {}: type error — {}", name, e)
+                                })?;
+                            }
 
                             // Register inferred type for later defines
                             let resolved_params: Vec<TcType> =

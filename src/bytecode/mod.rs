@@ -44,10 +44,15 @@ fn desugar_define(d: &LispVal) -> Option<(String, LispVal)> {
                         _ => return None,
                     };
                     let params = sig[1..].to_vec();
+                    // Skip `::` type annotations: (define (f x) :: int body)
+                    let body_items = {
+                        let (_ann, b) = crate::helpers::split_define_annotation(&l[2..]);
+                        b.to_vec()
+                    };
                     let lam = LispVal::List(
                         std::iter::once(LispVal::Sym("lambda".into()))
                             .chain(std::iter::once(LispVal::List(params)))
-                            .chain(l[2..].iter().cloned())
+                            .chain(body_items.into_iter())
                             .collect(),
                     );
                     Some((name, lam))

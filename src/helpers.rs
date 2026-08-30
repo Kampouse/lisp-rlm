@@ -775,3 +775,22 @@ pub fn lookup_constructor(name: &str) -> Option<TypeVariant> {
 pub fn clear_type_registry() {
     TYPE_REGISTRY.with(|reg| reg.borrow_mut().clear());
 }
+
+/// Split a define's trailing items into (optional type annotation, body items).
+///
+/// Supports the `::` annotation form shared by the checker and frontends:
+///   (define (f x y) :: int int -> int BODY)
+/// When the first item is `::`, the annotation is everything up to the last
+/// item, and the body is the last item (single-expression body required).
+/// Without `::`, all items are the body (multi-body defines stay supported).
+pub fn split_define_annotation(rest: &[LispVal]) -> (Option<Vec<LispVal>>, &[LispVal]) {
+    if rest.len() >= 3 {
+        if let LispVal::Sym(s) = &rest[0] {
+            if s == "::" {
+                let ann = rest[1..rest.len() - 1].to_vec();
+                return (Some(ann), &rest[rest.len() - 1..]);
+            }
+        }
+    }
+    (None, rest)
+}
