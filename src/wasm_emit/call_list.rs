@@ -817,16 +817,18 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(ma));
                 v.push(Instruction::LocalSet(n_tmp));
-                // Alloc new array at heap (fixed max allocation since count is runtime)
-                let alloc_size = 64 * 8;
-                if self.p2_mode || self.wasi_mode {
-                    v.extend(self.heap_bump_runtime(alloc_size, "__map_alloc"));
-                    v.push(Instruction::LocalGet(self.local_idx("__map_alloc")));
-                } else {
-                    let new_heap = self.heap_bump(alloc_size);
-                    v.push(Instruction::I64Const(new_heap as i64));
-                }
-                v.push(Instruction::LocalSet(new_ptr));
+                // 2026-08-30: dynamic sizing — the old fixed 64*8 buffer
+                // overflowed for inputs >63 elems (count field said 500 but
+                // only 64 slots existed → heap corruption / silent zeros:
+                // reduce-over-500 returned 0). Size = (n+1)*8 at runtime.
+                let bytes_tmp = self.local_idx("__map_bytes");
+                v.push(Instruction::LocalGet(n_tmp));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalSet(bytes_tmp));
+                v.extend(self.emit_rtheap_alloc(new_ptr, bytes_tmp));
                 // Store count at new[0]
                 v.push(Instruction::LocalGet(new_ptr));
                 v.push(Instruction::I32WrapI64);
@@ -914,15 +916,16 @@ impl WasmEmitter {
                 v.push(Instruction::I64Load(ma));
                 v.push(Instruction::LocalSet(n_tmp));
                 // Alloc new array
-                let alloc_size = (1 + 64) * 8;
-                if self.p2_mode || self.wasi_mode {
-                    v.extend(self.heap_bump_runtime(alloc_size, "__fil_alloc"));
-                    v.push(Instruction::LocalGet(self.local_idx("__fil_alloc")));
-                } else {
-                    let new_heap = self.heap_bump(alloc_size);
-                    v.push(Instruction::I64Const(new_heap as i64));
-                }
-                v.push(Instruction::LocalSet(new_ptr));
+                // 2026-08-30: dynamic sizing (see map) — fixed (1+64)*8
+                // overflowed for >64 passing elements.
+                let bytes_tmp = self.local_idx("__fil_bytes");
+                v.push(Instruction::LocalGet(n_tmp));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalSet(bytes_tmp));
+                v.extend(self.emit_rtheap_alloc(new_ptr, bytes_tmp));
                 // Store initial count 0
                 v.push(Instruction::LocalGet(new_ptr));
                 v.push(Instruction::I32WrapI64);
