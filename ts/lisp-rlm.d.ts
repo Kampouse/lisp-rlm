@@ -73,6 +73,8 @@ declare const near: {
 
   // args / returns
   jsonGetStr(key: string): string | null;
+  /** {"k": ["a","b"]} → LispArr<string>; max 64 elements, nil if missing */
+  jsonArr(key: string): LispArr<string>;
   jsonGetInt(key: string): number | null;
   jsonReturnStr(v: string): void;
   jsonReturnInt(v: number): void;

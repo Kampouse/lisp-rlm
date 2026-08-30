@@ -24,6 +24,13 @@ impl WasmEmitter {
                     _ => Err("near/json_get_u128 key must be a string literal".into()),
                 }
             }
+            "near/json_get_arr" => {
+                if a.is_empty() { return Err("near/json_get_arr requires a string key argument".into()); }
+                match &a[0] {
+                    LispVal::Str(key) => self.json_get_arr(key),
+                    _ => Err("near/json_get_arr key must be a string literal".into()),
+                }
+            }
             "near/json_get_str" => {
                 if a.is_empty() { return Err("near/json_get_str requires a string key argument".into()); }
                 match &a[0] {

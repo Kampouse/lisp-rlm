@@ -139,10 +139,18 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, LispVal
         .ok_or("ts_frontend: anonymous functions unsupported (M1)")?;
 
     let mut params = Vec::new();
-    let mut param_names: Vec<(String, bool)> = Vec::new(); // (name, is_number)
+    // (name, kind): 0 = string, 1 = number, 2 = string[]
+    let mut param_names: Vec<(String, u8)> = Vec::new();
     for p in &f.params.items {
         let n = binding_name(&p.pattern)?;
-        param_names.push((n.clone(), param_is_number(p)));
+        let kind = if param_is_number(p) {
+            1
+        } else if param_is_str_array(p) {
+            2
+        } else {
+            0
+        };
+        param_names.push((n.clone(), kind));
     }
 
     let body = f
@@ -160,12 +168,12 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, LispVal
         if !param_names.is_empty() {
             let bindings = param_names
                 .iter()
-                .map(|(n, num)| {
+                .map(|(n, kind)| {
                     let get = list(vec![Sym("near/json_get_str"), Str(n.clone())]);
-                    let v = if *num {
-                        list(vec![Sym("str->num"), get])
-                    } else {
-                        get
+                    let v = match kind {
+                        1 => list(vec![Sym("str->num"), get]),
+                        2 => list(vec![Sym("near/json_get_arr"), Str(n.clone())]),
+                        _ => get,
                     };
                     list(vec![Sym(n.clone()), v])
                 })
@@ -1485,6 +1493,10 @@ fn map_member_fn(obj: &str, prop: &str) -> String {
         // lisp lib predates the snake convention here
         return "near/deposit-gte".into();
     }
+    if obj == "near" && prop == "jsonArr" {
+        // json array args: {"k": ["a","b"]} → TAG_ARRAY of strings
+        return "near/json_get_arr".into();
+    }
     format!("{}/{}", obj, snake(prop))
 }
 
@@ -1506,6 +1518,17 @@ fn map_builtin_call(name: &str) -> String {
         _ => return name.to_string(),
     }
     .to_string()
+}
+
+fn param_is_str_array(p: &FormalParameter<'_>) -> bool {
+    match &p.type_annotation {
+        Some(a) => matches!(
+            &a.type_annotation,
+            TSType::TSArrayType(arr)
+                if matches!(&arr.element_type, TSType::TSStringKeyword(_))
+        ),
+        None => false,
+    }
 }
 
 fn param_is_number(p: &FormalParameter<'_>) -> bool {
