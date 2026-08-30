@@ -16,7 +16,7 @@
 //!   ✓ ! - unary, ++/-- (expression value)
 //!   ✓ calls: bare identifiers + member calls via builtin mapping
 //!   ✓ string methods: .length, .slice(), .startsWith(), .indexOf(), .includes()
-//!   ✓ arrays: [a, b, c] → (list ...) [interpreter only, not WASM]
+//!   ✓ arrays: [a, b, c] → (list ...), arr[i] → (nth arr i)
 //!   ✓ arrow functions: (a, b) => expr, (a) => { stmts }
 //!   ✓ object literals: { key: val } → (json-obj (pair "key" val))
 //!   ✗ classes, async, destructuring, optional chaining,

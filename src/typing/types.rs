@@ -454,6 +454,16 @@ impl TcEnv {
                 Box::new(TcType::Con(TcCon::Num)),
             ),
         );
+        // str= / str!= : string equality (TS frontend M2)
+        for name in &["str=", "str!="] {
+            env.insert_mono(
+                name.to_string(),
+                TcType::Arrow(
+                    vec![TcType::Con(TcCon::Str), TcType::Con(TcCon::Str)],
+                    Box::new(TcType::Con(TcCon::Bool)),
+                ),
+            );
+        }
         env.insert_mono(
             "str-contains".to_string(),
             // Bool, not Int (wasm-fuzz find #4, 2026-08-27): the emitted
@@ -1295,6 +1305,15 @@ impl TcEnv {
         env.insert_mono("vec-nth".into(), TcType::Arrow(vec![any_arr_ty.clone(), int_ty.clone()], Box::new(TcType::Con(TcCon::Any))));
         env.insert_mono("vec-length".into(), TcType::Arrow(vec![any_arr_ty.clone()], Box::new(int_ty.clone())));
         env.insert_mono("vec-push".into(), TcType::Arrow(vec![any_arr_ty.clone(), TcType::Con(TcCon::Any)], Box::new(any_arr_ty.clone())));
+        // lisp-rlm list builtins (emitter: call_list.rs)
+        env.insert_mono("list".into(), TcType::Arrow(vec![any_ty.clone(), any_ty.clone(), any_ty.clone()], Box::new(any_arr_ty.clone())));
+        env.insert_mono("nth".into(), TcType::Arrow(vec![any_arr_ty.clone(), int_ty.clone()], Box::new(TcType::Con(TcCon::Any))));
+        env.insert_mono("len".into(), TcType::Arrow(vec![any_arr_ty.clone()], Box::new(int_ty.clone())));
+        env.insert_mono("car".into(), TcType::Arrow(vec![any_arr_ty.clone()], Box::new(TcType::Con(TcCon::Any))));
+        env.insert_mono("cdr".into(), TcType::Arrow(vec![any_arr_ty.clone()], Box::new(any_arr_ty.clone())));
+        env.insert_mono("cons".into(), TcType::Arrow(vec![TcType::Con(TcCon::Any), any_arr_ty.clone()], Box::new(any_arr_ty.clone())));
+        env.insert_mono("append".into(), TcType::Arrow(vec![any_arr_ty.clone(), any_arr_ty.clone()], Box::new(any_arr_ty.clone())));
+        env.insert_mono("array".into(), TcType::Arrow(vec![any_ty.clone(), any_ty.clone(), any_ty.clone()], Box::new(any_arr_ty.clone())));
 
         // NEAR storage (emitter names)
         env.insert_mono(
