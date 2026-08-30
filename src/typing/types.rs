@@ -429,6 +429,30 @@ impl TcEnv {
                 Box::new(TcType::Con(TcCon::Str)),
             ),
         );
+        // byte-at: (byte-at s i) -> byte code at index i (0 if out of range).
+        // Numeric char access for symbol interning in lisp-written interpreters —
+        // without it, tokens ≥2 chars cannot get distinct hash codes. (2026-08-29)
+        // Result is Num (tagged arithmetic value), index accepts Int (literal) or Num.
+        env.insert_mono(
+            "byte-at".to_string(),
+            TcType::Arrow(
+                vec![
+                    TcType::Con(TcCon::Str),
+                    TcType::Con(TcCon::Num),
+                ],
+                Box::new(TcType::Con(TcCon::Num)),
+            ),
+        );
+        env.insert_mono(
+            "byte-at".to_string(),
+            TcType::Arrow(
+                vec![
+                    TcType::Con(TcCon::Str),
+                    TcType::Con(TcCon::Int),
+                ],
+                Box::new(TcType::Con(TcCon::Num)),
+            ),
+        );
         env.insert_mono(
             "str-contains".to_string(),
             // Bool, not Int (wasm-fuzz find #4, 2026-08-27): the emitted

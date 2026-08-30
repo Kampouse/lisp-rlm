@@ -554,6 +554,66 @@ impl WasmEmitter {
                 v.push(Instruction::End);
                 Ok(v)
             }
+            "byte-at" => {
+                // (byte-at s i) -> u8 code of byte i, or 0 if out of range.
+                // Enables numeric char access for symbol interning in lisp-written interpreters.
+                // String descriptor: untagged = (len << 32) | ptr. No allocation, no locals.
+                if a.len() != 2 {
+                    return Err("byte-at: expected 2 args (string, index)".into());
+                }
+                let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                // raw on stack; evaluate index, untag; stack: raw idx
+                v.extend(self.expr(&a[1])?);
+                v.extend(self.emit_untag());
+                // bounds: local.get both? avoid locals: compute via stack with i32 ops.
+                // stack: (len<<32|ptr) idx  — wrap ptr to i32 after saving len? Use dup-free sequencing:
+                // 1) clone raw via LocalSet? No locals declared here... use LocalTee pattern with temps:
+                // Simpler: since stack can't dup, use local slots — call_string's fn has generic locals
+                // via local_idx("__xx"). Declare two:
+                let raw_i = self.local_idx("__ba_raw");
+                let idx_i = self.local_idx("__ba_idx");
+                v = Vec::new();
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(raw_i));
+                v.extend(self.expr(&a[1])?);
+                v.extend(self.emit_untag());
+                // clamp: idx >= len → 0    (len = raw >> 32)
+                v.push(Instruction::LocalGet(raw_i));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalTee(idx_i)); // idx on stack (saved too? LocalTee stores)
+                // oops: need raw's len above idx: reorder — store idx FIRST then compare
+                v = Vec::new();
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(raw_i));
+                v.extend(self.expr(&a[1])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(idx_i));
+                // if idx >= len → result 0 else load8_u(ptr + idx)
+                v.push(Instruction::LocalGet(idx_i));
+                v.push(Instruction::LocalGet(raw_i));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64GeU);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::Else);
+                v.push(Instruction::LocalGet(raw_i));
+                v.push(Instruction::I32WrapI64);   // ptr (low 32 bits)
+                v.push(Instruction::LocalGet(idx_i));
+                v.push(Instruction::I32WrapI64);   // idx
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma8));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::End);
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
             "str-len" => {
                 if a.len() != 1 {
                     return Err("str-len: expected 1 arg".into());
@@ -4310,6 +4370,7 @@ impl WasmEmitter {
         let idx_i = self.local_idx_i32("__stn_idx");
         let acc_i = self.local_idx("__stn_acc");
         let ch_i = self.local_idx_i32("__stn_ch");
+        let all_i = self.local_idx_i32("__stn_all"); // 1 iff every char so far is a digit
         let mut v = Vec::new();
 
         // Evaluate arg (tagged string)
@@ -4331,11 +4392,33 @@ impl WasmEmitter {
         v.push(Instruction::I32WrapI64);
         v.push(Instruction::LocalSet(len_i));
 
-        // Initialize: idx=0, acc=0
+        // Initialize: idx=0, acc=0, neg=0, all-digits=1
+        let neg_i = self.local_idx_i32("__stn_neg");
         v.push(Instruction::I64Const(0));
         v.push(Instruction::LocalSet(acc_i));
         v.push(Instruction::I32Const(0));
         v.push(Instruction::LocalSet(idx_i));
+        v.push(Instruction::I32Const(0));
+        v.push(Instruction::LocalSet(neg_i));
+        v.push(Instruction::I32Const(1));
+        v.push(Instruction::LocalSet(all_i));
+        // Leading '-'? (matches the interpreter's i64 parse; before this fix
+        // the sign was silently DROPPED: str->num "-5" = 5)
+        v.push(Instruction::LocalGet(len_i));
+        v.push(Instruction::I32Const(0));
+        v.push(Instruction::I32GtS);
+        v.push(Instruction::If(wasm_encoder::BlockType::Empty));
+        v.push(Instruction::LocalGet(ptr_i));
+        v.push(Instruction::I32Load8U(ma));
+        v.push(Instruction::I32Const(45)); // '-'
+        v.push(Instruction::I32Eq);
+        v.push(Instruction::If(wasm_encoder::BlockType::Empty));
+        v.push(Instruction::I32Const(1));
+        v.push(Instruction::LocalSet(neg_i));
+        v.push(Instruction::I32Const(1));
+        v.push(Instruction::LocalSet(idx_i));
+        v.push(Instruction::End);
+        v.push(Instruction::End);
 
         // Loop: while idx < len
         // block B2
@@ -4377,6 +4460,10 @@ impl WasmEmitter {
             v.push(Instruction::I64Add);
             v.push(Instruction::LocalSet(acc_i));
 
+        v.push(Instruction::Else);
+            v.push(Instruction::I32Const(0));
+            v.push(Instruction::LocalSet(all_i));
+
         v.push(Instruction::End); // end if
 
         // idx++
@@ -4390,6 +4477,24 @@ impl WasmEmitter {
         v.push(Instruction::End); // end loop L3
         v.push(Instruction::End); // end block B2
 
+        // If any non-digit was seen, the whole result is 0 (strict numeric parse)
+        v.push(Instruction::LocalGet(all_i));
+        v.push(Instruction::I32Eqz);
+        v.push(Instruction::If(wasm_encoder::BlockType::Empty));
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::LocalSet(acc_i));
+        v.push(Instruction::End);
+
+        // Negate if leading '-'
+        v.push(Instruction::LocalGet(neg_i));
+        v.push(Instruction::I32Const(0));
+        v.push(Instruction::I32Ne);
+        v.push(Instruction::If(wasm_encoder::BlockType::Empty));
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::LocalGet(acc_i));
+        v.push(Instruction::I64Sub);
+        v.push(Instruction::LocalSet(acc_i));
+        v.push(Instruction::End);
         // Return tagged number
         v.push(Instruction::LocalGet(acc_i));
         v.extend(self.emit_tag_num());
