@@ -626,9 +626,20 @@ keep it in the u128 string family end to end.
   `pull-1|{"hyperliquid":...}`; nonexistent-method path stores `pull-bad|FAIL`
   (fail-closed + tag correlation in one proof).
 
-## OPEN (2026-08-30): layout-dependent heap corruption in str-join/let paths (TS arrays)
+## SOLVED (2026-08-30 evening): layout-dependent heap corruption — ROOT CAUSE was mem[56] init
 
-**Status**: real, reproducible, NOT yet root-caused. Blocks on-chain array-storage
+**Fix**: heap_ptr_i32() now syncs heap_ptr = max(heap_ptr, next_data_offset) at the
+mem[56] data-segment emit, so the runtime heap ALWAYS starts above every static.
+Old behavior: mem[56] = compile-time heap_ptr, but literals placed after the last
+heap_bump() only advanced next_data_offset → runtime heap started BELOW statics →
+first runtime alloc clobbered literals/delimiter bytes (position-dependent garbage:
+vote2 ',,,,', run_g '10,21,nil', strCat 'E(').
+
+**Bonus fix same day**: generic export wrapper's TAG_STR arm returned the RAW tagged
+i64 (8 bytes of tag bits) — raw-lisp `:: -> str` exports returned garbage. Now
+value_return(len, view_ptr) — host copies the actual bytes.
+
+**Status**: real, root-caused, FIXED — ballot/strCat/vote/run_g all green. Blocks on-chain array-storage
 patterns (ballot-style vote loops) until fixed. Pure-array tests (args in → filter
 → join out) pass; corruption appears when join results are let-bound or modules
 grow past a layout threshold.

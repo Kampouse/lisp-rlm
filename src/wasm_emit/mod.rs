@@ -402,6 +402,18 @@ impl WasmEmitter {
     /// Return current heap_ptr as i32, initializing if needed.
     pub(crate) fn heap_ptr_i32(&mut self) -> i32 {
         self.ensure_heap_init();
+        // 2026-08-30 THE layout bug, root-caused: the mem[56] init used
+        // self.heap_ptr, but literals/statics placed AFTER the last heap_bump()
+        // only advance next_data_offset. Runtime heap started BELOW those
+        // statics → the FIRST runtime alloc (str-join output, to-string,
+        // storage_get copy, str-cat dst) clobbered literals/delimiter data.
+        // Symptoms were position-dependent across modules (vote2 ',',,,,'
+        // run_g '10,21,nil' ballot corruption, strCat-only views returning
+        // data-segment bytes 'E('). Sync at read time — mem[56] init is now
+        // always ≥ every static ever placed.
+        if self.next_data_offset > self.heap_ptr {
+            self.heap_ptr = self.next_data_offset;
+        }
         self.heap_ptr as i32
     }
 

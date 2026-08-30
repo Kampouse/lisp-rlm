@@ -338,7 +338,7 @@ stitched module region at 1MiB. Split literals or shrink allocations",
             // meaningful entry points but can be pushed after __toplevel.
             if let Some(f) = self.funcs.iter().rev().find(|f| !f.name.starts_with("__h_")) {
                 let idx = internal_base + (self.funcs.len()-1) as u32;
-                let mut fb = Function::new(vec![(1u32, ValType::I64)]); // local 0 for result swapping
+                let mut fb = Function::new(vec![(2u32, ValType::I64)]); // locals 0,1 for result swapping
                                                                         // Pass default args: for each param, push 100000 (for tight loop benchmarking)
                 for _ in 0..f.param_count {
                     fb.instruction(&Instruction::I64Const(100000));
@@ -356,7 +356,7 @@ stitched module region at 1MiB. Split literals or shrink allocations",
                         .iter()
                         .find(|f| f.name.as_str() == fn_name.as_str());
                     let param_count = func.map(|f| f.param_count).unwrap_or(0);
-                    let mut fb = Function::new(vec![(1u32, ValType::I64)]); // local 0 for result swapping
+                    let mut fb = Function::new(vec![(2u32, ValType::I64)]); // locals 0,1 for result swapping
                     let ma = wasm_encoder::MemArg {
                         offset: 0,
                         align: 3,
@@ -414,21 +414,31 @@ stitched module region at 1MiB. Split literals or shrink allocations",
                             fb.instruction(&Instruction::I64Const(TEMP_MEM));
                             fb.instruction(&Instruction::Call(host_idx[&25])); // value_return
                             fb.instruction(&Instruction::Else);
-                            // Check for TAG_STR — store tagged value for TS decoding
+                            // Check for TAG_STR — return the string's actual bytes
                             fb.instruction(&Instruction::LocalGet(0));
                             fb.instruction(&Instruction::I64Const(7)); // tag mask
                             fb.instruction(&Instruction::I64And);
                             fb.instruction(&Instruction::I64Const(TAG_STR));
                             fb.instruction(&Instruction::I64Eq);
                             fb.instruction(&Instruction::If(BlockType::Empty));
-                            // TAG_STR: store full tagged value at TEMP_MEM so TS can decode the string
-                            fb.instruction(&Instruction::I64Const(TEMP_MEM));
+                            // TAG_STR (2026-08-30): the old arm stored the RAW
+                            // tagged i64 at TEMP_MEM and returned 8 bytes of it —
+                            // callers saw tag-bit garbage ('(' / 'E('). TS functions
+                            // never reach here (they wrap in json_return_str which
+                            // sets RETURN_FLAG); this arm serves raw-lisp :: -> str
+                            // exports. Return the view's bytes directly: the host
+                            // copies from contract memory, so value_return(len, ptr)
+                            // needs no copy. Stack order: len, then ptr.
+                            fb.instruction(&Instruction::LocalGet(0));
+                            fb.instruction(&Instruction::I64Const(TAG_BITS));
+                            fb.instruction(&Instruction::I64ShrU); // payload = (len<<32)|ptr
+                            fb.instruction(&Instruction::LocalTee(1)); // keep payload for ptr
+                            fb.instruction(&Instruction::I64Const(32));
+                            fb.instruction(&Instruction::I64ShrU); // len
+                            fb.instruction(&Instruction::LocalGet(1));
                             fb.instruction(&Instruction::I32WrapI64);
-                            fb.instruction(&Instruction::LocalGet(0)); // full tagged string value
-                            fb.instruction(&Instruction::I64Store(ma));
-                            fb.instruction(&Instruction::I64Const(8));
-                            fb.instruction(&Instruction::I64Const(TEMP_MEM));
-                            fb.instruction(&Instruction::Call(host_idx[&25])); // value_return
+                            fb.instruction(&Instruction::I64ExtendI32U); // ptr as i64
+                            fb.instruction(&Instruction::Call(host_idx[&25])); // value_return(len, ptr)
                             fb.instruction(&Instruction::Else);
                             // TAG_NUM/TAG_BOOL: untag, store, value_return
                             fb.instruction(&Instruction::I64Const(TEMP_MEM));
