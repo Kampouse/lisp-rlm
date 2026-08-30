@@ -1682,6 +1682,10 @@ fn map_member_fn(obj: &str, prop: &str) -> String {
         // lisp lib predates the snake convention here
         return "near/deposit-gte".into();
     }
+    if obj == "near" && prop == "callAwait" {
+        // lisp sugar form predates the snake convention (hyphen, not underscore)
+        return "near/call-await".into();
+    }
     if obj == "near" && prop == "jsonArr" {
         // json array args: {"k": ["a","b"]} → TAG_ARRAY of strings
         return "near/json_get_arr".into();

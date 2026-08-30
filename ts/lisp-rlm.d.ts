@@ -108,7 +108,17 @@ declare const near: {
   log(s: string): void;
   logNum(n: number): void;
   abort(msg: string): void;
-  // long-tail (promise batches, validators, ecrecover, random_seed, …)
+  // ── cross-contract (async promise machinery) ──
+  // callAwait: schedule an async call on `target`, then invoke `callback`
+  // (an exported fn on THIS contract) with the callee's result readable
+  // via near.promiseResult(0). Deposit fixed at 0 — use raw batches for payable.
+  callAwait(target: string, method: string, argsJson: string, gas: number,
+            callback: string, cbGas: number, cbArgsJson: string): void;
+  // inside a callback: read the callee's return ("0" = first promise result).
+  // Returns the raw value or NIL on failure — branch on it, fail closed.
+  promiseResult(idx: number): string;
+
+  // long-tail (raw promise batches, validators, ecrecover, random_seed, …)
   // exists at the lisp level but is not TS-declared yet — add typed
   // entries here in the same commit you first use one from TS.
 };
