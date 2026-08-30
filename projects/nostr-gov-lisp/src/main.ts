@@ -14,7 +14,7 @@ function die(m: string) {
 }
 
 function getStr(k: string) {
-  return near.storageGet(k);
+  return near.storageGet(k) ?? "";
 }
 
 function numStr(k: string) {

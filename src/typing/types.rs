@@ -141,8 +141,9 @@ pub enum TcCon {
     List(Box<TcType>),             // homogeneous list
     Map(Box<TcType>, Box<TcType>), // key → val
     Tuple(Vec<TcType>),
-    Ptr, // raw WASM pointer — distinct from tagged Num
-    Any, // escape hatch
+    Opt(Box<TcType>), // T | nil — storage reads and other maybe-missing values
+    Ptr,              // raw WASM pointer — distinct from tagged Num
+    Any,              // escape hatch
 }
 
 /// A type scheme: forall α1..αn. τ
@@ -1303,10 +1304,14 @@ impl TcEnv {
                 Box::new(nil_ty.clone()),
             ),
         );
-        // near/storage_get : str → any (returns nil on miss, str on hit)
+        // near/storage_get : str → (opt str) — nil on miss, str on hit.
+        // Forces callers through (default x fallback) / TS `??` to handle the miss.
         env.insert_mono(
             "near/storage_get".into(),
-            TcType::Arrow(vec![str_ty.clone()], Box::new(any_ty.clone())),
+            TcType::Arrow(
+                vec![str_ty.clone()],
+                Box::new(TcType::Con(TcCon::Opt(Box::new(str_ty.clone())))),
+            ),
         );
         env.insert_mono(
             "near/storage_has".into(),
@@ -1480,6 +1485,7 @@ impl std::fmt::Display for TcCon {
                 let s: Vec<String> = ts.iter().map(|t| t.to_string()).collect();
                 write!(f, "(tuple {})", s.join(" "))
             }
+            TcCon::Opt(t) => write!(f, "(opt {})", t),
             TcCon::Ptr => write!(f, "ptr"),
             TcCon::Any => write!(f, "any"),
         }

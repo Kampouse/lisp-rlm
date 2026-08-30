@@ -1002,6 +1002,32 @@ impl LoopCompiler {
                             self.code[jmp_idx] = Op::Jump(self.code.len());
                             true
                         }
+                        // (default e1 e2) — e1 if non-nil, else e2 (single eval of e1)
+                        "default" => {
+                            let val = match list.get(1) {
+                                Some(t) => t,
+                                None => return false,
+                            };
+                            let fallback = match list.get(2) {
+                                Some(t) => t,
+                                None => return false,
+                            };
+                            if !self.compile_expr(val, outer_env) {
+                                return false;
+                            }
+                            // stack: v → Dup; compare to nil; if non-nil keep v
+                            self.code.push(Op::Dup);
+                            self.code.push(Op::PushNil);
+                            self.code.push(Op::Eq);
+                            let jf_idx = self.code.len();
+                            self.code.push(Op::JumpIfFalse(0));
+                            self.code.push(Op::Pop); // drop nil'd v
+                            if !self.compile_expr(fallback, outer_env) {
+                                return false;
+                            }
+                            self.code[jf_idx] = Op::JumpIfFalse(self.code.len());
+                            true
+                        }
                         // recur: compile args, store into loop var slots, jump to loop start
                         "recur" => {
                             if let Some((loop_start, var_slots)) = self.loop_stack.last().cloned() {

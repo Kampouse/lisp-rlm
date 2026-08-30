@@ -67,9 +67,11 @@ pub fn parse_ts(src: &str) -> Result<Vec<LispVal>, String> {
 
 fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
     // TypeScript hoists function declarations: a call may textually precede
-    // the helper's definition. Lisp requires define-before-use, so non-exported
-    // functions are collected and emitted first (source order preserved);
-    // everything else (consts, exports, top-level exprs) follows in order.
+    // the helper's definition. Lisp requires define-before-use, so we reorder:
+    //   1. top-level consts (module-load-time, source order)
+    //   2. non-exported functions (hoisted, source order)
+    //   3. everything else (exported defines, exports, top-level exprs) in order
+    let mut consts: Vec<LispVal> = Vec::new();
     let mut hoisted: Vec<LispVal> = Vec::new();
     let mut out: Vec<LispVal> = Vec::new();
     for stmt in &p.body {
@@ -107,7 +109,7 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                         .init
                         .as_ref()
                         .ok_or("ts_frontend: top-level declarations need initializers")?;
-                    out.push(list(vec![Sym("define"), Sym(name), lower_expr(init)?]));
+                    consts.push(list(vec![Sym("define"), Sym(name), lower_expr(init)?]));
                 }
             }
             Statement::ExpressionStatement(e) => {
@@ -122,8 +124,10 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
             }
         }
     }
-    hoisted.extend(out);
-    Ok(hoisted)
+    let mut result = consts;
+    result.extend(hoisted);
+    result.extend(out);
+    Ok(result)
 }
 
 /// Lower a function declaration → (define (name params...) body)
@@ -825,7 +829,10 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
             Ok(match l.operator {
                 LogicalOperator::And => list(vec![Sym("if"), a, b, list(vec![Sym("="), Num(1), Num(0)])]),
                 LogicalOperator::Or => list(vec![Sym("if"), a, list(vec![Sym("="), Num(1), Num(1)]), b]),
-                LogicalOperator::Coalesce => return Err("ts_frontend: ?? not in M1".into()),
+                // `a ?? b` — value-level nil-handling: (default a b)
+                LogicalOperator::Coalesce => {
+                    list(vec![Sym("default"), lower_expr(&l.left)?, lower_expr(&l.right)?])
+                }
             })
         }
         Expression::UnaryExpression(u) => match u.operator {

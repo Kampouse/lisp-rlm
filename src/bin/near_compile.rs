@@ -51,6 +51,18 @@ fn load_project_config(dir: &str) -> Result<ProjectConfig, String> {
 
 // ── MAIN ──
 
+/// Default output path for single-file compiles. Never the input path:
+/// extension swapped (.lisp/.ts/.mts → .wasm), else `<input>.wasm` appended.
+fn default_wasm_out(src_path: &str) -> String {
+    let p = std::path::Path::new(src_path);
+    match p.extension().and_then(|e| e.to_str()) {
+        Some("lisp") | Some("ts") | Some("mts") => {
+            p.with_extension("wasm").to_string_lossy().into_owned()
+        }
+        _ => format!("{}.wasm", src_path),
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
@@ -1902,7 +1914,7 @@ fn run_compile(args: &[String]) {
             let out = positional
                 .get(1)
                 .map(|s| s.to_string())
-                .unwrap_or_else(|| src_path.replace(".lisp", ".wasm"));
+                .unwrap_or_else(|| default_wasm_out(src_path));
             let _ = fs::write(&out, &wasm_bytes);
             std::process::exit(1);
         }
@@ -1911,7 +1923,7 @@ fn run_compile(args: &[String]) {
     let out = positional
         .get(1)
         .map(|s| s.to_string())
-        .unwrap_or_else(|| src_path.replace(".lisp", ".wasm"));
+        .unwrap_or_else(|| default_wasm_out(src_path));
     fs::write(&out, &wasm_bytes).expect("write WASM");
     println!("✅ {} ({} bytes) — validated", out, wasm_bytes.len());
 }

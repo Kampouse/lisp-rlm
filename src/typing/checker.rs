@@ -156,6 +156,11 @@ fn unify_con(c1: &TcCon, c2: &TcCon) -> UnifyResult {
         (TcCon::Ptr, TcCon::Num) | (TcCon::Num, TcCon::Ptr) => Ok(Subst::new()),
         (TcCon::Ptr, TcCon::Int) | (TcCon::Int, TcCon::Ptr) => Ok(Subst::new()),
         (TcCon::Any, _) | (_, TcCon::Any) => Ok(Subst::new()),
+        // Option types: (opt T) unifies with itself (inner must agree) and
+        // with nil (the empty branch). A bare T does NOT unify with (opt T) —
+        // force the nil case through (default x fallback).
+        (TcCon::Opt(a), TcCon::Opt(b)) => unify(a, b),
+        (TcCon::Opt(_), TcCon::Nil) | (TcCon::Nil, TcCon::Opt(_)) => Ok(Subst::new()),
         (TcCon::Num, TcCon::Int) | (TcCon::Int, TcCon::Num) => Ok(Subst::new()),
         (TcCon::Num, TcCon::Float) | (TcCon::Float, TcCon::Num) => Ok(Subst::new()),
         (TcCon::List(a), TcCon::List(b)) => unify(a, b),
@@ -287,6 +292,16 @@ fn parse_type_list(elems: &[LispVal]) -> Result<TcType, String> {
                 }
                 let inner = parse_type_annotation(&elems[1])?;
                 return Ok(TcType::Con(TcCon::List(Box::new(inner))));
+            }
+            "opt" | ":opt" | "option" | ":option" => {
+                if elems.len() != 2 {
+                    return Err(format!(
+                        "(opt T) expects 1 arg, got {}",
+                        elems.len() - 1
+                    ));
+                }
+                let inner = parse_type_annotation(&elems[1])?;
+                return Ok(TcType::Con(TcCon::Opt(Box::new(inner))));
             }
             "map" | ":map" => {
                 if elems.len() != 3 {
@@ -844,6 +859,25 @@ fn infer(
                     infer_lambda(&list[1..], env, supply, subst)
                 }
                 LispVal::Sym(s) if s == "if" => infer_if(&list[1..], env, supply, subst),
+                LispVal::Sym(s) if s == "default" => {
+                    // (default e1 e2) — e1 maybe-nil, e2 the fallback.
+                    // Collapses (opt T) → T; forces the nil case to be handled.
+                    let e1 = list.get(1).ok_or("default: missing value")?;
+                    let e2 = list.get(2).ok_or("default: missing fallback")?;
+                    let inner = supply.fresh();
+                    let t1 = infer(e1, env, supply, subst)?;
+                    let s1 = unify(&t1, &TcType::Con(TcCon::Opt(Box::new(inner.clone()))))
+                        .map_err(|e| {
+                            format!("default: value is not maybe-nil — {}", e)
+                        })?;
+                    *subst = s1.compose(subst.clone());
+                    let t2 = infer(e2, env, supply, subst)?;
+                    let inner_sub = subst.apply(&inner);
+                    let s2 = unify(&inner_sub, &t2)
+                        .map_err(|e| format!("default: fallback type disagrees — {}", e))?;
+                    *subst = s2.compose(subst.clone());
+                    Ok(subst.apply(&t2))
+                }
                 LispVal::Sym(s) if s == "let" => infer_let(&list[1..], env, supply, subst),
                 LispVal::Sym(s) if s == "let*" => infer_let_star(&list[1..], env, supply, subst),
                 LispVal::Sym(s) if s == "while" => {

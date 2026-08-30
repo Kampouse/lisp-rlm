@@ -74,7 +74,7 @@
   (near/log m)
   (near/abort m))
 
-(define (get-str k) (near/storage_get k))
+(define (get-str k) (default (near/storage_get k) ""))
 
 (define (num-str k)
   (let ((v (get-str k)))

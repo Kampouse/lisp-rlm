@@ -341,6 +341,24 @@ impl WasmEmitter {
                 v.push(Instruction::End);
                 Ok(v)
             }
+            "default" => {
+                // (default e1 e2) — e1 if non-nil else e2; e1 evaluated once.
+                if a.len() != 2 {
+                    return Err("default: need 2 args (value, fallback)".into());
+                }
+                let tmp = self.local_idx("__deflt");
+                let mut v = self.expr(&a[0])?;
+                v.push(Instruction::LocalSet(tmp));
+                v.push(Instruction::LocalGet(tmp));
+                v.push(Instruction::I64Const(TAG_NIL));
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.extend(self.expr(&a[1])?);
+                v.push(Instruction::Else);
+                v.push(Instruction::LocalGet(tmp));
+                v.push(Instruction::End);
+                Ok(v)
+            }
             "cond" => {
                 // (cond (test1 val1 ...) (test2 val2 ...) ... (else valN ...))
                 // Supports implicit begin in clause bodies (multiple values after test)

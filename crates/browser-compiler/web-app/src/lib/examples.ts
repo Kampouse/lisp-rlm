@@ -66,13 +66,13 @@ export function get_value(): string {
 }
 
 function getCounter(): number {
-  const v = near.storageGet("c");
-  return strToNum(strLength(v) === 0 ? "0" : v);
+  return strToNum(near.storageGet("c") ?? "0");
 }
 
 // Dialect notes:
 // - near.storageGet/Set, near.log, near.abort (host bindings)
 // - toStr / strToNum / strLength (stdlib bridge)
+// - storageGet returns str-or-nil; `x ?? fallback` handles the nil
 // - new_ exports as NEAR's "new" constructor (reserved word in TS)
 // - get_* functions are views (auto value_return)
 // - values stored as strings, numbers are i64`,
