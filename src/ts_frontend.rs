@@ -1,21 +1,26 @@
-//! TS frontend (M1): TypeScript-syntax surface → lisp s-expression source.
+//! TS frontend (M2): TypeScript-syntax surface → lisp s-expression source.
 //!
 //! Lowering pipeline: TS source --oxc_parser--> TS AST --this module--> lisp
 //! source text --existing parser/checker/emitters--> all backends (near wasm,
 //! bytecode, wasi) unchanged.
 //!
-//! M1 subset (deliberately small, differential-provable):
+//! M2 subset:
 //!   ✓ function declarations (exported or not) → define (+ export form)
 //!   ✓ const/let locals (single declarator, initializer required)
-//!   ✓ if / else (tail position: full expression; non-tail: side-effect begin)
-//!   ✓ return (tail position only)
-//!   ✓ numeric/string/boolean/null literals, template literals → (str ...)
-//!   ✓ binary ops: + - * / % < > <= >= == === != !== (numbers only)
-//!   ✓ && || (short-circuit, boolean-valued 0/1 — NOT JS value semantics)
-//!   ✓ ! - unary
+//!   ✓ if / else (full expression in any position)
+//!   ✓ return (any position — early returns via flag guard)
+//!   ✓ assignment/mutation: x = e, x += e, x -= e, i++, i--
+//!   ✓ for / while loops (with break/return support)
+//!   ✓ numeric/string/boolean/null/bigint literals, template literals → (str ...)
+//!   ✓ binary ops: + - * / % < > <= >= == === != !== && || ^ | & << >>
+//!   ✓ ! - unary, ++/-- (expression value)
 //!   ✓ calls: bare identifiers + member calls via builtin mapping
-//!   ✗ classes, async, closures/arrow fns (T4 landmine), destructuring,
-//!     optional chaining, assignment/mutation, early returns, imports
+//!   ✓ string methods: .length, .slice(), .startsWith(), .indexOf(), .includes()
+//!   ✓ arrays: [a, b, c] → (list ...) [interpreter only, not WASM]
+//!   ✓ arrow functions: (a, b) => expr, (a) => { stmts }
+//!   ✓ object literals: { key: val } → (json-obj (pair "key" val))
+//!   ✗ classes, async, destructuring, optional chaining,
+//!     for-in/for-of, switch, try/catch, imports
 //!
 //! Truthiness: JS `if (x)` → `(if (!= x 0) ...)` — numeric truthiness by
 //! decree (the lisp's 0-truthy landsmine sidestepped explicitly). String
@@ -202,13 +207,222 @@ fn lower_function(
 }
 
 /// Lower a statement list whose value is the tail expression.
+/// When any non-final statement contains `return`, the whole block is
+/// wrapped in a `(__fn_done __res)` flag guard.
+/// Check if a statement is `return expr` (for tail-if-else detection).
+fn is_return_stmt(s: &Statement<'_>) -> bool {
+    matches!(s, Statement::ReturnStatement(_))
+}
+
 fn lower_block_tail(stmts: &[Statement<'_>], view: bool) -> Result<LispVal, String> {
     if stmts.is_empty() {
         return Ok(num(0));
     }
     let (init, last) = stmts.split_at(stmts.len() - 1);
-    let tail = lower_tail_stmt(&last[0], view)?;
-    lower_prefix_around(init, tail, view)
+    let has_early_return = init.iter().any(stmt_has_return);
+
+    // Optimize: if init is [if-with-return, ...] and tail is return,
+    // this is an if-else pattern — no flag guard needed. Each
+    // if-with-return gets absorbed as an else branch.
+    let is_tail_return = is_return_stmt(&last[0]);
+    if has_early_return && is_tail_return {
+        // Check if ALL init returns are inside if statements (not arbitrary mid-function)
+        let all_init_returns_in_if = init.iter().all(|s| {
+            matches!(s, Statement::IfStatement(_))
+        });
+        if all_init_returns_in_if {
+            // Lower as if-else chain: each if-return becomes a branch,
+            // the tail return becomes the final else.
+            let tail_expr = match &last[0] {
+                Statement::ReturnStatement(r) => match &r.argument {
+                    Some(e) => {
+                        let v = lower_expr(e)?;
+                        if view { list(vec![sym("near/json_return_str"), v]) } else { v }
+                    }
+                    None => num(0),
+                },
+                _ => unreachable!(),
+            };
+            return lower_if_else_chain(init, tail_expr, view);
+        }
+    }
+
+    if has_early_return {
+        let tail = lower_tail_stmt(&last[0], view)?;
+        let guarded_tail = list(vec![
+            sym("if"),
+            list(vec![sym("="), sym("__fn_done"), num(0)]),
+            tail,
+            sym("__fn_res"),
+        ]);
+        let body = lower_prefix_around_with_return(init, guarded_tail, view)?;
+        Ok(list(vec![
+            sym("let"),
+            list(vec![
+                list(vec![sym("__fn_done"), num(0)]),
+                list(vec![sym("__fn_res"), num(0)]),
+            ]),
+            body,
+        ]))
+    } else {
+        let tail = lower_tail_stmt(&last[0], view)?;
+        lower_prefix_around(init, tail, view)
+    }
+}
+
+/// Lower a chain of if-return statements followed by a final return as
+/// a nested if-else, avoiding the flag-guard overhead.
+///   if (c1) return e1;
+///   if (c2) return e2;
+///   return e3;
+/// → (if c1 e1 (if c2 e2 e3))
+fn lower_if_else_chain(
+    if_stmts: &[Statement<'_>],
+    else_val: LispVal,
+    view: bool,
+) -> Result<LispVal, String> {
+    if if_stmts.is_empty() {
+        return Ok(else_val);
+    }
+    let (rest, last_if) = if_stmts.split_at(if_stmts.len() - 1);
+    let i = match &last_if[0] {
+        Statement::IfStatement(i) => i,
+        _ => return Err("ts_frontend: internal: expected if in if-else chain".into()),
+    };
+    // Get the return value from inside the if's consequent
+    let then_val = extract_return_value(stmts_of(&i.consequent), view)?;
+    let else_branch = match &i.alternate {
+        Some(alt) => {
+            // if-else itself: lower the else branch, which may also contain returns
+            if stmt_has_return(&i.consequent) || i.alternate.as_ref().is_some_and(|a| stmt_has_return(a)) {
+                // Has return in alternate too — recurse into it
+                lower_block_tail(stmts_of(alt), view)?
+            } else {
+                lower_block_tail(stmts_of(alt), view)?
+            }
+        }
+        None => lower_if_else_chain(rest, else_val, view)?,
+    };
+    Ok(list(vec![sym("if"), truthy(&i.test)?, then_val, else_branch]))
+}
+
+/// Extract the expression from a `return expr;` statement (must be single return).
+fn extract_return_value(stmts: &[Statement<'_>], view: bool) -> Result<LispVal, String> {
+    if stmts.len() != 1 {
+        return Err("ts_frontend: expected single return in if-else branch".into());
+    }
+    match &stmts[0] {
+        Statement::ReturnStatement(r) => match &r.argument {
+            Some(e) => {
+                let v = lower_expr(e)?;
+                if view { Ok(list(vec![sym("near/json_return_str"), v])) } else { Ok(v) }
+            }
+            None => Ok(num(0)),
+        },
+        _ => Err("ts_frontend: expected return in if-else branch".into()),
+    }
+}
+
+/// Like `lower_prefix_around` but mid-function `return` writes the
+/// `__fn_done/__fn_res` flag pair instead of being an error.
+fn lower_prefix_around_with_return(stmts: &[Statement<'_>], tail: LispVal, view: bool) -> Result<LispVal, String> {
+    if stmts.is_empty() {
+        return Ok(tail);
+    }
+    let (init, last) = stmts.split_at(stmts.len() - 1);
+    let inner = match &last[0] {
+        Statement::VariableDeclaration(v) => {
+            let mut bindings = Vec::new();
+            for d in &v.declarations {
+                let name = binding_name(&d.id)?;
+                let init_e = d
+                    .init
+                    .as_ref()
+                    .ok_or("ts_frontend: local declaration needs initializer")?;
+                bindings.push(list(vec![sym(name), lower_expr(init_e)?]));
+            }
+            list(vec![sym("let"), list(bindings), tail])
+        }
+        Statement::ExpressionStatement(e) => {
+            let e2 = match &e.expression {
+                Expression::AssignmentExpression(asg) => {
+                    let (v, expr) = lower_assignment(asg)?;
+                    list(vec![sym("set!"), sym(v), expr])
+                }
+                other => lower_expr(other)?,
+            };
+            list(vec![sym("begin"), e2, tail])
+        }
+        Statement::IfStatement(i) => {
+            let then_e = lower_block_tail(stmts_of(&i.consequent), view)?;
+            let else_e = match &i.alternate {
+                Some(alt) => lower_block_tail(stmts_of(alt), view)?,
+                None => num(0),
+            };
+            let guarded = list(vec![
+                sym("if"),
+                list(vec![sym("="), sym("__fn_done"), num(0)]),
+                list(vec![sym("if"), truthy(&i.test)?, then_e, else_e]),
+                num(0),
+            ]);
+            list(vec![sym("begin"), guarded, tail])
+        }
+        Statement::ReturnStatement(r) => {
+            let val = match &r.argument {
+                Some(e) => {
+                    let v = lower_expr(e)?;
+                    if view { list(vec![sym("near/json_return_str"), v]) } else { v }
+                }
+                None => num(0),
+            };
+            list(vec![
+                sym("begin"),
+                list(vec![sym("set!"), sym("__fn_res"), val]),
+                list(vec![sym("set!"), sym("__fn_done"), num(1)]),
+                tail,
+            ])
+        }
+        Statement::WhileStatement(_) => {
+            let while_e = lower_while_value(&last[0])?;
+            list(vec![
+                sym("begin"),
+                while_e,
+                list(vec![sym("if"), sym("__wl_done"),
+                    list(vec![sym("begin"),
+                        list(vec![sym("set!"), sym("__fn_res"), sym("__wl_res")]),
+                        list(vec![sym("set!"), sym("__fn_done"), num(1)]),
+                    ]),
+                ]),
+                tail,
+            ])
+        }
+        Statement::ForStatement(fr) => {
+            let for_e = lower_for(fr)?;
+            list(vec![
+                sym("begin"),
+                for_e,
+                list(vec![sym("if"), sym("__wl_done"),
+                    list(vec![sym("begin"),
+                        list(vec![sym("set!"), sym("__fn_res"), sym("__wl_res")]),
+                        list(vec![sym("set!"), sym("__fn_done"), num(1)]),
+                    ]),
+                ]),
+                tail,
+            ])
+        }
+        Statement::BlockStatement(b) => {
+            let inner = lower_block_tail(&b.body, view)?;
+            list(vec![sym("begin"), inner, tail])
+        }
+        Statement::EmptyStatement(_) => tail,
+        s => {
+            return Err(format!(
+                "ts_frontend: statement `{}` not allowed mid-function",
+                stmt_kind(s)
+            ))
+        }
+    };
+    lower_prefix_around_with_return(init, inner, view)
 }
 
 /// Prefix statements wrap the tail expression like let-nesting.
@@ -833,23 +1047,57 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
             _ => Err("ts_frontend: unary operator not in M1".into()),
         },
         Expression::CallExpression(c) => {
-            let head = callee_name(&c.callee)?;
-            let head = map_builtin_call(&head);
+            // Detect string/list method calls: receiver.method(args)
+            // → (lisp-method receiver args...)
+            let (head, receiver) = match &c.callee {
+                Expression::StaticMemberExpression(s) => {
+                    let obj_name = match &s.object {
+                        Expression::Identifier(id) => Some(id.name.as_str().to_string()),
+                        Expression::StringLiteral(sl) => Some(sl.value.as_str().to_string()),
+                        _ => None,
+                    };
+                    let prop = s.property.name.as_str();
+                    let mapped = map_member_fn(obj_name.as_deref().unwrap_or(""), prop);
+                    // Check if it's a string/list method (not a module path)
+                    let is_instance_method = matches!(
+                        prop,
+                        "length" | "slice" | "startsWith" | "endsWith" | "indexOf"
+                        | "includes" | "charAt" | "concat" | "toString" | "valueOf"
+                        | "push" | "pop" | "join" | "split"
+                    ) && obj_name.is_some();
+                    if is_instance_method {
+                        (mapped, Some((&s.object, obj_name.unwrap())))
+                    } else {
+                        (map_builtin_call(&mapped), None)
+                    }
+                }
+                other => {
+                    let h = map_builtin_call(&callee_name(other)?);
+                    (h, None)
+                }
+            };
             let mut items = vec![sym(head.clone())];
+            // Prepend receiver as first arg for instance methods
+            if let Some((obj_expr, _name)) = &receiver {
+                items.push(lower_expr(obj_expr)?);
+            }
             for a in &c.arguments {
                 if let Argument::SpreadElement(_) = a {
-                    return Err("ts_frontend: spread not in M1".into());
+                    return Err("ts_frontend: spread not supported".into());
                 }
                 let e2 = a
                     .as_expression()
-                    .ok_or("ts_frontend: unsupported call argument (M1)")?;
+                    .ok_or("ts_frontend: unsupported call argument")?;
                 items.push(lower_expr(e2)?);
             }
-            // json-get is dynamically str-or-num; the checker types it Int,
-            // which breaks string comparisons. to-string is tag-aware
-            // (identity on str, decimal on num) — safe cast for the dialect.
             if head == "json-get" {
                 return Ok(list(vec![sym("to-string"), list(items)]));
+            }
+            // str-char-at(s, i) -> (str-slice s i (+ i 1))
+            if head == "str-char-at" && items.len() == 3 {
+                let s = items[1].clone();
+                let idx = items[2].clone();
+                return Ok(list(vec![sym("str-slice"), s, idx.clone(), list(vec![sym("+"), idx, num(1)])]));
             }
             Ok(list(items))
         }
@@ -860,8 +1108,109 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
             lower_expr(&c.alternate)?,
         ])),
         Expression::ParenthesizedExpression(p) => lower_expr(&p.expression),
+        // Static member (property access, not call): str.length -> (str-length str)
+        Expression::StaticMemberExpression(s) => {
+            let obj_e = lower_expr(&s.object)?;
+            match s.property.name.as_str() {
+                "length" => Ok(list(vec![sym("str-length"), obj_e])),
+                prop => Err(format!(
+                    "ts_frontend: property access `.{}(syscall_status)` not supported (use method call instead)",
+                    prop
+                )),
+            }
+        }
+        // Array literal: [a, b, c] -> (list a b c)
+        // NOTE: list/nth only available in interpreter, not compiled WASM backends.
+        // Compiling with --target near will error if arrays are used.
+        Expression::ArrayExpression(arr) => {
+            let mut items = vec![sym("list")];
+            for el in &arr.elements {
+                match el {
+                    oxc_ast::ast::ArrayExpressionElement::SpreadElement(_) => {
+                        return Err("ts_frontend: spread not supported".into());
+                    }
+                    oxc_ast::ast::ArrayExpressionElement::Elision(_) => {
+                        items.push(num(0));
+                    }
+                    _ => {
+                        if let Some(expr) = el.as_expression() {
+                            items.push(lower_expr(expr)?);
+                        } else {
+                            return Err("ts_frontend: unsupported array element".into());
+                        }
+                    }
+                }
+            }
+            Ok(list(items))
+        }
+        // Computed member: arr[i] -> (nth arr i)
+        // NOTE: nth only available in interpreter, not compiled WASM.
+        Expression::ComputedMemberExpression(cm) => {
+            let obj_e = lower_expr(&cm.object)?;
+            let idx = lower_expr(&cm.expression)?;
+            Ok(list(vec![sym("nth"), obj_e, idx]))
+        }
+        // Arrow function: (a, b) => expr  or  (a) => { stmts }
+        Expression::ArrowFunctionExpression(arrow) => {
+            let mut params = Vec::new();
+            for p in &arrow.params.items {
+                let n = binding_name(&p.pattern)?;
+                params.push(sym(n));
+            }
+            let body = if arrow.body.is_expression() {
+                lower_expr(arrow.body.as_expression().unwrap())?
+            } else {
+                use oxc_ast::ast::ArrowFunctionBody;
+                match &arrow.body {
+                    ArrowFunctionBody::FunctionBody(b) => {
+                        lower_block_tail(&b.statements, false)?
+                    }
+                    _ => return Err("ts_frontend: unexpected arrow body".into()),
+                }
+            };
+            Ok(list(vec![sym("lambda"), list(params), body]))
+        }
+        // Object literal: { key: val } -> (json-obj (pair "key" val))
+        Expression::ObjectExpression(obj) => {
+            let mut items = vec![sym("json-obj")];
+            for prop in &obj.properties {
+                match prop {
+                    oxc_ast::ast::ObjectPropertyKind::ObjectProperty(p) => {
+                        let key_str = match &p.key {
+                            oxc_ast::ast::PropertyKey::StaticIdentifier(id) => {
+                                id.name.as_str().to_string()
+                            }
+                            other => {
+                                // String literals etc. come via INHERIT
+                                if let Some(expr) = other.as_expression() {
+                                    if let Expression::StringLiteral(s) = expr {
+                                        s.value.as_str().to_string()
+                                    } else {
+                                        return Err("ts_frontend: object key must be identifier or string".into());
+                                    }
+                                } else {
+                                    return Err("ts_frontend: object key must be identifier or string".into());
+                                }
+                            }
+                        };
+                        let val = lower_expr(&p.value)?;
+                        items.push(list(vec![sym("pair"), str(key_str), val]));
+                    }
+                    oxc_ast::ast::ObjectPropertyKind::SpreadProperty(_) => {
+                        return Err("ts_frontend: object spread not supported".into());
+                    }
+                }
+            }
+            Ok(list(items))
+        }
+        // Update expressions: i++ -> (+ i 1), i-- -> (- i 1)
+        Expression::UpdateExpression(u) => {
+            let v = update_target_simple(&u.argument)?;
+            let one = if matches!(u.operator, oxc_syntax::operator::UpdateOperator::Increment) { 1 } else { -1 };
+            Ok(list(vec![sym("+"), sym(v), num(one)]))
+        }
         _ => Err(format!(
-            "ts_frontend: expression `{}` not in M1 subset",
+            "ts_frontend: expression `{}` not supported",
             expr_kind(e)
         )),
     }
@@ -876,7 +1225,9 @@ fn statically_bool(e: &Expression<'_>) -> bool {
             .map(|h| {
                 matches!(
                     h.as_str(),
-                    "u128/gt" | "u128/lt" | "u128/gte" | "u128/lte" | "u128/eq" | "near/deposit-gte"
+                    "u128/gt" | "u128/lt" | "u128/gte" | "u128/lte" | "u128/eq"
+                    | "near/deposit-gte"
+                    | "str-starts-with" | "str-ends-with" | "str-contains"
                 )
             })
             .unwrap_or(false),
@@ -936,9 +1287,13 @@ fn callee_name(e: &Expression<'_>) -> Result<String, String> {
         Expression::StaticMemberExpression(s) => {
             let obj = match &s.object {
                 Expression::Identifier(id) => id.name.as_str().to_string(),
+                Expression::StringLiteral(sl) => sl.value.as_str().to_string(),
                 _ => return Err("ts_frontend: nested member chains not in M1".into()),
             };
             Ok(map_member_fn(&obj, s.property.name.as_str()))
+        }
+        Expression::ComputedMemberExpression(_) => {
+            Err("ts_frontend: computed member calls not supported".into())
         }
         _ => Err("ts_frontend: callee must be an identifier or member (M1)".into()),
     }
@@ -971,8 +1326,20 @@ fn map_global_fn(name: &str) -> String {
 /// Object.method(...) → object/method_snake (near.* passthrough + snake).
 fn map_member_fn(obj: &str, prop: &str) -> String {
     if obj == "near" && prop == "depositGte" {
-        // lisp lib predates the snake convention here
         return "near/deposit-gte".into();
+    }
+    // String instance methods -> lisp string builtins
+    match prop {
+        "length" => return "str-length".into(),
+        "slice" => return "str-slice".into(),
+        "startsWith" => return "str-starts-with".into(),
+        "endsWith" => return "str-ends-with".into(),
+        "indexOf" => return "str-index-of".into(),
+        "includes" => return "str-contains".into(),
+        "charAt" => return "str-char-at".into(),
+        "concat" => return "str-cat".into(),
+        "toString" | "valueOf" => return "to-string".into(),
+        _ => {}
     }
     format!("{}/{}", obj, snake(prop))
 }
@@ -1100,19 +1467,15 @@ fn decl_kind(d: &Declaration<'_>) -> &'static str {
 fn expr_kind(e: &Expression<'_>) -> &'static str {
     use Expression::*;
     match e {
-        ArrayExpression(_) => "array",
-        ArrowFunctionExpression(_) => "arrow-function",
         AssignmentExpression(_) => "assignment",
         AwaitExpression(_) => "await",
         ChainExpression(_) => "optional-chain",
         ClassExpression(_) => "class",
         ConditionalExpression(_) => "ternary",
         NewExpression(_) => "new",
-        ObjectExpression(_) => "object-literal",
         SequenceExpression(_) => "sequence",
         TaggedTemplateExpression(_) => "tagged-template",
         ThisExpression(_) => "this",
-        UpdateExpression(_) => "++/--",
         YieldExpression(_) => "yield",
         _ => "other",
     }
