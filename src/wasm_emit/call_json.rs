@@ -47,7 +47,11 @@ impl WasmEmitter {
                 self.json_return_int(val_expr)
             }
             "near/json_return_str" => {
-                let packed_expr = self.expr(&a[0])?;
+                // Wrap with tag-aware to-string: raw NUM args rendered empty
+                // before (json_return_str assumes a STR tag). to-string is a
+                // no-op on strings, decimal-converts numbers.
+                let wrapped = LispVal::List(vec![LispVal::Sym("to-string".into()), a[0].clone()]);
+                let packed_expr = self.expr(&wrapped)?;
                 self.json_return_str(packed_expr)
             }
             "json-return" => {

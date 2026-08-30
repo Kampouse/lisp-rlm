@@ -107,11 +107,25 @@ impl WasmEmitter {
         let dig_i = self.local_idx("__its2_dig");
         let i_i = self.local_idx("__its2_i");
         let src_i = self.local_idx("__its2_src");
+        let val_i = self.local_idx("__its2_val");
         let mut v = Vec::new();
+        // Tag-aware: (to-string str) must be identity (matches the interpreter's
+        // Display-based to-string). Only NUM takes the decimal path.
         v.extend(n);
-        // Untag the number before converting: val >> TAG_BITS
+        v.push(Instruction::LocalSet(val_i));
+        v.push(Instruction::LocalGet(val_i));
+        v.push(Instruction::I64Const(7));
+        v.push(Instruction::I64And);
+        v.push(Instruction::I64Const(TAG_STR));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Result(wasm_encoder::ValType::I64)));
+        // STR path: pass the tagged string through unchanged
+        v.push(Instruction::LocalGet(val_i));
+        v.push(Instruction::Else);
+        // NUM path: untag the number before converting: val >> TAG_BITS
         // TAG_NUM uses signed values — must use arithmetic (signed) right shift
         // to preserve negative numbers. I64ShrU would mangle negatives.
+        v.push(Instruction::LocalGet(val_i));
         v.push(Instruction::I64Const(TAG_BITS));
         v.push(Instruction::I64ShrS);
         v.push(Instruction::LocalSet(n_i));
@@ -273,6 +287,7 @@ impl WasmEmitter {
         v.push(Instruction::LocalGet(dst_i));
         v.push(Instruction::I64Or);
         v.extend(self.emit_tag_str());
+        v.push(Instruction::End); // close STR/NUM if
         Ok(v)
     }
 }

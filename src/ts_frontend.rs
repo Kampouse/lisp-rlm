@@ -26,7 +26,10 @@
 
 use crate::types::LispVal;
 use oxc_allocator::Allocator;
-use oxc_ast::ast::{Argument, Declaration, Expression, Function as TsFunction, Program, Statement};
+use oxc_ast::ast::{
+    Argument, Declaration, Expression, FormalParameter, Function as TsFunction, Program, Statement,
+    TSType,
+};
 use oxc_parser::Parser;
 use oxc_span::SourceType;
 use oxc_syntax::operator::{BinaryOperator, LogicalOperator, UnaryOperator};
@@ -76,7 +79,7 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                         ))
                     }
                 };
-                let (name, define) = lower_function(f)?;
+                let (name, define) = lower_function(f, true)?;
                 let view = name.starts_with("get_");
                 out.push(define);
                 out.push(list(vec![
@@ -87,7 +90,7 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                 ]));
             }
             Statement::FunctionDeclaration(f) => {
-                out.push(lower_function(f)?.1);
+                out.push(lower_function(f, false)?.1);
             }
             Statement::VariableDeclaration(v) => {
                 for d in &v.declarations {
@@ -115,7 +118,7 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
 }
 
 /// Lower a function declaration → (define (name params...) body)
-fn lower_function(f: &TsFunction<'_>) -> Result<(String, LispVal), String> {
+fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, LispVal), String> {
     let name = f
         .id
         .as_ref()
@@ -123,8 +126,10 @@ fn lower_function(f: &TsFunction<'_>) -> Result<(String, LispVal), String> {
         .ok_or("ts_frontend: anonymous functions unsupported (M1)")?;
 
     let mut params = Vec::new();
+    let mut param_names: Vec<(String, bool)> = Vec::new(); // (name, is_number)
     for p in &f.params.items {
-        params.push(Sym(binding_name(&p.pattern)?));
+        let n = binding_name(&p.pattern)?;
+        param_names.push((n.clone(), param_is_number(p)));
     }
 
     let body = f
@@ -135,7 +140,35 @@ fn lower_function(f: &TsFunction<'_>) -> Result<(String, LispVal), String> {
     // view convention: get_* functions' returns become json_return_str
     // (the define tail value alone does not call value_return)
     let view = name.starts_with("get_");
-    let expr = lower_block_tail(&body.statements, view)?;
+
+    // Exported contracts read args from the transaction input JSON
+    // (json_get_str pattern); `: number` annotations wrap str->num.
+    let expr = if exported {
+        if !param_names.is_empty() {
+            let bindings = param_names
+                .iter()
+                .map(|(n, num)| {
+                    let get = list(vec![Sym("near/json_get_str"), Str(n.clone())]);
+                    let v = if *num {
+                        list(vec![Sym("str->num"), get])
+                    } else {
+                        get
+                    };
+                    list(vec![Sym(n.clone()), v])
+                })
+                .collect();
+            let inner = lower_block_tail(&body.statements, view)?;
+            list(vec![Sym("let"), list(bindings), inner])
+        } else {
+            lower_block_tail(&body.statements, view)?
+        }
+    } else {
+        // helper fns keep real lisp params
+        for (n, _) in &param_names {
+            params.push(Sym(n.clone()));
+        }
+        lower_block_tail(&body.statements, false)?
+    };
 
     let mut define_items = Vec::new();
     let mut sig = vec![Sym(name.clone())];
@@ -177,7 +210,14 @@ fn lower_prefix_around(stmts: &[Statement<'_>], tail: LispVal, view: bool) -> Re
         }
         Statement::ExpressionStatement(e) => {
             // side-effect expression, discard value
-            list(vec![Sym("begin"), lower_expr(&e.expression)?, tail])
+            let e2 = match &e.expression {
+                Expression::AssignmentExpression(asg) => {
+                    let (v, expr) = lower_assignment(asg)?;
+                    list(vec![Sym("set!"), Sym(v), expr])
+                }
+                other => lower_expr(other)?,
+            };
+            list(vec![Sym("begin"), e2, tail])
         }
         Statement::IfStatement(i) => {
             // non-tail if: side-effect only; branches are void-ish blocks.
@@ -193,11 +233,26 @@ fn lower_prefix_around(stmts: &[Statement<'_>], tail: LispVal, view: bool) -> Re
             ])
         }
         Statement::ReturnStatement(_) => {
-            return Err("ts_frontend: `return` only allowed as the last statement (M1)".into())
+            return Err("ts_frontend: `return` only allowed as the last statement".into())
+        }
+        Statement::WhileStatement(w) => {
+            let body_e = loop_body_expr(stmts_of(&w.body))?;
+            list(vec![
+                Sym("begin"),
+                list(vec![
+                    Sym("while"),
+                    truthy(&w.test)?,
+                    body_e,
+                ]),
+                tail,
+            ])
+        }
+        Statement::ForStatement(fr) => {
+            list(vec![Sym("begin"), lower_for(fr)?, tail])
         }
         s => {
             return Err(format!(
-                "ts_frontend: statement `{}` not allowed mid-function (M1)",
+                "ts_frontend: statement `{}` not allowed mid-function",
                 stmt_kind(s)
             ))
         }
@@ -252,10 +307,198 @@ fn lower_tail_stmt(s: &Statement<'_>, view: bool) -> Result<LispVal, String> {
             Ok(list(vec![Sym("let"), list(bindings), Num(0)]))
         }
         Statement::EmptyStatement(_) => Ok(Num(0)),
+        Statement::WhileStatement(w) => {
+            let body_e = loop_body_expr(stmts_of(&w.body))?;
+            Ok(list(vec![Sym("while"), truthy(&w.test)?, body_e]))
+        }
+        Statement::ForStatement(fr) => lower_for(fr),
         s2 => Err(format!(
-            "ts_frontend: statement `{}` not in M1 tail subset",
+            "ts_frontend: statement `{}` not in tail subset",
             stmt_kind(s2)
         )),
+    }
+}
+
+/// Body of a while/for: statements → single begin-expression (side effects).
+fn loop_body_expr(stmts: &[Statement<'_>]) -> Result<LispVal, String> {
+    if stmts.is_empty() {
+        return Ok(Num(0));
+    }
+    let mut exprs = Vec::new();
+    for s in stmts {
+        exprs.push(tail_stmt_as_expr(s)?);
+    }
+    if exprs.len() == 1 {
+        Ok(exprs.into_iter().next().unwrap())
+    } else {
+        let mut items = vec![Sym("begin")];
+        items.extend(exprs);
+        Ok(list(items))
+    }
+}
+
+/// A statement inside a loop body, as a pure expression.
+fn tail_stmt_as_expr(s: &Statement<'_>) -> Result<LispVal, String> {
+    match s {
+        Statement::ExpressionStatement(e) => match &e.expression {
+            Expression::AssignmentExpression(asg) => {
+                let (v, expr) = lower_assignment(asg)?;
+                Ok(list(vec![Sym("set!"), Sym(v), expr]))
+            }
+            other => lower_expr(other),
+        },
+        Statement::IfStatement(i) => {
+            let then_e = loop_body_expr(stmts_of(&i.consequent))?;
+            let else_e = match &i.alternate {
+                Some(alt) => loop_body_expr(stmts_of(alt))?,
+                None => Num(0),
+            };
+            Ok(list(vec![Sym("if"), truthy(&i.test)?, then_e, else_e]))
+        }
+        Statement::BlockStatement(b) => loop_body_expr(&b.body),
+        Statement::VariableDeclaration(v) => {
+            // let inside a loop body: bind then 0 (scoped to this iteration)
+            let mut bindings = Vec::new();
+            for d in &v.declarations {
+                let name = binding_name(&d.id)?;
+                let init_e = d
+                    .init
+                    .as_ref()
+                    .ok_or("ts_frontend: local declaration needs initializer")?;
+                bindings.push(list(vec![Sym(name), lower_expr(init_e)?]));
+            }
+            Ok(list(vec![Sym("let"), list(bindings), Num(0)]))
+        }
+        Statement::BreakStatement(_) | Statement::ContinueStatement(_) => {
+            Err("ts_frontend: break/continue not supported (use the loop condition)".into())
+        }
+        Statement::ReturnStatement(_) => Err("ts_frontend: return inside loops not supported".into()),
+        Statement::WhileStatement(w) => {
+            let body_e = loop_body_expr(stmts_of(&w.body))?;
+            Ok(list(vec![Sym("while"), truthy(&w.test)?, body_e]))
+        }
+        Statement::ForStatement(fr) => lower_for(fr),
+        s2 => Err(format!(
+            "ts_frontend: statement `{}` not allowed inside loops",
+            stmt_kind(s2)
+        )),
+    }
+}
+
+/// Desugar `for (let i = 0; i < n; i++) { ... }` into the lisp's TCO loop:
+///   (loop ((i init)...) (if (!= test 0) (begin body... (recur i'...)) 0))
+/// Body assignments to loop vars (x = e / x += e / x -= e) are threaded
+/// through recur. DEVIATION: assignments take effect at iteration end —
+/// a later read in the SAME iteration sees the old value. Restructure with
+/// fresh consts if read-after-write is needed.
+fn lower_for(fr: &oxc_ast::ast::ForStatement<'_>) -> Result<LispVal, String> {
+    use oxc_ast::ast::{ForStatementInit, AssignmentOperator};
+
+    // init: must be a let/const declaration
+    let decl = match &fr.init {
+        Some(ForStatementInit::VariableDeclaration(v)) => v,
+        _ => return Err("ts_frontend: for-loop init must be `let` declarations (e.g. `for (let i = 0; ...)`)".to_string()),
+    };
+    let mut loop_vars: Vec<String> = Vec::new();
+    let mut bindings = Vec::new();
+    for d in &decl.declarations {
+        let n = binding_name(&d.id)?;
+        let init_e = d
+            .init
+            .as_ref()
+            .ok_or("ts_frontend: for-loop vars need initializers")?;
+        bindings.push(list(vec![Sym(n.clone()), lower_expr(init_e)?]));
+        loop_vars.push(n);
+    }
+
+    let test = fr
+        .test
+        .as_ref()
+        .ok_or("ts_frontend: for-loop needs a condition")?;
+
+    // update clause → (set! v expr); runs after the body each iteration
+    let mut update_form: Option<LispVal> = None;
+    if let Some(u) = &fr.update {
+        let e = match u {
+            Expression::UpdateExpression(upd) => {
+                let v = update_target_simple(&upd.argument)?;
+                let one = if matches!(upd.operator, oxc_syntax::operator::UpdateOperator::Increment) { 1 } else { -1 };
+                list(vec![Sym("set!"), Sym(v.clone()), list(vec![Sym("+"), Sym(v), Num(one)])])
+            }
+            Expression::AssignmentExpression(asg) => {
+                let (v, expr) = lower_assignment(asg)?;
+                list(vec![Sym("set!"), Sym(v), expr])
+            }
+            _ => return Err("ts_frontend: for-loop update must be `i++`/`i--`/`i = e`/`i += e`".into()),
+        };
+        update_form = Some(e);
+    }
+
+    // body statements as effects; assignments become set! (while compiles
+    // INLINE in wasm, so set! writes the actual local — exact JS semantics,
+    // including read-after-write within an iteration)
+    let body_stmts = stmts_of(&fr.body);
+    let mut body_items = Vec::new();
+    for s in body_stmts {
+        body_items.push(tail_stmt_as_expr(s)?);
+    }
+    if let Some(u) = update_form {
+        body_items.push(u);
+    }
+    let mut begin_items = vec![Sym("begin")];
+    begin_items.extend(body_items);
+    let begin_e = if begin_items.len() == 1 {
+        Num(0)
+    } else {
+        list(begin_items)
+    };
+
+    // (let ((v init)...) (begin (while cond body) 0))
+    Ok(list(vec![
+        Sym("let"),
+        list(bindings),
+        list(vec![
+            Sym("begin"),
+            list(vec![Sym("while"), truthy(test)?, begin_e]),
+            Num(0),
+        ]),
+    ]))
+}
+
+/// `x = e` / `x += e` / `x -= e` → (var, expr). Only plain identifiers.
+fn lower_assignment(
+    asg: &oxc_ast::ast::AssignmentExpression<'_>,
+) -> Result<(String, LispVal), String> {
+    use oxc_syntax::operator::AssignmentOperator;
+    let v = match &asg.left {
+        oxc_ast::ast::AssignmentTarget::AssignmentTargetIdentifier(id) => {
+            id.name.as_str().to_string()
+        }
+        _ => return Err("ts_frontend: assignment target must be a plain variable".into()),
+    };
+    let rhs = lower_expr(&asg.right)?;
+    let out = match asg.operator {
+        AssignmentOperator::Assign => rhs,
+        AssignmentOperator::Addition => list(vec![Sym("+"), Sym(v.clone()), rhs]),
+        AssignmentOperator::Subtraction => list(vec![Sym("-"), Sym(v.clone()), rhs]),
+        _ => return Err("ts_frontend: only = / += / -= assignments supported".into()),
+    };
+    Ok((v, out))
+}
+
+fn update_target_name(e: &Expression<'_>) -> Result<String, String> {
+    match e {
+        Expression::Identifier(id) => Ok(id.name.as_str().to_string()),
+        _ => Err("ts_frontend: loop update target must be a plain variable".into()),
+    }
+}
+
+fn update_target_simple(t: &oxc_ast::ast::SimpleAssignmentTarget<'_>) -> Result<String, String> {
+    match t {
+        oxc_ast::ast::SimpleAssignmentTarget::AssignmentTargetIdentifier(id) => {
+            Ok(id.name.as_str().to_string())
+        }
+        _ => Err("ts_frontend: loop update target must be a plain variable".into()),
     }
 }
 
@@ -349,6 +592,12 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
             }
             Ok(list(items))
         }
+        Expression::ConditionalExpression(c) => Ok(list(vec![
+            Sym("if"),
+            truthy(&c.test)?,
+            lower_expr(&c.consequent)?,
+            lower_expr(&c.alternate)?,
+        ])),
         Expression::ParenthesizedExpression(p) => lower_expr(&p.expression),
         _ => Err(format!(
             "ts_frontend: expression `{}` not in M1 subset",
@@ -357,9 +606,33 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
     }
 }
 
-/// `(if (!= test 0) ...)` — numeric truthiness by decree.
+/// Numeric truthiness by decree: `if (x)` → `(if (!= x 0) ...)`.
+/// Statically-boolean exprs (comparisons, && || !) pass through unwrapped —
+/// the checker types them bool and rejects (!= bool 0).
 fn truthy(e: &Expression<'_>) -> Result<LispVal, String> {
-    Ok(list(vec![Sym("!="), lower_expr(e)?, Num(0)]))
+    let is_not = match e {
+        Expression::UnaryExpression(u) => matches!(u.operator, UnaryOperator::LogicalNot),
+        _ => false,
+    };
+    let already_bool = matches!(e, Expression::LogicalExpression(_)) || is_not || matches!(
+        e,
+        Expression::BinaryExpression(b) if matches!(
+            b.operator,
+            BinaryOperator::Equality
+                | BinaryOperator::Inequality
+                | BinaryOperator::StrictEquality
+                | BinaryOperator::StrictInequality
+                | BinaryOperator::LessThan
+                | BinaryOperator::GreaterThan
+                | BinaryOperator::LessEqualThan
+                | BinaryOperator::GreaterEqualThan
+        )
+    );
+    if already_bool {
+        lower_expr(e)
+    } else {
+        Ok(list(vec![Sym("!="), lower_expr(e)?, Num(0)]))
+    }
 }
 
 /// Resolve a callee to a lisp symbol:
@@ -407,6 +680,13 @@ fn map_global_fn(name: &str) -> String {
 /// Object.method(...) → object/method_snake (near.* passthrough + snake).
 fn map_member_fn(obj: &str, prop: &str) -> String {
     format!("{}/{}", obj, snake(prop))
+}
+
+fn param_is_number(p: &FormalParameter<'_>) -> bool {
+    match &p.type_annotation {
+        Some(a) => matches!(&a.type_annotation, TSType::TSNumberKeyword(_)),
+        None => false,
+    }
 }
 
 fn binding_name(p: &oxc_ast::ast::BindingPattern<'_>) -> Result<String, String> {
