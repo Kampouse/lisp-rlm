@@ -88,6 +88,11 @@ declare const near: {
   transfer(receiver: string, amount: number): void;
   /** Send NEAR (u128 decimal string). */
   transferU128(receiver: string, amount: string): void;
+  /** Yield checkpoint: suspends contract, waits for external resume.
+   *  Returns data_id (u64). Resume with yieldResume(data_id, payload). */
+  yieldCreate(method: string, args: string, gas: number, weight: number): number;
+  /** Resume a yielded checkpoint with payload. */
+  yieldResume(dataId: number, payload: string): number;
 
   // ── IO ──
   /** Log a string. */
@@ -203,6 +208,14 @@ declare function nearCallAwait(
 declare function nearTransfer(receiver: string, amount: number): void;
 /** Transfer NEAR u128 (global alias for near.transferU128). */
 declare function nearTransferU128(receiver: string, amount: string): void;
+/** Yield checkpoint (global alias for near.yieldCreate). */
+declare function yieldCreate(method: string, args: string, gas: number, weight: number): number;
+/** Resume yielded checkpoint (global alias for near.yieldResume). */
+declare function yieldResume(dataId: number, payload: string): number;
+/** Yield checkpoint (near-prefixed alias). */
+declare function nearYieldCreate(method: string, args: string, gas: number, weight: number): number;
+/** Resume yielded checkpoint (near-prefixed alias). */
+declare function nearYieldResume(dataId: number, payload: string): number;
 
 // ═══════════════════════════════════════════════════════════════════
 // M2 TS subset — supported syntax

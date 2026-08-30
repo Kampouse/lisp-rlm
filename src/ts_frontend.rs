@@ -735,7 +735,7 @@ fn is_nil_call(v: &LispVal) -> bool {
     matches!(
         head.as_str(),
         "near/storage_set" | "near/storage_remove" | "near/abort" | "near/value_return"
-        | "near/call" | "near/call-await" | "near/transfer" | "near/transfer_u128"
+        | "near/call" | "near/call-await" | "near/transfer" | "near/transfer_u128" | "near/promise_yield_create" | "near/promise_yield_resume"
     )
 }
 
@@ -1562,6 +1562,11 @@ fn map_member_fn(obj: &str, prop: &str) -> String {
             "callAwait" => "near/call-await".into(),
             "transfer" => "near/transfer".into(),
             "transferU128" => "near/transfer_u128".into(),
+            // Yield/resume (checkpoint API)
+            "yieldCreate" => "near/promise_yield_create".into(),
+            "yieldResume" => "near/promise_yield_resume".into(),
+            "promiseYieldCreate" => "near/promise_yield_create".into(),
+            "promiseYieldResume" => "near/promise_yield_resume".into(),
             // Misc
             "depositGte" => "near/deposit-gte".into(),
             "log" => "near/log".into(),
@@ -1608,6 +1613,11 @@ fn map_builtin_call(name: &str) -> String {
         "nearCallAwait" => "near/call-await",
         "nearTransfer" => "near/transfer",
         "nearTransferU128" => "near/transfer_u128",
+        // Yield/resume
+        "yieldCreate" => "near/promise_yield_create",
+        "yieldResume" => "near/promise_yield_resume",
+        "nearYieldCreate" => "near/promise_yield_create",
+        "nearYieldResume" => "near/promise_yield_resume",
         _ => return name.to_string(),
     }
     .to_string()

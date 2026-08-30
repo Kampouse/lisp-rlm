@@ -1007,6 +1007,24 @@ impl TcEnv {
                 Box::new(nil_ty.clone()),
             ),
         );
+        // near/promise_yield_create : str → str → int → int → int
+        // (method, args_json, gas, weight) → data_id (u64 as int)
+        env.insert_mono(
+            "near/promise_yield_create".into(),
+            TcType::Arrow(
+                vec![str_ty.clone(), str_ty.clone(), int_ty.clone(), int_ty.clone()],
+                Box::new(int_ty.clone()),
+            ),
+        );
+        // near/promise_yield_resume : int → str → int
+        // (data_id, payload) → data_id
+        env.insert_mono(
+            "near/promise_yield_resume".into(),
+            TcType::Arrow(
+                vec![int_ty.clone(), str_ty.clone()],
+                Box::new(int_ty.clone()),
+            ),
+        );
         // near/block_timestamp : () → int
         // near/deposit-gte : int → int → bool (lo, hi literal only; emitter takes 1-2)
         env.insert_mono("near/deposit-gte".into(), TcType::Arrow(vec![int_ty.clone(), int_ty.clone()], Box::new(bool_ty.clone())));
