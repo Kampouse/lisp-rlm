@@ -241,6 +241,34 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                 out.push(lower_expr(&e.expression)?);
             }
             Statement::EmptyStatement(_) => {}
+            // Types-only imports from the near module family are ELIDED.
+            // The ambient d.ts (ts/lisp-rlm.d.ts → Monaco addExtraLib)
+            // provides editor completions without any import; near-sdk-js
+            // muscle memory pastes an import line, so accept it. Anything
+            // else is a hard error (no module system at runtime).
+            Statement::ImportDeclaration(imp) => {
+                let src = imp.source.value.as_str();
+                if src == "near" || src.starts_with("near-") || src.starts_with("./near") {
+                    // `import near from "near"` would SHADOW the ambient
+                    // global — hint the importless spelling.
+                    let has_default = imp
+                        .specifiers
+                        .iter()
+                        .flatten()
+                        .any(|s| matches!(s, oxc_ast::ast::ImportDeclarationSpecifier::ImportDefaultSpecifier(_)));
+                    if has_default {
+                        return Err(
+                            "ts_frontend: `import near from \"near\"` shadows the built-in `near` global — delete the import line; `near.*` works without it".into(),
+                        );
+                    }
+                    // named/type imports: types-only, elide
+                } else {
+                    return Err(format!(
+                        "ts_frontend: imports are not supported (module `{}`) — only types-only `import {{...}} from \"near*\"` is elided",
+                        src
+                    ));
+                }
+            }
             s => {
                 return Err(format!(
                     "ts_frontend: statement `{}` not in M1 subset",

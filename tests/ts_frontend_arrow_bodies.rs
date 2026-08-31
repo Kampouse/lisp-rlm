@@ -101,3 +101,26 @@ fn exported_get_arrow_is_view() {
     let ir = lower("export const get_count = (): number => 7;\n");
     assert!(ir.contains("#t"), "get_* must be a view export: {}", ir);
 }
+
+/// Types-only imports from the near module family are elided (editor DX).
+#[test]
+fn near_named_import_elided() {
+    compile("import { near } from \"near\";\nexport const main = (): number => { console.log(\"hi\"); return 1; };\n");
+    compile("import type { LispArr } from \"near-sdk-js\";\nexport const main = (): number => 1;\n");
+}
+
+/// `import near from "near"` (default import) hard-errors — it shadows the
+/// ambient global and would silently kill editor completions.
+#[test]
+fn near_default_import_errors() {
+    let r = ts_to_lisp_source("import near from \"near\";\nexport const main = (): number => 1;\n");
+    assert!(r.is_err());
+    assert!(r.unwrap_err().contains("shadows"));
+}
+
+/// Non-near imports stay a hard error (no module system at runtime).
+#[test]
+fn other_imports_error() {
+    let r = ts_to_lisp_source("import { useState } from \"react\";\nexport const main = (): number => 1;\n");
+    assert!(r.is_err());
+}
