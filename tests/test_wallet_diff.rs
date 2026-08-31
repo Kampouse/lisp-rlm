@@ -287,6 +287,16 @@ fn decode_tagged_num(bytes: &[u8]) -> i64 {
 mod tests {
     use super::*;
 
+    /// ⚠ HARNESS DEFECT (found 2026-08-31 during the nil-miss sweep — NOT a
+    /// nil-on-miss stale expectation): these four tests shell out to
+    /// `near-compile /tmp/wallet_factory.lisp` and
+    /// `/tmp/wallet_factory_full.lisp`, but those fixture files are written
+    /// by NOBODY — a full `git rev-list --all` scan confirms they were never
+    /// committed. They only ever passed on machines where a developer's /tmp
+    /// still held hand-written copies (same /tmp-race fragility class as the
+    /// test_p2_native_http flake). Fix requires authoring the fixtures (or
+    /// embedding them as consts) — deliberately NOT done in the nil-miss
+    /// test pass to avoid fabricating contract sources; left red on purpose.
     fn compile_lisp() -> Vec<u8> {
         let status = Command::new("cargo")
             .args([
@@ -301,7 +311,11 @@ mod tests {
             .current_dir("/Users/asil/.openclaw/workspace/lisp-rlm")
             .status()
             .expect("failed to run near-compile");
-        assert!(status.success(), "near-compile failed");
+        assert!(
+            status.success(),
+            "near-compile failed — /tmp/wallet_factory.lisp fixture is missing \
+             (never committed to the repo; see HARNESS DEFECT note above)"
+        );
         std::fs::read("/tmp/wallet_factory_test.wasm").expect("read wasm")
     }
 
@@ -363,7 +377,11 @@ mod tests {
             .current_dir("/Users/asil/.openclaw/workspace/lisp-rlm")
             .status()
             .expect("failed to run near-compile");
-        assert!(status.success(), "full factory near-compile failed");
+        assert!(
+            status.success(),
+            "full factory near-compile failed — /tmp/wallet_factory_full.lisp \
+             fixture is missing (never committed; see HARNESS DEFECT note)"
+        );
 
         let wasm = std::fs::read("/tmp/wallet_factory_full_test.wasm").expect("read wasm");
         let engine = Engine::default();
@@ -400,7 +418,7 @@ mod tests {
             .current_dir("/Users/asil/.openclaw/workspace/lisp-rlm")
             .status()
             .expect("failed to run near-compile");
-        assert!(status.success());
+        assert!(status.success(), "near-compile failed — /tmp/wallet_factory_full.lisp fixture is missing (never committed; see HARNESS DEFECT note)");
 
         let wasm = std::fs::read("/tmp/wallet_factory_full_test.wasm").expect("read wasm");
         let engine = Engine::default();
