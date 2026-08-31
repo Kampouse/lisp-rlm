@@ -1048,6 +1048,11 @@ impl LoopCompiler {
                                 self.code.push(Op::Jump(loop_start));
                                 true
                             } else {
+                                // recur with no enclosing loop — hard compile
+                                // error, never a silent fallback (GAPS t21)
+                                eprintln!(
+                                    "compile error: recur used outside of a loop"
+                                );
                                 false
                             }
                         }
@@ -1853,6 +1858,13 @@ impl LoopCompiler {
                                     }
                                     return false;
                                 }
+                            }
+                            // Hard validate recur tail positions BEFORE compiling the
+                            // body — a non-tail (recur ...) must never silently
+                            // compile into slot stores + jump (GAPS t21).
+                            if let Err(msg) = validate_recur_tails(body, var_slots.len()) {
+                                eprintln!("compile error: {}", msg);
+                                return false;
                             }
                             let loop_start = self.code.len();
                             self.loop_stack.push((loop_start, var_slots));
@@ -4742,9 +4754,134 @@ fn extract_num(args: &[LispVal], idx: usize) -> Result<i64, String> {
     }
 }
 
+/// Strict integer arg for bit-op builtins (wrap-*, muldiv, isqrt, band/...):
+/// Num only — Float/String would be silent bit-cast garbage. Hard error
+/// instead (repo policy; the wasm path traps on the equivalent mismatch).
+fn strict_num(args: &[LispVal], idx: usize, op: &str) -> Result<i64, String> {
+    match args.get(idx) {
+        Some(LispVal::Num(n)) => Ok(*n),
+        Some(other) => Err(format!("{}: expected integer, got {}", op, other)),
+        None => Err(format!("{}: missing arg {}", op, idx)),
+    }
+}
+
 /// Evaluate a builtin by name (for Op::BuiltinCall)
 /// Check if a name is a NEAR builtin
-fn eval_near_builtin_match(name: &str) -> bool {
+/// Validate that every `(recur ...)` in a loop body sits in direct tail
+/// position with arity matching the loop variables.
+pub fn validate_recur_tails(body: &LispVal, loop_vars: usize) -> Result<(), String> {
+    validate_recur_tail_expr(body, loop_vars, true)
+}
+
+fn validate_recur_tail_expr(e: &LispVal, arity: usize, tail: bool) -> Result<(), String> {
+    let LispVal::List(items) = e else { return Ok(()) };
+    let Some(LispVal::Sym(head)) = items.first() else {
+        for x in items {
+            validate_recur_tail_expr(x, arity, false)?;
+        }
+        return Ok(());
+    };
+    let last_inherits = |items: &Vec<LispVal>| -> Result<(), String> {
+        for x in &items[1..items.len().saturating_sub(1)] {
+            validate_recur_tail_expr(x, arity, false)?;
+        }
+        if items.len() > 1 {
+            validate_recur_tail_expr(items.last().unwrap(), arity, tail)?;
+        }
+        Ok(())
+    };
+    match head.as_str() {
+        "recur" => {
+            if !tail {
+                return Err(
+                    "recur not in tail position — it must be the final expression of the \
+                     loop body (or of a tail branch: if/cond/when/begin/let/and/or tails)"
+                        .into(),
+                );
+            }
+            if items.len() - 1 != arity {
+                return Err(format!(
+                    "recur arity mismatch: loop has {} variable(s), recur passed {}",
+                    arity,
+                    items.len() - 1
+                ));
+            }
+            for x in &items[1..] {
+                validate_recur_tail_expr(x, arity, false)?;
+            }
+            Ok(())
+        }
+        // tail-spine forms: branches / final expressions inherit tail position
+        "if" => {
+            if items.len() >= 2 {
+                validate_recur_tail_expr(&items[1], arity, false)?;
+            }
+            if items.len() >= 3 {
+                validate_recur_tail_expr(&items[2], arity, tail)?;
+            }
+            if items.len() >= 4 {
+                validate_recur_tail_expr(&items[3], arity, tail)?;
+            }
+            Ok(())
+        }
+        "begin" | "progn" | "and" | "or" => last_inherits(items),
+        "let" | "let*" | "letrec" => {
+            if let Some(LispVal::List(bs)) = items.get(1) {
+                for b in bs {
+                    validate_recur_tail_expr(b, arity, false)?;
+                }
+            }
+            for x in &items[2..items.len().saturating_sub(1)] {
+                validate_recur_tail_expr(x, arity, false)?;
+            }
+            if items.len() > 2 {
+                validate_recur_tail_expr(items.last().unwrap(), arity, tail)?;
+            }
+            Ok(())
+        }
+        "cond" => {
+            for clause in &items[1..] {
+                if let LispVal::List(cl) = clause {
+                    let is_else = matches!(cl.first(), Some(LispVal::Sym(s)) if s == "else");
+                    if cl.len() >= 2 && !is_else {
+                        validate_recur_tail_expr(&cl[0], arity, false)?;
+                    }
+                    for x in &cl[1..cl.len().saturating_sub(1)] {
+                        validate_recur_tail_expr(x, arity, false)?;
+                    }
+                    if cl.len() > 1 {
+                        validate_recur_tail_expr(cl.last().unwrap(), arity, tail)?;
+                    }
+                }
+            }
+            Ok(())
+        }
+        "when" | "unless" => {
+            if items.len() >= 2 {
+                validate_recur_tail_expr(&items[1], arity, false)?;
+            }
+            for x in &items[2..items.len().saturating_sub(1)] {
+                validate_recur_tail_expr(x, arity, false)?;
+            }
+            if items.len() > 2 {
+                validate_recur_tail_expr(items.last().unwrap(), arity, tail)?;
+            }
+            Ok(())
+        }
+        // separate scopes: recur inside belongs to them (inner loop validates
+        // its own body; lambda recur errors as outside-loop / non-tail)
+        "lambda" | "fn" | "quote" | "loop" => Ok(()),
+        // ordinary call / special form — operands are never tail positions
+        _ => {
+            for x in &items[1..] {
+                validate_recur_tail_expr(x, arity, false)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+pub fn eval_near_builtin_match(name: &str) -> bool {
     matches!(name,
         // ── Legacy bare names (pre-near/ namespace) ──
         "storage-write" | "storage_write"
@@ -5738,6 +5875,105 @@ pub fn eval_builtin(
                 other.map(|v| format!("{:?}", v)).unwrap_or_else(|| "missing arg".into())
             )),
         },
+        // ── Wrapping arithmetic + integer intrinsics ──
+        // Ports of wasm_emit/call_core.rs ops (surface_parity inventory,
+        // T6 class). Semantics match the wasm path exactly: i64 bit-level
+        // ops, hard errors on wrong arity/type (repo policy — wasm traps,
+        // interp errors, never silent fallback).
+        "wrap-add" | "wrap-sub" | "wrap-mul" => {
+            // Variadic left fold with i64 wrapping semantics; 0 args → identity.
+            let identity: i64 = if name == "wrap-mul" { 1 } else { 0 };
+            if args.is_empty() {
+                return Ok(LispVal::Num(identity));
+            }
+            let mut acc = strict_num(args, 0, name)?;
+            for i in 1..args.len() {
+                let x = strict_num(args, i, name)?;
+                acc = match name {
+                    "wrap-add" => acc.wrapping_add(x),
+                    "wrap-sub" => acc.wrapping_sub(x),
+                    _ => acc.wrapping_mul(x),
+                };
+            }
+            Ok(LispVal::Num(acc))
+        }
+        "muldiv" => {
+            // (muldiv a b c) → (a*b)/c over unsigned 128-bit intermediate.
+            // c == 0 → "division by zero" (canonical pair); hi >= c → overflow
+            // hard error (wasm: unreachable trap). Mirrors emit_muldiv.
+            if args.len() != 3 {
+                return Err(format!("muldiv: need 3 args (a b c), got {}", args.len()));
+            }
+            let a = strict_num(args, 0, "muldiv")? as u64;
+            let b = strict_num(args, 1, "muldiv")? as u64;
+            let c = strict_num(args, 2, "muldiv")? as u64;
+            if c == 0 {
+                return Err("division by zero".into());
+            }
+            let prod = (a as u128) * (b as u128);
+            if (prod >> 64) >= c as u128 {
+                return Err("muldiv: overflow — result does not fit in 64 bits".into());
+            }
+            Ok(LispVal::Num((prod / c as u128) as u64 as i64))
+        }
+        "isqrt" => {
+            // (isqrt n) → floor(sqrt(n)) over the u64 bit pattern
+            // (wasm compares I64LtU — negatives read as huge unsigned).
+            if args.len() != 1 {
+                return Err(format!("isqrt: need 1 arg, got {}", args.len()));
+            }
+            let n = strict_num(args, 0, "isqrt")? as u64;
+            // Integer Newton with float seed, exact fixup at both ends.
+            // CHECKED arithmetic throughout: an overflowing square is
+            // definitely > n (saturating_mul would clamp to u64::MAX and
+            // read as <= n when n == u64::MAX — infinite fixup loop).
+            let mut r = (n as f64).sqrt() as u64;
+            while r > 0 && r.checked_mul(r).map_or(true, |sq| sq > n) {
+                r -= 1;
+            }
+            while r
+                .checked_add(1)
+                .and_then(|r1| r1.checked_mul(r1).map(|sq| (r1, sq)))
+                .map(|(r1, sq)| sq <= n)
+                .unwrap_or(false)
+            {
+                r += 1;
+            }
+            Ok(LispVal::Num(r as i64))
+        }
+        "band" | "bor" => {
+            if args.len() != 2 {
+                return Err(format!("{}: need 2 args, got {}", name, args.len()));
+            }
+            let x = strict_num(args, 0, name)?;
+            let y = strict_num(args, 1, name)?;
+            Ok(LispVal::Num(if name == "band" { x & y } else { x | y }))
+        }
+        "bnot" => {
+            if args.len() != 1 {
+                return Err(format!("bnot: need 1 arg, got {}", args.len()));
+            }
+            Ok(LispVal::Num(!strict_num(args, 0, "bnot")?))
+        }
+        "shl" | "shr" => {
+            // wasm shift counts are masked mod 64 (I64Shl/I64ShrU semantics).
+            // shl result must stay in the 61-bit tagged payload range
+            // [-2^60, 2^60-1] — emit_tag_num_checked traps otherwise.
+            if args.len() != 2 {
+                return Err(format!("{}: need 2 args, got {}", name, args.len()));
+            }
+            let x = strict_num(args, 0, name)?;
+            let s = (strict_num(args, 1, name)? as u64) & 63;
+            if name == "shl" {
+                let r = x.wrapping_shl(s as u32);
+                if r < -(1i64 << 60) || r >= (1i64 << 60) {
+                    return Err("shl: result out of range for tagged num".into());
+                }
+                Ok(LispVal::Num(r))
+            } else {
+                Ok(LispVal::Num(((x as u64) >> s) as i64))
+            }
+        }
         // ── Promises (delay/force) ──
         "make-promise" => {
             // (make-promise thunk) → wraps a 0-param closure in a Delay
