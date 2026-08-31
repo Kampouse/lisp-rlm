@@ -36,6 +36,8 @@ declare function strJoin(separator: string, parts: LispArr<string>): string;
 
 declare function strCat(...parts: string[]): string;
 declare function strLength(s: string): number;
+/** alias of strLength (both spellings lower to str-length) */
+declare function strLen(s: string): number;
 declare function strSlice(s: string, start: number, end: number): string;
 declare function strIndexOf(haystack: string, needle: string): number;
 declare function strToNum(s: string): number;
@@ -131,9 +133,57 @@ declare const near: {
   // yieldResume: resume a yielded promise — (dataId, payload).
   yieldResume(dataId: string, payload: string): number;
 
-  // long-tail (raw promise batches, validators, ecrecover, random_seed, …)
-  // exists at the lisp level but is not TS-declared yet — add typed
-  // entries here in the same commit you first use one from TS.
+  // ── crypto / hashing (host functions; all compile-verified) ──
+  /** SHA-256 of a byte string → hex digest (64 hex chars). */
+  sha256(msg: string): string;
+  keccak256(msg: string): string;
+  keccak512(msg: string): string;
+  ripemd160(msg: string): string;
+  /** 32 bytes of validator randomness for the current block. */
+  randomSeed(): string;
+  /** Ed25519: (signature, message, public_key) → 1/0. */
+  ed25519Verify(sig: string, msg: string, pk: string): number;
+  /** secp256r1: (sig 64B r||s, msg digest, pk 33B compressed) → 1/0.
+   *  Requires NEAR protocol 85+. */
+  p256Verify(sig: string, msg: string, pk: string): number;
+  /** Ethereum-style: (msgHash, sig, v, malleabilityFlag 0/1)
+   *  → recovered address hex, or "" on failure. */
+  ecrecover(msgHash: string, sig: string, v: number, malleability: number): string;
+  // BLS12-381 + BN254 precompiles (hex-encoded point buffers) — advanced use.
+  altBn128G1Sum(buf: string): string;
+  altBn128G1Multiexp(pairs: string): string;
+  altBn128PairingCheck(buf: string): number;
+  bls12381P1Sum(buf: string): string;
+  bls12381P2Sum(buf: string): string;
+  bls12381G1Multiexp(pairs: string): string;
+  bls12381G2Multiexp(pairs: string): string;
+
+  // ── context / gas ──
+  /** Full signer public key (hex) — pairs with ed25519Verify. */
+  signerAccountPk(): string;
+  prepaidGas(): number;
+  usedGas(): number;
+  /** Raw transaction input JSON (the full args object as a string). */
+  input(): string;
+  /** Abort execution with a panic message (state rolls back). */
+  panic(msg: string): void;
+
+  // ── raw promises (lower-level than callAwait) ──
+  /** All three take deposit as i64 (use 0) BEFORE gas. Return promise idx. */
+  promiseCreate(target: string, method: string, argsJson: string, deposit: number, gas: number): number;
+  promiseThen(p: number, target: string, method: string, argsJson: string, deposit: number, gas: number): number;
+  promiseAnd(p1: number, p2: number): number;
+
+  // ── promise batches (multi-action promises; strings, not raw ABI) ──
+  promiseBatchCreate(target: string): number;
+  promiseBatchThen(p: number, target: string): number;
+  promiseBatchActionTransfer(p: number, yoctoAmount: string): void;
+  /** Note arg order: deposit (string) BEFORE gas. */
+  promiseBatchActionFunctionCall(p: number, method: string, argsJson: string, yoctoDeposit: string, gas: number): void;
+  promiseBatchActionCreateAccount(p: number): void;
+  // Raw-ABI forms (ptr/len pairs, not strings) also exist for stake,
+  // addKeyWithFullAccess, addKeyWithFunctionCall, deleteKey, deleteAccount,
+  // deployContract — awkward from TS; reach for them only if you must.
 };
 
 // ── JS std shims (2026-08-30) ─────────────────────────────────────────

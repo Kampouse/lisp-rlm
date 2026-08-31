@@ -325,7 +325,10 @@ fn do_build_target_with_config(project_dir: &str, target: &str, config: ProjectC
     let source =
         fs::read_to_string(&src_path).map_err(|e| format!("read {}: {}", config.src, e))?;
 
-    // If source is Solidity (.sol), translate to Lisp first
+    // If source is Solidity (.sol), translate to Lisp first. TS (.ts/.mts)
+    // lowers through the TS frontend — mirrors do_build's branch (run_build
+    // routes here, so without this the raw TS text hits the lisp checker).
+    let is_ts = config.src.ends_with(".ts") || config.src.ends_with(".mts");
     let effective_source = if config.src.ends_with(".sol") {
         let lisp_vals = lisp_rlm_wasm::solidity::translate_solidity(&source)
             .map_err(|e| format!("Solidity translation: {}", e))?;
@@ -334,13 +337,22 @@ fn do_build_target_with_config(project_dir: &str, target: &str, config: ProjectC
             .map(|v| v.to_string())
             .collect::<Vec<_>>()
             .join("\n")
+    } else if is_ts {
+        lisp_rlm_wasm::ts_frontend::ts_to_lisp_source(&source)
+            .map_err(|e| format!("TS lowering: {}", e))?
     } else {
         source.clone()
+    };
+    let ident_map = if is_ts {
+        lisp_rlm_wasm::ts_frontend::take_ident_offsets()
+    } else {
+        Vec::new()
     };
 
     let wasm_bytes = match target {
         "near" => {
-            let wasm = lisp_rlm_wasm::wasm_emit::compile_near(&effective_source)?;
+            let wasm = lisp_rlm_wasm::wasm_emit::compile_near(&effective_source)
+                .map_err(|e| augment_with_ts_line(e, &ident_map, &source))?;
             let func_names: Vec<String> = extract_func_names(&effective_source).unwrap_or_default();
             let _dbg_path = Path::new(project_dir).join("target/_debug_raw.wasm");
             let _ = fs::write(&_dbg_path, &wasm);

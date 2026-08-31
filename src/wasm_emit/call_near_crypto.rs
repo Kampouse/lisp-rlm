@@ -31,6 +31,9 @@ impl WasmEmitter {
     ) -> Result<Vec<Instruction<'static>>, String> {
         match op {
             "near/sha256" => {
+                if a.len() != 1 {
+                    return Err("near/sha256: need 1 args (msg)".into());
+                }
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
                 // Untag string: extract len and ptr
@@ -60,6 +63,9 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/keccak256" => {
+                if a.len() != 1 {
+                    return Err("near/keccak256: need 1 args (msg)".into());
+                }
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
                 // Untag string: extract len and ptr
@@ -89,6 +95,9 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/ed25519_verify" => {
+                if a.len() != 3 {
+                    return Err("near/ed25519_verify: need 3 args (sig, msg, pk)".into());
+                }
                 // (near/ed25519_verify signature message public_key) → bool
                 // All three args are byte strings (tagged Str)
                 // NEAR host: ed25519_verify(sig_len, sig_ptr, msg_len, msg_ptr, pk_len, pk_ptr) → u64 — idx 24
@@ -203,6 +212,9 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/p256_verify" => {
+                if a.len() != 3 {
+                    return Err("near/p256_verify: need 3 args (sig, msg, pk)".into());
+                }
                 // (near/p256_verify signature message public_key) → bool
                 // NEAR host: p256_verify(sig_len, sig_ptr, msg_len, msg_ptr, pk_len, pk_ptr) → u64 — idx 55
                 // sig: 64 bytes (r||s), msg: prehashed digest, pk: 33 bytes (compressed SEC1)
@@ -246,6 +258,9 @@ impl WasmEmitter {
             }
             "near/random_seed" => self.read_to_register(23, a),
             "near/keccak512" => {
+                if a.len() != 1 {
+                    return Err("near/keccak512: need 1 args (msg)".into());
+                }
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
                 v.extend(data.clone());
@@ -271,6 +286,9 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/ripemd160" => {
+                if a.len() != 1 {
+                    return Err("near/ripemd160: need 1 args (msg)".into());
+                }
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
                 v.extend(data.clone());
@@ -296,6 +314,9 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/ecrecover" => {
+                if a.len() != 4 && a.len() != 5 {
+                    return Err("near/ecrecover: need 4 args (hash, sig, v, malleability); 5th (s) ignored".into());
+                }
                 let hash = self.expr(&a[0])?;
                 let sig = self.expr(&a[1])?;
                 let v_val = self.expr(&a[2])?;
@@ -325,6 +346,9 @@ impl WasmEmitter {
                 Ok(vv)
             }
             "near/alt_bn128_g1_multiexp" => {
+                if a.len() != 1 {
+                    return Err("near/alt_bn128_g1_multiexp: need 1 args (pairs)".into());
+                }
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
                 v.extend(data.clone());
@@ -350,6 +374,9 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/alt_bn128_g1_sum" => {
+                if a.len() != 1 {
+                    return Err("near/alt_bn128_g1_sum: need 1 args (data buffer)".into());
+                }
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
                 v.extend(data.clone());
@@ -375,6 +402,9 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/alt_bn128_pairing_check" => {
+                if a.len() != 1 {
+                    return Err("near/alt_bn128_pairing_check: need 1 args (data buffer)".into());
+                }
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
                 v.extend(data.clone());
@@ -390,6 +420,9 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/bls12381_p1_sum" => {
+                if a.len() != 1 {
+                    return Err("near/bls12381_p1_sum: need 1 args (data buffer)".into());
+                }
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
                 v.extend(data.clone());
@@ -416,6 +449,9 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/bls12381_p2_sum" => {
+                if a.len() != 1 {
+                    return Err("near/bls12381_p2_sum: need 1 args (data buffer)".into());
+                }
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
                 v.extend(data.clone());
@@ -442,6 +478,9 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/bls12381_g1_multiexp" => {
+                if a.len() != 1 {
+                    return Err("near/bls12381_g1_multiexp: need 1 args (pairs)".into());
+                }
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
                 v.extend(data.clone());
@@ -468,6 +507,9 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/bls12381_g2_multiexp" => {
+                if a.len() != 1 {
+                    return Err("near/bls12381_g2_multiexp: need 1 args (pairs)".into());
+                }
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
                 v.extend(data.clone());
