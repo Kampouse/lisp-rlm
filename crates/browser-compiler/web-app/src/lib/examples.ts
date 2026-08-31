@@ -171,6 +171,19 @@ export function get_profile(): string {
 // Nested reads: args { "cfg": { "server": { "port": "80" } } }
 export function get_port(cfg: string): string {
   return cfg.server.port;
+}
+
+// ── Typed object params ──────────────────────────────────────
+// Inline shape or `type` alias — numeric props AUTO-DECODE.
+type Ballot = { title: string; votes: number };
+
+export function cast(b: Ballot): string {
+  let nv = b.votes + 1;             // strToNum handled by the lowering
+  return b.title + ": " + toStr(nv);
+}
+
+export function tally(b: Ballot, stamp: number): string {
+  return { title: b.title, votes: b.votes, stamped: stamp };
 }`,
   },
   {

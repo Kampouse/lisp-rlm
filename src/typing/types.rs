@@ -398,9 +398,9 @@ impl TcEnv {
                 ),
             );
         }
-        // str-cat: strings-only variadic concat (interpreter + wasm_emit agree;
-        // Num args are NOT stringified — wasm untag assumes TAG_STR, so the
-        // interpreter hard-errors instead of wasm's silent mis-read)
+        // str-cat: strings-only variadic concat (interpreter + wasm_emit
+        // agree; arity handled variadically in checker.rs — all-Str args,
+        // Num args hard-error: wasm untag assumes TAG_STR)
         env.insert_mono(
             "str-cat".to_string(),
             TcType::Arrow(

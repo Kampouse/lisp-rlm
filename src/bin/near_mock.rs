@@ -957,8 +957,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(ref data) = st.return_data {
                 if data.len() == 8 {
                     let val = i64::from_le_bytes(data[..8].try_into().unwrap());
-                    // Untag: remove low 3 tag bits
-                    println!("📄 {} (raw i64, untagged: {})", val, val >> 3);
+                    // 8 bytes is ambiguous: i64 returns AND 8-char strings
+                    // both land here — show the string interpretation when
+                    // all bytes are printable ASCII (a JSON/str return),
+                    // else the i64 view (2026-08-31: 8-char strings were
+                    // mislabeled as garbage i64s during M2 object debugging)
+                    let printable = data.iter().all(|b| (0x20..0x7f).contains(b));
+                    if printable {
+                        let s = String::from_utf8_lossy(data);
+                        println!("📄 {:?} (8-byte str | i64 view: {})", s, val);
+                    } else {
+                        // Untag: remove low 3 tag bits
+                        println!("📄 {} (raw i64, untagged: {})", val, val >> 3);
+                    }
                 } else {
                     let s = String::from_utf8_lossy(data);
                     if !s.is_empty() {

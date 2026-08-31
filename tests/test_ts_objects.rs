@@ -157,3 +157,69 @@ fn object_spread_hard_errors() {
     .expect_err("spread must hard-error");
     assert!(err.contains("spread"), "{err}");
 }
+
+// ── M2+: object-typed params (inline literal annotations) ───────────────
+
+#[test]
+fn object_param_numeric_prop_auto_decodes() {
+    let out = lower(
+        "export function f(u: { name: string; votes: number }): number {\n  return u.votes;\n}",
+    );
+    assert!(
+        out.contains(r#"(str->num (json-get-str "votes" u))"#),
+        "annotated numeric prop auto str->num: {out}"
+    );
+}
+
+#[test]
+fn object_param_string_prop_plain_read() {
+    let out = lower(
+        "export function f(u: { name: string }): string {\n  return u.name;\n}",
+    );
+    assert!(
+        out.contains(r#"(json-get-str "name" u)"#),
+        "string prop reads plain: {out}"
+    );
+}
+
+#[test]
+fn object_param_embeds_raw_in_literal() {
+    let out = lower(
+        "export function f(u: { name: string }): string {\n  return { wrapped: u, n: 1 };\n}",
+    );
+    assert!(
+        out.contains(r#"(json-set "{}" "wrapped" u)"#),
+        "obj param embeds RAW (no json-quote): {out}"
+    );
+}
+
+#[test]
+fn object_param_type_alias_resolves() {
+    let out = lower(
+        "type U = { name: string; votes: number };\nexport function f(u: U): number {\n  return u.votes;\n}",
+    );
+    assert!(
+        out.contains(r#"(str->num (json-get-str "votes" u))"#),
+        "type alias resolves with numeric prop: {out}"
+    );
+}
+
+#[test]
+fn unknown_named_type_hard_errors() {
+    let err = ts_to_lisp_source(
+        "export function f(u: Missing): string {\n  return u.a;\n}",
+    )
+    .expect_err("unknown type refs must hard-error");
+    assert!(
+        err.contains("inline object literal type"),
+        "hint at inline: {err}"
+    );
+}
+
+#[test]
+fn object_param_round_trip_executes() {
+    // full pipeline: typed param → read → arithmetic → rebuild → return
+    compile(
+        "export function vote(u: { name: string; votes: number }): string {\n  let nv = u.votes + 1;\n  return u.name + \" -> \" + toStr(nv);\n}\n",
+    );
+}

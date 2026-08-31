@@ -1422,6 +1422,19 @@ fn infer_application(
 
     // Variadic builtins: accept any arity
     if let LispVal::Sym(name) = func {
+        // str-cat: variadic STRINGS-ONLY concat (emitter + interp are
+        // variadic; the old binary Arrow type rejected legal 3+ arg forms
+        // — matches the wasm_emit arm's n-arg single-alloc path).
+        // Non-str args still hard-error (wasm untag assumes TAG_STR).
+        if name == "str-cat" {
+            for arg in args {
+                let t = infer(arg, env, supply, subst)?;
+                if unify(&t, &TcType::Con(TcCon::Str)).is_err() {
+                    return Err("in call (str-cat ...): args must all be str".into());
+                }
+            }
+            return Ok(TcType::Con(TcCon::Str));
+        }
         if name == "str-concat" || name == "string-append" || name == "str" {
             for arg in args {
                 let _ = infer(arg, env, supply, subst)?;
