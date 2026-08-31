@@ -68,9 +68,13 @@ fn bitops_match_wasm() {
 #[test]
 fn near_kv_get_compiles_and_reads() {
     // was rejected by the lisp-run compile gate (GAPS t18/t19) though the
-    // runtime twin existed — composite key read matching near/kv writes
-    eval_str("(near/kv 99 \"acc\" \"slot\")");
-    assert_eq!(eval_str("(near/kv-get \"acc\" \"slot\")"), "99");
-    // miss → Num(0) default (both surfaces)
+    // runtime twin existed — composite key read matching near/kv writes.
+    // NOTE: eval_str mints a fresh EvalState per call, so write+read must
+    // share ONE program (begin) — separate calls would read an empty store.
+    assert_eq!(
+        eval_str(r#"(begin (near/kv 99 "acc" "slot") (near/kv-get "acc" "slot"))"#),
+        "99"
+    );
+    // miss → Num(0) default (both surfaces; fresh state guarantees the miss)
     assert_eq!(eval_str("(near/kv-get \"no\" \"such\")"), "0");
 }

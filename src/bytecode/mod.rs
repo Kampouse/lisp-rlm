@@ -5912,7 +5912,7 @@ pub fn eval_builtin(
             }
             let prod = (a as u128) * (b as u128);
             if (prod >> 64) >= c as u128 {
-                return Err("muldiv: result does not fit in 64 bits".into());
+                return Err("muldiv: overflow — result does not fit in 64 bits".into());
             }
             Ok(LispVal::Num((prod / c as u128) as u64 as i64))
         }
@@ -5924,11 +5924,19 @@ pub fn eval_builtin(
             }
             let n = strict_num(args, 0, "isqrt")? as u64;
             // Integer Newton with float seed, exact fixup at both ends.
+            // CHECKED arithmetic throughout: an overflowing square is
+            // definitely > n (saturating_mul would clamp to u64::MAX and
+            // read as <= n when n == u64::MAX — infinite fixup loop).
             let mut r = (n as f64).sqrt() as u64;
-            while r > 0 && r.saturating_mul(r) > n {
+            while r > 0 && r.checked_mul(r).map_or(true, |sq| sq > n) {
                 r -= 1;
             }
-            while r.checked_add(1).map(|r1| r1.saturating_mul(r1) <= n).unwrap_or(false) {
+            while r
+                .checked_add(1)
+                .and_then(|r1| r1.checked_mul(r1).map(|sq| (r1, sq)))
+                .map(|(r1, sq)| sq <= n)
+                .unwrap_or(false)
+            {
                 r += 1;
             }
             Ok(LispVal::Num(r as i64))
