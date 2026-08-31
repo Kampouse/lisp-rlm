@@ -78,6 +78,51 @@ function getCounter(): number {
 // - values stored as strings, numbers are i64`,
   },
   {
+    name: 'NEAR API Tour (TS)',
+    icon: '🗺️',
+    target: 'p1',
+    lang: 'ts',
+    source: `// NEAR API tour — every spelling below compile-verified.
+// No imports needed: near.* / storage.* map to builtins automatically.
+//
+// ── Storage (string KV — store numbers as strings) ─────────────
+//   near.storageSet(k, v)      storage.set(k, v)   // both spellings
+//   near.storageGet(k) ?? ""   → string (raw result is str-or-nil)
+//   near.storageHas(k) → bool  near.storageDel(k)
+//
+// ── Transaction context ────────────────────────────────────────
+//   near.blockIndex()          near.blockTimestamp()
+//   near.currentAccountId()    near.signerAccountId()
+//   near.attachedDeposit()     near.prepaidGas()
+//
+// ── Logging / panic ────────────────────────────────────────────
+//   console.log(x)             → on-chain log (str, num, or array)
+//   near.abort("reason")       → panic + revert
+//
+// ── Strings & numbers ──────────────────────────────────────────
+//   toStr(123) → "123"         strToNum("42") → 42
+//   strLength("abc") → 3
+//
+// ── Cross-contract (async fns only, one await, first stmt) ────
+//   const r = await near.callAwait("acct", "method", argsJson, deposit)
+//
+// Exports: export function / export const f = arrow.
+// get_* names become views; new_ exports as NEAR's "new".
+
+export function tour(): string {
+  near.storageSet("visits", toStr(strToNum(near.storageGet("visits") ?? "0") + 1));
+
+  console.log("account:", near.currentAccountId());
+  console.log("block:", near.blockIndex());
+  console.log("visits:", near.storageGet("visits"));
+  console.log("array logging works too:", [1, 2, 3]);
+
+  return near.storageGet("visits") ?? "0";
+}
+
+export const get_visits = (): string => near.storageGet("visits") ?? "0";`,
+  },
+  {
     name: 'CC View',
     icon: '🔗',
     target: 'p1',
