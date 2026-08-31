@@ -519,6 +519,23 @@ fn cmd_test(dir: Option<&str>, json: bool) -> Result<(), String> {
             }
             a.extend(["--prepaid".into(), "200".into()]);
             let out = capture("near-vm-run", &a)?;
+            // expect_error: the call MUST fail (abort/panic) — trap expected
+            if let Some(want_err) = step["expect_error"].as_str() {
+                let errored = out.contains("❌") || out.contains("trap");
+                if errored && (want_err.is_empty() || out.contains(want_err)) {
+                    passed += 1;
+                } else {
+                    failed += 1;
+                    failures.push(serde_json::json!({
+                        "scenario": scen_name, "step": i, "method": method,
+                        "expect_error": want_err, "got": out.trim()
+                    }));
+                    if !json {
+                        eprintln!("FAIL {} step {} ({}): expected error '{}', got success/other", scen_name, i, method, want_err);
+                    }
+                }
+                continue;
+            }
             let result_line = out.lines().rev().find(|l| l.contains('📄')).unwrap_or("").to_string();
             if let Some(expect) = step["expect"].as_str() {
                 let got = result_line.trim().trim_start_matches('📄').trim();

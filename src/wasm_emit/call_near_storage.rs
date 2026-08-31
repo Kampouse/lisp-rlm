@@ -86,11 +86,11 @@ match op {
                 v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(18));
-                // if flag == 0 → miss → Str("") ; else copy register → heap, tag Str
+                // if flag == 0 → miss → Nil (typed (opt str): `??`/default handles
+                // the miss; returning Str("") made fallbacks unreachable — FT bug)
                 v.push(Instruction::I64Eqz);
                 v.push(Instruction::If(BlockType::Result(ValType::I64)));
-                v.push(Instruction::I64Const(TEMP_MEM)); // ptr, len=0 — no bytes read
-                v.extend(self.emit_tag_str());
+                v.push(Instruction::I64Const(TAG_NIL));
                 v.push(Instruction::Else);
                 // len = register_len(0)
                 v.push(Instruction::I64Const(0));

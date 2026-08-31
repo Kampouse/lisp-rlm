@@ -4902,7 +4902,9 @@ fn eval_near_builtin(
             match state.near_storage.get(&key) {
                 Some(LispVal::Str(s)) => Some(Ok(LispVal::Str(s.clone()))),
                 Some(_) => Some(Err(format!("near/storage_get: key '{}' holds a non-string value (written by near/store?) — mixing storage families on one key is unsupported", key))),
-                None => Some(Ok(LispVal::Str(String::new()))),
+                // nil on miss — matches declared (opt str) + NEAR semantics; "" made
+                // `??` fallbacks unreachable (FT bug, 2026-08-30)
+                None => Some(Ok(LispVal::Nil)),
             }
         }
         "near/storage_has" | "near/storage_has_key" => {

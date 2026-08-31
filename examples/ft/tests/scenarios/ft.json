@@ -1,0 +1,48 @@
+{
+  "name": "ft-lifecycle",
+  "steps": [
+    {
+      "method": "new",
+      "args": {
+        "total": "1000000"
+      }
+    },
+    {
+      "method": "ft_transfer",
+      "args": {
+        "to": "bob.testnet",
+        "amount": "400000"
+      }
+    },
+    {
+      "method": "get_balance",
+      "args": {
+        "account": "bob.testnet"
+      },
+      "view": true,
+      "expect": "400000"
+    },
+    {
+      "method": "get_balance",
+      "args": {
+        "account": "owner.test.near"
+      },
+      "view": true,
+      "expect": "600000"
+    },
+    {
+      "method": "ft_total",
+      "args": {},
+      "view": true,
+      "expect": "1000000"
+    },
+    {
+      "method": "ft_transfer",
+      "args": {
+        "to": "carol.testnet",
+        "amount": "9999999"
+      },
+      "expect_error": ""
+    }
+  ]
+}
