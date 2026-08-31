@@ -3436,11 +3436,13 @@ impl WasmEmitter {
         v.push(Instruction::LocalSet(res));
         v.push(Instruction::I64Const(0));
         v.push(Instruction::LocalSet(ng));
-        // Wrap parse section: if pos >= ilen (key not found), skip parsing; res stays 0
+        // Wrap parse section: if pos >= ilen (key not found) → TAG_NIL.
+        // (2026-08-31) the gate now PRODUCES the value: tagged NUM on hit,
+        // TAG_NIL on miss — d.ts says `number | null` and `?? n` must fire.
         v.push(Instruction::LocalGet(pos));
         v.push(Instruction::LocalGet(ilen));
         v.push(Instruction::I64LtS);
-        v.push(Instruction::If(BlockType::Empty)); // if pos < ilen → parse
+        v.push(Instruction::If(BlockType::Result(ValType::I64))); // if pos < ilen → parse
 
         // (I1 fix: pos already points past the colon)
 
@@ -3590,9 +3592,13 @@ impl WasmEmitter {
         v.push(Instruction::I64Sub);
         v.push(Instruction::LocalSet(res));
         v.push(Instruction::End); // end if neg
-        v.push(Instruction::End); // end if pos < ilen (parse section)
-                                  // Return res (0 if key not found, parsed value otherwise)
+        // then-branch result: tagged NUM (caller no longer re-tags)
         v.push(Instruction::LocalGet(res));
+        v.extend(self.emit_tag_num());
+        v.push(Instruction::Else);
+        // miss: TAG_NIL
+        v.push(Instruction::I64Const(TAG_NIL));
+        v.push(Instruction::End); // end if pos < ilen (parse section)
         Ok(v)
     }
 

@@ -91,9 +91,19 @@ declare const near: {
   storageUsage(): number;
 
   // args / returns
+  /**
+   * Read a string arg from the transaction input JSON.
+   * Missing key → null — pair with `??`:
+   *   let g = near.jsonGetStr("g") ?? "default";
+   */
   jsonGetStr(key: string): string | null;
   /** {"k": ["a","b"]} → LispArr<string>; max 64 elements, nil if missing */
   jsonArr(key: string): LispArr<string>;
+  /**
+   * Read a numeric arg from the transaction input JSON.
+   * Missing key → null — pair with `??`:
+   *   let n = near.jsonGetInt("n") ?? 0;
+   */
   jsonGetInt(key: string): number | null;
   jsonReturnStr(v: string): void;
   jsonReturnInt(v: number): void;

@@ -275,15 +275,16 @@ fn helpers_json_set_impl_unit() {
 
 #[test]
 fn json_get_str_missing_key_returns_empty_exec() {
-    // The scan's exhaustion exit left pos mid-input; the found-gate then
-    // read input TAIL BYTES as the value — {"x":1} returned "1", {} → "{".
-    // Now: clean miss → empty string.
+    // History: (1) miss read input TAIL BYTES as the value ({"x":1} → "1");
+    // (2) fixed to "" — but that silently broke `??` (d.ts promises
+    // `string | null`); (3) FINAL contract: miss → nil, bare to-string
+    // renders "nil", `(default x fb)` fires. See the two tests below.
     let out = run_near_mock(
         r#"(define (main) (near/log (to-string (near/json_get_str "g"))))"#,
     );
     assert!(
-        out.contains("LOG:   ") || out.contains("LOG:  [debug"),
-        "missing key must log empty, got: {}",
+        out.contains("LOG: nil"),
+        "missing key must render nil, got: {}",
         out
     );
 }
@@ -318,6 +319,32 @@ fn log_num_prints_value_not_tag_exec() {
     assert!(
         out.contains("LOG: 777"),
         "log_num must print the untagged value, got: {}",
+        out
+    );
+}
+
+// ── 2026-08-31 #2: `??` on input reads (d.ts said nullable, runtime said "") ──
+
+#[test]
+fn json_get_str_missing_fires_nullish_fallback_exec() {
+    let out = run_near_mock(
+        r#"(define (main) (near/log (to-string (default (near/json_get_str "g") "fallback"))))"#,
+    );
+    assert!(
+        out.contains("LOG: fallback"),
+        "?? must fire on missing key, got: {}",
+        out
+    );
+}
+
+#[test]
+fn to_string_nil_renders_nil_exec() {
+    let out = run_near_mock(
+        r#"(define (main) (near/log (to-string (near/json_get_str "g"))))"#,
+    );
+    assert!(
+        out.contains("LOG: nil"),
+        "bare miss must be visible as nil, got: {}",
         out
     );
 }

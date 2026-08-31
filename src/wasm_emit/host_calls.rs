@@ -364,6 +364,27 @@ impl WasmEmitter {
         v.push(Instruction::LocalGet(val_i));
         v.extend(self.array_to_str_code());
         v.push(Instruction::Else);
+        // NIL path (2026-08-31): to-string(nil) → "nil" — was falling to
+        // NUM and printing the tag bits as "0". `jsonGetStr` now returns
+        // nil on missing keys; bare to-string of a miss must be visible.
+        v.push(Instruction::LocalGet(val_i));
+        v.push(Instruction::I64Const(7));
+        v.push(Instruction::I64And);
+        v.push(Instruction::I64Const(TAG_NIL));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Result(wasm_encoder::ValType::I64)));
+        let nil_off = self.alloc_data(b"nil") as i64;
+        // (3 << 32 | nil_off) << 3 | TAG_STR — "nil" as a tagged str
+        v.push(Instruction::I64Const(3));
+        v.push(Instruction::I64Const(32));
+        v.push(Instruction::I64Shl);
+        v.push(Instruction::I64Const(nil_off));
+        v.push(Instruction::I64Or);
+        v.push(Instruction::I64Const(TAG_BITS));
+        v.push(Instruction::I64Shl);
+        v.push(Instruction::I64Const(TAG_STR));
+        v.push(Instruction::I64Or);
+        v.push(Instruction::Else);
         // NUM path: untag the number before converting: val >> TAG_BITS
         // TAG_NUM uses signed values — must use arithmetic (signed) right shift
         // to preserve negative numbers. I64ShrU would mangle negatives.
@@ -526,7 +547,8 @@ impl WasmEmitter {
         v.push(Instruction::LocalGet(dst_i));
         v.push(Instruction::I64Or);
         v.extend(self.emit_tag_str());
-        v.push(Instruction::End); // close ARRAY/NUM if
+        v.push(Instruction::End); // close NIL/NUM if
+        v.push(Instruction::End); // close ARRAY/else if
         v.push(Instruction::End); // close STR/else if
         Ok(v)
     }

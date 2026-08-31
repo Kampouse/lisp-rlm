@@ -7,9 +7,10 @@ impl WasmEmitter {
                 if a.is_empty() { return Err("near/json_get_int requires a string key argument".into()); }
                 match &a[0] {
                     LispVal::Str(key) => {
-                        let mut v = self.json_get_int(key)?;
-                        v.extend(self.emit_tag_num());
-                        Ok(v)
+                        // (2026-08-31) returns TAGGED NUM on hit / TAG_NIL on
+                        // miss (d.ts `number | null`; `?? 7` must fire) —
+                        // tagging now happens inside json_get_int's found-gate.
+                        self.json_get_int(key)
                     }
                     _ => Err("near/json_get_int key must be a string literal".into()),
                 }
@@ -36,7 +37,22 @@ impl WasmEmitter {
                 match &a[0] {
                     LispVal::Str(key) => {
                         let mut v = self.json_get_str(key)?;
+                        // (2026-08-31) d.ts says `string | null` and `??`
+                        // lowers to (default x fb) — but a miss returned ""
+                        // (TAG_STR), so the fallback NEVER fired. Miss now
+                        // yields TAG_NIL; `(jsonGetStr("g") ?? "fb")` works
+                        // exactly as TS promises. Bare use without ?? gets
+                        // nil (to-string renders it "nil" — visible, not
+                        // silent corruption).
+                        let t = self.local_idx("__jgs_miss");
+                        v.push(Instruction::LocalTee(t));
+                        v.push(Instruction::I64Eqz);
+                        v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                        v.push(Instruction::I64Const(TAG_NIL));
+                        v.push(Instruction::Else);
+                        v.push(Instruction::LocalGet(t));
                         v.extend(self.emit_tag_str());
+                        v.push(Instruction::End);
                         Ok(v)
                     }
                     _ => Err("near/json_get_str key must be a string literal".into()),
