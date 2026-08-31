@@ -337,3 +337,98 @@ fn wasm_storage_bytes_on_chain_shape() {
         .expect("key stored as raw key bytes");
     assert_eq!(got, b"pure bytes", "on-chain value bytes = exact UTF-8");
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Storage-read memo cache (perf/storage-read-cache) — semantics pins.
+// The wasm emitter caches storage_get results in linear memory per
+// instance; every storage_write op flushes. These pins hold the exact
+// read-after-write / read-after-remove / cross-family / same-length-key
+// isolation / overflow-fallback behavior the cache must preserve.
+// ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn wasm_storage_cache_semantics() {
+    let w = World { storage: Arc::new(Mutex::new(HashMap::new())) };
+
+    // tx 1: seed
+    run_near(&w, r#"(define (main) (begin (near/storage_set "k" "v1") (near/storage_set "ka" "A") (near/storage_set "kb" "B") (near/return "ok")))"#)
+        .unwrap();
+
+    // tx 2: read-hit, then invalidate-by-set, then read the NEW value —
+    // the classic read-set-read hazard: first get caches v1, the set must
+    // flush, the second get must observe v2 (not the cached v1).
+    let r = run_near(
+        &w,
+        r#"(define (main) (near/return (str-concat (default (near/storage_get "k") "MISS") "|" (begin (near/storage_set "k" "v2") (default (near/storage_get "k") "MISS")))))"#,
+    )
+    .unwrap();
+    assert_eq!(r.as_str(), "v1|v2", "set must invalidate the cached read");
+
+    // tx 3: fresh instance — must see tx 2's write (erc20-hazard class:
+    // per-instance cache, never persisted)
+    let r = run_near(&w, r#"(define (main) (near/return (default (near/storage_get "k") "MISS")))"#)
+        .unwrap();
+    assert_eq!(r.as_str(), "v2", "fresh instance reads committed value");
+
+    // tx 4: remove invalidates too — get caches, remove flushes, get misses
+    let r = run_near(
+        &w,
+        r#"(define (main) (near/return (str-concat (default (near/storage_get "k") "MISS") "|" (begin (near/storage_remove "k") (default (near/storage_get "k") "MISS")))))"#,
+    )
+    .unwrap();
+    assert_eq!(r.as_str(), "v2|MISS", "remove must invalidate the cached read");
+
+    // tx 5: same-length keys must NOT alias in the cache (exact byte
+    // compare — regression for the (klen>>3)<<3 peephole-eaten tail loop)
+    let r = run_near(
+        &w,
+        r#"(define (main) (near/return (str-concat (default (near/storage_get "ka") "?") (default (near/storage_get "kb") "?") (default (near/storage_get "ka") "?"))))"#,
+    )
+    .unwrap();
+    assert_eq!(r.as_str(), "ABA", "same-length keys are distinct cache entries");
+
+    // tx 6: cross-family write (tagged-word near/store) must flush the
+    // string-family cache — the raw 8-byte value reads back as a Str
+    let r = run_near(
+        &w,
+        r#"(define (main) (begin (near/storage_set "cf" "seeded") (near/return (str-concat (default (near/storage_get "cf") "?") "|" (begin (near/store "cf" 4242) (to-string (str-length (default (near/storage_get "cf") "?"))))))))"#,
+    )
+    .unwrap();
+    assert_eq!(r.as_str(), "seeded|8", "near/store must flush the cache (8 raw bytes)");
+}
+
+#[test]
+fn wasm_storage_cache_overflow_and_long_keys() {
+    let w = World { storage: Arc::new(Mutex::new(HashMap::new())) };
+
+    // >64 distinct keys: table fills, further reads run uncached — every
+    // value must still be exact (fallback correctness)
+    let mut src = String::from("(define (main) (begin ");
+    for i in 0..70 {
+        src.push_str(&format!("(near/storage_set \"key{:02}\" \"val{:02}x\") ", i, i));
+    }
+    src.push_str("(near/return \"ok\")))");
+    run_near(&w, &src).unwrap();
+
+    // read all 70 back in one tx: reads 65..70 hit the overflow fallback
+    let mut src = String::from("(define (main) (near/return (str-concat ");
+    for i in 0..70 {
+        src.push_str(&format!("(default (near/storage_get \"key{:02}\") \"?\") ", i));
+    }
+    src.push_str(")))");
+    let r = run_near(&w, &src).unwrap();
+    let expect: String = (0..70).map(|i| format!("val{:02}x", i)).collect();
+    assert_eq!(r.as_str(), expect, "overflow fallback reads stay exact");
+
+    // long key (> 64 bytes → uncached path) still round-trips
+    let long_key = "K".repeat(70);
+    let r = run_near(
+        &w,
+        &format!(
+            r#"(define (main) (begin (near/storage_set "{}" "longval") (near/return (default (near/storage_get "{}") "MISS"))))"#,
+            long_key, long_key
+        ),
+    )
+    .unwrap();
+    assert_eq!(r.as_str(), "longval", ">64-byte keys read uncached, exact");
+}
