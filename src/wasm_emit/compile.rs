@@ -656,6 +656,21 @@ fn parse_and_compile_opts(
 
     let mut em = WasmEmitter::new();
 
+    // Pre-scan: hoist (memory N) declarations so EVERY function body emits
+    // against the final memory size, regardless of where the decl sits in
+    // the file (same treatment as export/function-name pre-scans — decl
+    // order must not matter). Multiple decls: last one wins, matching the
+    // old sequential-overwrite behavior.
+    for e in &exprs {
+        if let LispVal::List(items) = e {
+            if let (LispVal::Sym(s), Some(LispVal::Num(n))) = (&items[0], items.get(1)) {
+                if s == "memory" {
+                    em.set_memory(*n as u32);
+                }
+            }
+        }
+    }
+
     // Pre-scan: register export names so near/call-await callback
     // validation sees the full export table BEFORE any function body emits
     // (export forms commonly sit at the bottom of the file).

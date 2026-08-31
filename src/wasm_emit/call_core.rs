@@ -576,6 +576,21 @@ impl WasmEmitter {
                     }
                 }
                 let var_names: Vec<String> = var_inits.iter().map(|(n, _)| n.clone()).collect();
+                // Hard-validate recur tail positions BEFORE the rewrite pass:
+                // non-tail (recur ...) used to be silently rewritten into a
+                // plain __loop_N call (stack-growing, wrong value semantics).
+                // GAPS t21 — must be a compile error on BOTH paths.
+                let pre_body = if a.len() == 2 {
+                    a[1].clone()
+                } else {
+                    LispVal::List(
+                        vec![LispVal::Sym("begin".into())]
+                            .into_iter()
+                            .chain(a[1..].iter().cloned())
+                            .collect(),
+                    )
+                };
+                crate::bytecode::validate_recur_tails(&pre_body, var_names.len())?;
                 // Replace (recur val...) in body with (__loop_N val...) — direct self-call for TCO
                 let mut body_exprs: Vec<LispVal> = a[1..].to_vec();
                 for expr in &mut body_exprs {
@@ -653,8 +668,9 @@ impl WasmEmitter {
             }
             "recur" => {
                 // recur should have been replaced by replace_recur in loop desugar
-                // If we get here, recur is used outside a loop
-                Err("recur outside of loop".into())
+                // (or rejected by validate_recur_tails). If we get here, recur
+                // is used outside a loop / outside direct tail position.
+                Err("compile error: recur used outside of a loop (or not in direct tail position)".into())
             }
             "while" => {
                 let id = self.while_id.get();

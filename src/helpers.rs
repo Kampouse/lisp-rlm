@@ -269,6 +269,12 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "u128/store", "u128/load", "u128/load_high", "u128/new",
     "u128/from_yocto", "u128/to_str", "u128/from_str",
     "u128/fit_i64", "u128/checked_to_i64", "u128/to_i64", "u128/from_i64",
+    // interp ports of wasm_emit/call_core.rs intrinsics (surface_parity, T6 class)
+    "wrap-add", "wrap-sub", "wrap-mul", "muldiv", "isqrt",
+    "band", "bor", "bnot", "shl", "shr",
+    // near/kv-get: runtime twin of near/kv (eval_near_builtin) — was missing
+    // from the compile gate, so lisp-run rejected it (GAPS t18/t19)
+    "near/kv-get",
     // wallet-factory byte/string builtins (wasm_emit/call_string.rs, commit fb825ba)
     "str-len", "str-contains-byte", "str-repeat", "hex-encode", "base64-decode",
     "near/store-bytes", "near/load-bytes",

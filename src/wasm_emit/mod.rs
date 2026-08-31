@@ -915,6 +915,13 @@ impl WasmEmitter {
                         // which gets lifted separately during emit_define. Do not descend.
                         return;
                     }
+                    if head == "lambda" || head == "fn" || head == "quote" {
+                        // recur inside a nested lambda is NOT this loop's tail
+                        // position — leave it to fail loudly in call dispatch
+                        // ("recur outside of loop") instead of silently
+                        // rewriting it into a __loop_N call.
+                        return;
+                    }
                 }
                 // Recurse into children
                 for item in items.iter_mut() {
