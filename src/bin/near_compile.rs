@@ -185,7 +185,10 @@ fn do_build(project_dir: &str) -> Result<(ProjectConfig, Vec<u8>), String> {
     let source =
         fs::read_to_string(&src_path).map_err(|e| format!("read {}: {}", config.src, e))?;
 
-    // If source is Solidity (.sol), translate to Lisp first
+    // Translate source dialects to lisp first (.sol → solidity translator,
+    // .ts → TS frontend; do_build is the deploy/test/project path — the
+    // single-file compile path had .ts but this one didn't, so `deploy` on
+    // a TS project fed raw TS into the lisp parser)
     let effective_source = if config.src.ends_with(".sol") {
         let lisp_vals = lisp_rlm_wasm::solidity::translate_solidity(&source)
             .map_err(|e| format!("Solidity translation: {}", e))?;
@@ -194,6 +197,9 @@ fn do_build(project_dir: &str) -> Result<(ProjectConfig, Vec<u8>), String> {
             .map(|v| v.to_string())
             .collect::<Vec<_>>()
             .join("\n")
+    } else if config.src.ends_with(".ts") || config.src.ends_with(".mts") {
+        lisp_rlm_wasm::ts_frontend::ts_to_lisp_source(&source)
+            .map_err(|e| format!("TS lowering: {}", e))?
     } else {
         source.clone()
     };

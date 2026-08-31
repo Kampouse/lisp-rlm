@@ -81,6 +81,8 @@ enum Commands {
         contract: String,
         method: String,
         args: Option<String>,
+        #[arg(long)]
+        account: Option<String>,
         #[arg(long, default_value = "testnet")]
         network: String,
     },
@@ -167,10 +169,13 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             delegate("near-compile", &a)
         }
-        Commands::View { contract, method, args, network } => {
+        Commands::View { contract, method, args, account, network } => {
             let mut a = vec!["view".into(), contract, method];
             if let Some(x) = &args {
                 a.push(x.clone());
+            }
+            if let Some(acc) = &account {
+                a.extend(["--account".into(), acc.clone()]);
             }
             if network != "testnet" {
                 a.extend(["--network".into(), network]);
