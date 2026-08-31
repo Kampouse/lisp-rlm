@@ -118,6 +118,19 @@ declare const near: {
   // Returns the raw value or NIL on failure — branch on it, fail closed.
   promiseResult(idx: number): string;
 
+  // ── async/await (V1) ──
+  // `export async function` with `const x = await near.call(...)` as the
+  // FIRST statement compiles to entry + <name>__resume continuation:
+  // params saved to storage, result bound in the continuation. Zero deposit.
+  call(target: string, method: string, argsJson: string, gas: number, deposit: number): void;
+
+  // ── promise yield (NEAR resumable calls) ──
+  // yieldCreate: schedule SELF.<method>(args) and yield execution — gas
+  // reserves for the resume; weight is the yield weight. Returns yield idx.
+  yieldCreate(method: string, argsJson: string, gas: number, weight: number): number;
+  // yieldResume: resume a yielded promise — (dataId, payload).
+  yieldResume(dataId: string, payload: string): number;
+
   // long-tail (raw promise batches, validators, ecrecover, random_seed, …)
   // exists at the lisp level but is not TS-declared yet — add typed
   // entries here in the same commit you first use one from TS.

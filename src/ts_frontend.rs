@@ -91,6 +91,12 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                         ))
                     }
                 };
+                if f.r#async {
+                    for form in lower_async_function(f)? {
+                        out.push(form);
+                    }
+                    continue;
+                }
                 let (name, define) = lower_function(f, true)?;
                 let view = name.starts_with("get_");
                 out.push(define);
@@ -105,6 +111,12 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                 ]));
             }
             Statement::FunctionDeclaration(f) => {
+                if f.r#async {
+                    return Err(
+                        "ts_frontend: V1 async functions must be exported (continuation is an on-chain entry)"
+                            .into(),
+                    );
+                }
                 hoisted.push(lower_function(f, false)?.1);
             }
             Statement::VariableDeclaration(v) => {
@@ -133,6 +145,190 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
     result.extend(hoisted);
     result.extend(out);
     Ok(result)
+}
+
+/// Lower an async function into entry + continuation via near/call-await.
+/// V1 (fail-loud): exactly one await, `const x = await near.call(...)`,
+/// and it must be the FIRST statement (their original V1 silently dropped
+/// pre-await statements — we hard-error instead).
+/// Returns forms: entry define, entry export, continuation define, cont. export.
+fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
+    let name = f
+        .id
+        .as_ref()
+        .map(|i| i.name.as_str().to_string())
+        .ok_or("ts_frontend: anonymous async functions unsupported")?;
+
+    // (name, kind): 0 = string, 1 = number, 2 = string[]
+    let mut param_names: Vec<(String, u8)> = Vec::new();
+    for p in &f.params.items {
+        let n = binding_name(&p.pattern)?;
+        let kind = if param_is_number(p) {
+            1
+        } else if param_is_str_array(p) {
+            2
+        } else {
+            0
+        };
+        param_names.push((n.clone(), kind));
+    }
+
+    let body = f
+        .body
+        .as_ref()
+        .ok_or("ts_frontend: async function missing body")?;
+    let stmts = &body.statements;
+
+    // Find `const x = await expr;`
+    let mut await_idx = None;
+    let mut await_var = None;
+    let mut await_expr = None;
+    for (i, s) in stmts.iter().enumerate() {
+        if let oxc_ast::ast::Statement::VariableDeclaration(vd) = s {
+            if vd.declarations.len() == 1 {
+                let decl = &vd.declarations[0];
+                if let Some(init) = &decl.init {
+                    if let oxc_ast::ast::Expression::AwaitExpression(ae) = init {
+                        await_idx = Some(i);
+                        await_var = Some(binding_name(&decl.id)?);
+                        await_expr = Some(&ae.argument);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    let await_idx =
+        await_idx.ok_or("ts_frontend: async function must contain `const x = await expr;`")?;
+    if await_idx != 0 {
+        return Err(
+            "ts_frontend: V1 async — await must be the first statement (pre-await code unsupported)"
+                .into(),
+        );
+    }
+    let await_var = await_var.unwrap();
+    let await_expr = await_expr.unwrap();
+    let after_stmts = &stmts[await_idx + 1..];
+
+    let state_key = format!("__await:{}", name);
+    let cb_name = format!("{}__resume", name);
+
+    // ── entry: read params from tx json, save state, fire call-await ──
+    let mut entry_inner: Vec<LispVal> = Vec::new(); // begin-items after bindings
+    for (n, kind) in &param_names {
+        let v = if *kind == 1 {
+            list(vec![Sym("to-string"), Sym(n.clone())])
+        } else {
+            Sym(n.clone())
+        };
+        entry_inner.push(list(vec![
+            Sym("near/storage_set"),
+            Str(format!("{}:{}", state_key, n)),
+            v,
+        ]));
+    }
+    // await near.call(target, method, args, gas, deposit)
+    //   → near/call-await(target, method, args, gas, cb, 50Tgas, "{}")
+    let await_lisp = lower_expr(await_expr)?;
+    let call_await = match &await_lisp {
+        LispVal::List(items) if items.len() >= 6 && items[0] == Sym("near/call") => {
+            // fail-loud: dropped deposit must be zero
+            let dep_ok = matches!(&items[5], LispVal::Num(0))
+                || matches!(&items[5], LispVal::Str(x) if x == "0");
+            if !dep_ok {
+                return Err(
+                    "ts_frontend: await near.call(...) — deposit must be 0 (call-await is zero-deposit; use the raw near/call-await form for payable)"
+                        .into(),
+                );
+            }
+            let mut new_items = vec![Sym("near/call-await")];
+            new_items.extend(items[1..5].iter().cloned());
+            new_items.push(Str(cb_name.clone()));
+            new_items.push(Num(50_000_000_000_000));
+            new_items.push(Str("{}".to_string()));
+            list(new_items)
+        }
+        LispVal::List(items) if !items.is_empty() && items[0] == Sym("near/call") => {
+            return Err("ts_frontend: await must wrap near.call() with 5 args (target, method, args, gas, 0)".into());
+        }
+        _ => {
+            return Err(
+                "ts_frontend: V1 async — await expression must be near.call(...)".into(),
+            )
+        }
+    };
+    entry_inner.push(call_await);
+
+    let entry_body = if param_names.is_empty() {
+        let mut b = vec![Sym("begin")];
+        b.extend(entry_inner);
+        list(b)
+    } else {
+        let bindings = param_names
+            .iter()
+            .map(|(n, kind)| {
+                let get = list(vec![Sym("near/json_get_str"), Str(n.clone())]);
+                let v = match kind {
+                    1 => list(vec![Sym("str->num"), get]),
+                    2 => list(vec![Sym("near/json_get_arr"), Str(n.clone())]),
+                    _ => get,
+                };
+                list(vec![Sym(n.clone()), v])
+            })
+            .collect();
+        list(vec![
+            Sym("let"),
+            list(bindings),
+            {
+                let mut b = vec![Sym("begin")];
+                b.extend(entry_inner);
+                list(b)
+            },
+        ])
+    };
+    let entry_define = list(vec![Sym("define"), list(vec![Sym(name.clone())]), entry_body]);
+    let view = name.starts_with("get_");
+    let entry_export = list(vec![
+        Sym("export"),
+        Str(name.clone()),
+        Sym(name.clone()),
+        if view { Sym("#t") } else { Sym("#f") },
+    ]);
+
+    // ── continuation: restore state, bind promise result, run the rest ──
+    let mut let_bindings: Vec<LispVal> = Vec::new();
+    for (n, kind) in &param_names {
+        // storage_get returns (opt str) — unwrap with default before use
+        let getter = list(vec![
+            Sym("default"),
+            list(vec![Sym("near/storage_get"), Str(format!("{}:{}", state_key, n))]),
+            Str(String::new()),
+        ]);
+        let val = if *kind == 1 {
+            list(vec![Sym("str->num"), getter])
+        } else {
+            getter
+        };
+        let_bindings.push(list(vec![Sym(n.clone()), val]));
+    }
+    let_bindings.push(list(vec![
+        Sym(await_var.clone()),
+        list(vec![Sym("near/promise_result"), Num(0)]),
+    ]));
+    let after_body = lower_block_tail(after_stmts, false)?;
+    let cb_define = list(vec![
+        Sym("define"),
+        list(vec![Sym(cb_name.clone())]),
+        list(vec![Sym("let"), list(let_bindings), after_body]),
+    ]);
+    let cb_export = list(vec![
+        Sym("export"),
+        Str(cb_name.clone()),
+        Sym(cb_name.clone()),
+        Sym("#f"),
+    ]);
+
+    Ok(vec![entry_define, entry_export, cb_define, cb_export])
 }
 
 /// Lower a function declaration → (define (name params...) body)
@@ -1164,6 +1360,26 @@ fn update_target_simple(t: &oxc_ast::ast::SimpleAssignmentTarget<'_>) -> Result<
 
 // ── Expressions ───────────────────────────────────────────────────────────
 
+/// Statically "stringy": string literal, template, to-string/toStr/strCat
+/// calls, or another stringy concat. Conservative — misses non-literal strs
+/// (typed only by annotation), which still hard-error at the checker.
+fn expr_is_stringy(e: &Expression) -> bool {
+    match e {
+        Expression::StringLiteral(_) | Expression::TemplateLiteral(_) => true,
+        Expression::BinaryExpression(b) => {
+            b.operator == BinaryOperator::Addition
+                && (expr_is_stringy(&b.left) || expr_is_stringy(&b.right))
+        }
+        Expression::CallExpression(c) => match &c.callee {
+            Expression::Identifier(id) => {
+                matches!(id.name.as_str(), "toStr" | "toString" | "strCat" | "to_string")
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
     match e {
         Expression::NumericLiteral(n) => Ok(Num(n.value as i64)),
@@ -1235,6 +1451,15 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
             }
         }
         Expression::BinaryExpression(b) => {
+            // stringy +: fold into nested binary str-cat (checker's + is num-only;
+            // any string literal / template operand ⇒ concat semantics)
+            if b.operator == BinaryOperator::Addition
+                && (expr_is_stringy(&b.left) || expr_is_stringy(&b.right))
+            {
+                let l = lower_expr(&b.left)?;
+                let r = lower_expr(&b.right)?;
+                return Ok(list(vec![Sym("str-cat"), l, r]));
+            }
             let op: &str = match b.operator {
                 BinaryOperator::Addition => "+",
                 BinaryOperator::Subtraction => "-",
@@ -1685,6 +1910,12 @@ fn map_member_fn(obj: &str, prop: &str) -> String {
     if obj == "near" && prop == "callAwait" {
         // lisp sugar form predates the snake convention (hyphen, not underscore)
         return "near/call-await".into();
+    }
+    if obj == "near" && (prop == "yieldCreate" || prop == "promiseYieldCreate") {
+        return "near/promise_yield_create".into();
+    }
+    if obj == "near" && (prop == "yieldResume" || prop == "promiseYieldResume") {
+        return "near/promise_yield_resume".into();
     }
     if obj == "near" && prop == "jsonArr" {
         // json array args: {"k": ["a","b"]} → TAG_ARRAY of strings
