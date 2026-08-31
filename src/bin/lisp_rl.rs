@@ -62,8 +62,15 @@ enum Commands {
     },
     /// Run tests/scenarios/*.json through the sandbox VM
     Test { dir: Option<String> },
-    /// Build + deploy to NEAR (delegates to near-compile)
-    Deploy { dir: Option<String>, #[command(flatten)] near: NearAuth },
+    /// Build + deploy to NEAR (delegates to near-compile).
+    /// Skips when the on-chain code hash already matches (use --force to redeploy).
+    Deploy {
+        dir: Option<String>,
+        #[command(flatten)]
+        near: NearAuth,
+        #[arg(long)]
+        force: bool,
+    },
     /// Call a contract method (delegates to near-compile)
     Call {
         contract: String,
@@ -99,6 +106,18 @@ enum Commands {
     },
     /// Fuel-meter a compiled contract (delegates to near-compile bench)
     Bench { file: String },
+    /// Account status: balance, storage, code hash, active keys
+    Account { id: String, #[arg(long, default_value = "testnet")] network: String },
+    /// Validate local NEAR credentials against on-chain access keys
+    Keys { #[arg(long, default_value = "testnet")] network: String },
+    /// Create + fund a fresh testnet account via the public faucet
+    Faucet { #[arg(long)] name: Option<String> },
+    /// List contract ABI: exports with signatures (scraped from source)
+    Abi { dir: Option<String> },
+    /// Rebuild + retest on every source change (Ctrl-C to stop)
+    Watch { dir: Option<String> },
+    /// Interactive lisp REPL (delegates to near-compile)
+    Repl,
     /// Solidity → lisp → wasm
     Sol {
         #[command(subcommand)]
@@ -147,12 +166,18 @@ fn run(cli: Cli) -> Result<(), String> {
             cmd_simulate(&path, &method, &args, view, prepaid, cli.json)
         }
         Commands::Test { dir } => cmd_test(dir.as_deref(), cli.json),
-        Commands::Deploy { dir, near } => {
-            let mut a: Vec<String> = vec!["deploy".into()];
-            if let Some(d) = &dir {
-                a.push(d.clone());
+        Commands::Deploy { dir, near, force } => {
+            let project_dir = dir.clone().unwrap_or_else(|| ".".into());
+            // Preflight: skip when the same code is already on-chain
+            if !force {
+                if let Some(msg) = deploy_preflight(&project_dir, &near, cli.json)? {
+                    println!("{}", msg);
+                    return Ok(());
+                }
             }
+            let mut a: Vec<String> = vec!["deploy".into(), project_dir.clone()];
             append_auth(&mut a, &near);
+            clamp_gas_if_needed(&mut a, &project_dir, &near.account, cli.json)?;
             delegate("near-compile", &a)
         }
         Commands::Call { contract, method, args, near, deposit, gas } => {
@@ -166,6 +191,9 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             if let Some(g) = &gas {
                 a.extend(["--gas".into(), g.clone()]);
+            } else {
+                // balance-aware default: never bounce on NotEnoughBalance
+                clamp_gas_if_needed(&mut a, ".", &near.account, cli.json)?;
             }
             delegate("near-compile", &a)
         }
@@ -197,6 +225,12 @@ fn run(cli: Cli) -> Result<(), String> {
             delegate("near-compile", &a)
         }
         Commands::Bench { file } => delegate("near-compile", &["bench".into(), file]),
+        Commands::Account { id, network } => cmd_account(&id, &network, cli.json),
+        Commands::Keys { network } => cmd_keys(&network, cli.json),
+        Commands::Faucet { name } => cmd_faucet(name.as_deref(), cli.json),
+        Commands::Abi { dir } => cmd_abi(dir.as_deref(), cli.json),
+        Commands::Watch { dir } => cmd_watch(dir.as_deref()),
+        Commands::Repl => delegate("near-compile", &["--repl".into()]),
         Commands::Sol { cmd } => match cmd {
             SolCmd::Compile { input, output } => cmd_sol(&input, &output, cli.json),
         },
@@ -511,6 +545,416 @@ fn cmd_sol(input: &str, output: &str, json: bool) -> Result<(), String> {
         );
     } else {
         println!("{} ({} bytes)", output, wasm.len());
+    }
+    Ok(())
+}
+
+
+// ── RPC + new commands ────────────────────────────────────────────────────
+
+fn rpc_url(network: &str) -> &'static str {
+    match network {
+        "mainnet" => "https://rpc.fastnear.com",
+        _ => "https://rpc.testnet.fastnear.com",
+    }
+}
+
+fn rpc_query(network: &str, method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
+    let rt = tokio::runtime::Runtime::new().map_err(|e| format!("{}", e))?;
+    rt.block_on(async {
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(rpc_url(network))
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({"jsonrpc": "2.0", "id": "lisp-rlm", "method": method, "params": params}))
+            .send()
+            .await
+            .map_err(|e| format!("rpc: {}", e))?;
+        let v: serde_json::Value = resp.json().await.map_err(|e| format!("rpc json: {}", e))?;
+        if let Some(err) = v.get("error") {
+            return Err(format!("rpc: {}", err.get("message").and_then(|m| m.as_str()).unwrap_or("error")));
+        }
+        Ok(v["result"].clone())
+    })
+}
+
+fn fmt_near(yocto: &str) -> String {
+    let n: f64 = yocto.parse().unwrap_or(0.0);
+    format!("{:.5}", n / 1e24)
+}
+
+fn cmd_account(id: &str, network: &str, json: bool) -> Result<(), String> {
+    let acct = rpc_query(
+        network,
+        "query",
+        serde_json::json!({"request_type": "view_account", "finality": "final", "account_id": id}),
+    )?;
+    let keys = rpc_query(
+        network,
+        "query",
+        serde_json::json!({"request_type": "view_access_key_list", "finality": "final", "account_id": id}),
+    )?;
+    let key_list: Vec<String> = keys["keys"]
+        .as_array()
+        .map(|ks| {
+            ks.iter()
+                .filter_map(|k| {
+                    k["public_key"].as_str().map(|pk| {
+                        let perm = if k["access_key"]["permission"].is_string() {
+                            k["access_key"]["permission"].as_str().unwrap_or("?").to_string()
+                        } else {
+                            "FunctionCall".to_string()
+                        };
+                        format!("{} ({})", &pk[..pk.len().min(28)], perm)
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "ok": true, "id": id, "balance": acct["amount"], "locked": acct["locked"],
+                "storage_usage": acct["storage_usage"], "code_hash": acct["code_hash"], "keys": keys["keys"]
+            }))
+            .unwrap()
+        );
+    } else {
+        println!("👤 {} ({})", id, network);
+        println!("   💰 {} NEAR (locked {})", fmt_near(acct["amount"].as_str().unwrap_or("0")), fmt_near(acct["locked"].as_str().unwrap_or("0")));
+        println!("   💾 {} bytes storage", acct["storage_usage"].as_u64().unwrap_or(0));
+        println!("   🧩 code: {}", acct["code_hash"].as_str().unwrap_or("?"));
+        println!("   🔑 {} access key(s)", key_list.len());
+        for k in &key_list {
+            println!("      {}", k);
+        }
+    }
+    Ok(())
+}
+
+fn cmd_keys(network: &str, json: bool) -> Result<(), String> {
+    let cred_dir = dirs_home().join(format!(".near-credentials/{}", network));
+    let entries = fs::read_dir(&cred_dir)
+        .map_err(|e| format!("read {}: {}", cred_dir.display(), e))?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
+        .collect::<Vec<_>>();
+    if entries.is_empty() {
+        return Err(format!("no credentials in {}", cred_dir.display()));
+    }
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    for e in &entries {
+        let account = e.path().file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let local_pk = fs::read_to_string(e.path())
+            .ok()
+            .and_then(|b| serde_json::from_str::<serde_json::Value>(&b).ok())
+            .and_then(|j| {
+                let v = j["public_key"].as_str().map(|s| s.to_string());
+                v.or_else(|| j["access_key"].as_str().map(|s| s.to_string()))
+            })
+            .unwrap_or_default();
+        let (balance, ok) = match rpc_query(
+            network,
+            "query",
+            serde_json::json!({"request_type": "view_access_key_list", "finality": "final", "account_id": &account}),
+        ) {
+            Err(_) => ("n/a".into(), false),
+            Ok(list) => {
+                let has = list["keys"]
+                    .as_array()
+                    .map(|ks| ks.iter().any(|k| k["public_key"].as_str() == Some(local_pk.as_str())))
+                    .unwrap_or(false);
+                let bal = rpc_query(
+                    network,
+                    "query",
+                    serde_json::json!({"request_type": "view_account", "finality": "final", "account_id": &account}),
+                )
+                .ok()
+                .and_then(|a| a["amount"].as_str().map(|s| s.to_string()))
+                .unwrap_or_else(|| "0".into());
+                (fmt_near(&bal), has)
+            }
+        };
+        rows.push(serde_json::json!({"account": account, "key_ok": ok, "balance": balance}));
+    }
+    if json {
+        println!("{}", serde_json::to_string(&serde_json::json!({"ok": true, "keys": rows})).unwrap());
+    } else {
+        for r in &rows {
+            println!(
+                "{} {:<48} {} NEAR",
+                if r["key_ok"].as_bool().unwrap_or(false) { "✅" } else { "❌" },
+                r["account"].as_str().unwrap_or("?"),
+                r["balance"].as_str().unwrap_or("?")
+            );
+        }
+    }
+    Ok(())
+}
+
+fn dirs_home() -> PathBuf {
+    std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("."))
+}
+
+fn cmd_faucet(name: Option<&str>, json: bool) -> Result<(), String> {
+    // Generate key from OS entropy (no rand dep)
+    let mut seed = [0u8; 32];
+    {
+        use std::io::Read;
+        let mut f = fs::File::open("/dev/urandom").map_err(|e| format!("{}", e))?;
+        f.read_exact(&mut seed).map_err(|e| format!("{}", e))?;
+    }
+    let signing = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let pk = bs58::encode(signing.verifying_key().to_bytes()).into_string();
+    let account = match name {
+        Some(n) => format!("{}.testnet", n),
+        None => {
+            let t = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            format!("anon{}{}.testnet", hex_short(&seed[..4]), t % 100000)
+        }
+    };
+    let rt = tokio::runtime::Runtime::new().map_err(|e| format!("{}", e))?;
+    rt.block_on(async {
+        let client = reqwest::Client::new();
+        let resp = client
+            .post("https://helper.testnet.near.org/account")
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({"newAccountId": account, "newAccountPublicKey": format!("ed25519:{}", pk)}))
+            .send()
+            .await
+            .map_err(|e| format!("faucet: {}", e))?;
+        if !resp.status().is_success() {
+            let t = resp.text().await.unwrap_or_default();
+            return Err(format!("faucet {}: {}", t.is_empty(), &t[..t.len().min(200)]));
+        }
+        Ok::<(), String>(())
+    })?;
+    let cred = serde_json::json!({
+        "account_id": account,
+        "public_key": format!("ed25519:{}", pk),
+        "private_key": format!("ed25519:{}", bs58::encode(seed).into_string()),
+        "access_key": {"nonce": 0, "permission": "FullAccess"}
+    });
+    let dir = dirs_home().join(".near-credentials/testnet");
+    fs::create_dir_all(&dir).map_err(|e| format!("{}", e))?;
+    fs::write(dir.join(format!("{}.json", account)), serde_json::to_string_pretty(&cred).unwrap())
+        .map_err(|e| format!("{}", e))?;
+    if json {
+        println!("{}", serde_json::to_string(&serde_json::json!({"ok": true, "account": account, "funded": true})).unwrap());
+    } else {
+        println!("🚰 Created + funded {}", account);
+        println!("   key saved to ~/.near-credentials/testnet/{}.json", account);
+        println!("   use: lisp-rlm deploy . --account {}", account);
+    }
+    Ok(())
+}
+
+fn hex_short(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{:02x}", x)).collect::<String>()[..4].to_string()
+}
+
+fn cmd_abi(dir: Option<&str>, json: bool) -> Result<(), String> {
+    let project_dir = dir.unwrap_or(".");
+    let (src, _out, _t) = load_near_json(project_dir)?;
+    let source = fs::read_to_string(Path::new(project_dir).join(&src))
+        .map_err(|e| format!("{}", e))?;
+    let mut abi: Vec<serde_json::Value> = Vec::new();
+    if src.ends_with(".ts") || src.ends_with(".mts") {
+        // scrape `export [async] function NAME(params): RET`
+        for line in source.lines() {
+            let l = line.trim();
+            if !l.starts_with("export function") {
+                continue;
+            }
+            let rest = l.trim_start_matches("export function").trim();
+            if let Some(open) = rest.find('(') {
+                let name = rest[..open].trim().to_string();
+                let params = rest[open + 1..].split(')').next().unwrap_or("").trim().to_string();
+                let ret = rest.split("): ").nth(1).map(|r| r.trim_end_matches(|c| c == ' ' || c == '{').trim().to_string()).unwrap_or_default();
+                let view = name.starts_with("get_") || ret == "string";
+                abi.push(serde_json::json!({"name": name, "kind": if view {"view"} else {"call"}, "params": params, "returns": ret}));
+            }
+        }
+    } else {
+        for line in source.lines() {
+            let l = line.trim();
+            if l.starts_with("(export ") {
+                let parts: Vec<&str> = l.split_whitespace().collect();
+                if parts.len() >= 4 {
+                    abi.push(serde_json::json!({
+                        "name": parts[1].trim_matches('"'),
+                        "kind": if parts[3].contains("#t") {"view"} else {"call"},
+                        "params": "", "returns": ""
+                    }));
+                }
+            }
+        }
+    }
+    if json {
+        println!("{}", serde_json::to_string(&serde_json::json!({"ok": true, "abi": abi})).unwrap());
+    } else {
+        println!("{:<4} {:<24} {:<44} {}", "KIND", "NAME", "PARAMS", "RETURNS");
+        for a in &abi {
+            println!(
+                "{:<4} {:<24} {:<44} {}",
+                if a["kind"] == "view" { "👁" } else { "✍" },
+                a["name"].as_str().unwrap_or("?"),
+                a["params"].as_str().unwrap_or(""),
+                a["returns"].as_str().unwrap_or("")
+            );
+        }
+    }
+    Ok(())
+}
+
+fn cmd_watch(dir: Option<&str>) -> Result<(), String> {
+    let project_dir = dir.unwrap_or(".");
+    println!("👀 watching {} (Ctrl-C to stop)", project_dir);
+    let mut last = snapshot(project_dir);
+    // initial run
+    let _ = cmd_build(Some(project_dir), None, false);
+    let _ = cmd_test(Some(project_dir), false);
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let now = snapshot(project_dir);
+        if now != last {
+            last = now;
+            println!("\n⏳ change detected — rebuilding");
+            if let Err(e) = cmd_build(Some(project_dir), None, false) {
+                eprintln!("   build: {}", e);
+                continue;
+            }
+            let _ = cmd_test(Some(project_dir), false);
+        }
+    }
+}
+
+fn snapshot(dir: &str) -> Vec<(String, u128)> {
+    let mut v = Vec::new();
+    if let Ok(rd) = fs::read_dir(Path::new(dir).join("src")) {
+        for e in rd.filter_map(|e| e.ok()) {
+            if let Ok(md) = e.metadata() {
+                if let Ok(m) = md.modified() {
+                    let ns = m
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_nanos())
+                        .unwrap_or(0);
+                    v.push((e.path().to_string_lossy().to_string(), ns));
+                }
+            }
+        }
+    }
+    v
+}
+
+/// Skip deploy when the on-chain code hash already matches local wasm.
+fn deploy_preflight(project_dir: &str, near: &NearAuth, json: bool) -> Result<Option<String>, String> {
+    // build if stale/missing (quiet)
+    let (_src, output, _t) = load_near_json(project_dir)?;
+    let out = Path::new(project_dir).join(&output);
+    if !out.exists() {
+        cmd_build(Some(project_dir), None, json)?;
+    }
+    let wasm = match fs::read(&out) {
+        Ok(w) => w,
+        Err(_) => return Ok(None), // let the delegate path build+fail properly
+    };
+    let account = match &near.account {
+        Some(a) => a.clone(),
+        None => {
+            // near.json account (resolve_near_ctx will error later if absent)
+            let c = fs::read_to_string(Path::new(project_dir).join("near.json")).unwrap_or_default();
+            let j: serde_json::Value = serde_json::from_str(&c).unwrap_or(serde_json::Value::Null);
+            j["account"].as_str().unwrap_or("").to_string()
+        }
+    };
+    if account.is_empty() {
+        return Ok(None);
+    }
+    let onchain = rpc_query(
+        &near.network,
+        "query",
+        serde_json::json!({"request_type": "view_account", "finality": "final", "account_id": account}),
+    );
+    let onchain_hash = match onchain {
+        Ok(a) => a["code_hash"].as_str().unwrap_or("").to_string(),
+        Err(_) => return Ok(None), // account missing → fresh deploy
+    };
+    use sha2::Digest;
+    let local_hash = hex(&sha2::Sha256::digest(&wasm));
+    if onchain_hash == local_hash && local_hash != "1111111111111111111111111111111111111111111111111111111111111111" {
+        return Ok(Some(format!(
+            "🟰 already deployed — on-chain code hash matches local ({}…) — use --force to redeploy",
+            &local_hash[..8]
+        )));
+    }
+    Ok(None)
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{:02x}", x)).collect()
+}
+
+/// Balance-aware gas attach: when no explicit --gas was given, clamp the
+/// default to what the signer can actually afford (reserve 0.05 NEAR).
+fn clamp_gas_if_needed(args: &mut Vec<String>, project_dir: &str, account: &Option<String>, json: bool) -> Result<(), String> {
+    if args.iter().any(|a| a == "--gas") {
+        return Ok(());
+    }
+    let signer = match account {
+        Some(a) => a.clone(),
+        None => {
+            let c = fs::read_to_string(Path::new(project_dir).join("near.json")).unwrap_or_default();
+            let j: serde_json::Value = serde_json::from_str(&c).unwrap_or(serde_json::Value::Null);
+            j["account"].as_str().unwrap_or("").to_string()
+        }
+    };
+    if signer.is_empty() {
+        return Ok(());
+    }
+    let jval = |v: &serde_json::Value| -> u128 {
+        v.as_u64().map(|n| n as u128)
+            .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+            .unwrap_or(0)
+    };
+    let price = match rpc_query("testnet", "gas_price", serde_json::json!({"finality": "final"})) {
+        Ok(v) => jval(&v["gas_price"]),
+        Err(_) => return Ok(()),
+    };
+    let bal = match rpc_query(
+        "testnet",
+        "query",
+        serde_json::json!({"request_type": "view_account", "finality": "final", "account_id": signer}),
+    ) {
+        Ok(v) => jval(&v["amount"]),
+        Err(_) => return Ok(()),
+    };
+    if price == 0 {
+        return Ok(());
+    }
+    // Observed on testnet (2026-08-30): the RPC-reported gas_price can lag
+    // the validator's effective price by ~10x block-to-block. Budget with
+    // a pessimistic 10x price so the clamp never *under*-clamps.
+    let assumed_price = price.saturating_mul(10);
+    let reserve: u128 = 50_000_000_000_000_000_000_000; // 0.05 NEAR
+    let affordable = bal.saturating_sub(reserve) / assumed_price; // gas units
+    let default_gas: u128 = 300_000_000_000_000;
+    if affordable < default_gas {
+        let clamped = affordable.saturating_mul(9) / 10; // headroom for fees
+        if clamped < 10_000_000_000_000 {
+            if !json {
+                eprintln!("⚠️  {} has ~{} NEAR — cannot afford gas; skipping send", signer, fmt_near(&bal.to_string()));
+            }
+            return Err(format!("signer {} cannot afford gas (balance {} yocto)", signer, bal));
+        }
+        if !json {
+            eprintln!("⚠️  attaching {} gas ({} NEAR balance can't cover the 300 Tgas default) — use --gas to override", clamped, fmt_near(&bal.to_string()));
+        }
+        args.extend(["--gas".into(), clamped.to_string()]);
     }
     Ok(())
 }

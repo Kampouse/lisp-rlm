@@ -853,6 +853,13 @@ async fn prepare_tx(
 }
 
 /// Sign a borsh-encoded transaction body and broadcast it.
+/// gas_burnt arrives as JSON number (or string for big values) — take either
+fn json_u128(v: &serde_json::Value) -> u128 {
+    v.as_u64().map(|n| n as u128)
+        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+        .unwrap_or(0)
+}
+
 async fn sign_and_broadcast(
     tx_body: Vec<u8>,
     ctx: &NearContext,
@@ -889,6 +896,28 @@ async fn sign_and_broadcast(
             "execution failed: {}",
             serde_json::to_string_pretty(failure).unwrap_or_default()
         ));
+    }
+
+    // Human receipt: total gas burnt + logs emitted (all broadcast paths)
+    let mut burnt: u128 = json_u128(&result["result"]["transaction_outcome"]["outcome"]["gas_burnt"]);
+    let mut logs: Vec<String> = Vec::new();
+    if let Some(receipts) = result["result"]["receipts_outcome"].as_array() {
+        for r in receipts {
+            burnt += json_u128(&r["outcome"]["gas_burnt"]);
+            if let Some(ls) = r["outcome"]["logs"].as_array() {
+                for l in ls {
+                    if let Some(t) = l.as_str() {
+                        if !t.is_empty() {
+                            logs.push(t.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    println!("⛽ {:.6} Tgas burnt", burnt as f64 / 1e12);
+    for l in &logs {
+        println!("📝 {}", l);
     }
 
     Ok(tx_hash)
