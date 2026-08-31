@@ -1,6 +1,23 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
+  // Full entry (mounts reliably) + explicit TS contribution pins — the
+  // bundler (rolldown) tree-shook the language-service side effects out of
+  // the bare full import: no TS worker, no suggest, no tokens. The explicit
+  // side-effect imports force them into the bundle.
   import * as monaco from 'monaco-editor';
+  import 'monaco-editor/esm/vs/editor/editor.all';
+  import 'monaco-editor/esm/vs/basic-languages/typescript/typescript.contribution';
+  import 'monaco-editor/esm/vs/language/typescript/monaco.contribution';
+  // Worker constructors via Vite's ?worker — the bundler emits each worker as
+  // a hashed chunk and hands back a class that loads it. (The previous
+  // `new URL('monaco-editor/...', import.meta.url)` idiom was NOT rewritten by
+  // rolldown-vite: the runtime URL 404'd and the TS worker never spawned —
+  // no completions, no squiggles.)
+  import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
+  import JsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker';
+  import CssWorker from 'monaco-editor/esm/vs/language/css/css.worker?worker';
+  import HtmlWorker from 'monaco-editor/esm/vs/language/html/html.worker?worker';
+  import TsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker';
   // Ambient dialect surface for the TS worker — same file local editors
   // reference via /// <reference path>. Canonical copy lives at ts/.
   // @ts-ignore -- vite ?raw (no vite-env.d.ts typing needed at runtime)
@@ -779,25 +796,22 @@
   // Prevents "Could not create web worker(s)" warning
   (self as any).MonacoEnvironment = {
     getWorker: function (_moduleId: string, label: string) {
-      const getWorkerModule = (workerUrl: string, label: string) => {
-        return new Worker(workerUrl, { type: 'module', name: label });
-      };
       switch (label) {
         case 'json':
-          return getWorkerModule(new URL('monaco-editor/esm/vs/language/json/json.worker', import.meta.url).href, label);
+          return new JsonWorker();
         case 'css':
         case 'scss':
         case 'less':
-          return getWorkerModule(new URL('monaco-editor/esm/vs/language/css/css.worker', import.meta.url).href, label);
+          return new CssWorker();
         case 'html':
         case 'handlebars':
         case 'razor':
-          return getWorkerModule(new URL('monaco-editor/esm/vs/language/html/html.worker', import.meta.url).href, label);
+          return new HtmlWorker();
         case 'typescript':
         case 'javascript':
-          return getWorkerModule(new URL('monaco-editor/esm/vs/language/typescript/ts.worker', import.meta.url).href, label);
+          return new TsWorker();
         default:
-          return getWorkerModule(new URL('monaco-editor/esm/vs/editor/editor.worker', import.meta.url).href, label);
+          return new EditorWorker();
       }
     }
   };
