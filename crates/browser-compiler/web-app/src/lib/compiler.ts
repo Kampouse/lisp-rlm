@@ -102,7 +102,11 @@ export function lowerTs(source: string): string {
  *  Pure/fuzz WASM may still import some env functions even without a full NEAR runtime.
  *  `value_return` captures the return value bytes so the caller can read the result.
  *  After instantiation, call `setMemory(memory)` on the returned object to enable capture. */
-function buildEnvStubs(): { env: Record<string, Function>; setMemory: (mem: WebAssembly.Memory) => void; capturedReturn: () => Uint8Array | null } {
+/** Logs recorded by the pure-target env stubs during the last runPure call.
+ *  Side channel so runPure's many return paths don't each need patching. */
+let pureRunLogs: string[] = [];
+
+function buildEnvStubs(): { env: Record<string, Function>; setMemory: (mem: WebAssembly.Memory) => void; capturedReturn: () => Uint8Array | null; collectedLogs: () => string[] } {
   const stub = () => {};
   const stubI64 = () => BigInt(0);
   let capturedMemory: WebAssembly.Memory | null = null;
@@ -110,6 +114,20 @@ function buildEnvStubs(): { env: Record<string, Function>; setMemory: (mem: WebA
   const vrStub = (len: bigint, ptr: bigint) => {
     if (capturedBytes === null && capturedMemory) {
       capturedBytes = new Uint8Array(capturedMemory.buffer).slice(Number(ptr), Number(ptr + len));
+    }
+  };
+  // #28: log_utf8(len, ptr) — decode the logged string so console.log
+  // output is visible on the pure target (mirrors the NEAR path's nearLogs).
+  const logUtf8 = (len: bigint, ptr: bigint) => {
+    if (capturedMemory) {
+      const view = new Uint8Array(capturedMemory.buffer);
+      pureRunLogs.push(new TextDecoder().decode(view.slice(Number(ptr), Number(ptr) + Number(len))));
+    }
+  };
+  const logUtf16 = (len: bigint, ptr: bigint) => {
+    if (capturedMemory) {
+      const view = new Uint8Array(capturedMemory.buffer);
+      pureRunLogs.push(new TextDecoder('utf-16le').decode(view.slice(Number(ptr), Number(ptr) + Number(len))));
     }
   };
   return {
@@ -125,7 +143,7 @@ function buildEnvStubs(): { env: Record<string, Function>; setMemory: (mem: WebA
       storage_has_key: stubI64,
       sha256: stub, keccak256: stub, random_seed: stub, ed25519_verify: stubI64, p256_verify: stubI64,
       value_return: vrStub,
-      panic: stub, panic_utf8: stub, log_utf8: stub, log_utf16: stub,
+      panic: stub, panic_utf8: stub, log_utf8: logUtf8, log_utf16: logUtf16,
       promise_create: stubI64, promise_then: stubI64, promise_and: stubI64,
       promise_results_count: stubI64, promise_result: stubI64, promise_return: stubI64,
       storage_iter_prefix: stubI64, storage_iter_range: stubI64, storage_iter_next: stubI64,
@@ -133,6 +151,7 @@ function buildEnvStubs(): { env: Record<string, Function>; setMemory: (mem: WebA
     },
     setMemory: (mem: WebAssembly.Memory) => { capturedMemory = mem; },
     capturedReturn: () => capturedBytes,
+    collectedLogs: () => pureRunLogs.slice(),
   };
 }
 
@@ -268,8 +287,18 @@ function createWasiImports(state: WasiState): WebAssembly.Imports {
   };
 }
 
-/** Run pure WASM in the browser */
+/** Run pure WASM in the browser. console.log output (log_utf8 host calls)
+ *  is prefixed to the returned result string so the default pure target
+ *  shows logs instead of silently swallowing them. */
 export async function runPure(wasmBytes: Uint8Array, preWrite?: { offset: number; bytes: Uint8Array }): Promise<string> {
+  pureRunLogs = [];
+  const result = await runPureRaw(wasmBytes, preWrite);
+  const logs = pureRunLogs;
+  return logs.length > 0 ? logs.join('\n') + '\n' + result : result;
+}
+
+/** Run pure WASM in the browser (raw — logs land in pureRunLogs) */
+async function runPureRaw(wasmBytes: Uint8Array, preWrite?: { offset: number; bytes: Uint8Array }): Promise<string> {
   const stubs = buildEnvStubs();
   const importObject = { env: stubs.env };
   const { instance } = await WebAssembly.instantiate(wasmBytes.buffer as ArrayBuffer, importObject) as any;
