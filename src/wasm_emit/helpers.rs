@@ -515,9 +515,18 @@ impl WasmEmitter {
     }
 
     pub(crate) fn emit_safe_store8(&mut self) -> Vec<Instruction<'static>> {
+        // Stack in:  [i64 addr, i32 byte]  →  stack out: []
+        // Read-modify-write the containing 8-byte word so unaligned byte
+        // stores never tear neighboring bytes.
+        // (2026-08-31) full rewrite: the prior emission never passed wasm
+        // validation — byte local was i64, the store pushed value before
+        // address, a dangling shift stayed on the stack, and the 0xFF mask
+        // constant was missing. near/log_num & near/json_get_int (its only
+        // callers) were dead paths as a result.
         let addr = self.local_idx("__sb_addr");
-        let byte = self.local_idx("__sb_byte");
+        let byte = self.local_idx_i32("__sb_byte");
         let word = self.local_idx("__sb_word");
+        let shift = self.local_idx("__sb_shift");
         let ma8 = wasm_encoder::MemArg {
             offset: 0,
             align: 0,
@@ -526,47 +535,38 @@ impl WasmEmitter {
         vec![
             Instruction::LocalSet(byte), // save byte (i32)
             Instruction::LocalSet(addr), // save addr (i64)
-            // Align addr down to 8-byte boundary: aligned = addr & ~7
-            Instruction::LocalGet(addr),
-            Instruction::I64Const(!7i64 as i64), // 0xFFFFFFFFFFFFFFF8
-            Instruction::I64And,
-            Instruction::I32WrapI64,
-            Instruction::I64Load(ma8.clone()),
-            Instruction::LocalSet(word),
-            // Compute shift amount: (addr & 7) * 8
-            Instruction::LocalGet(addr),
-            Instruction::I64Const(7),
-            Instruction::I64And,
-            Instruction::I64Const(3),
-            Instruction::I64Shl, // shift_amount
-            // Create mask: ~(0xFF << shift_amount)
-            Instruction::I64Const(-1), // 0xFFFFFFFFFFFFFFFF
-            Instruction::LocalGet(addr),
-            Instruction::I64Const(7),
-            Instruction::I64And,
-            Instruction::I64Const(3),
-            Instruction::I64Shl,
-            Instruction::I64Const(8),
-            Instruction::I64Shl, // 0xFF << shift_amount
-            Instruction::I64Xor, // ~(0xFF << shift_amount) via XOR with -1
-            // Mask out the old byte: word & mask
-            Instruction::LocalGet(word),
-            Instruction::I64And,
-            // OR in new byte at the right position
-            Instruction::LocalGet(byte),
-            Instruction::I64ExtendI32U,
-            Instruction::LocalGet(addr),
-            Instruction::I64Const(7),
-            Instruction::I64And,
-            Instruction::I64Const(3),
-            Instruction::I64Shl,
-            Instruction::I64Shl,
-            Instruction::I64Or,
-            // Store back
+            // word = load64(addr & ~7)
             Instruction::LocalGet(addr),
             Instruction::I64Const(!7i64 as i64),
             Instruction::I64And,
             Instruction::I32WrapI64,
+            Instruction::I64Load(ma8.clone()),
+            Instruction::LocalSet(word),
+            // shift = (addr & 7) * 8
+            Instruction::LocalGet(addr),
+            Instruction::I64Const(7),
+            Instruction::I64And,
+            Instruction::I64Const(3),
+            Instruction::I64Shl,
+            Instruction::LocalSet(shift),
+            // push store address (i32) FIRST, then the new word
+            Instruction::LocalGet(addr),
+            Instruction::I64Const(!7i64 as i64),
+            Instruction::I64And,
+            Instruction::I32WrapI64,
+            // new_word = (word & ~(0xFF << shift)) | (byte << shift)
+            Instruction::LocalGet(word),
+            Instruction::I64Const(-1),
+            Instruction::I64Const(0xFF),
+            Instruction::LocalGet(shift),
+            Instruction::I64Shl, // 0xFF << shift
+            Instruction::I64Xor, // ~(0xFF << shift)
+            Instruction::I64And, // word & mask
+            Instruction::LocalGet(byte),
+            Instruction::I64ExtendI32U,
+            Instruction::LocalGet(shift),
+            Instruction::I64Shl, // byte << shift
+            Instruction::I64Or,  // merged word
             Instruction::I64Store(ma8),
         ]
     }

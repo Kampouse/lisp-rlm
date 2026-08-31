@@ -3199,6 +3199,11 @@ impl WasmEmitter {
         v.push(Instruction::LocalGet(ilen));
         v.push(Instruction::I64GtS);
         v.push(Instruction::If(BlockType::Empty));
+        // Miss-gate fix (2026-08-31, same as json_get_str): pin pos=ilen
+        // so the `pos < ilen` found-gate reads a clean miss instead of
+        // parsing input tail bytes as the value.
+        v.push(Instruction::LocalGet(ilen));
+        v.push(Instruction::LocalSet(pos));
         v.push(Instruction::Br(2));
         v.push(Instruction::End);
 
@@ -3423,6 +3428,14 @@ impl WasmEmitter {
         v.push(Instruction::End);
         v.push(Instruction::End); // outer loop/block
 
+        // (2026-08-31) res/ng MUST be zeroed BEFORE the found-gate: they
+        // are function-level locals reused by every inlined json_get_int
+        // emission, and a miss after a hit leaked the previous call's
+        // value (json_get_int "miss" after "hit" returned the hit's res).
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::LocalSet(res));
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::LocalSet(ng));
         // Wrap parse section: if pos >= ilen (key not found), skip parsing; res stays 0
         v.push(Instruction::LocalGet(pos));
         v.push(Instruction::LocalGet(ilen));
@@ -3646,6 +3659,9 @@ impl WasmEmitter {
         v.push(Instruction::LocalGet(ilen));
         v.push(Instruction::I64GtS);
         v.push(Instruction::If(BlockType::Empty));
+        // Miss-gate fix (2026-08-31, same as json_get_str): pin pos=ilen.
+        v.push(Instruction::LocalGet(ilen));
+        v.push(Instruction::LocalSet(pos));
         v.push(Instruction::Br(2));
         v.push(Instruction::End);
 
@@ -4065,6 +4081,13 @@ impl WasmEmitter {
         v.push(Instruction::LocalGet(ilen));
         v.push(Instruction::I32GtS);
         v.push(Instruction::If(BlockType::Empty));
+        // Miss-gate fix (2026-08-31): this exit leaves pos at
+        // ilen-pat_len+1 (< ilen), so the downstream `pos < ilen` "found"
+        // gate misread the TAIL BYTES of the input as a value —
+        // jsonGetStr("g") on {"x":1} returned "1". Pin pos=ilen on
+        // exhaustion so the gate sees a clean miss.
+        v.push(Instruction::LocalGet(ilen));
+        v.push(Instruction::LocalSet(pos));
         v.push(Instruction::Br(2));
         v.push(Instruction::End);
 

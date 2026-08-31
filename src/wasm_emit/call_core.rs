@@ -886,6 +886,9 @@ impl WasmEmitter {
                 let ptr = self.local_idx("__logn_ptr");
                 let mut v = Vec::new();
                 v.extend(num_expr);
+                // (2026-08-31) lisp numbers are TAGGED — untag before
+                // digit conversion (5 printed as "40", 777 as "6216").
+                v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(abs_val));
                 v.push(Instruction::LocalGet(abs_val));
                 v.push(Instruction::I64Const(0));

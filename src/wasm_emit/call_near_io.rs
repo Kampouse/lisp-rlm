@@ -91,6 +91,8 @@ impl WasmEmitter {
                     v.push(Self::host_call(28));
                     // Second: log the number (same technique as near/log_num)
                     v.extend(num_expr);
+                    // (2026-08-31) lisp numbers are TAGGED — untag first
+                    v.extend(self.emit_untag());
                     v.push(Instruction::LocalSet(abs_val));
                     v.push(Instruction::LocalGet(abs_val));
                     v.push(Instruction::I64Const(0));

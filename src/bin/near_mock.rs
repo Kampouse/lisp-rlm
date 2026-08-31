@@ -125,7 +125,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let data = mem.data(&caller);
                 if ptr + len <= data.len() {
                     let msg = String::from_utf8_lossy(&data[ptr..ptr + len]).to_string();
-                    println!("  LOG: {}", msg);
+                    println!("  LOG: {}  [debug len={} ptr={}]", msg, len, ptr);
+                } else {
+                    println!("  LOG: <out-of-range> [debug len={} ptr={}]", len, ptr);
                 }
             }
             Ok(())
