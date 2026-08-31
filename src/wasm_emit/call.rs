@@ -7,10 +7,20 @@ impl WasmEmitter {
         a: &[LispVal],
     ) -> Result<Vec<Instruction<'static>>, String> {
         // ── Domain dispatch (each returns Err("__not_handled__") if op doesn't match) ──
+        // Storage-write ops additionally get the storage-read memo cache
+        // flush appended AFTER their code (the write must land before the
+        // count is cleared — both are plain stores, order within the op body
+        // is fine because the flush sits at the very end, after the host
+        // write call and its Drop).
         macro_rules! try_domain {
             ($method:expr) => {
                 match $method {
-                    Ok(v) => return Ok(v),
+                    Ok(mut v) => {
+                        if Self::is_storage_write_op(op) {
+                            Self::emit_storage_cache_flush(&mut v);
+                        }
+                        return Ok(v);
+                    }
                     Err(e) if e == "__not_handled__" => {}
                     Err(e) => return Err(e),
                 }
