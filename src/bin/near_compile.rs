@@ -178,6 +178,50 @@ fn run_init(name: &str) {
 
 // ── BUILD ──
 
+/// Append `[ts line N]` to a checker error for names it mentions.
+/// Catches `'quoted'` names and bare identifiers adjacent to keywords.
+fn augment_with_ts_line(err: String, map: &[(String, u32)], src: &str) -> String {
+    if map.is_empty() {
+        return err;
+    }
+    // collect candidate names: 'single-quoted' spans in the message
+    let mut names: Vec<String> = Vec::new();
+    let bytes = err.as_bytes();
+    let mut i = 0;
+    while i + 2 < bytes.len() {
+        if bytes[i] == b'\'' {
+            if let Some(end) = err[i + 1..].find('\'') {
+                let cand = &err[i + 1..i + 1 + end];
+                if !cand.is_empty()
+                    && cand
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '!')
+                {
+                    names.push(cand.to_string());
+                }
+                i = i + 1 + end + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    let mut hints: Vec<(String, String)> = Vec::new();
+    for n in names {
+        if let Some(line) = lisp_rlm_wasm::ts_frontend::ts_line_hint(map, src, &n) {
+            hints.push((n, line));
+        }
+    }
+    if hints.is_empty() {
+        return err;
+    }
+    let seen: Vec<String> = hints
+        .iter()
+        .take(3)
+        .map(|(n, l)| format!("`{}` → ts line {}", n, l))
+        .collect();
+    format!("{}\n  📍 ts source: {}", err, seen.join(", "))
+}
+
 fn do_build(project_dir: &str) -> Result<(ProjectConfig, Vec<u8>), String> {
     let config = load_project_config(project_dir)?;
 
@@ -204,8 +248,25 @@ fn do_build(project_dir: &str) -> Result<(ProjectConfig, Vec<u8>), String> {
         source.clone()
     };
 
-    // Compile and validate
-    let wasm_bytes = lisp_rlm_wasm::wasm_emit::compile_near(&effective_source)?;
+    // Compile and validate (TS projects: augment checker errors with the
+    // TS source line, resolved from the ident-offset map the lowering walk
+    // just produced)
+    let is_ts = config.src.ends_with(".ts") || config.src.ends_with(".mts");
+    let ident_map = if is_ts {
+        lisp_rlm_wasm::ts_frontend::take_ident_offsets()
+    } else {
+        Vec::new()
+    };
+    let wasm_bytes = match lisp_rlm_wasm::wasm_emit::compile_near(&effective_source) {
+        Ok(b) => b,
+        Err(e) => {
+            return Err(augment_with_ts_line(
+                e,
+                &ident_map,
+                &source,
+            ))
+        }
+    };
     let func_names: Vec<String> = extract_func_names(&effective_source).unwrap_or_default();
 
     // Validate with function-name error mapping

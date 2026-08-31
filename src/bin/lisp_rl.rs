@@ -357,17 +357,66 @@ fn cmd_build(dir: Option<&str>, target: Option<&str>, json: bool) -> Result<(), 
     Ok(())
 }
 
+/// Append ts-source line hints to checker errors mentioning 'quoted' names.
+fn ts_err_hint(err: String, map: &[(String, u32)], src: &str) -> String {
+    if map.is_empty() {
+        return err;
+    }
+    let mut names: Vec<String> = Vec::new();
+    let bytes = err.as_bytes();
+    let mut i = 0;
+    while i + 2 < bytes.len() {
+        if bytes[i] == b'\'' {
+            if let Some(end) = err[i + 1..].find('\'') {
+                let cand = &err[i + 1..i + 1 + end];
+                if !cand.is_empty()
+                    && cand
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '!')
+                {
+                    names.push(cand.to_string());
+                }
+                i = i + 1 + end + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    let hints: Vec<String> = names
+        .iter()
+        .filter_map(|n| {
+            lisp_rlm_wasm::ts_frontend::ts_line_hint(map, src, n)
+                .map(|l| format!("`{}` → ts line {}", n, l))
+        })
+        .take(3)
+        .collect();
+    if hints.is_empty() {
+        return err;
+    }
+    format!("{}\n  📍 ts source: {}", err, hints.join(", "))
+}
+
 fn compile_source(source: &str, src: &str, target: &str) -> Result<Vec<u8>, String> {
+    let is_ts = src.ends_with(".ts") || src.ends_with(".mts");
     let effective = if src.ends_with(".sol") {
         let vals = lisp_rlm_wasm::solidity::translate_solidity(source)?;
         vals.iter().map(|v| format!("{}\n", v)).collect()
-    } else if src.ends_with(".ts") {
+    } else if is_ts {
         lisp_rlm_wasm::ts_frontend::ts_to_lisp_source(source)?
     } else {
         source.to_string()
     };
+    // TS projects: checker errors get ts-source line hints appended
+    let augment = |e: String| -> String {
+        if !is_ts {
+            return e;
+        }
+        let map = lisp_rlm_wasm::ts_frontend::take_ident_offsets();
+        ts_err_hint(e, &map, source)
+    };
     match target {
-        "near" => lisp_rlm_wasm::wasm_emit::compile_near(&effective).map_err(|e| format!("{}", e)),
+        "near" => lisp_rlm_wasm::wasm_emit::compile_near(&effective)
+            .map_err(|e| augment(format!("{}", e))),
         "outlayer" | "wasi" | "wasi-p1" => lisp_rlm_wasm::wasi::compile_outlayer(&effective)
             .map_err(|e| format!("{}", e)),
         "outlayer-p2" | "wasi-p2" | "component" => {

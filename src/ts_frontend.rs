@@ -52,20 +52,101 @@ pub fn ts_to_lisp_source(src: &str) -> Result<String, String> {
     Ok(out)
 }
 
+// ── TS source positions for error reporting ─────────────────────────────
+// The lowering walk drops oxc spans, so we thread a side map (thread_local
+// to avoid churning every lower_* signature): every identifier reference and
+// declaration records (name, byte-offset). Downstream errors mention names;
+// the CLI boundary resolves name → TS line.
+
+thread_local! {
+    static IDENT_OFFSETS: std::cell::RefCell<Vec<(String, u32)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn note_ident(name: &str, offset: u32) {
+    IDENT_OFFSETS.with(|m| {
+        let mut m = m.borrow_mut();
+        // keep first occurrence per name — declarations usually precede refs,
+        // and refs-before-def (hoisting) are exactly the undefined ones
+        if !m.iter().any(|(n, _)| n == name) {
+            m.push((name.to_string(), offset));
+        }
+    });
+}
+
+/// byte offset → (line, col), both 1-based
+fn line_col(src: &str, offset: u32) -> (u32, u32) {
+    let off = (offset as usize).min(src.len());
+    let (mut line, mut col) = (1u32, 1u32);
+    for &b in &src.as_bytes()[..off] {
+        if b == b'\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    (line, col)
+}
+
+/// one-line source excerpt with the offending line, caret under col
+fn src_excerpt(src: &str, line: u32) -> String {
+    src.lines()
+        .nth((line as usize).saturating_sub(1))
+        .map(|l| format!("\n  {:>4} | {}\n       | {}^", line, l.trim_end(), " ".repeat(0)))
+        .unwrap_or_default()
+}
+
 /// Parse TypeScript source and lower it to top-level lisp forms.
 pub fn parse_ts(src: &str) -> Result<Vec<LispVal>, String> {
     let allocator = Allocator::default();
     let source_type = SourceType::default().with_typescript(true).with_module(true);
     let ret = Parser::new(&allocator, src, source_type).parse();
     if ret.panicked || !ret.diagnostics.is_empty() {
-        let msg = ret
-            .diagnostics
-            .first()
+        let d = ret.diagnostics.first();
+        let msg = d
             .map(|d| d.message.to_string())
             .unwrap_or_else(|| "unknown parse error".into());
+        if let Some(d) = d {
+            // span lives in labels[0] (LabeledSpan::offset)
+            let off = d
+                .labels
+                .iter()
+                .next()
+                .map(|l| l.offset() as u32)
+                .unwrap_or(0);
+            let (line, col) = line_col(src, off);
+            return Err(format!(
+                "TS parse error at line {}, col {}: {}{}",
+                line,
+                col,
+                msg,
+                src_excerpt(src, line)
+            ));
+        }
         return Err(format!("TS parse error: {}", msg));
     }
+    IDENT_OFFSETS.with(|m| m.borrow_mut().clear());
+    // on success (or error) the map holds first-occurrence offsets for every
+    // identifier seen during the walk — drained by take_ident_offsets()
     lower_program(&ret.program)
+}
+
+/// Parse + retain the ident→offset map (for augmenting downstream errors).
+/// Consumes the map the walk just produced — call immediately after a
+/// successful `parse_ts` on the SAME thread.
+pub fn take_ident_offsets() -> Vec<(String, u32)> {
+    IDENT_OFFSETS.with(|m| std::mem::take(&mut *m.borrow_mut()))
+}
+
+/// Best-effort: name → "line N" hint for error augmentation.
+pub fn ts_line_hint(map: &[(String, u32)], src: &str, name: &str) -> Option<String> {
+    map.iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, off)| {
+            let (line, _col) = line_col(src, *off);
+            format!("{}", line)
+        })
 }
 
 // ── Program / statements ──────────────────────────────────────────────────
@@ -1588,7 +1669,10 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
             items.extend(parts);
             Ok(list(items))
         }
-        Expression::Identifier(id) => Ok(Sym(id.name.as_str().to_string())),
+        Expression::Identifier(id) => {
+            note_ident(&id.name, id.span.start);
+            Ok(Sym(id.name.as_str().to_string()))
+        }
         Expression::ArrayExpression(a) => {
             // [e0, e1, ...] → (array e0 e1 ...) — TAG_ARRAY heap block
             let mut items = vec![Sym("array")];
@@ -2136,12 +2220,19 @@ fn truthy(e: &Expression<'_>) -> Result<LispVal, String> {
 ///   foo(...)             → foo
 fn callee_name(e: &Expression<'_>) -> Result<String, String> {
     match e {
-        Expression::Identifier(id) => Ok(map_global_fn(id.name.as_str())),
+        Expression::Identifier(id) => {
+            note_ident(&id.name, id.span.start);
+            Ok(map_global_fn(id.name.as_str()))
+        }
         Expression::StaticMemberExpression(s) => {
             let obj = match &s.object {
-                Expression::Identifier(id) => id.name.as_str().to_string(),
+                Expression::Identifier(id) => {
+                    note_ident(&id.name, id.span.start);
+                    id.name.as_str().to_string()
+                }
                 _ => return Err("ts_frontend: nested member chains not in M1".into()),
             };
+            note_ident(s.property.name.as_str(), s.property.span.start);
             Ok(map_member_fn(&obj, s.property.name.as_str()))
         }
         _ => Err("ts_frontend: callee must be an identifier or member (M1)".into()),
@@ -2174,6 +2265,18 @@ fn map_global_fn(name: &str) -> String {
 
 /// Object.method(...) → object/method_snake (near.* passthrough + snake).
 fn map_member_fn(obj: &str, prop: &str) -> String {
+    // near-sdk-js spelling: storage.set/get/has/del(...) — same builtins
+    // as near.storageSet/Get/… so both dialect spellings coexist.
+    if obj == "storage" {
+        let mapped = match prop {
+            "set" | "write" => "near/storage_set",
+            "get" | "read" => "near/storage_get",
+            "has" | "hasKey" => "near/storage_has",
+            "del" | "remove" => "near/storage_del",
+            _ => return format!("near/storage_{}", snake(prop)),
+        };
+        return mapped.into();
+    }
     if obj == "near" && prop == "depositGte" {
         // lisp lib predates the snake convention here
         return "near/deposit-gte".into();
@@ -2362,5 +2465,23 @@ fn expr_kind(e: &Expression<'_>) -> &'static str {
         UpdateExpression(_) => "++/--",
         YieldExpression(_) => "yield",
         _ => "other",
+    }
+}
+
+#[cfg(test)]
+mod ts_pos_tests {
+    #[test]
+    fn ts_ident_offsets_recorded_and_hints_resolve() {
+        let src = "export function new_() {\n  let x = 1\n  let y = undefined_helper(x)\n  return y\n}\n";
+        let r = super::parse_ts(src).expect("parses");
+        assert!(!r.is_empty());
+        let map = super::take_ident_offsets();
+        eprintln!("MAP: {:?}", map);
+        assert!(
+            map.iter().any(|(n, _)| n == "undefined_helper"),
+            "undefined_helper should be in the ident map"
+        );
+        let line = super::ts_line_hint(&map, src, "undefined_helper").expect("hint");
+        assert_eq!(line, "3");
     }
 }
