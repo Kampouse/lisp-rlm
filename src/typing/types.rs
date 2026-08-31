@@ -1250,7 +1250,10 @@ impl TcEnv {
             ),
         );
         // near/promise_and: variadic — accepts any number of promise indices (emitter has two impls)
-        // near/promise_result: 0-arg or 1-arg — no explicit type, emitter handles both (wildcard fallback)
+        // near/promise_result: exactly 1 arg (promise idx) → status int.
+        // (The old "0-arg wildcard" comment was wrong: the emitter only ever
+        // handled 1-arg — 0-arg panicked at a[0]; hard-error guard added
+        // 2026-08-31 in call_near_promise.rs.)
 
         // String builtins used in NEAR contracts
         env.insert_mono(

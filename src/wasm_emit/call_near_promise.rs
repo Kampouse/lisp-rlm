@@ -352,6 +352,11 @@ impl WasmEmitter {
                 Instruction::I64Shl,
             ]),
             "near/promise_result" => {
+                // Arity guard: 0-arg reached a[0] and panicked (index OOB).
+                // Hard error per repo policy — never a compiler crash.
+                if a.len() != 1 {
+                    return Err("near/promise_result: need 1 arg (promise idx)".into());
+                }
                 self.need_host(34);
                 self.need_host(0);
                 self.need_host(1);
