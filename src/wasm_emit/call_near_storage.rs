@@ -52,7 +52,24 @@ impl WasmEmitter {
         klen_l: u32,
         kptr_l: u32,
         tail_l: u32,
-    ) -> Vec<Instruction<'static>> {
+    ) -> Result<Vec<Instruction<'static>>, String> {
+        // Reserve the cache region from the static data allocator, so no
+        // data segment can ever land inside [CACHE_COUNT_ADDR, CACHE_END).
+        // Lazy (first cached storage_get) on purpose: wasi/p2 builds flip
+        // wasi_mode after construction and their outlayer heap_bufs live at
+        // 131072+512n — they never reach this arm and keep the low base.
+        if self.next_data_offset < CACHE_END {
+            if self.next_data_offset as i64 > CACHE_COUNT_ADDR {
+                // >128KB of literals were already placed below the region's
+                // end — a data segment would overlap the slot table. Fail
+                // loudly rather than corrupt the cache at instantiation.
+                return Err(format!(
+                    "storage cache region overflow: data at {} overlaps [{}..{}]",
+                    self.next_data_offset, CACHE_COUNT_ADDR, CACHE_END
+                ));
+            }
+            self.next_data_offset = CACHE_END;
+        }
         let ma8 = MemArg { offset: 0, align: 3, memory_index: 0 };
         let ma0 = MemArg { offset: 0, align: 0, memory_index: 0 };
         let mut v = Vec::new();
@@ -209,7 +226,7 @@ impl WasmEmitter {
         v.push(Instruction::Br(0));
         v.push(Instruction::End); // B
         v.push(Instruction::End); // A
-        v
+        Ok(v)
     }
 
     /// Emit the cache insert for the key in local `k` (tagged Str) with the
@@ -393,7 +410,7 @@ match op {
                 // ── memo cache lookup (per-tx storage-read cache) ──
                 v.extend(self.emit_storage_cache_lookup(
                     k, res_l, hit_l, cnt_l, idx_l, slot_l, j_l, eq_l, klen_l, kptr_l, tail_l,
-                ));
+                )?);
                 // ── miss → host read path, then insert into the cache ──
                 v.push(Instruction::LocalGet(hit_l));
                 v.push(Instruction::I64Eqz);
