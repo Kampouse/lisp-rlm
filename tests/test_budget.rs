@@ -44,15 +44,26 @@ fn test_budget_catches_infinite_tail_recursion() {
 
 #[test]
 fn test_budget_catches_infinite_mutual_recursion() {
-    let code = r#"
+    // NOTE (2026-08-31): in debug-profile builds the native recursion
+    // (vm_call_lambda frames) blows the default 2MB test-thread stack
+    // BEFORE the budget trips — aborting the whole test binary. Run the
+    // eval on a 16MB stack so the BUDGET (or the depth guard) — not the
+    // OS stack — is what catches the loop. Release builds behave the same.
+    let handle = std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            let code = r#"
         (define f (lambda () (g)))
         (define g (lambda () (f)))
         (f)
     "#;
-    // Budget must account for define overhead (~30 ops each) + recursion depth.
-    // Mutual recursion through vm_call_lambda creates native stack frames,
-    // so on macOS the stack limit is hit before the budget on small budgets.
-    let result = eval_with_budget(code, 200);
+            // Budget must account for define overhead (~30 ops each) + recursion depth.
+            // Mutual recursion through vm_call_lambda creates native stack frames,
+            // so on macOS the stack limit is hit before the budget on small budgets.
+            eval_with_budget(code, 200)
+        })
+        .expect("spawn big-stack thread");
+    let result = handle.join().expect("eval thread panicked");
     assert!(result.is_err(), "should hit budget, got: {:?}", result);
     let err = result.unwrap_err();
     assert!(

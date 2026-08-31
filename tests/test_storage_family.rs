@@ -13,8 +13,8 @@
 //!
 //! Pins:
 //!  - set/get round-trip, incl. >8-byte values (no tagged-word truncation)
-//!  - get miss → "" (both VMs)
-//!  - has → 1|0 (both), remove → get "" (both)
+//!  - get miss → nil (both VMs — e48d64c; "" made ??/default fallbacks dead)
+//!  - has → 1|0 (both), remove → get nil (both)
 //!  - overwrite semantics
 //!  - non-Str value / non-Str key → hard error (interp) ≡ trap (wasm)
 //!  - cross-family read (near/store-written key via storage_get) → interp
@@ -66,14 +66,21 @@ impl Interp {
             Ok(v) => panic!("expected Err, got Ok {:?}", v),
         }
     }
+    /// Assert the expr evaluates to exactly Nil (nil-on-miss — e48d64c).
+    fn nil(&mut self, src: &str) {
+        match self.eval(src) {
+            Ok(LispVal::Nil) => {}
+            other => panic!("expected Nil from {}, got {:?}", src, other.map(|v| format!("{:?}", v))),
+        }
+    }
 }
 
 #[test]
 fn interp_storage_family_lifecycle() {
     let mut it = Interp::new();
 
-    // miss → ""
-    assert_eq!(it.s("(near/storage_get \"nope\")"), "");
+    // miss → nil (was "" before e48d64c — "" made ??/default fallbacks dead)
+    it.nil("(near/storage_get \"nope\")");
 
     // set → Num(0); get → exact bytes; has → 1
     assert_eq!(it.n("(near/storage_set \"k\" \"hello\")"), 0);
@@ -90,10 +97,10 @@ fn interp_storage_family_lifecycle() {
     assert_eq!(it.n("(near/storage_set \"k\" \"second\")"), 0);
     assert_eq!(it.s("(near/storage_get \"k\")"), "second");
 
-    // remove → has 0, get ""
+    // remove → has 0, get nil
     assert_eq!(it.n("(near/storage_remove \"k\")"), 0);
     assert_eq!(it.n("(near/storage_has \"k\")"), 0);
-    assert_eq!(it.s("(near/storage_get \"k\")"), "");
+    it.nil("(near/storage_get \"k\")");
 }
 
 #[test]
@@ -253,6 +260,16 @@ enum Val {
     Bytes(Vec<u8>),
 }
 
+/// near/return (builtin form) serializes Nil via the non-string arm: the
+/// untagged payload (0) stored as 8 bytes. The OLD "" behavior went through
+/// the string arm → a 0-LENGTH payload — so "8 zero bytes" is the distinct
+/// observable for nil-on-miss at the value_return boundary.
+fn assert_nil_payload(v: &Val, what: &str) {
+    let Val::Bytes(b) = v;
+    assert_eq!(b.len(), 8, "{}: nil payload is 8 bytes (was 0 bytes for \"\")", what);
+    assert!(b.iter().all(|&x| x == 0), "{}: nil payload is all-zero, got {:?}", what, b);
+}
+
 impl Val {
     fn as_str(&self) -> String {
         match self {
@@ -292,10 +309,12 @@ fn wasm_fresh_memory_persistence() {
         .expect("run3 get long");
     assert_eq!(v.as_str(), long, "80-char string survives fresh memory — no 8B truncation");
 
-    // miss → ""
+    // miss → nil (e48d64c): near/return emits the 8-zero-byte nil payload
+    // (the old Str("") path emitted a 0-length payload — length is the
+    // distinguishing observable at value_return)
     let v = run_near(&w, "(define (main) (near/return (near/storage_get \"nope\")))")
         .expect("run4 miss");
-    assert_eq!(v.as_str(), "", "missing key → empty string");
+    assert_nil_payload(&v, "missing key");
 
     // has → 1 / 0
     let v = run_near(&w, "(define (main) (near/return (near/storage_has \"k\")))").unwrap();
@@ -303,10 +322,10 @@ fn wasm_fresh_memory_persistence() {
     let v = run_near(&w, "(define (main) (near/return (near/storage_has \"nope\")))").unwrap();
     assert_eq!(v.as_i64(), 0);
 
-    // remove → get "" , has 0
+    // remove → get nil, has 0
     run_near(&w, "(define (main) (near/return (near/storage_remove \"k\")))").unwrap();
     let v = run_near(&w, "(define (main) (near/return (near/storage_get \"k\")))").unwrap();
-    assert_eq!(v.as_str(), "");
+    assert_nil_payload(&v, "removed key");
     let v = run_near(&w, "(define (main) (near/return (near/storage_has \"k\")))").unwrap();
     assert_eq!(v.as_i64(), 0);
 

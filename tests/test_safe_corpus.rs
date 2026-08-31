@@ -342,13 +342,21 @@ fn run_near(w: &World, driver: &str) -> Result<(i64, Option<String>), String> {
         .map_err(|e| format!("call main: {}", e))?;
 
     let bytes = returned.lock().unwrap().clone().unwrap_or_default();
+    // Decode by payload shape (53bf10f raw-str return arm):
+    //  - 8 bytes  → untagged i64 (Num results)
+    //  - any other length → the raw UTF-8 string bytes (Str results —
+    //    near/return value_returns the view's bytes, not the tagged i64)
     let raw = if bytes.len() == 8 {
         i64::from_le_bytes(bytes[..8].try_into().unwrap())
     } else {
         0
     };
-    // string decode: packed = ptr | (len << 32)
-    Ok((raw, None))
+    let s = if bytes.len() == 8 {
+        None
+    } else {
+        Some(String::from_utf8_lossy(&bytes).to_string())
+    };
+    Ok((raw, s))
 }
 
 #[test]
@@ -366,13 +374,12 @@ fn wasm_shared_storage_lifecycle() {
     .expect("run1");
     assert_eq!(v, 1, "proposer's implicit slot → 1 approval");
 
-    // run 2 (alice): tx-amount returns Str — wrapper value_returns the FULL
-    // TAGGED i64: ((len<<32)|ptr)<<3|TAG_STR. Sanity-pin the shape only (the
-    // interp side already asserts exact string content).
-    let (raw, _) = run_near(&w, "(define (main) (tx-amount \"t1\"))").expect("run2");
-    assert_eq!(raw & 7, 5, "TAG_STR");
-    let untagged = raw >> 3;
-    assert_eq!((untagged >> 32) as u32 as usize, 25, "1.5e24 = 25 digits");
+    // run 2 (alice): tx-amount returns Str — since 53bf10f the raw-str
+    // return arm value_returns the view's BYTES (the old tagged-i64
+    // payload surfaced as tag-bit garbage). Exact content now decodable:
+    // the u128 yocto string round-trips intact.
+    let (_raw, s) = run_near(&w, "(define (main) (tx-amount \"t1\"))").expect("run2");
+    assert_eq!(s.as_deref(), Some(AMT), "tx-amount → exact 25-digit yocto string");
 
     // run 3 (alice): re-approve idempotent
     let (v, _) = run_near(
