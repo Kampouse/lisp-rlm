@@ -760,24 +760,13 @@ function buildNearEnv(): Record<string, Function> {
       nearPanicMsg = msg;
       throw new Error(`NEAR panic: ${msg}`);
     },
-    // #28: log_utf8(len, ptr)
+    // #28: log_utf8(len, ptr) — log the UTF-8 string at (ptr, ptr+len).
+    // Raw UTF-8 per the NEAR spec — machine-verified against the emitter:
+    // console.log("hello") calls log_utf8(5, 256) with "hello" bytes at 256.
+    // (The previous tagged-i64 decoding misparsed ASCII as garbage —
+    // `tagged(6:...)` was "hello".)
     log_utf8: (len: bigint, ptr: bigint) => {
-      const raw = nearMemView().getBigInt64(Number(ptr), true);
-      const tagType = Number(raw & BigInt(7));
-      const payload = raw >> BigInt(3);
-      let msg: string;
-      switch (tagType) {
-        case 0: msg = payload.toString(); break;
-        case 1: msg = payload === BigInt(0) ? 'false' : 'true'; break;
-        case 4: msg = 'nil'; break;
-        case 5: {
-          const lo = Number(payload & BigInt(0xFFFFFFFF));
-          const hi = Number((payload >> BigInt(32)) & BigInt(0xFFFFFFFF));
-          msg = new TextDecoder().decode(nearMemBytes().slice(lo, lo + hi));
-          break;
-        }
-        default: msg = `tagged(${tagType}:${payload})`;
-      }
+      const msg = new TextDecoder().decode(nearMemBytes().slice(Number(ptr), Number(ptr) + Number(len)));
       nearStdout += msg + '\n';
       nearLogs.push(msg);
     },
