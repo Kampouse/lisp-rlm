@@ -15,6 +15,8 @@
 //!   ✓ ! - unary
 //!   ✓ calls: bare identifiers + member calls via builtin mapping
 //!   ✓ arrow fns (2026-08-30): expression/single-return bodies, as
+//!     callbacks; (2026-08-31) full block bodies via lower_block_tail
+//!     (begin/let/if sequencing, early returns)
 //!     .map/.filter/.reduce callbacks — inlined by resolve_lambda_1/2,
 //!     so the T4 closure-aliasing landmine never triggers
 //!   ✓ array pipeline chaining (2026-08-30): join/map/filter/reduce take
@@ -2103,17 +2105,23 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
             for p in &a.params.items {
                 params.push(Sym(binding_name(&p.pattern)?));
             }
-            // body: expression form (x => e) or { return e; } / { e; }
-            let body_expr: &Expression<'_> = if let Some(e) = a.get_expression() {
-                e
+            // body: expression form (x => e) or block body.
+            // Single-statement blocks keep the M1 fast paths (shape-stable).
+            // Multi-statement blocks (2026-08-31) reuse function-body
+            // statement lowering: begin sequencing, const→let bindings,
+            // if-branches, early returns (flag-guard). No view calls in
+            // arrow context, so view=false.
+            let body_val: LispVal = if let Some(e) = a.get_expression() {
+                lower_expr(e)?
             } else if let Some(fb) = a.get_function_body() {
                 match fb.statements.as_slice() {
-                    [Statement::ExpressionStatement(es)] => &es.expression,
-                    [Statement::ReturnStatement(r)] => r
-                        .argument
-                        .as_ref()
-                        .ok_or("ts_frontend: bare return in arrow not in M1")?,
-                    _ => return Err("ts_frontend: arrow body must be a single expression or return (M1)".into()),
+                    [] => return Err("ts_frontend: empty arrow body not in M1".into()),
+                    [Statement::ExpressionStatement(es)] => lower_expr(&es.expression)?,
+                    [Statement::ReturnStatement(r)] => match r.argument.as_ref() {
+                        Some(e) => lower_expr(e)?,
+                        None => return Err("ts_frontend: bare return in arrow not in M1".into()),
+                    },
+                    stmts => lower_block_tail(stmts, false)?,
                 }
             } else {
                 return Err("ts_frontend: empty arrow body not in M1".into());
@@ -2121,7 +2129,7 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
             Ok(list(vec![
                 Sym("lambda"),
                 list(params),
-                lower_expr(body_expr)?,
+                body_val,
             ]))
         }
         _ => Err(format!(
