@@ -234,12 +234,24 @@ const PROTECTED_REGIONS: &[(i64, i64)] = &[
     (256, 272),  // AMOUNT_MEM
     (4096, 49152+4096), // HEAP..HANDLE_TABLE end
     (8192, 8480),// STORAGE_BUF + STORAGE_U128_BUF + KEY_BUF
+    (131_072, 136_720), // storage-read memo cache (count + slot table)
     (16384, 32768+8192), // INPUT_BUF..RETURN_BUF end
     (36864, 40960), // BORSH_BUF
 ];
 // Tag validation: valid low 3 bits are 0–6 (TAG_NUM..TAG_ARRAY). 7 is invalid.
 const TAG_INVALID: i64 = 7;
 
+// ── Storage-read memo cache (per-transaction) ──
+// Within one tx, contract storage is immutable except through our own
+// storage-write ops, which all flush the cache (count=0). Reads of the
+// same key are served from a fixed slot table in linear memory instead of
+// repeating the storage_read host call.
+const CACHE_COUNT_ADDR: i64 = 131_072;  // u64: number of filled slots (0..=64)
+const CACHE_SLOT_BASE: i64 = 131_080;   // 64 slots × 88 bytes
+pub(crate) const CACHE_SLOTS: i64 = 64;
+pub(crate) const CACHE_KEY_CAP: i64 = 64; // max cached key length; longer keys read uncached
+pub(crate) const CACHE_STRIDE: i64 = 88;  // key_ptr | key_len | value_tagged | key-bytes copy
+const CACHE_END: u32 = 136_720;           // 131080 + 64*88 = 136712, 8-aligned pad
 // ── Handle table for memory-safe struct access ──
 const HANDLE_COUNT_ADDR: i64 = 48;   // 8-byte slot: number of allocated handles
 const HANDLE_TABLE_BASE: i64 = 49152; // base of handle table (1024 entries × 16 bytes = 16KB)
@@ -352,7 +364,7 @@ impl WasmEmitter {
         Self {
             locals: HashMap::new(), next_local: 0, free_locals: Vec::new(), local_type_map: Vec::new(), current_func: None, current_param_count: 0, tc_depth: 0, try_stack: Vec::new(),
             while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 64, exports: Vec::new(),
-            data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(),
+            data_segments: Vec::new(), next_data_offset: CACHE_END, host_needed: HashSet::new(),
             gas_local: None, needs_frame: false, heap_ptr: 0, lambda_counter: 0, str_cat_depth: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), http_post_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false, u128h: None, fn_int_annotations: std::collections::HashMap::new(), raw_twins: std::collections::HashMap::new(), borsh_schemas: HashMap::new(), storage_get_count: 0, http_post_call_count: 0, env_get_count: 0,
             func_defs: HashMap::new(),
             wasm_imports: Vec::new(),

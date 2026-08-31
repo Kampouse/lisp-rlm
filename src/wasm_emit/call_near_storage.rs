@@ -2,6 +2,308 @@ use super::*;
 use wasm_encoder::{MemArg, Instruction, BlockType, ValType};
 
 impl WasmEmitter {
+    /// Ops that mutate contract storage through the NEAR host (storage_write
+    /// / storage_remove). Every one of them must invalidate the storage-read
+    /// memo cache — the central hook in `call()` appends the flush.
+    pub(crate) fn is_storage_write_op(op: &str) -> bool {
+        matches!(
+            op,
+            "near/storage_set"
+                | "near/storage_write"
+                | "near/storage_remove"
+                | "near/store"
+                | "near/remove"
+                | "near/store_num"
+                | "near/kv"
+                | "near/kstore"
+                | "near/store-deposit"
+                | "near/store-bytes"
+                | "u128/store_storage"
+                | "near/store_u128"
+        )
+    }
+
+    /// Cache invalidation: slot i is valid iff i < count, so a single store
+    /// of 0 to the count word empties the whole table. Appended after every
+    /// storage-write op's emitted code (value on the stack is undisturbed).
+    pub(crate) fn emit_storage_cache_flush(v: &mut Vec<Instruction<'static>>) {
+        v.push(Instruction::I32Const(CACHE_COUNT_ADDR as i32));
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::I64Store(MemArg { offset: 0, align: 3, memory_index: 0 }));
+    }
+
+    /// Emit the cache lookup for the key in local `k` (tagged Str).
+    /// On hit: `res_l` = cached tagged value, `hit_l` = 1.
+    /// On miss: `hit_l` = 0 (caller runs the host read + insert).
+    /// Key compare is EXACT: length filter, 8-byte chunks over len>>3, then
+    /// byte-wise tail — never reads past either key, so adjacent-memory
+    /// garbage can only cause a false MISS (safe), never a false hit.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn emit_storage_cache_lookup(
+        &mut self,
+        k: u32,
+        res_l: u32,
+        hit_l: u32,
+        cnt_l: u32,
+        idx_l: u32,
+        slot_l: u32,
+        j_l: u32,
+        eq_l: u32,
+        klen_l: u32,
+        kptr_l: u32,
+        tail_l: u32,
+    ) -> Vec<Instruction<'static>> {
+        let ma8 = MemArg { offset: 0, align: 3, memory_index: 0 };
+        let ma0 = MemArg { offset: 0, align: 0, memory_index: 0 };
+        let mut v = Vec::new();
+        // klen = raw(k) >> 32 ; kptr = (u32)raw(k)
+        v.push(Instruction::LocalGet(k));
+        v.extend(self.emit_untag());
+        v.push(Instruction::I64Const(32));
+        v.push(Instruction::I64ShrU);
+        v.push(Instruction::LocalSet(klen_l));
+        v.push(Instruction::LocalGet(k));
+        v.extend(self.emit_untag());
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::LocalSet(kptr_l));
+        // hit = 0
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::LocalSet(hit_l));
+        // cnt = mem64[CACHE_COUNT_ADDR]
+        v.push(Instruction::I32Const(CACHE_COUNT_ADDR as i32));
+        v.push(Instruction::I64Load(ma8.clone()));
+        v.push(Instruction::LocalSet(cnt_l));
+        // idx = 0
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::LocalSet(idx_l));
+        // ── outer scan: Block A { Loop B { ... } } ──
+        v.push(Instruction::Block(BlockType::Empty)); // A
+        v.push(Instruction::Loop(BlockType::Empty)); // B
+        // if idx >= cnt → br A (exit scan)
+        v.push(Instruction::LocalGet(idx_l));
+        v.push(Instruction::LocalGet(cnt_l));
+        v.push(Instruction::I64GeU);
+        v.push(Instruction::BrIf(1));
+        // slot = CACHE_SLOT_BASE + idx * CACHE_STRIDE
+        v.push(Instruction::I64Const(CACHE_SLOT_BASE));
+        v.push(Instruction::LocalGet(idx_l));
+        v.push(Instruction::I64Const(CACHE_STRIDE));
+        v.push(Instruction::I64Mul);
+        v.push(Instruction::I64Add);
+        v.push(Instruction::LocalSet(slot_l));
+        // if mem64[slot+8] == klen:
+        v.push(Instruction::LocalGet(slot_l));
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I64Load(MemArg { offset: 8, align: 3, memory_index: 0 }));
+        v.push(Instruction::LocalGet(klen_l));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty)); // C
+        //   eq = 1; j = 0
+        v.push(Instruction::I64Const(1));
+        v.push(Instruction::LocalSet(eq_l));
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::LocalSet(j_l));
+        //   Block D { Loop E { chunk compare } }
+        v.push(Instruction::Block(BlockType::Empty)); // D
+        v.push(Instruction::Loop(BlockType::Empty)); // E
+        //   if j >= klen>>3 → br D
+        v.push(Instruction::LocalGet(j_l));
+        v.push(Instruction::LocalGet(klen_l));
+        v.push(Instruction::I64Const(3));
+        v.push(Instruction::I64ShrU);
+        v.push(Instruction::I64GeU);
+        v.push(Instruction::BrIf(1));
+        //   if mem64[slot+24+j*8] != mem64[kptr+j*8] → eq = 0
+        v.push(Instruction::LocalGet(slot_l));
+        v.push(Instruction::LocalGet(j_l));
+        v.push(Instruction::I64Const(3));
+        v.push(Instruction::I64Shl);
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I64Load(MemArg { offset: 24, align: 3, memory_index: 0 }));
+        v.push(Instruction::LocalGet(kptr_l));
+        v.push(Instruction::LocalGet(j_l));
+        v.push(Instruction::I64Const(3));
+        v.push(Instruction::I64Shl);
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I64Load(ma8.clone()));
+        v.push(Instruction::I64Ne);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::LocalSet(eq_l));
+        v.push(Instruction::End);
+        //   if eq == 0 → br D (bail out of compare)
+        v.push(Instruction::LocalGet(eq_l));
+        v.push(Instruction::I64Eqz);
+        v.push(Instruction::BrIf(1));
+        //   j++; br E
+        v.push(Instruction::LocalGet(j_l));
+        v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::LocalSet(j_l));
+        v.push(Instruction::Br(0));
+        v.push(Instruction::End); // E
+        v.push(Instruction::End); // D
+        //   tail = klen & -8 (low 3 bits cleared; NOT (klen>>3)<<3 — the
+        //   peephole optimizer deletes const-3 shr/shl pairs as tag round-trips)
+        v.push(Instruction::LocalGet(klen_l));
+        v.push(Instruction::I64Const(-8));
+        v.push(Instruction::I64And);
+        v.push(Instruction::LocalSet(tail_l));
+        //   Block G { Loop H { tail byte compare } }
+        v.push(Instruction::Block(BlockType::Empty)); // G
+        v.push(Instruction::Loop(BlockType::Empty)); // H
+        //   if tail >= klen → br G
+        v.push(Instruction::LocalGet(tail_l));
+        v.push(Instruction::LocalGet(klen_l));
+        v.push(Instruction::I64GeU);
+        v.push(Instruction::BrIf(1));
+        //   if load8(slot+24+tail) != load8(kptr+tail) → eq = 0
+        v.push(Instruction::LocalGet(slot_l));
+        v.push(Instruction::LocalGet(tail_l));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I64Load8U(MemArg { offset: 24, align: 0, memory_index: 0 }));
+        v.push(Instruction::LocalGet(kptr_l));
+        v.push(Instruction::LocalGet(tail_l));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I64Load8U(ma0.clone()));
+        v.push(Instruction::I64Ne);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::LocalSet(eq_l));
+        v.push(Instruction::End);
+        //   if eq == 0 → br G
+        v.push(Instruction::LocalGet(eq_l));
+        v.push(Instruction::I64Eqz);
+        v.push(Instruction::BrIf(1));
+        //   tail++; br H
+        v.push(Instruction::LocalGet(tail_l));
+        v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::LocalSet(tail_l));
+        v.push(Instruction::Br(0));
+        v.push(Instruction::End); // H
+        v.push(Instruction::End); // G
+        //   if eq → res = mem64[slot+16]; hit = 1; br A (from J: 0=J,1=C,2=B,3=A)
+        v.push(Instruction::LocalGet(eq_l));
+        v.push(Instruction::I32WrapI64); // if consumes an i32 condition
+        v.push(Instruction::If(BlockType::Empty)); // J
+        v.push(Instruction::LocalGet(slot_l));
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I64Load(MemArg { offset: 16, align: 3, memory_index: 0 }));
+        v.push(Instruction::LocalSet(res_l));
+        v.push(Instruction::I64Const(1));
+        v.push(Instruction::LocalSet(hit_l));
+        v.push(Instruction::Br(3));
+        v.push(Instruction::End); // J
+        v.push(Instruction::End); // C
+        // idx++; br B
+        v.push(Instruction::LocalGet(idx_l));
+        v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::LocalSet(idx_l));
+        v.push(Instruction::Br(0));
+        v.push(Instruction::End); // B
+        v.push(Instruction::End); // A
+        v
+    }
+
+    /// Emit the cache insert for the key in local `k` (tagged Str) with the
+    /// freshly-read tagged result in `res_l`. Count is in `cnt_l` (loaded by
+    /// the lookup — still current: single-threaded, nothing appended since).
+    /// Skips (falls through uncached) when the table is full or the key is
+    /// longer than CACHE_KEY_CAP. Key bytes are COPIED into the slot (with
+    /// the tail zeroed), so later mutation of the source buffer (TEMP_MEM
+    /// reuse, heap aliasing) can never poison a cached entry.
+    pub(crate) fn emit_storage_cache_insert(
+        &mut self,
+        k: u32,
+        res_l: u32,
+        cnt_l: u32,
+        slot_l: u32,
+        j_l: u32,
+        klen_l: u32,
+        kptr_l: u32,
+    ) -> Vec<Instruction<'static>> {
+        let ma8 = MemArg { offset: 0, align: 3, memory_index: 0 };
+        let ma0 = MemArg { offset: 0, align: 0, memory_index: 0 };
+        let mut v = Vec::new();
+        // guard: klen <= CAP && cnt < SLOTS
+        v.push(Instruction::LocalGet(klen_l));
+        v.push(Instruction::I64Const(CACHE_KEY_CAP));
+        v.push(Instruction::I64LeU);
+        v.push(Instruction::LocalGet(cnt_l));
+        v.push(Instruction::I64Const(CACHE_SLOTS));
+        v.push(Instruction::I64LtU);
+        v.push(Instruction::I32And); // i64 comparisons return i32 — combine as i32
+        v.push(Instruction::If(BlockType::Empty)); // L
+        // slot = SLOT_BASE + cnt*88
+        v.push(Instruction::I64Const(CACHE_SLOT_BASE));
+        v.push(Instruction::LocalGet(cnt_l));
+        v.push(Instruction::I64Const(CACHE_STRIDE));
+        v.push(Instruction::I64Mul);
+        v.push(Instruction::I64Add);
+        v.push(Instruction::LocalSet(slot_l));
+        // mem64[slot+0] = kptr ; [slot+8] = klen ; [slot+16] = res
+        v.push(Instruction::LocalGet(slot_l));
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::LocalGet(kptr_l));
+        v.push(Instruction::I64Store(ma8.clone()));
+        v.push(Instruction::LocalGet(slot_l));
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::LocalGet(klen_l));
+        v.push(Instruction::I64Store(MemArg { offset: 8, align: 3, memory_index: 0 }));
+        v.push(Instruction::LocalGet(slot_l));
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::LocalGet(res_l));
+        v.push(Instruction::I64Store(MemArg { offset: 16, align: 3, memory_index: 0 }));
+        // zero the 64-byte key-copy tail (8 × i64 store at +24..+88)
+        for off in (24..88).step_by(8) {
+            v.push(Instruction::LocalGet(slot_l));
+            v.push(Instruction::I32WrapI64);
+            v.push(Instruction::I64Const(0));
+            v.push(Instruction::I64Store(MemArg { offset: off, align: 3, memory_index: 0 }));
+        }
+        // copy key bytes: j = 0; Block M { Loop N { if j>=klen br; slot[24+j] = key[j]; j++ } }
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::LocalSet(j_l));
+        v.push(Instruction::Block(BlockType::Empty)); // M
+        v.push(Instruction::Loop(BlockType::Empty)); // N
+        v.push(Instruction::LocalGet(j_l));
+        v.push(Instruction::LocalGet(klen_l));
+        v.push(Instruction::I64GeU);
+        v.push(Instruction::BrIf(1));
+        v.push(Instruction::LocalGet(slot_l));
+        v.push(Instruction::LocalGet(j_l));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::LocalGet(kptr_l));
+        v.push(Instruction::LocalGet(j_l));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I64Load8U(ma0.clone()));
+        v.push(Instruction::I64Store8(MemArg { offset: 24, align: 0, memory_index: 0 }));
+        v.push(Instruction::LocalGet(j_l));
+        v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::LocalSet(j_l));
+        v.push(Instruction::Br(0));
+        v.push(Instruction::End); // N
+        v.push(Instruction::End); // M
+        // count++
+        v.push(Instruction::I32Const(CACHE_COUNT_ADDR as i32));
+        v.push(Instruction::LocalGet(cnt_l));
+        v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I64Store(ma8.clone()));
+        v.push(Instruction::End); // L
+        v
+    }
+
     pub(crate) fn call_near_storage(
         &mut self,
         op: &str,
@@ -71,12 +373,31 @@ match op {
                 let dst_l = self.local_idx("__sg_dst");
                 let tmp_l = self.local_idx("__sg_tmp");
                 let new_l = self.local_idx("__sg_new");
+                // storage-read memo cache locals
+                let res_l = self.local_idx("__sg_res");
+                let hit_l = self.local_idx("__sg_hit");
+                let cnt_l = self.local_idx("__sg_cnt");
+                let idx_l = self.local_idx("__sg_idx");
+                let slot_l = self.local_idx("__sg_slot");
+                let j_l = self.local_idx("__sg_j");
+                let eq_l = self.local_idx("__sg_eq");
+                let klen_l = self.local_idx("__sg_klen");
+                let kptr_l = self.local_idx("__sg_kptr");
+                let tail_l = self.local_idx("__sg_tail");
                 let ma8 = MemArg { offset: 0, align: 3, memory_index: 0 };
                 let mem_limit = (self.memory_pages as i64) * 65536;
                 let mut v = Vec::new();
                 v.extend(key);
                 v.push(Instruction::LocalSet(k));
                 Self::emit_assert_tag_str(&mut v, k);
+                // ── memo cache lookup (per-tx storage-read cache) ──
+                v.extend(self.emit_storage_cache_lookup(
+                    k, res_l, hit_l, cnt_l, idx_l, slot_l, j_l, eq_l, klen_l, kptr_l, tail_l,
+                ));
+                // ── miss → host read path, then insert into the cache ──
+                v.push(Instruction::LocalGet(hit_l));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::If(BlockType::Empty));
                 // storage_read(key_len, key_ptr, register=0) → success flag
                 v.push(Instruction::LocalGet(k));
                 v.extend(self.emit_untag());
@@ -99,7 +420,7 @@ match op {
                 // bump-allocate len bytes (8-aligned) from RUNTIME_HEAP_PTR (addr 56)
                 v.push(Instruction::I64Const(56));
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64Load(ma8));
+                v.push(Instruction::I64Load(ma8.clone()));
                 v.push(Instruction::LocalSet(tmp_l));
                 v.push(Instruction::LocalGet(tmp_l));
                 v.push(Instruction::LocalGet(len_l));
@@ -116,7 +437,7 @@ match op {
                 v.push(Instruction::I64Const(56));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalGet(new_l));
-                v.push(Instruction::I64Store(ma8));
+                v.push(Instruction::I64Store(ma8.clone()));
                 v.push(Instruction::Else);
                 v.push(Instruction::Unreachable); // out of memory — hard error
                 v.push(Instruction::End);
@@ -134,6 +455,12 @@ match op {
                 v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 v.push(Instruction::End);
+                // save result, then insert into the cache (skips when full /
+                // key > 64 bytes — uncached fallback)
+                v.push(Instruction::LocalSet(res_l));
+                v.extend(self.emit_storage_cache_insert(k, res_l, cnt_l, slot_l, j_l, klen_l, kptr_l));
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(res_l));
                 Ok(v)
             }
             "near/storage_has" | "near/storage_has_key" => {
