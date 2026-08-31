@@ -426,14 +426,190 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, LispVal
     Ok((name, list(define_items)))
 }
 
+/// A bare mid-function return: `return e;` as a statement at this level
+/// (nested ifs/loops handle their own exits via takeover / __wl guards).
+fn stmts_have_bare_return(stmts: &[Statement<'_>]) -> bool {
+    stmts.iter().any(|s| match s {
+        Statement::ReturnStatement(_) => true,
+        Statement::BlockStatement(b) => stmts_have_bare_return(&b.body),
+        _ => false,
+    })
+}
+
 /// Lower a statement list whose value is the tail expression.
 fn lower_block_tail(stmts: &[Statement<'_>], view: bool) -> Result<LispVal, String> {
     if stmts.is_empty() {
         return Ok(Num(0));
     }
     let (init, last) = stmts.split_at(stmts.len() - 1);
+    if stmts_have_bare_return(init) {
+        // early-return function: flag-guard lowering (M2).
+        // __fn_res starts as nil (bottom type — accepts str/num set!s).
+        let tail = lower_tail_stmt(&last[0], view)?;
+        let guarded_tail = list(vec![
+            Sym("if"),
+            list(vec![Sym("="), Sym("__fn_done"), Num(0)]),
+            tail,
+            Sym("__fn_res"),
+        ]);
+        let body = lower_prefix_around_with_return(init, guarded_tail, view)?;
+        return Ok(list(vec![
+            Sym("let"),
+            list(vec![
+                list(vec![Sym("__fn_done"), Num(0)]),
+                list(vec![Sym("__fn_res"), list(vec![Sym("quote"), LispVal::Nil])]),
+            ]),
+            body,
+        ]));
+    }
     let tail = lower_tail_stmt(&last[0], view)?;
     lower_prefix_around(init, tail, view)
+}
+
+/// Like lower_prefix_around, but a bare `return e;` mid-function stores
+/// into __fn_res/__fn_done (bound by lower_block_tail's flag-guard path).
+/// If-branches containing returns capture their value into __fn_res —
+/// the uniform guard makes any post-return statement a no-op.
+fn lower_prefix_around_with_return(
+    stmts: &[Statement<'_>],
+    tail: LispVal,
+    view: bool,
+) -> Result<LispVal, String> {
+    if stmts.is_empty() {
+        return Ok(tail);
+    }
+    let (init, last) = stmts.split_at(stmts.len() - 1);
+    let inner = match &last[0] {
+        Statement::VariableDeclaration(v) => {
+            // pure binding — no guard needed (no side effects to skip)
+            let mut bindings = Vec::new();
+            for d in &v.declarations {
+                let name = binding_name(&d.id)?;
+                let init_e = d
+                    .init
+                    .as_ref()
+                    .ok_or("ts_frontend: local declaration needs initializer")?;
+                bindings.push(list(vec![Sym(name), lower_expr(init_e)?]));
+            }
+            list(vec![Sym("let"), list(bindings), tail])
+        }
+        Statement::ExpressionStatement(e) => {
+            // side-effect statement: skip entirely once the function has
+            // returned (TS semantics — statements after return don't run)
+            let e2 = effect_expr(&e.expression)?;
+            list(vec![
+                Sym("begin"),
+                list(vec![
+                    Sym("if"),
+                    list(vec![Sym("="), Sym("__fn_done"), Num(0)]),
+                    e2,
+                    Num(0),
+                ]),
+                tail,
+            ])
+        }
+        Statement::IfStatement(i) => {
+            let mut then_e = lower_block_tail(stmts_of(&i.consequent), view)?;
+            if stmt_has_return(&i.consequent) {
+                // branch value becomes the function result
+                then_e = list(vec![
+                    Sym("begin"),
+                    list(vec![Sym("set!"), Sym("__fn_res"), then_e]),
+                    list(vec![Sym("set!"), Sym("__fn_done"), Num(1)]),
+                ]);
+            }
+            let else_e = match &i.alternate {
+                Some(alt) => {
+                    let mut e = lower_block_tail(stmts_of(alt), view)?;
+                    if stmt_has_return(alt) {
+                        e = list(vec![
+                            Sym("begin"),
+                            list(vec![Sym("set!"), Sym("__fn_res"), e]),
+                            list(vec![Sym("set!"), Sym("__fn_done"), Num(1)]),
+                        ]);
+                    }
+                    e
+                }
+                None => Num(0),
+            };
+            list(vec![
+                Sym("begin"),
+                list(vec![
+                    Sym("if"),
+                    list(vec![Sym("="), Sym("__fn_done"), Num(0)]),
+                    list(vec![Sym("if"), truthy(&i.test)?, then_e, else_e]),
+                    Num(0),
+                ]),
+                tail,
+            ])
+        }
+        Statement::ReturnStatement(r) => {
+            let val = match &r.argument {
+                Some(e) => {
+                    let v = lower_expr(e)?;
+                    if view {
+                        list(vec![Sym("near/json_return_str"), v])
+                    } else {
+                        v
+                    }
+                }
+                None => Num(0),
+            };
+            list(vec![
+                Sym("begin"),
+                list(vec![Sym("set!"), Sym("__fn_res"), val]),
+                list(vec![Sym("set!"), Sym("__fn_done"), Num(1)]),
+                tail,
+            ])
+        }
+        Statement::WhileStatement(_) => {
+            let (has_exits, core) = lower_while_parts(&last[0])?;
+            let mut v = vec![Sym("begin"), core];
+            if has_exits {
+                // loop exit feeds the function-level flag too
+                v.push(list(vec![
+                    Sym("if"),
+                    Sym("__wl_done"),
+                    list(vec![
+                        Sym("begin"),
+                        list(vec![Sym("set!"), Sym("__fn_res"), Sym("__wl_res")]),
+                        list(vec![Sym("set!"), Sym("__fn_done"), Num(1)]),
+                    ]),
+                ]));
+            }
+            v.push(tail);
+            list(v)
+        }
+        Statement::ForOfStatement(fo) => {
+            let (has_exits, core) = lower_for_of_parts(fo)?;
+            let mut v = vec![Sym("begin"), core];
+            if has_exits {
+                v.push(list(vec![
+                    Sym("if"),
+                    Sym("__wl_done"),
+                    list(vec![
+                        Sym("begin"),
+                        list(vec![Sym("set!"), Sym("__fn_res"), Sym("__wl_res")]),
+                        list(vec![Sym("set!"), Sym("__fn_done"), Num(1)]),
+                    ]),
+                ]));
+            }
+            v.push(tail);
+            list(v)
+        }
+        Statement::BlockStatement(b) => {
+            let inner_blk = lower_block_tail(&b.body, view)?;
+            list(vec![Sym("begin"), inner_blk, tail])
+        }
+        Statement::EmptyStatement(_) => tail,
+        s => {
+            return Err(format!(
+                "ts_frontend: statement `{}` not allowed mid-function (M2 early-return)",
+                stmt_kind(s)
+            ))
+        }
+    };
+    lower_prefix_around_with_return(init, inner, view)
 }
 
 /// Prefix statements wrap the tail expression like let-nesting.
@@ -1621,6 +1797,77 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                     }
                 }
             }
+            // ── string instance methods (M2): receiver prepended ──
+            // s.startsWith(x) → (str-starts-with s x), etc.
+            // Note: string-typed only — the checker rejects wrong arg types
+            // (str-index-of on an array errors loudly rather than guessing).
+            if let Expression::StaticMemberExpression(sm) = &c.callee {
+                let prop = sm.property.name.as_str();
+                let is_str_method = matches!(
+                    prop,
+                    "slice"
+                        | "startsWith"
+                        | "endsWith"
+                        | "indexOf"
+                        | "includes"
+                        | "charAt"
+                        | "trim"
+                        | "toUpperCase"
+                        | "toLowerCase"
+                        | "concat"
+                        | "split"
+                );
+                if is_str_method {
+                    let recv = lower_expr(&sm.object)?;
+                    let arg = |i: usize| -> Result<LispVal, String> {
+                        c.arguments
+                            .get(i)
+                            .and_then(|a| a.as_expression())
+                            .map(lower_expr)
+                            .transpose()?
+                            .ok_or_else(|| {
+                                format!("ts_frontend: .{} needs argument {}", prop, i + 1)
+                            })
+                    };
+                    let argc = c.arguments.len();
+                    return match prop {
+                        "slice" => {
+                            let start = arg(0)?;
+                            let end = if argc >= 2 {
+                                arg(1)?
+                            } else {
+                                // JS s.slice(i) = to end
+                                list(vec![Sym("str-length"), recv.clone()])
+                            };
+                            Ok(list(vec![Sym("str-slice"), recv, start, end]))
+                        }
+                        "startsWith" => Ok(list(vec![Sym("str-starts-with"), recv, arg(0)?])),
+                        "endsWith" => Ok(list(vec![Sym("str-ends-with"), recv, arg(0)?])),
+                        "indexOf" => Ok(list(vec![Sym("str-index-of"), recv, arg(0)?])),
+                        "includes" => Ok(list(vec![Sym("str-contains"), recv, arg(0)?])),
+                        "charAt" => {
+                            let i = arg(0)?;
+                            Ok(list(vec![
+                                Sym("str-slice"),
+                                recv,
+                                i.clone(),
+                                list(vec![Sym("+"), i, Num(1)]),
+                            ]))
+                        }
+                        "trim" => Ok(list(vec![Sym("str-trim"), recv])),
+                        "toUpperCase" => Ok(list(vec![Sym("str-upcase"), recv])),
+                        "toLowerCase" => Ok(list(vec![Sym("str-downcase"), recv])),
+                        "concat" => {
+                            if argc != 1 {
+                                return Err("ts_frontend: .concat takes exactly one argument (binary str-cat)".into());
+                            }
+                            Ok(list(vec![Sym("str-cat"), recv, arg(0)?]))
+                        }
+                        "split" => Ok(list(vec![Sym("str-split"), recv, arg(0)?])),
+                        _ => unreachable!(),
+                    };
+                }
+            }
             // Array method calls first: xs.push(v) → (vec-push xs v),
             // xs.join(sep) → (str-join sep xs) — note the arg reordering.
             // Pipeline members (join/map/filter/reduce, 2026-08-30) accept
@@ -1804,15 +2051,39 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
 /// Statically-boolean exprs pass through; numerics get (!= x 0).
 fn statically_bool(e: &Expression<'_>) -> bool {
     let bool_call = match e {
-        Expression::CallExpression(c) => callee_name(&c.callee)
-            .ok()
-            .map(|h| {
-                matches!(
-                    h.as_str(),
-                    "u128/gt" | "u128/lt" | "u128/gte" | "u128/lte" | "u128/eq" | "near/deposit-gte"
-                )
-            })
-            .unwrap_or(false),
+        Expression::CallExpression(c) => {
+            // string instance predicates (M2): startsWith / endsWith / includes
+            if let Expression::StaticMemberExpression(sm) = &c.callee {
+                if matches!(
+                    sm.property.name.as_str(),
+                    "startsWith" | "endsWith" | "includes"
+                ) {
+                    true
+                } else {
+                    callee_name(&c.callee)
+                        .ok()
+                        .map(|h| {
+                            matches!(
+                                h.as_str(),
+                                "u128/gt" | "u128/lt" | "u128/gte" | "u128/lte" | "u128/eq"
+                                    | "near/deposit-gte"
+                            )
+                        })
+                        .unwrap_or(false)
+                }
+            } else {
+                callee_name(&c.callee)
+                    .ok()
+                    .map(|h| {
+                        matches!(
+                            h.as_str(),
+                            "u128/gt" | "u128/lt" | "u128/gte" | "u128/lte" | "u128/eq"
+                                | "near/deposit-gte"
+                        )
+                    })
+                    .unwrap_or(false)
+            }
+        }
         _ => false,
     };
     let is_not = matches!(
