@@ -174,7 +174,7 @@ export function get_port(cfg: string): string {
 }
 
 // ── Typed object params ──────────────────────────────────────
-// Inline shape or `type` alias — numeric props AUTO-DECODE.
+// Inline shape or a type alias — numeric props AUTO-DECODE.
 type Ballot = { title: string; votes: number };
 
 export function cast(b: Ballot): string {
