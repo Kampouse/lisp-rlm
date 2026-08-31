@@ -6658,6 +6658,24 @@ pub fn eval_builtin(
             Some(LispVal::Bool(b)) => Ok(LispVal::Str((if *b { "true" } else { "false" }).to_string())),
             _ => Ok(LispVal::Str("null".to_string())),
             },
+        // (json-set json key encoded-value) — set/replace top-level key in a
+        // JSON object string, returns the new JSON string. Semantics are
+        // identical to the emitted __json_set wasm helper (see
+        // helpers::json_set_impl for the scanner): key found → value replaced
+        // in place (order preserved); missing → inserted before final '}';
+        // empty/invalid json arg → treated as {}. encoded-value must already
+        // be JSON value text (json-quote output / bare literal / raw object).
+        "json-set" => {
+            if args.len() != 3 {
+                return Err("json-set: expected 3 args (json key encoded-value)".into());
+            }
+            match (&args[0], &args[1], &args[2]) {
+                (LispVal::Str(j), LispVal::Str(k), LispVal::Str(v)) => {
+                    Ok(LispVal::Str(crate::helpers::json_set_impl(j, k, v)))
+                }
+                _ => Err("json-set: json, key and encoded-value must all be strings".into()),
+            }
+        }
         "to-string" => Ok(LispVal::Str(format!(
             "{}",
             args.get(0).unwrap_or(&LispVal::Nil)

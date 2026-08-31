@@ -457,6 +457,116 @@ impl WasmEmitter {
                 v.extend(self.emit_tag_str());
                 Ok(v)
             }
+            // (json-set json key encoded-value) → new JSON object string.
+            // json/key/value are runtime strings; encoded-value must already
+            // be JSON value text (json-quote output, bare number/bool/null,
+            // or raw object/array). __json_set (json.rs) scans the top-level
+            // object, replaces the key's value in place (order preserved) or
+            // inserts before the final '}'. Empty/invalid json arg → treated
+            // as {}. Result is heap-allocated and tagged Str.
+            "json-set" => {
+                if a.len() != 3 {
+                    return Err("json-set: expected 3 args (json key encoded-value)".into());
+                }
+                let mut v = Vec::new();
+                let js_json = self.local_idx("jsv_json");
+                let js_key = self.local_idx("jsv_key");
+                let js_val = self.local_idx("jsv_val");
+                // Eval all three args (tagged), untag each to packed (len<<32|ptr)
+                v.extend(self.expr(&a[0])?);
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64ShrU);
+                v.extend(self.expr(&a[1])?);
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64ShrU);
+                v.extend(self.expr(&a[2])?);
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64ShrU);
+                // Stack: [json, key, val] → store in reverse
+                v.push(Instruction::LocalSet(js_val));
+                v.push(Instruction::LocalSet(js_key));
+                v.push(Instruction::LocalSet(js_json));
+                // CRITICAL: Bump the heap pointer PAST the input json BEFORE
+                // calling __json_set, so the result allocation below cannot
+                // overlap (and overwrite) the input string (same reason as
+                // json-array-get).
+                let js_inlen = self.local_idx_i32("jsv_inlen");
+                let js_inalign = self.local_idx_i32("jsv_inalign");
+                v.push(Instruction::LocalGet(js_json));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalSet(js_inlen));
+                v.push(Instruction::LocalGet(js_inlen));
+                v.push(Instruction::I32Const(7));
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Const(-8));
+                v.push(Instruction::I32And);
+                v.push(Instruction::LocalSet(js_inalign));
+                let rhp: i32 = 56; // RUNTIME_HEAP_PTR
+                let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let js_oldheap = self.local_idx("jsv_oldheap");
+                v.push(Instruction::I32Const(rhp));
+                v.push(Instruction::I64Load(ma8.clone()));
+                v.push(Instruction::LocalSet(js_oldheap));
+                v.push(Instruction::I32Const(rhp));
+                v.push(Instruction::LocalGet(js_oldheap));
+                v.push(Instruction::LocalGet(js_inalign));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Store(ma8.clone()));
+                // Call __json_set(json, key, val) — returns tagged Str in stdout_buf
+                let idx = self.ensure_json_set_func();
+                v.push(Instruction::LocalGet(js_json));
+                v.push(Instruction::LocalGet(js_key));
+                v.push(Instruction::LocalGet(js_val));
+                v.push(Instruction::Call(crate::wasm_emit::USER_BASE | idx));
+                // Post-processing: copy result from stdout_buf to runtime heap
+                let js_tmp = self.local_idx("jsv_packed");
+                let js_len = self.local_idx_i32("jsv_len");
+                let js_ptr = self.local_idx_i32("jsv_ptr");
+                let js_heap = self.local_idx("jsv_heap");
+                let js_aligned = self.local_idx_i32("jsv_aligned");
+                v.push(Instruction::LocalSet(js_tmp));
+                v.push(Instruction::LocalGet(js_tmp));
+                v.extend(self.emit_untag()); // untag: >> 3
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU); // packed >> 32 = len
+                v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(js_len));
+                v.push(Instruction::LocalGet(js_tmp));
+                v.extend(self.emit_untag()); // untag: >> 3
+                v.push(Instruction::I32WrapI64); v.push(Instruction::LocalSet(js_ptr));
+                // Align result len to 8
+                v.push(Instruction::LocalGet(js_len));
+                v.push(Instruction::I32Const(7));
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Const(-8));
+                v.push(Instruction::I32And);
+                v.push(Instruction::LocalSet(js_aligned));
+                // Read current heap ptr (already bumped past input)
+                v.push(Instruction::I32Const(rhp));
+                v.push(Instruction::I64Load(ma8.clone()));
+                v.push(Instruction::LocalSet(js_heap));
+                // Bump: heap_ptr + aligned result len
+                v.push(Instruction::I32Const(rhp));
+                v.push(Instruction::LocalGet(js_heap));
+                v.push(Instruction::LocalGet(js_aligned));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Store(ma8.clone()));
+                // memory.copy dst=js_heap, src=js_ptr(stdout_buf), len=js_len
+                v.push(Instruction::LocalGet(js_heap));
+                v.push(Instruction::I32WrapI64); // dst as i32
+                v.push(Instruction::LocalGet(js_ptr));
+                v.push(Instruction::LocalGet(js_len));
+                v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+                // Repack: (len << 32) | heap
+                v.push(Instruction::LocalGet(js_len)); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalGet(js_heap)); // already i64
+                v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
+                Ok(v)
+            }
             _ => Err("__not_handled__".into()),
         }
     }

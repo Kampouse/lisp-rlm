@@ -63,6 +63,11 @@ pub fn ts_to_lisp_source(src: &str) -> Result<String, String> {
 thread_local! {
     static IDENT_OFFSETS: std::cell::RefCell<Vec<(String, u32)>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    /// Numeric-typed parameter names in scope during body lowering — used
+    /// by object-literal value encoding (`{votes: votes}` encodes bare
+    /// number when `votes: number` was annotated).
+    static NUM_PARAM_NAMES: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 fn note_ident(name: &str, offset: u32) {
@@ -508,7 +513,10 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, LispVal
                 .map(|(n, kind)| {
                     let get = list(vec![Sym("near/json_get_str"), Str(n.clone())]);
                     let v = match kind {
-                        1 => list(vec![Sym("str->num"), get]),
+                        1 => {
+                            NUM_PARAM_NAMES.with(|s| s.borrow_mut().push(n.clone()));
+                            list(vec![Sym("str->num"), get])
+                        }
                         2 => list(vec![Sym("near/json_get_arr"), Str(n.clone())]),
                         _ => get,
                     };
@@ -516,6 +524,7 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, LispVal
                 })
                 .collect();
             let inner = lower_block_tail(&body.statements, view)?;
+            NUM_PARAM_NAMES.with(|s| s.borrow_mut().clear());
             list(vec![Sym("let"), list(bindings), inner])
         } else {
             lower_block_tail(&body.statements, view)?
@@ -960,7 +969,19 @@ fn lower_tail_stmt(s: &Statement<'_>, view: bool) -> Result<LispVal, String> {
             Ok(list(vec![Sym("if"), truthy(&i.test)?, then_e, else_e]))
         }
         Statement::BlockStatement(b) => lower_block_tail(&b.body, view),
-        Statement::ExpressionStatement(e) => Ok(ensure_int_value(lower_expr(&e.expression)?)),
+        // Tail assignment (`u.k = v;` as last statement, void fn): route
+        // through the assignment form so member targets get the helpful
+        // jsonSet message instead of "expression assignment not in M1".
+        Statement::ExpressionStatement(e) => {
+            if matches!(e.expression, Expression::AssignmentExpression(_)) {
+                let v = lower_assign_form(match &e.expression {
+                    Expression::AssignmentExpression(asg) => asg,
+                    _ => unreachable!(),
+                })?;
+                return Ok(ensure_int_value(v));
+            }
+            Ok(ensure_int_value(lower_expr(&e.expression)?))
+        }
         Statement::VariableDeclaration(v) => {
             // trailing let: bind, value 0
             let mut bindings = Vec::new();
@@ -1609,6 +1630,11 @@ fn lower_assign_form(
             let (v, expr) = lower_assignment(asg)?;
             Ok(list(vec![Sym("set!"), Sym(v), expr]))
         }
+        oxc_ast::ast::AssignmentTarget::StaticMemberExpression(_) => Err(
+            "ts_frontend: property assignment not supported — objects are immutable JSON values; \
+             rebuild with `o = jsonSet(o, \"key\", jsonQuote(v))` (numbers: toStr(v))"
+                .into(),
+        ),
         oxc_ast::ast::AssignmentTarget::ComputedMemberExpression(cm) => {
             let obj = lower_expr(&cm.object)?;
             let idx = lower_expr(&cm.expression)?;
@@ -1630,6 +1656,99 @@ fn lower_assign_form(
             Ok(list(vec![Sym("vec-set!"), obj, idx, val]))
         }
         _ => return Err("ts_frontend: assignment target must be a variable or element access".into()),
+    }
+}
+
+/// M2 objects: `{ k: v, ... }` → nested `(json-set "{}" "k" <encoded v>)`
+/// folds. Objects are JSON-string values: storage/return/interop need no
+/// conversion, reads go through near/json_get_str.
+fn lower_object_literal(
+    obj: &oxc_ast::ast::ObjectExpression<'_>,
+) -> Result<LispVal, String> {
+    let mut acc = Str("{}".to_string());
+    for prop in &obj.properties {
+        match prop {
+            oxc_ast::ast::ObjectPropertyKind::ObjectProperty(p) => {
+                let key = match &p.key {
+                    oxc_ast::ast::PropertyKey::StaticIdentifier(id) => {
+                        id.name.as_str().to_string()
+                    }
+                    oxc_ast::ast::PropertyKey::StringLiteral(s) => s.value.as_str().to_string(),
+                    _ => {
+                        return Err(
+                            "ts_frontend: object key must be an identifier or string literal"
+                                .into(),
+                        )
+                    }
+                };
+                let val = encode_json_value(&p.value)?;
+                acc = list(vec![Sym("json-set"), acc, Str(key), val]);
+            }
+            oxc_ast::ast::ObjectPropertyKind::SpreadProperty(_) => {
+                return Err("ts_frontend: object spread not supported".into());
+            }
+        }
+    }
+    Ok(acc)
+}
+
+/// Encode a TS expression as a JSON VALUE expression for json-set's 3rd
+/// arg (json-set takes already-encoded value text — string values keep
+/// their quotes, numbers/bools are bare).
+///
+/// Statically-known shapes encode exactly: string/template → json-quote,
+/// numeric literal → to-string, boolean literal → true/false, nested
+/// object literal → recursion (its result IS encoded text). Everything
+/// else: numberish-by-construction (arithmetic, Math.*, .length,
+/// strToNum/strLength/jsonGetInt calls) → to-string; otherwise assume
+/// string → json-quote.
+fn encode_json_value(e: &Expression<'_>) -> Result<LispVal, String> {
+    match e {
+        Expression::StringLiteral(_) | Expression::TemplateLiteral(_) => {
+            Ok(list(vec![Sym("json-quote"), lower_expr(e)?]))
+        }
+        Expression::NumericLiteral(_) => Ok(list(vec![Sym("to-string"), lower_expr(e)?])),
+        Expression::BooleanLiteral(b) => {
+            Ok(Str(if b.value { "true" } else { "false" }.to_string()))
+        }
+        Expression::ObjectExpression(_) => lower_expr(e), // already encoded
+        _ => {
+            if expr_is_numberish(e) {
+                Ok(list(vec![Sym("to-string"), lower_expr(e)?]))
+            } else {
+                Ok(list(vec![Sym("json-quote"), lower_expr(e)?]))
+            }
+        }
+    }
+}
+
+/// Numeric-by-construction expressions (no annotations in parse-only mode,
+/// so classify by shape).
+fn expr_is_numberish(e: &Expression<'_>) -> bool {
+    match e {
+        Expression::NumericLiteral(_) | Expression::BooleanLiteral(_) => true,
+        // `: number`-annotated params (threaded through NUM_PARAM_NAMES
+        // during body lowering) encode as bare numbers in object literals
+        Expression::Identifier(id) => NUM_PARAM_NAMES
+            .with(|s| s.borrow().iter().any(|n| n == id.name.as_str())),
+        Expression::BinaryExpression(_) => true, // arithmetic (stringy + handled earlier)
+        Expression::CallExpression(c) => match &c.callee {
+            Expression::Identifier(id) => matches!(
+                id.name.as_str(),
+                "strToNum" | "strLength" | "strLen" | "jsonGetInt"
+            ),
+            Expression::StaticMemberExpression(sm) => {
+                if let Expression::Identifier(id) = &sm.object {
+                    matches!(id.name.as_str(), "Math" | "u128")
+                        || sm.property.name.as_str() == "length"
+                } else {
+                    sm.property.name.as_str() == "length"
+                }
+            }
+            _ => false,
+        },
+        Expression::StaticMemberExpression(sm) => sm.property.name.as_str() == "length",
+        _ => false,
     }
 }
 
@@ -1809,16 +1928,48 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
             ]))
         }
         Expression::StaticMemberExpression(sm) => {
-            // Value-position member reads: only `.length` on arrays.
-            // (string length stays strLength(s) — .length is ARRAY-typed)
+            // Value-position member reads.
+            // `.length` on arrays → vec-length (string length stays
+            // strLength(s) — .length is ARRAY-typed).
+            // M2 objects: any other `.key` is a property read on a
+            // JSON-string object → (json-get-str "key" obj). The scanner
+            // takes DOT PATHS natively, so o.a.b folds into one call
+            // (json-get-str "a.b" o) — no per-hop temp binding. Absent
+            // keys read as "" (json-get-str's missing-key contract).
             match sm.property.name.as_str() {
                 "length" => Ok(list(vec![Sym("vec-length"), lower_expr(&sm.object)?])),
-                other => Err(format!(
-                    "ts_frontend: member read `.{}` not in M1 (arrays expose .length)",
-                    other
-                )),
+                prop => {
+                    // fold the static-member chain into a dot path
+                    let mut path = vec![prop.to_string()];
+                    let mut base = &sm.object;
+                    loop {
+                        match base {
+                            Expression::StaticMemberExpression(inner) => {
+                                path.push(inner.property.name.as_str().to_string());
+                                base = &inner.object;
+                            }
+                            _ => break,
+                        }
+                    }
+                    if let Expression::Identifier(id) = base {
+                        if matches!(
+                            id.name.as_str(),
+                            "near" | "storage" | "u128" | "console" | "Math" | "JSON"
+                        ) {
+                            return Err(format!(
+                                "ts_frontend: `{}.{}` — namespaces are not values; call it",
+                                id.name,
+                                path.last().unwrap()
+                            ));
+                        }
+                    }
+                    let recv = lower_expr(base)?;
+                    let dotted = path.iter().rev().cloned().collect::<Vec<_>>().join(".");
+                    Ok(list(vec![Sym("json-get-str"), Str(dotted), recv]))
+                }
             }
         }
+        Expression::ObjectExpression(obj) => lower_object_literal(obj),
         Expression::BinaryExpression(b) => {
             // stringy +: fold into nested binary str-cat (checker's + is num-only;
             // any string literal / template operand ⇒ concat semantics)
@@ -2406,6 +2557,8 @@ fn map_builtin_call(name: &str) -> String {
         "hexDecode" => "hex-decode",
         "sha256Hash" => "sha256-hash",
         "schnorrVerify" => "schnorr-verify",
+        "jsonSet" => "json-set",
+        "jsonQuote" => "json-quote",
         _ => return name.to_string(),
     }
     .to_string()

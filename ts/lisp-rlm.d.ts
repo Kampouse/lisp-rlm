@@ -17,8 +17,7 @@
 
 // ── free function builtins (camelCase → snake_case lisp builtins) ──────
 
-// ── arrays (lisp TAG_ARRAY values; `arr[i]`, `arr.length`, `arr.push`,
-// `for (const x of arr)` all lower to vec-nth/vec-length/vec-push/while) ──
+// ── arrays (lisp TAG_ARRAY values; `arr[i]`, `arr.length`, `arr.push`,// `for (const x of arr)` all lower to vec-nth/vec-length/vec-push/while) ──
 declare interface LispArr<T> {
   readonly length: number;
   [index: number]: T;
@@ -33,6 +32,18 @@ declare interface LispArr<T> {
 }
 declare function strSplit(s: string, delimiter: string): LispArr<string>;
 declare function strJoin(separator: string, parts: LispArr<string>): string;
+
+// ── M2 objects: JSON-string values ──────────────────────────────────────
+// `{ k: v }` literals fold into json-set chains and are plain JSON text:
+// storage/returns/interop need no conversion. Reads: `o.key` ("" when
+// absent), nested `o.a.b` lowers to one dot-path call. Numeric reads need strToNum;
+// rebuild via jsonSet with an ENCODED value (jsonQuote(s) for strings,
+// toStr(n) for numbers — object literals self-encode).
+declare type LispObj = string;
+/** JSON-escape a string and wrap it in quotes → encoded VALUE for jsonSet. */
+declare function jsonQuote(s: string): string;
+/** Set/replace a top-level key → NEW object (immutable; rebind: o = jsonSet(o, k, v)). */
+declare function jsonSet(obj: LispObj, key: string, encodedValue: string): LispObj;
 
 declare function strCat(...parts: string[]): string;
 declare function strLength(s: string): number;

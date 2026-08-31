@@ -5956,4 +5956,607 @@ impl WasmEmitter {
         });
         (self.funcs.len() - 1) as u32
     }
+
+    /// (json-set json key encoded-value) wasm helper — 2026-08-31.
+    /// Scans the top-level JSON object for `key`:
+    ///   found     → replace its value IN PLACE (key position and member
+    ///               order preserved)
+    ///   not found → insert `"key":<encoded-value>` immediately before the
+    ///               final `}`
+    /// Empty / invalid `json` arg is treated as `{}` — a fresh object is
+    /// built from key + encoded_value (spec'd behavior, NOT a silent error).
+    /// All three params are packed (len<<32|ptr) tagged-payload strings;
+    /// `encoded_value` must ALREADY be valid JSON value text (json-quote
+    /// output, bare number/bool/null, or raw object/array text).
+    /// The result is assembled at stdout_buf (2MB scratch — above heap and
+    /// wit adapter, same as __json_array_get) and returned as a TAGGED Str
+    /// pointing there; the call site (call_json.rs "json-set") copies it to
+    /// the runtime heap before anything else can clobber the scratch.
+    pub(crate) fn ensure_json_set_func(&mut self) -> u32 {
+        if let Some(idx) = self.funcs.iter().position(|f| f.name == "__json_set") {
+            return idx as u32;
+        }
+        let ma = wasm_encoder::MemArg {
+            offset: 0,
+            align: 0,
+            memory_index: 0,
+        };
+        let stdout_buf: i32 = 2097152; // 2MB — must be above heap (200000-999980) and wit adapter (900000+)
+        // Params: 0=json packed, 1=key packed, 2=value packed (all i64)
+        // 21 i32 locals (indices 3..23):
+        //   3=scan_i 4=ch 5=depth 6=in_str 7=esc 8=key_len 9=key_ptr 10=val_len
+        //   11=val_ptr 12=match 13=key_start 14=kj 15=value_start 16=value_end
+        //   17=close_pos 18=brace_pos 19=member_count 20=out_len 21=json_len
+        //   22=json_ptr 23=seg_len
+        let mut ins: Vec<Instruction<'static>> = Vec::new();
+
+        // ── micro-helpers (plain fns over fixed local indices) ──
+        // ch = json_ptr[scan_i]
+        fn load_ch(ins: &mut Vec<Instruction<'static>>, ma: &wasm_encoder::MemArg) {
+            ins.push(Instruction::LocalGet(22));
+            ins.push(Instruction::LocalGet(3));
+            ins.push(Instruction::I32Add);
+            ins.push(Instruction::I32Load8U(ma.clone()));
+            ins.push(Instruction::LocalSet(4));
+        }
+        // write one literal byte at stdout_buf+out_len; out_len++
+        fn wr1(
+            ins: &mut Vec<Instruction<'static>>,
+            ma: &wasm_encoder::MemArg,
+            stdout_buf: i32,
+            b: i32,
+        ) {
+            ins.push(Instruction::LocalGet(20));
+            ins.push(Instruction::I32Const(stdout_buf));
+            ins.push(Instruction::I32Add);
+            ins.push(Instruction::I32Const(b));
+            ins.push(Instruction::I32Store8(ma.clone()));
+            ins.push(Instruction::LocalGet(20));
+            ins.push(Instruction::I32Const(1));
+            ins.push(Instruction::I32Add);
+            ins.push(Instruction::LocalSet(20));
+        }
+        // memory.copy stdout_buf+out_len ← src_base[0..len_l]; out_len += len
+        fn copy_from(
+            ins: &mut Vec<Instruction<'static>>,
+            stdout_buf: i32,
+            src_base: u32,
+            len_l: u32,
+        ) {
+            ins.push(Instruction::I32Const(stdout_buf));
+            ins.push(Instruction::LocalGet(20));
+            ins.push(Instruction::I32Add);
+            ins.push(Instruction::LocalGet(src_base));
+            ins.push(Instruction::LocalGet(len_l));
+            ins.push(Instruction::MemoryCopy {
+                src_mem: 0,
+                dst_mem: 0,
+            });
+            ins.push(Instruction::LocalGet(20));
+            ins.push(Instruction::LocalGet(len_l));
+            ins.push(Instruction::I32Add);
+            ins.push(Instruction::LocalSet(20));
+        }
+        // memory.copy stdout_buf+out_len ← json_ptr[start_l..end_l]; out_len += seg
+        fn copy_json_range(
+            ins: &mut Vec<Instruction<'static>>,
+            stdout_buf: i32,
+            start_l: u32,
+            end_l: u32,
+        ) {
+            ins.push(Instruction::LocalGet(end_l));
+            ins.push(Instruction::LocalGet(start_l));
+            ins.push(Instruction::I32Sub);
+            ins.push(Instruction::LocalSet(23)); // seg_len = end - start
+            ins.push(Instruction::I32Const(stdout_buf));
+            ins.push(Instruction::LocalGet(20));
+            ins.push(Instruction::I32Add);
+            ins.push(Instruction::LocalGet(22));
+            ins.push(Instruction::LocalGet(start_l));
+            ins.push(Instruction::I32Add);
+            ins.push(Instruction::LocalGet(23));
+            ins.push(Instruction::MemoryCopy {
+                src_mem: 0,
+                dst_mem: 0,
+            });
+            ins.push(Instruction::LocalGet(20));
+            ins.push(Instruction::LocalGet(23));
+            ins.push(Instruction::I32Add);
+            ins.push(Instruction::LocalSet(20));
+        }
+        // ((out_len << 32 | stdout_buf) << 3) | TAG_STR(5) ; Return
+        fn tagged_return(ins: &mut Vec<Instruction<'static>>, stdout_buf: i32) {
+            ins.push(Instruction::LocalGet(20));
+            ins.push(Instruction::I64ExtendI32U);
+            ins.push(Instruction::I64Const(32));
+            ins.push(Instruction::I64Shl);
+            ins.push(Instruction::I64Const(stdout_buf as i64));
+            ins.push(Instruction::I64Or);
+            ins.push(Instruction::I64Const(3));
+            ins.push(Instruction::I64Shl);
+            ins.push(Instruction::I64Const(5));
+            ins.push(Instruction::I64Or);
+            ins.push(Instruction::Return);
+        }
+        // fresh-object path: {"key":value} — used for empty/invalid json args
+        fn fresh_build(
+            ins: &mut Vec<Instruction<'static>>,
+            ma: &wasm_encoder::MemArg,
+            stdout_buf: i32,
+        ) {
+            wr1(ins, ma, stdout_buf, 0x7B); // '{'
+            wr1(ins, ma, stdout_buf, 0x22); // '"'
+            copy_from(ins, stdout_buf, 9, 8); // key text
+            wr1(ins, ma, stdout_buf, 0x22); // '"'
+            wr1(ins, ma, stdout_buf, 0x3A); // ':'
+            copy_from(ins, stdout_buf, 11, 10); // encoded value text
+            wr1(ins, ma, stdout_buf, 0x7D); // '}'
+            tagged_return(ins, stdout_buf);
+        }
+        // skip whitespace at scan_i (flat if-chain — no nested block/loop traps,
+        // same shape as __json_array_get's ws skip)
+        fn ws_skip(ins: &mut Vec<Instruction<'static>>, ma: &wasm_encoder::MemArg) {
+            ins.push(Instruction::Block(BlockType::Empty)); // @B_ws
+            ins.push(Instruction::Loop(BlockType::Empty)); // @L_ws
+            ins.push(Instruction::LocalGet(3));
+            ins.push(Instruction::LocalGet(21));
+            ins.push(Instruction::I32GeS);
+            ins.push(Instruction::If(BlockType::Empty)); // @I_oob — out of input → exit ws
+            ins.push(Instruction::Br(2));
+            ins.push(Instruction::End);
+            load_ch(ins, ma);
+            for c in [0x20u32, 0x09, 0x0A, 0x0D] {
+                ins.push(Instruction::LocalGet(4));
+                ins.push(Instruction::I32Const(c as i32));
+                ins.push(Instruction::I32Eq);
+                ins.push(Instruction::If(BlockType::Empty)); // @I_ch — match → advance + re-check
+                ins.push(Instruction::LocalGet(3));
+                ins.push(Instruction::I32Const(1));
+                ins.push(Instruction::I32Add);
+                ins.push(Instruction::LocalSet(3));
+                ins.push(Instruction::Br(1)); // continue L_ws
+                ins.push(Instruction::End);
+            }
+            ins.push(Instruction::Br(1)); // not whitespace → exit B_ws
+            ins.push(Instruction::End); // L_ws
+            ins.push(Instruction::End); // B_ws
+        }
+
+        // ── unpack params ──
+        ins.push(Instruction::LocalGet(0));
+        ins.push(Instruction::I64Const(32));
+        ins.push(Instruction::I64ShrU);
+        ins.push(Instruction::I32WrapI64);
+        ins.push(Instruction::LocalSet(21)); // json_len
+        ins.push(Instruction::LocalGet(0));
+        ins.push(Instruction::I32WrapI64);
+        ins.push(Instruction::LocalSet(22)); // json_ptr
+        ins.push(Instruction::LocalGet(1));
+        ins.push(Instruction::I64Const(32));
+        ins.push(Instruction::I64ShrU);
+        ins.push(Instruction::I32WrapI64);
+        ins.push(Instruction::LocalSet(8)); // key_len
+        ins.push(Instruction::LocalGet(1));
+        ins.push(Instruction::I32WrapI64);
+        ins.push(Instruction::LocalSet(9)); // key_ptr
+        ins.push(Instruction::LocalGet(2));
+        ins.push(Instruction::I64Const(32));
+        ins.push(Instruction::I64ShrU);
+        ins.push(Instruction::I32WrapI64);
+        ins.push(Instruction::LocalSet(10)); // val_len
+        ins.push(Instruction::LocalGet(2));
+        ins.push(Instruction::I32WrapI64);
+        ins.push(Instruction::LocalSet(11)); // val_ptr
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::LocalSet(19)); // member_count = 0
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::LocalSet(20)); // out_len = 0
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::LocalSet(3)); // scan_i = 0
+
+        // ── Phase 1: find the opening '{' (leading whitespace tolerated;
+        // anything else before '{' or no '{' at all → invalid → fresh) ──
+        ins.push(Instruction::Block(BlockType::Empty)); // @B_find
+        ins.push(Instruction::Loop(BlockType::Empty)); // @L_find
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::LocalGet(21));
+        ins.push(Instruction::I32GeS);
+        ins.push(Instruction::If(BlockType::Empty)); // @I_nf
+        fresh_build(&mut ins, &ma, stdout_buf);
+        ins.push(Instruction::Return); // fresh_build already Returns; keep explicit fallthrough impossible
+        ins.push(Instruction::End);
+        load_ch(&mut ins, &ma);
+        ins.push(Instruction::LocalGet(4));
+        ins.push(Instruction::I32Const(0x7B));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::If(BlockType::Empty)); // @I_brace
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::LocalSet(18)); // brace_pos = scan_i
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(3)); // scan_i past '{'
+        ins.push(Instruction::Br(2)); // exit B_find
+        ins.push(Instruction::End);
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(3));
+        ins.push(Instruction::Br(0)); // back to L_find
+        ins.push(Instruction::End); // L_find
+        ins.push(Instruction::End); // B_find
+
+        // ── Phase 2: member loop — one top-level `"key":value` per iteration ──
+        ins.push(Instruction::Loop(BlockType::Empty)); // @L_mem
+        ws_skip(&mut ins, &ma);
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::LocalGet(21));
+        ins.push(Instruction::I32GeS);
+        ins.push(Instruction::If(BlockType::Empty)); // @I_m1
+        fresh_build(&mut ins, &ma, stdout_buf);
+        ins.push(Instruction::Return);
+        ins.push(Instruction::End);
+        load_ch(&mut ins, &ma);
+
+        // '}' → close of object, key not found → INSERT before it
+        ins.push(Instruction::LocalGet(4));
+        ins.push(Instruction::I32Const(0x7D));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::If(BlockType::Empty)); // @I_close
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::LocalSet(17)); // close_pos = scan_i
+        copy_json_range(&mut ins, stdout_buf, 18, 17); // {…prefix (exclusive of '}')
+        ins.push(Instruction::LocalGet(19));
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::I32GtS);
+        ins.push(Instruction::If(BlockType::Empty)); // @I_sep — comma only when a member precedes
+        wr1(&mut ins, &ma, stdout_buf, 0x2C); // ','
+        ins.push(Instruction::End);
+        wr1(&mut ins, &ma, stdout_buf, 0x22); // '"'
+        copy_from(&mut ins, stdout_buf, 9, 8); // key
+        wr1(&mut ins, &ma, stdout_buf, 0x22); // '"'
+        wr1(&mut ins, &ma, stdout_buf, 0x3A); // ':'
+        copy_from(&mut ins, stdout_buf, 11, 10); // encoded value
+        copy_json_range(&mut ins, stdout_buf, 17, 21); // '}' + any trailing text
+        tagged_return(&mut ins, stdout_buf);
+        ins.push(Instruction::End);
+
+        // member must start with '"' — else malformed → fresh (hard rule, no
+        // lenient byte-skip: a desynced scanner silently corrupts objects)
+        ins.push(Instruction::LocalGet(4));
+        ins.push(Instruction::I32Const(0x22));
+        ins.push(Instruction::I32Ne);
+        ins.push(Instruction::If(BlockType::Empty)); // @I_kq
+        fresh_build(&mut ins, &ma, stdout_buf);
+        ins.push(Instruction::Return);
+        ins.push(Instruction::End);
+
+        // ── key string scan: scan_i at opening quote ──
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(13)); // key_start = scan_i + 1
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(3)); // scan_i past '"'
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::LocalSet(7)); // esc = 0
+        ins.push(Instruction::Block(BlockType::Empty)); // @B_ks
+        ins.push(Instruction::Loop(BlockType::Empty)); // @L_ks
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::LocalGet(21));
+        ins.push(Instruction::I32GeS);
+        ins.push(Instruction::If(BlockType::Empty)); // @I_k1
+        fresh_build(&mut ins, &ma, stdout_buf);
+        ins.push(Instruction::Return);
+        ins.push(Instruction::End);
+        load_ch(&mut ins, &ma);
+        ins.push(Instruction::LocalGet(7));
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::I32Ne);
+        ins.push(Instruction::If(BlockType::Empty)); // @I_esc — escaped char: consume literally
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::LocalSet(7));
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(3));
+        ins.push(Instruction::Br(1)); // continue L_ks
+        ins.push(Instruction::End);
+        ins.push(Instruction::LocalGet(4));
+        ins.push(Instruction::I32Const(0x5C));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::If(BlockType::Empty)); // @I_bs — backslash: next char escaped
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::LocalSet(7));
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(3));
+        ins.push(Instruction::Br(1)); // continue L_ks
+        ins.push(Instruction::End);
+        ins.push(Instruction::LocalGet(4));
+        ins.push(Instruction::I32Const(0x22));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::If(BlockType::Empty)); // @I_cq — closing quote: done, scan_i stays ON it
+        ins.push(Instruction::Br(2)); // exit B_ks
+        ins.push(Instruction::End);
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(3));
+        ins.push(Instruction::Br(0)); // continue L_ks
+        ins.push(Instruction::End); // L_ks
+        ins.push(Instruction::End); // B_ks
+
+        // ── match check: raw key text [key_start, scan_i) vs key arg ──
+        // (raw byte compare — keys containing escapes won't match; typical
+        // top-level keys are plain identifiers)
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::LocalSet(12)); // match = 1
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::LocalGet(13));
+        ins.push(Instruction::I32Sub);
+        ins.push(Instruction::LocalGet(8));
+        ins.push(Instruction::I32Ne);
+        ins.push(Instruction::If(BlockType::Empty)); // @I_len — length mismatch → no match
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::LocalSet(12));
+        ins.push(Instruction::End);
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::LocalSet(14)); // kj = 0
+        ins.push(Instruction::Block(BlockType::Empty)); // @B_mc
+        ins.push(Instruction::Loop(BlockType::Empty)); // @L_mc
+        ins.push(Instruction::LocalGet(14));
+        ins.push(Instruction::LocalGet(8));
+        ins.push(Instruction::I32GeS);
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::LocalGet(12));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::I32Or);
+        ins.push(Instruction::BrIf(1)); // kj exhausted or already mismatched → exit B_mc
+        ins.push(Instruction::LocalGet(22));
+        ins.push(Instruction::LocalGet(13));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalGet(14));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::I32Load8U(ma.clone()));
+        ins.push(Instruction::LocalGet(9));
+        ins.push(Instruction::LocalGet(14));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::I32Load8U(ma.clone()));
+        ins.push(Instruction::I32Ne);
+        ins.push(Instruction::If(BlockType::Empty)); // @I_mb
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::LocalSet(12));
+        ins.push(Instruction::End);
+        ins.push(Instruction::LocalGet(14));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(14));
+        ins.push(Instruction::Br(0)); // continue L_mc
+        ins.push(Instruction::End); // L_mc
+        ins.push(Instruction::End); // B_mc
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(3)); // scan_i past closing quote
+
+        // ── skip ws, optional ':', ws → value_start ──
+        ws_skip(&mut ins, &ma);
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::LocalGet(21));
+        ins.push(Instruction::I32GeS);
+        ins.push(Instruction::If(BlockType::Empty)); // @I_v0
+        fresh_build(&mut ins, &ma, stdout_buf);
+        ins.push(Instruction::Return);
+        ins.push(Instruction::End);
+        load_ch(&mut ins, &ma);
+        ins.push(Instruction::LocalGet(4));
+        ins.push(Instruction::I32Const(0x3A));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::If(BlockType::Empty)); // @I_col
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(3));
+        ins.push(Instruction::End);
+        ws_skip(&mut ins, &ma);
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::LocalGet(21));
+        ins.push(Instruction::I32GeS);
+        ins.push(Instruction::If(BlockType::Empty)); // @I_v1
+        fresh_build(&mut ins, &ma, stdout_buf);
+        ins.push(Instruction::Return);
+        ins.push(Instruction::End);
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::LocalSet(15)); // value_start = scan_i
+
+        // ── value extent scan: track strings/escapes + nesting depth; a
+        // top-level ',' / '}' / ']' ends the value with scan_i left ON it ──
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::LocalSet(5)); // depth = 0
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::LocalSet(6)); // in_str = 0
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::LocalSet(7)); // esc = 0
+        ins.push(Instruction::Block(BlockType::Empty)); // @B_vs
+        ins.push(Instruction::Loop(BlockType::Empty)); // @L_vs
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::LocalGet(21));
+        ins.push(Instruction::I32GeS);
+        ins.push(Instruction::If(BlockType::Empty)); // @I_u1 — unterminated → invalid
+        fresh_build(&mut ins, &ma, stdout_buf);
+        ins.push(Instruction::Return);
+        ins.push(Instruction::End);
+        load_ch(&mut ins, &ma);
+        ins.push(Instruction::LocalGet(7));
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::I32Ne);
+        ins.push(Instruction::If(BlockType::Empty)); // @I_e1
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::LocalSet(7));
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(3));
+        ins.push(Instruction::Br(1)); // continue L_vs
+        ins.push(Instruction::End);
+        ins.push(Instruction::LocalGet(6));
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::I32Ne);
+        ins.push(Instruction::If(BlockType::Empty)); // @I_s1 — inside string
+        ins.push(Instruction::LocalGet(4));
+        ins.push(Instruction::I32Const(0x5C));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::If(BlockType::Empty)); // @I_s2
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::LocalSet(7));
+        ins.push(Instruction::End);
+        ins.push(Instruction::LocalGet(4));
+        ins.push(Instruction::I32Const(0x22));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::If(BlockType::Empty)); // @I_s3
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::LocalSet(6));
+        ins.push(Instruction::End);
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(3));
+        ins.push(Instruction::Br(1)); // continue L_vs
+        ins.push(Instruction::End);
+        ins.push(Instruction::LocalGet(4));
+        ins.push(Instruction::I32Const(0x22));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::If(BlockType::Empty)); // @I_q1 — opening quote
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::LocalSet(6));
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(3));
+        ins.push(Instruction::Br(1)); // continue L_vs
+        ins.push(Instruction::End);
+        ins.push(Instruction::LocalGet(4));
+        ins.push(Instruction::I32Const(0x7B));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::LocalGet(4));
+        ins.push(Instruction::I32Const(0x5B));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::I32Or);
+        ins.push(Instruction::If(BlockType::Empty)); // @I_o1 — '{' or '[' → depth++
+        ins.push(Instruction::LocalGet(5));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(5));
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(3));
+        ins.push(Instruction::Br(1)); // continue L_vs
+        ins.push(Instruction::End);
+        ins.push(Instruction::LocalGet(4));
+        ins.push(Instruction::I32Const(0x7D));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::If(BlockType::Empty)); // @I_c1 — '}'
+        ins.push(Instruction::LocalGet(5));
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::If(BlockType::Empty)); // @I_c2 — at depth 0 → value end
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::LocalSet(16)); // value_end = scan_i
+        ins.push(Instruction::Br(3)); // exit I_c2+I_c1+L_vs → land after B_vs
+        ins.push(Instruction::End);
+        ins.push(Instruction::LocalGet(5));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Sub);
+        ins.push(Instruction::LocalSet(5));
+        ins.push(Instruction::End);
+        ins.push(Instruction::LocalGet(4));
+        ins.push(Instruction::I32Const(0x5D));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::If(BlockType::Empty)); // @I_r1 — ']'
+        ins.push(Instruction::LocalGet(5));
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::If(BlockType::Empty)); // @I_r2
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::LocalSet(16)); // value_end = scan_i
+        ins.push(Instruction::Br(3));
+        ins.push(Instruction::End);
+        ins.push(Instruction::LocalGet(5));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Sub);
+        ins.push(Instruction::LocalSet(5));
+        ins.push(Instruction::End);
+        ins.push(Instruction::LocalGet(4));
+        ins.push(Instruction::I32Const(0x2C));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::LocalGet(5));
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::I32And);
+        ins.push(Instruction::If(BlockType::Empty)); // @I_cm — ',' at depth 0 → value end
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::LocalSet(16)); // value_end = scan_i
+        ins.push(Instruction::Br(2)); // exit I_cm+L_vs → land after B_vs
+        ins.push(Instruction::End);
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(3));
+        ins.push(Instruction::Br(0)); // continue L_vs
+        ins.push(Instruction::End); // L_vs
+        ins.push(Instruction::End); // B_vs
+
+        // member fully parsed
+        ins.push(Instruction::LocalGet(19));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(19)); // member_count++
+
+        // ── key matched → REPLACE: prefix [brace,value_start) + new value +
+        //    tail [value_end, end) — key text and member order preserved ──
+        ins.push(Instruction::LocalGet(12));
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::I32Ne);
+        ins.push(Instruction::If(BlockType::Empty)); // @I_rep
+        copy_json_range(&mut ins, stdout_buf, 18, 15); // `{"k":` prefix
+        copy_from(&mut ins, stdout_buf, 11, 10); // new encoded value
+        copy_json_range(&mut ins, stdout_buf, 16, 21); // rest (`,` next members `}` …)
+        tagged_return(&mut ins, stdout_buf);
+        ins.push(Instruction::End);
+
+        // not matched → step over ',' (a '}' re-enters the close branch at
+        // the top of L_mem) and continue scanning members
+        load_ch(&mut ins, &ma);
+        ins.push(Instruction::LocalGet(4));
+        ins.push(Instruction::I32Const(0x2C));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::If(BlockType::Empty)); // @I_cma
+        ins.push(Instruction::LocalGet(3));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(3));
+        ins.push(Instruction::End);
+        ins.push(Instruction::Br(0)); // continue L_mem
+        ins.push(Instruction::End); // L_mem
+
+        // unreachable in practice (every L_mem exit path Returns); concrete
+        // fallback keeps the function body typeable
+        fresh_build(&mut ins, &ma, stdout_buf);
+        ins.push(Instruction::Return);
+
+        self.funcs.push(FuncDef {
+            name: "__json_set".to_string(),
+            param_count: 3,
+            local_count: 21,
+            instrs: ins,
+            local_entries: Some(vec![(21u32, ValType::I32)]),
+            custom_type: None,
+        });
+        (self.funcs.len() - 1) as u32
+    }
 }

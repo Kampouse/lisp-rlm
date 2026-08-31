@@ -31,6 +31,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "dict/merge",
     "json-array-len",
     "json-array-get",
+    "json-set",
     "json-parse",
     "json-get",
     "json-get-in",
@@ -612,6 +613,145 @@ pub fn match_pattern(pattern: &LispVal, value: &LispVal) -> Option<Vec<(String, 
     }
 }
 
+/// (json-set json key encoded-value) core scanner — shared by the interpreter
+/// (bytecode/mod.rs `eval_builtin`) and mirrored 1:1 by the emitted wasm
+/// helper `__json_set` (src/wasm_emit/json.rs). Scans the top-level JSON
+/// object:
+///   key found     → replace its value IN PLACE (key position + member order
+///                   preserved)
+///   key not found → insert `"key":<encoded-value>` immediately before the
+///                   final `}`
+/// Empty / invalid `json` arg is treated as `{}` — a fresh object is built
+/// from key + encoded_value (spec'd behavior, not a silent error).
+/// `encoded_value` must ALREADY be valid JSON value text (json-quote output,
+/// bare number/bool/null, or raw object/array text). Key comparison is RAW
+/// byte equality — keys containing escapes (\u0041 style) won't match.
+pub fn json_set_impl(json: &str, key: &str, encoded_value: &str) -> String {
+    let b = json.as_bytes();
+    // Fresh-object builder: {"key":value} — for empty/invalid json args.
+    let fresh = || -> String { format!("{{\"{}\":{}}}", key, encoded_value) };
+
+    // Phase 1: find the opening '{' of the top-level object.
+    let mut i = 0usize;
+    while i < b.len() && b[i] != b'{' {
+        i += 1;
+    }
+    if i == b.len() {
+        return fresh(); // empty or no object → treat as {}
+    }
+    let brace = i;
+    i += 1;
+
+    let mut member_count = 0usize;
+    loop {
+        // skip whitespace
+        while i < b.len() && matches!(b[i], b' ' | b'\t' | b'\n' | b'\r') {
+            i += 1;
+        }
+        if i >= b.len() {
+            return fresh(); // unterminated object → invalid
+        }
+        if b[i] == b'}' {
+            // Key not found → insert before final '}' (comma only when a
+            // member precedes — `{}` gets no leading comma).
+            let sep = if member_count > 0 { "," } else { "" };
+            return format!(
+                "{}{}\"{}\":{}{}",
+                &json[brace..i],
+                sep,
+                key,
+                encoded_value,
+                &json[i..]
+            );
+        }
+        if b[i] != b'"' {
+            return fresh(); // malformed member key → invalid
+        }
+        // Parse the key string (escape-aware). After the loop, i sits ON the
+        // closing quote; raw key text = json[key_start..i].
+        let key_start = i + 1;
+        i += 1;
+        let mut esc = false;
+        while i < b.len() {
+            if esc {
+                esc = false;
+            } else if b[i] == b'\\' {
+                esc = true;
+            } else if b[i] == b'"' {
+                break;
+            }
+            i += 1;
+        }
+        if i >= b.len() {
+            return fresh(); // unterminated key → invalid
+        }
+        let matched = (i - key_start) == key.len() && &json[key_start..i] == key;
+        i += 1; // past closing quote
+        // skip ws, optional ':', ws
+        while i < b.len() && matches!(b[i], b' ' | b'\t' | b'\n' | b'\r') {
+            i += 1;
+        }
+        if i < b.len() && b[i] == b':' {
+            i += 1;
+        }
+        while i < b.len() && matches!(b[i], b' ' | b'\t' | b'\n' | b'\r') {
+            i += 1;
+        }
+        if i >= b.len() {
+            return fresh(); // unterminated → invalid
+        }
+        let value_start = i;
+        // Scan value extent: track strings/escapes + nesting depth; a
+        // top-level ',' / '}' / ']' ends the value with i left ON that char.
+        let mut depth = 0i32;
+        let mut in_str = false;
+        let mut vesc = false;
+        while i < b.len() {
+            let c = b[i];
+            if vesc {
+                vesc = false;
+            } else if in_str {
+                if c == b'\\' {
+                    vesc = true;
+                } else if c == b'"' {
+                    in_str = false;
+                }
+            } else if c == b'"' {
+                in_str = true;
+            } else if c == b'{' || c == b'[' {
+                depth += 1;
+            } else if c == b'}' || c == b']' {
+                if depth == 0 {
+                    break; // value_end = i
+                }
+                depth -= 1;
+            } else if c == b',' && depth == 0 {
+                break; // value_end = i
+            }
+            i += 1;
+        }
+        if i >= b.len() {
+            return fresh(); // unterminated value → invalid
+        }
+        let value_end = i;
+        member_count += 1;
+        if matched {
+            // Replace in place — prefix [brace, value_start) + new value +
+            // tail [value_end, end). Key text and member order preserved.
+            return format!(
+                "{}{}{}",
+                &json[brace..value_start],
+                encoded_value,
+                &json[value_end..]
+            );
+        }
+        // Advance past ',' (a '}' re-enters the close branch at loop top).
+        if b[i] == b',' {
+            i += 1;
+        }
+    }
+}
+
 /// Get documentation string for a builtin.
 pub fn get_doc(name: &str) -> Option<&'static str> {
     Some(match name {
@@ -695,6 +835,9 @@ pub fn get_doc(name: &str) -> Option<&'static str> {
         "dict/has?" => "(dict/has? d key) — Check if key exists.",
         "dict/keys" => "(dict/keys d) — List of keys.",
         "dict/vals" => "(dict/vals d) — List of values.",
+
+        // JSON
+        "json-set" => "(json-set json key encoded-value) — Set/replace top-level key in JSON object, returns new JSON.",
 
         // IO
         "print" => "(print x) — Print value without newline.",

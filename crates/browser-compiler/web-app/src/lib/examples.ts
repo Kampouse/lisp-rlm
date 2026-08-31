@@ -123,6 +123,57 @@ export function tour(): string {
 export const get_visits = (): string => near.storageGet("visits") ?? "0";`,
   },
   {
+    name: 'Objects (TS)',
+    icon: '🧱',
+    target: 'p1',
+    lang: 'ts',
+    source: `// M2 objects — JSON-string values, zero conversion for
+// storage / returns / cross-contract args.
+//
+// ── Literals self-encode ──────────────────────────────────────
+//   { name: "bob", votes: 42, active: true }
+//   strings → quoted, numbers bare, booleans bare true/false
+//
+// ── Reads ─────────────────────────────────────────────────────
+//   o.name          → string (nil when absent — ?? "" to default)
+//   o.server.port   → nested folds inline
+//   numeric value?  → strToNum(o.votes) (reads are strings)
+//
+// ── Rebuild (immutable) ───────────────────────────────────────
+//   o = jsonSet(o, "key", encodedValue)
+//   strings: jsonQuote(s) · numbers: toStr(n)
+//
+// ── Type the param as string ──────────────────────────────────
+//   (LispObj alias in the d.ts = string)
+
+export function makeProfile(name: string): string {
+  return { name: name, votes: 0, active: true };
+}
+
+export function new_(): string {
+  // exported fns read args from tx input, so build inline here
+  // (makeProfile is the typed API surface for external callers)
+  near.storageSet("profile", { name: "bob", votes: 0, active: true });
+  return "ok";
+}
+
+export function vote(): string {
+  let p = near.storageGet("profile") ?? "{}";
+  let nv = strToNum(p.votes) + 1;
+  near.storageSet("profile", jsonSet(p, "votes", toStr(nv)));
+  return p.name + ": " + toStr(nv) + " votes";
+}
+
+export function get_profile(): string {
+  return near.storageGet("profile") ?? "{}";
+}
+
+// Nested reads: args { "cfg": { "server": { "port": "80" } } }
+export function get_port(cfg: string): string {
+  return cfg.server.port;
+}`,
+  },
+  {
     name: 'CC View',
     icon: '🔗',
     target: 'p1',

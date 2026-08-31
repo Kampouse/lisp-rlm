@@ -896,6 +896,21 @@ impl TcEnv {
             },
         );
 
+        // json-set : str → str → str → str
+        // (top-level key set/replace; value arg is pre-encoded JSON text —
+        // the mirror of json-quote's output)
+        env.insert_mono(
+            "json-set".to_string(),
+            TcType::Arrow(
+                vec![
+                    TcType::Con(TcCon::Str),
+                    TcType::Con(TcCon::Str),
+                    TcType::Con(TcCon::Str),
+                ],
+                Box::new(TcType::Con(TcCon::Str)),
+            ),
+        );
+
         // to-string : 'a → str
         let a9 = TcType::Var(0);
         env.insert(
