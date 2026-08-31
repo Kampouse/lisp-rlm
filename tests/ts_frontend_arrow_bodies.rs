@@ -71,3 +71,33 @@ fn empty_arrow_body_still_errors() {
     );
     assert!(r.is_err(), "empty arrow body must not silently compile");
 }
+
+/// `export const f = arrow` → real entry point (function-shaped define).
+#[test]
+fn exported_named_arrow_compiles_to_entry() {
+    compile("export const double = (x: number): number => { console.log(x); return x * 2; };\n");
+}
+
+/// Expression-bodied exported arrow (fast path).
+#[test]
+fn exported_arrow_expression_body_compiles() {
+    compile("export const add1 = (x: number): number => x + 1;\n");
+}
+
+/// Exported non-arrow const stays a hard error.
+#[test]
+fn exported_non_arrow_const_errors() {
+    let r = ts_to_lisp_source("export const ANSWER = 42;\n");
+    assert!(r.is_err(), "non-arrow export must fail loud");
+    assert!(
+        r.unwrap_err().contains("arrow initializer"),
+        "error must point at the fix"
+    );
+}
+
+/// get_* exported arrow inherits the view convention.
+#[test]
+fn exported_get_arrow_is_view() {
+    let ir = lower("export const get_count = (): number => 7;\n");
+    assert!(ir.contains("#t"), "get_* must be a view export: {}", ir);
+}

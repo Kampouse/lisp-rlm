@@ -165,33 +165,58 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
     for stmt in &p.body {
         match stmt {
             Statement::ExportDeclaration(decl) => {
-                let f = match &decl.declaration {
-                    Declaration::FunctionDeclaration(f) => f,
+                match &decl.declaration {
+                    Declaration::FunctionDeclaration(f) => {
+                        if f.r#async {
+                            for form in lower_async_function(f)? {
+                                out.push(form);
+                            }
+                            continue;
+                        }
+                        let (name, define) = lower_function(f, true)?;
+                        let view = name.starts_with("get_");
+                        out.push(define);
+                        // `new` is a reserved word in TypeScript — `new_` is the
+                        // dialect's spelling for NEAR's `new` constructor export.
+                        let export_name = if name == "new_" { "new".to_string() } else { name.clone() };
+                        out.push(list(vec![
+                            Sym("export"),
+                            Str(export_name),
+                            Sym(name),
+                            if view { Sym("#t") } else { Sym("#f") },
+                        ]));
+                    }
+                    // export const f = (params) => body — arrow exported as a
+                    // named entry. Function-shaped define required (a value
+                    // define `(define f (lambda...))` compiles to a stub).
+                    // Non-arrow exported consts stay a hard error.
+                    Declaration::VariableDeclaration(v) => {
+                        if v.declarations.len() != 1 {
+                            return Err("ts_frontend: `export const` supports exactly one declarator".into());
+                        }
+                        let d = &v.declarations[0];
+                        let name = binding_name(&d.id)?;
+                        match d.init.as_ref() {
+                            Some(Expression::ArrowFunctionExpression(a)) => {
+                                let (define, export_form) = lower_exported_arrow(&name, a)?;
+                                out.push(define);
+                                out.push(export_form);
+                            }
+                            _ => {
+                                return Err(format!(
+                                    "ts_frontend: `export const {}` needs an arrow initializer (other exports must use `export function`)",
+                                    name
+                                ))
+                            }
+                        }
+                    }
                     d => {
                         return Err(format!(
-                            "ts_frontend: only `export function` is supported, got {}",
+                            "ts_frontend: only `export function` or `export const f = arrow` are supported, got {}",
                             decl_kind(d)
                         ))
                     }
-                };
-                if f.r#async {
-                    for form in lower_async_function(f)? {
-                        out.push(form);
-                    }
-                    continue;
                 }
-                let (name, define) = lower_function(f, true)?;
-                let view = name.starts_with("get_");
-                out.push(define);
-                // `new` is a reserved word in TypeScript — `new_` is the
-                // dialect's spelling for NEAR's `new` constructor export.
-                let export_name = if name == "new_" { "new".to_string() } else { name.clone() };
-                out.push(list(vec![
-                    Sym("export"),
-                    Str(export_name),
-                    Sym(name),
-                    if view { Sym("#t") } else { Sym("#f") },
-                ]));
             }
             Statement::FunctionDeclaration(f) => {
                 if f.r#async {
@@ -1639,6 +1664,60 @@ fn expr_is_stringy(e: &Expression) -> bool {
     }
 }
 
+/// Shared arrow lowering: params list + body value. Used by inline arrows
+/// and by `export const f = (x) => ...` (which needs the body spliced into
+/// a function-shaped define — `(define f (lambda ...))` exports compile to
+/// a stub, only `(define (f x) body)` produces a real entry).
+fn arrow_parts(a: &oxc_ast::ast::ArrowFunctionExpression<'_>) -> Result<(Vec<LispVal>, LispVal), String> {
+    let mut params: Vec<LispVal> = Vec::new();
+    for p in &a.params.items {
+        params.push(Sym(binding_name(&p.pattern)?));
+    }
+    let body_val: LispVal = if let Some(e) = a.get_expression() {
+        lower_expr(e)?
+    } else if let Some(fb) = a.get_function_body() {
+        match fb.statements.as_slice() {
+            [] => return Err("ts_frontend: empty arrow body not in M1".into()),
+            [Statement::ExpressionStatement(es)] => lower_expr(&es.expression)?,
+            [Statement::ReturnStatement(r)] => match r.argument.as_ref() {
+                Some(e) => lower_expr(e)?,
+                None => return Err("ts_frontend: bare return in arrow not in M1".into()),
+            },
+            stmts => lower_block_tail(stmts, false)?,
+        }
+    } else {
+        return Err("ts_frontend: empty arrow body not in M1".into());
+    };
+    Ok((params, body_val))
+}
+
+/// `export const f = (params) => body` → function-shaped define + export.
+fn lower_exported_arrow(
+    name: &str,
+    a: &oxc_ast::ast::ArrowFunctionExpression<'_>,
+) -> Result<(LispVal, LispVal), String> {
+    let (params, body) = arrow_parts(a)?;
+    let define = list(vec![
+        Sym("define"),
+        list({
+            let mut d = vec![Sym(name.to_string())];
+            d.extend(params);
+            d
+        }),
+        body,
+    ]);
+    // mirror lower_function's view convention (get_* → view)
+    let view = name.starts_with("get_");
+    let export_name = if name == "new_" { "new".to_string() } else { name.to_string() };
+    let export = list(vec![
+        Sym("export"),
+        Str(export_name),
+        Sym(name.to_string()),
+        if view { Sym("#t") } else { Sym("#f") },
+    ]);
+    Ok((define, export))
+}
+
 fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
     match e {
         Expression::NumericLiteral(n) => Ok(Num(n.value as i64)),
@@ -2101,31 +2180,9 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
         // inlined by the wasm emitters (resolve_lambda_1/2) with the param
         // bound, so outer consts stay visible.
         Expression::ArrowFunctionExpression(a) => {
-            let mut params: Vec<LispVal> = Vec::new();
-            for p in &a.params.items {
-                params.push(Sym(binding_name(&p.pattern)?));
-            }
-            // body: expression form (x => e) or block body.
-            // Single-statement blocks keep the M1 fast paths (shape-stable).
-            // Multi-statement blocks (2026-08-31) reuse function-body
-            // statement lowering: begin sequencing, const→let bindings,
-            // if-branches, early returns (flag-guard). No view calls in
-            // arrow context, so view=false.
-            let body_val: LispVal = if let Some(e) = a.get_expression() {
-                lower_expr(e)?
-            } else if let Some(fb) = a.get_function_body() {
-                match fb.statements.as_slice() {
-                    [] => return Err("ts_frontend: empty arrow body not in M1".into()),
-                    [Statement::ExpressionStatement(es)] => lower_expr(&es.expression)?,
-                    [Statement::ReturnStatement(r)] => match r.argument.as_ref() {
-                        Some(e) => lower_expr(e)?,
-                        None => return Err("ts_frontend: bare return in arrow not in M1".into()),
-                    },
-                    stmts => lower_block_tail(stmts, false)?,
-                }
-            } else {
-                return Err("ts_frontend: empty arrow body not in M1".into());
-            };
+            // body: expression form (x => e) or block body — see arrow_parts
+            // (shared with `export const f = arrow`).
+            let (params, body_val) = arrow_parts(a)?;
             Ok(list(vec![
                 Sym("lambda"),
                 list(params),
