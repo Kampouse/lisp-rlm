@@ -191,41 +191,44 @@ export function tally(b: Ballot, stamp: number): string {
     icon: '🏦',
     target: 'near',
     lang: 'ts',
-    source: `// Lending v1 — deposit collateral, borrow at 50% LTV, 5% fee.
-// Args (JSON): { "amt": "1000" } — try deposit → borrow → repay.
+    source: `// Lending v2 — u128 precision (yoctoNEAR, 10^24).
+// bigint operators lower to u128/* string math — i64 would truncate.
+// Args: { "amt": "5250000000000000000000000" } (5.25 NEAR)
 
-const LTV_BP = 5000;   // 50% collateral factor
-const FEE_BP = 500;    // 5% origination fee
-const SCALE = 10000;
+const LTV_BP = 5000n;   // 50% collateral factor
+const FEE_BP = 500n;    // 5% origination fee
+const SCALE = 10000n;
+const ZERO = 0n;
 
-export function deposit(amt: number): string {
+export function deposit(amt: bigint): string {
   let who = near.signerAccountId();
-  let acct = near.storageGet("lv1:" + who) ?? '{"dep":0,"bor":0}';
-  let next = jsonSet(acct, "dep", toStr(strToNum(acct.dep) + amt));
-  near.storageSet("lv1:" + who, next);
+  let acct = near.storageGet("lv2:" + who) ?? '{"dep":"0","bor":"0"}';
+  let next = jsonSet(acct, "dep", acct.dep + amt);
+  near.storageSet("lv2:" + who, next);
   return next;
 }
 
-export function borrow(amt: number): string {
+export function borrow(amt: bigint): string {
   let who = near.signerAccountId();
-  let acct = near.storageGet("lv1:" + who) ?? '{"dep":0,"bor":0}';
-  let add = (amt * (SCALE + FEE_BP)) / SCALE;      // debt + fee
-  let bor = strToNum(acct.bor) + add;
-  if (strToNum(acct.dep) * LTV_BP < bor * SCALE) {
-    near.abort("insufficient collateral");          // visible in logs
+  let acct = near.storageGet("lv2:" + who) ?? '{"dep":"0","bor":"0"}';
+  // debt = amt * (1 + fee), rounded UP — never lend the fee short
+  let add = (amt * (SCALE + FEE_BP) + (SCALE - 1n)) / SCALE;
+  let bor = acct.bor + add;
+  if (acct.dep * LTV_BP < bor * SCALE) {
+    near.abort("insufficient collateral");
   }
-  let next = jsonSet(acct, "bor", toStr(bor));
-  near.storageSet("lv1:" + who, next);
+  let next = jsonSet(acct, "bor", bor);
+  near.storageSet("lv2:" + who, next);
   return next;
 }
 
-export function repay(amt: number): string {
+export function repay(amt: bigint): string {
   let who = near.signerAccountId();
-  let acct = near.storageGet("lv1:" + who) ?? '{"dep":0,"bor":0}';
-  let bor = strToNum(acct.bor) - amt;
-  if (bor < 0) { bor = 0; }
-  let next = jsonSet(acct, "bor", toStr(bor));
-  near.storageSet("lv1:" + who, next);
+  let acct = near.storageGet("lv2:" + who) ?? '{"dep":"0","bor":"0"}';
+  let bor = acct.bor - amt;
+  if (bor < ZERO) { bor = ZERO; }
+  let next = jsonSet(acct, "bor", bor);
+  near.storageSet("lv2:" + who, next);
   return next;
 }`,
   },
