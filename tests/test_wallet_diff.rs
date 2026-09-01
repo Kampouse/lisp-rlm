@@ -287,36 +287,40 @@ fn decode_tagged_num(bytes: &[u8]) -> i64 {
 mod tests {
     use super::*;
 
-    /// ⚠ HARNESS DEFECT (found 2026-08-31 during the nil-miss sweep — NOT a
-    /// nil-on-miss stale expectation): these four tests shell out to
-    /// `near-compile /tmp/wallet_factory.lisp` and
-    /// `/tmp/wallet_factory_full.lisp`, but those fixture files are written
-    /// by NOBODY — a full `git rev-list --all` scan confirms they were never
-    /// committed. They only ever passed on machines where a developer's /tmp
-    /// still held hand-written copies (same /tmp-race fragility class as the
-    /// test_p2_native_http flake). Fix requires authoring the fixtures (or
-    /// embedding them as consts) — deliberately NOT done in the nil-miss
-    /// test pass to avoid fabricating contract sources; left red on purpose.
-    fn compile_lisp() -> Vec<u8> {
-        let status = Command::new("cargo")
-            .args([
-                "run",
-                "--release",
-                "--bin",
-                "near-compile",
-                "--",
-                "/tmp/wallet_factory.lisp",
-                "/tmp/wallet_factory_test.wasm",
-            ])
-            .current_dir("/Users/asil/.openclaw/workspace/lisp-rlm")
+    /// FIXED 2026-09-01 (was a harness defect: fixtures were never
+    /// committed and the compile shelled into a STALE clone at
+    /// ~/.openclaw/workspace/lisp-rlm). Both fixtures now live in
+    /// fixtures/ and compile against THIS repo (CARGO_MANIFEST_DIR).
+    fn compile_fixture(name: &str) -> Vec<u8> {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures")
+            .join(name);
+        let out = std::env::temp_dir().join(format!(
+            "wf_{}_{}.wasm",
+            name.replace('.', "_"),
+            std::process::id()
+        ));
+        let status = Command::new("./target/release/near-compile")
+            .arg(&src)
+            .arg("-o")
+            .arg(&out)
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
             .status()
-            .expect("failed to run near-compile");
+            .expect("failed to run near-compile (cargo build --release --bin near-compile first)");
         assert!(
             status.success(),
-            "near-compile failed — /tmp/wallet_factory.lisp fixture is missing \
-             (never committed to the repo; see HARNESS DEFECT note above)"
+            "near-compile failed on fixtures/{}",
+            name
         );
-        std::fs::read("/tmp/wallet_factory_test.wasm").expect("read wasm")
+        std::fs::read(&out).expect("read wasm")
+    }
+
+    fn compile_lisp() -> Vec<u8> {
+        compile_fixture("wallet_factory.lisp")
+    }
+
+    fn compile_full() -> Vec<u8> {
+        compile_fixture("wallet_factory_full.lisp")
     }
 
     /// Lisp factory init stores owner + default code_hash + code_size=0
@@ -364,26 +368,7 @@ mod tests {
     /// Full factory contract compiles and has correct exports
     #[test]
     fn full_wallet_factory_compiles() {
-        let status = Command::new("cargo")
-            .args([
-                "run",
-                "--release",
-                "--bin",
-                "near-compile",
-                "--",
-                "/tmp/wallet_factory_full.lisp",
-                "/tmp/wallet_factory_full_test.wasm",
-            ])
-            .current_dir("/Users/asil/.openclaw/workspace/lisp-rlm")
-            .status()
-            .expect("failed to run near-compile");
-        assert!(
-            status.success(),
-            "full factory near-compile failed — /tmp/wallet_factory_full.lisp \
-             fixture is missing (never committed; see HARNESS DEFECT note)"
-        );
-
-        let wasm = std::fs::read("/tmp/wallet_factory_full_test.wasm").expect("read wasm");
+        let wasm = compile_full();
         let engine = Engine::default();
         Module::new(&engine, &wasm).expect("full factory WASM should be valid");
 
@@ -405,22 +390,7 @@ mod tests {
     /// Full factory: validates WASM structure and imports
     #[test]
     fn full_factory_init_state() {
-        let status = Command::new("cargo")
-            .args([
-                "run",
-                "--release",
-                "--bin",
-                "near-compile",
-                "--",
-                "/tmp/wallet_factory_full.lisp",
-                "/tmp/wallet_factory_full_test.wasm",
-            ])
-            .current_dir("/Users/asil/.openclaw/workspace/lisp-rlm")
-            .status()
-            .expect("failed to run near-compile");
-        assert!(status.success(), "near-compile failed — /tmp/wallet_factory_full.lisp fixture is missing (never committed; see HARNESS DEFECT note)");
-
-        let wasm = std::fs::read("/tmp/wallet_factory_full_test.wasm").expect("read wasm");
+        let wasm = compile_full();
         let engine = Engine::default();
         let module = Module::new(&engine, &wasm).expect("full factory WASM should be valid");
 
@@ -480,17 +450,11 @@ mod tests {
             std::fs::write(&path, code).unwrap();
             let wasm_path = format!("/tmp/test_builtin_{}.wasm", name.replace('/', "_"));
 
-            let status = Command::new("cargo")
-                .args([
-                    "run",
-                    "--release",
-                    "--bin",
-                    "near-compile",
-                    "--",
-                    &path,
-                    &wasm_path,
-                ])
-                .current_dir("/Users/asil/.openclaw/workspace/lisp-rlm")
+            let status = Command::new("./target/release/near-compile")
+                .arg(&path)
+                .arg("-o")
+                .arg(&wasm_path)
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
                 .status()
                 .expect("near-compile failed");
             assert!(status.success(), "builtin {} failed to compile", name);

@@ -39,6 +39,12 @@ fn test_p2_combined_core_has_fd_write_shim() {
 fn test_p2_post_bridge_replaces_outlayer_import() {
     // With all-literal POST URLs the component must NOT import the
     // outlayer host interface — it bridges to wasi:http internally.
+    // P2_LOCK: compile_outlayer_p2 (in-process) writes the shared
+    // /tmp/p2_core_debug.{pid} dump — without the lock this raced the
+    // core_wat users in the same binary and flipped fd_write's
+    // "call 23" structural count (flake seen in full batteries
+    // 2026-09-01; passes in isolation every time).
+    let _g = P2_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let wasm = compile_outlayer_p2(r#"
 (define (run)
   (str-cat "r:" (http-post "https://api.hyperliquid.xyz/info" "{\"type\":\"allMids\"}")))
@@ -62,6 +68,7 @@ fn test_p2_dynamic_post_keeps_outlayer_import() {
 "#);
     // core imports the outlayer sentinel → check component-level import
     // exists (dynamic path must keep the host import)
+    let _g = P2_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let wasm = compile_outlayer_p2(r#"
 (define (run u)
   (str-cat "r:" (http-post u "{\"x\":1}")))
