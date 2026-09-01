@@ -191,9 +191,10 @@ export function tally(b: Ballot, stamp: number): string {
     icon: '🏦',
     target: 'near',
     lang: 'ts',
-    source: `// Lending v3 — u128 + TIME-BASED INTEREST.
-// bigint → u128/* string math; 10% APY accrues per-second on every
-// call via near.blockTimestamp(). 50% LTV, 5% fee (ceiled).
+    source: `// Lending v4 — u128 + interest + LIQUIDATIONS.
+// 10% APY accrues per-second. health < 10000 bp → anyone but the
+// borrower can repay up to half the debt and seize collateral at a
+// 5% bonus. 50% LTV, 5% fee (ceiled), floor interest.
 // Args: { "amt": "10000000000000000000000000" } (10 NEAR)
 
 const LTV_BP = 5000n;
@@ -203,6 +204,8 @@ const SCALE = 10000n;
 const YEAR_SEC = 31536000n;
 const ZERO = 0n;
 const SEC = 1000000000n;
+const LIQ_BONUS_BP = 500n;
+const TWO = 2n;
 
 function accrue(acct: string, ts: bigint): string {
   let bor = acct.bor;
@@ -216,42 +219,57 @@ function accrue(acct: string, ts: bigint): string {
 
 export function deposit(amt: bigint): string {
   let who = near.signerAccountId();
-  let raw = near.storageGet("lv3:" + who) ?? '{"dep":"0","bor":"0","ts":"0"}';
-  let acct = accrue(raw, near.blockTimestamp());
+  let raw = near.storageGet("lv4:" + who) ?? '{"dep":"0","bor":"0","ts":"0","own":""}';
+  let a = accrue(raw, near.blockTimestamp());
+  let next = jsonSet(a, "dep", a.dep + amt);
   if (raw.ts == ZERO) {
-    acct = jsonSet(acct, "ts", near.blockTimestamp());
+    next = jsonSet(next, "own", who);   // first deposit stamps the owner
   }
-  let next = jsonSet(acct, "dep", acct.dep + amt);
-  near.storageSet("lv3:" + who, next);
+  near.storageSet("lv4:" + who, next);
   return next;
 }
 
 export function borrow(amt: bigint): string {
   let who = near.signerAccountId();
-  let acct = accrue(
-    near.storageGet("lv3:" + who) ?? '{"dep":"0","bor":"0","ts":"0"}',
+  let a = accrue(
+    near.storageGet("lv4:" + who) ?? '{"dep":"0","bor":"0","ts":"0","own":""}',
     near.blockTimestamp(),
   );
   let add = (amt * (SCALE + FEE_BP) + (SCALE - 1n)) / SCALE;
-  let bor = acct.bor + add;
-  if (acct.dep * LTV_BP < bor * SCALE) {
+  let bor = a.bor + add;
+  if (a.dep * LTV_BP < bor * SCALE) {
     near.abort("insufficient collateral");
   }
-  let next = jsonSet(acct, "bor", bor);
-  near.storageSet("lv3:" + who, next);
+  let next = jsonSet(a, "bor", bor);
+  near.storageSet("lv4:" + who, next);
+  return next;
+}
+
+export function liquidate(victim: string, amt: bigint): string {
+  let a = accrue(
+    near.storageGet("lv4:" + victim) ?? '{"dep":"0","bor":"0","ts":"0","own":""}',
+    near.blockTimestamp(),
+  );
+  if (a.bor == ZERO) { near.abort("nothing to liquidate"); }
+  if (a.dep * LTV_BP >= a.bor * SCALE) { near.abort("account healthy"); }
+  if (near.signerAccountId() == a.own) { near.abort("cannot liquidate yourself"); }
+  if (amt * TWO > a.bor) { near.abort("close factor 50%"); }
+  let seize = (amt * (SCALE + LIQ_BONUS_BP)) / SCALE;
+  if (seize > a.dep) { near.abort("collateral exhausted"); }
+  let next = jsonSet(a, "bor", a.bor - amt);
+  next = jsonSet(next, "dep", a.dep - seize);
+  near.storageSet("lv4:" + victim, next);
   return next;
 }
 
 export function health(): string {
   let who = near.signerAccountId();
-  let acct = accrue(
-    near.storageGet("lv3:" + who) ?? '{"dep":"0","bor":"0","ts":"0"}',
+  let a = accrue(
+    near.storageGet("lv4:" + who) ?? '{"dep":"0","bor":"0","ts":"0","own":""}',
     near.blockTimestamp(),
   );
-  if (acct.bor == ZERO) {
-    return "inf";
-  }
-  return (acct.dep * LTV_BP) / acct.bor;
+  if (a.bor == ZERO) { return "inf"; }
+  return (a.dep * LTV_BP) / a.bor;
 }`,
   },
   {

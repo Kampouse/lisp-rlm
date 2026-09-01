@@ -453,10 +453,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut store,
         FuncType::new(&engine, vec![ValType::I64], vec![]),
         move |_, args, _| {
-            s_sa.lock()
-                .unwrap()
-                .registers
-                .insert(args[0].unwrap_i64() as u64, b"owner.test.near".to_vec());
+            // NEAR_MOCK_SIGNER overrides the tx signer — liquidation tests
+            // need caller ≠ account owner (default stays owner.test.near).
+            s_sa.lock().unwrap().registers.insert(
+                args[0].unwrap_i64() as u64,
+                std::env::var("NEAR_MOCK_SIGNER")
+                    .unwrap_or_else(|_| "owner.test.near".into())
+                    .into_bytes(),
+            );
             Ok(())
         },
     );

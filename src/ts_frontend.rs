@@ -2251,19 +2251,27 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                     return Ok(list(vec![Sym(uop), l, r]));
                 }
                 match b.operator {
+                    // NOTE (2026-09-01): a <= b is NOT (b > a) in u128 land
+                    // when a == b — strict ops lose the boundary. Lower to
+                    // negated strict: l <= r ≡ NOT(l > r), l >= r ≡ NOT(l < r),
+                    // l != r ≡ NOT(l = r). `not` — NOT `(= 0 …)`: u128
+                    // comparisons are bool-typed in the checker, and a
+                    // num-typed 0 against bool is a type error (the old `!=`
+                    // lowering had this latent bug, never exercised).
+                    // Caught by lending v4's liquidation guard firing at
+                    // exactly health == LIQ_LINE.
                     BinaryOperator::LessEqualThan => {
-                        return Ok(list(vec![Sym("u128/gt"), r, l]))
+                        return Ok(list(vec![Sym("not"), list(vec![Sym("u128/gt"), l, r])]))
                     }
                     BinaryOperator::GreaterEqualThan => {
-                        return Ok(list(vec![Sym("u128/lt"), r, l]))
+                        return Ok(list(vec![Sym("not"), list(vec![Sym("u128/lt"), l, r])]))
                     }
                     BinaryOperator::Equality | BinaryOperator::StrictEquality => {
                         return Ok(list(vec![Sym("u128/eq"), l, r]))
                     }
                     BinaryOperator::Inequality | BinaryOperator::StrictInequality => {
                         return Ok(list(vec![
-                            Sym("="),
-                            Num(0),
+                            Sym("not"),
                             list(vec![Sym("u128/eq"), l, r]),
                         ]))
                     }

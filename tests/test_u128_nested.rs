@@ -86,3 +86,35 @@ fn ts_bigint_surface() {
     assert!(!ir.contains("(+ ") && !ir.contains("(* ") && !ir.contains("(- "),
         "no raw i64 arithmetic may appear in bigint context: {ir}");
 }
+
+#[test]
+fn bigint_cmp_boundary_inclusive() {
+    // l >= r / l <= r at EQUALITY must be true (2026-09-01): the old
+    // lowering `>= → (u128/lt r l)` implements strict > — lending v4's
+    // liquidation guard refused to fire at exactly health == LIQ_LINE.
+    // Also covers != (old lowering used num-typed (= 0 …) against a
+    // bool-typed u128/eq — a checker type error once exercised).
+    let eq = |a: &str, b: &str, op: &str| {
+        let ts = format!("export function t(x: bigint, y: bigint): string {{ if (x {op} y) {{ return \"yes\"; }} return \"no\"; }}", op = op);
+        let ir = ts_to_lisp_source(&ts).expect("lowering");
+        let exprs = parse_all(&ir).expect("parse");
+        lisp_rlm_wasm::typing::type_check_program(&exprs, true).expect("typecheck");
+        let wasm = lisp_rlm_wasm::wasm_emit::compile_near_from_exprs(&exprs).expect("compile");
+        let tmp = std::env::temp_dir().join("nm_bnd.wasm");
+        std::fs::write(&tmp, &wasm).unwrap();
+        let out = std::process::Command::new("./target/release/near-mock")
+            .arg(&tmp).arg("t").arg(format!(r#"{{"x":"{a}","y":"{b}"}}"#))
+            .output().unwrap();
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    // equal values — inclusive ops say yes, strict ops say no
+    assert!(eq("5000000000000000000000000", "5000000000000000000000000", ">=").contains("yes"));
+    assert!(eq("5000000000000000000000000", "5000000000000000000000000", "<=").contains("yes"));
+    assert!(eq("5000000000000000000000000", "5000000000000000000000000", ">").contains("no"));
+    assert!(eq("5000000000000000000000000", "5000000000000000000000000", "<").contains("no"));
+    assert!(eq("5000000000000000000000000000", "5000000000000000000000000000", "!=").contains("no"));
+    assert!(eq("5000000000000000000000000000", "5000000000000000000000000000", "==").contains("yes"));
+    // distinct values still behave
+    assert!(eq("6000000000000000000000000", "5000000000000000000000000", ">=").contains("yes"));
+    assert!(eq("4000000000000000000000000", "5000000000000000000000000000", ">=").contains("no"));
+}

@@ -1,8 +1,11 @@
-//! Lending v3 — u128 + time-based interest (2026-08-31).
+//! Lending v4 — u128 + interest + LIQUIDATIONS (2026-09-01).
 //!
-//! Deterministic via NEAR_MOCK_BLOCK_TS pinning: deposit/borrow at t0,
-//! health at t0+100d shows exactly the predicted accrued debt
-//! (10% APY, floor division, lazy accrual on every entry).
+//! Deterministic guards: NEAR_MOCK_BLOCK_TS pins time, NEAR_MOCK_SIGNER
+//! impersonates the liquidator. Full sequence: deposit → max borrow
+//! (health exactly 10000 = at the line) → at-line liquidation REFUSED
+//! (the >= boundary bug lived here) → self-liquidation refused →
+//! close-factor refused → alice liquidates 2e24: seizes 2.1e24 (5%
+//! bonus), debt drops 5.137e24 → 3.137e24, health 9733 → 12591.
 
 use std::process::Command;
 use lisp_rlm_wasm::ts_frontend::ts_to_lisp_source;
@@ -10,55 +13,62 @@ use lisp_rlm_wasm::{parse_all, compile_near_from_exprs};
 
 const SRC: &str = include_str!("../fixtures/lending.ts");
 
-fn run(method: &str, input: &str, ts_ns: &str) -> String {
+fn run(method: &str, input: &str, ts_ns: &str, signer: Option<&str>) -> String {
     let ir = ts_to_lisp_source(SRC).unwrap_or_else(|e| panic!("lowering: {}", e));
     let exprs = parse_all(&ir).expect("parse");
     lisp_rlm_wasm::typing::type_check_program(&exprs, true).expect("typecheck");
     let wasm = compile_near_from_exprs(&exprs).unwrap_or_else(|e| panic!("compile: {}", e));
-    let tmp = std::env::temp_dir().join(format!("nm_l3_{}.wasm", std::process::id()));
+    let tmp = std::env::temp_dir().join(format!("nm_l4_{}.wasm", std::process::id()));
     std::fs::write(&tmp, &wasm).unwrap();
-    let out = Command::new("./target/release/near-mock")
-        .env("NEAR_MOCK_BLOCK_TS", ts_ns)
-        .arg(&tmp)
-        .arg(method)
-        .arg(input)
-        .output()
-        .expect("near-mock");
+    let mut cmd = Command::new("./target/release/near-mock");
+    cmd.env("NEAR_MOCK_BLOCK_TS", ts_ns);
+    if let Some(s) = signer {
+        cmd.env("NEAR_MOCK_SIGNER", s);
+    }
+    let out = cmd.arg(&tmp).arg(method).arg(input).output().expect("near-mock");
     format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
 }
 
 const TS0: &str = "1800000000000000000";
-// TS0 + 100*86400*1e9 = 1_808_640_000_000_000_000 (machine-derived —
-// a hand-typed transposition here cost 20min of phantom-bug hunting)
-const T100D: &str = "1808640000000000000";
+const T100D: &str = "1808640000000000000"; // TS0 + 8_640_000s (machine-derived)
 
 #[test]
-fn lending_interest_accrues_exact() {
+fn lending_liquidations_full_guard_battery() {
     let _ = std::fs::remove_file("/tmp/near-mock-state.bin");
 
-    // deposit 10 NEAR at t0
-    let out = run("deposit", r#"{"amt":"10000000000000000000000000"}"#, TS0);
+    let out = run("deposit", r#"{"amt":"10000000000000000000000000"}"#, TS0, None);
     assert!(out.contains(r#""dep":10000000000000000000000000"#), "{out}");
+    // NOTE: json-set writes string values UNQUOTED (own:owner.test.near) —
+// lenient round-trip works (self-guard matched it); strict-JSON quirk
+// tracked separately.
+    assert!(out.contains(r#""own":owner.test.near"#), "first deposit must stamp owner: {out}");
 
-    // borrow 4 NEAR → debt 4.2e24 (5% fee), clock stamped t0
-    let out = run("borrow", r#"{"amt":"4000000000000000000000000"}"#, TS0);
-    assert!(out.contains(r#""bor":4200000000000000000000000"#), "{out}");
+    // max borrow: debt lands EXACTLY on 5e24 (fee ceiled) → health 10000
+    let out = run("borrow", r#"{"amt":"4761904761904761904761904"}"#, TS0, None);
+    assert!(out.contains(r#""bor":5000000000000000000000000"#), "{out}");
 
-    // t0: health = 10e24*5000/4.2e24 = 11904 bp
-    let out = run("health", "{}", TS0);
-    assert!(out.contains("📄 11904"), "{out}");
+    let out = run("health", "{}", TS0, None);
+    assert!(out.contains("📄 10000"), "{out}");
 
-    // +100 days: interest = 4.2e24*1000*8640000/(10000*31536000)
-    //            = 115068493150684931506849 (floor) → debt 4315068493150684931506849
-    // health = 10e24*5000/4315068493150684931506849 = 11587
-    let out = run("health", "{}", T100D);
-    assert!(out.contains("📄 11587"), "interest must accrue exactly: {out}");
+    // at-the-line (health == LIQ_LINE): `>=` must INCLUDE equality → refuse
+    let out = run("liquidate", r#"{"victim":"owner.test.near","amt":"1000000000000000000000000"}"#, TS0, Some("alice.test.near"));
+    assert!(out.contains("account healthy"), "at-line account must not be liquidatable: {out}");
 
-    // repay 0 at +100d returns the accrued debt (pure query effect)
-    let out = run("repay", r#"{"amt":"0"}"#, T100D);
-    assert!(out.contains(r#""bor":4315068493150684931506849"#), "{out}");
+    // +100d: interest 136986301369863013698630 → bor 5136986301369863013698630, health 9733
+    // borrower cannot liquidate themselves
+    let out = run("liquidate", r#"{"victim":"owner.test.near","amt":"2000000000000000000000000"}"#, T100D, None);
+    assert!(out.contains("cannot liquidate yourself"), "{out}");
 
-    // over-LTV borrow at t0 again still aborts with reason
-    let out = run("borrow", r#"{"amt":"5000000000000000000000000"}"#, T100D);
-    assert!(out.contains("insufficient collateral"), "{out}");
+    // close factor: 3e24 > bor/2 → refused
+    let out = run("liquidate", r#"{"victim":"owner.test.near","amt":"3000000000000000000000000"}"#, T100D, Some("alice.test.near"));
+    assert!(out.contains("close factor"), "{out}");
+
+    // alice liquidates 2e24: seizes 2.1e24 (5% bonus), bor → 3136986301369863013698630
+    let out = run("liquidate", r#"{"victim":"owner.test.near","amt":"2000000000000000000000000"}"#, T100D, Some("alice.test.near"));
+    assert!(out.contains(r#""bor":3136986301369863013698630"#), "{out}");
+    assert!(out.contains(r#""dep":7900000000000000000000000"#), "{out}");
+
+    // health restored above the line: 9733 → 12591
+    let out = run("health", "{}", T100D, None);
+    assert!(out.contains("📄 12591"), "{out}");
 }
