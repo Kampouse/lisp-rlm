@@ -1435,6 +1435,25 @@ fn infer_application(
             }
             return Ok(TcType::Con(TcCon::Str));
         }
+        // len: POLYMORPHIC — interp accepts BOTH str and list (and any
+        // array-ish value); the env carried two conflicting registrations
+        // (list→int generic at types.rs:800, str-narrow at 1512) so
+        // (len (str-concat "a" "b")) failed the checker while interp ran
+        // it. Found via the source-level differential fuzzer, 2026-09-01.
+        if name == "len" && args.len() == 1 {
+            let t = infer(&args[0], env, supply, subst)?;
+            let el = supply.fresh();
+            let list_t = match el {
+                TcType::Var(vid) => TcType::Con(TcCon::List(Box::new(TcType::Var(vid)))),
+                other => other,
+            };
+            let is_list = unify(&t, &list_t).is_ok();
+            let is_str = unify(&t, &TcType::Con(TcCon::Str)).is_ok();
+            if !is_list && !is_str {
+                return Err(format!("in call (len ...): type mismatch: {} ≠ str/list", t));
+            }
+            return Ok(TcType::Con(TcCon::Int));
+        }
         if name == "str-concat" || name == "string-append" || name == "str" {
             for arg in args {
                 let _ = infer(arg, env, supply, subst)?;

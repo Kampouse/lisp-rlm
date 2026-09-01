@@ -1102,11 +1102,14 @@ pub fn compile_standalone_opts(source: &str, typecheck: bool) -> Result<Vec<u8>,
 
 pub fn compile_fuzz(source: &str) -> Result<Vec<u8>, String> {
     let mut em = parse_and_compile(source, false)?;
-    // Export the function named "run" (the test entry point), not funcs.last()
-    // which may be a lambda added after the run function.
+    // Export the ENTRY: prefer "run", then "main". NEVER the blanket
+    // last-non-helper fallback — a desugar-generated LAMBDA can trail the
+    // user's entry (found 2026-09-01 via the differential fuzzer:
+    // (str-join "-" (list "a" "b")) desugar leaves a trailing lambda that
+    // became "run" and executed with the raw input as its parameter).
     if let Some(f) = em.funcs.iter().find(|f| f.name == "run") {
         em.add_export(&f.name.clone(), "run", false);
-    } else if let Some(f) = em.funcs.iter().rev().find(|f| !f.name.starts_with("__h_")) {
+    } else if let Some(f) = em.funcs.iter().find(|f| f.name == "main") {
         em.add_export(&f.name.clone(), "run", false);
     }
     em.set_fuzz_mode(true);

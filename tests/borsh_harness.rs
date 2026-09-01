@@ -120,6 +120,11 @@ impl WasmRunner {
         Ok(())
     }
 
+    /// Snapshot of wasm memory (for TaggedValue decoding outside).
+    pub fn mem_snapshot(&self) -> Vec<u8> {
+        self.memory.data(&self.store).to_vec()
+    }
+
     /// Read an i64 from WASM memory (little-endian).
     pub fn read_i64(&self, offset: usize) -> i64 {
         let mem = self.memory.data(&self.store);
