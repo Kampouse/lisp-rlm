@@ -435,4 +435,74 @@ export function ftTransferFrom(from: string, to: string, amount: bigint): string
 (define (main)
   (report-balance "user.near"))`,
   },
+  {
+    name: 'FT-Lend (TS)',
+    icon: '🏦',
+    target: 'near',
+    lang: 'ts',
+    source: `// FT + lending desk: your FT balance is collateral, borrow the same
+// token against it. Cap = locked * 5000 / 10000 (50% LTV, no price
+// feed needed — same token both sides). Keys: ft:<who> balance,
+// lt:<who> locked, ld:<who> debt.
+// Try: ftMint {to,amount}, lendDeposit {amount}, lendBorrow {amount}…
+
+const ZERO = 0n;
+const LTV = 5000n;
+const SCALE = 10000n;
+
+export function ftMint(to: string, amount: bigint): string {
+  if ((near.storageGet("ft:own") ?? "") == "") {
+    near.storageSet("ft:own", near.signerAccountId());
+  }
+  if (near.signerAccountId() != (near.storageGet("ft:own") ?? "")) {
+    near.abort("only the owner may mint");
+  }
+  let bal = near.storageGet("ft:" + to) ?? ZERO;
+  let supply = near.storageGet("ft:supply") ?? ZERO;
+  near.storageSet("ft:" + to, bal + amount);
+  near.storageSet("ft:supply", supply + amount);
+  return "supply:" + (supply + amount);
+}
+
+export function lendDeposit(amount: bigint): string {
+  let who = near.signerAccountId();
+  let bal = near.storageGet("ft:" + who) ?? ZERO;
+  if (bal < amount) { near.abort("insufficient balance"); }
+  let locked = near.storageGet("lt:" + who) ?? ZERO;
+  near.storageSet("ft:" + who, bal - amount);
+  near.storageSet("lt:" + who, locked + amount);
+  return "locked:" + (locked + amount);
+}
+
+export function lendBorrow(amount: bigint): string {
+  let who = near.signerAccountId();
+  let debt = near.storageGet("ld:" + who) ?? ZERO;
+  let cap = (near.storageGet("lt:" + who) ?? ZERO) * LTV / SCALE;
+  if (debt + amount > cap) { near.abort("would exceed borrow cap"); }
+  let bal = near.storageGet("ft:" + who) ?? ZERO;
+  near.storageSet("ld:" + who, debt + amount);
+  near.storageSet("ft:" + who, bal + amount);
+  return "debt:" + (debt + amount);
+}
+
+export function lendWithdraw(amount: bigint): string {
+  let who = near.signerAccountId();
+  let locked = near.storageGet("lt:" + who) ?? ZERO;
+  if (locked < amount) { near.abort("withdraw exceeds locked"); }
+  let debt = near.storageGet("ld:" + who) ?? ZERO;
+  if (debt > (locked - amount) * LTV / SCALE) {
+    near.abort("would undercollateralize");
+  }
+  let bal = near.storageGet("ft:" + who) ?? ZERO;
+  near.storageSet("lt:" + who, locked - amount);
+  near.storageSet("ft:" + who, bal + amount);
+  return "locked:" + (locked - amount);
+}
+
+export function lendHealth(): string {
+  let who = near.signerAccountId();
+  let cap = (near.storageGet("lt:" + who) ?? ZERO) * LTV / SCALE;
+  return "cap:" + cap + " debt:" + (near.storageGet("ld:" + who) ?? ZERO);
+}`,
+  },
 ];
