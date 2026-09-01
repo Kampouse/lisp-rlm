@@ -80,7 +80,7 @@ fn near_json_probe(body: &str, args_json: &str) -> String {
     let src = format!("(define (run x) {})\n", body);
     std::fs::write(&lisp, &src).unwrap();
     let out = Command::new("./target/debug/near-compile")
-        .args([&lisp, "--out", &wasm])
+        .args([&lisp, "-o", &wasm])
         .output()
         .expect("near-compile");
     assert!(out.status.success(), "compile failed: {}", String::from_utf8_lossy(&out.stderr));

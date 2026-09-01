@@ -1901,6 +1901,11 @@ fn encode_json_value(e: &Expression<'_>) -> Result<LispVal, String> {
                     return lower_expr(e);
                 }
             }
+            // json-quote dynamic values. It's tag-aware at runtime
+            // (interp + wasm): Str → escaped+quoted, Num → bare decimal
+            // (valid JSON number), Bool → true/false. `: number` params
+            // still encode bare via the numberish path (their tests pin
+            // that shape); everything else quotes safely.
             if expr_is_numberish(e) {
                 Ok(list(vec![Sym("to-string"), lower_expr(e)?]))
             } else {
@@ -1919,7 +1924,14 @@ fn expr_is_numberish(e: &Expression<'_>) -> bool {
         // during body lowering) encode as bare numbers in object literals
         Expression::Identifier(id) => NUM_PARAM_NAMES
             .with(|s| s.borrow().iter().any(|n| n == id.name.as_str())),
-        Expression::BinaryExpression(_) => true, // arithmetic (stringy + handled earlier)
+        // A binary op is numberish only if BOTH sides are — `a + b` with
+        // number params is arithmetic (bare), but `roster + "," + who` on
+        // strings is concat and MUST json-quote (the multisig record
+        // corruption, 2026-09-01: blanket `=> true` stored concat values
+        // unquoted; the commas desynced the scanner, next set nuked keys).
+        Expression::BinaryExpression(b) => {
+            expr_is_numberish(&b.left) && expr_is_numberish(&b.right)
+        }
         Expression::CallExpression(c) => match &c.callee {
             Expression::Identifier(id) => matches!(
                 id.name.as_str(),
@@ -2802,6 +2814,36 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
             if head == "json-get" {
                 return Ok(list(vec![Sym("to-string"), list(items)]));
             }
+            // json-set's 3rd arg is JSON-ENCODED value text — but TS users
+            // pass raw values (escrow stored UNQUOTED strings: invalid JSON
+            // that only wasm's tolerant scanner could read back, and any
+            // embedded quote/brace corrupted the record — the multisig
+            // protocol lost a field entirely. 2026-09-01). SELF-ENCODE the
+            // value argument: strings → json-quote, numbers → to-string,
+            // pre-encoded (jsonQuote(...) / object-literal) results pass
+            // through unchanged.
+            if head == "json-set" && items.len() == 4 {
+                let key = items[2].clone();
+                let raw = c.arguments.get(2)
+                    .and_then(|a| a.as_expression())
+                    .ok_or("ts_frontend: bad jsonSet 3rd arg")?;
+                // jsonQuote(x) / {object-literal} / jsonSet(...) already
+                // produce encoded text — splice raw.
+                let already = match raw {
+                    Expression::CallExpression(ic) => match &ic.callee {
+                        Expression::Identifier(id) => matches!(id.name.as_str(), "jsonQuote" | "jsonSet"),
+                        _ => false,
+                    },
+                    Expression::ObjectExpression(_) => true,
+                    _ => false,
+                };
+                let encoded = if already {
+                    lower_expr(raw)?
+                } else {
+                    encode_json_value(raw)?
+                };
+                return Ok(list(vec![Sym("json-set"), items[1].clone(), key, encoded]));
+            }
             // str-cat is variadic in the EMITTER but 2-ary in the CHECKER —
             // fold n-ary strCat calls into nested 2-arg applications
             if head == "str-cat" && items.len() > 3 {
@@ -2987,7 +3029,10 @@ fn map_member_fn(obj: &str, prop: &str) -> String {
             "set" | "write" => "near/storage_set",
             "get" | "read" => "near/storage_get",
             "has" | "hasKey" => "near/storage_has",
-            "del" | "remove" => "near/storage_del",
+            // BUG (latent, 2026-09-01): mapped to near/storage_del which
+            // exists in NO engine — checker reject or silent nil. Real op
+            // (interp + wasm emitter + checker) is near/storage_remove.
+            "del" | "remove" => "near/storage_remove",
             _ => return format!("near/storage_{}", snake(prop)),
         };
         return mapped.into();

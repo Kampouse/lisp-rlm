@@ -245,7 +245,7 @@ struct ExecCtx {
 
 #[derive(Clone)]
 enum PAction {
-    FnCall { method: String, args: Vec<u8>, gas: u64 },
+    FnCall { method: String, args: Vec<u8>, gas: u64, dep: u128 },
     Transfer(u128),
 }
 
@@ -332,11 +332,20 @@ fn restore_partition(st: &mut MockState, snap: Vec<(Vec<u8>, Option<Vec<u8>>)>, 
 /// (never re-enter a live instance — the heap global would be clobbered).
 /// Signer/predecessor = `predecessor` (promise calls aren't user-signed).
 /// Returns Some(return-bytes) on success, None on trap (state reverted).
+thread_local! {
+    /// The CURRENT receipt's attached deposit. Set by sub_execute for
+    /// batch function-call children (was: silently dropped — dep_ptr was
+    /// read nowhere; 2026-09-01). Top-level entries fall back to
+    /// NEAR_MOCK_ATTACH via the host fn.
+    static CURRENT_DEPOSIT: std::cell::RefCell<Option<u128>> = const { std::cell::RefCell::new(None) };
+}
+
 fn sub_execute(
     account: &str,
     method: &str,
     args: &[u8],
     predecessor: &str,
+    deposit: u128,
 ) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error>> {
     let module = MODULES.with(|m| {
         m.borrow()
@@ -371,6 +380,25 @@ fn sub_execute(
         })
     });
 
+    // Receipt value: debit the SENDER (predecessor), credit the callee.
+    // On trap, partition restore below undoes the callee's credit; the
+    // sender's debit must also unwind → do the debit AFTER the child's
+    // snapshot decision — simplest: perform both, and on trap manually
+    // refund the sender (real NEAR: failed receipt refunds its deposit).
+    if deposit > 0 {
+        let mut st = state.lock().unwrap();
+        let credit_key = prefixed_key(account, b"\x00near-bal");
+        let bal: u128 = st.storage.get(&credit_key)
+            .and_then(|v| std::str::from_utf8(v).ok()).and_then(|s| s.parse().ok()).unwrap_or(0);
+        st.storage.insert(credit_key.clone(), (bal + deposit).to_string().into_bytes());
+        let debit_key = prefixed_key(predecessor, b"\x00near-bal");
+        let sbal: u128 = st.storage.get(&debit_key)
+            .and_then(|v| std::str::from_utf8(v).ok()).and_then(|s| s.parse().ok()).unwrap_or(0);
+        st.storage.insert(debit_key, (sbal.saturating_sub(deposit)).to_string().into_bytes());
+        eprintln!("  💰 fn-call deposit {} yocto: {} → {}", deposit, predecessor, account);
+    }
+    let saved_dep = CURRENT_DEPOSIT.with(|d| d.borrow_mut().replace(deposit));
+
     eprintln!("  ↳ cross: {}.{}({})", account, method, String::from_utf8_lossy(args));
     let part_snap = { snapshot_partition(&state.lock().unwrap(), account) };
 
@@ -391,7 +419,17 @@ fn sub_execute(
     if trap {
         eprintln!("  ⚠ cross: {}.{} TRAPPED — reverting partition", account, method);
         restore_partition(&mut state.lock().unwrap(), part_snap, account);
+        if deposit > 0 {
+            // failed receipt refunds its deposit to the sender
+            let mut st = state.lock().unwrap();
+            let rk = prefixed_key(predecessor, b"\x00near-bal");
+            let b: u128 = st.storage.get(&rk)
+                .and_then(|v| std::str::from_utf8(v).ok()).and_then(|s| s.parse().ok()).unwrap_or(0);
+            st.storage.insert(rk, (b + deposit).to_string().into_bytes());
+            eprintln!("  💰 deposit {} refunded to {} (failed receipt)", deposit, predecessor);
+        }
     }
+    CURRENT_DEPOSIT.with(|d| *d.borrow_mut() = saved_dep);
 
     // Restore isolation context
     EXEC_CTX.with(|c| *c.borrow_mut() = old_ctx);
@@ -421,8 +459,8 @@ fn execute_promise(idx: usize) -> Result<Vec<Option<Vec<u8>>>, Box<dyn std::erro
         // then re-runs with the payload when host 83 resumes the handle.
         let saved = PROMISE_RESULTS.with(|r| std::mem::replace(&mut *r.borrow_mut(), vec![None]));
         for action in &batch.actions {
-            if let PAction::FnCall { method, args, .. } = action {
-                match sub_execute(&batch.account, method, args, &batch.creator) {
+            if let PAction::FnCall { method, args, dep, .. } = action {
+                match sub_execute(&batch.account, method, args, &batch.creator, *dep) {
                     Ok(ret) => out.push(ret),
                     Err(_) => out.push(None),
                 }
@@ -434,8 +472,32 @@ fn execute_promise(idx: usize) -> Result<Vec<Option<Vec<u8>>>, Box<dyn std::erro
     if !batch.account.is_empty() {
         for action in &batch.actions {
             match action {
-                PAction::FnCall { method, args, .. } => {
-                    out.push(sub_execute(&batch.account, method, args, &batch.creator)?);
+                PAction::FnCall { method, args, dep, .. } => {
+                    // NEAR receipt ordering: if the child RETURNS a promise
+                    // (promise_return), its receipts execute BEFORE this
+                    // batch's dependents — the mock used to skip them, so
+                    // a flash-loan settle ran before the borrower's repay
+                    // transfer landed (flashpool protocol, 2026-09-01).
+                    // CLEAR first: PENDING_RETURN is process-wide TLS — an
+                    // ancestor's entry promise_return would leak in and we'd
+                    // re-execute the WHOLE returned subtree inside the child
+                    // (double transfers, phantom settles).
+                    let outer_ret = PENDING_RETURN.with(|p| p.borrow_mut().take());
+                    let r = sub_execute(&batch.account, method, args, &batch.creator, *dep)?;
+                    // NEAR receipt semantics (matches the airdrop suite):
+                    // a trapped FnCall reverts ITSELF only — its result is
+                    // Failed for descendants (promiseSucceeded=0) and
+                    // SIBLINGS stay committed. The flashloan lesson: the
+                    // transfer-out receipt COMMITS; a stiff borrower keeps
+                    // the funds; the settle aborts fail-closed. This is
+                    // exactly why real pools whitelist borrowers.
+                    out.push(r);
+                    let child_ret = PENDING_RETURN.with(|p| std::mem::replace(&mut *p.borrow_mut(), outer_ret));
+                    if let Some(ridx) = child_ret {
+                        eprintln!("  ⛓ child returned promise {} — resolving before dependents", ridx);
+                        let cres = execute_promise(ridx)?;
+                        for r in cres { out.push(r); }
+                    }
                 }
                 PAction::Transfer(amt) => {
                     // NEAR semantics: transfers carry REAL value; a receipt is
@@ -579,13 +641,24 @@ fn build_promise_hosts(
             let args_json = mem_read_str(&mut caller, args[3].unwrap_i64(), args[4].unwrap_i64())
                 .unwrap_or_default();
             let gas = args[6].unwrap_i64() as u64;
+            let dep = {
+                let ptr = args[5].unwrap_i64() as usize;
+                let mut buf = [0u8; 16];
+                if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                    let md = mem.data(&caller);
+                    if ptr + 16 <= md.len() {
+                        buf.copy_from_slice(&md[ptr..ptr + 16]);
+                    }
+                }
+                u128::from_le_bytes(buf)
+            };
             eprintln!(
-                "  → action_fn_call(idx={}, {} args={})",
-                idx, method, args_json
+                "  → action_fn_call(idx={}, {} args={} dep={})",
+                idx, method, args_json, dep
             );
             PROMISE_DAG.with(|d| {
                 if let Some(b) = d.borrow_mut().get_mut(idx) {
-                    b.actions.push(PAction::FnCall { method, args: args_json.into_bytes(), gas });
+                    b.actions.push(PAction::FnCall { method, args: args_json.into_bytes(), gas, dep });
                 }
             });
             Ok(())
@@ -644,6 +717,7 @@ fn build_promise_hosts(
                             method: method.clone(),
                             args: args_bytes.clone(),
                             gas: args[4].unwrap_i64() as u64,
+                            dep: 0,
                         }],
                         is_yield: true,
                     });
@@ -705,6 +779,7 @@ fn build_promise_hosts(
                                         method: parts[1].to_string(),
                                         args: parts[3].as_bytes().to_vec(),
                                         gas: 0,
+                                        dep: 0,
                                     }],
                                     is_yield: true,
                                 }
@@ -724,7 +799,7 @@ fn build_promise_hosts(
             };
             eprintln!("  ⏵ yield_resume({}) payload={}", idx, payload);
             let (method, args_json, _) = match batch.actions.first() {
-                Some(PAction::FnCall { method, args, gas }) => (method.clone(), args.clone(), *gas),
+                Some(PAction::FnCall { method, args, gas, .. }) => (method.clone(), args.clone(), *gas),
                 _ => {
                     eprintln!("  ⚠ yield_resume: no callback action on idx {}", idx);
                     results[0] = Val::I64(0);
@@ -736,7 +811,7 @@ fn build_promise_hosts(
                 &mut *r.borrow_mut(),
                 vec![Some(payload.into_bytes())],
             ));
-            let ret = sub_execute(&batch.account, &method, &args_json, &batch.creator);
+            let ret = sub_execute(&batch.account, &method, &args_json, &batch.creator, 0);
             PROMISE_RESULTS.with(|r| *r.borrow_mut() = saved);
             // one-shot: consume the persisted yield handle
             {
@@ -773,7 +848,7 @@ fn build_promise_hosts(
             let idx = dag_push(
                 vec![],
                 acct,
-                vec![PAction::FnCall { method, args: args_json.into_bytes(), gas: args[7].unwrap_i64() as u64 }],
+                vec![PAction::FnCall { method, args: args_json.into_bytes(), gas: args[7].unwrap_i64() as u64, dep: 0 }],
             );
             results[0] = Val::I64(idx as i64);
             Ok(())
@@ -794,7 +869,7 @@ fn build_promise_hosts(
             let new_idx = dag_push(
                 vec![idx],
                 acct,
-                vec![PAction::FnCall { method, args: args_json.into_bytes(), gas: args[8].unwrap_i64() as u64 }],
+                vec![PAction::FnCall { method, args: args_json.into_bytes(), gas: args[8].unwrap_i64() as u64, dep: 0 }],
             );
             results[0] = Val::I64(new_idx as i64);
             Ok(())
@@ -1316,11 +1391,28 @@ fn build_env_linker(
     let account_balance_fn = Func::new(
         &mut *store,
         FuncType::new(&engine, vec![ValType::I64], vec![]),
-        move |_, args, _| {
-            s_ab.lock()
-                .unwrap()
-                .registers
-                .insert(args[0].unwrap_i64() as u64, vec![0u8; 16]);
+        move |mut caller, args, _| {
+            // ABI: args[0] = PTR (16-byte write target). Writes the
+            // contract's real near-bal (was zeros; also hit a register-id
+            // bug — flashpool settle, 2026-09-01).
+            let contract = exec_ctx_or_default().contract;
+            let amt: u128 = STATE_ARC
+                .with(|s| s.borrow().clone())
+                .and_then(|st| {
+                    let st = st.lock().unwrap();
+                    st.storage
+                        .get(&prefixed_key(&contract, b"\x00near-bal"))
+                        .and_then(|v| std::str::from_utf8(v).ok())
+                        .and_then(|s| s.parse().ok())
+                })
+                .unwrap_or(0);
+            let ptr = args[0].unwrap_i64() as usize;
+            if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                let md = mem.data_mut(&mut caller);
+                if ptr + 16 <= md.len() {
+                    md[ptr..ptr + 16].copy_from_slice(&amt.to_le_bytes());
+                }
+            }
             Ok(())
         },
     );
@@ -1331,12 +1423,17 @@ fn build_env_linker(
         FuncType::new(&engine, vec![ValType::I64], vec![]),
         move |mut caller, args, _| {
             let ptr = args[0].unwrap_i64() as usize;
-            // Write 16 zero bytes to memory (mock always has 0 deposit)
+            // Real host shape: 16 LE bytes of THIS receipt's deposit.
+            // Reads NEAR_MOCK_ATTACH (same var the balance-credit path
+            // uses — was always 0: the auction protocol reads it, and
+            // value-receiving entries silently saw nothing. 2026-09-01.)
+            let amt: u128 = CURRENT_DEPOSIT.with(|d| *d.borrow())
+                .or_else(|| std::env::var("NEAR_MOCK_ATTACH").ok().and_then(|s| s.trim().parse().ok()))
+                .unwrap_or(0);
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 let md = mem.data_mut(&mut caller);
                 if ptr + 16 <= md.len() {
-                    md[ptr..ptr + 16].copy_from_slice(&[0u8; 16]);
-                    eprintln!("  → attached_deposit(ptr={}) wrote 16b zeros", ptr);
+                    md[ptr..ptr + 16].copy_from_slice(&amt.to_le_bytes());
                 }
             }
             Ok(())
@@ -1574,7 +1671,23 @@ fn build_env_linker(
         "predecessor_account_id",
         predecessor_account_fn,
     )?;
-    linker.define(&*store, "env", "block_index", noop0r.clone())?;
+    let block_index_fn = Func::new(
+        &mut *store,
+        FuncType::new(&engine, vec![], vec![ValType::I64]),
+        |_, _, r| {
+            r[0] = Val::I64(
+                // NEAR_MOCK_BLOCK_HEIGHT pins it for deterministic
+                // block-conditioned protocols (auction deadlines); a real
+                // chain height otherwise (mock: fixed genesis-ish 1000).
+                std::env::var("NEAR_MOCK_BLOCK_HEIGHT")
+                    .ok()
+                    .and_then(|s| s.parse::<i64>().ok())
+                    .unwrap_or(1000),
+            );
+            Ok(())
+        },
+    );
+    linker.define(&*store, "env", "block_index", block_index_fn)?;
     linker.define(&*store, "env", "block_timestamp", block_ts_fn)?;
     linker.define(&*store, "env", "account_balance", account_balance_fn)?;
     linker.define(&*store, "env", "attached_deposit", attached_deposit_fn)?;

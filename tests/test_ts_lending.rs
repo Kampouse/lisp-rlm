@@ -37,15 +37,15 @@ fn lending_liquidations_full_guard_battery() {
     let _ = std::fs::remove_file("/tmp/near-mock-state.bin");
 
     let out = run("deposit", r#"{"amt":"10000000000000000000000000"}"#, TS0, None);
-    assert!(out.contains(r#""dep":10000000000000000000000000"#), "{out}");
+    assert!(out.contains(r#""dep":"10000000000000000000000000""#), "{out}"); // 2026-09-01: jsonSet self-encodes (bug #22) — values now valid-JSON quoted
     // NOTE: json-set writes string values UNQUOTED (own:owner.test.near) —
 // lenient round-trip works (self-guard matched it); strict-JSON quirk
 // tracked separately.
-    assert!(out.contains(r#""own":owner.test.near"#), "first deposit must stamp owner: {out}");
+    assert!(out.contains(r#""own":"owner.test.near""#), "first deposit must stamp owner: {out}");
 
     // max borrow: debt lands EXACTLY on 5e24 (fee ceiled) → health 10000
     let out = run("borrow", r#"{"amt":"4761904761904761904761904"}"#, TS0, None);
-    assert!(out.contains(r#""bor":5000000000000000000000000"#), "{out}");
+    assert!(out.contains(r#""bor":"5000000000000000000000000""#), "{out}");
 
     let out = run("health", "{}", TS0, None);
     assert!(out.contains("📄 10000"), "{out}");
@@ -65,8 +65,8 @@ fn lending_liquidations_full_guard_battery() {
 
     // alice liquidates 2e24: seizes 2.1e24 (5% bonus), bor → 3136986301369863013698630
     let out = run("liquidate", r#"{"victim":"owner.test.near","amt":"2000000000000000000000000"}"#, T100D, Some("alice.test.near"));
-    assert!(out.contains(r#""bor":3136986301369863013698630"#), "{out}");
-    assert!(out.contains(r#""dep":7900000000000000000000000"#), "{out}");
+    assert!(out.contains(r#""bor":"3136986301369863013698630""#), "{out}");
+    assert!(out.contains(r#""dep":"7900000000000000000000000""#), "{out}");
 
     // health restored above the line: 9733 → 12591
     let out = run("health", "{}", T100D, None);
@@ -81,7 +81,7 @@ fn lending_liquidations_full_guard_battery() {
     // MAX withdraw: dep-amt == bor*2 → dep'*5000 == bor*10000 exactly —
     // allowed (guard is strict <, consistent with borrow). health → 10000.
     let out = run("withdraw", r#"{"amt":"1626027397260273972602740"}"#, T100D, None);
-    assert!(out.contains(r#""dep":6273972602739726027397260"#), "{out}");
+    assert!(out.contains(r#""dep":"6273972602739726027397260""#), "{out}");
 
     // one yocto more must abort
     let out = run("withdraw", r#"{"amt":"1"}"#, T100D, None);
@@ -89,7 +89,7 @@ fn lending_liquidations_full_guard_battery() {
 
     // repay the rest, then drain to zero — full lifecycle closes
     let out = run("repay", r#"{"amt":"3136986301369863013698630"}"#, T100D, None);
-    assert!(out.contains(r#""bor":0"#), "{out}");
+    assert!(out.contains(r#""bor":"0""#), "{out}");
     let out = run("withdraw", r#"{"amt":"6273972602739726027397260"}"#, T100D, None);
-    assert!(out.contains(r#""dep":0"#), "{out}");
+    assert!(out.contains(r#""dep":"0""#), "{out}");
 }

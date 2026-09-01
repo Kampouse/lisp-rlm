@@ -161,16 +161,16 @@ fn gap_b1_epoch_height_wrong_arity_accepted() {
     // Either way, the type checker did NOT report an arity error — that's the bug.
 }
 
-/// GAP-B2: near/account_balance takes 0 args but type checker accepts 2 args.
+/// GAP-B2 → CLOSED 2026-09-01: near/account_balance is now typed () → int
+/// (flashpool protocol), so wrong arity IS caught.
 #[test]
 fn gap_b2_account_balance_wrong_arity_accepted() {
     let src = r#"(define (bad) (near/account_balance "extra1" "extra2"))
 (export "bad" bad true)"#;
     let result = compile_typed(src);
-    // Type checker accepts this because near/account_balance is wildcard-only.
     assert!(
-        result.is_ok() || !result.unwrap_err().contains("arity"),
-        "type checker should NOT catch arity for wildcard-only near/account_balance"
+        result.is_err() && result.unwrap_err().contains("arity"),
+        "account_balance arity must be enforced now (was wildcard-only)"
     );
 }
 

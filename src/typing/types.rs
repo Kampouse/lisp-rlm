@@ -1571,6 +1571,9 @@ impl TcEnv {
         env.insert_mono("near/signer_to_buf".into(), TcType::Arrow(vec![], Box::new(int_ty.clone())));
         env.insert_mono("near/write_amount".into(), TcType::Arrow(vec![int_ty.clone()], Box::new(nil_ty.clone())));
         env.insert_mono("near/block_index".into(), TcType::Arrow(vec![], Box::new(int_ty.clone())));
+        // near/account_balance : () → int (low u64 of the 16-byte value;
+        // the mock returns the contract's real  near-bal)
+        env.insert_mono("near/account_balance".into(), TcType::Arrow(vec![], Box::new(int_ty.clone())));
         env.insert_mono("near/block_timestamp".into(), TcType::Arrow(vec![], Box::new(str_ty.clone())));
         env.insert_mono("near/ed25519_verify".into(), TcType::Arrow(vec![str_ty.clone(), str_ty.clone(), str_ty.clone()], Box::new(int_ty.clone())));
         env.insert_mono("hex-encode".into(), TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())));

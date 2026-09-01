@@ -12,6 +12,7 @@ impl WasmEmitter {
             let buf_i = self.local_idx("__rr_buf");
             let len_i = self.local_idx("__rr_len");
             let mut v = Vec::new();
+            self.need_host(host_idx);
             // Call host function to write to register 0
             v.push(Instruction::I64Const(0)); // register_id=0
             v.push(Self::host_call(host_idx));
@@ -57,7 +58,10 @@ impl WasmEmitter {
         host_idx: usize,
     ) -> Result<Vec<Instruction<'static>>, String> {
         let mut v = Vec::new();
-        // Pass TEMP_MEM as the pointer where host will write u128
+        // MUST register the host — the sentinel map only includes
+        // host_needed; an unregistered call resolved to nothing and the
+        // op silently evaluated to 0 (account_balance, 2026-09-01).
+        self.need_host(host_idx);
         v.push(Instruction::I64Const(TEMP_MEM as i64));
         v.push(Self::host_call(host_idx));
         // Load low 8 bytes (bytes 0..7) from TEMP_MEM — tag as Num
@@ -78,7 +82,7 @@ impl WasmEmitter {
         host_idx: usize,
     ) -> Result<Vec<Instruction<'static>>, String> {
         let mut v = Vec::new();
-        // Pass TEMP_MEM as the pointer where host will write u128
+        self.need_host(host_idx);
         v.push(Instruction::I64Const(TEMP_MEM as i64));
         v.push(Self::host_call(host_idx));
         // Load high 8 bytes (bytes 8..15) from TEMP_MEM — tag as Num

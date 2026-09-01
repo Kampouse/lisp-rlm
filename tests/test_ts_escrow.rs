@@ -95,6 +95,8 @@ fn chained_jsonset_with_hash_no_longer_loses_keys() {
     let _lock = state_lock();
     let _ = std::fs::remove_file("/tmp/near-mock-state.bin");
     let out = run(&w, "t", r#"{"recipient":"alice.test.near","secret":"s3cr3t-demo","amount":"500000000000000000000000","timeoutSec":"600"}"#, Some("owner.test.near"), Some(1_800_000_000_000_000_000));
-    assert!(out.contains(r#""sender":owner.test.near"#), "record lost its keys: {out}");
-    assert!(out.contains(r#""hashlock":4821d08e"#), "hashlock not hex-embedded: {out}");
+    // 2026-09-01: jsonSet now self-encodes values (bug #22) — records are
+    // VALID JSON, so values are quoted. Keys-present assertions unchanged.
+    assert!(out.contains(r#""sender":"owner.test.near""#), "record lost its keys: {out}");
+    assert!(out.contains(r#""hashlock":"4821d08e"#), "hashlock not hex-embedded: {out}");
 }
