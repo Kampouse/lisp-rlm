@@ -223,3 +223,11 @@ fn object_param_round_trip_executes() {
         "export function vote(u: { name: string; votes: number }): string {\n  let nv = u.votes + 1;\n  return u.name + \" -> \" + toStr(nv);\n}\n",
     );
 }
+
+#[test]
+fn ts_percent_compiles() {
+    // `%` used to lower to a nonexistent lisp `%` (checker reject); now
+    // compiles to the JS-exact truncated remainder. Sign cases verified
+    // in tests/test_api_sweep.rs matrix_ts_percent_js_semantics.
+    compile("export function m(): number { return -7 % 2; }\n");
+}

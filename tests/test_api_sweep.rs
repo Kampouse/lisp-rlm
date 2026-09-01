@@ -184,3 +184,23 @@ fn matrix_prefix_and_collision_keys() {
         "LOG: late"
     );
 }
+
+#[test]
+fn matrix_ts_percent_js_semantics() {
+    // wasm executes the compiled TS (compile_near path won't parse TS —
+    // use the lisp the TS lowers to, exact form)
+    let cases = [
+        (r#"(near/log_num (- 10 (* 3 (/ 10 3))))"#, "LOG: 1"),   // 10%3
+        (r#"(near/log_num (- -7 (* 2 (/ -7 2))))"#, "LOG: -1"),  // -7%2 (JS: -1)
+        (r#"(near/log_num (- 7 (* -2 (/ 7 -2))))"#, "LOG: 1"),   // 7%-2 (JS: 1)
+        (r#"(near/log_num (- -7 (* -2 (/ -7 -2))))"#, "LOG: -1"),// -7%-2 (JS: -1)
+    ];
+    for (call, expect) in cases {
+        let src = format!(r#"(define (main) {call})"#);
+        let out = near_mock(&src, "main", "{}");
+        assert!(
+            out.contains(expect),
+            "{call} must give {expect}: {out}"
+        );
+    }
+}

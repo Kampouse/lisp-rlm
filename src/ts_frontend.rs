@@ -2066,12 +2066,32 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                 let r = lower_expr(&b.right)?;
                 return Ok(list(vec![Sym("str-cat"), l, r]));
             }
+            // `%`: JS truncated remainder (sign follows dividend: -7%2=-1).
+            // The lisp `mod` builtin is EUCLIDEAN (always >= 0) — mapping
+            // % to it silently returned wrong signs for negative operands.
+            // Exact JS semantics via existing truncated ops: a - b*(a/b).
+            if b.operator == BinaryOperator::Remainder {
+                let a = lower_expr(&b.left)?;
+                let bsym = lower_expr(&b.right)?;
+                return Ok(list(vec![
+                    Sym("-"),
+                    a.clone(),
+                    list(vec![
+                        Sym("*"),
+                        bsym.clone(),
+                        list(vec![Sym("/"), a, bsym]),
+                    ]),
+                ]));
+            }
             let op: &str = match b.operator {
                 BinaryOperator::Addition => "+",
                 BinaryOperator::Subtraction => "-",
                 BinaryOperator::Multiplication => "*",
                 BinaryOperator::Division => "/",
-                BinaryOperator::Remainder => "%",
+                // (2026-08-31) `%` was emitted as a lisp `%` — undefined in
+                // the checker/interp/emitter (the builtin is `mod`); every
+                // TS modulo failed to compile.
+                BinaryOperator::Remainder => "mod",
                 BinaryOperator::LessThan => "<",
                 BinaryOperator::GreaterThan => ">",
                 BinaryOperator::LessEqualThan => "<=",
