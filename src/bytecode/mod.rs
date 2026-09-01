@@ -4937,6 +4937,7 @@ pub fn eval_near_builtin_match(name: &str) -> bool {
         | "near/call" | "near/transfer" | "near/transfer_u128" | "near/deploy_contract"
         | "near/promise_create" | "near/promise_then" | "near/promise_and"
         | "near/promise_results_count" | "near/promise_result" | "near/promise_return"
+        | "near/promise_succeeded"
         | "near/promise_batch_create" | "near/promise_batch_then"
         | "near/promise_batch_action_create_account"
         | "near/promise_batch_action_deploy_contract"
@@ -5375,6 +5376,15 @@ fn eval_near_builtin(
             m.insert("promises".into(), LispVal::List(indices));
             state.near_promises.push(LispVal::Map(m));
             Some(Ok(LispVal::Num(idx)))
+        }
+        "near/promise_succeeded" => {
+            let idx = extract_num(args, 0).unwrap_or(-1) as usize;
+            let ok = state
+                .near_promise_results
+                .get(idx)
+                .map(|r| !r.is_empty())
+                .unwrap_or(false);
+            Some(Ok(LispVal::Num(if ok { 1 } else { 0 })))
         }
         "near/promise_results_count" => {
             Some(Ok(LispVal::Num(state.near_promise_results.len() as i64)))

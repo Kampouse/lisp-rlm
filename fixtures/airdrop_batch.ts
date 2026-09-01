@@ -26,12 +26,13 @@ export function airdrop__resume(): string {
   if (n != 3) {
     near.abort("expected 3 receipts");
   }
-  // fail-closed: receipts report "1" on success (mock marker); anything
-  // else = failed receipt → abort (this resume's writes revert; the
-  // successful sibling transfers KEEP their committed value — NEAR)
+  // fail-closed via the STATUS probe: Successful(empty) transfers are
+  // real NEAR shape; promiseSucceeded distinguishes them from Failed.
+  // Any failure aborts — this resume's writes revert while the successful
+  // sibling transfers KEEP their committed value (receipt atomicity).
   let i = 0;
   while (i < n) {
-    if (near.promiseResult(i) != "1") {
+    if (near.promiseSucceeded(i) == 0) {
       near.abort("a transfer receipt failed");
     }
     i = i + 1;

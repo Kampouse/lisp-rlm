@@ -1147,12 +1147,13 @@ impl TcEnv {
                 Box::new(int_ty.clone()),
             ),
         );
-        // near/promise_yield_resume : int → str → int
-        // (data_id, payload) → data_id
+        // near/promise_yield_resume : str → str → int
+        // (data_id, payload) → ok — data_id is an opaque STRING id (NEAR
+        // canonical; the mock's register yields "yd:<idx>")
         env.insert_mono(
             "near/promise_yield_resume".into(),
             TcType::Arrow(
-                vec![int_ty.clone(), str_ty.clone()],
+                vec![str_ty.clone(), str_ty.clone()],
                 Box::new(int_ty.clone()),
             ),
         );
@@ -1275,6 +1276,10 @@ impl TcEnv {
         // Promise BATCH forms (raw TS surface — exercised by the airdrop
         // protocol 2026-09-01). batch_create/then tagged by the emitter;
         // action forms return 0 (statement-position calls).
+        env.insert_mono(
+            "near/promise_succeeded".into(),
+            TcType::Arrow(vec![int_ty.clone()], Box::new(int_ty.clone())),
+        );
         env.insert_mono(
             "near/promise_results_count".into(),
             TcType::Arrow(vec![], Box::new(int_ty.clone())),

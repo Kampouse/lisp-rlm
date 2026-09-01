@@ -356,6 +356,28 @@ impl WasmEmitter {
                 v.extend(self.emit_tag_num()); // tag the combined promise idx
                 Ok(v)
             }
+            "near/promise_succeeded" => {
+                // NEAR PromiseResult status probe: host 34 returns
+                // 0=NotReady, 1=Successful, 2=Failed. This exposes the
+                // distinction the payload-only surface conflates
+                // (Successful(empty) vs Failed both read as "").
+                // Scratch register 2 — never clobbers register 0 data.
+                if a.len() != 1 {
+                    return Err("near/promise_succeeded: need 1 arg (promise idx)".into());
+                }
+                self.need_host(34);
+                let idx = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                v.extend(idx);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(2)); // scratch register id
+                v.push(Self::host_call(34));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::I64ExtendI32U);
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
             "near/promise_results_count" => Ok(vec![
                 Self::host_call(33),
                 Instruction::I64Const(TAG_BITS),

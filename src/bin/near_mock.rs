@@ -255,6 +255,9 @@ struct PromiseBatch {
     account: String,
     creator: String,
     actions: Vec<PAction>,
+    /// Yield promise (host 82): the callback executes once with a NotReady
+    /// result, then re-executes with the payload when host 83 resumes it.
+    is_yield: bool,
 }
 
 thread_local! {
@@ -292,7 +295,7 @@ fn dag_push(deps: Vec<usize>, account: String, actions: Vec<PAction>) -> usize {
     let creator = exec_ctx_or_default().contract;
     PROMISE_DAG.with(|d| {
         let mut d = d.borrow_mut();
-        d.push(PromiseBatch { deps, account, creator, actions });
+        d.push(PromiseBatch { deps, account, creator, actions, is_yield: false });
         d.len() - 1
     })
 }
@@ -412,6 +415,22 @@ fn execute_promise(idx: usize) -> Result<Vec<Option<Vec<u8>>>, Box<dyn std::erro
         PROMISE_RESULTS.with(|r| std::mem::replace(&mut *r.borrow_mut(), dep_results.clone()));
     let mut out = Vec::new();
     let mut batch_touched: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::new();
+    if batch.is_yield {
+        // NEAR yield: the callback runs once NOW with a NotReady result
+        // (promiseSucceeded(0)==0 → contract returns its pending path),
+        // then re-runs with the payload when host 83 resumes the handle.
+        let saved = PROMISE_RESULTS.with(|r| std::mem::replace(&mut *r.borrow_mut(), vec![None]));
+        for action in &batch.actions {
+            if let PAction::FnCall { method, args, .. } = action {
+                match sub_execute(&batch.account, method, args, &batch.creator) {
+                    Ok(ret) => out.push(ret),
+                    Err(_) => out.push(None),
+                }
+            }
+        }
+        PROMISE_RESULTS.with(|r| *r.borrow_mut() = saved);
+        return Ok(out);
+    }
     if !batch.account.is_empty() {
         for action in &batch.actions {
             match action {
@@ -471,12 +490,10 @@ fn execute_promise(idx: usize) -> Result<Vec<Option<Vec<u8>>>, Box<dyn std::erro
                     let rbal = rbal + *amt;
                     st.storage.insert(credit_key, rbal.to_string().into_bytes());
                     eprintln!("  ↗ transfer {} yocto → {} (bal now {})", amt, batch.account, rbal);
-                    // DEVIATION (documented): real NEAR transfer success =
-                    // Successful(EMPTY) — indistinguishable from Failed at
-                    // our promise_result surface (status is discarded by the
-                    // emitter). Marker "1" keeps receipts verifiable
-                    // fail-closed. TODO: expose promise_result status.
-                    out.push(Some(vec![b'1']));
+                    // TRUE NEAR: successful transfer = Successful(empty).
+                    // Contracts distinguish it from Failed via
+                    // near/promise_succeeded (status probe). No more marker.
+                    out.push(Some(vec![]));
                 }
             }
         }
@@ -512,6 +529,8 @@ fn build_promise_hosts(
     engine: &wasmtime::Engine,
 ) -> Result<
     (
+        wasmtime::Func,
+        wasmtime::Func,
         wasmtime::Func,
         wasmtime::Func,
         wasmtime::Func,
@@ -595,6 +614,148 @@ fn build_promise_hosts(
                     b.actions.push(PAction::Transfer(amt));
                 }
             });
+            Ok(())
+        },
+    );
+    // 82 promise_yield_create(m_len, m_ptr, a_len, a_ptr, gas, weight, reg) -> idx
+    // data_id ("yd:<idx>") lands in the register; the promise index IS the
+    // resume handle (documented mock simplification of NEAR's opaque data_id).
+    let pyc = Func::new(
+        &mut *store,
+        FuncType::new(engine, vec![ValType::I64; 7], vec![ValType::I64]),
+        move |mut caller, args, results| {
+            let method = mem_read_str(&mut caller, args[0].unwrap_i64(), args[1].unwrap_i64())
+                .unwrap_or_default();
+            let args_json = mem_read_str(&mut caller, args[2].unwrap_i64(), args[3].unwrap_i64())
+                .unwrap_or_default();
+            let reg = args[6].unwrap_i64() as u64;
+            let contract = exec_ctx_or_default().contract;
+            eprintln!("  → promise_yield_create({} args={}) on {}", method, args_json, contract);
+            let batch_creator = exec_ctx_or_default().contract;
+            let args_bytes = args_json.clone().into_bytes();
+            let idx = {
+                PROMISE_DAG.with(|d| {
+                    let mut d = d.borrow_mut();
+                    d.push(PromiseBatch {
+                        deps: vec![],
+                        account: contract.clone(),
+                        creator: batch_creator.clone(),
+                        actions: vec![PAction::FnCall {
+                            method: method.clone(),
+                            args: args_bytes.clone(),
+                            gas: args[4].unwrap_i64() as u64,
+                        }],
+                        is_yield: true,
+                    });
+                    d.len() - 1
+                })
+            };
+            let did = format!("yd:{}", idx);
+            let st = STATE_ARC.with(|s| s.borrow().clone());
+            if let Some(st) = st {
+                let mut st = st.lock().unwrap();
+                st.registers.insert(reg, did.into_bytes());
+                // persist: \x00yield:<idx> = account \x1f method \x1f creator \x1f args_json
+                let spec = format!("{}\x1f{}\x1f{}\x1f{}", contract, method, batch_creator, args_json);
+                let key = format!("\x00yield:{}", idx);
+                st.storage.insert(key.into_bytes(), spec.into_bytes());
+            }
+            results[0] = Val::I64(idx as i64);
+            Ok(())
+        },
+    );
+    // 83 promise_yield_resume(idx, p_len, p_ptr) -> 1/0
+    // NOTE: the host-table ABI is (i64 x4) — idx, d_len, d_ptr, p_len, p_ptr?
+    // The table says 4 i64 params; emitter pushes (idx, d_len, d_ptr, p_len, p_ptr)?
+    // Keep 4: (idx, payload_len, payload_ptr, _pad) — see emitter's actual pushes.
+    let pyr = Func::new(
+        &mut *store,
+        FuncType::new(engine, vec![ValType::I64; 4], vec![ValType::I64]),
+        move |mut caller, args, results| {
+            // ABI: (data_id_len, data_id_ptr, payload_len, payload_ptr) — the
+            // emitter passes the data_id as a STRING ("yd:<idx>" or "<idx>")
+            let data_id = mem_read_str(&mut caller, args[0].unwrap_i64(), args[1].unwrap_i64())
+                .unwrap_or_default();
+            let payload = mem_read_str(&mut caller, args[2].unwrap_i64(), args[3].unwrap_i64())
+                .unwrap_or_default();
+            let idx: usize = data_id
+                .trim_start_matches("yd:")
+                .parse()
+                .unwrap_or(usize::MAX);
+            let dag = PROMISE_DAG.with(|d| d.borrow().clone());
+            let batch = match dag.get(idx) {
+                Some(b) if b.is_yield => b.clone(),
+                _ => {
+                    // cross-process resume: the spec lives in the state file
+                    let st = STATE_ARC.with(|s| s.borrow().clone());
+                    let key = format!("\x00yield:{}", idx);
+                    let spec = st
+                        .as_ref()
+                        .and_then(|st| st.lock().unwrap().storage.get(key.as_bytes()).cloned());
+                    match spec {
+                        Some(bytes) => {
+                            let s = String::from_utf8_lossy(&bytes).to_string();
+                            let parts: Vec<&str> = s.split('\x1f').collect();
+                            if parts.len() == 4 {
+                                PromiseBatch {
+                                    deps: vec![],
+                                    account: parts[0].to_string(),
+                                    creator: parts[2].to_string(),
+                                    actions: vec![PAction::FnCall {
+                                        method: parts[1].to_string(),
+                                        args: parts[3].as_bytes().to_vec(),
+                                        gas: 0,
+                                    }],
+                                    is_yield: true,
+                                }
+                            } else {
+                                eprintln!("  ⚠ yield_resume: bad persisted spec at {}", idx);
+                                results[0] = Val::I64(0);
+                                return Ok(());
+                            }
+                        }
+                        None => {
+                            eprintln!("  ⚠ yield_resume: idx {} is not a yield promise", idx);
+                            results[0] = Val::I64(0);
+                            return Ok(());
+                        }
+                    }
+                }
+            };
+            eprintln!("  ⏵ yield_resume({}) payload={}", idx, payload);
+            let (method, args_json, _) = match batch.actions.first() {
+                Some(PAction::FnCall { method, args, gas }) => (method.clone(), args.clone(), *gas),
+                _ => {
+                    eprintln!("  ⚠ yield_resume: no callback action on idx {}", idx);
+                    results[0] = Val::I64(0);
+                    return Ok(());
+                }
+            };
+            // Re-run the callback with the payload as the Successful result
+            let saved = PROMISE_RESULTS.with(|r| std::mem::replace(
+                &mut *r.borrow_mut(),
+                vec![Some(payload.into_bytes())],
+            ));
+            let ret = sub_execute(&batch.account, &method, &args_json, &batch.creator);
+            PROMISE_RESULTS.with(|r| *r.borrow_mut() = saved);
+            // one-shot: consume the persisted yield handle
+            {
+                let st = STATE_ARC.with(|s| s.borrow().clone());
+                if let Some(st) = st {
+                    st.lock().unwrap().storage.remove(format!("\x00yield:{}", idx).as_bytes());
+                }
+            }
+            match ret {
+                Ok(Some(bytes)) => {
+                    let s = String::from_utf8_lossy(&bytes);
+                    if !s.is_empty() {
+                        println!("📄 (yield) {}", s);
+                    }
+                }
+                Ok(None) => eprintln!("  ⚠ yield callback trapped"),
+                Err(e) => eprintln!("  ⚠ yield callback error: {}", e),
+            }
+            results[0] = Val::I64(1);
             Ok(())
         },
     );
@@ -702,7 +863,7 @@ fn build_promise_hosts(
             Ok(())
         },
     );
-    Ok((pc, pt, pa, prc, pr, pret, pbc, pbt, pafc, pbat))
+    Ok((pc, pt, pa, prc, pr, pret, pbc, pbt, pafc, pbat, pyc, pyr))
 }
 fn build_env_linker(
     store: &mut wasmtime::Store<()>,
@@ -1483,8 +1644,7 @@ fn build_env_linker(
     linker.define(&*store, "env", "log_s", noop1.clone())?;
     linker.define(&*store, "env", "validator_account_id", noop1.clone())?;
     linker.define(&*store, "env", "promise_results", noop1.clone())?;
-    linker.define(&*store, "env", "promise_yield_create", noop_7i_1o)?;
-    linker.define(&*store, "env", "promise_yield_resume", noop_4i_1o.clone())?;
+    // (yield hosts defined below — cross engine or noop, never twice)
     linker.define(&*store, "env", "account_locked_balance", noop1.clone())?;
     linker.define(&*store, "env", "storage_iter_prefix", noop_2i_1o.clone())?;
     linker.define(&*store, "env", "storage_iter_range", noop_4i_1o.clone())?;
@@ -1538,7 +1698,7 @@ fn build_env_linker(
     // Real promise hosts (cross engine) — override the noops. STATE_ARC is
     // set by the drivers; when unset (defensive), noops remain.
     if STATE_ARC.with(|s| s.borrow().is_some()) {
-        let (pc, pt, pa, prc, pr, pret, pbc, pbt, pafc, pbat) =
+        let (pc, pt, pa, prc, pr, pret, pbc, pbt, pafc, pbat, pyc, pyr) =
             build_promise_hosts(&mut *store, engine)?;
         linker.define(&*store, "env", "promise_create", pc)?;
         linker.define(&*store, "env", "promise_then", pt)?;
@@ -1550,6 +1710,8 @@ fn build_env_linker(
         linker.define(&*store, "env", "promise_batch_then", pbt)?;
         linker.define(&*store, "env", "promise_batch_action_function_call", pafc)?;
         linker.define(&*store, "env", "promise_batch_action_transfer", pbat)?;
+        linker.define(&*store, "env", "promise_yield_create", pyc)?;
+        linker.define(&*store, "env", "promise_yield_resume", pyr)?;
     } else {
         linker.define(&*store, "env", "promise_create", noop_8i_1o.clone())?;
         linker.define(&*store, "env", "promise_then", noop_9i_1o.clone())?;
@@ -1560,6 +1722,8 @@ fn build_env_linker(
         linker.define(&*store, "env", "promise_result", noop_2i_1o.clone())?;
         linker.define(&*store, "env", "promise_return", noop1.clone())?;
         linker.define(&*store, "env", "promise_batch_action_function_call", noop_7i.clone())?;
+        linker.define(&*store, "env", "promise_yield_create", noop_7i_1o)?;
+        linker.define(&*store, "env", "promise_yield_resume", noop_4i_1o)?;
         linker.define(&*store, "env", "promise_batch_action_transfer", noop_2i.clone())?;
     }
 
