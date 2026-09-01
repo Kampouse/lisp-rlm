@@ -22,7 +22,7 @@ const ZERO = 0n;
 const POOL0 = '{"ra":"0","rb":"0","ts":"0"}';
 const WAL0 = '{"a":"0","b":"0"}';
 
-function pool(): string {
+function pool() {
   return near.storageGet("amm:pool") ?? POOL0;
 }
 
@@ -31,7 +31,7 @@ function savePool(p: string): string {
   return p;
 }
 
-function wallet(who: string): string {
+function wallet(who: string) {
   return near.storageGet("amm:w:" + who) ?? WAL0;
 }
 
@@ -134,8 +134,8 @@ export function swapExactIn(dir: string, amtIn: bigint): string {
   if (p.ts == ZERO || p.ra <= ZERO || p.rb <= ZERO) {
     near.abort("empty pool");
   }
-  let rIn = "0";
-  let rOut = "0";
+  let rIn: any = "0";
+  let rOut: any = "0";
   if (dir == "a") {
     rIn = p.ra;
     rOut = p.rb;
@@ -144,6 +144,7 @@ export function swapExactIn(dir: string, amtIn: bigint): string {
     rOut = p.ra;
   }
   let out = toStr(rOut * amtIn * FEE_NUM / (rIn * FEE_DEN + amtIn * FEE_NUM));
+  // @ts-expect-error — legal lattice compare (STR vs NUM) in the dialect
   if (out <= ZERO) {
     near.abort("dust");
   }

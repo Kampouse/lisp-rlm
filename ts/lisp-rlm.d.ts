@@ -42,8 +42,10 @@ declare function strJoin(separator: string, parts: LispArr<string>): string;
 declare type LispObj = string;
 /** JSON-escape a string and wrap it in quotes → encoded VALUE for jsonSet. */
 declare function jsonQuote(s: string): string;
-/** Set/replace a top-level key → NEW object (immutable; rebind: o = jsonSet(o, k, v)). */
-declare function jsonSet(obj: LispObj, key: string, encodedValue: string): LispObj;
+/** Set/replace a top-level key → NEW object (immutable; rebind: o = jsonSet(o, k, v)).
+ *  Value: pre-encoded (jsonQuote(s)/object literal/jsonSet(...)), or a raw
+ *  bigint literal — the frontend auto-encodes those. */
+declare function jsonSet(obj: LispObj, key: string, value: any): any;
 
 declare function strCat(...parts: string[]): string;
 declare function strLength(s: string): number;
@@ -52,7 +54,7 @@ declare function strLen(s: string): number;
 declare function strSlice(s: string, start: number, end: number): string;
 declare function strIndexOf(haystack: string, needle: string): number;
 declare function strToNum(s: string): number;
-declare function toStr(n: number): string;
+declare function toStr(n: any): string;
 declare const toString: typeof toStr; // alias — shadows nothing at call sites
 declare function jsonGet(key: string, json: string): string;
 declare function hexDecode(hex: string): string;
@@ -80,13 +82,31 @@ declare const u128: {
   isZero(s: string): number;
 };
 
+// Free-function u128 spellings (u128Add → u128/add etc). Args `any`:
+// they coerce both NUM (bigint literal / param) and STR decimal strings.
+declare function u128Add(a: any, b: any): string;
+declare function u128Sub(a: any, b: any): string;
+declare function u128Mul(a: any, b: any): string;
+declare function u128Div(a: any, b: any): string;
+declare function u128Mod(a: any, b: any): string;
+declare function u128Lt(a: any, b: any): number;
+declare function u128Gt(a: any, b: any): number;
+declare function u128Eq(a: any, b: any): number;
+declare function u128IsZero(s: string): number;
+
 // ── the `near` namespace (member passthrough, camelCase auto-snakifies) ─
 
 declare const near: {
   // storage (string → string)
-  storageSet(key: string, value: string): void;
-  storageGet(key: string): string | null;
+  /** Value: pre-encoded string, or raw lattice value (num/bigint
+   *  arithmetic results auto-encode at the storage boundary). */
+  storageSet(key: string, value: any): void;
+  /** Returns "" if missing. Typed `any`: records read via dynamic
+   *  field access (p = pool(); p.ra) — `string` would fight the
+   *  runtime model in the editor. */
+  storageGet(key: string): any;
   storageHas(key: string): boolean;
+  storageHasKey(key: string): boolean;
   storageRemove(key: string): void;
   storageUsage(): number;
 
@@ -113,7 +133,8 @@ declare const near: {
   currentAccountId(): string;
   signerAccountId(): string;
   blockIndex(): number;
-  blockTimestamp(): number;
+  /** u128-scale ns since epoch — crosses as NUM (lattice); typed any. */
+  blockTimestamp(): any;
 
   // money (u128 scale → decimal strings)
   attachedDeposit(): string;
@@ -157,6 +178,8 @@ declare const near: {
   // ── crypto / hashing (host functions; all compile-verified) ──
   /** SHA-256 of a byte string → hex digest (64 hex chars). */
   sha256(msg: string): string;
+  /** kebab-alias spelling (same op). */
+  sha256Hash(msg: string): string;
   keccak256(msg: string): string;
   keccak512(msg: string): string;
   ripemd160(msg: string): string;
@@ -193,7 +216,7 @@ declare const near: {
   /** All three take deposit as i64 (use 0) BEFORE gas. Return promise idx. */
   promiseCreate(target: string, method: string, argsJson: string, deposit: number, gas: number): number;
   promiseThen(p: number, target: string, method: string, argsJson: string, deposit: number, gas: number): number;
-  promiseAnd(p1: number, p2: number): number;
+  promiseAnd(p1: number, p2: number, p3?: number): number;
 
   // ── promise batches (multi-action promises; strings, not raw ABI) ──
   promiseBatchCreate(target: string): number;
@@ -202,24 +225,41 @@ declare const near: {
   /** Note arg order: deposit (string) BEFORE gas. */
   promiseBatchActionFunctionCall(p: number, method: string, argsJson: string, yoctoDeposit: string, gas: number): void;
   promiseBatchActionCreateAccount(p: number): void;
+  /** Return a promise as this call's outcome (async return pattern). */
+  promiseReturn(p: number): void;
+  /** Number of promise results readable in this callback. */
+  promiseResultsCount(): number;
+  /** Whether promise result idx succeeded (1/0) — callbacks only. */
+  promiseSucceeded(idx: number): number;
   // Raw-ABI forms (ptr/len pairs, not strings) also exist for stake,
   // addKeyWithFullAccess, addKeyWithFunctionCall, deleteKey, deleteAccount,
   // deployContract — awkward from TS; reach for them only if you must.
 };
 
 // ── JS std shims (2026-08-30) ─────────────────────────────────────────
-// console.log → near/log (args space-joined, auto to-string'd)
-declare const console: { log(...parts: (string | number | boolean)[]): void };
-// Math.abs/max/min → abs/max/min (variadic, integer math)
-declare const Math: {
-  abs(x: number): number;
-  max(...xs: number[]): number;
-  min(...xs: number[]): number;
-};
-// JSON.stringify(scalar) → json-quote (str → "…" with escapes, num → decimal)
-// JSON.stringifyArr(arr) → JSON array text via map(json-quote)
-// JSON.parse: NOT NEEDED — tx args arrive parsed; use typed params / near.jsonGet
-declare const JSON: {
-  stringify(v: string | number | boolean): string;
+// console.log → near/log (args space-joined, auto to-string'd).
+// Math.abs/max/min → abs/max/min (variadic, integer math).
+// JSON.stringify(scalar) → json-quote; JSON.parse: NOT NEEDED — tx args
+// arrive parsed; use typed params / near.jsonGet.
+// (console/Math/JSON value types come from lib — not redeclared here.)
+interface JSON {
+  /** JSON array text via map(json-quote). */
   stringifyArr(arr: LispArr<string | number>): string;
+}
+
+// ── legacy snake_case builtins (pass through to lisp names verbatim) ──
+declare function near_storage_get(key: string): any;
+declare function near_storage_set(key: string, value: string): void;
+declare function near_predecessor_account_id(): string;
+
+// ── storage.* namespace (aliases → near/storage_*) ──────────────────────
+declare const storage: {
+  get(key: string): any;
+  read(key: string): any;
+  set(key: string, value: any): void;
+  write(key: string, value: any): void;
+  del(key: string): void;
+  remove(key: string): void;
+  has(key: string): boolean;
+  hasKey(key: string): boolean;
 };

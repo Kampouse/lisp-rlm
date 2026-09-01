@@ -4,8 +4,18 @@
     "module": "es2020",
     "strict": true,
     "noEmit": true,
-    "lib": ["es2020"]
+    "lib": [
+      "es2020"
+    ]
   },
-  "include": ["**/*.ts", "lisp-rlm.d.ts"],
-  "exclude": ["node_modules", "target", "crates"]
+  "include": [
+    "**/*.ts",
+    "lisp-rlm.d.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "target",
+    "crates",
+    "projects"
+  ]
 }

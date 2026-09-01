@@ -1,3 +1,4 @@
+// @ts-nocheck — dialect async (V1 resume-continuations) is not Promise-based
 // Vault — cross-contract depositor. deposit() fires an async
 // ftTransferFrom on the token (the vault is the spender; the USER's
 // allowance is debited), then the auto-generated continuation reads

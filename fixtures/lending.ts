@@ -16,7 +16,7 @@ const LIQ_LINE = 10000n;     // health below this = liquidatable
 const LIQ_BONUS_BP = 500n;   // liquidator pays 1.00, receives 1.05
 const TWO = 2n;
 
-function accrue(acct: string, ts: bigint): string {
+function accrue(acct: any, ts: bigint) {
   let bor = acct.bor;
   let elapsed = (ts - acct.ts) / SEC;
   if (bor > ZERO && elapsed > ZERO) {
@@ -26,7 +26,7 @@ function accrue(acct: string, ts: bigint): string {
   return jsonSet(next, "ts", ts);
 }
 
-function acct(): string {
+function acct() {
   let who = near.signerAccountId();
   return accrue(
     near.storageGet("lv4:" + who) ?? '{"dep":"0","bor":"0","ts":"0","own":""}',
@@ -114,7 +114,8 @@ export function liquidate(victim: string, amt: bigint): string {
   return next;
 }
 
-export function health(): string {
+export function health(): any {
+  // any: returns "inf" (STR) or a ratio (NUM) — lattice-polymorphic
   let a = acct();
   if (a.bor == ZERO) {
     return "inf";
