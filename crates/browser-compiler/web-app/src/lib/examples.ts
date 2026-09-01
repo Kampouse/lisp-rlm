@@ -146,7 +146,7 @@ export const get_visits = (): string => near.storageGet("visits") ?? "0";`,
 // ── Type the param as string ──────────────────────────────────
 //   (LispObj alias in the d.ts = string)
 
-export function makeProfile(name: string): string {
+export function makeProfile(name: string) {
   return { name: name, votes: 0, active: true };
 }
 
@@ -157,7 +157,7 @@ export function new_(): string {
   return "ok";
 }
 
-export function vote(): string {
+export function vote() {
   let p = near.storageGet("profile") ?? "{}";
   let nv = strToNum(p.votes) + 1;
   near.storageSet("profile", jsonSet(p, "votes", toStr(nv)));
@@ -169,7 +169,7 @@ export function get_profile(): string {
 }
 
 // Nested reads: args { "cfg": { "server": { "port": "80" } } }
-export function get_port(cfg: string): string {
+export function get_port(cfg: any): any {
   return cfg.server.port;
 }
 
@@ -177,12 +177,12 @@ export function get_port(cfg: string): string {
 // Inline shape or a type alias — numeric props AUTO-DECODE.
 type Ballot = { title: string; votes: number };
 
-export function cast(b: Ballot): string {
+export function cast(b: Ballot) {
   let nv = b.votes + 1;             // strToNum handled by the lowering
   return b.title + ": " + toStr(nv);
 }
 
-export function tally(b: Ballot, stamp: number): string {
+export function tally(b: Ballot, stamp: number) {
   return { title: b.title, votes: b.votes, stamped: stamp };
 }`,
   },
@@ -207,7 +207,7 @@ const SEC = 1000000000n;
 const LIQ_BONUS_BP = 500n;
 const TWO = 2n;
 
-function accrue(acct: string, ts: bigint): string {
+function accrue(acct: any, ts: bigint) {
   let bor = acct.bor;
   let elapsed = (ts - acct.ts) / SEC;
   if (bor > ZERO && elapsed > ZERO) {
@@ -277,7 +277,7 @@ export function liquidate(victim: string, amt: bigint): string {
   return next;
 }
 
-export function health(): string {
+export function health(): any {
   let who = near.signerAccountId();
   let a = accrue(
     near.storageGet("lv4:" + who) ?? '{"dep":"0","bor":"0","ts":"0","own":""}',
@@ -518,6 +518,11 @@ export function lendHealth(): string {
 
 const ZERO = 0n;
 const NANOS = 1000000000n;
+function geTs(now: bigint, tl: bigint): bigint {
+  if (now >= tl) { return 1n; }
+  return 0n;
+}
+
 const REC0 = '{"sender":"","recipient":"","amt":"0","tl":"0","state":""}';
 
 export function ftMint(to: string, amount: bigint): string {
@@ -557,7 +562,7 @@ export function escrowClaim(id: bigint, secret: string): string {
   if (near.sha256Hash(secret) != (near.storageGet("eh:" + id) ?? "")) {
     near.abort("wrong secret");
   }
-  if (near.blockTimestamp() > rec.tl) { near.abort("timed out"); }
+  if (geTs(near.blockTimestamp(), rec.tl) != 0n) { near.abort("timed out"); }
   let rBal = near.storageGet("ft:" + who) ?? ZERO;
   near.storageSet("ft:" + who, rBal + rec.amt);
   near.storageSet("e:" + id, jsonSet(rec, "state", "CLAIMED"));
@@ -569,7 +574,7 @@ export function escrowRefund(id: bigint): string {
   let rec = near.storageGet("e:" + id) ?? REC0;
   if (rec.state != "PENDING") { near.abort("not pending"); }
   if (who != rec.sender) { near.abort("only the sender may refund"); }
-  if (near.blockTimestamp() < rec.tl) { near.abort("not yet timed out"); }
+  if (geTs(near.blockTimestamp(), rec.tl) == 0n) { near.abort("not yet timed out"); }
   let sBal = near.storageGet("ft:" + who) ?? ZERO;
   near.storageSet("ft:" + who, sBal + rec.amt);
   near.storageSet("e:" + id, jsonSet(rec, "state", "REFUNDED"));
@@ -581,23 +586,33 @@ export function escrowRefund(id: bigint): string {
     icon: '🔄',
     target: 'near',
     lang: 'ts',
-    source: `// Atomic swap: Alice locks asset-A against sha256(secret); Bob locks
-// asset-B against the same hash; Alice reveals the secret to take B;
-// Bob takes A with the revealed secret. Bob's window ends at the
-// MIDPOINT of the remaining time (Alice can never refund while Bob's
-// B is claimable). Two tokens: fa:<who> / fb:<who>.
-// Try: swapNew {amountA, amountB, timeoutSec, secret} as alice,
-// then swapLockB {id} as bob, swapClaimB {id, secret} as alice,
-// swapClaimA {id, secret} as bob.
+    source: `// Atomic swap: Alice locks asset-A against H=sha256(secret); Bob locks
+// asset-B against the same H; Alice reveals the secret to take B; Bob
+// uses the revealed secret to take A. Bob's claim window ends at the
+// MIDPOINT of the remaining time, so Alice can never refund her A while
+// Bob's B is still claimable (the classic swap safety property).
+//
+// Keys: s:<id> record, sh:<id> hashlock, sr:<id> revealed secret,
+//       fa:<who> / fb:<who> token balances (two namespaces).
+// States: A → BOTH → B_CLAIMED → DONE, with refund side-exits.
 
 const ZERO = 0n;
 const NANOS = 1000000000n;
-const REC0 = '{"init":"","resp":"","amtA":"0","amtB":"0","tlA":"0","tlB":"0","state":""}';
-
 function geTs(now: bigint, tl: bigint): bigint {
   if (now >= tl) { return 1n; }
   return 0n;
 }
+
+function ltTs(now: bigint, tl: bigint): bigint {
+  if (now < tl) { return 0n; }
+  return 1n;
+}
+
+function midTl(now: bigint, tlA: bigint): bigint {
+  return now + (tlA - now) / 2n;
+}
+
+const REC0 = '{"init":"","resp":"","amtA":"0","amtB":"0","tlA":"0","tlB":"0","state":""}';
 
 function mintTo(ns: string, to: string, amount: bigint): string {
   let bal = near.storageGet(ns + ":" + to) ?? ZERO;
@@ -615,16 +630,27 @@ export function fbMint(to: string, amount: bigint): string {
   return mintTo("fb", to, amount);
 }
 
+export function faBalanceOf(who: string): string {
+  return near.storageGet("fa:" + who) ?? ZERO;
+}
+
+export function fbBalanceOf(who: string): string {
+  return near.storageGet("fb:" + who) ?? ZERO;
+}
+
 export function swapNew(amountA: bigint, amountB: bigint, timeoutSec: bigint, secret: string): string {
   let init = near.signerAccountId();
   let bal = near.storageGet("fa:" + init) ?? ZERO;
-  if (bal < amountA) { near.abort("insufficient A balance"); }
+  if (bal < amountA) {
+    near.abort("insufficient A balance");
+  }
   let id = near.storageGet("s:count") ?? ZERO;
   id = id + 1n;
+  let tlA = near.blockTimestamp() + timeoutSec * NANOS;
   let rec = jsonSet(REC0, "init", init);
   rec = jsonSet(rec, "amtA", amountA);
   rec = jsonSet(rec, "amtB", amountB);
-  rec = jsonSet(rec, "tlA", near.blockTimestamp() + timeoutSec * NANOS);
+  rec = jsonSet(rec, "tlA", tlA);
   rec = jsonSet(rec, "state", "A");
   near.storageSet("s:" + id, rec);
   near.storageSet("sh:" + id, near.sha256Hash(secret));
@@ -633,15 +659,22 @@ export function swapNew(amountA: bigint, amountB: bigint, timeoutSec: bigint, se
   return "swap:" + id;
 }
 
+// Responder (Bob) locks his B. Only while state A. His claim deadline is
+// the midpoint between now and Alice's tlA.
 export function swapLockB(id: bigint): string {
   let resp = near.signerAccountId();
   let rec = near.storageGet("s:" + id) ?? REC0;
-  if (rec.state != "A") { near.abort("not in state A"); }
-  if (geTs(near.blockTimestamp(), rec.tlA) != ZERO) { near.abort("timed out"); }
+  if (rec.state != "A") {
+    near.abort("not in state A");
+  }
+  if (geTs(near.blockTimestamp(), rec.tlA) != ZERO) {
+    near.abort("timed out");
+  }
   let bal = near.storageGet("fb:" + resp) ?? ZERO;
-  if (bal < rec.amtB) { near.abort("insufficient B balance"); }
-  let now = near.blockTimestamp();
-  let tlB = now + (rec.tlA - now) / 2n;
+  if (bal < rec.amtB) {
+    near.abort("insufficient B balance");
+  }
+  let tlB = midTl(near.blockTimestamp(), rec.tlA);
   let next = jsonSet(rec, "resp", resp);
   next = jsonSet(next, "tlB", tlB);
   next = jsonSet(next, "state", "BOTH");
@@ -650,15 +683,22 @@ export function swapLockB(id: bigint): string {
   return "locked:" + tlB;
 }
 
+// Initiator (Alice) reveals the secret and takes B — before tlB.
 export function swapClaimB(id: bigint, secret: string): string {
   let who = near.signerAccountId();
   let rec = near.storageGet("s:" + id) ?? REC0;
-  if (rec.state != "BOTH") { near.abort("not in state BOTH"); }
-  if (who != rec.init) { near.abort("only the initiator may claim B"); }
+  if (rec.state != "BOTH") {
+    near.abort("not in state BOTH");
+  }
+  if (who != rec.init) {
+    near.abort("only the initiator may claim B");
+  }
   if (near.sha256Hash(secret) != (near.storageGet("sh:" + id) ?? "")) {
     near.abort("wrong secret");
   }
-  if (geTs(near.blockTimestamp(), rec.tlB) != ZERO) { near.abort("B window closed"); }
+  if (geTs(near.blockTimestamp(), rec.tlB) != ZERO) {
+    near.abort("B window closed");
+  }
   let bal = near.storageGet("fb:" + who) ?? ZERO;
   near.storageSet("fb:" + who, bal + rec.amtB);
   near.storageSet("sr:" + id, secret);
@@ -666,19 +706,65 @@ export function swapClaimB(id: bigint, secret: string): string {
   return "claimedB:" + rec.amtB;
 }
 
+// Responder (Bob) takes A with the revealed secret — before tlA.
 export function swapClaimA(id: bigint, secret: string): string {
   let who = near.signerAccountId();
   let rec = near.storageGet("s:" + id) ?? REC0;
-  if (rec.state != "B_CLAIMED") { near.abort("not in state B_CLAIMED"); }
-  if (who != rec.resp) { near.abort("only the responder may claim A"); }
+  if (rec.state != "B_CLAIMED") {
+    near.abort("not in state B_CLAIMED");
+  }
+  if (who != rec.resp) {
+    near.abort("only the responder may claim A");
+  }
   if (near.sha256Hash(secret) != (near.storageGet("sh:" + id) ?? "")) {
     near.abort("wrong secret");
   }
-  if (geTs(near.blockTimestamp(), rec.tlA) != ZERO) { near.abort("A window closed"); }
+  if (geTs(near.blockTimestamp(), rec.tlA) != ZERO) {
+    near.abort("A window closed");
+  }
   let bal = near.storageGet("fa:" + who) ?? ZERO;
   near.storageSet("fa:" + who, bal + rec.amtA);
   near.storageSet("s:" + id, jsonSet(rec, "state", "DONE"));
   return "claimedA:" + rec.amtA;
-}`,
+}
+
+// Initiator refund: only if Bob never locked (state A), after tlA.
+export function swapRefundA(id: bigint): string {
+  let who = near.signerAccountId();
+  let rec = near.storageGet("s:" + id) ?? REC0;
+  if (rec.state != "A") {
+    near.abort("not in state A");
+  }
+  if (who != rec.init) {
+    near.abort("only the initiator may refund");
+  }
+  if (ltTs(near.blockTimestamp(), rec.tlA) == ZERO) {
+    near.abort("not yet timed out");
+  }
+  let bal = near.storageGet("fa:" + who) ?? ZERO;
+  near.storageSet("fa:" + who, bal + rec.amtA);
+  near.storageSet("s:" + id, jsonSet(rec, "state", "DONE"));
+  return "refundedA:" + rec.amtA;
+}
+
+// Responder refund: after tlB if Alice never claimed.
+export function swapRefundB(id: bigint): string {
+  let who = near.signerAccountId();
+  let rec = near.storageGet("s:" + id) ?? REC0;
+  if (rec.state != "BOTH") {
+    near.abort("not in state BOTH");
+  }
+  if (who != rec.resp) {
+    near.abort("only the responder may refund");
+  }
+  if (ltTs(near.blockTimestamp(), rec.tlB) == ZERO) {
+    near.abort("not yet timed out");
+  }
+  let bal = near.storageGet("fb:" + who) ?? ZERO;
+  near.storageSet("fb:" + who, bal + rec.amtB);
+  near.storageSet("s:" + id, jsonSet(rec, "state", "A"));
+  return "refundedB:" + rec.amtB;
+}
+`,
   },
 ];

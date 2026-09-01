@@ -55,7 +55,6 @@ declare function strSlice(s: string, start: number, end: number): string;
 declare function strIndexOf(haystack: string, needle: string): number;
 declare function strToNum(s: string): number;
 declare function toStr(n: any): string;
-declare const toString: typeof toStr; // alias — shadows nothing at call sites
 declare function jsonGet(key: string, json: string): string;
 declare function hexDecode(hex: string): string;
 declare function sha256Hash(msg: string): string;
