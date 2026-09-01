@@ -2329,11 +2329,37 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                 // the correct join. Numeric-only literals keep u128/add
                 // (they mean real arithmetic).
                 if b.operator == BinaryOperator::Addition {
-                    let lit_is_nonnumeric = |e: &Expression| {
-                        matches!(e, Expression::StringLiteral(sl)
-                            if sl.value.bytes().any(|b| !b.is_ascii_digit()))
-                    };
-                    if lit_is_nonnumeric(&b.left) || lit_is_nonnumeric(&b.right) {
+                    // String-VALUED operands concat — not just direct
+                    // literals. `("a" + user) + "b" + 5n` lowers left-assoc:
+                    // the outer + sees a BinaryExpression on the left, which
+                    // the old literal-only check missed → u128/add on
+                    // "a…b" → parse trap (found via cross-contract vault,
+                    // 2026-09-01). Only a PURELY numeric string literal
+                    // still means arithmetic.
+                    fn stringy_nonnumeric(e: &Expression) -> bool {
+                        match e {
+                            Expression::StringLiteral(sl) => {
+                                sl.value.bytes().any(|b| !b.is_ascii_digit())
+                            }
+                            Expression::TemplateLiteral(_) => true,
+                            Expression::BinaryExpression(be) => {
+                                be.operator == BinaryOperator::Addition
+                                    && (stringy_nonnumeric(&be.left)
+                                        || stringy_nonnumeric(&be.right)
+                                        || expr_is_stringy(&be.left)
+                                        || expr_is_stringy(&be.right))
+                            }
+                            Expression::CallExpression(c) => match &c.callee {
+                                Expression::Identifier(id) => matches!(
+                                    id.name.as_str(),
+                                    "toStr" | "toString" | "strCat" | "to_string"
+                                ),
+                                _ => false,
+                            },
+                            _ => false,
+                        }
+                    }
+                    if stringy_nonnumeric(&b.left) || stringy_nonnumeric(&b.right) {
                         let l = lower_expr(&b.left)?;
                         let r = lower_expr(&b.right)?;
                         return Ok(list(vec![Sym("str-cat"), l, r]));

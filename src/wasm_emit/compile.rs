@@ -1185,6 +1185,26 @@ pub fn compile_near_from_exprs(exprs: &[LispVal]) -> Result<Vec<u8>, String> {
     crate::typing::check_set_value_positions(exprs);
 
     let mut em = WasmEmitter::new();
+
+    // Pre-scan: register export names BEFORE any body emits — near/call-await
+    // callback validation needs the full export table (export forms commonly
+    // sit at the bottom of the file). Mirrors parse_and_compile's pre-scan
+    // (found via cross-contract vault: from_exprs path missed it, 2026-09-01).
+    for e in exprs {
+        if let LispVal::List(items) = e {
+            if items.len() >= 3 {
+                if let (LispVal::Sym(s), LispVal::Str(en), LispVal::Sym(fn_)) =
+                    (&items[0], &items[1], &items[2])
+                {
+                    if s == "export" {
+                        let view = items.len() > 3 && matches!(&items[3], LispVal::Bool(true));
+                        em.add_export(fn_, en, view);
+                    }
+                }
+            }
+        }
+    }
+
     for e in exprs {
         if let LispVal::List(items) = e {
             if items.is_empty() {
