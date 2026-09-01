@@ -505,4 +505,75 @@ export function lendHealth(): string {
   return "cap:" + cap + " debt:" + (near.storageGet("ld:" + who) ?? ZERO);
 }`,
   },
+  {
+    name: 'HTLC Escrow (TS)',
+    icon: '🔐',
+    target: 'near',
+    lang: 'ts',
+    source: `// Hash-timelock escrow: claim with the secret before the deadline,
+// or the sender refunds after it. The hashlock is sha256(secret) as a
+// 64-char hex digest — scanner-safe inside JSON records.
+// Try: escrowNew {recipient, secret, amount, timeoutSec}, then
+// escrowClaim {id, secret} as the recipient, escrowRefund {id} later.
+
+const ZERO = 0n;
+const NANOS = 1000000000n;
+const REC0 = '{"sender":"","recipient":"","amt":"0","tl":"0","state":""}';
+
+export function ftMint(to: string, amount: bigint): string {
+  if ((near.storageGet("ft:own") ?? "") == "") {
+    near.storageSet("ft:own", near.signerAccountId());
+  }
+  let bal = near.storageGet("ft:" + to) ?? ZERO;
+  let supply = near.storageGet("ft:supply") ?? ZERO;
+  near.storageSet("ft:" + to, bal + amount);
+  near.storageSet("ft:supply", supply + amount);
+  return "supply:" + (supply + amount);
+}
+
+export function escrowNew(recipient: string, secret: string, amount: bigint, timeoutSec: bigint): string {
+  let who = near.signerAccountId();
+  let bal = near.storageGet("ft:" + who) ?? ZERO;
+  if (bal < amount) { near.abort("insufficient balance"); }
+  let id = near.storageGet("e:count") ?? ZERO;
+  id = id + 1n;
+  let rec = jsonSet(REC0, "sender", who);
+  rec = jsonSet(rec, "recipient", recipient);
+  rec = jsonSet(rec, "amt", amount);
+  rec = jsonSet(rec, "tl", near.blockTimestamp() + timeoutSec * NANOS);
+  rec = jsonSet(rec, "state", "PENDING");
+  near.storageSet("e:" + id, rec);
+  near.storageSet("e:count", id);
+  near.storageSet("eh:" + id, near.sha256Hash(secret));
+  near.storageSet("ft:" + who, bal - amount);
+  return "escrow:" + id;
+}
+
+export function escrowClaim(id: bigint, secret: string): string {
+  let who = near.signerAccountId();
+  let rec = near.storageGet("e:" + id) ?? REC0;
+  if (rec.state != "PENDING") { near.abort("not pending"); }
+  if (who != rec.recipient) { near.abort("only the recipient may claim"); }
+  if (near.sha256Hash(secret) != (near.storageGet("eh:" + id) ?? "")) {
+    near.abort("wrong secret");
+  }
+  if (near.blockTimestamp() > rec.tl) { near.abort("timed out"); }
+  let rBal = near.storageGet("ft:" + who) ?? ZERO;
+  near.storageSet("ft:" + who, rBal + rec.amt);
+  near.storageSet("e:" + id, jsonSet(rec, "state", "CLAIMED"));
+  return "claimed:" + rec.amt;
+}
+
+export function escrowRefund(id: bigint): string {
+  let who = near.signerAccountId();
+  let rec = near.storageGet("e:" + id) ?? REC0;
+  if (rec.state != "PENDING") { near.abort("not pending"); }
+  if (who != rec.sender) { near.abort("only the sender may refund"); }
+  if (near.blockTimestamp() < rec.tl) { near.abort("not yet timed out"); }
+  let sBal = near.storageGet("ft:" + who) ?? ZERO;
+  near.storageSet("ft:" + who, sBal + rec.amt);
+  near.storageSet("e:" + id, jsonSet(rec, "state", "REFUNDED"));
+  return "refunded:" + rec.amt;
+}`,
+  },
 ];

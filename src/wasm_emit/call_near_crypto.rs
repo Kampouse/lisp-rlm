@@ -24,6 +24,47 @@ fn hex_nibble(b: u8) -> Result<u8, String> {
 }
 
 impl WasmEmitter {
+    /// Nibble (0..15) is on the wasm stack. Convert to an ASCII hex digit
+    /// and store it at heap_base + i*2 + byte_off. Scratch local d_l is
+    /// reused for the digit computation. Used by sha256-hash hex encoding.
+    fn hex_digit_store(
+        heap_base: u32,
+        i_l: u32,
+        d_l: u32,
+        byte_off: i32,
+        ma: &wasm_encoder::MemArg,
+    ) -> Vec<Instruction<'static>> {
+        let mut v = Vec::new();
+        // d = nibble; d <= 9 ? '0'+d : 'a'+d-10  (48 + d + (d>9 ? 39 : 0))
+        v.push(Instruction::LocalSet(d_l));
+        v.push(Instruction::LocalGet(d_l));
+        v.push(Instruction::I32Const(9));
+        v.push(Instruction::I32GtU);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(d_l));
+        v.push(Instruction::I32Const(48 + 39));
+        v.push(Instruction::I32Add);
+        v.push(Instruction::LocalSet(d_l));
+        v.push(Instruction::Else);
+        v.push(Instruction::LocalGet(d_l));
+        v.push(Instruction::I32Const(48));
+        v.push(Instruction::I32Add);
+        v.push(Instruction::LocalSet(d_l));
+        v.push(Instruction::End);
+        // store8(heap_base + i*2 + off, d)
+        v.push(Instruction::LocalGet(heap_base));
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::LocalGet(i_l));
+        v.push(Instruction::I32Const(2));
+        v.push(Instruction::I32Mul);
+        v.push(Instruction::I32Add);
+        v.push(Instruction::I32Const(byte_off));
+        v.push(Instruction::I32Add);
+        v.push(Instruction::LocalGet(d_l));
+        v.push(Instruction::I32Store8(ma.clone()));
+        v
+    }
+
     pub(crate) fn call_near_crypto(
         &mut self,
         op: &str,
@@ -199,14 +240,75 @@ impl WasmEmitter {
                 // output_ptr: use TEMP_MEM area
                 v.push(Instruction::I64Const(TEMP_MEM));
                 v.push(Instruction::I32WrapI64);
-                // Call sha256_hash
+                // Call sha256_hash — 32 raw bytes now at TEMP_MEM
                 v.push(Self::wasm_import_call(wasm_idx));
-                // Build result: tagged Str from 32 bytes at TEMP_MEM
-                // Str tag: (ptr | (len << 32)) where ptr=TEMP_MEM, len=32
-                v.push(Instruction::I64Const(TEMP_MEM as i64));
-                v.push(Instruction::I64Const(32));
+
+                // HEX-ENCODE into a fresh heap string (64 chars).
+                // (2026-09-01, HTLC bug #12 root cause): the old path
+                // returned a tagged Str aliasing the fixed TEMP_MEM
+                // scratch — two live digests overwrote each other — and
+                // RAW binary bytes embedded via json-set derailed
+                // __json_set's structural scanner whenever the digest
+                // contained { } " \ , : (silent fresh-object fallback =
+                // total record loss on the next chained set). Hex is
+                // scanner-safe, storage-safe, display-safe, and matches
+                // the HTLC convention (hashlocks are hex digests).
+                let hx_i = self.local_idx_i32("__hx_i");
+                let hx_d = self.local_idx_i32("__hx_d");
+                let hx_b = self.local_idx_i32("__hx_b");
+                let hx_old = self.local_idx("__hx_old");
+                let ma1 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+                // hx_old = heap_bump(64)
+                v.push(Instruction::I32Const(56)); // RUNTIME_HEAP_PTR addr
+                v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::LocalSet(hx_old));
+                v.push(Instruction::I32Const(56));
+                v.push(Instruction::LocalGet(hx_old));
+                v.push(Instruction::I64Const(64));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                // i = 0
+                v.push(Instruction::I32Const(0));
+                v.push(Instruction::LocalSet(hx_i));
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                // if i >= 32 → done
+                v.push(Instruction::LocalGet(hx_i));
+                v.push(Instruction::I32Const(32));
+                v.push(Instruction::I32GeS);
+                v.push(Instruction::I32Eqz);
+                v.push(Instruction::If(BlockType::Empty));
+                // b = TEMP_MEM[i] (kept in its own local — the digit
+                // scratch hx_d is clobbered by hex_digit_store itself)
+                v.push(Instruction::I32Const(TEMP_MEM as i32));
+                v.push(Instruction::LocalGet(hx_i));
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma1.clone()));
+                v.push(Instruction::LocalSet(hx_b));
+                // hi nibble → hex digit at old + i*2
+                v.push(Instruction::LocalGet(hx_b));
+                v.push(Instruction::I32Const(4));
+                v.push(Instruction::I32ShrU);
+                v.extend(Self::hex_digit_store(hx_old, hx_i, hx_d, 0, &ma1));
+                // lo nibble → hex digit at old + i*2 + 1
+                v.push(Instruction::LocalGet(hx_b));
+                v.push(Instruction::I32Const(15));
+                v.push(Instruction::I32And);
+                v.extend(Self::hex_digit_store(hx_old, hx_i, hx_d, 1, &ma1));
+                // i++; continue
+                v.push(Instruction::LocalGet(hx_i));
+                v.push(Instruction::I32Const(1));
+                v.push(Instruction::I32Add);
+                v.push(Instruction::LocalSet(hx_i));
+                v.push(Instruction::Br(1));
+                v.push(Instruction::End); // if
+                v.push(Instruction::End); // loop
+                v.push(Instruction::End); // block
+                // tagged Str: (64 << 32) | hx_old
+                v.push(Instruction::I64Const(64));
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalGet(hx_old));
                 v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 Ok(v)
