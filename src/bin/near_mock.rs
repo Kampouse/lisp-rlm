@@ -771,7 +771,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     linker.define(&store, "env", "attached_deposit", attached_deposit_fn)?;
     linker.define(&store, "env", "used_gas", used_gas_fn)?;
     linker.define(&store, "env", "prepaid_gas", prepaid_gas_fn)?;
-    linker.define(&store, "env", "random_seed", noop1.clone())?;
+    // random_seed(register_id) — writes 32 bytes to the register (real NEAR
+    // contract). Was noop → read_register trapped on the missing register
+    // (caught by the API sweep 2026-08-31). Deterministic per-run seed.
+    let rs1 = state.clone();
+    let random_seed_fn = Func::new(
+        &mut store,
+        FuncType::new(&engine, vec![ValType::I64], vec![]),
+        move |_caller, args, _| {
+            let rid = args[0].unwrap_i64() as u64;
+            let seed: Vec<u8> = (0u32..8)
+                .flat_map(|i| (0x5EED_0000u32.wrapping_add(i)).to_le_bytes())
+                .collect();
+            let mut st = rs1.lock().unwrap();
+            write_reg_checked(&mut st, rid, seed).map_err(|e| wasmtime::Error::msg(e))?;
+            Ok(())
+        },
+    );
+    linker.define(&store, "env", "random_seed", random_seed_fn)?;
     linker.define(&store, "env", "sha256", sha256_fn)?;
     // schnorr_verify_bip340(pk_ptr: i32, sig_ptr: i32, msg_ptr: i32, msg_len: i32) -> i32
     let schnorr_fn = Func::new(
