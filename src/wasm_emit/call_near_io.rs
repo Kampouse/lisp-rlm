@@ -198,7 +198,27 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/abort" => {
-                // panic() — idx 26, traps unconditionally
+                // panic() — idx 26, traps unconditionally.
+                // (2026-08-31) log the message first — a bare "ABORT" in
+                // the backtrace told the developer nothing about WHY.
+                if !a.is_empty() {
+                    self.need_host(28);
+                    self.need_host(26);
+                    let msg = self.expr(&a[0])?;
+                    let mut v = Vec::new();
+                    v.extend(msg.clone());
+                    v.extend(self.emit_untag());
+                    v.push(Instruction::I64Const(32));
+                    v.push(Instruction::I64ShrU); // len
+                    v.extend(msg);
+                    v.extend(self.emit_untag());
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::I64ExtendI32U); // ptr
+                    v.push(Self::host_call(28));
+                    v.push(Self::host_call(26));
+                    v.push(Instruction::I64Const(0));
+                    return Ok(v);
+                }
                 Ok(vec![Self::host_call(26), Instruction::I64Const(0)])
             }
             "abort" => {

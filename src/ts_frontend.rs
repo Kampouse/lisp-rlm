@@ -45,6 +45,14 @@ use oxc_syntax::operator::{BinaryOperator, LogicalOperator, UnaryOperator};
 
 /// Parse TypeScript source and lower it to lisp source text.
 pub fn ts_to_lisp_source(src: &str) -> Result<String, String> {
+    // compilation is stateless from the caller's view — reset all
+    // cross-compilation side maps (tests compile many programs on one
+    // thread; stale consts/aliases would shadow)
+    IDENT_OFFSETS.with(|m| m.borrow_mut().clear());
+    NUM_PARAM_NAMES.with(|s| s.borrow_mut().clear());
+    OBJ_PARAM_PROPS.with(|s| s.borrow_mut().clear());
+    TYPE_ALIASES.with(|s| s.borrow_mut().clear());
+    CONST_FOLDS.with(|s| s.borrow_mut().clear());
     let exprs = parse_ts(src)?;
     let mut out = String::new();
     for e in &exprs {
@@ -77,6 +85,12 @@ thread_local! {
     /// `type X = { ... }` aliases collected at statement level; resolved
     /// when a param is annotated with a named type. Compile-time only.
     static TYPE_ALIASES: std::cell::RefCell<Vec<(String, Vec<(String, bool)>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// Top-level `const K = <literal>;` — folded into every use site.
+    /// (2026-08-31) a value-define at top level emits a stub (known emitter
+    /// limitation), so numeric/string consts INSTEAD substitute inline and
+    /// emit nothing. Non-literal top-level consts keep the old path.
+    static CONST_FOLDS: std::cell::RefCell<Vec<(String, LispVal)>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
@@ -249,7 +263,23 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                         .init
                         .as_ref()
                         .ok_or("ts_frontend: top-level declarations need initializers")?;
-                    consts.push(list(vec![Sym("define"), Sym(name), lower_expr(init)?]));
+                    // Literal initializer → fold at use sites (top-level
+                    // value-defines emit stubs — see CONST_FOLDS note).
+                    let literal = match init {
+                        Expression::NumericLiteral(n) => Some(Num(n.value as i64)),
+                        Expression::StringLiteral(s) => {
+                            Some(Str(s.value.as_str().to_string()))
+                        }
+                        Expression::BooleanLiteral(b) => {
+                            Some(Num(if b.value { 1 } else { 0 }))
+                        }
+                        _ => None,
+                    };
+                    if let Some(v) = literal {
+                        CONST_FOLDS.with(|m| m.borrow_mut().push((name, v)));
+                    } else {
+                        consts.push(list(vec![Sym("define"), Sym(name), lower_expr(init)?]));
+                    }
                 }
             }
             Statement::ExpressionStatement(e) => {
@@ -1959,6 +1989,15 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
         }
         Expression::Identifier(id) => {
             note_ident(&id.name, id.span.start);
+            // top-level const substitution (literals only)
+            if let Some(v) = CONST_FOLDS.with(|m| {
+                m.borrow()
+                    .iter()
+                    .find(|(k, _)| k == id.name.as_str())
+                    .map(|(_, v)| v.clone())
+            }) {
+                return Ok(v);
+            }
             Ok(Sym(id.name.as_str().to_string()))
         }
         Expression::ArrayExpression(a) => {

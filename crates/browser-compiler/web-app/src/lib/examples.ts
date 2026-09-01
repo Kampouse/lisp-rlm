@@ -187,6 +187,49 @@ export function tally(b: Ballot, stamp: number): string {
 }`,
   },
   {
+    name: 'Lending (TS)',
+    icon: '🏦',
+    target: 'near',
+    lang: 'ts',
+    source: `// Lending v1 — deposit collateral, borrow at 50% LTV, 5% fee.
+// Args (JSON): { "amt": "1000" } — try deposit → borrow → repay.
+
+const LTV_BP = 5000;   // 50% collateral factor
+const FEE_BP = 500;    // 5% origination fee
+const SCALE = 10000;
+
+export function deposit(amt: number): string {
+  let who = near.signerAccountId();
+  let acct = near.storageGet("lv1:" + who) ?? '{"dep":0,"bor":0}';
+  let next = jsonSet(acct, "dep", toStr(strToNum(acct.dep) + amt));
+  near.storageSet("lv1:" + who, next);
+  return next;
+}
+
+export function borrow(amt: number): string {
+  let who = near.signerAccountId();
+  let acct = near.storageGet("lv1:" + who) ?? '{"dep":0,"bor":0}';
+  let add = (amt * (SCALE + FEE_BP)) / SCALE;      // debt + fee
+  let bor = strToNum(acct.bor) + add;
+  if (strToNum(acct.dep) * LTV_BP < bor * SCALE) {
+    near.abort("insufficient collateral");          // visible in logs
+  }
+  let next = jsonSet(acct, "bor", toStr(bor));
+  near.storageSet("lv1:" + who, next);
+  return next;
+}
+
+export function repay(amt: number): string {
+  let who = near.signerAccountId();
+  let acct = near.storageGet("lv1:" + who) ?? '{"dep":0,"bor":0}';
+  let bor = strToNum(acct.bor) - amt;
+  if (bor < 0) { bor = 0; }
+  let next = jsonSet(acct, "bor", toStr(bor));
+  near.storageSet("lv1:" + who, next);
+  return next;
+}`,
+  },
+  {
     name: 'CC View',
     icon: '🔗',
     target: 'p1',
