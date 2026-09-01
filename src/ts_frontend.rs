@@ -51,8 +51,11 @@ pub fn ts_to_lisp_source(src: &str) -> Result<String, String> {
     IDENT_OFFSETS.with(|m| m.borrow_mut().clear());
     NUM_PARAM_NAMES.with(|s| s.borrow_mut().clear());
     OBJ_PARAM_PROPS.with(|s| s.borrow_mut().clear());
+    BIGINT_NAMES.with(|s| s.borrow_mut().clear());
+    BIGINT_LOCALS.with(|s| s.borrow_mut().clear());
     TYPE_ALIASES.with(|s| s.borrow_mut().clear());
     CONST_FOLDS.with(|s| s.borrow_mut().clear());
+    BIGINT_CONSTS.with(|s| s.borrow_mut().clear());
     let exprs = parse_ts(src)?;
     let mut out = String::new();
     for e in &exprs {
@@ -76,6 +79,14 @@ thread_local! {
     /// number when `votes: number` was annotated).
     static NUM_PARAM_NAMES: std::cell::RefCell<Vec<String>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    /// `bigint`-annotated param names in scope — u128-precision amounts.
+    /// Drives operator selection (`a + b` lowers to u128/add).
+    static BIGINT_NAMES: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// `let x = <bigint expr>;` locals in the function being lowered —
+    /// bigint-shaped for later operator selection in the same body.
+    static BIGINT_LOCALS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
     /// Object-typed params in scope: (param, props) where props carry
     /// is_number per key. Drives (1) read-time auto str->num on
     /// `param.numericProp`, (2) encode-time raw embedding of the param
@@ -91,6 +102,10 @@ thread_local! {
     /// limitation), so numeric/string consts INSTEAD substitute inline and
     /// emit nothing. Non-literal top-level consts keep the old path.
     static CONST_FOLDS: std::cell::RefCell<Vec<(String, LispVal)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// Top-level `const K = <n-literal>;` names — bigint-shaped identifiers
+    /// for operator selection (fold value lands in CONST_FOLDS as Str).
+    static BIGINT_CONSTS: std::cell::RefCell<Vec<String>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
@@ -265,6 +280,7 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                         .ok_or("ts_frontend: top-level declarations need initializers")?;
                     // Literal initializer → fold at use sites (top-level
                     // value-defines emit stubs — see CONST_FOLDS note).
+                    let mut is_bigint = false;
                     let literal = match init {
                         Expression::NumericLiteral(n) => Some(Num(n.value as i64)),
                         Expression::StringLiteral(s) => {
@@ -273,9 +289,23 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                         Expression::BooleanLiteral(b) => {
                             Some(Num(if b.value { 1 } else { 0 }))
                         }
+                        // `const FEE_BP = 500n;` — u128 const: folds as a
+                        // decimal string AND marks the name bigint-shaped
+                        Expression::BigIntLiteral(b) => {
+                            is_bigint = true;
+                            Some(Str(
+                                b.raw
+                                    .as_ref()
+                                    .map(|s| s.as_str().trim_end_matches('n').to_string())
+                                    .unwrap_or_default(),
+                            ))
+                        }
                         _ => None,
                     };
                     if let Some(v) = literal {
+                        if is_bigint {
+                            BIGINT_CONSTS.with(|m| m.borrow_mut().push(name.clone()));
+                        }
                         CONST_FOLDS.with(|m| m.borrow_mut().push((name, v)));
                     } else {
                         consts.push(list(vec![Sym("define"), Sym(name), lower_expr(init)?]));
@@ -362,10 +392,14 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
     // (object = JSON-text binding; numeric props auto-decode on read)
     NUM_PARAM_NAMES.with(|s| s.borrow_mut().clear());
     OBJ_PARAM_PROPS.with(|s| s.borrow_mut().clear());
+    BIGINT_NAMES.with(|s| s.borrow_mut().clear());
+    BIGINT_LOCALS.with(|s| s.borrow_mut().clear());
     let mut param_names: Vec<(String, u8)> = Vec::new();
     for p in &f.params.items {
         let n = binding_name(&p.pattern)?;
-        let kind = if param_is_number(p) {
+        let kind = if param_is_bigint(p) {
+            4
+        } else if param_is_number(p) {
             1
         } else if param_is_str_array(p) {
             2
@@ -380,6 +414,9 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
         } else {
             0
         };
+        if kind == 4 {
+            BIGINT_NAMES.with(|s| s.borrow_mut().push(n.clone()));
+        }
         param_names.push((n.clone(), kind));
     }
 
@@ -541,6 +578,40 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
     Ok(vec![entry_define, entry_export, cb_define, cb_export])
 }
 
+/// Forward scan: register every `let x = <bigint-init>;` in a function
+/// body BEFORE lowering. The statement lowering is CPS-style (continuations
+/// lower before the statement itself), so registering at the let-site was
+/// too late for later statements that reference the binding.
+fn scan_bigint_lets(stmts: &[Statement<'_>]) {
+    for s in stmts {
+        scan_one_bigint_let(s);
+    }
+}
+
+fn scan_one_bigint_let(s: &Statement<'_>) {
+    if let Statement::VariableDeclaration(v) = s {
+        for d in &v.declarations {
+            let Some(init) = &d.init else { continue };
+            if expr_is_bigint(init) {
+                if let Ok(name) = binding_name(&d.id) {
+                    BIGINT_LOCALS.with(|m| m.borrow_mut().push(name));
+                }
+            }
+        }
+    }
+    match s {
+        Statement::BlockStatement(b) => scan_bigint_lets(&b.body),
+        Statement::IfStatement(i) => {
+            scan_one_bigint_let(&i.consequent);
+            if let Some(alt) = &i.alternate {
+                scan_one_bigint_let(alt); // covers `else if` chains
+            }
+        }
+        Statement::WhileStatement(w) => scan_one_bigint_let(&w.body),
+        _ => {}
+    }
+}
+
 /// Lower a function declaration → (define (name params...) body)
 fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, LispVal), String> {
     let name = f
@@ -554,10 +625,14 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, LispVal
     // (object = JSON-text binding; numeric props auto-decode on read)
     NUM_PARAM_NAMES.with(|s| s.borrow_mut().clear());
     OBJ_PARAM_PROPS.with(|s| s.borrow_mut().clear());
+    BIGINT_NAMES.with(|s| s.borrow_mut().clear());
+    BIGINT_LOCALS.with(|s| s.borrow_mut().clear());
     let mut param_names: Vec<(String, u8)> = Vec::new();
     for p in &f.params.items {
         let n = binding_name(&p.pattern)?;
-        let kind = if param_is_number(p) {
+        let kind = if param_is_bigint(p) {
+            4
+        } else if param_is_number(p) {
             1
         } else if param_is_str_array(p) {
             2
@@ -572,6 +647,9 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, LispVal
         } else {
             0
         };
+        if kind == 4 {
+            BIGINT_NAMES.with(|s| s.borrow_mut().push(n.clone()));
+        }
         param_names.push((n.clone(), kind));
     }
 
@@ -579,6 +657,10 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, LispVal
         .body
         .as_ref()
         .ok_or("ts_frontend: function overloads/declarations unsupported")?;
+
+    // forward-scan bigint lets (CPS lowering means let-site registration
+    // runs after statements that reference the binding — see scan_bigint_lets)
+    scan_bigint_lets(&body.statements);
 
     // view convention: get_* functions' returns become json_return_str
     // (the define tail value alone does not call value_return)
@@ -853,6 +935,9 @@ fn lower_prefix_around(stmts: &[Statement<'_>], tail: LispVal, view: bool) -> Re
                     .init
                     .as_ref()
                     .ok_or("ts_frontend: local declaration needs initializer")?;
+                if expr_is_bigint(init_e) {
+                    BIGINT_LOCALS.with(|s| s.borrow_mut().push(name.clone()));
+                }
                 bindings.push(list(vec![Sym(name), lower_expr(init_e)?]));
             }
             list(vec![Sym("let"), list(bindings), tail])
@@ -1955,13 +2040,62 @@ fn lower_exported_arrow(
     Ok((define, export))
 }
 
+/// true when the expression is bigint-shaped: `10n` literal, a bigint-typed
+/// param reference, a u128Xxx(...) call result, or nested bigint arithmetic.
+fn expr_is_bigint(e: &Expression<'_>) -> bool {
+    match e {
+        Expression::BigIntLiteral(_) => true,
+        Expression::Identifier(id) => {
+            let n = id.name.as_str();
+            BIGINT_NAMES.with(|s| s.borrow().iter().any(|x| x == n))
+                || BIGINT_LOCALS.with(|s| s.borrow().iter().any(|x| x == n))
+                || BIGINT_CONSTS.with(|s| s.borrow().iter().any(|x| x == n))
+        }
+        // `(a * b) / c` — parens hide the inner binary from detection
+        Expression::ParenthesizedExpression(pe) => expr_is_bigint(&pe.expression),
+        Expression::CallExpression(c) => {
+            if let Expression::Identifier(id) = &c.callee {
+                matches!(
+                    id.name.as_str(),
+                    "u128Add"
+                        | "u128Sub"
+                        | "u128Mul"
+                        | "u128Div"
+                        | "u128Mod"
+                        | "u128FromNum"
+                )
+            } else {
+                false
+            }
+        }
+        Expression::BinaryExpression(b) => {
+            matches!(
+                b.operator,
+                BinaryOperator::Addition
+                    | BinaryOperator::Subtraction
+                    | BinaryOperator::Multiplication
+                    | BinaryOperator::Division
+                    | BinaryOperator::Remainder
+            ) && (expr_is_bigint(&b.left) || expr_is_bigint(&b.right))
+        }
+        _ => false,
+    }
+}
+
 fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
     match e {
         Expression::NumericLiteral(n) => Ok(Num(n.value as i64)),
         Expression::StringLiteral(s) => Ok(Str(s.value.as_str().to_string())),
         Expression::BooleanLiteral(b) => Ok(Num(if b.value { 1 } else { 0 })),
         Expression::NullLiteral(_) => Ok(LispVal::Nil),
-        Expression::BigIntLiteral(b) => Ok(Str(b.raw.as_ref().map(|s| s.as_str().to_string()).unwrap_or_default())), // u128-style digits-as-string
+                // u128-style digits-as-string. oxc raw for `1000n` is "1000n" —
+        // strip the suffix: a stray 'n' would trap the u128/* parsers.
+        Expression::BigIntLiteral(b) => Ok(Str(
+            b.raw
+                .as_ref()
+                .map(|s| s.as_str().trim_end_matches('n').to_string())
+                .unwrap_or_default(),
+        )),
         Expression::TemplateLiteral(t) => {
             let mut parts = Vec::new();
             for i in 0..t.quasis.len() {
@@ -2096,6 +2230,51 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
         }
         Expression::ObjectExpression(obj) => lower_object_literal(obj),
         Expression::BinaryExpression(b) => {
+            // bigint operators (2026-08-31): either side bigint-shaped
+            // (`10n` literal, bigint param, u128Xxx(...) result, nested
+            // bigint arithmetic) ⇒ lower to the u128/* string family —
+            // i64 math silently truncates yocto-scale amounts.
+            if expr_is_bigint(&b.left) || expr_is_bigint(&b.right) {
+                let uop: Option<&str> = match b.operator {
+                    BinaryOperator::Addition => Some("u128/add"),
+                    BinaryOperator::Subtraction => Some("u128/sub"),
+                    BinaryOperator::Multiplication => Some("u128/mul"),
+                    BinaryOperator::Division => Some("u128/div"),
+                    BinaryOperator::Remainder => Some("u128/mod"),
+                    BinaryOperator::LessThan => Some("u128/lt"),
+                    BinaryOperator::GreaterThan => Some("u128/gt"),
+                    _ => None,
+                };
+                let l = lower_expr(&b.left)?;
+                let r = lower_expr(&b.right)?;
+                if let Some(uop) = uop {
+                    return Ok(list(vec![Sym(uop), l, r]));
+                }
+                match b.operator {
+                    BinaryOperator::LessEqualThan => {
+                        return Ok(list(vec![Sym("u128/gt"), r, l]))
+                    }
+                    BinaryOperator::GreaterEqualThan => {
+                        return Ok(list(vec![Sym("u128/lt"), r, l]))
+                    }
+                    BinaryOperator::Equality | BinaryOperator::StrictEquality => {
+                        return Ok(list(vec![Sym("u128/eq"), l, r]))
+                    }
+                    BinaryOperator::Inequality | BinaryOperator::StrictInequality => {
+                        return Ok(list(vec![
+                            Sym("="),
+                            Num(0),
+                            list(vec![Sym("u128/eq"), l, r]),
+                        ]))
+                    }
+                    _ => {
+                        return Err(format!(
+                            "ts_frontend: operator {:?} not supported on bigint operands",
+                            b.operator
+                        ))
+                    }
+                }
+            }
             // stringy +: fold into nested binary str-cat (checker's + is num-only;
             // any string literal / template operand ⇒ concat semantics)
             if b.operator == BinaryOperator::Addition
@@ -2536,8 +2715,11 @@ fn statically_bool(e: &Expression<'_>) -> bool {
                     callee_name(&c.callee)
                         .ok()
                         .map(|h| {
+                            // camel names (u128Lt) map to the lisp builtin
+                            // (u128/lt) — check the POST-mapping name
+                            let mapped = map_builtin_call(&h);
                             matches!(
-                                h.as_str(),
+                                mapped.as_str(),
                                 "u128/gt" | "u128/lt" | "u128/gte" | "u128/lte" | "u128/eq"
                                     | "near/deposit-gte"
                             )
@@ -2548,8 +2730,9 @@ fn statically_bool(e: &Expression<'_>) -> bool {
                 callee_name(&c.callee)
                     .ok()
                     .map(|h| {
+                        let mapped = map_builtin_call(&h);
                         matches!(
-                            h.as_str(),
+                            mapped.as_str(),
                             "u128/gt" | "u128/lt" | "u128/gte" | "u128/lte" | "u128/eq"
                                 | "near/deposit-gte"
                         )
@@ -2704,9 +2887,29 @@ fn map_builtin_call(name: &str) -> String {
         "schnorrVerify" => "schnorr-verify",
         "jsonSet" => "json-set",
         "jsonQuote" => "json-quote",
+        // u128-precision arithmetic (decimal-string ABI, both runtimes)
+        "u128Add" => "u128/add",
+        "u128Sub" => "u128/sub",
+        "u128Mul" => "u128/mul",
+        "u128Div" => "u128/div",
+        "u128Mod" => "u128/mod",
+        "u128Lt" => "u128/lt",
+        "u128Gt" => "u128/gt",
+        "u128Eq" => "u128/eq",
+        "u128IsZero" => "u128/is-zero",
+        "u128FromNum" => "u128/from-i64",
+        "u128ToNum" => "u128/to-i64",
         _ => return name.to_string(),
     }
     .to_string()
+}
+
+/// `amt: bigint` — u128-precision amount param (decimal-string ABI).
+fn param_is_bigint(p: &FormalParameter<'_>) -> bool {
+    match &p.type_annotation {
+        Some(a) => matches!(&a.type_annotation, TSType::TSBigIntKeyword(_)),
+        None => false,
+    }
 }
 
 fn param_is_str_array(p: &FormalParameter<'_>) -> bool {

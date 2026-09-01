@@ -105,5 +105,13 @@ name = "sol-compile"
 path = "src/bin/sol_compile.rs"
 
 [[bin]]
+name = "ir-dump"
+path = "src/bin/ir_dump.rs"
+
+[[bin]]
+name = "wrun"
+path = "src/bin/wrun.rs"
+
+[[bin]]
 name = "lisp-rlm"
 path = "src/bin/lisp_rl.rs"

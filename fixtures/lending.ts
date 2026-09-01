@@ -1,69 +1,68 @@
-// ── Lending v1 — single-asset, collateralized, all-integer math ──
+// ── Lending v2 — u128 precision (yoctoNEAR, 10^24) ──
 //
-// Model: deposit the native token as collateral, borrow against it.
-//   LTV 50% (500 bp) · 5% (500 bp) origination fee · balances in u64
-// Interest accrual is per-action in v1 (time-based needs block_ts, v2).
+// All balance math is bigint: operators lower to the u128/* string family
+// (limb math on both runtimes), so amounts never touch i64.
+//   LTV 50% · 5% origination fee (ceiled — the protocol keeps the dust)
 
-const LTV_BP = 5000;  // 50% collateral factor (basis points)
-const FEE_BP = 500;   // 5% origination fee on borrows
-const SCALE = 10000;
+const LTV_BP = 5000n;   // 50% collateral factor
+const FEE_BP = 500n;    // 5% origination fee
+const SCALE = 10000n;
+const ZERO = 0n;
 
-export function deposit(amt: number): string {
+export function deposit(amt: bigint): string {
   let who = near.signerAccountId();
-  let acct = near.storageGet("lv1:" + who) ?? '{"dep":0,"bor":0}';
-  let dep = strToNum(acct.dep) + amt;
-  let next = jsonSet(acct, "dep", toStr(dep));
-  near.storageSet("lv1:" + who, next);
+  let acct = near.storageGet("lv2:" + who) ?? '{"dep":"0","bor":"0"}';
+  let dep = acct.dep + amt;
+  let next = jsonSet(acct, "dep", dep);
+  near.storageSet("lv2:" + who, next);
   return next;
 }
 
-export function withdraw(amt: number): string {
+export function withdraw(amt: bigint): string {
   let who = near.signerAccountId();
-  let acct = near.storageGet("lv1:" + who) ?? '{"dep":0,"bor":0}';
-  let dep = strToNum(acct.dep) - amt;
+  let acct = near.storageGet("lv2:" + who) ?? '{"dep":"0","bor":"0"}';
+  let dep = acct.dep - amt;
   // remaining collateral must still cover the open borrow at LTV
-  if (dep * LTV_BP < strToNum(acct.bor) * SCALE) {
+  if (dep * LTV_BP < acct.bor * SCALE) {
     near.abort("withdraw would undercollateralize");
   }
-  let next = jsonSet(acct, "dep", toStr(dep));
-  near.storageSet("lv1:" + who, next);
+  let next = jsonSet(acct, "dep", dep);
+  near.storageSet("lv2:" + who, next);
   return next;
 }
 
-export function borrow(amt: number): string {
+export function borrow(amt: bigint): string {
   let who = near.signerAccountId();
-  let acct = near.storageGet("lv1:" + who) ?? '{"dep":0,"bor":0}';
-  // debt grows by amt + fee, all in integer basis points
-  let add = (amt * (SCALE + FEE_BP)) / SCALE;
-  let bor = strToNum(acct.bor) + add;
-  if (strToNum(acct.dep) * LTV_BP < bor * SCALE) {
+  let acct = near.storageGet("lv2:" + who) ?? '{"dep":"0","bor":"0"}';
+  // debt = amt * (1 + fee), rounded UP — never lend the fee short
+  let add = (amt * (SCALE + FEE_BP) + (SCALE - 1n)) / SCALE;
+  let bor = acct.bor + add;
+  if (acct.dep * LTV_BP < bor * SCALE) {
     near.abort("insufficient collateral");
   }
-  let next = jsonSet(acct, "bor", toStr(bor));
-  near.storageSet("lv1:" + who, next);
+  let next = jsonSet(acct, "bor", bor);
+  near.storageSet("lv2:" + who, next);
   return next;
 }
 
-export function repay(amt: number): string {
+export function repay(amt: bigint): string {
   let who = near.signerAccountId();
-  let acct = near.storageGet("lv1:" + who) ?? '{"dep":0,"bor":0}';
-  let bor = strToNum(acct.bor) - amt;
-  if (bor < 0) {
-    bor = 0;
+  let acct = near.storageGet("lv2:" + who) ?? '{"dep":"0","bor":"0"}';
+  let bor = acct.bor - amt;
+  if (bor < ZERO) {
+    bor = ZERO;
   }
-  let next = jsonSet(acct, "bor", toStr(bor));
-  near.storageSet("lv1:" + who, next);
+  let next = jsonSet(acct, "bor", bor);
+  near.storageSet("lv2:" + who, next);
   return next;
 }
 
-// health = collateral coverage, 10000 = exactly at LTV limit
+// coverage in basis points: 10000+ = safe, <10000 = liquidatable
 export function health(): string {
   let who = near.signerAccountId();
-  let acct = near.storageGet("lv1:" + who) ?? '{"dep":0,"bor":0}';
-  let bor = strToNum(acct.bor);
-  if (bor == 0) {
+  let acct = near.storageGet("lv2:" + who) ?? '{"dep":"0","bor":"0"}';
+  if (acct.bor == ZERO) {
     return "inf";
   }
-  let h = (strToNum(acct.dep) * LTV_BP * SCALE) / (bor * SCALE);
-  return toStr(h);
+  return (acct.dep * LTV_BP) / acct.bor;
 }

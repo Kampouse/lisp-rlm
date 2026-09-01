@@ -563,8 +563,15 @@ impl WasmEmitter {
                 let h = self.ensure_u128_str_helpers();
                 let av = self.expr(&a[0])?;
                 let bv = self.expr(&a[1])?;
-                let va = self.local_idx("__u128sa");
-                let vb = self.local_idx("__u128sb");
+                // (2026-08-31) FRESH locals per invocation: a u128 op nested
+                // in the second operand reused __u128sa/__u128sb and
+                // clobbered the outer op's saved first operand —
+                // (u128/lt (u128/mul A B) (u128/mul C D)) compared C's
+                // operand instead of A*B's result (interp was right).
+                let gen = self.u128_call_count;
+                self.u128_call_count += 1;
+                let va = self.local_idx(&format!("__u128sa_{gen}"));
+                let vb = self.local_idx(&format!("__u128sb_{gen}"));
                 let mut v = Vec::new();
                 v.extend(av); v.push(Instruction::LocalSet(va));
                 v.extend(bv); v.push(Instruction::LocalSet(vb));
@@ -586,8 +593,15 @@ impl WasmEmitter {
                 let h = self.ensure_u128_str_helpers();
                 let av = self.expr(&a[0])?;
                 let bv = self.expr(&a[1])?;
-                let va = self.local_idx("__u128sa");
-                let vb = self.local_idx("__u128sb");
+                // (2026-08-31) FRESH locals per invocation: a u128 op nested
+                // in the second operand reused __u128sa/__u128sb and
+                // clobbered the outer op's saved first operand —
+                // (u128/lt (u128/mul A B) (u128/mul C D)) compared C's
+                // operand instead of A*B's result (interp was right).
+                let gen = self.u128_call_count;
+                self.u128_call_count += 1;
+                let va = self.local_idx(&format!("__u128sa_{gen}"));
+                let vb = self.local_idx(&format!("__u128sb_{gen}"));
                 let mut v = Vec::new();
                 v.extend(av); v.push(Instruction::LocalSet(va));
                 v.extend(bv); v.push(Instruction::LocalSet(vb));
@@ -609,8 +623,15 @@ impl WasmEmitter {
                 let h = self.ensure_u128_str_helpers();
                 let av = self.expr(&a[0])?;
                 let bv = self.expr(&a[1])?;
-                let va = self.local_idx("__u128sa");
-                let vb = self.local_idx("__u128sb");
+                // (2026-08-31) FRESH locals per invocation: a u128 op nested
+                // in the second operand reused __u128sa/__u128sb and
+                // clobbered the outer op's saved first operand —
+                // (u128/lt (u128/mul A B) (u128/mul C D)) compared C's
+                // operand instead of A*B's result (interp was right).
+                let gen = self.u128_call_count;
+                self.u128_call_count += 1;
+                let va = self.local_idx(&format!("__u128sa_{gen}"));
+                let vb = self.local_idx(&format!("__u128sb_{gen}"));
                 let mut v = Vec::new();
                 v.extend(av); v.push(Instruction::LocalSet(va));
                 v.extend(bv); v.push(Instruction::LocalSet(vb));
