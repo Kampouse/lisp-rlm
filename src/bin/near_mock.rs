@@ -494,10 +494,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             r[0] = Val::I64(
                 // NEAR host returns NANoseconds — mock must match the real
                 // scale (was millis: silent 1e6x unit divergence).
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos() as i64,
+                // NEAR_MOCK_BLOCK_TS pins it for deterministic time tests
+                // (interest accrual): real clock otherwise.
+                std::env::var("NEAR_MOCK_BLOCK_TS")
+                    .ok()
+                    .and_then(|s| s.parse::<i64>().ok())
+                    .unwrap_or_else(|| {
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_nanos() as i64
+                    }),
             );
             Ok(())
         },

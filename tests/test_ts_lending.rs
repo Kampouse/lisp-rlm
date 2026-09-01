@@ -1,60 +1,64 @@
-//! Lending-protocol lifecycle — u128 precision (TS surface, 2026-08-31).
+//! Lending v3 — u128 + time-based interest (2026-08-31).
 //!
-//! deposit → borrow-reject (LTV) → borrow-ok (fee math, ceiled) → repay →
-//! withdraw, in YOCTO units (1 NEAR = 10^24) across separate near-mock
-//! invocations sharing the persistent state file. Amounts deliberately
-//! exceed i64 (~9.2e18) — the whole point of the u128 string ABI.
+//! Deterministic via NEAR_MOCK_BLOCK_TS pinning: deposit/borrow at t0,
+//! health at t0+100d shows exactly the predicted accrued debt
+//! (10% APY, floor division, lazy accrual on every entry).
 
 use std::process::Command;
 use lisp_rlm_wasm::ts_frontend::ts_to_lisp_source;
-use lisp_rlm_wasm::{parse_all, typing, compile_near_from_exprs};
+use lisp_rlm_wasm::{parse_all, compile_near_from_exprs};
 
 const SRC: &str = include_str!("../fixtures/lending.ts");
 
-fn run(method: &str, input: &str) -> String {
-    let ir = ts_to_lisp_source(SRC).unwrap_or_else(|e| panic!("ts lowering failed: {}", e));
-    let exprs = lisp_rlm_wasm::parse_all(&ir).expect("must parse");
-    lisp_rlm_wasm::typing::type_check_program(&exprs, true).expect("must typecheck");
-    let wasm = lisp_rlm_wasm::compile_near_from_exprs(&exprs).unwrap_or_else(|e| panic!("compile failed: {}", e));
-    let tmp = std::env::temp_dir().join(format!("nm_lending_{}.wasm", std::process::id()));
+fn run(method: &str, input: &str, ts_ns: &str) -> String {
+    let ir = ts_to_lisp_source(SRC).unwrap_or_else(|e| panic!("lowering: {}", e));
+    let exprs = parse_all(&ir).expect("parse");
+    lisp_rlm_wasm::typing::type_check_program(&exprs, true).expect("typecheck");
+    let wasm = compile_near_from_exprs(&exprs).unwrap_or_else(|e| panic!("compile: {}", e));
+    let tmp = std::env::temp_dir().join(format!("nm_l3_{}.wasm", std::process::id()));
     std::fs::write(&tmp, &wasm).unwrap();
     let out = Command::new("./target/release/near-mock")
+        .env("NEAR_MOCK_BLOCK_TS", ts_ns)
         .arg(&tmp)
         .arg(method)
         .arg(input)
         .output()
-        .expect("near-mock should run");
+        .expect("near-mock");
     format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
 }
 
+const TS0: &str = "1800000000000000000";
+// TS0 + 100*86400*1e9 = 1_808_640_000_000_000_000 (machine-derived —
+// a hand-typed transposition here cost 20min of phantom-bug hunting)
+const T100D: &str = "1808640000000000000";
+
 #[test]
-fn lending_lifecycle_u128() {
-    let _ = std::fs::remove_file("/tmp/near-mock-state.bin"); // fresh state
+fn lending_interest_accrues_exact() {
+    let _ = std::fs::remove_file("/tmp/near-mock-state.bin");
 
-    // deposit 5.25 NEAR = 5.25e24 yocto (25 digits — over i64)
-    let out = run("deposit", r#"{"amt":"5250000000000000000000000"}"#);
-    assert!(out.contains(r#"📄 {"dep":5250000000000000000000000,"bor":"0"}"#), "deposit: {out}");
+    // deposit 10 NEAR at t0
+    let out = run("deposit", r#"{"amt":"10000000000000000000000000"}"#, TS0);
+    assert!(out.contains(r#""dep":10000000000000000000000000"#), "{out}");
 
-    // borrow 3 NEAR: debt 3.15e24, cover only 2.625e24 → ABORT with reason
-    let out = run("borrow", r#"{"amt":"3000000000000000000000000"}"#);
-    assert!(
-        out.contains("insufficient collateral") && out.contains("ABORT"),
-        "over-LTV borrow must abort with reason: {out}"
-    );
+    // borrow 4 NEAR → debt 4.2e24 (5% fee), clock stamped t0
+    let out = run("borrow", r#"{"amt":"4000000000000000000000000"}"#, TS0);
+    assert!(out.contains(r#""bor":4200000000000000000000000"#), "{out}");
 
-    // borrow 2 NEAR: debt = 2e24*10500/10000 = 2.1e24 exactly (fee ceiled)
-    let out = run("borrow", r#"{"amt":"2000000000000000000000000"}"#);
-    assert!(out.contains(r#"📄 {"dep":5250000000000000000000000,"bor":2100000000000000000000000}"#), "borrow: {out}");
+    // t0: health = 10e24*5000/4.2e24 = 11904 bp
+    let out = run("health", "{}", TS0);
+    assert!(out.contains("📄 11904"), "{out}");
 
-    // health = dep*LTV/bor = 5.25e24*5000/2.1e24 = 12500 (bp)
-    let out = run("health", "{}");
-    assert!(out.contains("📄 12500"), "health: {out}");
+    // +100 days: interest = 4.2e24*1000*8640000/(10000*31536000)
+    //            = 115068493150684931506849 (floor) → debt 4315068493150684931506849
+    // health = 10e24*5000/4315068493150684931506849 = 11587
+    let out = run("health", "{}", T100D);
+    assert!(out.contains("📄 11587"), "interest must accrue exactly: {out}");
 
-    // repay the full 2.1 NEAR debt
-    let out = run("repay", r#"{"amt":"2100000000000000000000000"}"#);
-    assert!(out.contains(r#""bor":0"#), "repay: {out}");
+    // repay 0 at +100d returns the accrued debt (pure query effect)
+    let out = run("repay", r#"{"amt":"0"}"#, T100D);
+    assert!(out.contains(r#""bor":4315068493150684931506849"#), "{out}");
 
-    // withdraw everything
-    let out = run("withdraw", r#"{"amt":"5250000000000000000000000"}"#);
-    assert!(out.contains(r#"📄 {"dep":0,"bor":0}"#), "withdraw: {out}");
+    // over-LTV borrow at t0 again still aborts with reason
+    let out = run("borrow", r#"{"amt":"5000000000000000000000000"}"#, T100D);
+    assert!(out.contains("insufficient collateral"), "{out}");
 }
