@@ -35,7 +35,7 @@ use crate::types::LispVal;
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
     Argument, Declaration, Expression, FormalParameter, Function as TsFunction, Program, Statement,
-    TSType,
+    TSType, VariableDeclarator,
 };
 use oxc_parser::Parser;
 use oxc_span::SourceType;
@@ -53,6 +53,7 @@ pub fn ts_to_lisp_source(src: &str) -> Result<String, String> {
     OBJ_PARAM_PROPS.with(|s| s.borrow_mut().clear());
     BIGINT_NAMES.with(|s| s.borrow_mut().clear());
     BIGINT_LOCALS.with(|s| s.borrow_mut().clear());
+    SHAPE_BIGINT_FIELDS.with(|s| s.borrow_mut().clear());
     TYPE_ALIASES.with(|s| s.borrow_mut().clear());
     CONST_FOLDS.with(|s| s.borrow_mut().clear());
     BIGINT_CONSTS.with(|s| s.borrow_mut().clear());
@@ -86,6 +87,14 @@ thread_local! {
     /// `let x = <bigint expr>;` locals in the function being lowered —
     /// bigint-shaped for later operator selection in the same body.
     static BIGINT_LOCALS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// Record-typed locals with bigint fields, inferred from the shape
+    /// literal in `let rec = storageGet(...) ?? '{"amt":"0",...}'`:
+    /// keys whose default is a QUOTED NUMERIC string are bigint fields
+    /// (the storageGet ?? record pattern; found via the HTLC contract
+    /// 2026-09-01 — `rec.amt + x` lowered to plain numeric + because
+    /// dot-access never carried the shape's bigint typing).
+    static SHAPE_BIGINT_FIELDS: std::cell::RefCell<Vec<(String, String)>> =
         const { std::cell::RefCell::new(Vec::new()) };
     /// Object-typed params in scope: (param, props) where props carry
     /// is_number per key. Drives (1) read-time auto str->num on
@@ -394,6 +403,7 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
     OBJ_PARAM_PROPS.with(|s| s.borrow_mut().clear());
     BIGINT_NAMES.with(|s| s.borrow_mut().clear());
     BIGINT_LOCALS.with(|s| s.borrow_mut().clear());
+    SHAPE_BIGINT_FIELDS.with(|s| s.borrow_mut().clear());
     let mut param_names: Vec<(String, u8)> = Vec::new();
     for p in &f.params.items {
         let n = binding_name(&p.pattern)?;
@@ -597,6 +607,7 @@ fn scan_one_bigint_let(s: &Statement<'_>) {
                     BIGINT_LOCALS.with(|m| m.borrow_mut().push(name));
                 }
             }
+            register_shape_fields(d, init);
         }
     }
     match s {
@@ -627,6 +638,7 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, LispVal
     OBJ_PARAM_PROPS.with(|s| s.borrow_mut().clear());
     BIGINT_NAMES.with(|s| s.borrow_mut().clear());
     BIGINT_LOCALS.with(|s| s.borrow_mut().clear());
+    SHAPE_BIGINT_FIELDS.with(|s| s.borrow_mut().clear());
     let mut param_names: Vec<(String, u8)> = Vec::new();
     for p in &f.params.items {
         let n = binding_name(&p.pattern)?;
@@ -938,6 +950,7 @@ fn lower_prefix_around(stmts: &[Statement<'_>], tail: LispVal, view: bool) -> Re
                 if expr_is_bigint(init_e) {
                     BIGINT_LOCALS.with(|s| s.borrow_mut().push(name.clone()));
                 }
+                register_shape_fields(d, init_e);
                 bindings.push(list(vec![Sym(name), lower_expr(init_e)?]));
             }
             list(vec![Sym("let"), list(bindings), tail])
@@ -2042,9 +2055,82 @@ fn lower_exported_arrow(
 
 /// true when the expression is bigint-shaped: `10n` literal, a bigint-typed
 /// param reference, a u128Xxx(...) call result, or nested bigint arithmetic.
+/// Register `rec.field` pairs as bigint-typed when the let's default is a
+/// JSON shape literal with quoted-numeric field defaults: `?? '{"amt":"0"}'`
+/// ⇒ rec.amt is bigint-shaped. Called from every bigint-let scan site.
+fn register_shape_fields(d: &VariableDeclarator<'_>, init: &Expression<'_>) {
+    // unwrap parens / ?? chains to the rightmost default
+    let mut e = init;
+    loop {
+        match e {
+            Expression::ParenthesizedExpression(pe) => e = &pe.expression,
+            Expression::LogicalExpression(l)
+                if l.operator == LogicalOperator::Coalesce =>
+            {
+                e = &l.right
+            }
+            _ => break,
+        }
+    }
+    let Expression::StringLiteral(sl) = e else { return };
+    let Ok(name) = binding_name(&d.id) else { return };
+    for field in shape_bigint_fields(&sl.value) {
+        SHAPE_BIGINT_FIELDS.with(|m| m.borrow_mut().push((name.clone(), field)));
+    }
+}
+
+/// Extract keys whose values are quoted numeric strings: `"amt":"0"` → amt.
+/// Empty strings and non-numeric values are excluded (those fields are
+/// genuinely string-typed: state, owner, hash…).
+fn shape_bigint_fields(lit: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = lit.trim().trim_start_matches('{').trim_end_matches('}');
+    while let Some(i) = rest.find('"') {
+        rest = &rest[i + 1..];
+        let Some(k_end) = rest.find('"') else { break };
+        let key = &rest[..k_end];
+        rest = &rest[k_end + 1..];
+        let Some(c_end) = rest.find(':') else { break };
+        rest = &rest[c_end + 1..];
+        let v = rest.trim_start();
+        if let Some(stripped) = v.strip_prefix('"') {
+            if let Some(v_end) = stripped.find('"') {
+                let val = &stripped[..v_end];
+                if !val.is_empty() && val.bytes().all(|b| b.is_ascii_digit()) {
+                    out.push(key.to_string());
+                }
+                rest = &stripped[v_end + 1..];
+                continue;
+            }
+        }
+        // unquoted or missing value: skip to next comma
+        match rest.find(',') {
+            Some(c) => rest = &rest[c + 1..],
+            None => break,
+        }
+    }
+    out
+}
+
 fn expr_is_bigint(e: &Expression<'_>) -> bool {
     match e {
         Expression::BigIntLiteral(_) => true,
+        // `x ?? 0n` — the DEFAULT defines the miss-type: storageGet
+        // results are decimal strings in this ABI, so a bigint default
+        // makes the whole local bigint-shaped. (HTLC 2026-09-01:
+        // `bal + rec.amt` needed this; bal was `storageGet(...) ?? 0n`.)
+        Expression::LogicalExpression(l)
+            if l.operator == LogicalOperator::Coalesce =>
+        {
+            expr_is_bigint(&l.right)
+        }
+        // `rec.amt` where rec's shape literal has a quoted-numeric default
+        Expression::StaticMemberExpression(sm) => {
+            let Expression::Identifier(base) = &sm.object else { return false };
+            let field = sm.property.name.as_str();
+            SHAPE_BIGINT_FIELDS
+                .with(|s| s.borrow().iter().any(|(b, f)| b == base.name.as_str() && f == field))
+        }
         Expression::Identifier(id) => {
             let n = id.name.as_str();
             BIGINT_NAMES.with(|s| s.borrow().iter().any(|x| x == n))
@@ -2888,6 +2974,25 @@ fn map_member_fn(obj: &str, prop: &str) -> String {
     }
     if obj == "near" && (prop == "yieldResume" || prop == "promiseYieldResume") {
         return "near/promise_yield_resume".into();
+    }
+    if obj == "near" {
+        // kebab-canonical builtins: these map to unprefixed kebab ops, NOT
+        // the default near/snake_name path. The default path produced
+        // near/json_get / near/json_set — which don't exist (only the free
+        // function spellings jsonGet()/jsonSet() reached the real ops).
+        // Found via the HTLC contract (2026-09-01): every earlier contract
+        // had accidentally used the free-function form.
+        if let Some(kebab) = match prop {
+            "jsonGet" => Some("json-get"),
+            "jsonSet" => Some("json-set"),
+            "jsonQuote" => Some("json-quote"),
+            "sha256Hash" => Some("sha256-hash"),
+            "hexDecode" => Some("hex-decode"),
+            "schnorrVerify" => Some("schnorr-verify"),
+            _ => None,
+        } {
+            return kebab.into();
+        }
     }
     if obj == "near" && prop == "jsonArr" {
         // json array args: {"k": ["a","b"]} → TAG_ARRAY of strings

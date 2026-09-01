@@ -1136,7 +1136,18 @@ impl WasmEmitter {
                             _ => {
                                 self.need_host(idx);
                                 let mut v = vec![Self::host_call(idx)];
-                                v.extend(self.emit_tag_num());
+                                if idx == 9 {
+                                    // block_timestamp: nanos (~1.8e18) exceed f64's
+                                    // 2^53 mantissa — tag_num would round off the
+                                    // low digits. The checker types this op as str
+                                    // (exact decimal string), so route the raw i64
+                                    // through the exact i64_to_str helper instead.
+                                    // Divergence found via HTLC timeout math.
+                                    let h = self.ensure_u128_str_helpers();
+                                    v.push(Instruction::Call(USER_BASE | h.i64_to_str));
+                                } else {
+                                    v.extend(self.emit_tag_num());
+                                }
                                 Ok(v)
                             }
                         }
