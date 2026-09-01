@@ -2235,6 +2235,24 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
             // bigint arithmetic) ⇒ lower to the u128/* string family —
             // i64 math silently truncates yocto-scale amounts.
             if expr_is_bigint(&b.left) || expr_is_bigint(&b.right) {
+                // Mixed `+` with a NON-NUMERIC string literal is
+                // concatenation, not arithmetic (2026-09-01, found via the
+                // FT contract): `"supply:" + (supply + amount)` lowered to
+                // (u128/add "supply:" …) which traps parsing "supply:".
+                // u128 values are decimal strings at runtime — str-cat is
+                // the correct join. Numeric-only literals keep u128/add
+                // (they mean real arithmetic).
+                if b.operator == BinaryOperator::Addition {
+                    let lit_is_nonnumeric = |e: &Expression| {
+                        matches!(e, Expression::StringLiteral(sl)
+                            if sl.value.bytes().any(|b| !b.is_ascii_digit()))
+                    };
+                    if lit_is_nonnumeric(&b.left) || lit_is_nonnumeric(&b.right) {
+                        let l = lower_expr(&b.left)?;
+                        let r = lower_expr(&b.right)?;
+                        return Ok(list(vec![Sym("str-cat"), l, r]));
+                    }
+                }
                 let uop: Option<&str> = match b.operator {
                     BinaryOperator::Addition => Some("u128/add"),
                     BinaryOperator::Subtraction => Some("u128/sub"),
