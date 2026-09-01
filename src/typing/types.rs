@@ -1272,6 +1272,32 @@ impl TcEnv {
         // near/promise_return : int → int (returns the promise to the runtime;
         // bytecode VM yields Num(0) — mirrored here. Found via the portfolio
         // aggregator: TS reached the form but the env had no entry.)
+        // Promise BATCH forms (raw TS surface — exercised by the airdrop
+        // protocol 2026-09-01). batch_create/then tagged by the emitter;
+        // action forms return 0 (statement-position calls).
+        env.insert_mono(
+            "near/promise_results_count".into(),
+            TcType::Arrow(vec![], Box::new(int_ty.clone())),
+        );
+        env.insert_mono(
+            "near/promise_batch_create".into(),
+            TcType::Arrow(vec![str_ty.clone()], Box::new(int_ty.clone())),
+        );
+        env.insert_mono(
+            "near/promise_batch_then".into(),
+            TcType::Arrow(vec![int_ty.clone(), str_ty.clone()], Box::new(int_ty.clone())),
+        );
+        env.insert_mono(
+            "near/promise_batch_action_function_call".into(),
+            TcType::Arrow(
+                vec![int_ty.clone(), str_ty.clone(), str_ty.clone(), str_ty.clone(), int_ty.clone()],
+                Box::new(int_ty.clone()),
+            ),
+        );
+        env.insert_mono(
+            "near/promise_batch_action_transfer".into(),
+            TcType::Arrow(vec![int_ty.clone(), str_ty.clone()], Box::new(int_ty.clone())),
+        );
         env.insert_mono(
             "near/promise_return".into(),
             TcType::Arrow(vec![int_ty.clone()], Box::new(int_ty.clone())),

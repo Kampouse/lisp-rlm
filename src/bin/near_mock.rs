@@ -88,6 +88,27 @@ fn run_cross(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         .with(|m| m.borrow().as_ref().unwrap().get(contract_acct).cloned())
         .ok_or(format!("contract account {} not in manifest", contract_acct))?;
 
+    // Attached deposit (NEAR_MOCK_ATTACH=decimal yocto) — credited to the
+    // callee's NEAR balance before the entry runs, like a real receipt.
+    if let Ok(attach) = std::env::var("NEAR_MOCK_ATTACH") {
+        if !attach.is_empty() {
+            let amt: u128 = attach.trim().parse().map_err(|_| "NEAR_MOCK_ATTACH must be decimal yocto")?;
+            let state0 = state.lock().unwrap();
+            let key = prefixed_key(contract_acct, b"\x00near-bal");
+            let bal: u128 = state0
+                .storage
+                .get(&key)
+                .and_then(|v| std::str::from_utf8(v).ok())
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0u128);
+            let key_owned = key.clone();
+            drop(state0);
+            let mut state0 = state.lock().unwrap();
+            state0.storage.insert(key_owned, (bal + amt).to_string().into_bytes());
+            eprintln!("  💰 attached {} yocto → {} (bal {})", amt, contract_acct, bal + amt);
+        }
+    }
+
     let mut store = wasmtime::Store::new(&*engine, ());
     store.set_fuel(PREPAID_FUEL.with(|f| *f.borrow()))?;
     let linker = build_env_linker(&mut store, &*engine, state.clone(), args_json.clone().into_bytes())?;
@@ -98,6 +119,37 @@ fn run_cross(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         .ok_or_else(|| format!("Method '{}' not found", method))?;
     println!("▶ {}.{}({})", contract_acct, method, if args_json == "{}" { "".into() } else { args_json.clone() });
     let result = func.call(&mut store, &[], &mut []);
+    let tx_snapshot: HashMap<Vec<u8>, Vec<u8>> = {
+        // taken AFTER attach credit — the deposit is part of the tx; a
+        // failed tx refunds it (NEAR: attached deposit returns on failure)
+        let st = state.lock().unwrap();
+        let mut s2: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+        for (k, v) in st.storage.iter() {
+            if k != &prefixed_key(contract_acct, b"\x00near-bal") || result.is_ok() {
+                // keep pre-entry balances only when the entry failed;
+                // on success we snapshot post-attach (deposit sticks)
+            }
+            s2.insert(k.clone(), v.clone());
+        }
+        if result.is_err() {
+            // entry failed: snapshot WITHOUT the attach credit → full refund
+            if let Ok(attach) = std::env::var("NEAR_MOCK_ATTACH") {
+                if let Ok(amt) = attach.trim().parse::<u128>() {
+                    let key = prefixed_key(contract_acct, b"\x00near-bal");
+                    if let Some(v) = s2.get(&key).cloned() {
+                        let bal: u128 = String::from_utf8_lossy(&v).trim().parse().unwrap_or(0);
+                        let pre_bal = bal.saturating_sub(amt);
+                        if pre_bal > 0 {
+                            s2.insert(key, pre_bal.to_string().into_bytes());
+                        } else {
+                            s2.remove(&key);
+                        }
+                    }
+                }
+            }
+        }
+        s2
+    };
 
     match result {
         Ok(_) => {
@@ -117,7 +169,22 @@ fn run_cross(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             // Resolve any promise returned by the entry
             if let Some(idx) = pending {
                 eprintln!("  ⛓ resolving promise DAG (root {})", idx);
-                let results = execute_promise(idx)?;
+                let dag = execute_promise(idx);
+                if let Err(e) = &dag {
+                    println!("❌ receipt chain failed: {}", e);
+                    println!("   ↺ full rollback (single tx = atomic)");
+                    let mut st = state.lock().unwrap();
+                    st.storage = tx_snapshot;
+                    drop(st);
+                    let st = state.lock().unwrap();
+                    let mut keys: Vec<(&Vec<u8>, &Vec<u8>)> = st.storage.iter().collect();
+                    keys.sort();
+                    println!("💾 Saved {} keys (rolled back)", keys.len());
+                    let encoded = bincode::serialize(&st.storage)?;
+                    std::fs::write(state_path, encoded)?;
+                    return Ok(());
+                }
+                let results = dag.unwrap();
                 let last = results.iter().rev().find_map(|r| r.as_ref().cloned());
                 if let Some(bytes) = last {
                     let s = String::from_utf8_lossy(&bytes);
@@ -130,6 +197,9 @@ fn run_cross(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => {
             println!("❌ {}", e);
             println!("   ↳ debug: {:?}", e);
+            println!("   ↺ entry trapped — full rollback (single tx = atomic)");
+            let mut st = state.lock().unwrap();
+            st.storage = tx_snapshot;
         }
     }
 
@@ -341,6 +411,7 @@ fn execute_promise(idx: usize) -> Result<Vec<Option<Vec<u8>>>, Box<dyn std::erro
     let saved =
         PROMISE_RESULTS.with(|r| std::mem::replace(&mut *r.borrow_mut(), dep_results.clone()));
     let mut out = Vec::new();
+    let mut batch_touched: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::new();
     if !batch.account.is_empty() {
         for action in &batch.actions {
             match action {
@@ -348,8 +419,64 @@ fn execute_promise(idx: usize) -> Result<Vec<Option<Vec<u8>>>, Box<dyn std::erro
                     out.push(sub_execute(&batch.account, method, args, &batch.creator)?);
                 }
                 PAction::Transfer(amt) => {
-                    eprintln!("  ↗ transfer {} yocto → {}", amt, batch.account);
-                    out.push(Some(vec![]));
+                    // NEAR semantics: transfers carry REAL value; a receipt is
+                    // atomic but SIBLING receipts commit independently. On
+                    // insufficient balance THIS receipt reverts (only the
+                    // partitions it touched) and yields a FAILED promise
+                    // result — the callback decides (fail-closed pattern).
+                    let state = STATE_ARC.with(|s| s.borrow().clone()).ok_or("no state")?;
+                    let mut st = state.lock().unwrap();
+                    let debit_key = prefixed_key(&batch.creator, b"\x00near-bal");
+                    let bal: u128 = st
+                        .storage
+                        .get(&debit_key)
+                        .and_then(|v| std::str::from_utf8(v).ok())
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0u128);
+                    if bal < *amt {
+                        eprintln!(
+                            "  ⚠ transfer {} yocto → {}: creator {} has {} — INSUFFICIENT (this receipt reverts)",
+                            amt, batch.account, batch.creator, bal
+                        );
+                        // revert everything this batch touched so far
+                        for (k, v) in batch_touched.iter() {
+                            match v {
+                                Some(val) => {
+                                    st.storage.insert(k.clone(), val.clone());
+                                }
+                                None => {
+                                    st.storage.remove(k);
+                                }
+                            }
+                        }
+                        out.push(None); // FAILED promise result
+                        break; // skip the rest of THIS receipt only
+                    }
+                    batch_touched.push((
+                        debit_key.clone(),
+                        st.storage.get(&debit_key).cloned(),
+                    ));
+                    st.storage.insert(debit_key, (bal - *amt).to_string().into_bytes());
+                    let credit_key = prefixed_key(&batch.account, b"\x00near-bal");
+                    batch_touched.push((
+                        credit_key.clone(),
+                        st.storage.get(&credit_key).cloned(),
+                    ));
+                    let rbal: u128 = st
+                        .storage
+                        .get(&credit_key)
+                        .and_then(|v| std::str::from_utf8(v).ok())
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0u128);
+                    let rbal = rbal + *amt;
+                    st.storage.insert(credit_key, rbal.to_string().into_bytes());
+                    eprintln!("  ↗ transfer {} yocto → {} (bal now {})", amt, batch.account, rbal);
+                    // DEVIATION (documented): real NEAR transfer success =
+                    // Successful(EMPTY) — indistinguishable from Failed at
+                    // our promise_result surface (status is discarded by the
+                    // emitter). Marker "1" keeps receipts verifiable
+                    // fail-closed. TODO: expose promise_result status.
+                    out.push(Some(vec![b'1']));
                 }
             }
         }
@@ -445,15 +572,15 @@ fn build_promise_hosts(
             Ok(())
         },
     );
-    // 44 promise_batch_action_transfer(idx, amt_ptr, amt_len)
+    // 44 promise_batch_action_transfer(idx, amt_ptr) — u128 LE at ptr (16 bytes)
     let pbat = Func::new(
         &mut *store,
-        FuncType::new(engine, vec![ValType::I64; 3], vec![]),
+        FuncType::new(engine, vec![ValType::I64; 2], vec![]),
         move |mut caller, args, _| {
             let idx = args[0].unwrap_i64() as usize;
             let amt = {
                 let ptr = args[1].unwrap_i64() as usize;
-                let len = (args[2].unwrap_i64() as usize).min(16);
+                let len = 16usize;
                 let mut buf = [0u8; 16];
                 if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                     let md = mem.data(&caller);

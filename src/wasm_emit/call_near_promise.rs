@@ -639,11 +639,35 @@ impl WasmEmitter {
                         "near/promise_batch_action_transfer: need 2 args (idx, amount_ptr)".into(),
                     );
                 }
+                // CRITICAL: emit in EVALUATION order (idx first, then
+                // amount) — the a[i] exprs compile to instr VECTORS; emitting
+                // them out of order scrambles the stack (found 2026-09-01:
+                // host 44 received untag(amount) as the promise idx and the
+                // parse call consumed the idx — invalid wasm).
                 let idx = self.expr(&a[0])?;
-                let amount_ptr = self.expr(&a[1])?;
+                let amount = self.expr(&a[1])?;
                 let mut v = Vec::new();
+                let h = self.ensure_u128_str_helpers();
+                let idx_local = self.local_idx("__xfer_idx");
+                let amt_local = self.local_idx("__xfer_amt");
+                // 1. idx → local (untagged for the host)
                 v.extend(idx);
-                v.extend(amount_ptr);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(idx_local));
+                // 2. amount decimal-str → u128 LE bytes at TEMP_MEM (strict
+                // parse, same machinery as near/transfer_u128)
+                v.extend(amount);
+                v.push(Instruction::LocalSet(amt_local));
+                v.push(Instruction::LocalGet(amt_local));
+                v.push(Instruction::I64Const(TEMP_MEM as i64));
+                v.push(Self::call_user(h.parse));
+                v.push(Instruction::Drop);
+                // 3. host 44: (idx, amount_ptr=TEMP_MEM) — the u128 LE
+                // limbs live at TEMP_MEM; host reads 16 bytes (import ABI
+                // is 2-arg — pushing 3 left a value on the stack: the
+                // module's import signature wins at validation!)
+                v.push(Instruction::LocalGet(idx_local));
+                v.push(Instruction::I64Const(TEMP_MEM as i64));
                 v.push(Self::host_call(44));
                 v.push(Instruction::I64Const(0));
                 Ok(v)
