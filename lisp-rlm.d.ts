@@ -17,6 +17,8 @@ declare const near: {
   storageRemove(key: string): void;
   /** Check if key exists. */
   storageHas(key: string): number;
+  /** Check if key exists (canonical name). */
+  storageHasKey(key: string): number;
   /** Read raw bytes. */
   storageGetBytes(key: string): string;
   /** Write raw bytes. */
@@ -29,6 +31,8 @@ declare const near: {
   predecessorAccountId(): string;
   /** This contract's account ID. */
   currentAccountId(): string;
+  /** Transaction signer (top-level account that signed). */
+  signerAccountId(): string;
   /** Current block height (u64). */
   blockHeight(): number;
   /** Current block index (alias for blockHeight). */
@@ -43,6 +47,10 @@ declare const near: {
   attachedDeposit(): number;
   /** Deposit attached (high 64 bits). */
   attachedDepositHigh(): number;
+  /** Deposit attached (u128 decimal string). */
+  attachedDepositU128(): string;
+  /** Contract account balance (u128 decimal string, yoctoNEAR). */
+  accountBalance(): string;
   /** Raw input JSON string. */
   input(): string;
   /** Random seed (u64). */
@@ -53,8 +61,12 @@ declare const near: {
   ed25519Verify(message: string, signature: string, public_key: string): number;
   /** Schnorr (BIP-340) signature verification. */
   schnorrVerify(message: string, signature: string, public_key: string): number;
+  /** secp256r1 (P-256) signature verification. */
+  p256Verify(message: string, signature: string, public_key: string): number;
   /** SHA-256 hash. */
   sha256(data: string): string;
+  /** Keccak-256 hash. */
+  keccak256(data: string): string;
   /** Ethereum address recovery. */
   ecrecover(hash: string, sig: string): string;
 
@@ -84,6 +96,43 @@ declare const near: {
   promiseResult(index: number): string;
   /** Number of promise results available. */
   promiseResultsCount(): number;
+  /** Whether promise result at index succeeded (1/0). Callbacks only. */
+  promiseSucceeded(index: number): number;
+
+  // ── Promise batch API (raw receipt composition) ──
+  /** Start a batch on target account. Returns promise index. */
+  promiseBatchCreate(target: string): number;
+  /** Chain an existing promise onto a new batch on target. */
+  promiseBatchThen(promise: number, target: string): number;
+  /** Append a function call to a batch.
+   *  deposit is a u128 decimal string. */
+  promiseBatchActionFunctionCall(
+    promise: number,
+    method: string,
+    args: string,
+    deposit: string,
+    gas: number,
+  ): void;
+  /** Append a NEAR transfer to a batch (u128 decimal string). */
+  promiseBatchActionTransfer(promise: number, amount: string): void;
+  /** Combine up to 3 promises into one. */
+  promiseAnd(a: number, b: number, c?: number): number;
+  /** Return a promise as this call's outcome (async pattern). */
+  promiseReturn(promise: number): void;
+  /** Legacy single-shot call. Returns promise index. */
+  promiseCreate(target: string, method: string, args: string, gas: number, deposit: number): number;
+  /** Legacy: attach callback to promise. */
+  promiseThen(
+    promise: number,
+    target: string,
+    method: string,
+    args: string,
+    gas: number,
+    deposit: number,
+    cb: string,
+    cbGas: number,
+    cbArgs: string,
+  ): number;
   /** Send NEAR (i64 yocto). */
   transfer(receiver: string, amount: number): void;
   /** Send NEAR (u128 decimal string). */
@@ -101,6 +150,8 @@ declare const near: {
   logNum(n: number): void;
   /** Abort with message. */
   panic(msg: string): never;
+  /** Abort with message (fixture style). */
+  abort(msg: string): never;
   /** Abort (no message). */
   abort(): never;
 
@@ -145,6 +196,14 @@ declare function hexDecode(s: string): string;
 
 /** Get value from JSON string at path. */
 declare function jsonGet(json: string, path: string): any;
+/** Set field on a JSON object string. Returns the new JSON string. */
+declare function jsonSet(json: string, key: string, value: any): string;
+/** Wrap a value as a JSON string literal (for jsonSet string values). */
+declare function jsonQuote(value: string): string;
+/** Get string field from JSON (alias for near.jsonGetStr). */
+declare function jsonGetStr(json: string, path: string): string;
+/** Get integer field from JSON. */
+declare function jsonGetInt(json: string, path: string): number;
 
 // ═══════════════════════════════════════════════════════════════════
 // Global builtins — arrays / lists / HOFs
@@ -224,24 +283,26 @@ declare function nearYieldResume(dataId: number, payload: string): number;
 // Supported:
 //   - export function / function / arrow functions
 //   - const / let declarations
-// // - if / else / for / while
-// // - return (including early return)
-// // - = / += / -= assignments
-// // - i++ / i-- (update expressions)
-// // - String methods: .length, .slice(), .startsWith(), .endsWith(),
-// //   .indexOf(), .includes(), .charAt(), .concat(), .toString()
-// // - Template literals: `hello ${name}`
-// // - Array literals: [1, 2, 3]
-// // - Array indexing: arr[i]
-// // - Object literals: { key: val } (→ json-obj)
-// // - map / filter / reduce
-// // - async/await (V1: single `const x = await nearCall(...)` per function)
-// //   - async/await (V1: single `const x = await nearCall(...)` per function)
-// //   - Destructuring, spread, rest
-// //   - class, interface, type, enum
-// //   - try/catch, throw
-// //   - import/export (single-file only)
-// //   - Ternary (use if/else)
-// //   - &&, ||, ?? as expressions (use if/else)
-// //   - switch, for...of, for...in
-// //   - any method calls on non-string/non-array receivers
+//   - if / else / for / while
+//   - return (including early return)
+//   - = / += / -= assignments
+//   - i++ / i-- (update expressions)
+//   - String methods: .length, .slice(), .startsWith(), .endsWith(),
+//     .indexOf(), .includes(), .charAt(), .concat(), .toString()
+//   - Template literals: `hello ${name}`
+//   - Array literals: [1, 2, 3]
+//   - Array indexing: arr[i]
+//   - Object literals: { key: val } (→ json-obj)
+//   - map / filter / reduce
+//   - bigint literals (123n) in NUM positions
+//   - async/await (V1: single `const x = await nearCall(...)` per function)
+//
+// NOT supported (compile error):
+//   - Ternary (use if/else)
+//   - &&, ||, ?? as expressions (use if/else)
+//   - switch, for...of, for...in
+//   - Destructuring, spread, rest
+//   - class, interface, type, enum
+//   - try/catch, throw
+//   - import/export across files (single-file only)
+//   - any method calls on non-string/non-array receivers
