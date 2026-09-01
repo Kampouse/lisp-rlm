@@ -2,7 +2,7 @@ export interface Example {
   name: string;
   icon: string;
   source: string;
-  target: 'p1' | 'p2' | 'pure';
+  target: 'p1' | 'p2' | 'pure' | 'near';
   lang?: 'ts';
 }
 
