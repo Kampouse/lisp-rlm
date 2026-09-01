@@ -2339,7 +2339,12 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                     fn stringy_nonnumeric(e: &Expression) -> bool {
                         match e {
                             Expression::StringLiteral(sl) => {
-                                sl.value.bytes().any(|b| !b.is_ascii_digit())
+                                // "" means CONCAT (found via portfolio's
+                                // `(x ?? 0n) + ""` — empty string passed the
+                                // all-digits test → u128/add(x, "") → parse
+                                // trap. An empty string is never arithmetic.)
+                                sl.value.is_empty()
+                                    || sl.value.bytes().any(|b| !b.is_ascii_digit())
                             }
                             Expression::TemplateLiteral(_) => true,
                             Expression::BinaryExpression(be) => {

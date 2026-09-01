@@ -338,7 +338,8 @@ fn execute_promise(idx: usize) -> Result<Vec<Option<Vec<u8>>>, Box<dyn std::erro
     for dep in &batch.deps {
         dep_results.extend(execute_promise(*dep)?);
     }
-    let saved = PROMISE_RESULTS.with(|r| std::mem::replace(&mut *r.borrow_mut(), dep_results));
+    let saved =
+        PROMISE_RESULTS.with(|r| std::mem::replace(&mut *r.borrow_mut(), dep_results.clone()));
     let mut out = Vec::new();
     if !batch.account.is_empty() {
         for action in &batch.actions {
@@ -354,7 +355,15 @@ fn execute_promise(idx: usize) -> Result<Vec<Option<Vec<u8>>>, Box<dyn std::erro
         }
     }
     PROMISE_RESULTS.with(|r| *r.borrow_mut() = saved);
-    Ok(out)
+    // Pure combinator (promise_and): its "results" ARE the flattened child
+    // outputs — a promise_then on an and-node must see [p1_outs..., p2_outs...]
+    // (NEAR semantics). Batches with an account return only their own
+    // action outputs.
+    if batch.account.is_empty() {
+        Ok(dep_results)
+    } else {
+        Ok(out)
+    }
 }
 
 // ── real promise hosts (cross engine) ──

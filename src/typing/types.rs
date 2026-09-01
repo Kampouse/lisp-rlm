@@ -1269,6 +1269,13 @@ impl TcEnv {
         );
         // near/promise_and: variadic — accepts any number of promise indices (emitter has two impls)
         // near/promise_result: exactly 1 arg (promise idx) → status int.
+        // near/promise_return : int → int (returns the promise to the runtime;
+        // bytecode VM yields Num(0) — mirrored here. Found via the portfolio
+        // aggregator: TS reached the form but the env had no entry.)
+        env.insert_mono(
+            "near/promise_return".into(),
+            TcType::Arrow(vec![int_ty.clone()], Box::new(int_ty.clone())),
+        );
         // (The old "0-arg wildcard" comment was wrong: the emitter only ever
         // handled 1-arg — 0-arg panicked at a[0]; hard-error guard added
         // 2026-08-31 in call_near_promise.rs.)

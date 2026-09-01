@@ -326,6 +326,11 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0));
                 v.extend(gas);
                 v.push(Self::host_call(31));
+                // TAG the returned promise idx — the raw host i64 flowed into
+                // user bindings; a later untag shifted it to 0 (promise_return
+                // resolved the WRONG root — found via portfolio aggregator,
+                // 2026-09-01; promise_create/call-await already tagged).
+                v.extend(self.emit_tag_num());
                 Ok(v)
             }
             "near/promise_and" => {
@@ -335,6 +340,10 @@ impl WasmEmitter {
                 for (i, x) in a.iter().enumerate() {
                     v.push(Instruction::I32Const((64 + i * 8) as i32));
                     v.extend(self.expr(x)?);
+                    // UNTAG before the raw u64 store — indices are TAGGED
+                    // i64s in lisp land; storing tagged values gave the host
+                    // idx<<TAG_BITS and the DAG resolved nothing.
+                    v.extend(self.emit_untag());
                     v.push(Instruction::I64Store(wasm_encoder::MemArg {
                         offset: 0,
                         align: 3,
@@ -344,6 +353,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(64)); // ptr
                 v.push(Instruction::I64Const(a.len() as i64)); // count
                 v.push(Self::host_call(32));
+                v.extend(self.emit_tag_num()); // tag the combined promise idx
                 Ok(v)
             }
             "near/promise_results_count" => Ok(vec![
@@ -389,6 +399,15 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(TEMP_MEM as i64));
                 v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
+                // BUG #16 (2026-09-01, portfolio aggregator): the tagged str
+                // ALIASED TEMP_MEM — a second promise_result overwrote the
+                // bytes before the first string was consumed (both operands
+                // of the u128 add read the LAST payload: 250K+250K=500K
+                // instead of 700K+250K=950K). Concat with "" forces a fresh
+                // HEAP copy — the same aliasing class as sha256 bug #12.
+                v.push(Instruction::I64Const(0)); // packed empty str
+                v.extend(self.emit_tag_str());
+                v.extend(self.emit_str_concat());
                 v.push(Instruction::Else);
                 v.push(Instruction::I64Const(0)); // packed empty str
                 v.extend(self.emit_tag_str());
