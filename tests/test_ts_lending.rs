@@ -71,4 +71,25 @@ fn lending_liquidations_full_guard_battery() {
     // health restored above the line: 9733 → 12591
     let out = run("health", "{}", T100D, None);
     assert!(out.contains("📄 12591"), "{out}");
+
+    // ── withdraw (v4.1): boundary at health == 10000 exactly ──
+    // post-liquidation: dep 7.9e24, bor 3136986301369863013698630
+    // over-line withdraw refused
+    let out = run("withdraw", r#"{"amt":"2000000000000000000000000"}"#, T100D, None);
+    assert!(out.contains("undercollateralize"), "{out}");
+
+    // MAX withdraw: dep-amt == bor*2 → dep'*5000 == bor*10000 exactly —
+    // allowed (guard is strict <, consistent with borrow). health → 10000.
+    let out = run("withdraw", r#"{"amt":"1626027397260273972602740"}"#, T100D, None);
+    assert!(out.contains(r#""dep":6273972602739726027397260"#), "{out}");
+
+    // one yocto more must abort
+    let out = run("withdraw", r#"{"amt":"1"}"#, T100D, None);
+    assert!(out.contains("undercollateralize"), "{out}");
+
+    // repay the rest, then drain to zero — full lifecycle closes
+    let out = run("repay", r#"{"amt":"3136986301369863013698630"}"#, T100D, None);
+    assert!(out.contains(r#""bor":0"#), "{out}");
+    let out = run("withdraw", r#"{"amt":"6273972602739726027397260"}"#, T100D, None);
+    assert!(out.contains(r#""dep":0"#), "{out}");
 }

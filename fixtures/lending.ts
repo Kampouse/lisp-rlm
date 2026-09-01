@@ -72,6 +72,21 @@ export function repay(amt: bigint): string {
 
 // liquidator (signer) repays `amt` of `victim`'s debt and seizes
 // collateral at a 5% bonus. Victim's account key, liquidator's tx.
+export function withdraw(amt: bigint): string {
+  let who = near.signerAccountId();
+  let a = accrue(
+    near.storageGet("lv4:" + who) ?? '{"dep":"0","bor":"0","ts":"0","own":""}',
+    near.blockTimestamp(),
+  );
+  let dep = a.dep - amt;
+  if (dep * LTV_BP < a.bor * SCALE) {
+    near.abort("withdraw would undercollateralize");
+  }
+  let next = jsonSet(a, "dep", dep);
+  near.storageSet("lv4:" + who, next);
+  return next;
+}
+
 export function liquidate(victim: string, amt: bigint): string {
   let a = accrue(
     near.storageGet("lv4:" + victim) ?? '{"dep":"0","bor":"0","ts":"0","own":""}',
