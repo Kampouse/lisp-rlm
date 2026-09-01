@@ -326,6 +326,37 @@ export function ftTransfer(to: string, amount: bigint): string {
 
 export function ftBalanceOf(who: string): string {
   return near.storageGet("ft:" + who) ?? ZERO;
+}
+
+// ── Allowances (NEP-141 approve/transferFrom) ──
+function allowanceKey(owner: string, spender: string): string {
+  return "fta:" + owner + ":" + spender;
+}
+
+export function ftApprove(spender: string, amount: bigint): string {
+  let who = near.signerAccountId();
+  let key = allowanceKey(who, spender);
+  let cur = near.storageGet(key) ?? ZERO;
+  if (cur != ZERO && amount != ZERO) {
+    near.abort("reset allowance to zero first");   // NEP-141 race rule
+  }
+  near.storageSet(key, amount);
+  return "ok";
+}
+
+export function ftTransferFrom(from: string, to: string, amount: bigint): string {
+  let who = near.signerAccountId();
+  let aKey = allowanceKey(from, who);
+  let allowed = near.storageGet(aKey) ?? ZERO;
+  let bal = near.storageGet("ft:" + from) ?? ZERO;
+  if (allowed < amount || bal < amount) {
+    near.abort("allowance or balance too low");
+  }
+  let toBal = near.storageGet("ft:" + to) ?? ZERO;
+  near.storageSet(aKey, allowed - amount);
+  near.storageSet("ft:" + from, bal - amount);
+  near.storageSet("ft:" + to, toBal + amount);
+  return "ok";
 }`,
   },
   {

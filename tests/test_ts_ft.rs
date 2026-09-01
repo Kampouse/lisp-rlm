@@ -11,6 +11,19 @@ use lisp_rlm_wasm::{parse_all, compile_near_from_exprs};
 
 const SRC: &str = include_str!("../fixtures/ft.ts");
 
+use std::sync::{Mutex, OnceLock};
+
+fn state_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let m = LOCK.get_or_init(|| Mutex::new(()));
+    match m.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+
+
 fn run(method: &str, input: &str, signer: Option<&str>) -> String {
     let ir = ts_to_lisp_source(SRC).unwrap_or_else(|e| panic!("lowering: {}", e));
     let exprs = parse_all(&ir).expect("parse");
@@ -26,6 +39,7 @@ fn run(method: &str, input: &str, signer: Option<&str>) -> String {
 
 #[test]
 fn ft_full_lifecycle() {
+    let _lock = state_lock();
     let _ = std::fs::remove_file("/tmp/near-mock-state.bin");
 
     // first minter becomes owner; mints 2.5M (24-digit, 18dp-style)
@@ -59,6 +73,51 @@ fn ft_full_lifecycle() {
     assert!(out.contains("supply:2000000000000000000000000"), "{out}");
     let out = run("ftBalanceOf", r#"{"who":"alice.test.near"}"#, None);
     assert!(out.contains("500000000000000000000000"), "{out}");
+}
+
+#[test]
+fn ft_allowances_nep141() {
+    let _lock = state_lock();
+    let _ = std::fs::remove_file("/tmp/near-mock-state.bin");
+
+    // fresh deployment: mint 2.5M to owner
+    let out = run("ftMint", r#"{"to":"owner.test.near","amount":"2500000000000000000000000"}"#, Some("owner.test.near"));
+    assert!(out.contains("supply:2500000000000000000000000"), "{out}");
+
+    // allowance starts at zero (missing key → default)
+    let out = run("ftAllowance", r#"{"owner":"owner.test.near","spender":"bob.test.near"}"#, None);
+    assert!(out.contains("📄 0"), "{out}");
+
+    // approve 500K, spend 400K via transferFrom (three keys written)
+    let out = run("ftApprove", r#"{"spender":"bob.test.near","amount":"500000000000000000000000"}"#, Some("owner.test.near"));
+    assert!(out.contains("ok"), "{out}");
+    let out = run("ftTransferFrom", r#"{"from":"owner.test.near","to":"alice.test.near","amount":"400000000000000000000000"}"#, Some("bob.test.near"));
+    assert!(out.contains("ok"), "{out}");
+
+    let out = run("ftAllowance", r#"{"owner":"owner.test.near","spender":"bob.test.near"}"#, None);
+    assert!(out.contains("100000000000000000000000"), "{out}");
+    let out = run("ftBalanceOf", r#"{"who":"owner.test.near"}"#, None);
+    assert!(out.contains("2100000000000000000000000"), "{out}");
+    let out = run("ftBalanceOf", r#"{"who":"alice.test.near"}"#, None);
+    assert!(out.contains("400000000000000000000000"), "{out}");
+
+    // +1-yocto over-allowance refused (|| guard covers allowance AND balance)
+    let out = run("ftTransferFrom", r#"{"from":"owner.test.near","to":"bob.test.near","amount":"100000000000000000000001"}"#, Some("bob.test.near"));
+    assert!(out.contains("allowance or balance too low"), "{out}");
+
+    // NEP-141 race rule: nonzero → nonzero must abort
+    let out = run("ftApprove", r#"{"spender":"bob.test.near","amount":"1000000000000000000000000"}"#, Some("owner.test.near"));
+    assert!(out.contains("reset allowance to zero first"), "{out}");
+
+    // reset to zero, then re-approve 1M and spend it
+    let out = run("ftApprove", r#"{"spender":"bob.test.near","amount":"0"}"#, Some("owner.test.near"));
+    assert!(out.contains("ok"), "{out}");
+    let out = run("ftApprove", r#"{"spender":"bob.test.near","amount":"1000000000000000000000000"}"#, Some("owner.test.near"));
+    assert!(out.contains("ok"), "{out}");
+    let out = run("ftTransferFrom", r#"{"from":"owner.test.near","to":"carol.test.near","amount":"1000000000000000000000000"}"#, Some("bob.test.near"));
+    assert!(out.contains("ok"), "{out}");
+    let out = run("ftBalanceOf", r#"{"who":"carol.test.near"}"#, None);
+    assert!(out.contains("1000000000000000000000000"), "{out}");
 }
 
 #[test]
