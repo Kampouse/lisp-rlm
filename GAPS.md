@@ -677,3 +677,27 @@ advance):
 **Next step**: instrument or disassemble a minimal repro (wasm-tools print),
 watch mem[56] + the array region; or convert the remaining static-site
 allocators (2635 class) to rtheap unconditionally and re-test vote2/run_g/ballot.
+
+## G-14 (2026-09-02, OPEN): statement-position `if` with host-call arms compiles to dead code (lisp twin)
+
+**Severity: HIGH — shipped a silently-dead payout branch through gauntlet + differential.**
+
+Repro chain (probes 9–14, /tmp/probe9..14.lisp):
+- `(if (= (str-length (json-get-str "tk" p)) 0) (near/transfer_u128 ...) (near/promise_batch_create ...))` as a NON-LAST let-body statement → **both arms never execute at runtime** (no host calls trace). Same shape with `(near/log ...)` arms → works.
+- Tail-position if (last statement) with log arms → works (tc() path).
+- Extracted helper fn with the if in tail position, host arms → STILL dead.
+- Bare host-call statements (no if) → work.
+
+Analysis so far:
+- WAT shows the if + inline host calls present in the body func; runtime skips them. Suspects: `tc_if`'s unconditional `Br(2)` exit-depth when there's no TC loop, and/or `emit_cond_branch`'s tag-dispatch `(= t 1)|(= t 4)|(= t 0) eqz` wrapping arms (only BOOL/INT/NIL-tagged conditions proceed?). Log-arm ifs vs host-arm ifs differ — the arm emission for near/* forms inside if-arms (late-registration global-0 path?) may be involved: export trampolines check `global.get 0 != 0` before returning the value.
+- The TS twin emits the same branch CORRECTLY (different lowering path) — live-proven: nostr-gov FT payout fired real receipts on testnet (btc-oracle token, 400 TKN moved).
+
+Collateral caught & fixed the same day:
+1. **Checker hole (FIXED)**: `infer_let`/`infer_let_star` only checked `parts.get(1)` — ALL let-body statements after the first compiled UNCHECKED. `(str-length (json-get ...))` (int/str mismatch) sailed through. Fixed: all body statements inferred, type = last.
+2. **json-get vs json-get-str (FIXED in twins)**: json-get is the NUMERIC extractor (str,str)→Int but does string extraction at runtime; string fields must use json-get-str. Twin converted (st/exp/amt/to/tk/bl/ac + approve rewrites).
+3. **Mock parity (FIXED)**: (a) promise FnCall to unknown account now hard-errors (was silent Ok(None) — masked phantom-contract routing); (b) fire-and-forget promises (no promise_return) now drain as orphan receipts after the returned DAG (were silently dropped); orphan receipt failures do NOT roll back the parent (on-chain parity).
+4. **tk="nil" (FIXED, live-caught)**: `(near/json_get_str "tk")` on absent key → nil → to-string → "nil" → FT promise to account "nil" (live AccountDoesNotExist receipt). Twins now `(default ... "")`. TS: `?? ""`.
+5. **auth-owner arg ordering (FIXED, live)**: expires/nonce emptiness checks ran before the ev dispatch — event-auth'd set_approvers/propose/execute died ERR_ARG_EXPIRES. Checks now inside the legacy branch. Live-verified: full event-auth'd governance cycle on gov2 (nonces 60–62).
+6. **Pause gate divergence (FIXED)**: lisp auth-owner gated paused for both dialects, TS never gated governance — locked semantic: pause kills all owner-gated actions in both twins; vector pins it.
+
+Parked: phantom-token gauntlet vector (#65–68 in gen-vectors.py comment) — restore when lisp twin regains FT branch.

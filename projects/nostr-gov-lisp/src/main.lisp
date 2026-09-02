@@ -621,7 +621,10 @@
       (if (u128/lt pexp (to-string ts))
           (die "ERR_EXPIRED")
           0)
-      (let ((tk (near/json_get_str "tk")))
+      ;; nil-guard: json_get_str(missing) is nil — default to "" so a
+      ;; tk-less proposal stores "" (NEAR payout) instead of routing the
+      ;; execute to an FT promise on account "nil" (live-caught 2026-09-02)
+      (let ((tk (default (near/json_get_str "tk") "")))
         (near/storage_set (str "p:" name ":" id)
                           (str "{\"id\":\"" id "\",\"st\":\"active\",\"exp\":\"" pexp
                                "\",\"amt\":\"" amt "\",\"to\":\"" to
@@ -654,14 +657,14 @@
       (if (= (str-length sig) 128)
           0
           (die "ERR_APPROVER_SIG_LEN"))
-      (let ((st (json-get "st" p))
-            (pexp (json-get "exp" p))
-            (bl (json-get "bl" p))
-            (ac (json-get "ac" p))
-            (amt (json-get "amt" p))
-            (to (json-get "to" p))
-            (pks (json-get "pks" a))
-            (thr (json-get "thr" a)))
+      (let ((st (json-get-str "st" p))
+            (pexp (json-get-str "exp" p))
+            (bl (json-get-str "bl" p))
+            (ac (json-get-str "ac" p))
+            (amt (json-get-str "amt" p))
+            (to (json-get-str "to" p))
+            (pks (json-get-str "pks" a))
+            (thr (json-get-str "thr" a)))
         (if (= st "active")
             0
             (die "ERR_NOT_ACTIVE"))
@@ -696,7 +699,7 @@
           (near/storage_set (str "p:" name ":" id)
                             (str "{\"id\":\"" id "\",\"st\":\"" nsth
                                  "\",\"exp\":\"" pexp "\",\"amt\":\"" amt
-                                 "\",\"to\":\"" to "\",\"tk\":\"" (json-get "tk" p)
+                                 "\",\"to\":\"" to "\",\"tk\":\"" (json-get-str "tk" p)
                                  "\",\"bl\":\"" nbl
                                  "\",\"bh\":\"0\",\"ac\":\"" (to-string nac) "\"}"))
           (near/log (str "approval " ix " on " name ":" id))
@@ -711,32 +714,35 @@
           (die "ERR_PROPOSAL_NOT_FOUND")
           0)
       (auth-owner (str "execute:" name ":" id))
-      (if (= (json-get "st" p) "approved")
+      (if (= (json-get-str "st" p) "approved")
           0
           (die "ERR_NOT_APPROVED"))
-      (if (u128/lt (json-get "exp" p) (to-string ts))
+      (if (u128/lt (json-get-str "exp" p) (to-string ts))
           (die "ERR_PROPOSAL_EXPIRED")
           0)
-      (if (= (str-length (json-get "tk" p)) 0)
-          ;; native NEAR payout
-          (near/transfer_u128 (json-get "to" p)
-                              (json-get "amt" p))
-          ;; FT payout: NEP-141 ft_transfer on the contract named by tk
-          (let ((pi (near/promise_batch_create (json-get "tk" p))))
-            (near/promise_batch_action_function_call
-              pi "ft_transfer"
-              (str "{\"receiver_id\":\"" (json-get "to" p)
-                   "\",\"amount\":\"" (json-get "amt" p)
-                   "\",\"memo\":\"nostr-gov\"}")
-              "1" 5000000000000)))
+      ;; NOTE (2026-09-02): the FT branch below is DISABLED in the lisp twin —
+      ;; emitter bug: host-call arms inside non-tail ifs compile to dead code
+      ;; (probes 9–14, GAPS.md "statement-if host-arm dead-branch"). The TS
+      ;; twin emits the same branch correctly (live-proven on testnet). Once
+      ;; the emitter is fixed, restore:
+      ;;   (if (= (str-length (json-get-str "tk" p)) 0)
+      ;;       (near/transfer_u128 (json-get-str "to" p) (json-get-str "amt" p))
+      ;;       (let ((pi (near/promise_batch_create (json-get-str "tk" p))))
+      ;;         (near/promise_batch_action_function_call pi "ft_transfer"
+      ;;           (str "{\"receiver_id\":\"" (json-get-str "to" p)
+      ;;                "\",\"amount\":\"" (json-get-str "amt" p)
+      ;;                "\",\"memo\":\"nostr-gov\"}")
+      ;;           "1" 5000000000000)))
+      (near/transfer_u128 (json-get-str "to" p)
+                          (json-get-str "amt" p))
       (near/storage_set (str "p:" name ":" id)
                         (str "{\"id\":\"" id "\",\"st\":\"executed\",\"exp\":\""
-                             (json-get "exp" p) "\",\"amt\":\"" (json-get "amt" p)
-                             "\",\"to\":\"" (json-get "to" p)
-                             "\",\"tk\":\"" (json-get "tk" p)
-                             "\",\"bl\":\"" (json-get "bl" p)
+                             (json-get-str "exp" p) "\",\"amt\":\"" (json-get-str "amt" p)
+                             "\",\"to\":\"" (json-get-str "to" p)
+                             "\",\"tk\":\"" (json-get-str "tk" p)
+                             "\",\"bl\":\"" (json-get-str "bl" p)
                              "\",\"bh\":\"0\",\"ac\":\""
-                             (json-get "ac" p) "\"}"))
+                             (json-get-str "ac" p) "\"}"))
       (near/log (str "proposal " id " executed: " name))
       0)))
 (export "execute" execute #f)

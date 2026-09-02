@@ -1241,7 +1241,22 @@ fn infer_let(
         new_env.insert_mono(name, subst.apply(&val_type));
     }
 
-    infer(&body, &new_env, supply, subst)
+    // Multi-statement let bodies: check ALL statements (2026-09-02 —
+    // nostr-gov shipped a dead payout branch because parts.get(1) only
+    // checked the FIRST body form; everything after compiled unchecked,
+    // a mixed-kind `=` slipped through and the emitter silently dropped
+    // the branch). Type is the LAST statement's.
+    if parts.len() < 2 {
+        return Ok(TcType::Con(TcCon::Nil));
+    }
+    if parts.len() == 2 {
+        return infer(&parts[1], &new_env, supply, subst);
+    }
+    let mut last_ty = TcType::Con(TcCon::Nil);
+    for stmt in &parts[1..] {
+        last_ty = infer(stmt, &new_env, supply, subst)?;
+    }
+    Ok(last_ty)
 }
 
 fn infer_let_star(
@@ -1251,7 +1266,6 @@ fn infer_let_star(
     subst: &mut Subst,
 ) -> Result<TcType, String> {
     let bindings_list = parts.first().ok_or("let*: missing bindings")?;
-    let body = parts.get(1).cloned().unwrap_or(LispVal::Nil);
 
     let bindings = match bindings_list {
         LispVal::List(l) => l,
@@ -1277,7 +1291,18 @@ fn infer_let_star(
         new_env.insert_mono(name, subst.apply(&val_type));
     }
 
-    infer(&body, &new_env, supply, subst)
+    // multi-statement body: check ALL (2026-09-02 same fix as infer_let)
+    if parts.len() < 2 {
+        return Ok(TcType::Con(TcCon::Nil));
+    }
+    if parts.len() == 2 {
+        return infer(&parts[1], &new_env, supply, subst);
+    }
+    let mut last_ty = TcType::Con(TcCon::Nil);
+    for stmt in &parts[1..] {
+        last_ty = infer(stmt, &new_env, supply, subst)?;
+    }
+    Ok(last_ty)
 }
 
 fn infer_begin(

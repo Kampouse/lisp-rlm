@@ -194,6 +194,31 @@ fn run_cross(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
+            // Fire-and-forget receipts (2026-09-02): batches created but not
+            // part of any returned DAG still execute on-chain as independent
+            // receipts. The mock used to drop them silently — a promise to a
+            // phantom account vanished instead of failing like live NEAR
+            // (nostr-gov tk="nil" shipped through every gate). Drain any
+            // unexecuted batches in creation order; their failures do NOT
+            // roll back the parent tx (receipt independence).
+            loop {
+                let next = PROMISE_DAG.with(|d| {
+                    d.borrow()
+                        .iter()
+                        .enumerate()
+                        .find(|(i, _)| !EXECUTED_PROMISES.with(|e| e.borrow().contains(i)))
+                        .map(|(i, _)| i)
+                });
+                let Some(idx) = next else { break };
+                eprintln!("  ⛓ orphan receipt {} (fire-and-forget)", idx);
+                match execute_promise(idx) {
+                    Ok(_) => {}
+                    Err(e) => println!(
+                        "❌ orphan receipt failed: {} (parent tx stays committed)",
+                        e
+                    ),
+                }
+            }
         }
         Err(e) => {
             println!("❌ {}", e);
@@ -301,6 +326,12 @@ fn dag_push(deps: Vec<usize>, account: String, actions: Vec<PAction>) -> usize {
     })
 }
 
+// batches already resolved this run (returned-DAG traversal + orphan drain)
+thread_local! {
+    static EXECUTED_PROMISES: std::cell::RefCell<std::collections::HashSet<usize>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
 /// Snapshot + revert one account's storage partition (failed receipts).
 fn snapshot_partition(st: &MockState, acct: &str) -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
     let pre = prefixed_key(acct, b"");
@@ -354,8 +385,15 @@ fn sub_execute(
             .and_then(|map| map.get(account).cloned())
     });
     let Some(module) = module else {
-        eprintln!("  ⚠ promise to unknown account {}", account);
-        return Ok(None);
+        // 2026-09-02 live-caught (nostr-gov tk="nil"): unknown-account FnCall
+        // receipts FAIL on-chain (AccountDoesNotExist). The old silent
+        // Ok(None) let gauntlets pass while every payout routed to a
+        // phantom contract. Hard-error so the step shows the failure.
+        return Err(format!(
+            "MOCK-CHAIN-FAILURE: promise FnCall to unknown account '{}' (on-chain: AccountDoesNotExist)",
+            account
+        )
+        .into());
     };
     let state = STATE_ARC.with(|s| s.borrow().clone()).expect("STATE_ARC set");
     let engine = ENGINE_TLS.with(|e| e.borrow().clone()).expect("ENGINE_TLS set");
@@ -446,6 +484,7 @@ fn sub_execute(
 /// become this batch's promise_results), then this batch's actions.
 fn execute_promise(idx: usize) -> Result<Vec<Option<Vec<u8>>>, Box<dyn std::error::Error>> {
     let batch = PROMISE_DAG.with(|d| d.borrow()[idx].clone());
+    EXECUTED_PROMISES.with(|e| e.borrow_mut().insert(idx));
     let mut dep_results: Vec<Option<Vec<u8>>> = Vec::new();
     for dep in &batch.deps {
         dep_results.extend(execute_promise(*dep)?);

@@ -25,12 +25,14 @@ while IFS= read -r line; do
   unset NEAR_MOCK_ATTACH
   ERR=$(echo "$OUT" | grep -oE 'LOG: ERR_[A-Z_]+' | head -1 | sed 's/^LOG: //')
   RET=$(echo "$OUT" | grep -oE '📄 .*' | head -1 | sed 's/^📄 //')
+  # mock receipt-failure parity: promise FnCall to unknown account traps
+  MCF=$(echo "$OUT" | grep -oE 'MOCK-CHAIN-FAILURE[^\"]*' | head -1)
   RVAL=$($PY -c 'import json,sys
 s=sys.argv[1]
 try:
   d=json.loads(s); print(d.get("result",""))
 except Exception: print("")' "$RET")
-  if [ -n "$ERR" ]; then R="$ERR"; else R="$RVAL"; fi
+  if [ -n "$ERR" ]; then R="$ERR"; elif [ -n "$MCF" ]; then R="$MCF"; else R="$RVAL"; fi
   if [ "$E" = "ok" ]; then
     OK=$([ -z "$ERR" ] && echo 1 || echo 0)
   elif [ "$E" = "active" ] || [ "$E" = "approved" ] || [ "$E" = "executed" ]; then
@@ -43,6 +45,7 @@ except Exception: print("")' "$RET")
   else
     fail=$((fail+1))
     fails+=("#$i $M expect=[$E] got=[$R]")
+    printf '%s\n' "$OUT" > /tmp/gauntlet-fail-$i.out
   fi
 done < <($PY "$HERE/gen-vectors.py" "${1:-$TSNS}")
 

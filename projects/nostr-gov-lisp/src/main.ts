@@ -531,7 +531,10 @@ export function propose() {
   if (u128.lt(pexp, toStr(ts))) {
     die("ERR_EXPIRED");
   }
-  const tk = near.jsonGetStr("tk");
+  // nil-guard: jsonGetStr(missing) is nil, not "" — without the default a
+  // tk-less (native NEAR) proposal would store "tk":"nil" and execute would
+  // route the payout to an FT promise on account "nil" (live-caught 2026-09-02)
+  const tk = near.jsonGetStr("tk") ?? "";
   near.storageSet(`p:${name}:${id}`, `{"id":"${id}","st":"active","exp":"${pexp}","amt":"${amt}","to":"${to}","tk":"${tk}","bl":"0","bh":"0","ac":"0"}`);
   near.storageSet(`pi:${name}`, toStr(strToNum(id) + 1));
   near.log(`proposal ${id} created for ${name}`);

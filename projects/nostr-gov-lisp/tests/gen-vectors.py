@@ -240,6 +240,16 @@ steps += [
      "ERR_PAUSED"),
     ("unpause", gov_event(SK, PK, "unpause", 58, EXPIRES, CONTRACT),
      "ok"),
+
+    # ── parked (2026-09-02): phantom-token execute vector ──
+    # The lisp twin's FT branch is disabled pending an emitter fix
+    # (statement-if host-arm dead-branch, GAPS.md) — the TS twin keeps it
+    # and is live-proven. Restore this block when the lisp twin regains
+    # FT payouts:
+    # ("propose", tk="phantom.kampy.testnet" nonce 59) → ok
+    # ("approve" ix0/ix1) → ok
+    # ("execute" nonce 60) → MOCK-CHAIN-FAILURE: promise FnCall to
+    #   unknown account 'phantom.kampy.testnet'
 ]
 
 for name, args, expect, *rest in steps:

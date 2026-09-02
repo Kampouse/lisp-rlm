@@ -40,14 +40,17 @@ run_all () {  # $1=wasm $2=outfile
     unset NEAR_MOCK_ATTACH
     ERR=$(echo "$OUT1" | grep -oE 'ERR_[A-Z_]+' | head -1)
     RET=$(echo "$OUT1" | grep -oE '📄 .*' | head -1 | sed 's/^📄 //')
+    # receipt-failure parity lines count as trace (a twin that fires a
+    # phantom promise while the other skips it MUST mismatch)
+    MCF=$(echo "$OUT1" | grep -oE "MOCK-CHAIN-FAILURE: [^']*" | head -1)
     RVAL=$($PY -c 'import json,sys
 s=sys.argv[1]
 try:
   d=json.loads(s); print(d.get("result",""))
 except Exception: print("")' "$RET")
-    if [ -n "$ERR" ]; then R="$ERR"; else R="$RVAL"; fi
+    if [ -n "$ERR" ]; then R="$ERR"; elif [ -n "$MCF" ]; then R="$MCF"; else R="$RVAL"; fi
     echo "#$i $M -> $R" >> "$OUT"
-    echo "$OUT1" | grep -E 'LOG:|📄' | sed "s|^|#$i |" >> "$OUT.full"
+    echo "$OUT1" | grep -E 'LOG:|📄|❌' | sed "s|^|#$i |" >> "$OUT.full"
   done < /tmp/diff-steps-full.jsonl
 }
 
