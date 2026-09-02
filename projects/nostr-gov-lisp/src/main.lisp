@@ -90,9 +90,7 @@
   (let ((base (get-num "ononce")))
     (if (< n base)
         (die "ERR_NONCE_TOO_LOW")
-        (if (>= n (+ base 64))
-            (die "ERR_NONCE_WINDOW_EXCEEDED")
-            0))))
+        0)))
 
 ;; slide while bit0 of lo is set:
 ;;   ononce++, lo = (lo>>1)|((hi&1)<<31), hi >>= 1
@@ -120,8 +118,17 @@
 (define (bit-get k lo hi)
   (if (< k 32) (band lo (shl 1 k)) (band hi (shl 1 (- k 32)))))
 
+;; jump-on-high (2026-09-02): a nonce ≥ base+64 is ACCEPTED and jumps
+;; the window (base=n, bitmap=bit0). Gaps below become TOO_LOW forever —
+;; sparse signers can never brick the wallet, nonce space is unbounded.
+;; In-window nonces keep the old bit-precision replay protection.
 (define (consume-nonce n)
   (nonce-window-check n)
+  (if (>= n (+ (get-num "ononce") 64))
+      (let ((_ (near/storage_set "ononce" (to-string n))))
+        (let ((_ (near/storage_set "obm_lo" "1")))
+          (let ((_ (near/storage_set "obm_hi" "0")))
+            0)))
   (let ((k (- n (get-num "ononce")))
         (lo (get-num "obm_lo"))
         (hi (get-num "obm_hi")))
@@ -133,7 +140,7 @@
             (let ((_ (near/storage_set "obm_hi"
                         (to-string (bit-set-hi k hi)))))
               (slide-window (bit-set k lo hi)
-                            (bit-set-hi k hi))))))))
+                            (bit-set-hi k hi)))))))))
 
 ;; ── auth ─────────────────────────────────────────────────────────
 

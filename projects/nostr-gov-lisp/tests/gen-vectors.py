@@ -61,8 +61,10 @@ steps = [
     ("create_wallet", {"name": "satoshi", "signature": owner_sig("create_wallet:satoshi", 0),
                        "expires_at": str(EXPIRES), "nonce": "0"}, "ERR_STORAGE_DEPOSIT"),
     # nonce beyond window
+    # (G-15 jump-on-high) beyond-window nonce is now ACCEPTED — the window
+    # jumps to it; unfunded, it dies at the deposit gate instead
     ("create_wallet", {"name": "satoshi", "signature": owner_sig("create_wallet:satoshi", 100),
-                       "expires_at": str(EXPIRES), "nonce": "100"}, "ERR_NONCE_WINDOW_EXCEEDED"),
+                       "expires_at": str(EXPIRES), "nonce": "100"}, "ERR_STORAGE_DEPOSIT"),
     # pause (no nonce consumption) — tampered → fail; then real → ok
     ("pause", {"signature": BAD_SIG, "expires_at": str(EXPIRES)}, "ERR_NOT_AUTHORIZED_TO_PAUSE"),
     ("pause", {"signature": sign(SK, sha(pause_msg())).hex(), "expires_at": str(EXPIRES)}, "ok"),
@@ -277,6 +279,27 @@ steps += [
     ("execute", dict({"name": "evgov", "id": "1"},
                      **gov_event(SK, PK, "execute:evgov:1", 60, EXPIRES, CONTRACT)),
      "MOCK-CHAIN-FAILURE: promise FnCall to unknown account 'phantom.kampy.testnet'"),
+
+    # ── G-15: nonce jump-on-high (sparse signers must never brick) ──
+    # far-ahead nonce is accepted and jumps the window; funded so it
+    # commits (the jump only persists on success — traps revert)
+    ("create_wallet", dict({"name": "jumper"},
+                           **gov_event(SK, PK, "create_wallet:jumper", 5000, EXPIRES, CONTRACT)),
+     "ok", 500000000000000000000000),
+    # pre-jump in-window nonce is now below the base → TOO_LOW forever
+    ("create_wallet", dict({"name": "jumper"},
+                           **gov_event(SK, PK, "create_wallet:jumper", 30, EXPIRES, CONTRACT)),
+     "ERR_NONCE_TOO_LOW"),
+    # next nonce in the new window works
+    ("create_wallet", dict({"name": "jumper2"},
+                           **gov_event(SK, PK, "create_wallet:jumper2", 5001, EXPIRES, CONTRACT)),
+     "ok", 500000000000000000000000),
+    # replay of the jumped nonce → TOO_LOW: jumper2's 5001 slid the base to
+    # 5002 (both bits consumed densely), so 5000 now sits below the base —
+    # dead forever, which is exactly the anti-replay guarantee we want
+    ("create_wallet", dict({"name": "jumper3"},
+                           **gov_event(SK, PK, "create_wallet:jumper3", 5000, EXPIRES, CONTRACT)),
+     "ERR_NONCE_TOO_LOW"),
 ]
 
 for name, args, expect, *rest in steps:

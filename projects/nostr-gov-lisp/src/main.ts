@@ -27,14 +27,14 @@ function getNum(k: string) {
   return strToNum(numStr(k));
 }
 
-// sliding nonce window (64 nonces), bitmap lo/hi u32 pair
+// sliding nonce window (64 nonces), bitmap lo/hi u32 pair.
+// jump-on-high (2026-09-02): nonce >= base+64 is ACCEPTED and jumps the
+// window (base=n, bitmap=bit0) — sparse signers can never brick the
+// wallet; in-window nonces keep bit-precision replay protection.
 function nonceWindowCheck(n: number) {
   const base = getNum("ononce");
   if (n < base) {
     die("ERR_NONCE_TOO_LOW");
-  }
-  if (n >= base + 64) {
-    die("ERR_NONCE_WINDOW_EXCEEDED");
   }
 }
 
@@ -66,6 +66,12 @@ function nonceBitGet(k: number, lo: number, hi: number) {
 
 function consumeNonce(n: number) {
   nonceWindowCheck(n);
+  if (n >= getNum("ononce") + 64) {
+    near.storageSet("ononce", toStr(n));
+    near.storageSet("obm_lo", "1");
+    near.storageSet("obm_hi", "0");
+    return;
+  }
   const k = n - getNum("ononce");
   const lo = getNum("obm_lo");
   const hi = getNum("obm_hi");
