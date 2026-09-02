@@ -170,13 +170,14 @@ export function execute(id: string, msgPoint: string, g2gen: string, coeffs: str
       mxBlob = mxBlob + pkc;
     }
   }
-  let sigma = near.bls12381P1Sum(sigBlob);          // 194 hex (97B w/sign)
-  let apk = near.bls12381G2Multiexp(mxBlob);        // 386 hex (193B w/sign)
-  // strip sign bytes — pairing pairs are sign-free:
-  //   pair1 = (σ 96B ‖ g2gen 192B), pair2 = (H(m) 96B ‖ apk 192B)
+  // host OUTPUTS are sign-free (testnet-verified 2026-09-02):
+  //   sigma = 96B G1 (192 hex), apk = 192B G2 (384 hex)
+  let sigma = near.bls12381P1Sum(sigBlob);
+  let apk = near.bls12381G2Multiexp(mxBlob);
+  // pairs: pair1 = (σ 96B ‖ g2gen 192B), pair2 = (H(m) 96B ‖ apk 192B)
   // client pre-negates H(m) so Σe = e(σ,g2)·e(-H(m),apk) == 1 on valid sig
-  let sig96 = strSlice(sigma, 2, 194);
-  let apk192 = strSlice(apk, 2, 386);
+  let sig96 = sigma;
+  let apk192 = apk;
   let gate = near.bls12381PairingCheck(sig96 + gg + pt + apk192);
   if (gate != 1) {
     near.abort("pairing check failed");

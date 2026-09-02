@@ -1674,14 +1674,17 @@ fn build_env_linker(
     // for map/decompress inputs). ret 0 = ok (register holds out_len bytes),
     // ret 1 = malformed length. Shape-stub only — not crypto-true.
     let bls_targets: [(&str, i64, i64); 8] = [
-        ("bls12381_p1_sum", 97, 97),        // (sign, G1 xy) each
-        ("bls12381_p2_sum", 193, 193),      // (sign, G2 xy)
-        ("bls12381_g1_multiexp", 128, 97),  // (G1 xy, fr LE) each
-        ("bls12381_g2_multiexp", 224, 193), // (G2 xy, fr LE)
-        ("bls12381_map_fp_to_g1", 48, 97),
-        ("bls12381_map_fp2_to_g2", 96, 193),
-        ("bls12381_p1_decompress", 48, 97),
-        ("bls12381_p2_decompress", 96, 193),
+        // INPUT strides carry sign bytes for sums (97/193); multiexp/map/
+        // decompress inputs are sign-free. OUTPUTS are all SIGN-FREE
+        // (96/192) — verified on testnet 2026-09-02 via SuccessValue sizes.
+        ("bls12381_p1_sum", 97, 96),        // in: (sign, G1 xy); out: G1 xy
+        ("bls12381_p2_sum", 193, 192),
+        ("bls12381_g1_multiexp", 128, 96),  // in: (G1 xy, fr LE); out: G1 xy
+        ("bls12381_g2_multiexp", 224, 192),
+        ("bls12381_map_fp_to_g1", 48, 96),
+        ("bls12381_map_fp2_to_g2", 96, 192),
+        ("bls12381_p1_decompress", 48, 96),
+        ("bls12381_p2_decompress", 96, 192),
     ];
     let mut bls_fns = Vec::new();
     for (_nm, stride, out_len) in bls_targets.iter() {
@@ -1697,9 +1700,8 @@ fn build_env_linker(
                     results[0] = Val::I64(1);
                     return Ok(());
                 }
-                // deterministic blob: sign byte 0x00 + cycling coords
+                // deterministic cycling-coords blob (sign-free output)
                 let mut blob = Vec::with_capacity(out_len as usize);
-                blob.push(0u8);
                 let mut i = 1;
                 while blob.len() < out_len as usize {
                     blob.push(((i * 7 + 3) % 251) as u8);

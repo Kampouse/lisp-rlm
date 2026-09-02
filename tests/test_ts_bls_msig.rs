@@ -117,7 +117,7 @@ fn bls_msig_threshold_lifecycle() {
     assert!(r.contains("points-ok"), "points: {r}");
     let exec = format!(r#"{{"id":"m1","coeffs":"{coeffs}"}}"#);
     let r = call(st, "execute", &exec);
-    assert!(r.contains("executed:00"), "exec: {r}");   // sign byte 00 + mock blob
+    assert!(r.contains("executed:0a11"), "exec: {r}");  // sign-free mock blob starts 0a (i=1,2: 0x0a,0x11)
 
     // verified view holds the aggregate signature
     let r = call(st, "verified", r#"{"id":"m1"}"#);
@@ -142,7 +142,7 @@ fn bls_msig_threshold_lifecycle() {
     let r = call(st, "execute", &format!(r#"{{"id":"m3","coeffs":"{coeffs}"}}"#));
     // NEAR-ABI mock P1Sum blob hex starts with sign byte 00 (971744e) —
     // was "executed:p1s" under the pre-971744e stub markers
-    assert!(r.contains("executed:00"), "m3 exec: {r}");
+    assert!(r.contains("executed:0a11"), "m3 exec: {r}");
 }
 
 #[test]
@@ -166,7 +166,7 @@ fn bls_pairing_gate_shape() {
     let r = call(st, "execute", &exec);
     // NEAR-ABI mock P1Sum blob hex starts with sign byte 00 (971744e) —
     // was "executed:p1s" under the pre-971744e stub markers
-    assert!(r.contains("executed:00"), "gate pass: {r}");
+    assert!(r.contains("executed:0a11"), "gate pass: {r}");
 
     // short H(m) (64 hex) → gate 320 bytes → not %384 → pairing abort
     let st2 = "/tmp/bls-msig-gate2.bin";
