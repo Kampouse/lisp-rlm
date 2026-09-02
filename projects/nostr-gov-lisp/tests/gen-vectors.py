@@ -119,12 +119,81 @@ steps = [
     ("unpause", gov_event(SK, PK, "unpause", 27, EXPIRES, CONTRACT),
      "ok"),
     ("is_paused", {}, "0"),
-    # legacy path still works after event traffic (fresh nonce 28)
+    # legacy path still works after event traffic (fresh nonce 28) —
+    # funded this time (deposit field) so wallet "satoshi" EXISTS for Phase 2
     ("create_wallet", {"name": "satoshi", "signature": owner_sig("create_wallet:satoshi", 28),
-                       "expires_at": str(EXPIRES), "nonce": "28"}, "ERR_STORAGE_DEPOSIT"),
+                       "expires_at": str(EXPIRES), "nonce": "28"}, "ok",
+     500000000000000000000000),
     # view after event traffic
     ("get_wallet", {"name": "evented"}, ""),
+
+    # ── Phase 2: proposals, m-of-n approvals, execute ────────────────
+    # wallet "satoshi" exists (created at step with deposit in mock),
+    # approvers: fresh keys 0xCC/0xDD, threshold 2-of-2.
 ]
 
-for name, args, expect in steps:
-    print(json.dumps({"method": name, "args": args, "expect": expect}))
+APR1 = bytes([0xCC] * 32)
+APR2 = bytes([0xDD] * 32)
+APR1_PK = i2b(mul(b2i(APR1))[0]).hex()
+APR2_PK = i2b(mul(b2i(APR2))[0]).hex()
+
+def apr_sig(sk, name, pid, ix):
+    m = (f"expires {EXPIRES}.000000000: approve:{name}:{pid}:{ix} "
+         f"| contract: {CONTRACT}").encode()
+    return sign(sk, sha(m)).hex()
+
+steps += [
+    # owner sets a 2-of-2 approver set on wallet "satoshi"
+    ("set_approvers", {"name": "satoshi", "pks": f"{APR1_PK},{APR2_PK}", "thr": "2",
+                       "signature": owner_sig("set_approvers:satoshi", 30),
+                       "expires_at": str(EXPIRES), "nonce": "30"}, "ok"),
+    # threshold 3 > 2 approvers → invalid
+    ("set_approvers", {"name": "satoshi", "pks": f"{APR1_PK},{APR2_PK}", "thr": "3",
+                       "signature": owner_sig("set_approvers:satoshi", 31),
+                       "expires_at": str(EXPIRES), "nonce": "31"}, "ERR_THRESHOLD_INVALID"),
+    # owner proposes 0.05N to rita.test.near (id 0)
+    ("propose", {"name": "satoshi", "pexp": str(EXPIRES), "am": "50000000000000000000000",
+                 "rc": "rita.test.near",
+                 "signature": owner_sig("propose:satoshi:0", 32),
+                 "expires_at": str(EXPIRES), "nonce": "32"}, "ok"),
+    ("get_proposal", {"name": "satoshi", "id": "0"}, "active"),
+    # execute while only-active → rejected
+    ("execute", {"name": "satoshi", "id": "0",
+                 "signature": owner_sig("execute:satoshi:0", 33),
+                 "expires_at": str(EXPIRES), "nonce": "33"}, "ERR_NOT_APPROVED"),
+    # wrong-key approver sig → invalid
+    ("approve", {"name": "satoshi", "id": "0", "ix": "0", "pubkey_hex": APR1_PK,
+                 "signature": apr_sig(APR2, "satoshi", "0", "0"),
+                 "expires_at": str(EXPIRES)}, "ERR_APPROVER_SIG_INVALID"),
+    # pk not at index → mismatch
+    ("approve", {"name": "satoshi", "id": "0", "ix": "0", "pubkey_hex": APR2_PK,
+                 "signature": apr_sig(APR1, "satoshi", "0", "0"),
+                 "expires_at": str(EXPIRES)}, "ERR_APPROVER_PK_MISMATCH"),
+    # first real approval (ix 0, approver 1) → still active (1 < 2)
+    ("approve", {"name": "satoshi", "id": "0", "ix": "0", "pubkey_hex": APR1_PK,
+                 "signature": apr_sig(APR1, "satoshi", "0", "0"),
+                 "expires_at": str(EXPIRES)}, "ok"),
+    ("get_proposal", {"name": "satoshi", "id": "0"}, "active"),
+    # double-approve → rejected
+    ("approve", {"name": "satoshi", "id": "0", "ix": "0", "pubkey_hex": APR1_PK,
+                 "signature": apr_sig(APR1, "satoshi", "0", "0"),
+                 "expires_at": str(EXPIRES)}, "ERR_ALREADY_APPROVED"),
+    # second approval (ix 1, approver 2) → threshold hit → approved
+    ("approve", {"name": "satoshi", "id": "0", "ix": "1", "pubkey_hex": APR2_PK,
+                 "signature": apr_sig(APR2, "satoshi", "0", "1"),
+                 "expires_at": str(EXPIRES)}, "ok"),
+    ("get_proposal", {"name": "satoshi", "id": "0"}, "approved"),
+    # owner executes → transfer fires (mock prints receipt)
+    ("execute", {"name": "satoshi", "id": "0",
+                 "signature": owner_sig("execute:satoshi:0", 34),
+                 "expires_at": str(EXPIRES), "nonce": "34"}, "ok"),
+    ("get_proposal", {"name": "satoshi", "id": "0"}, "executed"),
+    # re-execute → not approved anymore (st=executed)
+    ("execute", {"name": "satoshi", "id": "0",
+                 "signature": owner_sig("execute:satoshi:0", 35),
+                 "expires_at": str(EXPIRES), "nonce": "35"}, "ERR_NOT_APPROVED"),
+]
+
+for name, args, expect, *rest in steps:
+    dep = rest[0] if rest else 0
+    print(json.dumps({"method": name, "args": args, "expect": expect, "deposit": dep}))

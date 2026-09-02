@@ -33,8 +33,11 @@ run_all () {  # $1=wasm $2=outfile
     M=$($PY -c 'import json,sys;print(json.loads(sys.argv[1])["method"])' "$line")
     A=$($PY -c 'import json,sys;print(json.dumps(json.loads(sys.argv[1])["args"],separators=(",",":")))' "$line")
     V=""
-    case "$M" in get_owner_nonce|is_paused|get_version|get_wallet) V="--view";; esac
+    D=$($PY -c 'import json,sys;print(json.loads(sys.argv[1]).get("deposit",0))' "$line")
+    case "$M" in get_owner_nonce|is_paused|get_version|get_wallet|get_proposal|get_approvers) V="--view";; esac
+    export NEAR_MOCK_ATTACH="$D"
     OUT1=$("$MOCK" "$W" "$M" "$A" $V 2>&1)
+    unset NEAR_MOCK_ATTACH
     ERR=$(echo "$OUT1" | grep -oE 'ERR_[A-Z_]+' | head -1)
     RET=$(echo "$OUT1" | grep -oE '📄 .*' | head -1 | sed 's/^📄 //')
     RVAL=$($PY -c 'import json,sys

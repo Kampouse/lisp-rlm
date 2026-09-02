@@ -17,9 +17,12 @@ while IFS= read -r line; do
   M=$($PY -c 'import json,sys;print(json.loads(sys.argv[1])["method"])' "$line")
   A=$($PY -c 'import json,sys;print(json.dumps(json.loads(sys.argv[1])["args"],separators=(",",":")))' "$line")
   E=$($PY -c 'import json,sys;print(json.loads(sys.argv[1])["expect"])' "$line")
+  D=$($PY -c 'import json,sys;print(json.loads(sys.argv[1]).get("deposit",0))' "$line")
   V=""
-  case "$M" in get_owner_nonce|is_paused|get_version|get_wallet) V="--view";; esac
+  case "$M" in get_owner_nonce|is_paused|get_version|get_wallet|get_proposal|get_approvers) V="--view";; esac
+  export NEAR_MOCK_ATTACH="$D"
   OUT=$("$MOCK" "$W" "$M" "$A" $V 2>&1)
+  unset NEAR_MOCK_ATTACH
   ERR=$(echo "$OUT" | grep -oE 'LOG: ERR_[A-Z_]+' | head -1 | sed 's/^LOG: //')
   RET=$(echo "$OUT" | grep -oE '📄 .*' | head -1 | sed 's/^📄 //')
   RVAL=$($PY -c 'import json,sys
@@ -30,6 +33,8 @@ except Exception: print("")' "$RET")
   if [ -n "$ERR" ]; then R="$ERR"; else R="$RVAL"; fi
   if [ "$E" = "ok" ]; then
     OK=$([ -z "$ERR" ] && echo 1 || echo 0)
+  elif [ "$E" = "active" ] || [ "$E" = "approved" ] || [ "$E" = "executed" ]; then
+    OK=$(echo "$RET" | grep -q "\"st\":\"$E\"" && echo 1 || echo 0)
   else
     OK=$([ "$E" = "$R" ] && echo 1 || echo 0)
   fi
