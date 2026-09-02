@@ -27,6 +27,8 @@
 //! - [`dispatch`] — builtin dispatch modules, JSON helpers, and backward-compat stubs
 //! - [`typing`] — type inference and checking
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod bls_validate;
 pub mod builtin_schnorr;
 pub mod bytecode;
 pub mod clojure;

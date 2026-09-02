@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::rc::Rc;
 use wasmtime::*;
+use lisp_rlm_wasm::bls_validate;
 use lisp_rlm_wasm::builtin_schnorr::schnorr_verify_impl;
 
 const STATE_FILE: &str = "/tmp/near-mock-state.bin";
@@ -580,6 +581,20 @@ fn mem_read_str(caller: &mut wasmtime::Caller<'_, ()>, len: i64, ptr: i64) -> Op
         let md = mem.data(&caller);
         if ptr + len <= md.len() {
             return Some(String::from_utf8_lossy(&md[ptr..ptr + len]).into_owned());
+        }
+    }
+    None
+}
+
+/// Read `mem[ptr..ptr+len]` from guest memory, or None on OOB. Mock
+/// equivalent of nearcore's `get_memory_or_register!` (which traps with
+/// MemoryAccessViolation when ptr+len exceeds memory).
+fn read_guest_bytes(caller: &mut wasmtime::Caller<'_, ()>, len: i64, ptr: i64) -> Option<Vec<u8>> {
+    let (len, ptr) = (len as usize, ptr as usize);
+    if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+        let md = mem.data(&caller);
+        if ptr + len <= md.len() {
+            return Some(md[ptr..ptr + len].to_vec());
         }
     }
     None
@@ -1668,63 +1683,79 @@ fn build_env_linker(
             },
         ));
     }
-    // bls12381_* — NEAR host ABI (2026-09-02): 3-arg (len, ptr, rid) → i64
-    // status. Binary wire: stride bytes per element (sign byte + uncompressed
-    // point for sums; point + 32B LE scalar for multiexp; raw field elements
-    // for map/decompress inputs). ret 0 = ok (register holds out_len bytes),
-    // ret 1 = malformed length. Shape-stub only — not crypto-true.
-    let bls_targets: [(&str, i64, i64); 8] = [
-        // INPUT strides carry sign bytes for sums (97/193); multiexp/map/
-        // decompress inputs are sign-free. OUTPUTS are all SIGN-FREE
-        // (96/192) — verified on testnet 2026-09-02 via SuccessValue sizes.
-        ("bls12381_p1_sum", 97, 96),        // in: (sign, G1 xy); out: G1 xy
-        ("bls12381_p2_sum", 193, 192),
-        ("bls12381_g1_multiexp", 128, 96),  // in: (G1 xy, fr LE); out: G1 xy
-        ("bls12381_g2_multiexp", 224, 192),
-        ("bls12381_map_fp_to_g1", 48, 96),
-        ("bls12381_map_fp2_to_g2", 96, 192),
-        ("bls12381_p1_decompress", 48, 96),
-        ("bls12381_p2_decompress", 96, 192),
+    // bls12381_* — NEAR host ABI: 3-arg (len, ptr, rid) → i64 status.
+    // Byte-faithful validation: verbatim port of nearcore's bls12381.rs
+    // (real blst — on-curve, subgroup, canonical-encoding, sign-byte checks;
+    // sign-free 96/192B outputs). Length errors are HOST ERRORS (trap),
+    // matching nearcore's BLS12381InvalidInput; malformed points/signs →
+    // ret 1 with the register untouched.
+    let bls_targets: [(&str, u8); 8] = [
+        ("bls12381_p1_sum", bls_validate::kind::P1_SUM),
+        ("bls12381_p2_sum", bls_validate::kind::P2_SUM),
+        ("bls12381_g1_multiexp", bls_validate::kind::G1_MULTIEXP),
+        ("bls12381_g2_multiexp", bls_validate::kind::G2_MULTIEXP),
+        ("bls12381_map_fp_to_g1", bls_validate::kind::MAP_FP_TO_G1),
+        ("bls12381_map_fp2_to_g2", bls_validate::kind::MAP_FP2_TO_G2),
+        ("bls12381_p1_decompress", bls_validate::kind::P1_DECOMPRESS),
+        ("bls12381_p2_decompress", bls_validate::kind::P2_DECOMPRESS),
     ];
     let mut bls_fns = Vec::new();
-    for (_nm, stride, out_len) in bls_targets.iter() {
+    for (_nm, kind_id) in bls_targets.iter() {
         let st_g = state.clone();
-        let (stride, out_len) = (*stride, *out_len);
+        let kind_id = *kind_id;
         bls_fns.push(Func::new(
             &mut *store,
             FuncType::new(&engine, vec![ValType::I64; 3], vec![ValType::I64]),
-            move |_, args, results| {
+            move |mut caller, args, results| {
                 let len = args[0].unwrap_i64();
+                let ptr = args[1].unwrap_i64();
                 let rid = args[2].unwrap_i64() as u64;
-                if len <= 0 || len % stride != 0 {
-                    results[0] = Val::I64(1);
-                    return Ok(());
+                let Some(data) = read_guest_bytes(&mut caller, len, ptr) else {
+                    return Err(wasmtime::Error::msg(format!(
+                        "MemoryAccessViolation: bls12381 host read {}b @ {:#x}",
+                        len, ptr
+                    )));
+                };
+                match bls_validate::eval(kind_id, &data) {
+                    Err(e) => Err(wasmtime::Error::msg(e.to_string())),
+                    Ok(None) => {
+                        results[0] = Val::I64(1);
+                        Ok(())
+                    }
+                    Ok(Some(out)) => {
+                        let mut st = st_g.lock().unwrap();
+                        write_reg_checked(&mut st, rid, out)
+                            .map_err(|e| wasmtime::Error::msg(e))?;
+                        results[0] = Val::I64(0);
+                        Ok(())
+                    }
                 }
-                // deterministic cycling-coords blob (sign-free output)
-                let mut blob = Vec::with_capacity(out_len as usize);
-                let mut i = 1;
-                while blob.len() < out_len as usize {
-                    blob.push(((i * 7 + 3) % 251) as u8);
-                    i += 1;
-                }
-                let mut st = st_g.lock().unwrap();
-                write_reg_checked(&mut st, rid, blob).map_err(|e| wasmtime::Error::msg(e))?;
-                results[0] = Val::I64(0);
-                Ok(())
             },
         ));
     }
-    // bls12381_pairing_check: (len, ptr) → 0 identity / 1 bad / 2 non-id.
-    // Stub: well-formed 288-multiple input pairs → 0, else 1.
-    let sg_pc = state.clone();
+    // bls12381_pairing_check: (len, ptr) → i64. nearcore semantics:
+    // 0 = check passed, 1 = malformed point/encoding, 2 = well-formed but
+    // pairing ≠ 1. Empty input is vacuously true → 0. Bad total length is
+    // a host error (trap), like BLS12381InvalidInput on testnet.
     let bls_pairing_fn = Func::new(
         &mut *store,
         FuncType::new(&engine, vec![ValType::I64; 2], vec![ValType::I64]),
-        move |_, args, results| {
+        move |mut caller, args, results| {
             let len = args[0].unwrap_i64();
-            results[0] = Val::I64(if len > 0 && len % 288 == 0 { 0 } else { 1 });
-            let _ = &sg_pc;
-            Ok(())
+            let ptr = args[1].unwrap_i64();
+            let Some(data) = read_guest_bytes(&mut caller, len, ptr) else {
+                return Err(wasmtime::Error::msg(format!(
+                    "MemoryAccessViolation: bls12381_pairing_check read {}b @ {:#x}",
+                    len, ptr
+                )));
+            };
+            match bls_validate::pairing_check(&data) {
+                Err(e) => Err(wasmtime::Error::msg(e.to_string())),
+                Ok(code) => {
+                    results[0] = Val::I64(code as i64);
+                    Ok(())
+                }
+            }
         },
     );
 
@@ -1922,7 +1953,9 @@ fn build_env_linker(
                 .expect("missing memory export");
             let data = mem.data(&caller);
             
+            eprintln!("[schnorr-dbg] entry pk_ptr={} sig_ptr={} msg_ptr={} msg_len={} mem_len={}", pk_ptr, sig_ptr, msg_ptr, msg_len, data.len());
             if pk_ptr + 32 > data.len() || sig_ptr + 64 > data.len() || msg_ptr + msg_len > data.len() {
+                eprintln!("[schnorr-dbg] BOUNDS REJECT");
                 results[0] = Val::I32(0);
                 return Ok(());
             }
@@ -1930,8 +1963,12 @@ fn build_env_linker(
                 let pk: [u8; 32] = data[pk_ptr..pk_ptr+32].try_into().unwrap();
                 let sig: [u8; 64] = data[sig_ptr..sig_ptr+64].try_into().unwrap();
                 let msg = &data[msg_ptr..msg_ptr+msg_len];
-                schnorr_verify_impl(&pk, &sig, msg) as i32
-            })).unwrap_or(0);
+                eprintln!("[schnorr-dbg] pk_ptr={} sig_ptr={} msg_ptr={} msg_len={}", pk_ptr, sig_ptr, msg_ptr, msg_len);
+                eprintln!("[schnorr-dbg] pk[0..8]={:02x?} sig[0..8]={:02x?} msg[0..8]={:02x?}", &pk[0..8], &sig[0..8], &msg[msg.len().min(8)..msg.len().min(16).max(8)]);
+                let r = schnorr_verify_impl(&pk, &sig, msg) as i32;
+                eprintln!("[schnorr-dbg] result={}", r);
+                r
+            })).unwrap_or_else(|_| { eprintln!("[schnorr-dbg] PANIC"); 0 });
             
             results[0] = Val::I32(result);
             Ok(())
