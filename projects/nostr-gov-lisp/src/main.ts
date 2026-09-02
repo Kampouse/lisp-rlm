@@ -387,11 +387,16 @@ export function init() {
 }
 
 export function create_wallet() {
+  // pause gate FIRST and dialect-independent (2026-09-02 live catch:
+  // event-auth'd create sailed through a paused contract).
+  if (strLength(getStr("paused")) !== 0) {
+    die("ERR_PAUSED");
+  }
   const name = near.jsonGetStr("name");
   const sig = near.jsonGetStr("signature");
   const expires = near.jsonGetStr("expires_at");
   const nonce = near.jsonGetStr("nonce");
-  // ev routing first (mirrors the Rust reference): event-auth calls carry
+  // ev routing next (mirrors the Rust reference): event-auth calls carry
   // tags, not legacy expires_at/nonce, so arg validation is legacy-only.
   if (strLength(near.jsonGetStr("ev")) === 0) {
     if (strLength(expires) === 0) {

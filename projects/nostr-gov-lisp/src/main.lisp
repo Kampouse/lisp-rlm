@@ -389,11 +389,18 @@
 ;; deposit ≥ 0.5N, name checks, wallet insert + event.
 
 (define (create_wallet)
+  ;; pause gate FIRST and dialect-independent (2026-09-02 live catch:
+  ;; event-auth'd create sailed through a paused contract — the check
+  ;; lived only in the legacy arm). No wallet may be created while
+  ;; paused, regardless of how the caller authenticates.
+  (if (!= (str-length (get-str "paused")) 0)
+      (die "ERR_PAUSED")
+      0)
   (let ((name (near/json_get_str "name"))
         (sig (near/json_get_str "signature"))
         (expires (near/json_get_str "expires_at"))
         (nonce (near/json_get_str "nonce")))
-    ;; ev routing first (mirrors the Rust reference): event-auth calls carry
+    ;; ev routing next (mirrors the Rust reference): event-auth calls carry
     ;; tags, not legacy expires_at/nonce, so arg validation is legacy-only.
     (if (= (str-length (near/json_get_str "ev")) 0)
       (begin
@@ -402,9 +409,6 @@
             0)
         (if (= (str-length nonce) 0)
             (die "ERR_ARG_NONCE")
-            0)
-        (if (!= (str-length (get-str "paused")) 0)
-            (die "ERR_PAUSED")
             0)
         (verify-owner (str-cat "create_wallet:" name) sig expires nonce))
       (verify-owner-event (str-cat "create_wallet:" name))))

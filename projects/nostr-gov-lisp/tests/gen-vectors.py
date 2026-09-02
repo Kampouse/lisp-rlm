@@ -127,6 +127,13 @@ steps = [
     ("pause", gov_event(SK, PK, "pause", 0, EXPIRES, CONTRACT, content="pause it"),
      "ok"),
     ("is_paused", {}, "1"),
+    # (2026-09-02 live catch) EVENT-auth'd create must ALSO be paused-gated
+    # — the check used to live only in the legacy arm and event creates
+    # sailed through a paused contract on-chain
+    ("create_wallet", dict({"name": "pausedwallet"},
+                           **gov_event(SK, PK, "create_wallet:pausedwallet", 29, EXPIRES, CONTRACT)),
+     "ERR_PAUSED",
+     500000000000000000000000),
     ("pause", gov_event(SK, PK, "unpause", 0, EXPIRES, CONTRACT, content="pause it"),
      "ERR_EVENT_ACTION"),
     ("unpause", gov_event(SK, PK, "unpause", 27, EXPIRES, CONTRACT),
