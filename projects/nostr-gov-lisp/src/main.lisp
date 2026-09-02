@@ -164,7 +164,7 @@
       ;; inline calls hit emitter scratch-local aliasing (see GAPS.md)
       (let ((pkb (hex-decode pk))
             (sigb (hex-decode sig))
-            (mh (sha256-hash msg)))
+            (mh (hex-decode (sha256-hash msg))))
         (let ((ok (schnorr-verify pkb sigb mh)))
           (if (= ok 1)
               (consume-nonce (str->num nonce))
@@ -188,7 +188,7 @@
           0)
       (let ((ok (schnorr-verify (hex-decode pk)
                                 (hex-decode sig)
-                                (sha256-hash msg))))
+                                (hex-decode (sha256-hash msg)))))
         (if (= ok 1)
             0
             (die "ERR_NOT_AUTHORIZED_TO_PAUSE"))
@@ -288,7 +288,7 @@
       (let ((serialized (event-serialize pk cat kind tags content)))
         (let ((ok (schnorr-verify (hex-decode pk)
                                   (hex-decode sig)
-                                  (sha256-hash serialized))))
+                                  (hex-decode (sha256-hash serialized)))))
           (if (= ok 1)
               (consume-nonce (str->num tn))
               (die "ERR_EVENT_SIG_INVALID")))))))
@@ -329,7 +329,7 @@
       (let ((serialized (event-serialize pk cat kind tags content)))
         (let ((ok (schnorr-verify (hex-decode pk)
                                   (hex-decode sig)
-                                  (sha256-hash serialized))))
+                                  (hex-decode (sha256-hash serialized)))))
           (if (= ok 1)
               0
               (die "ERR_EVENT_SIG_INVALID")))))))
@@ -386,6 +386,11 @@
         (sig (near/json_get_str "signature"))
         (expires (near/json_get_str "expires_at"))
         (nonce (near/json_get_str "nonce")))
+    ;; ev routing first (mirrors the Rust reference): event-auth calls carry
+    ;; tags, not legacy expires_at/nonce, so arg validation is legacy-only.
+    (if (= (str-length (near/json_get_str "ev")) 0)
+      0
+      (verify-owner-event (str-cat "create_wallet:" name)))
     (if (= (str-length expires) 0)
         (die "ERR_ARG_EXPIRES")
         0)
@@ -395,9 +400,7 @@
     (if (!= (str-length (get-str "paused")) 0)
         (die "ERR_PAUSED")
         0)
-    (if (= (str-length (near/json_get_str "ev")) 0)
-      (verify-owner (str-cat "create_wallet:" name) sig expires nonce)
-      (verify-owner-event (str-cat "create_wallet:" name))))
+    (verify-owner (str-cat "create_wallet:" name) sig expires nonce))
   (let ((name (near/json_get_str "name")))
     (if (near/deposit-gte 1001882102603448320 27105)
         0
@@ -462,7 +465,7 @@
         (sig (near/json_get_str "sig_hex")))
     (let ((ok (schnorr-verify (hex-decode pk)
                               (hex-decode sig)
-                              (sha256-hash msg))))
+                              (hex-decode (sha256-hash msg)))))
       (if (= ok 1)
           0
           (die "Invalid schnorr signature: verification failed"))
@@ -674,9 +677,9 @@
             (die "ERR_APPROVER_PK_MISMATCH"))
         (if (= (schnorr-verify (hex-decode pk)
                                (hex-decode sig)
-                               (sha256-hash (str "expires " exp ".000000000: approve:"
+                               (hex-decode (sha256-hash (str "expires " exp ".000000000: approve:"
                                                  name ":" id ":" ix
-                                                 " | contract: " (near/current_account_id))))
+                                                 " | contract: " (near/current_account_id)))))
              1)
             0
             (die "ERR_APPROVER_SIG_INVALID"))

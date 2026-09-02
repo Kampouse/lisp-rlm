@@ -90,7 +90,7 @@ function verifyOwner(action: string, sig: string, expires: string, nonce: string
   }
   const pkb = hexDecode(pk);
   const sigb = hexDecode(sig);
-  const mh = sha256Hash(msg);
+  const mh = hexDecode(sha256Hash(msg));
   const ok = schnorrVerify(pkb, sigb, mh);
   if (ok === 1) {
     consumeNonce(strToNum(nonce));
@@ -230,6 +230,11 @@ export function create_wallet() {
   const sig = near.jsonGetStr("signature");
   const expires = near.jsonGetStr("expires_at");
   const nonce = near.jsonGetStr("nonce");
+  // ev routing first (mirrors the Rust reference): event-auth calls carry
+  // tags, not legacy expires_at/nonce, so arg validation is legacy-only.
+  if (strLength(near.jsonGetStr("ev")) !== 0) {
+    die("ERR_EVENT_AUTH_NOT_IN_TS_PORT");
+  }
   if (strLength(expires) === 0) {
     die("ERR_ARG_EXPIRES");
   }
@@ -239,11 +244,7 @@ export function create_wallet() {
   if (strLength(getStr("paused")) !== 0) {
     die("ERR_PAUSED");
   }
-  if (strLength(near.jsonGetStr("ev")) === 0) {
-    verifyOwner(`create_wallet:${name}`, sig, expires, nonce);
-  } else {
-    die("ERR_EVENT_AUTH_NOT_IN_TS_PORT");
-  }
+  verifyOwner(`create_wallet:${name}`, sig, expires, nonce);
   if (!near.depositGte(1001882102603448320, 27105)) {
     die("ERR_STORAGE_DEPOSIT");
   }
@@ -277,7 +278,7 @@ export function pause() {
     }
     const pkb = hexDecode(pk);
     const sigb = hexDecode(sig);
-    const mh = sha256Hash(msg);
+    const mh = hexDecode(sha256Hash(msg));
     const ok = schnorrVerify(pkb, sigb, mh);
     if (ok === 1) {
       near.storageSet("paused", "1");
@@ -430,7 +431,7 @@ export function approve() {
   const msg = `expires ${exp}.000000000: approve:${name}:${id}:${ix} | contract: ${near.currentAccountId()}`;
   const pkb = hexDecode(pk);
   const sigb = hexDecode(sig);
-  const mh = sha256Hash(msg);
+  const mh = hexDecode(sha256Hash(msg));
   const ok = schnorrVerify(pkb, sigb, mh);
   if (ok !== 1) {
     die("ERR_APPROVER_SIG_INVALID");
