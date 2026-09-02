@@ -11,6 +11,32 @@ export function ftMint(to: string, amount: bigint): string {
   return "supply:" + (supply + amount);
 }
 
+export function ftTransfer(to: string, amount: bigint): string {
+  let me = near.predecessorAccountId();
+  let bal = near.storageGet("ft:" + me) ?? ZERO;
+  if (bal < amount) {
+    near.abort("insufficient balance");
+  }
+  near.storageSet("ft:" + me, bal - amount);
+  let balTo = near.storageGet("ft:" + to) ?? ZERO;
+  near.storageSet("ft:" + to, balTo + amount);
+  return "ok:" + amount;
+}
+
+// NEP-141 standard entrypoint (promises from other contracts call this).
+// Arg names follow the NEP: receiver_id / amount / memo.
+export function ft_transfer(receiver_id: string, amount: bigint): string {
+  let me = near.predecessorAccountId();
+  let bal = near.storageGet("ft:" + me) ?? ZERO;
+  if (bal < amount) {
+    near.abort("insufficient balance");
+  }
+  near.storageSet("ft:" + me, bal - amount);
+  let balTo = near.storageGet("ft:" + receiver_id) ?? ZERO;
+  near.storageSet("ft:" + receiver_id, balTo + amount);
+  return "ok:" + amount;
+}
+
 export function ftBalanceOf(who: string): string {
   return "bal:" + (near.storageGet("ft:" + who) ?? ZERO);
 }
