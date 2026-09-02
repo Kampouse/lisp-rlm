@@ -176,9 +176,15 @@ export function execute(id: string, msgPoint: string, g2gen: string, coeffs: str
   let apk = near.bls12381G2Multiexp(mxBlob);
   // pairs: pair1 = (σ 96B ‖ g2gen 192B), pair2 = (H(m) 96B ‖ apk 192B)
   // client pre-negates H(m) so Σe = e(σ,g2)·e(-H(m),apk) == 1 on valid sig
-  let sig96 = sigma;
-  let apk192 = apk;
-  let gate = near.bls12381PairingCheck(sig96 + gg + pt + apk192);
+  // NOTE: single-expression 4-operand `a+b+c+d` concat zeroes the prefix
+  // operands (engine bug, testnet-proven 2026-09-02) — build via += which
+  // uses the correct growing-buffer path.
+  let gateBuf = "";
+  gateBuf = gateBuf + sigma;
+  gateBuf = gateBuf + gg;
+  gateBuf = gateBuf + pt;
+  gateBuf = gateBuf + apk;
+  let gate = near.bls12381PairingCheck(gateBuf);
   if (gate != 1) {
     near.abort("pairing check failed");
   }
