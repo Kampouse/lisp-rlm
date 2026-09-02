@@ -1006,11 +1006,34 @@ fn infer(
                 // Interpreter compares (= / !=) structurally on any values
                 // (nums, bools, strings, lists); the num-only env scheme
                 // would reject (= "a" "b") / (!= (list 1) (list 1)).
+                // bool ↔ int mixes are allowed: bools ARE tagged ints and
+                // `(= ok 1)` is a truthiness probe (surface tour 2 ctx
+                // fixture, 2026-09-01 — near/deposit-gte returns bool).
                 LispVal::Sym(s) if (s == "=" || s == "!=") && list.len() == 3 => {
                     let t1 = infer(&list[1], env, supply, subst)?;
                     let t2 = infer(&list[2], env, supply, subst)?;
-                    let su = unify(&subst.apply(&t1), &subst.apply(&t2))
-                        .map_err(|e| format!("in call ({} ...): {}", s, e))?;
+                    let a1 = subst.apply(&t1);
+                    let a2 = subst.apply(&t2);
+                    let su = match unify(&a1, &a2) {
+                        Ok(su) => su,
+                        Err(_) => {
+                            // mixed pair: OK if one side is bool (tagged-int
+                            // probe) — no substitution to record
+                            let a1_bool = unify(&a1, &TcType::Con(TcCon::Bool)).is_ok();
+                            let a2_bool = unify(&a2, &TcType::Con(TcCon::Bool)).is_ok();
+                            if (a1_bool || a2_bool)
+                                && (unify(&a1, &TcType::Con(TcCon::Num)).is_ok()
+                                    || unify(&a2, &TcType::Con(TcCon::Num)).is_ok())
+                            {
+                                Subst::new()
+                            } else {
+                                return Err(format!(
+                                    "in call ({} ...): type mismatch: {} ≠ {}",
+                                    s, a1, a2
+                                ));
+                            }
+                        }
+                    };
                     *subst = su.compose(subst.clone());
                     Ok(TcType::Con(TcCon::Bool))
                 }
@@ -1454,6 +1477,28 @@ fn infer_application(
             }
             return Ok(TcType::Con(TcCon::Int));
         }
+        // vec-length: same polymorphic treatment as len — the TS frontend
+        // lowers `.length` (arrays AND strings) to vec-length, the wasm
+        // emitter's `len` arm handles TAG_STR + TAG_ARRAY, and the interp
+        // "length" builtin accepts both. The old list-only Arrow type
+        // rejected `S.length` on any string (surface tour 2, 2026-09-01).
+        if name == "vec-length" && args.len() == 1 {
+            let t = infer(&args[0], env, supply, subst)?;
+            let el = supply.fresh();
+            let list_t = match el {
+                TcType::Var(vid) => TcType::Con(TcCon::List(Box::new(TcType::Var(vid)))),
+                other => other,
+            };
+            let is_list = unify(&t, &list_t).is_ok();
+            let is_str = unify(&t, &TcType::Con(TcCon::Str)).is_ok();
+            if !is_list && !is_str {
+                return Err(format!(
+                    "in call (vec-length ...): type mismatch: {} ≠ str/list",
+                    t
+                ));
+            }
+            return Ok(TcType::Con(TcCon::Int));
+        }
         if name == "str-concat" || name == "string-append" || name == "str" {
             for arg in args {
                 let _ = infer(arg, env, supply, subst)?;
@@ -1480,6 +1525,63 @@ fn infer_application(
                 let _ = infer(arg, env, supply, subst)?;
             }
             return Ok(TcType::Con(TcCon::List(Box::new(TcType::Con(TcCon::Any)))));
+        }
+        // `+` on strings → concat. The interpreter's `+` IS polymorphic
+        // (str+str concatenates; see interp "length" parity and the TS
+        // dialect's `acc + "S"` idiom), but the typing env is num-only —
+        // TS-side string concat that survived lowering (var + var, where a
+        // var is string-typed at runtime) hard-errored "num ≠ str".
+        // Str+str → str; anything else keeps the num arrow.
+        if name == "+" && args.len() == 2 {
+            let tl = infer(&args[0], env, supply, subst)?;
+            let tr = infer(&args[1], env, supply, subst)?;
+            // CONCRETE str only: an unbound type var unifies with Str, which
+            // made `(+ (f) 1)` on a not-yet-bound fn return Str and broke
+            // near/store's num param (test_near_counter regression 2026-09-01).
+            let is_concrete_str = |t: &TcType| {
+                matches!(subst.apply(t), TcType::Con(TcCon::Str))
+            };
+            let l_str = is_concrete_str(&tl);
+            let r_str = is_concrete_str(&tr);
+            if l_str || r_str {
+                // coerce the non-str side through to-string at runtime is the
+                // emitter's job; here just accept the mix and return str
+                return Ok(TcType::Con(TcCon::Str));
+            }
+            // fall through to the env arrow (num → num → num)
+            let su = unify(&subst.apply(&tl), &TcType::Con(TcCon::Num))
+                .map_err(|e| format!("in call (+ ...): {}", e))?;
+            *subst = su.compose(subst.clone());
+            let su2 = unify(&subst.apply(&tr), &TcType::Con(TcCon::Num))
+                .map_err(|e| format!("in call (+ ...): {}", e))?;
+            *subst = su2.compose(subst.clone());
+            return Ok(TcType::Con(TcCon::Num));
+        }
+        // `=` is polymorphic at runtime: numeric eq, string eq, and bool eq
+        // (bools are tagged ints; the interp's `=` compares tagged values).
+        // The typing env is num-only — `(= (deposit-gte 0 0) 1)` (surface
+        // tour 2 ctx fixture, 2026-09-01) errored "bool ≠ int". Accept
+        // same-type pairs of num|str|bool → bool.
+        if name == "=" && args.len() == 2 {
+            let tl = infer(&args[0], env, supply, subst)?;
+            let tr = infer(&args[1], env, supply, subst)?;
+            let tl = subst.apply(&tl);
+            let tr = subst.apply(&tr);
+            for t in [&TcType::Con(TcCon::Num), &TcType::Con(TcCon::Str), &TcType::Con(TcCon::Bool)] {
+                if unify(&tl, t).is_ok() && unify(&tr, t).is_ok() {
+                    return Ok(TcType::Con(TcCon::Bool));
+                }
+            }
+            // bool ↔ int mix: bools are tagged ints, `(= ok 1)` is a
+            // truthiness probe (surface tour 2 ctx, 2026-09-01)
+            let tl_bool = unify(&tl, &TcType::Con(TcCon::Bool)).is_ok();
+            let tr_bool = unify(&tr, &TcType::Con(TcCon::Bool)).is_ok();
+            if (tl_bool && unify(&tr, &TcType::Con(TcCon::Num)).is_ok())
+                || (tr_bool && unify(&tl, &TcType::Con(TcCon::Num)).is_ok())
+            {
+                return Ok(TcType::Con(TcCon::Bool));
+            }
+            // mixed/unknown: fall through to the num arrow for a precise error
         }
     }
 

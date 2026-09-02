@@ -69,6 +69,7 @@ impl WasmEmitter {
                 if a.len() != 1 {
                     return Err("vec-length: expected 1 arg".into());
                 }
+                let val_tmp = self.local_idx("__vl_val");
                 let arr_tmp = self.local_idx("__vl_arr");
                 let ma = wasm_encoder::MemArg {
                     offset: 0,
@@ -76,13 +77,32 @@ impl WasmEmitter {
                     memory_index: 0,
                 };
                 let mut v = self.expr(&a[0])?;
-                // Untag: >> TAG_BITS → raw heap ptr
+                v.push(Instruction::LocalSet(val_tmp));
+                // Polymorphic, matching the interp's `length`: TAG_STR → len
+                // from the tagged word (upper 32 bits); TAG_ARRAY → count
+                // from ptr[0] (2026-09-01 — ctx fixture vec-length'd
+                // randomSeed/signerAccountPk and read garbage: the arm was
+                // array-only while `len` was already polymorphic).
+                v.push(Instruction::LocalGet(val_tmp));
+                v.push(Instruction::I64Const(7));
+                v.push(Instruction::I64And);
+                v.push(Instruction::I64Const(TAG_STR));
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                // TAG_STR: extract len (upper 32 bits of payload)
+                v.push(Instruction::LocalGet(val_tmp));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::Else);
+                // TAG_ARRAY: load count from ptr[0]
+                v.push(Instruction::LocalGet(val_tmp));
                 v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(arr_tmp));
-                // Load count from ptr[0]
                 v.push(Instruction::LocalGet(arr_tmp));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(ma));
+                v.push(Instruction::End);
                 // Tag as number
                 v.extend(self.emit_tag_num());
                 Ok(v)

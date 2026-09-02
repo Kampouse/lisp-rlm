@@ -389,6 +389,40 @@ impl WasmEmitter {
         v.push(Instruction::I64Const(TAG_STR));
         v.push(Instruction::I64Or);
         v.push(Instruction::Else);
+        // BOOL path (2026-09-01): to-string(bool) → "true"/"false" — parity
+        // with the interpreter (was falling to NUM and printing "1"/"0").
+        v.push(Instruction::LocalGet(val_i));
+        v.push(Instruction::I64Const(7));
+        v.push(Instruction::I64And);
+        v.push(Instruction::I64Const(TAG_BOOL));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Result(wasm_encoder::ValType::I64)));
+        let true_off = self.alloc_data(b"true") as i64;
+        let false_off = self.alloc_data(b"false") as i64;
+        v.push(Instruction::LocalGet(val_i));
+        v.push(Instruction::I64Const(TAG_BITS));
+        v.push(Instruction::I64ShrS); // payload 0/1
+        v.push(Instruction::I32WrapI64); // If condition must be i32
+        v.push(Instruction::If(BlockType::Result(wasm_encoder::ValType::I64)));
+        // "true" → (4 << 32 | true_off) << 3 | TAG_STR
+        v.push(Instruction::I64Const(4));
+        v.push(Instruction::I64Const(32));
+        v.push(Instruction::I64Shl);
+        v.push(Instruction::I64Const(true_off));
+        v.push(Instruction::I64Or);
+        v.push(Instruction::Else);
+        // "false" → (5 << 32 | false_off) << 3 | TAG_STR
+        v.push(Instruction::I64Const(5));
+        v.push(Instruction::I64Const(32));
+        v.push(Instruction::I64Shl);
+        v.push(Instruction::I64Const(false_off));
+        v.push(Instruction::I64Or);
+        v.push(Instruction::End);
+        v.push(Instruction::I64Const(TAG_BITS));
+        v.push(Instruction::I64Shl);
+        v.push(Instruction::I64Const(TAG_STR));
+        v.push(Instruction::I64Or);
+        v.push(Instruction::Else);
         // NUM path: untag the number before converting: val >> TAG_BITS
         // TAG_NUM uses signed values — must use arithmetic (signed) right shift
         // to preserve negative numbers. I64ShrU would mangle negatives.
@@ -551,6 +585,7 @@ impl WasmEmitter {
         v.push(Instruction::LocalGet(dst_i));
         v.push(Instruction::I64Or);
         v.extend(self.emit_tag_str());
+        v.push(Instruction::End); // close BOOL if
         v.push(Instruction::End); // close NIL/NUM if
         v.push(Instruction::End); // close ARRAY/else if
         v.push(Instruction::End); // close STR/else if

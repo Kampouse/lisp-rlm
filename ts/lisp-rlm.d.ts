@@ -108,6 +108,17 @@ declare const near: {
   storageHasKey(key: string): boolean;
   storageRemove(key: string): void;
   storageUsage(): number;
+  /**
+   * Start a storage iterator over all keys with the given prefix.
+   * Returns an iterator id (number) — pass to near.iterNext().
+   * Exhausts in lexicographic key order.
+   */
+  iterPrefix(prefix: string): number;
+  /**
+   * Advance a storage iterator. Returns the next key, or null when
+   * exhausted (pair with `??` / check for null).
+   */
+  iterNext(iterId: number): string | null;
 
   // args / returns
   /**
@@ -138,6 +149,8 @@ declare const near: {
   // money (u128 scale → decimal strings)
   attachedDeposit(): string;
   attachedDepositU128(): string;
+  /** High 64 bits of the attached deposit as i64 (raw-ABI pairing with attachedDeposit). */
+  attachedDepositHigh(): number;
   accountBalance(): string;
   // compile-time u128 constant as (lo64, hi64) split — see wasm_emit
   // deposit check: writes attached_deposit to TEMP_MEM, compares u128

@@ -219,31 +219,31 @@ fn gap_b5_deposit_gte_wrong_arity_accepted() {
     );
 }
 
-/// GAP-B6: Type mismatch accepted — near/sha256 should take str but int accepted via wildcard.
+/// GAP-B6 [CLOSED 2026-09-01]: near/keccak512 was wildcard-only; it now has
+/// a real signature (str → str) so a num arg IS caught.
 #[test]
 fn gap_b6_type_mismatch_accepted_for_wildcard() {
-    // near/sha256 is explicitly typed as str → str, so this SHOULD be caught.
-    // But near/keccak512 is wildcard-only, so this passes.
     let src = r#"(define (bad) (near/keccak512 42))
 (export "bad" bad true)"#;
     let result = compile_typed(src);
-    // near/keccak512 is wildcard-only, so type mismatch is NOT caught.
     assert!(
-        result.is_ok(),
-        "type checker should NOT catch type mismatch for wildcard-only near/keccak512: {:?}",
+        result.is_err(),
+        "near/keccak512 is typed str → str now — num arg must be caught: {:?}",
         result
     );
 }
 
-/// GAP-B7: near/ecrecover takes 3 args but type checker accepts wrong count.
+/// GAP-B7 [CLOSED 2026-09-01]: near/ecrecover was wildcard-only (any arity
+/// accepted); it now has a real signature so 0 args IS an arity error.
 #[test]
 fn gap_b7_ecrecover_wrong_arity_accepted() {
     let src = r#"(define (bad) (near/ecrecover))
 (export "bad" bad true)"#;
     let result = compile_typed(src);
     assert!(
-        result.is_ok() || !result.unwrap_err().contains("arity"),
-        "type checker should NOT catch arity for wildcard-only near/ecrecover"
+        result.is_err(),
+        "near/ecrecover is typed now — 0 args must be caught: {:?}",
+        result
     );
 }
 
@@ -510,15 +510,18 @@ fn control_block_timestamp_catches_arity() {
     );
 }
 
-/// CONTROL: + is explicitly typed as num → num → num. Passing str should fail.
+/// CONTROL [SUPERSEDED 2026-09-01]: `+` is now polymorphic in the checker
+/// (str+str → concat, matching the interpreter and the TS `acc + "S"`
+/// idiom), so two str literals are LEGAL and return str.
 #[test]
 fn control_plus_catches_type_mismatch() {
     let src = r#"(define (bad) (+ "hello" "world"))
 (export "bad" bad true)"#;
     let result = compile_typed(src);
     assert!(
-        result.is_err(),
-        "+(\"hello\", \"world\") should fail type check (expects num)"
+        result.is_ok(),
+        "+(\"hello\", \"world\") is string concat now (interpreter parity): {:?}",
+        result
     );
 }
 

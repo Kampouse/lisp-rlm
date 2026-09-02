@@ -180,24 +180,34 @@ impl WasmEmitter {
                 v.push(Instruction::I64Load(ma));
                 v.push(Instruction::LocalSet(lambda_id_local));
                 v.push(Instruction::End);
-                // Dispatch: if/else chain matching lambda_id against known lambdas
+                // Dispatch: if/else chain matching lambda_id against known
+                // lambdas. NON-TAIL positions (let bindings, str args) must
+                // NOT Return — the old `Call; Return` was a tail-call opt
+                // that returned from the ENCLOSING function, silently
+                // discarding everything after the call (template siblings,
+                // later statements). Same result-local pattern as
+                // dynamic_call.rs: every arm stores to one local, read once.
+                let result_local = self.next_local;
+                self.next_local += 1;
+                v.push(Instruction::I64Const(-1)); // fallback: no matching lambda
+                v.push(Instruction::LocalSet(result_local));
                 for (lid, &(func_idx, _cap_count)) in self.lambda_info.iter().enumerate() {
                     v.push(Instruction::LocalGet(lambda_id_local));
                     v.push(Instruction::I64Const(lid as i64));
                     v.push(Instruction::I64Eq);
-                    v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                    v.push(Instruction::If(BlockType::Empty));
                     v.push(Instruction::LocalGet(temp_closure_ptr));
                     for &al in &arg_locals {
                         v.push(Instruction::LocalGet(al));
                     }
                     v.push(Instruction::Call(USER_BASE | func_idx as u32));
-                    v.push(Instruction::Return);
+                    v.push(Instruction::LocalSet(result_local));
                     v.push(Instruction::Else);
                 }
-                v.push(Instruction::I64Const(-1)); // fallback: return -1 (error sentinel)
                 for _ in 0..n_lambdas {
                     v.push(Instruction::End);
                 }
+                v.push(Instruction::LocalGet(result_local));
                 return Ok(v);
             }
         }

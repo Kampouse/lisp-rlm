@@ -398,7 +398,9 @@ impl WasmEmitter {
         v.push(I::End); v.push(I::End);
         v.push(I::I64Const(1)); v.push(I::Return);
         v.push(I::End);
-        // else: raw compare (num/bool/nil/fnref)
+        // else: raw compare (num/num, bool, nil, fnref). Bools stay tagged
+        // words here — the INTERPRETER is the parity source: (= #t 1) is
+        // false (different tags), (= #t #t) is true (same word).
         v.push(I::LocalGet(0)); v.push(I::LocalGet(1)); v.push(I::I64Eq); v.push(I::I64ExtendI32U);
         self.funcs.push(FuncDef {
             name: "__h_val_eq".into(),

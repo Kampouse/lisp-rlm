@@ -73,7 +73,11 @@ const KNOWN_NEAR_FUNCS: &[&str] = &[
     "predecessor_account_id",
     "predecessor",
     "attached_deposit",
+    "attached_deposit_high",
     "deposit-gte",
+    "iter_prefix",
+    "iter_range",
+    "iter_next",
     "block_index", "block_height", "block_timestamp",
     "ed25519_verify", "p256_verify",
     "sha256", "keccak256", "keccak512",
@@ -84,6 +88,7 @@ const KNOWN_NEAR_FUNCS: &[&str] = &[
     "bls12381_g1_multiexp", "bls12381_g2_multiexp",
     "prepaid_gas",
     "used_gas",
+    "storage_usage",
     "promise_create",
     "promise_then",
     "promise_and",
@@ -1083,18 +1088,21 @@ impl TcEnv {
             "near/attached_deposit_u128".into(),
             TcType::Arrow(vec![], Box::new(TcType::Con(TcCon::Str))),
         );
-        // near/store_u128 : str → int → nil  (key, tagged pointer)
+        // near/store_u128 : str → str → nil
+        // (key, decimal-u128 string — u128s are strings in this dialect;
+        // the tagged-int form errored on every TS caller, surface tour 2
+        // numStorage fixture 2026-09-01)
         env.insert_mono(
             "near/store_u128".into(),
             TcType::Arrow(
-                vec![str_ty.clone(), int_ty.clone()],
+                vec![str_ty.clone(), str_ty.clone()],
                 Box::new(nil_ty.clone()),
             ),
         );
-        // near/load_u128 : str → int (key) → int (returns tagged pointer)
+        // near/load_u128 : str → str (decimal-u128 string)
         env.insert_mono(
             "near/load_u128".into(),
-            TcType::Arrow(vec![str_ty.clone()], Box::new(int_ty.clone())),
+            TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())),
         );
         // near/call : str → str → str → int → int → nil
         // (target, method, args_json, gas, deposit)
@@ -1181,6 +1189,83 @@ impl TcEnv {
                 vec![str_ty.clone(), str_ty.clone(), str_ty.clone()],
                 Box::new(int_ty.clone()),
             ),
+        );
+        // near/keccak512 : str → str (hex digest)
+        env.insert_mono(
+            "near/keccak512".into(),
+            TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())),
+        );
+        // near/ripemd160 : str → str (hex digest)
+        env.insert_mono(
+            "near/ripemd160".into(),
+            TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())),
+        );
+        // near/ecrecover : str → str → int → int → str (address hex or "")
+        env.insert_mono(
+            "near/ecrecover".into(),
+            TcType::Arrow(
+                vec![
+                    str_ty.clone(),
+                    str_ty.clone(),
+                    int_ty.clone(),
+                    int_ty.clone(),
+                ],
+                Box::new(str_ty.clone()),
+            ),
+        );
+        // BN254 / BLS12-381 precompiles: hex buffer(s) → hex point (or
+        // pairing-check int). Exotic surface — compile-gated until protocol
+        // #16 exercises them for real (mocks return 0/empty).
+        env.insert_mono(
+            "near/alt_bn128_g1_sum".into(),
+            TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())),
+        );
+        env.insert_mono(
+            "near/alt_bn128_g1_multiexp".into(),
+            TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())),
+        );
+        env.insert_mono(
+            "near/alt_bn128_pairing_check".into(),
+            TcType::Arrow(vec![str_ty.clone()], Box::new(int_ty.clone())),
+        );
+        env.insert_mono(
+            "near/bls12381_p1_sum".into(),
+            TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())),
+        );
+        env.insert_mono(
+            "near/bls12381_p2_sum".into(),
+            TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())),
+        );
+        env.insert_mono(
+            "near/bls12381_g1_multiexp".into(),
+            TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())),
+        );
+        env.insert_mono(
+            "near/bls12381_g2_multiexp".into(),
+            TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())),
+        );
+        // near/iter_prefix : str → int (iterator id)
+        env.insert_mono(
+            "near/iter_prefix".into(),
+            TcType::Arrow(vec![str_ty.clone()], Box::new(int_ty.clone())),
+        );
+        // near/iter_range : str → str → int (iterator id)
+        env.insert_mono(
+            "near/iter_range".into(),
+            TcType::Arrow(
+                vec![str_ty.clone(), str_ty.clone()],
+                Box::new(int_ty.clone()),
+            ),
+        );
+        // near/iter_next : int → str | nil (next key, nil when exhausted)
+        env.insert_mono(
+            "near/iter_next".into(),
+            TcType::Arrow(vec![int_ty.clone()], Box::new(any_ty.clone())),
+        );
+        // near/attached_deposit_high : () → int (high 64 bits of u128 deposit)
+        env.insert_mono(
+            "near/attached_deposit_high".into(),
+            TcType::Arrow(vec![], Box::new(int_ty.clone())),
         );
 
         // schnorr-verify : str -> str -> str -> int (BIP-340, runtime bytes)
@@ -1463,7 +1548,7 @@ impl TcEnv {
         // ── NEAR host fns (missing) ──
         env.insert_mono(
             "near/signer_account_pk".into(),
-            TcType::Arrow(vec![], Box::new(int_ty.clone())),
+            TcType::Arrow(vec![], Box::new(str_ty.clone())),
         );
         env.insert_mono(
             "near/log_num".into(),

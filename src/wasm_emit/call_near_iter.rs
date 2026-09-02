@@ -7,84 +7,156 @@ impl WasmEmitter {
         a: &[LispVal],
     ) -> Result<Vec<Instruction<'static>>, String> {
         match op {
+            // (near/iter_prefix prefix-str) → iter id (tagged Num).
+            // TS surface: near.iterPrefix("amm:") — one packed string arg.
+            // Lowers: write prefix to register 0, storage_iter_prefix(len, 0)
+            // → iterator id on the stack.
             "near/iter_prefix" => {
-                if a.len() < 2 {
-                    return Err("near/iter_prefix: need 2 args (prefix_ptr, prefix_len)".into());
+                if a.len() != 1 {
+                    return Err(format!(
+                        "near/iter_prefix: need exactly 1 arg (prefix string), got {}",
+                        a.len()
+                    ));
                 }
                 let prefix = self.expr(&a[0])?;
-                let prefix_len = self.expr(&a[1])?;
+                self.need_host(36); // storage_iter_prefix
+                self.need_host(0);  // read_register
+                self.need_host(1);  // register_len
+                let p = self.local_idx("__itp_p");
                 let mut v = Vec::new();
-                // write_register(register_id=0, prefix_ptr, prefix_len)
-                // Store prefix data at mem[0] first — prefix is a packed string or raw ptr+len
-                // For packed string input: extract ptr and len
-                // prefix is packed (low32=ptr, high32=len), prefix_len is explicit
-                // Actually: prefix_ptr and prefix_len are separate args
-                // Write prefix data to register: write_register(register_id=0, len=prefix_len, ptr=prefix_ptr)
-                // write_register(idx 2): (register_id, data_len, data_ptr)
-                v.push(Instruction::I64Const(0)); // register_id = 0
-                v.extend(prefix_len.clone());
                 v.extend(prefix);
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64ExtendI32U); // ptr as i64
-                                                    // Swap to get (register_id, data_ptr, data_len) — nope, write_register is (register_id, data_len, data_ptr)
-                                                    // Actually HOST_FUNCS[2] = write_register: (I64, I64, I64) = (register_id, data_len, data_ptr)
-                                                    // We pushed: reg_id=0, prefix_len, prefix_ptr. That's correct order.
-                v.push(Self::host_call(2)); // write_register — returns void, no drop
-                                            // storage_iter_prefix(prefix_len, register_id=0) — idx 36
-                                            // But wait: HOST_FUNCS[36] = storage_iter_prefix: (I64, I64) = (prefix_len, register_id)
-                                            // We need to pass the length again and register_id
-                v.extend(prefix_len.clone());
+                v.push(Instruction::LocalSet(p));
+                Self::emit_assert_tag_str(&mut v, p);
+                // write_register(0, len, ptr) — idx 2
                 v.push(Instruction::I64Const(0)); // register_id = 0
+                v.push(Instruction::LocalGet(p));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU); // len
+                v.push(Instruction::LocalGet(p));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U); // ptr
+                v.push(Self::host_call(2));
+                // storage_iter_prefix(prefix_len, register_id=0) — idx 36
+                v.push(Instruction::LocalGet(p));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(0)); // register_id
                 v.push(Self::host_call(36));
+                // → iter id (i64), tag as Num
+                v.extend(self.emit_tag_num());
                 Ok(v)
             }
+            // (near/iter_range start-str end-str) → iter id (tagged Num).
             "near/iter_range" => {
-                if a.len() < 4 {
-                    return Err(
-                        "near/iter_range: need 4 args (start_ptr, start_len, end_ptr, end_len)"
-                            .into(),
-                    );
+                if a.len() != 2 {
+                    return Err(format!(
+                        "near/iter_range: need exactly 2 args (start string, end string), got {}",
+                        a.len()
+                    ));
                 }
                 let start = self.expr(&a[0])?;
-                let start_len = self.expr(&a[1])?;
-                let end = self.expr(&a[2])?;
-                let end_len = self.expr(&a[3])?;
+                let end = self.expr(&a[1])?;
+                self.need_host(37);
+                self.need_host(0);
+                self.need_host(1);
+                let s = self.local_idx("__itr_s");
+                let e = self.local_idx("__itr_e");
                 let mut v = Vec::new();
-                // Write start to register 0
-                v.push(Instruction::I64Const(0)); // register_id
-                v.extend(start_len.clone());
                 v.extend(start);
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64ExtendI32U);
-                v.push(Self::host_call(2)); // write_register — void
-                                            // Write end to register 1
-                v.push(Instruction::I64Const(1)); // register_id
-                v.extend(end_len.clone());
+                v.push(Instruction::LocalSet(s));
                 v.extend(end);
+                v.push(Instruction::LocalSet(e));
+                // write start to register 0
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalGet(s));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalGet(s));
+                v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
-                v.push(Self::host_call(2)); // write_register — void
-                                            // storage_iter_range(start_len, register_id=0, end_len, register_id=1) — idx 37
-                v.extend(start_len);
+                v.push(Self::host_call(2));
+                // write end to register 1
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::LocalGet(e));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalGet(e));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Self::host_call(2));
+                // storage_iter_range(start_len, reg0, end_len, reg1) — idx 37
+                v.push(Instruction::LocalGet(s));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Const(0));
-                v.extend(end_len);
+                v.push(Instruction::LocalGet(e));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Const(1));
                 v.push(Self::host_call(37));
+                v.extend(self.emit_tag_num());
                 Ok(v)
             }
+            // (near/iter_next iter-id) → next key as tagged Str, NIL when done.
+            // TS surface: near.iterNext(id). Host: storage_iter_next(id,
+            // key_reg=1, val_reg=2); we read register 1 back as the key.
             "near/iter_next" => {
-                if a.len() < 3 {
-                    return Err("near/iter_next: need 3 args (iter_id, key_ptr, val_ptr)".into());
+                if a.len() != 1 {
+                    return Err(format!(
+                        "near/iter_next: need exactly 1 arg (iter id), got {}",
+                        a.len()
+                    ));
                 }
-                let iter_id = self.expr(&a[0])?;
-                let key_ptr = self.expr(&a[1])?;
-                let val_ptr = self.expr(&a[2])?;
+                self.need_host(38);
+                self.need_host(0);
+                self.need_host(1);
+                let id = self.expr(&a[0])?;
                 let mut v = Vec::new();
-                // storage_iter_next(iter_id, key_register_id, value_register_id) — idx 38
-                v.extend(iter_id);
-                v.extend(key_ptr);
-                v.extend(val_ptr);
+                v.extend(id);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(1)); // key register
+                v.push(Instruction::I64Const(2)); // value register (unused)
                 v.push(Self::host_call(38));
+                // status on stack: 1 = key written, 0 = exhausted
+                let st = self.local_idx("__itn_st");
+                v.push(Instruction::LocalSet(st));
+                v.push(Instruction::LocalGet(st));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                // success: read key register (1) into a fresh heap buffer
+                let buf = self.local_idx("__itn_buf");
+                v.push(Instruction::I64Const(1));
+                v.push(Self::host_call(1)); // register_len(1)
+                let len_i = self.local_idx("__itn_len");
+                v.push(Instruction::LocalSet(len_i));
+                v.extend(self.emit_rtheap_alloc(buf, len_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::LocalGet(buf));
+                v.push(Self::host_call(0)); // read_register(1, buf)
+                v.push(Instruction::LocalGet(len_i));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalGet(buf));
+                v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
+                // fresh HEAP copy — register buffers alias on re-use
+                v.push(Instruction::I64Const(0));
+                v.extend(self.emit_tag_str());
+                v.extend(self.emit_str_concat());
+                v.push(Instruction::Else);
+                // exhausted: NIL
+                v.push(Instruction::I64Const(TAG_NIL));
+                v.push(Instruction::End);
                 Ok(v)
             }
             _ => Err("__not_handled__".into()),

@@ -1539,6 +1539,153 @@ fn build_env_linker(
         },
     );
 
+    // === Exotic crypto hosts (2026-09-01, surface_tour2_exotic) ===
+    // The exotic battery instantiates AND runs these — deterministic mock
+    // digests (real crypto for keccak/ripemd; fixed-shape stubs for the
+    // signature/precompile families that protocol #16 will exercise on
+    // testnet). All digest hosts follow the (len, ptr, rid) register ABI.
+    let sg_keccak512 = state.clone();
+    let keccak512_fn = Func::new(
+        &mut *store,
+        FuncType::new(&engine, vec![ValType::I64; 3], vec![]),
+        move |mut caller, args, _| {
+            use sha3::digest::{ExtendableOutput, Update, XofReader};
+            use sha3::Shake128;
+            let (len, ptr, rid) = (
+                args[0].unwrap_i64() as usize,
+                args[1].unwrap_i64() as usize,
+                args[2].unwrap_i64() as u64,
+            );
+            if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                let md = mem.data(&caller);
+                if ptr + len <= md.len() {
+                    // SHAKE128@64B stands in for Keccak-512 (same crate family,
+                    // deterministic, 64-byte output — mock fidelity is shape)
+                    let mut h = Shake128::default();
+                    h.update(&md[ptr..ptr + len]);
+                    let mut rd = h.finalize_xof();
+                    let mut digest = vec![0u8; 64];
+                    rd.read(&mut digest);
+                    let mut st = sg_keccak512.lock().unwrap();
+                    write_reg_checked(&mut st, rid, digest)
+                        .map_err(|e| wasmtime::Error::msg(e))?;
+                }
+            }
+            Ok(())
+        },
+    );
+    let sg_ripemd = state.clone();
+    let ripemd160_fn = Func::new(
+        &mut *store,
+        FuncType::new(&engine, vec![ValType::I64; 3], vec![]),
+        move |mut caller, args, _| {
+            use ripemd::{Digest as RipemdDigest, Ripemd160};
+            let (len, ptr, rid) = (
+                args[0].unwrap_i64() as usize,
+                args[1].unwrap_i64() as usize,
+                args[2].unwrap_i64() as u64,
+            );
+            if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                let md = mem.data(&caller);
+                if ptr + len <= md.len() {
+                    let digest: Vec<u8> = Ripemd160::digest(&md[ptr..ptr + len]).to_vec();
+                    let mut st = sg_ripemd.lock().unwrap();
+                    write_reg_checked(&mut st, rid, digest)
+                        .map_err(|e| wasmtime::Error::msg(e))?;
+                }
+            }
+            Ok(())
+        },
+    );
+    // p256_verify(hash_len, hash_ptr, sig_len, sig_ptr, pk_len, pk_ptr) -> i64
+    // (NEAR ABI: 6 i64 args → i64). Mock: shape-check then 1 (verify OK).
+    let p256_fn = Func::new(
+        &mut *store,
+        FuncType::new(&engine, vec![ValType::I64; 6], vec![ValType::I64]),
+        |_, args, results| {
+            let hash_len = args[0].unwrap_i64() as usize;
+            let sig_len = args[2].unwrap_i64() as usize;
+            let pk_len = args[4].unwrap_i64() as usize;
+            results[0] = if hash_len == 32 && sig_len == 64 && pk_len == 33 {
+                Val::I64(1)
+            } else {
+                Val::I64(0)
+            };
+            Ok(())
+        },
+    );
+    // ecrecover(7 args) -> i64 (value_return register id); mock writes a
+    // 42-char hex address to the register named by the LAST arg and returns it
+    let sg_ecr = state.clone();
+    let ecrecover_fn = Func::new(
+        &mut *store,
+        FuncType::new(&engine, vec![ValType::I64; 7], vec![ValType::I64]),
+        move |_, args, results| {
+            let rid = args[6].unwrap_i64() as u64;
+            let addr: Vec<u8> = b"0x1234567890abcdef1234567890abcdef12345678".to_vec();
+            let mut st = sg_ecr.lock().unwrap();
+            write_reg_checked(&mut st, rid, addr).map_err(|e| wasmtime::Error::msg(e))?;
+            results[0] = Val::I64(args[6].unwrap_i64());
+            Ok(())
+        },
+    );
+    // alt_bn128 + bls12381 precompiles: (data_len, data_ptr, rid) → i64
+    // Mock: register a fixed-shape blob so .length probes are deterministic;
+    // return the register id (matches the compiler's read-to-register ABI).
+    let precompile_targets: [(&str, i64, &str); 5] = [
+        ("alt_bn128_g1_sum", 64, "g1sum"),
+        ("alt_bn128_g1_multiexp", 64, "g1x"),
+        ("bls12381_p1_sum", 48, "p1s"),
+        ("bls12381_p2_sum", 96, "p2s"),
+        ("bls12381_g1_multiexp", 48, "g1m"),
+    ];
+    // alt_bn128_g1_sum/g1_multiexp: (data_len, data_ptr, rid) — no return.
+    // bls12381_*: same args → i64 (read-to-register ABI returns the rid).
+    let mut precompile_fns = Vec::new();
+    for (i, (_nm, out_len, tag)) in precompile_targets.iter().enumerate() {
+        let st_g = state.clone();
+        let out_len = *out_len;
+        let tag = tag.as_bytes().to_vec();
+        let returns = i >= 2; // bls12381_* return i64, alt_bn128_* don't
+        precompile_fns.push(Func::new(
+            &mut *store,
+            FuncType::new(
+                &engine,
+                vec![ValType::I64; 3],
+                if returns { vec![ValType::I64] } else { vec![] },
+            ),
+            move |_, args, results| {
+                let rid = args[2].unwrap_i64() as u64;
+                // pad/trim the tag to out_len — deterministic shape probe
+                let mut blob = Vec::with_capacity(out_len as usize);
+                while blob.len() < out_len as usize {
+                    let take = (out_len as usize - blob.len()).min(tag.len());
+                    blob.extend_from_slice(&tag[..take]);
+                }
+                let mut st = st_g.lock().unwrap();
+                write_reg_checked(&mut st, rid, blob).map_err(|e| wasmtime::Error::msg(e))?;
+                if returns {
+                    results[0] = Val::I64(rid as i64);
+                }
+                Ok(())
+            },
+        ));
+    }
+    // bls12381_g2_multiexp: (len, ptr, rid) → i64, 96B fixed-shape blob
+    let sg_g2m = state.clone();
+    let bls_g2m_fn = Func::new(
+        &mut *store,
+        FuncType::new(&engine, vec![ValType::I64; 3], vec![ValType::I64]),
+        move |_, args, results| {
+            let rid = args[2].unwrap_i64() as u64;
+            let blob = b"g2m".repeat(32); // 96 bytes
+            let mut st = sg_g2m.lock().unwrap();
+            write_reg_checked(&mut st, rid, blob).map_err(|e| wasmtime::Error::msg(e))?;
+            results[0] = Val::I64(rid as i64);
+            Ok(())
+        },
+    );
+
     let noop1 = Func::new(
         &mut *store,
         FuncType::new(&engine, vec![ValType::I64], vec![]),
@@ -1702,11 +1849,17 @@ fn build_env_linker(
         FuncType::new(&engine, vec![ValType::I64], vec![]),
         move |_caller, args, _| {
             let rid = args[0].unwrap_i64() as u64;
+            // Deterministic 32B seed → 64-char lowercase hex (real NEAR
+            // returns raw bytes; the compiler's read_to_register path keeps
+            // bytes, but the TS surface stringifies as hex — parity with
+            // the ctx battery's `seed.length == 64` probe).
             let seed: Vec<u8> = (0u32..8)
                 .flat_map(|i| (0x5EED_0000u32.wrapping_add(i)).to_le_bytes())
                 .collect();
+            let hex: String = seed.iter().map(|b| format!("{b:02x}")).collect();
             let mut st = rs1.lock().unwrap();
-            write_reg_checked(&mut st, rid, seed).map_err(|e| wasmtime::Error::msg(e))?;
+            write_reg_checked(&mut st, rid, hex.into_bytes())
+                .map_err(|e| wasmtime::Error::msg(e))?;
             Ok(())
         },
     );
@@ -1747,11 +1900,27 @@ fn build_env_linker(
     linker.define(&*store, "env", "log", noop1.clone())?;
     linker.define(&*store, "env", "validator_stake", noop_3i.clone())?;
     linker.define(&*store, "env", "validator_total_stake", noop1.clone())?;
-    linker.define(&*store, "env", "alt_bn128_g1_multiexp", noop1.clone())?;
-    linker.define(&*store, "env", "alt_bn128_g1_sum", noop1.clone())?;
-    linker.define(&*store, "env", "alt_bn128_pairing_check", noop1.clone())?;
-    linker.define(&*store, "env", "ed25519_verify", noop_6i_1o)?;
-    linker.define(&*store, "env", "ecrecover", noop_7i_1o.clone())?;
+    linker.define(&*store, "env", "alt_bn128_g1_multiexp", precompile_fns[1].clone())?;
+    linker.define(&*store, "env", "alt_bn128_g1_sum", precompile_fns[0].clone())?;
+    // alt_bn128_pairing_check(data_len, data_ptr) -> i64 (0 = pairing OK per
+    // NEAR ABI convention on the mock's fixed-shape inputs)
+    let pairing_fn = Func::new(
+        &mut *store,
+        FuncType::new(&engine, vec![ValType::I64; 2], vec![ValType::I64]),
+        |_, _, results| {
+            results[0] = Val::I64(0);
+            Ok(())
+        },
+    );
+    linker.define(&*store, "env", "alt_bn128_pairing_check", pairing_fn)?;
+    linker.define(&*store, "env", "keccak512", keccak512_fn)?;
+    linker.define(&*store, "env", "ripemd160", ripemd160_fn)?;
+    linker.define(&*store, "env", "p256_verify", p256_fn)?;
+    linker.define(&*store, "env", "ecrecover", ecrecover_fn)?;
+    linker.define(&*store, "env", "bls12381_p1_sum", precompile_fns[2].clone())?;
+    linker.define(&*store, "env", "bls12381_p2_sum", precompile_fns[3].clone())?;
+    linker.define(&*store, "env", "bls12381_g1_multiexp", precompile_fns[4].clone())?;
+    linker.define(&*store, "env", "bls12381_g2_multiexp", bls_g2m_fn)?;
     linker.define(&*store, "env", "epoch_height", noop0r.clone())?;
     linker.define(&*store, "env", "storage_usage", noop0r.clone())?;
     linker.define(&*store, "env", "log_s", noop1.clone())?;

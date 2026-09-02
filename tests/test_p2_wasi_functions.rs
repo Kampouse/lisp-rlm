@@ -240,33 +240,38 @@ near_host_test!(near_deposit_gte, "(near/deposit-gte 1000000)");
 // B. [BUG] Known broken functions — these panic at compile time
 // ════════════════════════════════════════════════════════════════
 
-/// [BUG] near/iter_prefix: dispatch code expects 2 args (ptr, len) but the
-/// function is documented as taking 1 string arg. Crashes with index OOB.
+/// [FIXED] near/iter_prefix: 1-arg string surface compiles cleanly (2026-09-01).
+/// Was raw-ptr era: dispatch expected (ptr, len) and panicked with OOB on the
+/// documented 1-string form — fixed by the string-arg iter surface in
+/// call_near_iter.rs (same fix lineage as the promise batch surface).
 #[test]
-#[should_panic]
-fn bug_iter_prefix_oob() {
+fn fixed_iter_prefix_string_arg() {
     let src = r#"(memory 1)
 (define (test) (near/iter_prefix "prefix"))
 (export "test" test true)"#;
     compile_near_untyped(src).unwrap();
 }
 
-/// [BUG] near/iter_range: dispatch expects 4 args (start_ptr, start_len, end_ptr, end_len)
-/// but documented as taking 2 string args.
+/// [FIXED] near/iter_range: 2-string-arg surface (start, end) compiles
+/// cleanly (2026-09-01). Was raw-ptr era: dispatch expected
+/// (start_ptr, start_len, end_ptr, end_len) and panicked OOB on the
+/// documented 2-string form — fixed alongside near/iter_prefix in
+/// call_near_iter.rs. Bug memorialized by the old bug_iter_range_oob
+/// (should_panic), flipped to a positive assertion.
 #[test]
-#[should_panic]
-fn bug_iter_range_oob() {
+fn fixed_iter_range_str_args() {
     let src = r#"(memory 1)
 (define (test) (near/iter_range "start" "end"))
 (export "test" test true)"#;
     compile_near_untyped(src).unwrap();
 }
 
-/// [BUG] near/iter_next: dispatch expects 3 args (iter_id, key_ptr, val_ptr)
-/// but documented as taking 1 arg (iter_id).
+/// [FIXED] near/iter_next: 1-arg (iter-id) surface compiles cleanly
+/// (2026-09-01). Was raw-ptr era: dispatch expected (id, key_ptr, val_ptr)
+/// and panicked OOB on the documented 1-arg form — fixed alongside
+/// near/iter_prefix in call_near_iter.rs.
 #[test]
-#[should_panic]
-fn bug_iter_next_oob() {
+fn fixed_iter_next_iter_id_arg() {
     let src = r#"(memory 1)
 (define (test) (let ((it (near/iter_prefix "prefix"))) (near/iter_next it)))
 (export "test" test true)"#;

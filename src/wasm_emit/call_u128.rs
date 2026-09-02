@@ -1134,7 +1134,11 @@ impl WasmEmitter {
                 let t_lo = self.local_idx("__bfs_tlo");
                 let t_hi = self.local_idx("__bfs_thi");
                 let x_hi = self.local_idx("__bfs_xhi");
-                let ptr_i = self.local_idx("__bfs_ptr");
+                // pointer local MUST be i32: every load8_u/store8 below
+                // indexes with it directly (2026-09-01 — was local_idx, an
+                // i64 slot, making the whole arm invalid wasm; the arm was
+                // never compiled before near/store_u128 started using it)
+                let ptr_i = self.local_idx_i32("__bfs_ptr");
                 let ma = wasm_encoder::MemArg {
                     offset: 0,
                     align: 0,
@@ -1158,7 +1162,6 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(len_i));
                 v.push(Instruction::LocalGet(str_i));
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::LocalSet(ptr_i));
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::LocalSet(lo_i));
@@ -1173,8 +1176,8 @@ impl WasmEmitter {
                 v.push(Instruction::I32Eq);
                 v.push(Instruction::If(BlockType::Empty));
                 v.push(Instruction::LocalGet(ptr_i));
-                v.push(Instruction::I64Const(1));
-                v.push(Instruction::I64Add);
+                v.push(Instruction::I32Const(1));
+                v.push(Instruction::I32Add);
                 v.push(Instruction::LocalSet(ptr_i));
                 v.push(Instruction::LocalGet(len_i));
                 v.push(Instruction::I64Const(1));
@@ -1188,10 +1191,11 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(len_i));
                 v.push(Instruction::I64GeU);
                 v.push(Instruction::BrIf(1));
+                // str byte at ptr+i: i is i64, ptr is i32 — extend i to i32
                 v.push(Instruction::LocalGet(ptr_i));
                 v.push(Instruction::LocalGet(i_i));
-                v.push(Instruction::I64Add);
                 v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Add);
                 v.push(Instruction::I32Load8U(ma));
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::LocalSet(ch_i));
@@ -1214,8 +1218,8 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(48));
                 v.push(Instruction::I64Sub);
                 v.push(Instruction::LocalSet(ch_i));
-                // lo:hi = lo:hi * 10 + digit
-                // t_lo = lo * 10 via shifts
+                // lo:hi = lo:hi * 10 + digit  (full 128-bit accumulate)
+                // t_lo = lo * 10 mod 2^64 via shifts
                 v.push(Instruction::LocalGet(lo_i));
                 v.push(Instruction::I64Const(3));
                 v.push(Instruction::I64Shl);
@@ -1224,7 +1228,8 @@ impl WasmEmitter {
                 v.push(Instruction::I64Shl);
                 v.push(Instruction::I64Add);
                 v.push(Instruction::LocalSet(t_lo));
-                // carry = (lo >> 32) * 10 + ((lo & 0xFFFFFFFF) * 10) >> 32
+                // carry C = (lo*10)>>32 pre-sum = loHi*10 + (loLo*10)>>32
+                // (loHi = lo>>32, loLo = lo & 0xFFFFFFFF); (lo*10)>>64 = C>>32
                 v.push(Instruction::LocalGet(lo_i));
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
@@ -1241,11 +1246,14 @@ impl WasmEmitter {
                 v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Add);
                 v.push(Instruction::LocalSet(t_hi));
-                // hi = hi * 10 + t_hi
+                // hi = hi * 10 + (t_hi >> 32)  — the >>32 was MISSING (2026-09-01,
+                // u128_storage_round_trip): hi came out 2^32× too large
                 v.push(Instruction::LocalGet(hi_i));
                 v.push(Instruction::I64Const(10));
                 v.push(Instruction::I64Mul);
                 v.push(Instruction::LocalGet(t_hi));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Add);
                 v.push(Instruction::LocalSet(hi_i));
                 // lo = t_lo + digit
@@ -1497,6 +1505,85 @@ impl WasmEmitter {
                     return Err("bigint-add: need 2 args (dst, src)".into());
                 }
                 self.call_u128("u128/add", a)
+            }
+            // near/store_u128: (key: str, value: decimal-u128 str) → nil.
+            // The TS num-storage path — parses the decimal string to a
+            // 128-bit pair, stages it through STORAGE_U128_BUF, storage_
+            // writes the 16 bytes under the key. Mirrors u128/store_storage
+            // but takes a string VALUE instead of an address.
+            "near/store_u128" => {
+                if a.len() != 2 {
+                    return Err("near/store_u128: need 2 args (key, decimal-str)".into());
+                }
+                self.need_host(17);
+                let key = self.expr(&a[0])?;
+                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let mut v = Vec::new();
+                // parse val (tagged str) → 16 bytes at STORAGE_U128_BUF.
+                // call_u128 evaluates its own args — no manual pushes here.
+                v.extend(self.call_u128(
+                    "u128/from_str",
+                    &[a[1].clone(), LispVal::Num(STORAGE_U128_BUF)],
+                )?);
+                v.push(Instruction::Drop); // from_str returns TAG_NIL
+                // storage_write(key_len, key_ptr, 16, STORAGE_U128_BUF, reg 0)
+                // key untag (>>3) THEN len extract (>>32) — skipping the
+                // untag fed the host a junk 64-byte NUL key
+                v.extend(key.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.extend(key);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(16));
+                v.push(Instruction::I64Const(STORAGE_U128_BUF));
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(17));
+                v.push(Instruction::Drop);
+                v.push(Instruction::I64Const(TAG_NIL));
+                Ok(v)
+            }
+            // near/load_u128: (key: str) → decimal-u128 str (tagged).
+            // storage_read into register 0, register_load 16 bytes into
+            // STORAGE_U128_BUF, render decimal via u128/to_str into a fresh
+            // 41-byte string (39 digits max + NUL + margin).
+            "near/load_u128" => {
+                if a.len() != 1 {
+                    return Err("near/load_u128: need 1 arg (key)".into());
+                }
+                self.need_host(18);
+                self.need_host(0);
+                self.need_host(1);
+                let key = self.expr(&a[0])?;
+                let mut v = Vec::new();
+                v.extend(key.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.extend(key);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0)); // register 0
+                v.push(Self::host_call(18));
+                v.push(Instruction::Drop);
+                // register_load(rid=0, ptr=STORAGE_U128_BUF) — host takes 2
+                // args (register_id, ptr) and returns NOTHING in the mock
+                // (no Drop: it would underflow an empty stack; real NEAR
+                // register_load returns a byte count the mock omits)
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Const(STORAGE_U128_BUF));
+                v.push(Self::host_call(0));
+                // fresh 41-byte buffer on the runtime heap; to_str(addr, buf)
+                // renders the decimal string there and returns a tagged str
+                v.extend(self.heap_bump_runtime(41, "__nl128_buf"));
+                v.extend(self.call_u128(
+                    "u128/to_str",
+                    &[LispVal::Num(STORAGE_U128_BUF), LispVal::Num(0)],
+                )?);
+                Ok(v)
             }
             _ => Err("__not_handled__".into()),
         }

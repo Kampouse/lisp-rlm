@@ -4933,6 +4933,8 @@ pub fn eval_near_builtin_match(name: &str) -> bool {
         | "near/alt_bn128_g1_multiexp" | "near/alt_bn128_g1_sum" | "near/alt_bn128_pairing_check"
         | "near/bls12381_p1_sum"
         | "near/random_seed"
+        // ── near/* u128 storage helpers (interp stubs return 0) ──
+        | "near/store_u128" | "near/load_u128" | "near/attached_deposit_u128"
         // ── near/* promises ──
         | "near/call" | "near/transfer" | "near/transfer_u128" | "near/deploy_contract"
         | "near/promise_create" | "near/promise_then" | "near/promise_and"

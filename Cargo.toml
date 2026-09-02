@@ -37,6 +37,7 @@ shellexpand = "3"
 im = "15"
 sha2 = "0.10"
 sha3 = "0.10"
+ripemd = "0.1"
 wat = "1.0"
 wasm-encoder = "0.248.0"
 wasmparser = { version = "0.228.0", features = ["simd"] }

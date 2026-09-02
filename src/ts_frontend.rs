@@ -53,6 +53,7 @@ pub fn ts_to_lisp_source(src: &str) -> Result<String, String> {
     OBJ_PARAM_PROPS.with(|s| s.borrow_mut().clear());
     BIGINT_NAMES.with(|s| s.borrow_mut().clear());
     BIGINT_LOCALS.with(|s| s.borrow_mut().clear());
+    STRING_LOCALS.with(|s| s.borrow_mut().clear());
     SHAPE_BIGINT_FIELDS.with(|s| s.borrow_mut().clear());
     TYPE_ALIASES.with(|s| s.borrow_mut().clear());
     CONST_FOLDS.with(|s| s.borrow_mut().clear());
@@ -87,6 +88,15 @@ thread_local! {
     /// `let x = <bigint expr>;` locals in the function being lowered —
     /// bigint-shaped for later operator selection in the same body.
     static BIGINT_LOCALS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// String-typed locals in the function being lowered: seeded by
+    /// `let s = <stringy>;` (literal/template/method-call) and GROWN by
+    /// `s = <stringy>` / `s += x` / `s = s + x` assignments. Drives `+`
+    /// dispatch on var+var operands — neither side is a literal, so the
+    /// static stringy checks can't see it (surface tour 2 for-of
+    /// accumulator, 2026-09-01: `out = out + x` emitted numeric + on
+    /// strings → interp type-error / wasm tagged-garbage).
+    static STRING_LOCALS: std::cell::RefCell<Vec<String>> =
         const { std::cell::RefCell::new(Vec::new()) };
     /// Record-typed locals with bigint fields, inferred from the shape
     /// literal in `let rec = storageGet(...) ?? '{"amt":"0",...}'`:
@@ -403,6 +413,7 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
     OBJ_PARAM_PROPS.with(|s| s.borrow_mut().clear());
     BIGINT_NAMES.with(|s| s.borrow_mut().clear());
     BIGINT_LOCALS.with(|s| s.borrow_mut().clear());
+    STRING_LOCALS.with(|s| s.borrow_mut().clear());
     SHAPE_BIGINT_FIELDS.with(|s| s.borrow_mut().clear());
     let mut param_names: Vec<(String, u8)> = Vec::new();
     for p in &f.params.items {
@@ -592,6 +603,8 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
 /// body BEFORE lowering. The statement lowering is CPS-style (continuations
 /// lower before the statement itself), so registering at the let-site was
 /// too late for later statements that reference the binding.
+/// STRING_LOCALS uses the same forward scan: `let out = "";` must be
+/// marked before the `out + x` binary-+ site lowers.
 fn scan_bigint_lets(stmts: &[Statement<'_>]) {
     for s in stmts {
         scan_one_bigint_let(s);
@@ -605,6 +618,14 @@ fn scan_one_bigint_let(s: &Statement<'_>) {
             if expr_is_bigint(init) {
                 if let Ok(name) = binding_name(&d.id) {
                     BIGINT_LOCALS.with(|m| m.borrow_mut().push(name));
+                }
+            }
+            if let Ok(name) = binding_name(&d.id) {
+                if expr_is_stringy(init)
+                    || expr_is_str_method_call(init)
+                    || matches!(init, Expression::Identifier(id) if is_string_local(id.name.as_str()))
+                {
+                    mark_string_local(&name);
                 }
             }
             register_shape_fields(d, init);
@@ -638,6 +659,7 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, LispVal
     OBJ_PARAM_PROPS.with(|s| s.borrow_mut().clear());
     BIGINT_NAMES.with(|s| s.borrow_mut().clear());
     BIGINT_LOCALS.with(|s| s.borrow_mut().clear());
+    STRING_LOCALS.with(|s| s.borrow_mut().clear());
     SHAPE_BIGINT_FIELDS.with(|s| s.borrow_mut().clear());
     let mut param_names: Vec<(String, u8)> = Vec::new();
     for p in &f.params.items {
@@ -809,6 +831,12 @@ fn lower_prefix_around_with_return(
                     .init
                     .as_ref()
                     .ok_or("ts_frontend: local declaration needs initializer")?;
+                if expr_is_bigint(init_e) {
+                    BIGINT_LOCALS.with(|s| s.borrow_mut().push(name.clone()));
+                }
+                if expr_is_stringy(init_e) || expr_is_str_method_call(init_e) {
+                    mark_string_local(&name);
+                }
                 bindings.push(list(vec![Sym(name), lower_expr(init_e)?]));
             }
             list(vec![Sym("let"), list(bindings), tail])
@@ -949,6 +977,9 @@ fn lower_prefix_around(stmts: &[Statement<'_>], tail: LispVal, view: bool) -> Re
                     .ok_or("ts_frontend: local declaration needs initializer")?;
                 if expr_is_bigint(init_e) {
                     BIGINT_LOCALS.with(|s| s.borrow_mut().push(name.clone()));
+                }
+                if expr_is_stringy(init_e) || expr_is_str_method_call(init_e) {
+                    mark_string_local(&name);
                 }
                 register_shape_fields(d, init_e);
                 bindings.push(list(vec![Sym(name), lower_expr(init_e)?]));
@@ -1965,8 +1996,35 @@ fn lower_assignment(
     };
     let rhs = lower_expr(&asg.right)?;
     let out = match asg.operator {
-        AssignmentOperator::Assign => rhs,
-        AssignmentOperator::Addition => list(vec![Sym("+"), Sym(v.clone()), rhs]),
+        AssignmentOperator::Assign => {
+            // Re-type the local when a stringy/numeric rhs overwrites it —
+            // `let out = ""; out = 5;` makes `out + x` arithmetic again.
+            let rhs_stringy = expr_is_stringy(&asg.right) || expr_is_str_method_call(&asg.right);
+            if rhs_stringy {
+                mark_string_local(&v);
+            } else if matches!(&asg.right, Expression::NumericLiteral(_))
+                && is_string_local(&v)
+            {
+                STRING_LOCALS.with(|s| s.borrow_mut().retain(|n| n != &v));
+            }
+            rhs
+        }
+        // `s += x`: string-VALUED rhs ⇒ str-cat, same rule as binary + (the
+        // plain `+` path would emit num-only (+) — interp/wasm hard-error or
+        // corrupt on str operands — surface tour 2, 2026-09-01). The lhs `v`
+        // is by construction already a string here (it accumulated one), but
+        // the DECIDER is the rhs shape, mirroring the binary `+` path below.
+        // `+=` itself proves `v` stringy when `v` was already marked; when it
+        // wasn't (first `s += "x"` after a stringy let), keep the rhs rule.
+        AssignmentOperator::Addition => {
+            let rhs_stringy = expr_is_stringy(&asg.right) || expr_is_str_method_call(&asg.right);
+            if rhs_stringy || is_string_local(&v) {
+                mark_string_local(&v);
+                list(vec![Sym("str-cat"), Sym(v.clone()), rhs])
+            } else {
+                list(vec![Sym("+"), Sym(v.clone()), rhs])
+            }
+        }
         AssignmentOperator::Subtraction => list(vec![Sym("-"), Sym(v.clone()), rhs]),
         _ => return Err("ts_frontend: only = / += / -= assignments supported".into()),
     };
@@ -2007,6 +2065,23 @@ fn expr_is_stringy(e: &Expression) -> bool {
             }
             _ => false,
         },
+        // strLength(s) / strLen(s) return int — numeric in + context. NOT
+        // stringy: `strLength(a) + strLength(b)` is numeric addition
+        // (hashTour, surface tour 2 exotic 2026-09-01). Adding these here
+        // forced str-cat on int args → checker "num ≠ str".
+        _ => false,
+    }
+}
+
+/// String-method calls return str at runtime: S.slice/S.charAt/S.concat/
+/// S.toUpperCase/… — any static member call is treated as string-valued for
+/// `+` dispatch (strMethods surface tour 2, 2026-09-01). Conservative: only
+/// method calls, not identifiers (those may be numbers).
+fn expr_is_str_method_call(e: &Expression) -> bool {
+    match e {
+        Expression::CallExpression(c) => {
+            matches!(&c.callee, Expression::StaticMemberExpression(_))
+        }
         _ => false,
     }
 }
@@ -2122,6 +2197,20 @@ fn shape_bigint_fields(lit: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// String-typed local in the CURRENT function body (STRING_LOCALS).
+fn is_string_local(n: &str) -> bool {
+    STRING_LOCALS.with(|s| s.borrow().iter().any(|x| x == n))
+}
+
+fn mark_string_local(n: &str) {
+    STRING_LOCALS.with(|s| {
+        let mut b = s.borrow_mut();
+        if !b.iter().any(|x| x == n) {
+            b.push(n.to_string());
+        }
+    });
 }
 
 fn expr_is_bigint(e: &Expression<'_>) -> bool {
@@ -2438,6 +2527,34 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                 let l = lower_expr(&b.left)?;
                 let r = lower_expr(&b.right)?;
                 return Ok(list(vec![Sym("str-cat"), l, r]));
+            }
+            // String-METHOD receivers concat too: `acc + S.slice(...)`,
+            // `acc + S.charAt(1)` — the callee side is a str-returning method
+            // call even though expr_is_stringy can't see it statically
+            // (surface tour 2 strMethods, 2026-09-01). Without this the + went
+            // to num-add → checker "num ≠ str".
+            if b.operator == BinaryOperator::Addition
+                && (expr_is_str_method_call(&b.left) || expr_is_str_method_call(&b.right))
+            {
+                let l = lower_expr(&b.left)?;
+                let r = lower_expr(&b.right)?;
+                return Ok(list(vec![Sym("str-cat"), l, r]));
+            }
+            // String-TYPED LOCAL operands concat: `out + x` where `out` was
+            // seeded by `let out = ""` (or any stringy init) — neither operand
+            // is a literal, so the checks above can't see it. The interp's `+`
+            // hard-errors on str operands and the wasm emitter's tagged add
+            // silently corrupts them, so this MUST lower to str-cat (surface
+            // tour 2 for-of accumulator, 2026-09-01).
+            if b.operator == BinaryOperator::Addition {
+                let side_is_string_local = |e: &Expression| {
+                    matches!(e, Expression::Identifier(id) if is_string_local(id.name.as_str()))
+                };
+                if side_is_string_local(&b.left) || side_is_string_local(&b.right) {
+                    let l = lower_expr(&b.left)?;
+                    let r = lower_expr(&b.right)?;
+                    return Ok(list(vec![Sym("str-cat"), l, r]));
+                }
             }
             // `%`: JS truncated remainder (sign follows dividend: -7%2=-1).
             // The lisp `mod` builtin is EUCLIDEAN (always >= 0) — mapping

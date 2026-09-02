@@ -2340,6 +2340,7 @@ dependencies = [
  "rayon",
  "regex",
  "reqwest",
+ "ripemd",
  "rustyline",
  "serde",
  "serde_json",
