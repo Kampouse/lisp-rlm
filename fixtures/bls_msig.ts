@@ -40,8 +40,8 @@ export function init(pks: string, t: number): string {
   }
   let blob = "";
   for (let i = 0; i < n; i++) {
-    if (arr[i].length != 192) {
-      near.abort("pk must be 96-byte compressed G2 (192 hex)");
+    if (arr[i].length != 386) {
+      near.abort("pk must be 97-byte G2 (193B w/sign = 386 hex)");
     }
     blob = blob + arr[i];
   }
@@ -60,15 +60,15 @@ function guardInit(): void {
 export function submit(id: string, msg: string, i: number, sig: string): string {
   guardInit();
   let blob = near.storageGet("bls:pksblob") ?? "";
-  let n = blob.length / 192;
-  if (blob.length != n * 192 || n == 0) {
+  let n = blob.length / 386;
+  if (blob.length != n * 386 || n == 0) {
     near.abort("corrupt pks blob");
   }
   if (i < 0 || i >= n) {
     near.abort("validator index out of range");
   }
-  if (sig.length != 96) {
-    near.abort("partial sig must be 48-byte compressed G1 (96 hex)");
+  if (sig.length != 194) {
+    near.abort("partial sig must be 97-byte G1 (194 hex)");
   }
   let bound = near.storageGet("bls:msg:" + id) ?? "";
   if (bound == "") {
@@ -90,6 +90,18 @@ export function count(id: string): string {
   return near.storageGet("bls:cnt:" + id) ?? "0";
 }
 
+export function setPoints(id: string, msgPoint: string, g2gen: string): string {
+  guardInit();
+  let msgPoint = near.storageGet("bls:mp:" + id) ?? "";
+  let g2gen = near.storageGet("bls:gen") ?? "";
+  if (msgPoint == "" || g2gen == "") {
+    near.abort("points not set for this message");
+  }
+  near.storageSet("bls:mp:" + id, msgPoint);
+  near.storageSet("bls:gen", g2gen);
+  return "points-ok";
+}
+
 export function execute(id: string, coeffs: string): string {
   guardInit();
   let t = near.storageGet("bls:t") ?? ZERO;
@@ -100,12 +112,13 @@ export function execute(id: string, coeffs: string): string {
   if ((near.storageGet("bls:done:" + id) ?? "") != "") {
     near.abort("already executed");
   }
-  let msg = near.storageGet("bls:msg:" + id) ?? "";
-  if (msg == "") {
-    near.abort("unknown message id");
+  let msgPoint = near.storageGet("bls:mp:" + id) ?? "";
+  let g2gen = near.storageGet("bls:gen") ?? "";
+  if (msgPoint == "" || g2gen == "") {
+    near.abort("points not set for this message");
   }
   let pksBlob = near.storageGet("bls:pksblob") ?? "";
-  let nPks = pksBlob.length / 192;
+  let nPks = pksBlob.length / 386;
   // aggregate σ = P1Sum over submitted partials; mxBlob = pk_i || c_i
   // for each SUBMITTED validator i. Fixed-stride coeff blob (66 chars:
   // 2-hex idx + 64-hex coeff); every submitted validator MUST find its
@@ -123,6 +136,7 @@ export function execute(id: string, coeffs: string): string {
   if (coeffs.length != nE * 66) {
     near.abort("coeffs blob must be 66-char entries");
   }
+
   for (let i = 0; i < nPks; i++) {
     s = near.storageGet(`bls:sig:${id}:${i}`) ?? "";
     if (s != "") {
@@ -130,7 +144,9 @@ export function execute(id: string, coeffs: string): string {
       found = "";
       for (let e = 0; e < nE; e++) {
         base = e * 66;
-        idx = strToNum(strSlice(coeffs, base, base + 2));
+        // NOTE: str->num("00") yields nil (leading-zero parse) — entries
+        // carry 1-based validator indices ("01".."0n")
+        idx = strToNum(strSlice(coeffs, base, base + 2)) - 1;
         if (idx == i) {
           found = strSlice(coeffs, base + 2, base + 66);
         }
@@ -138,16 +154,18 @@ export function execute(id: string, coeffs: string): string {
       if (found == "") {
         near.abort(`missing coefficient for validator ${i}`);
       }
-      pkc = strSlice(pksBlob, i * 192, i * 192 + 192) + found;
+      pkc = strSlice(pksBlob, i * 386 + 2, i * 386 + 386) + found;   // strip sign: 192B + 32B fr
       mxBlob = mxBlob + pkc;
     }
   }
-  let sigma = near.bls12381P1Sum(sigBlob);
-  let apk = near.bls12381G2Multiexp(mxBlob);
-
-  // gate: pairingCheck over (σ, apk) and the message point the client
-  // submits alongside — 1 = product is identity = valid aggregate sig
-  let gate = near.bls12381PairingCheck(`${sigma}${apk}${msg}`);
+  let sigma = near.bls12381P1Sum(sigBlob);          // 194 hex (97B w/sign)
+  let apk = near.bls12381G2Multiexp(mxBlob);        // 386 hex (193B w/sign)
+  // strip sign bytes — pairing pairs are sign-free:
+  //   pair1 = (σ 96B ‖ g2gen 192B), pair2 = (H(m) 96B ‖ apk 192B)
+  // client pre-negates H(m) so Σe = e(σ,g2)·e(-H(m),apk) == 1 on valid sig
+  let sig96 = strSlice(sigma, 2, 194);
+  let apk192 = strSlice(apk, 2, 386);
+  let gate = near.bls12381PairingCheck(sig96 + g2gen + msgPoint + apk192);
   if (gate != 1) {
     near.abort("pairing check failed");
   }

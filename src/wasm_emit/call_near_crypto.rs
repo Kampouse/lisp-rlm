@@ -24,6 +24,199 @@ fn hex_nibble(b: u8) -> Result<u8, String> {
 }
 
 impl WasmEmitter {
+    // ── generic hex⇄binary bridges for the NEAR BLS host ABI ──────────
+    // NEAR's bls12381_* hosts speak BINARY (uncompressed points + sign
+    // bytes); the TS surface speaks hex strings. These bridges make the
+    // wire NEAR-native while keeping fixtures readable.
+    //
+    /// hex string in locals (len_l: i64, ptr_l: i64) → fresh runtime-heap
+    /// binary buffer; sets bin_len_l and bin_ptr_l. RUNTIME_HEAP_PTR bump
+    /// convention (offset 56), same as the sha256 hex encode.
+    fn emit_hex_decode_to_heap(
+        &mut self,
+        len_l: u32,
+        ptr_l: u32,
+        bin_len_l: u32,
+        bin_ptr_l: u32,
+    ) -> Vec<Instruction<'static>> {
+        let mut v = Vec::new();
+        let i = self.local_idx_i32("__hxdi");
+        let c0 = self.local_idx_i32("__hxdc0");
+        let c1 = self.local_idx_i32("__hxdc1");
+        let nib = self.local_idx_i32("__hxdn");
+        let ma = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+        // dst = heap_bump(len/2)
+        v.push(Instruction::I32Const(56));
+        v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+        v.push(Instruction::LocalSet(bin_ptr_l));
+        v.push(Instruction::I32Const(56));
+        v.push(Instruction::LocalGet(bin_ptr_l));
+        v.push(Instruction::I64Const(64));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+        // bin_len = len/2
+        v.push(Instruction::LocalGet(len_l));
+        v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64ShrU);
+        v.push(Instruction::LocalSet(bin_len_l));
+        // for (i = 0; i < len/2; i++)
+        v.push(Instruction::I32Const(0));
+        v.push(Instruction::LocalSet(i));
+        v.push(Instruction::Block(BlockType::Empty));
+        v.push(Instruction::Loop(BlockType::Empty));
+        v.push(Instruction::LocalGet(i));
+        v.push(Instruction::LocalGet(bin_len_l));
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32GeS);
+        v.push(Instruction::I32Eqz);
+        v.push(Instruction::If(BlockType::Empty));
+        // c0 = ptr[2i] → nibble
+        v.push(Instruction::LocalGet(ptr_l));
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::LocalGet(i));
+        v.push(Instruction::I32Const(2));
+        v.push(Instruction::I32Mul);
+        v.push(Instruction::I32Add);
+        v.push(Instruction::I32Load8U(ma.clone()));
+        v.push(Instruction::LocalSet(c0));
+        v.push(Instruction::LocalGet(c0));
+        v.extend(Self::emit_ascii_to_nibble(nib));
+        v.push(Instruction::LocalSet(c0));
+        // c1 = ptr[2i+1] → nibble
+        v.push(Instruction::LocalGet(ptr_l));
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::LocalGet(i));
+        v.push(Instruction::I32Const(2));
+        v.push(Instruction::I32Mul);
+        v.push(Instruction::I32Const(1));
+        v.push(Instruction::I32Add);
+        v.push(Instruction::I32Add);
+        v.push(Instruction::I32Load8U(ma.clone()));
+        v.push(Instruction::LocalSet(c1));
+        v.push(Instruction::LocalGet(c1));
+        v.extend(Self::emit_ascii_to_nibble(nib));
+        v.push(Instruction::LocalSet(c1));
+        // dst[i] = c0*16 + c1
+        v.push(Instruction::LocalGet(bin_ptr_l));
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::LocalGet(i));
+        v.push(Instruction::I32Add);
+        v.push(Instruction::LocalGet(c0));
+        v.push(Instruction::I32Const(4));
+        v.push(Instruction::I32Shl);
+        v.push(Instruction::LocalGet(c1));
+        v.push(Instruction::I32Or);
+        v.push(Instruction::I32Store8(ma.clone()));
+        // i++
+        v.push(Instruction::LocalGet(i));
+        v.push(Instruction::I32Const(1));
+        v.push(Instruction::I32Add);
+        v.push(Instruction::LocalSet(i));
+        v.push(Instruction::Br(1));
+        v.push(Instruction::End); // if
+        v.push(Instruction::End); // loop
+        v.push(Instruction::End); // block
+        v
+    }
+
+    /// ascii hex char on stack → nibble (0..15). Scratch local nib_l.
+    fn emit_ascii_to_nibble(nib_l: u32) -> Vec<Instruction<'static>> {
+        let mut v = Vec::new();
+        v.push(Instruction::LocalSet(nib_l));
+        v.push(Instruction::LocalGet(nib_l));
+        v.push(Instruction::I32Const(97)); // 'a'
+        v.push(Instruction::I32GeS);
+        v.push(Instruction::If(wasm_encoder::BlockType::Result(wasm_encoder::ValType::I32)));
+        v.push(Instruction::LocalGet(nib_l));
+        v.push(Instruction::I32Const(87));
+        v.push(Instruction::I32Sub);
+        v.push(Instruction::Else);
+        v.push(Instruction::LocalGet(nib_l));
+        v.push(Instruction::I32Const(65)); // 'A'
+        v.push(Instruction::I32GeS);
+        v.push(Instruction::If(wasm_encoder::BlockType::Result(wasm_encoder::ValType::I32)));
+        v.push(Instruction::LocalGet(nib_l));
+        v.push(Instruction::I32Const(55));
+        v.push(Instruction::I32Sub);
+        v.push(Instruction::Else);
+        v.push(Instruction::LocalGet(nib_l));
+        v.push(Instruction::I32Const(48)); // '0'
+        v.push(Instruction::I32Sub);
+        v.push(Instruction::End);
+        v.push(Instruction::End);
+        v
+    }
+
+    /// binary in locals (len_l, ptr_l) → tagged hex string on stack.
+    fn emit_hex_encode_to_str(
+        &mut self,
+        len_l: u32,
+        ptr_l: u32,
+    ) -> Vec<Instruction<'static>> {
+        let mut v = Vec::new();
+        let i = self.local_idx_i32("__hxei");
+        let d = self.local_idx_i32("__hxed");
+        let ma = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+        // dst = heap_bump(2*len + 1)  (bump by 64 keeps alignment padding)
+        let dst = self.local_idx("__hxedst");
+        v.push(Instruction::I32Const(56));
+        v.push(Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+        v.push(Instruction::LocalSet(dst));
+        v.push(Instruction::I32Const(56));
+        v.push(Instruction::LocalGet(dst));
+        v.push(Instruction::LocalGet(len_l));
+        v.push(Instruction::I64Const(2));
+        v.push(Instruction::I64Mul);
+        v.push(Instruction::I64Const(64));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+        v.push(Instruction::I32Const(0));
+        v.push(Instruction::LocalSet(i));
+        v.push(Instruction::Block(BlockType::Empty));
+        v.push(Instruction::Loop(BlockType::Empty));
+        v.push(Instruction::LocalGet(i));
+        v.push(Instruction::LocalGet(len_l));
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32GeS);
+        v.push(Instruction::I32Eqz);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(ptr_l));
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::LocalGet(i));
+        v.push(Instruction::I32Add);
+        v.push(Instruction::I32Load8U(ma.clone()));
+        v.push(Instruction::I32Const(4));
+        v.push(Instruction::I32ShrU);
+        v.extend(Self::hex_digit_store(dst, i, d, 0, &ma));
+        v.push(Instruction::LocalGet(ptr_l));
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::LocalGet(i));
+        v.push(Instruction::I32Add);
+        v.push(Instruction::I32Load8U(ma.clone()));
+        v.push(Instruction::I32Const(15));
+        v.push(Instruction::I32And);
+        v.extend(Self::hex_digit_store(dst, i, d, 1, &ma));
+        v.push(Instruction::LocalGet(i));
+        v.push(Instruction::I32Const(1));
+        v.push(Instruction::I32Add);
+        v.push(Instruction::LocalSet(i));
+        v.push(Instruction::Br(1));
+        v.push(Instruction::End);
+        v.push(Instruction::End);
+        v.push(Instruction::End);
+        // tag (2*len << 32 | dst)
+        v.push(Instruction::LocalGet(len_l));
+        v.push(Instruction::I64Const(2));
+        v.push(Instruction::I64Mul);
+        v.push(Instruction::I64Const(32));
+        v.push(Instruction::I64Shl);
+        v.push(Instruction::LocalGet(dst));
+        v.push(Instruction::I64Or);
+        v.extend(self.emit_tag_str());
+        v
+    }
+
     /// Nibble (0..15) is on the wasm stack. Convert to an ASCII hex digit
     /// and store it at heap_base + i*2 + byte_off. Scratch local d_l is
     /// reused for the digit computation. Used by sha256-hash hex encoding.
@@ -557,37 +750,50 @@ impl WasmEmitter {
                 }
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
+                // (len, ptr) of the hex string
+                let h_len = self.local_idx("__bls_hlen");
                 v.extend(data.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(h_len));
+                let h_ptr = self.local_idx("__bls_hptr");
                 v.extend(data);
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(h_ptr));
+                // hex → binary on runtime heap (NEAR hosts speak binary)
+                let b_len = self.local_idx("__bls_blen");
+                let b_ptr = self.local_idx("__bls_bptr");
+                v.extend(self.emit_hex_decode_to_heap(h_len, h_ptr, b_len, b_ptr));
+                // host(value_len, value_ptr, rid=0); ret 0 = ok
+                v.push(Instruction::LocalGet(b_len));
+                v.push(Instruction::LocalGet(b_ptr));
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(59));
-                v.push(Instruction::Drop); // drop status u64
-                // ALIASING FIX (2026-09-02, found by bls_msig): reading the
-                // register straight into TEMP_MEM returns a POINTER that the
-                // next register-writing host call overwrites — two live
-                // results alias (sigma showed apk's bytes). Copy to a fresh
-                // runtime-heap buffer instead (call_near_iter.rs pattern).
-                let bls_len = self.local_idx("__bls_rlen");
+                let ret = self.local_idx("__bls_ret");
+                v.push(Instruction::LocalSet(ret));
+                // register 0 → (r_len, r_ptr) → hex-encoded tagged string
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(1)); // register_len(0)
-                v.push(Instruction::LocalSet(bls_len));
-                let bls_buf = self.local_idx("__bls_rbuf");
-                v.extend(self.emit_rtheap_alloc(bls_buf, bls_len));
+                let r_len = self.local_idx("__bls_rlen");
+                v.push(Instruction::LocalSet(r_len));
+                let r_ptr = self.local_idx("__bls_rptr");
+                v.extend(self.emit_rtheap_alloc(r_ptr, r_len));
                 v.push(Instruction::I64Const(0));
-                v.push(Instruction::LocalGet(bls_buf));
-                v.push(Self::host_call(0)); // read_register(0, buf)
-                v.push(Instruction::LocalGet(bls_len));
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64Shl);
-                v.push(Instruction::LocalGet(bls_buf));
-                v.push(Instruction::I64Or);
+                v.push(Instruction::LocalGet(r_ptr));
+                v.push(Self::host_call(0)); // read_register(0, r_ptr)
+                // ret != 0 (invalid input/point) → empty string; callers
+                // gate on length
+                v.push(Instruction::LocalGet(ret));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::If(wasm_encoder::BlockType::Result(wasm_encoder::ValType::I64)));
+                v.extend(self.emit_hex_encode_to_str(r_len, r_ptr));
+                v.push(Instruction::Else);
+                v.push(Instruction::I64Const(0));
                 v.extend(self.emit_tag_str());
+                v.push(Instruction::End);
                 Ok(v)
             }
             "near/bls12381_p2_sum" => {
@@ -596,274 +802,397 @@ impl WasmEmitter {
                 }
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
+                // (len, ptr) of the hex string
+                let h_len = self.local_idx("__bls_hlen");
                 v.extend(data.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(h_len));
+                let h_ptr = self.local_idx("__bls_hptr");
                 v.extend(data);
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(h_ptr));
+                // hex → binary on runtime heap (NEAR hosts speak binary)
+                let b_len = self.local_idx("__bls_blen");
+                let b_ptr = self.local_idx("__bls_bptr");
+                v.extend(self.emit_hex_decode_to_heap(h_len, h_ptr, b_len, b_ptr));
+                // host(value_len, value_ptr, rid=0); ret 0 = ok
+                v.push(Instruction::LocalGet(b_len));
+                v.push(Instruction::LocalGet(b_ptr));
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(60));
-                v.push(Instruction::Drop); // drop status u64
-                // ALIASING FIX (2026-09-02, found by bls_msig): reading the
-                // register straight into TEMP_MEM returns a POINTER that the
-                // next register-writing host call overwrites — two live
-                // results alias (sigma showed apk's bytes). Copy to a fresh
-                // runtime-heap buffer instead (call_near_iter.rs pattern).
-                let bls_len = self.local_idx("__bls_rlen");
+                let ret = self.local_idx("__bls_ret");
+                v.push(Instruction::LocalSet(ret));
+                // register 0 → (r_len, r_ptr) → hex-encoded tagged string
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(1)); // register_len(0)
-                v.push(Instruction::LocalSet(bls_len));
-                let bls_buf = self.local_idx("__bls_rbuf");
-                v.extend(self.emit_rtheap_alloc(bls_buf, bls_len));
+                let r_len = self.local_idx("__bls_rlen");
+                v.push(Instruction::LocalSet(r_len));
+                let r_ptr = self.local_idx("__bls_rptr");
+                v.extend(self.emit_rtheap_alloc(r_ptr, r_len));
                 v.push(Instruction::I64Const(0));
-                v.push(Instruction::LocalGet(bls_buf));
-                v.push(Self::host_call(0)); // read_register(0, buf)
-                v.push(Instruction::LocalGet(bls_len));
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64Shl);
-                v.push(Instruction::LocalGet(bls_buf));
-                v.push(Instruction::I64Or);
+                v.push(Instruction::LocalGet(r_ptr));
+                v.push(Self::host_call(0)); // read_register(0, r_ptr)
+                // ret != 0 (invalid input/point) → empty string; callers
+                // gate on length
+                v.push(Instruction::LocalGet(ret));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::If(wasm_encoder::BlockType::Result(wasm_encoder::ValType::I64)));
+                v.extend(self.emit_hex_encode_to_str(r_len, r_ptr));
+                v.push(Instruction::Else);
+                v.push(Instruction::I64Const(0));
                 v.extend(self.emit_tag_str());
+                v.push(Instruction::End);
                 Ok(v)
             }
             "near/bls12381_g1_multiexp" => {
                 if a.len() != 1 {
-                    return Err("near/bls12381_g1_multiexp: need 1 args (pairs)".into());
+                    return Err("near/bls12381_g1_multiexp: need 1 args (data buffer)".into());
                 }
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
+                // (len, ptr) of the hex string
+                let h_len = self.local_idx("__bls_hlen");
                 v.extend(data.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(h_len));
+                let h_ptr = self.local_idx("__bls_hptr");
                 v.extend(data);
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(h_ptr));
+                // hex → binary on runtime heap (NEAR hosts speak binary)
+                let b_len = self.local_idx("__bls_blen");
+                let b_ptr = self.local_idx("__bls_bptr");
+                v.extend(self.emit_hex_decode_to_heap(h_len, h_ptr, b_len, b_ptr));
+                // host(value_len, value_ptr, rid=0); ret 0 = ok
+                v.push(Instruction::LocalGet(b_len));
+                v.push(Instruction::LocalGet(b_ptr));
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(61));
-                v.push(Instruction::Drop); // drop status u64
-                // ALIASING FIX (2026-09-02, found by bls_msig): reading the
-                // register straight into TEMP_MEM returns a POINTER that the
-                // next register-writing host call overwrites — two live
-                // results alias (sigma showed apk's bytes). Copy to a fresh
-                // runtime-heap buffer instead (call_near_iter.rs pattern).
-                let bls_len = self.local_idx("__bls_rlen");
+                let ret = self.local_idx("__bls_ret");
+                v.push(Instruction::LocalSet(ret));
+                // register 0 → (r_len, r_ptr) → hex-encoded tagged string
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(1)); // register_len(0)
-                v.push(Instruction::LocalSet(bls_len));
-                let bls_buf = self.local_idx("__bls_rbuf");
-                v.extend(self.emit_rtheap_alloc(bls_buf, bls_len));
+                let r_len = self.local_idx("__bls_rlen");
+                v.push(Instruction::LocalSet(r_len));
+                let r_ptr = self.local_idx("__bls_rptr");
+                v.extend(self.emit_rtheap_alloc(r_ptr, r_len));
                 v.push(Instruction::I64Const(0));
-                v.push(Instruction::LocalGet(bls_buf));
-                v.push(Self::host_call(0)); // read_register(0, buf)
-                v.push(Instruction::LocalGet(bls_len));
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64Shl);
-                v.push(Instruction::LocalGet(bls_buf));
-                v.push(Instruction::I64Or);
+                v.push(Instruction::LocalGet(r_ptr));
+                v.push(Self::host_call(0)); // read_register(0, r_ptr)
+                // ret != 0 (invalid input/point) → empty string; callers
+                // gate on length
+                v.push(Instruction::LocalGet(ret));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::If(wasm_encoder::BlockType::Result(wasm_encoder::ValType::I64)));
+                v.extend(self.emit_hex_encode_to_str(r_len, r_ptr));
+                v.push(Instruction::Else);
+                v.push(Instruction::I64Const(0));
                 v.extend(self.emit_tag_str());
+                v.push(Instruction::End);
                 Ok(v)
             }
             "near/bls12381_g2_multiexp" => {
                 if a.len() != 1 {
-                    return Err("near/bls12381_g2_multiexp: need 1 args (pairs)".into());
+                    return Err("near/bls12381_g2_multiexp: need 1 args (data buffer)".into());
                 }
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
+                // (len, ptr) of the hex string
+                let h_len = self.local_idx("__bls_hlen");
                 v.extend(data.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(h_len));
+                let h_ptr = self.local_idx("__bls_hptr");
                 v.extend(data);
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(h_ptr));
+                // hex → binary on runtime heap (NEAR hosts speak binary)
+                let b_len = self.local_idx("__bls_blen");
+                let b_ptr = self.local_idx("__bls_bptr");
+                v.extend(self.emit_hex_decode_to_heap(h_len, h_ptr, b_len, b_ptr));
+                // host(value_len, value_ptr, rid=0); ret 0 = ok
+                v.push(Instruction::LocalGet(b_len));
+                v.push(Instruction::LocalGet(b_ptr));
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(62));
-                v.push(Instruction::Drop); // drop status u64
-                // ALIASING FIX (2026-09-02, found by bls_msig): reading the
-                // register straight into TEMP_MEM returns a POINTER that the
-                // next register-writing host call overwrites — two live
-                // results alias (sigma showed apk's bytes). Copy to a fresh
-                // runtime-heap buffer instead (call_near_iter.rs pattern).
-                let bls_len = self.local_idx("__bls_rlen");
+                let ret = self.local_idx("__bls_ret");
+                v.push(Instruction::LocalSet(ret));
+                // register 0 → (r_len, r_ptr) → hex-encoded tagged string
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(1)); // register_len(0)
-                v.push(Instruction::LocalSet(bls_len));
-                let bls_buf = self.local_idx("__bls_rbuf");
-                v.extend(self.emit_rtheap_alloc(bls_buf, bls_len));
+                let r_len = self.local_idx("__bls_rlen");
+                v.push(Instruction::LocalSet(r_len));
+                let r_ptr = self.local_idx("__bls_rptr");
+                v.extend(self.emit_rtheap_alloc(r_ptr, r_len));
                 v.push(Instruction::I64Const(0));
-                v.push(Instruction::LocalGet(bls_buf));
-                v.push(Self::host_call(0)); // read_register(0, buf)
-                v.push(Instruction::LocalGet(bls_len));
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64Shl);
-                v.push(Instruction::LocalGet(bls_buf));
-                v.push(Instruction::I64Or);
+                v.push(Instruction::LocalGet(r_ptr));
+                v.push(Self::host_call(0)); // read_register(0, r_ptr)
+                // ret != 0 (invalid input/point) → empty string; callers
+                // gate on length
+                v.push(Instruction::LocalGet(ret));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::If(wasm_encoder::BlockType::Result(wasm_encoder::ValType::I64)));
+                v.extend(self.emit_hex_encode_to_str(r_len, r_ptr));
+                v.push(Instruction::Else);
+                v.push(Instruction::I64Const(0));
                 v.extend(self.emit_tag_str());
+                v.push(Instruction::End);
                 Ok(v)
             }
             "near/bls12381_map_fp_to_g1" => {
+                if a.len() != 1 {
+                    return Err("near/bls12381_map_fp_to_g1: need 1 args (fp element)".into());
+                }
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
+                // (len, ptr) of the hex string
+                let h_len = self.local_idx("__bls_hlen");
                 v.extend(data.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(h_len));
+                let h_ptr = self.local_idx("__bls_hptr");
                 v.extend(data);
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(h_ptr));
+                // hex → binary on runtime heap (NEAR hosts speak binary)
+                let b_len = self.local_idx("__bls_blen");
+                let b_ptr = self.local_idx("__bls_bptr");
+                v.extend(self.emit_hex_decode_to_heap(h_len, h_ptr, b_len, b_ptr));
+                // host(value_len, value_ptr, rid=0); ret 0 = ok
+                v.push(Instruction::LocalGet(b_len));
+                v.push(Instruction::LocalGet(b_ptr));
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(63));
-                v.push(Instruction::Drop); // drop status u64
-                // ALIASING FIX (2026-09-02, found by bls_msig): reading the
-                // register straight into TEMP_MEM returns a POINTER that the
-                // next register-writing host call overwrites — two live
-                // results alias (sigma showed apk's bytes). Copy to a fresh
-                // runtime-heap buffer instead (call_near_iter.rs pattern).
-                let bls_len = self.local_idx("__bls_rlen");
+                let ret = self.local_idx("__bls_ret");
+                v.push(Instruction::LocalSet(ret));
+                // register 0 → (r_len, r_ptr) → hex-encoded tagged string
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(1)); // register_len(0)
-                v.push(Instruction::LocalSet(bls_len));
-                let bls_buf = self.local_idx("__bls_rbuf");
-                v.extend(self.emit_rtheap_alloc(bls_buf, bls_len));
+                let r_len = self.local_idx("__bls_rlen");
+                v.push(Instruction::LocalSet(r_len));
+                let r_ptr = self.local_idx("__bls_rptr");
+                v.extend(self.emit_rtheap_alloc(r_ptr, r_len));
                 v.push(Instruction::I64Const(0));
-                v.push(Instruction::LocalGet(bls_buf));
-                v.push(Self::host_call(0)); // read_register(0, buf)
-                v.push(Instruction::LocalGet(bls_len));
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64Shl);
-                v.push(Instruction::LocalGet(bls_buf));
-                v.push(Instruction::I64Or);
+                v.push(Instruction::LocalGet(r_ptr));
+                v.push(Self::host_call(0)); // read_register(0, r_ptr)
+                // ret != 0 (invalid input/point) → empty string; callers
+                // gate on length
+                v.push(Instruction::LocalGet(ret));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::If(wasm_encoder::BlockType::Result(wasm_encoder::ValType::I64)));
+                v.extend(self.emit_hex_encode_to_str(r_len, r_ptr));
+                v.push(Instruction::Else);
+                v.push(Instruction::I64Const(0));
                 v.extend(self.emit_tag_str());
+                v.push(Instruction::End);
                 Ok(v)
             }
             "near/bls12381_map_fp2_to_g2" => {
+                if a.len() != 1 {
+                    return Err("near/bls12381_map_fp2_to_g2: need 1 args (fp2 element)".into());
+                }
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
+                // (len, ptr) of the hex string
+                let h_len = self.local_idx("__bls_hlen");
                 v.extend(data.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(h_len));
+                let h_ptr = self.local_idx("__bls_hptr");
                 v.extend(data);
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(h_ptr));
+                // hex → binary on runtime heap (NEAR hosts speak binary)
+                let b_len = self.local_idx("__bls_blen");
+                let b_ptr = self.local_idx("__bls_bptr");
+                v.extend(self.emit_hex_decode_to_heap(h_len, h_ptr, b_len, b_ptr));
+                // host(value_len, value_ptr, rid=0); ret 0 = ok
+                v.push(Instruction::LocalGet(b_len));
+                v.push(Instruction::LocalGet(b_ptr));
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(64));
-                v.push(Instruction::Drop); // drop status u64
-                // ALIASING FIX (2026-09-02, found by bls_msig): reading the
-                // register straight into TEMP_MEM returns a POINTER that the
-                // next register-writing host call overwrites — two live
-                // results alias (sigma showed apk's bytes). Copy to a fresh
-                // runtime-heap buffer instead (call_near_iter.rs pattern).
-                let bls_len = self.local_idx("__bls_rlen");
+                let ret = self.local_idx("__bls_ret");
+                v.push(Instruction::LocalSet(ret));
+                // register 0 → (r_len, r_ptr) → hex-encoded tagged string
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(1)); // register_len(0)
-                v.push(Instruction::LocalSet(bls_len));
-                let bls_buf = self.local_idx("__bls_rbuf");
-                v.extend(self.emit_rtheap_alloc(bls_buf, bls_len));
+                let r_len = self.local_idx("__bls_rlen");
+                v.push(Instruction::LocalSet(r_len));
+                let r_ptr = self.local_idx("__bls_rptr");
+                v.extend(self.emit_rtheap_alloc(r_ptr, r_len));
                 v.push(Instruction::I64Const(0));
-                v.push(Instruction::LocalGet(bls_buf));
-                v.push(Self::host_call(0)); // read_register(0, buf)
-                v.push(Instruction::LocalGet(bls_len));
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64Shl);
-                v.push(Instruction::LocalGet(bls_buf));
-                v.push(Instruction::I64Or);
+                v.push(Instruction::LocalGet(r_ptr));
+                v.push(Self::host_call(0)); // read_register(0, r_ptr)
+                // ret != 0 (invalid input/point) → empty string; callers
+                // gate on length
+                v.push(Instruction::LocalGet(ret));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::If(wasm_encoder::BlockType::Result(wasm_encoder::ValType::I64)));
+                v.extend(self.emit_hex_encode_to_str(r_len, r_ptr));
+                v.push(Instruction::Else);
+                v.push(Instruction::I64Const(0));
                 v.extend(self.emit_tag_str());
+                v.push(Instruction::End);
                 Ok(v)
             }
             "near/bls12381_pairing_check" => {
+                if a.len() != 1 {
+                    return Err("near/bls12381_pairing_check: need 1 args (data buffer)".into());
+                }
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
+                let h_len = self.local_idx("__bls_hlen");
                 v.extend(data.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(h_len));
+                let h_ptr = self.local_idx("__bls_hptr");
                 v.extend(data);
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(h_ptr));
+                let b_len = self.local_idx("__bls_blen");
+                let b_ptr = self.local_idx("__bls_bptr");
+                v.extend(self.emit_hex_decode_to_heap(h_len, h_ptr, b_len, b_ptr));
+                // host(value_len, value_ptr) -> u64: 0 identity, 1 bad
+                // point, 2 non-identity. Map to TS: 1 = valid, 0 = else.
+                v.push(Instruction::LocalGet(b_len));
+                v.push(Instruction::LocalGet(b_ptr));
                 v.push(Self::host_call(65));
-                v.extend(self.emit_tag_num());
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::If(wasm_encoder::BlockType::Result(wasm_encoder::ValType::I64)));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::Else);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::End);
+                v.extend(self.emit_tag(0));
                 Ok(v)
             }
             "near/bls12381_p1_decompress" => {
+                if a.len() != 1 {
+                    return Err("near/bls12381_p1_decompress: need 1 args (compressed g1)".into());
+                }
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
+                // (len, ptr) of the hex string
+                let h_len = self.local_idx("__bls_hlen");
                 v.extend(data.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(h_len));
+                let h_ptr = self.local_idx("__bls_hptr");
                 v.extend(data);
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(h_ptr));
+                // hex → binary on runtime heap (NEAR hosts speak binary)
+                let b_len = self.local_idx("__bls_blen");
+                let b_ptr = self.local_idx("__bls_bptr");
+                v.extend(self.emit_hex_decode_to_heap(h_len, h_ptr, b_len, b_ptr));
+                // host(value_len, value_ptr, rid=0); ret 0 = ok
+                v.push(Instruction::LocalGet(b_len));
+                v.push(Instruction::LocalGet(b_ptr));
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(66));
-                v.push(Instruction::Drop); // drop status u64
-                // ALIASING FIX (2026-09-02, found by bls_msig): reading the
-                // register straight into TEMP_MEM returns a POINTER that the
-                // next register-writing host call overwrites — two live
-                // results alias (sigma showed apk's bytes). Copy to a fresh
-                // runtime-heap buffer instead (call_near_iter.rs pattern).
-                let bls_len = self.local_idx("__bls_rlen");
+                let ret = self.local_idx("__bls_ret");
+                v.push(Instruction::LocalSet(ret));
+                // register 0 → (r_len, r_ptr) → hex-encoded tagged string
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(1)); // register_len(0)
-                v.push(Instruction::LocalSet(bls_len));
-                let bls_buf = self.local_idx("__bls_rbuf");
-                v.extend(self.emit_rtheap_alloc(bls_buf, bls_len));
+                let r_len = self.local_idx("__bls_rlen");
+                v.push(Instruction::LocalSet(r_len));
+                let r_ptr = self.local_idx("__bls_rptr");
+                v.extend(self.emit_rtheap_alloc(r_ptr, r_len));
                 v.push(Instruction::I64Const(0));
-                v.push(Instruction::LocalGet(bls_buf));
-                v.push(Self::host_call(0)); // read_register(0, buf)
-                v.push(Instruction::LocalGet(bls_len));
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64Shl);
-                v.push(Instruction::LocalGet(bls_buf));
-                v.push(Instruction::I64Or);
+                v.push(Instruction::LocalGet(r_ptr));
+                v.push(Self::host_call(0)); // read_register(0, r_ptr)
+                // ret != 0 (invalid input/point) → empty string; callers
+                // gate on length
+                v.push(Instruction::LocalGet(ret));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::If(wasm_encoder::BlockType::Result(wasm_encoder::ValType::I64)));
+                v.extend(self.emit_hex_encode_to_str(r_len, r_ptr));
+                v.push(Instruction::Else);
+                v.push(Instruction::I64Const(0));
                 v.extend(self.emit_tag_str());
+                v.push(Instruction::End);
                 Ok(v)
             }
             "near/bls12381_p2_decompress" => {
+                if a.len() != 1 {
+                    return Err("near/bls12381_p2_decompress: need 1 args (compressed g2)".into());
+                }
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
+                // (len, ptr) of the hex string
+                let h_len = self.local_idx("__bls_hlen");
                 v.extend(data.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(h_len));
+                let h_ptr = self.local_idx("__bls_hptr");
                 v.extend(data);
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(h_ptr));
+                // hex → binary on runtime heap (NEAR hosts speak binary)
+                let b_len = self.local_idx("__bls_blen");
+                let b_ptr = self.local_idx("__bls_bptr");
+                v.extend(self.emit_hex_decode_to_heap(h_len, h_ptr, b_len, b_ptr));
+                // host(value_len, value_ptr, rid=0); ret 0 = ok
+                v.push(Instruction::LocalGet(b_len));
+                v.push(Instruction::LocalGet(b_ptr));
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(67));
-                v.push(Instruction::Drop); // drop status u64
-                // ALIASING FIX (2026-09-02, found by bls_msig): reading the
-                // register straight into TEMP_MEM returns a POINTER that the
-                // next register-writing host call overwrites — two live
-                // results alias (sigma showed apk's bytes). Copy to a fresh
-                // runtime-heap buffer instead (call_near_iter.rs pattern).
-                let bls_len = self.local_idx("__bls_rlen");
+                let ret = self.local_idx("__bls_ret");
+                v.push(Instruction::LocalSet(ret));
+                // register 0 → (r_len, r_ptr) → hex-encoded tagged string
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(1)); // register_len(0)
-                v.push(Instruction::LocalSet(bls_len));
-                let bls_buf = self.local_idx("__bls_rbuf");
-                v.extend(self.emit_rtheap_alloc(bls_buf, bls_len));
+                let r_len = self.local_idx("__bls_rlen");
+                v.push(Instruction::LocalSet(r_len));
+                let r_ptr = self.local_idx("__bls_rptr");
+                v.extend(self.emit_rtheap_alloc(r_ptr, r_len));
                 v.push(Instruction::I64Const(0));
-                v.push(Instruction::LocalGet(bls_buf));
-                v.push(Self::host_call(0)); // read_register(0, buf)
-                v.push(Instruction::LocalGet(bls_len));
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64Shl);
-                v.push(Instruction::LocalGet(bls_buf));
-                v.push(Instruction::I64Or);
+                v.push(Instruction::LocalGet(r_ptr));
+                v.push(Self::host_call(0)); // read_register(0, r_ptr)
+                // ret != 0 (invalid input/point) → empty string; callers
+                // gate on length
+                v.push(Instruction::LocalGet(ret));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::If(wasm_encoder::BlockType::Result(wasm_encoder::ValType::I64)));
+                v.extend(self.emit_hex_encode_to_str(r_len, r_ptr));
+                v.push(Instruction::Else);
+                v.push(Instruction::I64Const(0));
                 v.extend(self.emit_tag_str());
+                v.push(Instruction::End);
                 Ok(v)
             }
             "near/schnorr_verify" => {

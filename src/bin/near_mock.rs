@@ -1632,12 +1632,9 @@ fn build_env_linker(
     // alt_bn128 + bls12381 precompiles: (data_len, data_ptr, rid) → i64
     // Mock: register a fixed-shape blob so .length probes are deterministic;
     // return the register id (matches the compiler's read-to-register ABI).
-    let precompile_targets: [(&str, i64, &str); 5] = [
+    let precompile_targets: [(&str, i64, &str); 2] = [
         ("alt_bn128_g1_sum", 64, "g1sum"),
         ("alt_bn128_g1_multiexp", 64, "g1x"),
-        ("bls12381_p1_sum", 96, "p1s"),   // hex-convention: 48B point = 96 hex chars
-        ("bls12381_p2_sum", 192, "p2s"),  // 96B point = 192 hex
-        ("bls12381_g1_multiexp", 96, "g1m"),
     ];
     // alt_bn128_g1_sum/g1_multiexp: (data_len, data_ptr, rid) — no return.
     // bls12381_*: same args → i64 (read-to-register ABI returns the rid).
@@ -1646,7 +1643,7 @@ fn build_env_linker(
         let st_g = state.clone();
         let out_len = *out_len;
         let tag = tag.as_bytes().to_vec();
-        let returns = i >= 2; // bls12381_* return i64, alt_bn128_* don't
+        let returns = false; // alt_bn128_*: no return value
         precompile_fns.push(Func::new(
             &mut *store,
             FuncType::new(
@@ -1671,17 +1668,60 @@ fn build_env_linker(
             },
         ));
     }
-    // bls12381_g2_multiexp: (len, ptr, rid) → i64, 96B fixed-shape blob
-    let sg_g2m = state.clone();
-    let bls_g2m_fn = Func::new(
+    // bls12381_* — NEAR host ABI (2026-09-02): 3-arg (len, ptr, rid) → i64
+    // status. Binary wire: stride bytes per element (sign byte + uncompressed
+    // point for sums; point + 32B LE scalar for multiexp; raw field elements
+    // for map/decompress inputs). ret 0 = ok (register holds out_len bytes),
+    // ret 1 = malformed length. Shape-stub only — not crypto-true.
+    let bls_targets: [(&str, i64, i64); 8] = [
+        ("bls12381_p1_sum", 97, 97),        // (sign, G1 xy) each
+        ("bls12381_p2_sum", 193, 193),      // (sign, G2 xy)
+        ("bls12381_g1_multiexp", 128, 97),  // (G1 xy, fr LE) each
+        ("bls12381_g2_multiexp", 224, 193), // (G2 xy, fr LE)
+        ("bls12381_map_fp_to_g1", 48, 97),
+        ("bls12381_map_fp2_to_g2", 96, 193),
+        ("bls12381_p1_decompress", 48, 97),
+        ("bls12381_p2_decompress", 96, 193),
+    ];
+    let mut bls_fns = Vec::new();
+    for (_nm, stride, out_len) in bls_targets.iter() {
+        let st_g = state.clone();
+        let (stride, out_len) = (*stride, *out_len);
+        bls_fns.push(Func::new(
+            &mut *store,
+            FuncType::new(&engine, vec![ValType::I64; 3], vec![ValType::I64]),
+            move |_, args, results| {
+                let len = args[0].unwrap_i64();
+                let rid = args[2].unwrap_i64() as u64;
+                if len <= 0 || len % stride != 0 {
+                    results[0] = Val::I64(1);
+                    return Ok(());
+                }
+                // deterministic blob: sign byte 0x00 + cycling coords
+                let mut blob = Vec::with_capacity(out_len as usize);
+                blob.push(0u8);
+                let mut i = 1;
+                while blob.len() < out_len as usize {
+                    blob.push(((i * 7 + 3) % 251) as u8);
+                    i += 1;
+                }
+                let mut st = st_g.lock().unwrap();
+                write_reg_checked(&mut st, rid, blob).map_err(|e| wasmtime::Error::msg(e))?;
+                results[0] = Val::I64(0);
+                Ok(())
+            },
+        ));
+    }
+    // bls12381_pairing_check: (len, ptr) → 0 identity / 1 bad / 2 non-id.
+    // Stub: well-formed 288-multiple input pairs → 0, else 1.
+    let sg_pc = state.clone();
+    let bls_pairing_fn = Func::new(
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 3], vec![ValType::I64]),
+        FuncType::new(&engine, vec![ValType::I64; 2], vec![ValType::I64]),
         move |_, args, results| {
-            let rid = args[2].unwrap_i64() as u64;
-            let blob = b"g2m".repeat(64); // 192 chars (96B point hex-convention)
-            let mut st = sg_g2m.lock().unwrap();
-            write_reg_checked(&mut st, rid, blob).map_err(|e| wasmtime::Error::msg(e))?;
-            results[0] = Val::I64(rid as i64);
+            let len = args[0].unwrap_i64();
+            results[0] = Val::I64(if len > 0 && len % 288 == 0 { 0 } else { 1 });
+            let _ = &sg_pc;
             Ok(())
         },
     );
@@ -1917,10 +1957,14 @@ fn build_env_linker(
     linker.define(&*store, "env", "ripemd160", ripemd160_fn)?;
     linker.define(&*store, "env", "p256_verify", p256_fn)?;
     linker.define(&*store, "env", "ecrecover", ecrecover_fn)?;
-    linker.define(&*store, "env", "bls12381_p1_sum", precompile_fns[2].clone())?;
-    linker.define(&*store, "env", "bls12381_p2_sum", precompile_fns[3].clone())?;
-    linker.define(&*store, "env", "bls12381_g1_multiexp", precompile_fns[4].clone())?;
-    linker.define(&*store, "env", "bls12381_g2_multiexp", bls_g2m_fn)?;
+    linker.define(&*store, "env", "bls12381_p1_sum", bls_fns[0].clone())?;
+    linker.define(&*store, "env", "bls12381_p2_sum", bls_fns[1].clone())?;
+    linker.define(&*store, "env", "bls12381_g1_multiexp", bls_fns[2].clone())?;
+    linker.define(&*store, "env", "bls12381_g2_multiexp", bls_fns[3].clone())?;
+    linker.define(&*store, "env", "bls12381_map_fp_to_g1", bls_fns[4].clone())?;
+    linker.define(&*store, "env", "bls12381_map_fp2_to_g2", bls_fns[5].clone())?;
+    linker.define(&*store, "env", "bls12381_p1_decompress", bls_fns[6].clone())?;
+    linker.define(&*store, "env", "bls12381_p2_decompress", bls_fns[7].clone())?;
     // bls12381_pairing_check(data_len, data_ptr) -> i64.
     // EIP-2537 input: k pairs of (G1 48B || G2 96B) = 384B each, k >= 1.
     // Stub semantics (documented, not crypto): well-formed length -> 1
