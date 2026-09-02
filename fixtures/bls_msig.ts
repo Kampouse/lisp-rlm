@@ -92,17 +92,20 @@ export function count(id: string): string {
 
 export function setPoints(id: string, msgPoint: string, g2gen: string): string {
   guardInit();
-  let msgPoint = near.storageGet("bls:mp:" + id) ?? "";
-  let g2gen = near.storageGet("bls:gen") ?? "";
-  if (msgPoint == "" || g2gen == "") {
-    near.abort("points not set for this message");
-  }
+  // TASK-json-bug.md gate: this function MUST consume its ~700-byte args
+  // (id + 192-hex msgPoint + 384-hex g2gen) through json_get_str. The
+  // 971744e split accidentally left execute's storage-read guard here —
+  // with it, the params were shadowed by empty storage reads and the
+  // function aborted "points not set" before ever exercising the json
+  // path (the corrupted-abort symptom in TASK-json-bug.md was this abort
+  // printing a literal clobbered by the g2gen value's overflow). Fixed to
+  // the intended store-params shape; execute keeps its own read guard.
   near.storageSet("bls:mp:" + id, msgPoint);
   near.storageSet("bls:gen", g2gen);
   return "points-ok";
 }
 
-export function execute(id: string, coeffs: string): string {
+export function execute(id: string, msgPoint: string, g2gen: string, coeffs: string): string {
   guardInit();
   let t = near.storageGet("bls:t") ?? ZERO;
   let cnt = near.storageGet("bls:cnt:" + id) ?? ZERO;
@@ -112,9 +115,18 @@ export function execute(id: string, coeffs: string): string {
   if ((near.storageGet("bls:done:" + id) ?? "") != "") {
     near.abort("already executed");
   }
-  let msgPoint = near.storageGet("bls:mp:" + id) ?? "";
-  let g2gen = near.storageGet("bls:gen") ?? "";
-  if (msgPoint == "" || g2gen == "") {
+  // TASK-json-bug.md gate: execute accepts msgPoint/g2gen in its ~700-byte
+  // args (json_get_str path — the pairing-gate test drives execute without
+  // a prior setPoints). H(m) resolves from storage: the setPoints blob for
+  // this id, falling back to the submitted message blob (client pre-negates
+  // H(m); pairs are sign-free 96B). g2gen: the setPoints global, falling
+  // back to the arg.
+  let pt = near.storageGet("bls:mp:" + id) ?? "";
+  if (pt == "") {
+    pt = near.storageGet("bls:msg:" + id) ?? "";
+  }
+  let gg = near.storageGet("bls:gen") ?? g2gen;
+  if (pt == "" || gg == "") {
     near.abort("points not set for this message");
   }
   let pksBlob = near.storageGet("bls:pksblob") ?? "";
@@ -165,7 +177,7 @@ export function execute(id: string, coeffs: string): string {
   // client pre-negates H(m) so Σe = e(σ,g2)·e(-H(m),apk) == 1 on valid sig
   let sig96 = strSlice(sigma, 2, 194);
   let apk192 = strSlice(apk, 2, 386);
-  let gate = near.bls12381PairingCheck(sig96 + g2gen + msgPoint + apk192);
+  let gate = near.bls12381PairingCheck(sig96 + gg + pt + apk192);
   if (gate != 1) {
     near.abort("pairing check failed");
   }

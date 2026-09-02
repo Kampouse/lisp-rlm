@@ -4459,28 +4459,49 @@ impl WasmEmitter {
         v.push(Instruction::End);
         v.push(Instruction::End);
 
-        // Copy to compile-time heap area above all static buffers.
+        // Copy to the RUNTIME heap (RUNTIME_HEAP_PTR, mem addr 56).
         // U-fix (2026-08-29): was a bare memory.copy of the ESCAPED slice —
         // values with embedded quotes (`[\"action\",...`) shipped with
         // backslashes intact (len 155 vs 135), so any needle containing a
         // quote missed inside escaped hay (12 event-auth vectors failed).
         // Now decodes JSON escapes; see emit_unescape_copy.
-        // NOTE: heap slot is a fixed 256 bytes — values longer than that
-        // overflow into the next slot (pre-existing, unchanged).
-        let heap_dst = self.heap_bump(256);
+        //
+        // TASK-json-bug.md fix (2026-09-02): the destination was a
+        // compile-time heap_bump(256) slot. alloc_data lands key patterns
+        // and literals at next_data_offset, which heap_bump syncs to the
+        // heap top — i.e. DIRECTLY ABOVE the slot. Any value >256 bytes
+        // overflowed the slot at runtime and clobbered the pattern bytes of
+        // LATER json_get_str call sites (and string literals) before their
+        // scans ran: `{"a":"<384 chars>","b":"x"}` returned b as empty, and
+        // abort() literals printed fragments of the value. The dst now
+        // comes from the monotonic runtime heap, sized to the actual
+        // escaped length — no fixed cap, no adjacency with compile-time
+        // data; values up to INPUT_BUF (16KB) are handled.
         let src_addr = self.local_idx_i32("__jss_sa");
         let out_len = self.local_idx_i32("__jss_ulen");
+        let rh_dst = self.local_idx_i32("__jss_rh");
+        let rh_len = self.local_idx("__jss_rhlen");
         v.push(Instruction::I32Const(ib));
         v.push(Instruction::LocalGet(pos));
         v.push(Instruction::I32Add);
         v.push(Instruction::LocalSet(src_addr));
-        v.extend(self.emit_unescape_copy(heap_dst as i32, src_addr, slen, out_len));
-        // Return packed: (out_len << 32) | heap_dst
+        // runtime alloc: rh_dst64 = bump(mem[56], align8(slen))
+        v.push(Instruction::LocalGet(slen));
+        v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::LocalSet(rh_len));
+        let rh_dst64 = self.local_idx("__jss_rh64");
+        v.extend(self.emit_rtheap_alloc(rh_dst64, rh_len));
+        v.push(Instruction::LocalGet(rh_dst64));
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::LocalSet(rh_dst));
+        v.extend(self.emit_unescape_copy(rh_dst, src_addr, slen, out_len));
+        // Return packed: (out_len << 32) | rh_dst
         v.push(Instruction::LocalGet(out_len));
         v.push(Instruction::I64ExtendI32U);
         v.push(Instruction::I64Const(32));
         v.push(Instruction::I64Shl);
-        v.push(Instruction::I64Const(heap_dst as i64));
+        v.push(Instruction::LocalGet(rh_dst));
+        v.push(Instruction::I64ExtendI32U);
         v.push(Instruction::I64Or);
         v.push(Instruction::Else);
         // Key not found: return 0
@@ -4489,15 +4510,18 @@ impl WasmEmitter {
         Ok(v)
     }
 
-    /// Unescape-copy [src_addr_local .. +len_local) → dst_const.
+    /// Unescape-copy [src_addr_local .. +len_local) → dst_local.
     /// Decodes the standard single-char JSON escapes (\" \\ \/ \b \f \n \r \t);
     /// \uXXXX is passed through verbatim (6 bytes — NOT decoded; governance
     /// inputs are ASCII. Revisit with a corpus before shipping unicode args).
     /// Writes the decoded byte count to out_len_local. Decoded is always
     /// shorter than the escaped source, so dst needs only len bytes of room.
+    /// dst is a LOCAL (i32) — the runtime-heap block from emit_rtheap_alloc
+    /// (TASK-json-bug.md: fixed compile-time slots overflowed into adjacent
+    /// key patterns/literals on values >256B).
     pub(crate) fn emit_unescape_copy(
         &mut self,
-        dst_const: i32,
+        dst_local: u32,
         src_addr_local: u32,
         len_local: u32,
         out_len_local: u32,
@@ -4556,12 +4580,12 @@ impl WasmEmitter {
         v.push(Instruction::I32Const(0x75)); // 'u'
         v.push(Instruction::I32Eq);
         v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::I32Const(dst_const));
+        v.push(Instruction::LocalGet(dst_local));
         v.push(Instruction::LocalGet(out_len_local));
         v.push(Instruction::I32Add);
         v.push(Instruction::I32Const(0x5C));
         v.push(Instruction::I32Store8(ma8.clone()));
-        v.push(Instruction::I32Const(dst_const));
+        v.push(Instruction::LocalGet(dst_local));
         v.push(Instruction::LocalGet(out_len_local));
         v.push(Instruction::I32Const(1));
         v.push(Instruction::I32Add);
@@ -4612,7 +4636,7 @@ impl WasmEmitter {
         v.push(Instruction::LocalSet(w));
         v.push(Instruction::End);
         // store8(dst + out, w); out += 1
-        v.push(Instruction::I32Const(dst_const));
+        v.push(Instruction::LocalGet(dst_local));
         v.push(Instruction::LocalGet(out_len_local));
         v.push(Instruction::I32Add);
         v.push(Instruction::LocalGet(w));
@@ -4624,7 +4648,7 @@ impl WasmEmitter {
         v.push(Instruction::End);
         v.push(Instruction::Else);
         // ordinary byte
-        v.push(Instruction::I32Const(dst_const));
+        v.push(Instruction::LocalGet(dst_local));
         v.push(Instruction::LocalGet(out_len_local));
         v.push(Instruction::I32Add);
         v.push(Instruction::LocalGet(b));

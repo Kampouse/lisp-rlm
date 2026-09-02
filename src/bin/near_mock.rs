@@ -1965,21 +1965,12 @@ fn build_env_linker(
     linker.define(&*store, "env", "bls12381_map_fp2_to_g2", bls_fns[5].clone())?;
     linker.define(&*store, "env", "bls12381_p1_decompress", bls_fns[6].clone())?;
     linker.define(&*store, "env", "bls12381_p2_decompress", bls_fns[7].clone())?;
-    // bls12381_pairing_check(data_len, data_ptr) -> i64.
-    // EIP-2537 input: k pairs of (G1 48B || G2 96B) = 384B each, k >= 1.
-    // Stub semantics (documented, not crypto): well-formed length -> 1
-    // (pairs multiply to identity), malformed -> 0. Crypto-true
-    // verification happens on the real runtime / testnet gate.
-    let bls_pairing_fn = Func::new(
-        &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 2], vec![ValType::I64]),
-        |_, args, results| {
-            let len = args[0].unwrap_i64();
-            let ok = len > 0 && len % 384 == 0;
-            results[0] = Val::I64(if ok { 1 } else { 0 });
-            Ok(())
-        },
-    );
+    // bls12381_pairing_check: define the NEAR-native ABI stub built above
+    // (288B pairs, ret 0 = identity / 1 = bad). Until 2026-09-02 a stale
+    // EIP-2537 define sat here (384B pairs, ret 1 = ok) — it was the ONLY
+    // live define (the new stub was built but never registered), so the
+    // gate ran inverted: any non-384-multiple "passed" (TASK-json-bug.md
+    // gate tests caught it via the 512B short-H(m) case succeeding).
     linker.define(&*store, "env", "bls12381_pairing_check", bls_pairing_fn)?;
 
     linker.define(&*store, "env", "epoch_height", noop0r.clone())?;

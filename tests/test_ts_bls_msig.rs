@@ -45,11 +45,10 @@ fn vid(i: usize) -> String { let c = (b'a' + i as u8) as char; format!("{c}{c}")
 fn pk(i: usize) -> String { format!("00{}{}", vid(i), "ee".repeat(191)) }
 fn sig(i: usize) -> String { format!("00{}{}", vid(i), "ee".repeat(95)) }
 
-/// #[ignore] until the json_get_str input-bound fix lands (see
-/// TASK-json-bug.md) — the setPoints/execute flow needs ~700-byte args,
-/// beyond the scanner's 512-byte scratch.
+/// Un-ignored 2026-09-02: json_get_str now unescapes into a runtime-heap
+/// block sized to the value (TASK-json-bug.md) — the setPoints/execute
+/// flow's ~700-byte multi-key args parse correctly.
 #[test]
-#[ignore = "json_get_str 512B input cap — TASK-json-bug.md"]
 fn bls_msig_threshold_lifecycle() {
     let st = "/tmp/bls-msig-t.bin";
     let _ = std::fs::remove_file(st);
@@ -141,11 +140,12 @@ fn bls_msig_threshold_lifecycle() {
 
     // m3 with full coeffs succeeds
     let r = call(st, "execute", &format!(r#"{{"id":"m3","coeffs":"{coeffs}"}}"#));
-    assert!(r.contains("executed:p1s"), "m3 exec: {r}");
+    // NEAR-ABI mock P1Sum blob hex starts with sign byte 00 (971744e) —
+    // was "executed:p1s" under the pre-971744e stub markers
+    assert!(r.contains("executed:00"), "m3 exec: {r}");
 }
 
 #[test]
-#[ignore = "json_get_str 512B input cap — TASK-json-bug.md"]
 fn bls_pairing_gate_shape() {
     // stub gate: well-formed 384-multiple passes, malformed fails
     let st = "/tmp/bls-msig-gate.bin";
@@ -164,7 +164,9 @@ fn bls_pairing_gate_shape() {
     assert!(r.contains("submitted:1"), "sub: {r}");
     let exec = format!(r#"{{"id":"g1","msgPoint":"{msg}","g2gen":"{}","coeffs":"{}"}}"#, "07".repeat(192), "01".to_string() + &"11".repeat(32));
     let r = call(st, "execute", &exec);
-    assert!(r.contains("executed:p1s"), "gate pass: {r}");
+    // NEAR-ABI mock P1Sum blob hex starts with sign byte 00 (971744e) —
+    // was "executed:p1s" under the pre-971744e stub markers
+    assert!(r.contains("executed:00"), "gate pass: {r}");
 
     // short H(m) (64 hex) → gate 320 bytes → not %384 → pairing abort
     let st2 = "/tmp/bls-msig-gate2.bin";
