@@ -194,6 +194,155 @@ function bmBitIsSet(bm: string, k: number) {
   return u128.mod(u128.div(bm, pow2(k)), "2") === "1" ? 1 : 0;
 }
 
+// ── Phase 1.5: event auth (nostr kind 37500) ─────────────────────────────
+// Tag parsing with LITERAL needles only (str-index-of constraint at emit
+// time) — each extractor inlines its own needle, mirroring the lisp twin.
+
+const EMPTY = "";
+
+function tagAction(tags: string) {
+  const i = strIndexOf(tags, "[\"action\",\"");
+  if (i === -1) {
+    return EMPTY;
+  }
+  const rest = strSlice(tags, i + 11, strLength(tags));
+  if (strLength(rest) === 0) {
+    return EMPTY;
+  }
+  return strSlice(rest, 0, strIndexOf(rest, "\""));
+}
+
+function tagContract(tags: string) {
+  const i = strIndexOf(tags, "[\"contract\",\"");
+  if (i === -1) {
+    return EMPTY;
+  }
+  const rest = strSlice(tags, i + 13, strLength(tags));
+  if (strLength(rest) === 0) {
+    return EMPTY;
+  }
+  return strSlice(rest, 0, strIndexOf(rest, "\""));
+}
+
+function tagNonce(tags: string) {
+  const i = strIndexOf(tags, "[\"nonce\",\"");
+  if (i === -1) {
+    return EMPTY;
+  }
+  const rest = strSlice(tags, i + 10, strLength(tags));
+  if (strLength(rest) === 0) {
+    return EMPTY;
+  }
+  return strSlice(rest, 0, strIndexOf(rest, "\""));
+}
+
+function tagExpires(tags: string) {
+  const i = strIndexOf(tags, "[\"expires\",\"");
+  if (i === -1) {
+    return EMPTY;
+  }
+  const rest = strSlice(tags, i + 12, strLength(tags));
+  if (strLength(rest) === 0) {
+    return EMPTY;
+  }
+  return strSlice(rest, 0, strIndexOf(rest, "\""));
+}
+
+// canonical nostr event serialization for signing:
+// [0,"<pk>",<created_at>,<kind>,<tags json>,"<content>"]
+function eventSerialize(pk: string, cat: string, kind: string, tags: string, content: string) {
+  return `[0,"${pk}",${cat},${kind},${tags},"${content}"]`;
+}
+
+function verifyOwnerEvent(actionStr: string) {
+  const pk = near.jsonGetStr("pk");
+  const kind = near.jsonGetStr("kind");
+  const tags = near.jsonGetStr("tags");
+  const content = near.jsonGetStr("ct");
+  const sig = near.jsonGetStr("sig");
+  const cat = near.jsonGetStr("cat");
+  if (strLength(pk) !== 64) {
+    die("ERR_EVENT_PK_LEN");
+  }
+  if (strLength(sig) !== 128) {
+    die("ERR_EVENT_SIG_LEN");
+  }
+  if (kind !== "37500") {
+    die("ERR_EVENT_KIND");
+  }
+  if (pk !== getStr("owner_npub0")) {
+    die("ERR_EVENT_PK_MISMATCH");
+  }
+  const ta = tagAction(tags);
+  const tc = tagContract(tags);
+  const tn = tagNonce(tags);
+  const te = tagExpires(tags);
+  const ts = near.blockTimestamp();
+  if (u128.gt(ts, te)) {
+    die("ERR_SIG_EXPIRED");
+  }
+  if (ta !== actionStr) {
+    die("ERR_EVENT_ACTION");
+  }
+  if (tc !== near.currentAccountId()) {
+    die("ERR_EVENT_CONTRACT");
+  }
+  const serialized = eventSerialize(pk, cat, kind, tags, content);
+  const pkb = hexDecode(pk);
+  const sigb = hexDecode(sig);
+  const mh = hexDecode(sha256Hash(serialized));
+  const ok = schnorrVerify(pkb, sigb, mh);
+  if (ok === 1) {
+    consumeNonce(strToNum(tn));
+  } else {
+    die("ERR_EVENT_SIG_INVALID");
+  }
+}
+
+// guardian variant: pause carries NO nonce (mirrors legacy pause)
+function verifyGuardianEvent(actionStr: string) {
+  const pk = near.jsonGetStr("pk");
+  const kind = near.jsonGetStr("kind");
+  const tags = near.jsonGetStr("tags");
+  const content = near.jsonGetStr("ct");
+  const sig = near.jsonGetStr("sig");
+  const cat = near.jsonGetStr("cat");
+  if (strLength(pk) !== 64) {
+    die("ERR_EVENT_PK_LEN");
+  }
+  if (strLength(sig) !== 128) {
+    die("ERR_EVENT_SIG_LEN");
+  }
+  if (kind !== "37500") {
+    die("ERR_EVENT_KIND");
+  }
+  if (pk !== getStr("owner_npub0")) {
+    die("ERR_EVENT_PK_MISMATCH");
+  }
+  const ta = tagAction(tags);
+  const tc = tagContract(tags);
+  const te = tagExpires(tags);
+  const ts = near.blockTimestamp();
+  if (u128.gt(ts, te)) {
+    die("ERR_SIG_EXPIRED");
+  }
+  if (ta !== actionStr) {
+    die("ERR_EVENT_ACTION");
+  }
+  if (tc !== near.currentAccountId()) {
+    die("ERR_EVENT_CONTRACT");
+  }
+  const serialized = eventSerialize(pk, cat, kind, tags, content);
+  const pkb = hexDecode(pk);
+  const sigb = hexDecode(sig);
+  const mh = hexDecode(sha256Hash(serialized));
+  const ok = schnorrVerify(pkb, sigb, mh);
+  if (ok !== 1) {
+    die("ERR_EVENT_SIG_INVALID");
+  }
+  return 0;
+}
+
 function authOwner(action: string) {
   const sig = near.jsonGetStr("signature");
   const expires = near.jsonGetStr("expires_at");
@@ -207,7 +356,7 @@ function authOwner(action: string) {
   if (strLength(near.jsonGetStr("ev")) === 0) {
     verifyOwner(action, sig, expires, nonce);
   } else {
-    die("ERR_EVENT_AUTH_NOT_IN_TS_PORT");
+    verifyOwnerEvent(action);
   }
 }
 
@@ -244,7 +393,7 @@ export function create_wallet() {
     }
     verifyOwner(`create_wallet:${name}`, sig, expires, nonce);
   } else {
-    die("ERR_EVENT_AUTH_NOT_IN_TS_PORT");
+    verifyOwnerEvent(`create_wallet:${name}`);
   }
   if (!near.depositGte(1001882102603448320, 27105)) {
     die("ERR_STORAGE_DEPOSIT");
@@ -287,7 +436,8 @@ export function pause() {
       die("ERR_NOT_AUTHORIZED_TO_PAUSE");
     }
   } else {
-    die("ERR_EVENT_AUTH_NOT_IN_TS_PORT");
+    verifyGuardianEvent("pause");
+    near.storageSet("paused", "1");
   }
   return 0;
 }
@@ -305,7 +455,7 @@ export function unpause() {
     }
     verifyOwner("unpause", sig, expires, nonce);
   } else {
-    die("ERR_EVENT_AUTH_NOT_IN_TS_PORT");
+    verifyOwnerEvent("unpause");
   }
   near.storageRemove("paused");
   return 0;
