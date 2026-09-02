@@ -15,3 +15,4 @@ deploy/*/near.json
 near-vm-run/target/
 sandbox-tests/target/
 deploy/safe-sandbox/
+__pycache__/
