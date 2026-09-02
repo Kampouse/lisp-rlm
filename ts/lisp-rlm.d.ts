@@ -213,6 +213,13 @@ declare const near: {
   bls12381P2Sum(buf: string): string;
   bls12381G1Multiexp(pairs: string): string;
   bls12381G2Multiexp(pairs: string): string;
+  // EIP-2537 remainder (engine hosts 59-67; added for #16 BLS msig):
+  // pairing input = concat of (G1 48B || G2 96B) pairs, ≥1 pair, 384B each
+  bls12381PairingCheck(pairs: string): number;
+  bls12381MapFpToG1(fp: string): string;
+  bls12381MapFp2ToG2(fp2: string): string;
+  bls12381P1Decompress(g1: string): string;
+  bls12381P2Decompress(g2: string): string;
 
   // ── context / gas ──
   /** Full signer public key (hex) — pairs with ed25519Verify. */

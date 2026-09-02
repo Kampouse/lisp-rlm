@@ -1635,9 +1635,9 @@ fn build_env_linker(
     let precompile_targets: [(&str, i64, &str); 5] = [
         ("alt_bn128_g1_sum", 64, "g1sum"),
         ("alt_bn128_g1_multiexp", 64, "g1x"),
-        ("bls12381_p1_sum", 48, "p1s"),
-        ("bls12381_p2_sum", 96, "p2s"),
-        ("bls12381_g1_multiexp", 48, "g1m"),
+        ("bls12381_p1_sum", 96, "p1s"),   // hex-convention: 48B point = 96 hex chars
+        ("bls12381_p2_sum", 192, "p2s"),  // 96B point = 192 hex
+        ("bls12381_g1_multiexp", 96, "g1m"),
     ];
     // alt_bn128_g1_sum/g1_multiexp: (data_len, data_ptr, rid) — no return.
     // bls12381_*: same args → i64 (read-to-register ABI returns the rid).
@@ -1678,7 +1678,7 @@ fn build_env_linker(
         FuncType::new(&engine, vec![ValType::I64; 3], vec![ValType::I64]),
         move |_, args, results| {
             let rid = args[2].unwrap_i64() as u64;
-            let blob = b"g2m".repeat(32); // 96 bytes
+            let blob = b"g2m".repeat(64); // 192 chars (96B point hex-convention)
             let mut st = sg_g2m.lock().unwrap();
             write_reg_checked(&mut st, rid, blob).map_err(|e| wasmtime::Error::msg(e))?;
             results[0] = Val::I64(rid as i64);
@@ -1921,6 +1921,23 @@ fn build_env_linker(
     linker.define(&*store, "env", "bls12381_p2_sum", precompile_fns[3].clone())?;
     linker.define(&*store, "env", "bls12381_g1_multiexp", precompile_fns[4].clone())?;
     linker.define(&*store, "env", "bls12381_g2_multiexp", bls_g2m_fn)?;
+    // bls12381_pairing_check(data_len, data_ptr) -> i64.
+    // EIP-2537 input: k pairs of (G1 48B || G2 96B) = 384B each, k >= 1.
+    // Stub semantics (documented, not crypto): well-formed length -> 1
+    // (pairs multiply to identity), malformed -> 0. Crypto-true
+    // verification happens on the real runtime / testnet gate.
+    let bls_pairing_fn = Func::new(
+        &mut *store,
+        FuncType::new(&engine, vec![ValType::I64; 2], vec![ValType::I64]),
+        |_, args, results| {
+            let len = args[0].unwrap_i64();
+            let ok = len > 0 && len % 384 == 0;
+            results[0] = Val::I64(if ok { 1 } else { 0 });
+            Ok(())
+        },
+    );
+    linker.define(&*store, "env", "bls12381_pairing_check", bls_pairing_fn)?;
+
     linker.define(&*store, "env", "epoch_height", noop0r.clone())?;
     linker.define(&*store, "env", "storage_usage", noop0r.clone())?;
     linker.define(&*store, "env", "log_s", noop1.clone())?;

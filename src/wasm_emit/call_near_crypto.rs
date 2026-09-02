@@ -403,14 +403,24 @@ impl WasmEmitter {
                 v.push(Instruction::I64ExtendI32U); // data_ptr
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(53));
+                // ALIASING FIX (2026-09-02, found by bls_msig): reading the
+                // register straight into TEMP_MEM returns a POINTER that the
+                // next register-writing host call overwrites — two live
+                // results alias (sigma showed apk's bytes). Copy to a fresh
+                // runtime-heap buffer instead (call_near_iter.rs pattern).
+                let bls_len = self.local_idx("__bls_rlen");
                 v.push(Instruction::I64Const(0));
-                v.push(Instruction::I64Const(TEMP_MEM));
-                v.push(Self::host_call(0));
+                v.push(Self::host_call(1)); // register_len(0)
+                v.push(Instruction::LocalSet(bls_len));
+                let bls_buf = self.local_idx("__bls_rbuf");
+                v.extend(self.emit_rtheap_alloc(bls_buf, bls_len));
                 v.push(Instruction::I64Const(0));
-                v.push(Self::host_call(1));
+                v.push(Instruction::LocalGet(bls_buf));
+                v.push(Self::host_call(0)); // read_register(0, buf)
+                v.push(Instruction::LocalGet(bls_len));
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::LocalGet(bls_buf));
                 v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 Ok(v)
@@ -463,14 +473,24 @@ impl WasmEmitter {
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(0)); // register_id
                 v.push(Self::host_call(56));
+                // ALIASING FIX (2026-09-02, found by bls_msig): reading the
+                // register straight into TEMP_MEM returns a POINTER that the
+                // next register-writing host call overwrites — two live
+                // results alias (sigma showed apk's bytes). Copy to a fresh
+                // runtime-heap buffer instead (call_near_iter.rs pattern).
+                let bls_len = self.local_idx("__bls_rlen");
                 v.push(Instruction::I64Const(0));
-                v.push(Instruction::I64Const(TEMP_MEM));
-                v.push(Self::host_call(0));
+                v.push(Self::host_call(1)); // register_len(0)
+                v.push(Instruction::LocalSet(bls_len));
+                let bls_buf = self.local_idx("__bls_rbuf");
+                v.extend(self.emit_rtheap_alloc(bls_buf, bls_len));
                 v.push(Instruction::I64Const(0));
-                v.push(Self::host_call(1));
+                v.push(Instruction::LocalGet(bls_buf));
+                v.push(Self::host_call(0)); // read_register(0, buf)
+                v.push(Instruction::LocalGet(bls_len));
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::LocalGet(bls_buf));
                 v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 Ok(v)
@@ -491,14 +511,24 @@ impl WasmEmitter {
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(57));
+                // ALIASING FIX (2026-09-02, found by bls_msig): reading the
+                // register straight into TEMP_MEM returns a POINTER that the
+                // next register-writing host call overwrites — two live
+                // results alias (sigma showed apk's bytes). Copy to a fresh
+                // runtime-heap buffer instead (call_near_iter.rs pattern).
+                let bls_len = self.local_idx("__bls_rlen");
                 v.push(Instruction::I64Const(0));
-                v.push(Instruction::I64Const(TEMP_MEM));
-                v.push(Self::host_call(0));
+                v.push(Self::host_call(1)); // register_len(0)
+                v.push(Instruction::LocalSet(bls_len));
+                let bls_buf = self.local_idx("__bls_rbuf");
+                v.extend(self.emit_rtheap_alloc(bls_buf, bls_len));
                 v.push(Instruction::I64Const(0));
-                v.push(Self::host_call(1));
+                v.push(Instruction::LocalGet(bls_buf));
+                v.push(Self::host_call(0)); // read_register(0, buf)
+                v.push(Instruction::LocalGet(bls_len));
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::LocalGet(bls_buf));
                 v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 Ok(v)
@@ -538,14 +568,24 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(59));
                 v.push(Instruction::Drop); // drop status u64
+                // ALIASING FIX (2026-09-02, found by bls_msig): reading the
+                // register straight into TEMP_MEM returns a POINTER that the
+                // next register-writing host call overwrites — two live
+                // results alias (sigma showed apk's bytes). Copy to a fresh
+                // runtime-heap buffer instead (call_near_iter.rs pattern).
+                let bls_len = self.local_idx("__bls_rlen");
                 v.push(Instruction::I64Const(0));
-                v.push(Instruction::I64Const(TEMP_MEM));
-                v.push(Self::host_call(0));
+                v.push(Self::host_call(1)); // register_len(0)
+                v.push(Instruction::LocalSet(bls_len));
+                let bls_buf = self.local_idx("__bls_rbuf");
+                v.extend(self.emit_rtheap_alloc(bls_buf, bls_len));
                 v.push(Instruction::I64Const(0));
-                v.push(Self::host_call(1));
+                v.push(Instruction::LocalGet(bls_buf));
+                v.push(Self::host_call(0)); // read_register(0, buf)
+                v.push(Instruction::LocalGet(bls_len));
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::LocalGet(bls_buf));
                 v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 Ok(v)
@@ -567,14 +607,24 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(60));
                 v.push(Instruction::Drop); // drop status u64
+                // ALIASING FIX (2026-09-02, found by bls_msig): reading the
+                // register straight into TEMP_MEM returns a POINTER that the
+                // next register-writing host call overwrites — two live
+                // results alias (sigma showed apk's bytes). Copy to a fresh
+                // runtime-heap buffer instead (call_near_iter.rs pattern).
+                let bls_len = self.local_idx("__bls_rlen");
                 v.push(Instruction::I64Const(0));
-                v.push(Instruction::I64Const(TEMP_MEM));
-                v.push(Self::host_call(0));
+                v.push(Self::host_call(1)); // register_len(0)
+                v.push(Instruction::LocalSet(bls_len));
+                let bls_buf = self.local_idx("__bls_rbuf");
+                v.extend(self.emit_rtheap_alloc(bls_buf, bls_len));
                 v.push(Instruction::I64Const(0));
-                v.push(Self::host_call(1));
+                v.push(Instruction::LocalGet(bls_buf));
+                v.push(Self::host_call(0)); // read_register(0, buf)
+                v.push(Instruction::LocalGet(bls_len));
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::LocalGet(bls_buf));
                 v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 Ok(v)
@@ -596,14 +646,24 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(61));
                 v.push(Instruction::Drop); // drop status u64
+                // ALIASING FIX (2026-09-02, found by bls_msig): reading the
+                // register straight into TEMP_MEM returns a POINTER that the
+                // next register-writing host call overwrites — two live
+                // results alias (sigma showed apk's bytes). Copy to a fresh
+                // runtime-heap buffer instead (call_near_iter.rs pattern).
+                let bls_len = self.local_idx("__bls_rlen");
                 v.push(Instruction::I64Const(0));
-                v.push(Instruction::I64Const(TEMP_MEM));
-                v.push(Self::host_call(0));
+                v.push(Self::host_call(1)); // register_len(0)
+                v.push(Instruction::LocalSet(bls_len));
+                let bls_buf = self.local_idx("__bls_rbuf");
+                v.extend(self.emit_rtheap_alloc(bls_buf, bls_len));
                 v.push(Instruction::I64Const(0));
-                v.push(Self::host_call(1));
+                v.push(Instruction::LocalGet(bls_buf));
+                v.push(Self::host_call(0)); // read_register(0, buf)
+                v.push(Instruction::LocalGet(bls_len));
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::LocalGet(bls_buf));
                 v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 Ok(v)
@@ -625,14 +685,24 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(62));
                 v.push(Instruction::Drop); // drop status u64
+                // ALIASING FIX (2026-09-02, found by bls_msig): reading the
+                // register straight into TEMP_MEM returns a POINTER that the
+                // next register-writing host call overwrites — two live
+                // results alias (sigma showed apk's bytes). Copy to a fresh
+                // runtime-heap buffer instead (call_near_iter.rs pattern).
+                let bls_len = self.local_idx("__bls_rlen");
                 v.push(Instruction::I64Const(0));
-                v.push(Instruction::I64Const(TEMP_MEM));
-                v.push(Self::host_call(0));
+                v.push(Self::host_call(1)); // register_len(0)
+                v.push(Instruction::LocalSet(bls_len));
+                let bls_buf = self.local_idx("__bls_rbuf");
+                v.extend(self.emit_rtheap_alloc(bls_buf, bls_len));
                 v.push(Instruction::I64Const(0));
-                v.push(Self::host_call(1));
+                v.push(Instruction::LocalGet(bls_buf));
+                v.push(Self::host_call(0)); // read_register(0, buf)
+                v.push(Instruction::LocalGet(bls_len));
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::LocalGet(bls_buf));
                 v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 Ok(v)
@@ -651,14 +721,24 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(63));
                 v.push(Instruction::Drop); // drop status u64
+                // ALIASING FIX (2026-09-02, found by bls_msig): reading the
+                // register straight into TEMP_MEM returns a POINTER that the
+                // next register-writing host call overwrites — two live
+                // results alias (sigma showed apk's bytes). Copy to a fresh
+                // runtime-heap buffer instead (call_near_iter.rs pattern).
+                let bls_len = self.local_idx("__bls_rlen");
                 v.push(Instruction::I64Const(0));
-                v.push(Instruction::I64Const(TEMP_MEM));
-                v.push(Self::host_call(0));
+                v.push(Self::host_call(1)); // register_len(0)
+                v.push(Instruction::LocalSet(bls_len));
+                let bls_buf = self.local_idx("__bls_rbuf");
+                v.extend(self.emit_rtheap_alloc(bls_buf, bls_len));
                 v.push(Instruction::I64Const(0));
-                v.push(Self::host_call(1));
+                v.push(Instruction::LocalGet(bls_buf));
+                v.push(Self::host_call(0)); // read_register(0, buf)
+                v.push(Instruction::LocalGet(bls_len));
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::LocalGet(bls_buf));
                 v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 Ok(v)
@@ -677,14 +757,24 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(64));
                 v.push(Instruction::Drop); // drop status u64
+                // ALIASING FIX (2026-09-02, found by bls_msig): reading the
+                // register straight into TEMP_MEM returns a POINTER that the
+                // next register-writing host call overwrites — two live
+                // results alias (sigma showed apk's bytes). Copy to a fresh
+                // runtime-heap buffer instead (call_near_iter.rs pattern).
+                let bls_len = self.local_idx("__bls_rlen");
                 v.push(Instruction::I64Const(0));
-                v.push(Instruction::I64Const(TEMP_MEM));
-                v.push(Self::host_call(0));
+                v.push(Self::host_call(1)); // register_len(0)
+                v.push(Instruction::LocalSet(bls_len));
+                let bls_buf = self.local_idx("__bls_rbuf");
+                v.extend(self.emit_rtheap_alloc(bls_buf, bls_len));
                 v.push(Instruction::I64Const(0));
-                v.push(Self::host_call(1));
+                v.push(Instruction::LocalGet(bls_buf));
+                v.push(Self::host_call(0)); // read_register(0, buf)
+                v.push(Instruction::LocalGet(bls_len));
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::LocalGet(bls_buf));
                 v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 Ok(v)
@@ -718,14 +808,24 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(66));
                 v.push(Instruction::Drop); // drop status u64
+                // ALIASING FIX (2026-09-02, found by bls_msig): reading the
+                // register straight into TEMP_MEM returns a POINTER that the
+                // next register-writing host call overwrites — two live
+                // results alias (sigma showed apk's bytes). Copy to a fresh
+                // runtime-heap buffer instead (call_near_iter.rs pattern).
+                let bls_len = self.local_idx("__bls_rlen");
                 v.push(Instruction::I64Const(0));
-                v.push(Instruction::I64Const(TEMP_MEM));
-                v.push(Self::host_call(0));
+                v.push(Self::host_call(1)); // register_len(0)
+                v.push(Instruction::LocalSet(bls_len));
+                let bls_buf = self.local_idx("__bls_rbuf");
+                v.extend(self.emit_rtheap_alloc(bls_buf, bls_len));
                 v.push(Instruction::I64Const(0));
-                v.push(Self::host_call(1));
+                v.push(Instruction::LocalGet(bls_buf));
+                v.push(Self::host_call(0)); // read_register(0, buf)
+                v.push(Instruction::LocalGet(bls_len));
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::LocalGet(bls_buf));
                 v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 Ok(v)
@@ -744,14 +844,24 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(67));
                 v.push(Instruction::Drop); // drop status u64
+                // ALIASING FIX (2026-09-02, found by bls_msig): reading the
+                // register straight into TEMP_MEM returns a POINTER that the
+                // next register-writing host call overwrites — two live
+                // results alias (sigma showed apk's bytes). Copy to a fresh
+                // runtime-heap buffer instead (call_near_iter.rs pattern).
+                let bls_len = self.local_idx("__bls_rlen");
                 v.push(Instruction::I64Const(0));
-                v.push(Instruction::I64Const(TEMP_MEM));
-                v.push(Self::host_call(0));
+                v.push(Self::host_call(1)); // register_len(0)
+                v.push(Instruction::LocalSet(bls_len));
+                let bls_buf = self.local_idx("__bls_rbuf");
+                v.extend(self.emit_rtheap_alloc(bls_buf, bls_len));
                 v.push(Instruction::I64Const(0));
-                v.push(Self::host_call(1));
+                v.push(Instruction::LocalGet(bls_buf));
+                v.push(Self::host_call(0)); // read_register(0, buf)
+                v.push(Instruction::LocalGet(bls_len));
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::LocalGet(bls_buf));
                 v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 Ok(v)

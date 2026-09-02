@@ -1241,6 +1241,26 @@ impl TcEnv {
             TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())),
         );
         env.insert_mono(
+            "near/bls12381_pairing_check".into(),
+            TcType::Arrow(vec![str_ty.clone()], Box::new(int_ty.clone())),
+        );
+        env.insert_mono(
+            "near/bls12381_map_fp_to_g1".into(),
+            TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())),
+        );
+        env.insert_mono(
+            "near/bls12381_map_fp2_to_g2".into(),
+            TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())),
+        );
+        env.insert_mono(
+            "near/bls12381_p1_decompress".into(),
+            TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())),
+        );
+        env.insert_mono(
+            "near/bls12381_p2_decompress".into(),
+            TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())),
+        );
+        env.insert_mono(
             "near/bls12381_g2_multiexp".into(),
             TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())),
         );
