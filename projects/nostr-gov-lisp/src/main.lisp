@@ -621,10 +621,12 @@
       (if (u128/lt pexp (to-string ts))
           (die "ERR_EXPIRED")
           0)
-      (near/storage_set (str "p:" name ":" id)
-                        (str "{\"id\":\"" id "\",\"st\":\"active\",\"exp\":\"" pexp
-                             "\",\"amt\":\"" amt "\",\"to\":\"" to
-                             "\",\"bl\":\"0\",\"bh\":\"0\",\"ac\":\"0\"}"))
+      (let ((tk (near/json_get_str "tk")))
+        (near/storage_set (str "p:" name ":" id)
+                          (str "{\"id\":\"" id "\",\"st\":\"active\",\"exp\":\"" pexp
+                               "\",\"amt\":\"" amt "\",\"to\":\"" to
+                               "\",\"tk\":\"" tk
+                               "\",\"bl\":\"0\",\"bh\":\"0\",\"ac\":\"0\"}")))
       (near/storage_set (str "pi:" name)
                         (to-string (+ (str->num id) 1)))
       (near/log (str "proposal " id " created for " name))
@@ -694,7 +696,8 @@
           (near/storage_set (str "p:" name ":" id)
                             (str "{\"id\":\"" id "\",\"st\":\"" nsth
                                  "\",\"exp\":\"" pexp "\",\"amt\":\"" amt
-                                 "\",\"to\":\"" to "\",\"bl\":\"" nbl
+                                 "\",\"to\":\"" to "\",\"tk\":\"" (json-get "tk" p)
+                                 "\",\"bl\":\"" nbl
                                  "\",\"bh\":\"0\",\"ac\":\"" (to-string nac) "\"}"))
           (near/log (str "approval " ix " on " name ":" id))
           0)))))
@@ -714,13 +717,25 @@
       (if (u128/lt (json-get "exp" p) (to-string ts))
           (die "ERR_PROPOSAL_EXPIRED")
           0)
-      (near/transfer_u128 (json-get "to" p)
-                          (json-get "amt" p))
+      (if (= (str-length (json-get "tk" p)) 0)
+          ;; native NEAR payout
+          (near/transfer_u128 (json-get "to" p)
+                              (json-get "amt" p))
+          ;; FT payout: NEP-141 ft_transfer on the contract named by tk
+          (let ((pi (near/promise_batch_create (json-get "tk" p))))
+            (near/promise_batch_action_function_call
+              pi "ft_transfer"
+              (str "{\"receiver_id\":\"" (json-get "to" p)
+                   "\",\"amount\":\"" (json-get "amt" p)
+                   "\",\"memo\":\"nostr-gov\"}")
+              "1" 5000000000000)))
       (near/storage_set (str "p:" name ":" id)
                         (str "{\"id\":\"" id "\",\"st\":\"executed\",\"exp\":\""
                              (json-get "exp" p) "\",\"amt\":\"" (json-get "amt" p)
-                             "\",\"to\":\"" (json-get "to" p) "\",\"bl\":\""
-                             (json-get "bl" p) "\",\"bh\":\"0\",\"ac\":\""
+                             "\",\"to\":\"" (json-get "to" p)
+                             "\",\"tk\":\"" (json-get "tk" p)
+                             "\",\"bl\":\"" (json-get "bl" p)
+                             "\",\"bh\":\"0\",\"ac\":\""
                              (json-get "ac" p) "\"}"))
       (near/log (str "proposal " id " executed: " name))
       0)))

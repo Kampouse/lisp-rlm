@@ -525,7 +525,8 @@ export function propose() {
   if (u128.lt(pexp, toStr(ts))) {
     die("ERR_EXPIRED");
   }
-  near.storageSet(`p:${name}:${id}`, `{"id":"${id}","st":"active","exp":"${pexp}","amt":"${amt}","to":"${to}","bl":"0","bh":"0","ac":"0"}`);
+  const tk = near.jsonGetStr("tk");
+  near.storageSet(`p:${name}:${id}`, `{"id":"${id}","st":"active","exp":"${pexp}","amt":"${amt}","to":"${to}","tk":"${tk}","bl":"0","bh":"0","ac":"0"}`);
   near.storageSet(`pi:${name}`, toStr(strToNum(id) + 1));
   near.log(`proposal ${id} created for ${name}`);
   return 0;
@@ -593,7 +594,8 @@ export function approve() {
   const nac = strToNum(ac) + 1;
   const nbl = bmBitSet(bl, ixn);
   const nsth = nac >= strToNum(thr) ? "approved" : "active";
-  near.storageSet(`p:${name}:${id}`, `{"id":"${id}","st":"${nsth}","exp":"${pexp}","amt":"${amt}","to":"${to}","bl":"${nbl}","bh":"0","ac":"${nac}"}`);
+  const tk = jsonGet("tk", p);
+  near.storageSet(`p:${name}:${id}`, `{"id":"${id}","st":"${nsth}","exp":"${pexp}","amt":"${amt}","to":"${to}","tk":"${tk}","bl":"${nbl}","bh":"0","ac":"${nac}"}`);
   near.log(`approval ${ix} on ${name}:${id}`);
   return 0;
 }
@@ -613,8 +615,16 @@ export function execute() {
   if (u128.lt(jsonGet("exp", p), toStr(ts))) {
     die("ERR_PROPOSAL_EXPIRED");
   }
-  near.transferU128(jsonGet("to", p), jsonGet("amt", p));
-  near.storageSet(`p:${name}:${id}`, `{"id":"${id}","st":"executed","exp":"${jsonGet("exp", p)}","amt":"${jsonGet("amt", p)}","to":"${jsonGet("to", p)}","bl":"${jsonGet("bl", p)}","bh":"0","ac":"${jsonGet("ac", p)}"}`);
+  const tk = jsonGet("tk", p);
+  if (strLength(tk) === 0) {
+    // native NEAR payout
+    near.transferU128(jsonGet("to", p), jsonGet("amt", p));
+  } else {
+    // FT payout: NEP-141 ft_transfer on the token contract named by tk
+    const pi = near.promiseBatchCreate(tk);
+    near.promiseBatchActionFunctionCall(pi, "ft_transfer", `{"receiver_id":"${jsonGet("to", p)}","amount":"${jsonGet("amt", p)}","memo":"nostr-gov"}`, "1", 5000000000000);
+  }
+  near.storageSet(`p:${name}:${id}`, `{"id":"${id}","st":"executed","exp":"${jsonGet("exp", p)}","amt":"${jsonGet("amt", p)}","to":"${jsonGet("to", p)}","tk":"${jsonGet("tk", p)}","bl":"${jsonGet("bl", p)}","bh":"0","ac":"${jsonGet("ac", p)}"}`);
   near.log(`proposal ${id} executed: ${name}`);
   return 0;
 }

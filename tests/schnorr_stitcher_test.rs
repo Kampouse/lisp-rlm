@@ -291,6 +291,13 @@ impl Contract {
         linker
             .func_wrap("env", "promise_batch_action_transfer", |_a: i64, _b: i64| {})
             .unwrap();
+        linker
+            .func_wrap(
+                "env",
+                "promise_batch_action_function_call",
+                |_a: i64, _b: i64, _c: i64, _d: i64, _e: i64, _f: i64, _g: i64| {},
+            )
+            .unwrap();
 
         let instance = linker.instantiate(&mut store, &module).expect("instantiate");
         let f = instance
