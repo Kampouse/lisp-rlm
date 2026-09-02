@@ -2245,6 +2245,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1024 pages = 64MB initial memory. Enough that wee_alloc never needs memory_grow.
 
 
+    // G-14 (2026-09-02): set the promise-host env BEFORE linking. This
+    // driver never initialized STATE_ARC, so build_env_linker's is_some
+    // check fell through and bound all 12 promise hosts to silent noops —
+    // every fire-and-forget payout executed invisibly (the G-14 "dead
+    // arms" were never dead). Same env the cross driver sets.
+    //
+    // contract stays EMPTY unless NEAR_MOCK_CONTRACT is set: hosts treat
+    // empty as the "escrow.test.near" fixture default (current_account_id,
+    // sig messages, storage prefixes all derive from it) — passing the
+    // wasm file path here broke all 54 auth vectors before the sig-check
+    // ordering even ran.
+    ENGINE_TLS.with(|e| *e.borrow_mut() = Some(Rc::new(engine.clone())));
+    STATE_ARC.with(|s| *s.borrow_mut() = Some(state.clone()));
+    // signer default = the legacy exec_ctx_or_default value so tests that
+    // never set NEAR_MOCK_SIGNER see the same identity as before the ctx
+    // became explicit (the lending battery stamps `own:` from it).
+    let signer = std::env::var("NEAR_MOCK_SIGNER").unwrap_or_else(|_| "owner.test.near".into());
+    EXEC_CTX.with(|c| {
+        *c.borrow_mut() = Some(ExecCtx {
+            input: args_bytes.clone(),
+            signer: signer.clone(),
+            predecessor: signer.clone(),
+            contract: std::env::var("NEAR_MOCK_CONTRACT").unwrap_or_default(),
+            view: run_view,
+        })
+    });
     let linker = build_env_linker(&mut store, &engine, state.clone(), args_bytes.clone())?;
     let instance = linker.instantiate(&mut store, &module)?;
 
@@ -2304,6 +2330,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // just like a real transaction would.
     state.lock().unwrap().touched.clear();
     // Use a thread with timeout
+    // G-14: snapshot for receipt-chain rollback (same single-tx atomicity
+    // rule the cross driver enforces).
+    let tx_snapshot: HashMap<Vec<u8>, Vec<u8>> = state.lock().unwrap().storage.clone();
     let result = func.call(&mut store, &[], &mut []);
 
     // Check WASM's actual memory
@@ -2355,8 +2384,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
             }
+            // G-14: resolve receipts exactly like the cross driver — the
+            // returned DAG first, then fire-and-forget orphans (their
+            // failures do NOT roll back the parent tx: receipt independence).
+            drop(st); // release the print-section guard; execute_promise relocks
+            let pending = PENDING_RETURN.with(|p| *p.borrow());
+            if let Some(idx) = pending {
+                eprintln!("  ⛓ resolving promise DAG (root {})", idx);
+                match execute_promise(idx) {
+                    Err(e) => {
+                        println!("❌ receipt chain failed: {}", e);
+                        println!("   ↺ full rollback (single tx = atomic)");
+                        state.lock().unwrap().storage = tx_snapshot.clone();
+                    }
+                    Ok(results) => {
+                        let last = results.iter().rev().find_map(|r| r.as_ref().cloned());
+                        if let Some(bytes) = last {
+                            let s = String::from_utf8_lossy(&bytes);
+                            if !s.is_empty() {
+                                println!("📄 {}", s);
+                            }
+                        }
+                    }
+                }
+            }
+            loop {
+                let next = PROMISE_DAG.with(|d| {
+                    d.borrow()
+                        .iter()
+                        .enumerate()
+                        .find(|(i, _)| !EXECUTED_PROMISES.with(|e| e.borrow().contains(i)))
+                        .map(|(i, _)| i)
+                });
+                let Some(idx) = next else { break };
+                eprintln!("  ⛓ orphan receipt {} (fire-and-forget)", idx);
+                match execute_promise(idx) {
+                    Ok(_) => {}
+                    Err(e) => println!(
+                        "❌ orphan receipt failed: {} (parent tx stays committed)",
+                        e
+                    ),
+                }
+            }
         }
         Err(e) => {
+            // G-14: entry trapped — full rollback (single tx = atomic), and
+            // queued promise batches die with the tx (never executed).
+            state.lock().unwrap().storage = tx_snapshot.clone();
             let msg = format!("{}", e);
             if msg.contains("all fuel consumed") {
                 println!("❌ OutOfGas — exceeded {:.6} Tgas prepaid", prepaid_tgas);

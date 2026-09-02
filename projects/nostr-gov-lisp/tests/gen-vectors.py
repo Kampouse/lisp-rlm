@@ -34,10 +34,12 @@ steps = [
     # no deposit attached in harness → Rust path also aborts ERR_STORAGE_DEPOSIT
     ("create_wallet", {"name": "satoshi", "signature": owner_sig("create_wallet:satoshi", 7),
                        "expires_at": str(EXPIRES), "nonce": "7"}, "ERR_STORAGE_DEPOSIT"),
-    # same nonce reused → nonce already consumed by the failed attempt?
-    # (Rust: verify_owner consumes nonce BEFORE deposit check → yes, consumed)
+    # same nonce replayed: the first attempt TRAPPED, so on-chain semantics
+    # (2026-09-02: mock now rolls back storage on trap) → the consume is
+    # reverted → same deposit failure again. The old expectation
+    # (NONCE_ALREADY_USED) encoded the interpreter's persist-on-trap quirk.
     ("create_wallet", {"name": "satoshi", "signature": owner_sig("create_wallet:satoshi", 7),
-                       "expires_at": str(EXPIRES), "nonce": "7"}, "ERR_NONCE_ALREADY_USED"),
+                       "expires_at": str(EXPIRES), "nonce": "7"}, "ERR_STORAGE_DEPOSIT"),
     ("create_wallet", {"name": "satoshi", "signature": owner_sig("create_wallet:satoshi", 8),
                        "expires_at": str(EXPIRES), "nonce": "8"}, "ERR_STORAGE_DEPOSIT"),
     # expired signature
@@ -50,9 +52,14 @@ steps = [
     # nonce too low
     ("create_wallet", {"name": "satoshi", "signature": owner_sig("create_wallet:satoshi", 0),
                        "expires_at": str(EXPIRES), "nonce": "0"}, "ERR_STORAGE_DEPOSIT"),
-    # now ononce slid to 1 → nonce 0 is genuinely too low
+    # nonce 0, unfunded: dies at the deposit gate. NOTE — under chain
+    # semantics (trap = full revert, 2026-09-02) nonce 0 is FRESH here:
+    # the old TOO_LOW expectation relied on the window having slid via
+    # trap-persisted consumes of 7/8, which reverts now. Funding this
+    # vector would CREATE the wallet (breaking the phase-2 satoshi
+    # vector) — TOO_LOW needs a genuinely slid window to be reachable.
     ("create_wallet", {"name": "satoshi", "signature": owner_sig("create_wallet:satoshi", 0),
-                       "expires_at": str(EXPIRES), "nonce": "0"}, "ERR_NONCE_TOO_LOW"),
+                       "expires_at": str(EXPIRES), "nonce": "0"}, "ERR_STORAGE_DEPOSIT"),
     # nonce beyond window
     ("create_wallet", {"name": "satoshi", "signature": owner_sig("create_wallet:satoshi", 100),
                        "expires_at": str(EXPIRES), "nonce": "100"}, "ERR_NONCE_WINDOW_EXCEEDED"),
@@ -69,7 +76,10 @@ steps = [
     # wallet name rules
     ("create_wallet", {"name": "bad name!", "signature": owner_sig("create_wallet:bad name!", 13),
                        "expires_at": str(EXPIRES), "nonce": "13"}, "ERR_STORAGE_DEPOSIT"),
-    ("get_owner_nonce", {}, "1"),  # consumed 7,8 → window slid to 8 (7 was bit0→slide, 8 was bit1→slide) …then 11? no—11 aborted at ERR_PAUSED AFTER verify… Rust order: verify_owner FIRST (consumes 11? NO — Rust create_wallet: assert_not_paused FIRST, then verify_owner). Check both.
+    ("get_owner_nonce", {}, "0"),  # rollback semantics (2026-09-02): traps
+    # revert their nonce consumes — 7/8 died at deposit (reverted), 9/10 bad
+    # sigs, 0 too-low, pause/unpause are event-auth'd → no committed legacy
+    # nonce → 0. The old "1" encoded persist-on-trap.
     ("get_version", {}, "1"),
 
     # ── Phase 1.5: event auth (kind 37500) ────────────────────────
@@ -77,10 +87,11 @@ steps = [
     ("create_wallet", dict({"name": "evented"},
                            **gov_event(SK, PK, "create_wallet:evented", 20, EXPIRES, CONTRACT)),
      "ERR_STORAGE_DEPOSIT"),
-    # replay same nonce → consumed by the event path too
+    # replay same nonce → first attempt trapped (deposit), rollback reverts
+    # the nonce consume → same failure again (chain semantics, 2026-09-02)
     ("create_wallet", dict({"name": "evented"},
                            **gov_event(SK, PK, "create_wallet:evented", 20, EXPIRES, CONTRACT)),
-     "ERR_NONCE_ALREADY_USED"),
+     "ERR_STORAGE_DEPOSIT"),
     # wrong kind
     ("create_wallet", dict({"name": "evented"},
                            **gov_event(SK, PK, "create_wallet:evented", 21, EXPIRES, CONTRACT,
@@ -123,6 +134,13 @@ steps = [
     # funded this time (deposit field) so wallet "satoshi" EXISTS for Phase 2
     ("create_wallet", {"name": "satoshi", "signature": owner_sig("create_wallet:satoshi", 28),
                        "expires_at": str(EXPIRES), "nonce": "28"}, "ok",
+     500000000000000000000000),
+    # committed nonce replay: this create SUCCEEDED (deposit funded) so the
+    # nonce consume is durable → replay traps NONCE_ALREADY_USED (real
+    # replay protection coverage, replaces the pre-rollback vectors)
+    ("create_wallet", {"name": "satoshi", "signature": owner_sig("create_wallet:satoshi", 28),
+                       "expires_at": str(EXPIRES), "nonce": "28"},
+     "ERR_NONCE_ALREADY_USED",
      500000000000000000000000),
     # view after event traffic
     ("get_wallet", {"name": "evented"}, ""),
@@ -241,15 +259,24 @@ steps += [
     ("unpause", gov_event(SK, PK, "unpause", 58, EXPIRES, CONTRACT),
      "ok"),
 
-    # ── parked (2026-09-02): phantom-token execute vector ──
-    # The lisp twin's FT branch is disabled pending an emitter fix
-    # (statement-if host-arm dead-branch, GAPS.md) — the TS twin keeps it
-    # and is live-proven. Restore this block when the lisp twin regains
-    # FT payouts:
-    # ("propose", tk="phantom.kampy.testnet" nonce 59) → ok
-    # ("approve" ix0/ix1) → ok
-    # ("execute" nonce 60) → MOCK-CHAIN-FAILURE: promise FnCall to
-    #   unknown account 'phantom.kampy.testnet'
+    # ── regression: tk routing must never reach a phantom contract ──
+    # (2026-09-02 live catch: absent tk stored "nil", execute routed the
+    # payout to an ft_transfer promise on account "nil" — mock used to
+    # swallow unknown-account FnCalls; now it traps, vector pins it)
+    ("propose", dict({"name": "evgov", "pexp": str(EXPIRES), "am": "10000000000000000000000",
+                      "rc": "rita.test.near", "tk": "phantom.kampy.testnet"},
+                     **gov_event(SK, PK, "propose:evgov:1", 59, EXPIRES, CONTRACT)),
+     "ok"),
+    ("approve", {"name": "evgov", "id": "1", "ix": "0", "pubkey_hex": APR1_PK,
+                 "signature": apr_sig(APR1, "evgov", "1", "0"),
+                 "expires_at": str(EXPIRES)}, "ok"),
+    ("approve", {"name": "evgov", "id": "1", "ix": "1", "pubkey_hex": APR2_PK,
+                 "signature": apr_sig(APR2, "evgov", "1", "1"),
+                 "expires_at": str(EXPIRES)}, "ok"),
+    # mock parity: unknown-token FnCall receipt fails like on-chain
+    ("execute", dict({"name": "evgov", "id": "1"},
+                     **gov_event(SK, PK, "execute:evgov:1", 60, EXPIRES, CONTRACT)),
+     "MOCK-CHAIN-FAILURE: promise FnCall to unknown account 'phantom.kampy.testnet'"),
 ]
 
 for name, args, expect, *rest in steps:

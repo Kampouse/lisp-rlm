@@ -720,21 +720,16 @@
       (if (u128/lt (json-get-str "exp" p) (to-string ts))
           (die "ERR_PROPOSAL_EXPIRED")
           0)
-      ;; NOTE (2026-09-02): the FT branch below is DISABLED in the lisp twin —
-      ;; emitter bug: host-call arms inside non-tail ifs compile to dead code
-      ;; (probes 9–14, GAPS.md "statement-if host-arm dead-branch"). The TS
-      ;; twin emits the same branch correctly (live-proven on testnet). Once
-      ;; the emitter is fixed, restore:
-      ;;   (if (= (str-length (json-get-str "tk" p)) 0)
-      ;;       (near/transfer_u128 (json-get-str "to" p) (json-get-str "amt" p))
-      ;;       (let ((pi (near/promise_batch_create (json-get-str "tk" p))))
-      ;;         (near/promise_batch_action_function_call pi "ft_transfer"
-      ;;           (str "{\"receiver_id\":\"" (json-get-str "to" p)
-      ;;                "\",\"amount\":\"" (json-get-str "amt" p)
-      ;;                "\",\"memo\":\"nostr-gov\"}")
-      ;;           "1" 5000000000000)))
-      (near/transfer_u128 (json-get-str "to" p)
-                          (json-get-str "amt" p))
+      ;; FT branch restored 2026-09-02 (G-14 was a mock-driver bug — silent
+      ;; promise noops in single-contract mode — not an emitter bug):
+      (if (= (str-length (json-get-str "tk" p)) 0)
+          (near/transfer_u128 (json-get-str "to" p) (json-get-str "amt" p))
+          (let ((pi (near/promise_batch_create (json-get-str "tk" p))))
+            (near/promise_batch_action_function_call pi "ft_transfer"
+              (str "{\"receiver_id\":\"" (json-get-str "to" p)
+                   "\",\"amount\":\"" (json-get-str "amt" p)
+                   "\",\"memo\":\"nostr-gov\"}")
+              "1" 5000000000000)))
       (near/storage_set (str "p:" name ":" id)
                         (str "{\"id\":\"" id "\",\"st\":\"executed\",\"exp\":\""
                              (json-get-str "exp" p) "\",\"amt\":\"" (json-get-str "amt" p)

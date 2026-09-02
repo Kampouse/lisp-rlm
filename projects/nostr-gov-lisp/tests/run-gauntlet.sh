@@ -26,7 +26,7 @@ while IFS= read -r line; do
   ERR=$(echo "$OUT" | grep -oE 'LOG: ERR_[A-Z_]+' | head -1 | sed 's/^LOG: //')
   RET=$(echo "$OUT" | grep -oE '📄 .*' | head -1 | sed 's/^📄 //')
   # mock receipt-failure parity: promise FnCall to unknown account traps
-  MCF=$(echo "$OUT" | grep -oE 'MOCK-CHAIN-FAILURE[^\"]*' | head -1)
+  MCF=$(echo "$OUT" | grep -oE 'MOCK-CHAIN-FAILURE[^\"]*' | head -1 | sed 's/ *(.*//')
   RVAL=$($PY -c 'import json,sys
 s=sys.argv[1]
 try:

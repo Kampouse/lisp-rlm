@@ -701,3 +701,41 @@ Collateral caught & fixed the same day:
 6. **Pause gate divergence (FIXED)**: lisp auth-owner gated paused for both dialects, TS never gated governance — locked semantic: pause kills all owner-gated actions in both twins; vector pins it.
 
 Parked: phantom-token gauntlet vector (#65–68 in gen-vectors.py comment) — restore when lisp twin regains FT branch.
+
+### G-14 RESOLVED (2026-09-02, evening) — misdiagnosed as emitter, was the mock driver
+
+The "statement-if host-arm dead-branch" was **never an emitter bug**. probe15 (log markers
+inside the arms before each host call) showed the arms executing and taking the right
+branch — the compiler was innocent the whole time.
+
+**Actual root cause:** `near-mock` single-contract mode never initialized the TLS env
+(STATE_ARC/ENGINE_TLS/EXEC_CTX) before `build_env_linker`. The linker's
+`if STATE_ARC.is_some()` gate fell through and bound all 12 promise hosts to silent
+**noops** — every `promise_batch_create` / transfer receipt in single-mode testing
+executed into a void since the fixture harness was written. Cross mode always set them,
+which is why cross-engine tests passed. All probe 9–14 evidence ("log arms work, host
+arms dead") = logs are non-promise hosts; promise hosts were noops.
+
+**Fixes:**
+1. Single mode now sets ENGINE_TLS/STATE_ARC/EXEC_CTX before linking, with
+   `contract` left EMPTY (hosts default it to the `escrow.test.near` fixture id —
+   passing the wasm file path broke all 54 auth vectors via sig-message and
+   storage-prefix poisoning) and signer defaulting to the legacy `owner.test.near`.
+   `NEAR_MOCK_CONTRACT` env overrides the contract id when needed.
+2. Single mode now resolves receipts exactly like the cross driver: returned-DAG
+   first (failure → full rollback, single-tx atomicity), then fire-and-forget
+   orphans (failures don't roll back the parent), and entry traps now ROLL BACK
+   storage (chain semantics — previously writes survived traps).
+
+**Fallout — vectors recalibrated to chain semantics:** the old expectations encoded
+the interpreter's persist-on-trap quirk. Under rollback: nonce consumes inside
+trapped calls revert (failed create_wallet replays fail on deposit again, not
+NONCE_ALREADY_USED); nonce 0 is FRESH until the window genuinely slides (TOO_LOW
+unreachable in the phase-1 scenario without a slid window). Added a properly
+COMMITTED nonce-replay vector (funded create succeeds → funded replay traps
+NONCE_ALREADY_USED) so replay protection stays covered. Gauntlet 64→69 vectors.
+
+Board after: battery 1587/0 · gauntlet 69/69 · twins 68/68 trace-equivalent
+(FT branch live in BOTH twins; phantom-token execute pinned to
+MOCK-CHAIN-FAILURE). The TS-twin live-vs-mock discrepancy from this morning is
+explained: same noop-host bug — mock swallowed what live NEAR executed.
