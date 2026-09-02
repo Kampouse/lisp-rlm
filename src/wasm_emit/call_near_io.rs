@@ -199,13 +199,26 @@ impl WasmEmitter {
             }
             "near/abort" => {
                 // panic() — idx 26, traps unconditionally.
-                // (2026-08-31) log the message first — a bare "ABORT" in
-                // the backtrace told the developer nothing about WHY.
+                // (2026-09-02) with-arg path now ALSO lowers to panic_utf8
+                // (idx 27) after the log: the message lands in ExecutionError
+                // on-chain — parity with Rust's panic!(). The log stays for
+                // mock-trace parity and wallet explorers (both surfaces).
                 if !a.is_empty() {
                     self.need_host(28);
-                    self.need_host(26);
+                    self.need_host(27);
                     let msg = self.expr(&a[0])?;
                     let mut v = Vec::new();
+                    // args for log_utf8
+                    v.extend(msg.clone());
+                    v.extend(self.emit_untag());
+                    v.push(Instruction::I64Const(32));
+                    v.push(Instruction::I64ShrU); // len
+                    v.extend(msg.clone());
+                    v.extend(self.emit_untag());
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::I64ExtendI32U); // ptr
+                    v.push(Self::host_call(28)); // log_utf8(len, ptr)
+                    // args again for panic_utf8 (log consumed the stack)
                     v.extend(msg.clone());
                     v.extend(self.emit_untag());
                     v.push(Instruction::I64Const(32));
@@ -214,8 +227,7 @@ impl WasmEmitter {
                     v.extend(self.emit_untag());
                     v.push(Instruction::I32WrapI64);
                     v.push(Instruction::I64ExtendI32U); // ptr
-                    v.push(Self::host_call(28));
-                    v.push(Self::host_call(26));
+                    v.push(Self::host_call(27)); // panic_utf8(len, ptr)
                     v.push(Instruction::I64Const(0));
                     return Ok(v);
                 }

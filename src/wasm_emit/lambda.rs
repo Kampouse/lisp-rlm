@@ -469,7 +469,13 @@ impl WasmEmitter {
             "near/promise_batch_action_add_key_with_function_call" => self.need_host(47),
             "near/promise_batch_action_delete_key" => self.need_host(48),
             "near/promise_batch_action_delete_account" => self.need_host(49),
-            "near/abort" => self.need_host(26),
+            "near/abort" => {
+                // with-arg lowers to log_utf8(28) + panic_utf8(27);
+                // bare keeps panic(26)
+                self.need_host(28);
+                self.need_host(27);
+                self.need_host(26);
+            }
             "near/storage_set" => {
                 self.need_host(17);
             }

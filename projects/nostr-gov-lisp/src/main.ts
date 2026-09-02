@@ -232,19 +232,20 @@ export function create_wallet() {
   const nonce = near.jsonGetStr("nonce");
   // ev routing first (mirrors the Rust reference): event-auth calls carry
   // tags, not legacy expires_at/nonce, so arg validation is legacy-only.
-  if (strLength(near.jsonGetStr("ev")) !== 0) {
+  if (strLength(near.jsonGetStr("ev")) === 0) {
+    if (strLength(expires) === 0) {
+      die("ERR_ARG_EXPIRES");
+    }
+    if (strLength(nonce) === 0) {
+      die("ERR_ARG_NONCE");
+    }
+    if (strLength(getStr("paused")) !== 0) {
+      die("ERR_PAUSED");
+    }
+    verifyOwner(`create_wallet:${name}`, sig, expires, nonce);
+  } else {
     die("ERR_EVENT_AUTH_NOT_IN_TS_PORT");
   }
-  if (strLength(expires) === 0) {
-    die("ERR_ARG_EXPIRES");
-  }
-  if (strLength(nonce) === 0) {
-    die("ERR_ARG_NONCE");
-  }
-  if (strLength(getStr("paused")) !== 0) {
-    die("ERR_PAUSED");
-  }
-  verifyOwner(`create_wallet:${name}`, sig, expires, nonce);
   if (!near.depositGte(1001882102603448320, 27105)) {
     die("ERR_STORAGE_DEPOSIT");
   }

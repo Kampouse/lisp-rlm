@@ -45,6 +45,7 @@ struct Mock {
     logs: Vec<String>,
     ret: Option<Vec<u8>>,
     trapped: bool,
+    panic_msg: Option<String>,
     input: Vec<u8>,
 }
 
@@ -251,6 +252,24 @@ impl Contract {
                 move |mut caller: Caller<'_, Arc<Mutex<Mock>>>| -> Result<(), wasmtime::Error> {
                     caller.data_mut().lock().unwrap().trapped = true;
                     Err(wasmtime::Error::msg("panic"))
+                },
+            )
+            .unwrap();
+        linker
+            .func_wrap(
+                "env",
+                "panic_utf8",
+                move |mut caller: Caller<'_, Arc<Mutex<Mock>>>,
+                      len: i64,
+                      ptr: i64|
+                      -> Result<(), wasmtime::Error> {
+                    let d = read_mem(&mut caller, ptr as usize, len as usize);
+                    let msg = String::from_utf8_lossy(&d).to_string();
+                    let mut st = caller.data_mut().lock().unwrap();
+                    st.trapped = true;
+                    st.panic_msg = Some(msg.clone());
+                    st.logs.push(msg);
+                    Err(wasmtime::Error::msg("panic_utf8"))
                 },
             )
             .unwrap();

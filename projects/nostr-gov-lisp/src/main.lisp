@@ -389,18 +389,18 @@
     ;; ev routing first (mirrors the Rust reference): event-auth calls carry
     ;; tags, not legacy expires_at/nonce, so arg validation is legacy-only.
     (if (= (str-length (near/json_get_str "ev")) 0)
-      0
-      (verify-owner-event (str-cat "create_wallet:" name)))
-    (if (= (str-length expires) 0)
-        (die "ERR_ARG_EXPIRES")
-        0)
-    (if (= (str-length nonce) 0)
-        (die "ERR_ARG_NONCE")
-        0)
-    (if (!= (str-length (get-str "paused")) 0)
-        (die "ERR_PAUSED")
-        0)
-    (verify-owner (str-cat "create_wallet:" name) sig expires nonce))
+      (begin
+        (if (= (str-length expires) 0)
+            (die "ERR_ARG_EXPIRES")
+            0)
+        (if (= (str-length nonce) 0)
+            (die "ERR_ARG_NONCE")
+            0)
+        (if (!= (str-length (get-str "paused")) 0)
+            (die "ERR_PAUSED")
+            0)
+        (verify-owner (str-cat "create_wallet:" name) sig expires nonce))
+      (verify-owner-event (str-cat "create_wallet:" name))))
   (let ((name (near/json_get_str "name")))
     (if (near/deposit-gte 1001882102603448320 27105)
         0
