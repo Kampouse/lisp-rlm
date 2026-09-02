@@ -347,15 +347,21 @@ function authOwner(action: string) {
   const sig = near.jsonGetStr("signature");
   const expires = near.jsonGetStr("expires_at");
   const nonce = near.jsonGetStr("nonce");
-  if (strLength(expires) === 0) {
-    die("ERR_ARG_EXPIRES");
-  }
-  if (strLength(nonce) === 0) {
-    die("ERR_ARG_NONCE");
+  // pause gates all owner-auth'd actions, both auth dialects
+  if (strLength(getStr("paused")) !== 0) {
+    die("ERR_PAUSED");
   }
   if (strLength(near.jsonGetStr("ev")) === 0) {
+    // legacy sig path: expires/nonce are top-level args
+    if (strLength(expires) === 0) {
+      die("ERR_ARG_EXPIRES");
+    }
+    if (strLength(nonce) === 0) {
+      die("ERR_ARG_NONCE");
+    }
     verifyOwner(action, sig, expires, nonce);
   } else {
+    // event-auth path: expires/nonce live in event tags
     verifyOwnerEvent(action);
   }
 }

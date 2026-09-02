@@ -192,6 +192,54 @@ steps += [
     ("execute", {"name": "satoshi", "id": "0",
                  "signature": owner_sig("execute:satoshi:0", 35),
                  "expires_at": str(EXPIRES), "nonce": "35"}, "ERR_NOT_APPROVED"),
+
+    # ── Phase 2.5: governance via EVENT auth (ev-branch of auth-owner) ──
+    # funded wallet via event create (nonce 56), then the full
+    # set_approvers → propose → execute cycle signed as kind-37500 events
+    ("create_wallet", dict({"name": "evgov"},
+                           **gov_event(SK, PK, "create_wallet:evgov", 56, EXPIRES, CONTRACT)),
+     "ok", 500000000000000000000000),
+    ("set_approvers", dict({"name": "evgov", "pks": f"{APR1_PK},{APR2_PK}", "thr": "2"},
+                           **gov_event(SK, PK, "set_approvers:evgov", 50, EXPIRES, CONTRACT)),
+     "ok"),
+    # event path hits the same threshold validation
+    ("set_approvers", dict({"name": "evgov", "pks": f"{APR1_PK},{APR2_PK}", "thr": "3"},
+                           **gov_event(SK, PK, "set_approvers:evgov", 51, EXPIRES, CONTRACT)),
+     "ERR_THRESHOLD_INVALID"),
+    ("propose", dict({"name": "evgov", "pexp": str(EXPIRES), "am": "50000000000000000000000",
+                      "rc": "rita.test.near"},
+                     **gov_event(SK, PK, "propose:evgov:0", 52, EXPIRES, CONTRACT)),
+     "ok"),
+    ("get_proposal", {"name": "evgov", "id": "0"}, "active"),
+    # execute via event before approvals → state machine rejects
+    ("execute", dict({"name": "evgov", "id": "0"},
+                     **gov_event(SK, PK, "execute:evgov:0", 53, EXPIRES, CONTRACT)),
+     "ERR_NOT_APPROVED"),
+    # wrong action tag (names a different wallet) → rejected at auth layer
+    ("execute", dict({"name": "evgov", "id": "0"},
+                     **gov_event(SK, PK, "execute:other:0", 54, EXPIRES, CONTRACT)),
+     "ERR_EVENT_ACTION"),
+    # approvals are per-approver legacy schnorr (by design)
+    ("approve", {"name": "evgov", "id": "0", "ix": "0", "pubkey_hex": APR1_PK,
+                 "signature": apr_sig(APR1, "evgov", "0", "0"),
+                 "expires_at": str(EXPIRES)}, "ok"),
+    ("approve", {"name": "evgov", "id": "0", "ix": "1", "pubkey_hex": APR2_PK,
+                 "signature": apr_sig(APR2, "evgov", "0", "1"),
+                 "expires_at": str(EXPIRES)}, "ok"),
+    ("get_proposal", {"name": "evgov", "id": "0"}, "approved"),
+    # the payoff: execute signed as a nostr event → transfer fires
+    ("execute", dict({"name": "evgov", "id": "0"},
+                     **gov_event(SK, PK, "execute:evgov:0", 55, EXPIRES, CONTRACT)),
+     "ok"),
+    ("get_proposal", {"name": "evgov", "id": "0"}, "executed"),
+    # pause is a kill-switch for owner-gated actions in BOTH dialects
+    ("pause", gov_event(SK, PK, "pause", 0, EXPIRES, CONTRACT, content="hold"),
+     "ok"),
+    ("set_approvers", dict({"name": "evgov", "pks": f"{APR1_PK},{APR2_PK}", "thr": "2"},
+                           **gov_event(SK, PK, "set_approvers:evgov", 57, EXPIRES, CONTRACT)),
+     "ERR_PAUSED"),
+    ("unpause", gov_event(SK, PK, "unpause", 58, EXPIRES, CONTRACT),
+     "ok"),
 ]
 
 for name, args, expect, *rest in steps:
