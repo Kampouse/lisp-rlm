@@ -34,7 +34,14 @@ impl WasmEmitter {
                 };
                 self.emit_lambda(&param_names, &body)
             }
-            "+" => self.fold_binop(a, Instruction::I64Add, 0),
+            // Polymorphic `+` (TASK-concat-bug.md, testnet 2026-09-02): the
+            // checker types str+str as concat and TS host-result vars survive
+            // lowering as generic (+ …); the old unconditional tagged add
+            // corrupted string descriptors (prefix-NUL concats / tagged-ptr
+            // leaks on testnet). emit_poly_add keeps num+num bit-identical
+            // (fold_binop fast path) and diverts TAG_STR operands to a
+            // runtime-heap concat.
+            "+" => self.emit_poly_add(a),
             "*" => self.fold_binop(a, Instruction::I64Mul, 1),
             "-" if a.len() == 1 => {
                 let mut v = vec![Instruction::I64Const(0)];

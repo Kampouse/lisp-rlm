@@ -2578,6 +2578,22 @@ impl WasmEmitter {
                 // Otherwise, do a substring search loop
                 self.str_contains(a)
             }
+            "str=" => {
+                if a.len() != 2 {
+                    return Err("str=: expected 2 args".into());
+                }
+                // String equality: untag both, compare length then mem-compare.
+                // Result is a tagged bool (1=true, 0=false).
+                self.str_eq(a)
+            }
+            "str!=" => {
+                if a.len() != 2 {
+                    return Err("str!=: expected 2 args".into());
+                }
+                // String inequality: negate str=.
+                self.str_eq(a)?;
+                self.emit_bool_not()
+            }
             "str-index-of" => {
                 if a.len() != 2 {
                     return Err("str-index-of: expected 2 args (haystack, needle)".into());
@@ -5737,6 +5753,116 @@ impl WasmEmitter {
         v.extend(self.emit_tag_num());
         Ok(v)
     }
+
+    /// (str= a b) → tagged bool. Untag both, compare lengths,
+    /// then byte-by-byte mem-compare. Returns TAG_BOOL|1 or TAG_BOOL|0.
+    fn str_eq(&mut self, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
+        let ma8 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 0,
+            memory_index: 0,
+        };
+        let s1_i = self.local_idx("__seq_s1");
+        let s2_i = self.local_idx("__seq_s2");
+        let l1_i = self.local_idx("seq_l1");
+        let l2_i = self.local_idx("seq_l2");
+        let p1_i = self.local_idx("seq_p1");
+        let p2_i = self.local_idx("seq_p2");
+        let i_i = self.local_idx("seq_i");
+        let eq_i = self.local_idx("seq_eq");
+
+        let mut v = Vec::new();
+        v.extend(self.expr(&a[0])?);
+        v.push(Instruction::LocalSet(s1_i));
+        v.extend(self.expr(&a[1])?);
+        v.push(Instruction::LocalSet(s2_i));
+
+        v.push(Instruction::LocalGet(s1_i));
+        v.push(Instruction::I64Const(32));
+        v.push(Instruction::I64ShrU);
+        v.push(Instruction::LocalSet(l1_i));
+        v.push(Instruction::LocalGet(s1_i));
+        v.push(Instruction::I64Const(0xFFFFFFFF));
+        v.push(Instruction::I64And);
+        v.push(Instruction::LocalSet(p1_i));
+
+        v.push(Instruction::LocalGet(s2_i));
+        v.push(Instruction::I64Const(32));
+        v.push(Instruction::I64ShrU);
+        v.push(Instruction::LocalSet(l2_i));
+        v.push(Instruction::LocalGet(s2_i));
+        v.push(Instruction::I64Const(0xFFFFFFFF));
+        v.push(Instruction::I64And);
+        v.push(Instruction::LocalSet(p2_i));
+
+        // eq = 1 (assume true)
+        v.push(Instruction::I64Const(1));
+        v.push(Instruction::LocalSet(eq_i));
+        // if l1 != l2 → eq = 0
+        v.push(Instruction::LocalGet(l1_i));
+        v.push(Instruction::LocalGet(l2_i));
+        v.push(Instruction::I64Ne);
+        v.push(Instruction::If(wasm_encoder::BlockType::Empty));
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::LocalSet(eq_i));
+        v.push(Instruction::Else);
+        // byte loop
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::LocalSet(i_i));
+        v.push(Instruction::Block(wasm_encoder::BlockType::Empty));
+        v.push(Instruction::Loop(wasm_encoder::BlockType::Empty));
+        // if i >= l1, break
+        v.push(Instruction::LocalGet(i_i));
+        v.push(Instruction::LocalGet(l1_i));
+        v.push(Instruction::I64GeU);
+        v.push(Instruction::BrIf(1));
+        // compare bytes (i32 load)
+        v.push(Instruction::LocalGet(p1_i));
+        v.push(Instruction::LocalGet(i_i));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone()));
+        v.push(Instruction::LocalGet(p2_i));
+        v.push(Instruction::LocalGet(i_i));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone()));
+        v.push(Instruction::I32Ne);
+        v.push(Instruction::If(wasm_encoder::BlockType::Empty));
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::LocalSet(eq_i));
+        v.push(Instruction::Br(2));
+        v.push(Instruction::End);
+        v.push(Instruction::LocalGet(i_i));
+        v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::LocalSet(i_i));
+        v.push(Instruction::Br(0));
+        v.push(Instruction::End);
+        v.push(Instruction::End);
+        v.push(Instruction::End);
+
+        // tag result as bool
+        v.push(Instruction::LocalGet(eq_i));
+        v.push(Instruction::I64Const(3));
+        v.push(Instruction::I64Shl);
+        v.push(Instruction::I64Const(3));
+        v.push(Instruction::I64Or);
+        Ok(v)
+    }
+
+    fn emit_bool_not(&mut self) -> Result<Vec<Instruction<'static>>, String> {
+        let mut v = Vec::new();
+        v.push(Instruction::I64Const(3));
+        v.push(Instruction::I64ShrU);
+        v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Xor);
+        v.push(Instruction::I64Const(3));
+        v.push(Instruction::I64Shl);
+        v.push(Instruction::I64Const(3));
+        v.push(Instruction::I64Or);
+        Ok(v)
+    }
 }
 
 fn wr2(_t: &mut Vec<wasm_encoder::Instruction<'static>>, w: u32, ma8: wasm_encoder::MemArg, b0: i64, b1: i64) -> Vec<wasm_encoder::Instruction<'static>> {
@@ -5747,4 +5873,214 @@ fn wr2(_t: &mut Vec<wasm_encoder::Instruction<'static>>, w: u32, ma8: wasm_encod
         I::LocalGet(w), I::I32WrapI64, I::I64Const(b1), I::I64Store8(ma8),
         I::LocalGet(w), I::I64Const(1), I::I64Add, I::LocalSet(w),
     ]
+}
+
+impl WasmEmitter {
+    /// Polymorphic `+` (TASK-concat-bug.md, testnet 2026-09-02): the TS
+    /// frontend only rewrites `+` to str-cat for literal / string-local /
+    /// str-method shapes; vars bound to HOST RESULTS (storage_get,
+    /// json_get_str params, BLS hosts) survive lowering as generic
+    /// `(+ a b)`, which the checker types as concat ("coerce the non-str
+    /// side through to-string at runtime is the emitter's job") — but the
+    /// emitter's `+` unconditionally did a TAGGED i64 add of the two
+    /// TAG_STR descriptors: (raw1<<3|5) + (raw2<<3|5) == ((raw1+raw2+1)<<3)|2
+    /// — a corrupted descriptor (wrong tag, pointer past every live
+    /// buffer). On testnet that showed up as prefix-NUL concatenations and
+    /// 8-byte tagged-pointer leaks.
+    ///
+    /// This emits a runtime tag dispatch per operand pair (NEAR mode only —
+    /// wasi/p2 values are untagged raw i64s, where a raw 5 would false-hit
+    /// TAG_STR): num+num keeps the exact old checked tagged-add path (zero
+    /// behavioral change for arithmetic); if EITHER side carries TAG_STR,
+    /// both sides go through __to_string and a runtime-heap concat (single
+    /// alloc, word-copy), matching the correct `buf = buf + x` statement
+    /// path's semantics. Pure-literal / all-constant shapes still delegate
+    /// to fold_binop so compile-time folding and the try-body
+    /// non-numeric-literal catch semantics are unchanged.
+    pub(crate) fn emit_poly_add(
+        &mut self,
+        a: &[LispVal],
+    ) -> Result<Vec<Instruction<'static>>, String> {
+        let folded: Vec<LispVal> = a
+            .iter()
+            .map(|x| self.const_eval(x).unwrap_or_else(|| x.clone()))
+            .collect();
+        let all_num = folded.iter().all(|x| matches!(x, LispVal::Num(_)));
+        let any_nonnum_literal = folded
+            .iter()
+            .any(|x| matches!(x, LispVal::Str(_) | LispVal::Bool(_) | LispVal::Nil | LispVal::Vec(_)));
+        if a.is_empty() || self.wasi_mode || self.p2_mode || all_num || any_nonnum_literal {
+            return self.fold_binop(a, Instruction::I64Add, 0);
+        }
+        // Depth-keyed locals (reuses the str-cat nesting counter so a real
+        // (str-cat …) emitted inside an operand can never alias these).
+        let d = self.str_cat_depth;
+        self.str_cat_depth += 1;
+        let acc_i = self.local_idx(&format!("__pa{}_acc", d));
+        let cur_i = self.local_idx(&format!("__pa{}_cur", d));
+        let a_raw_i = self.local_idx(&format!("__pa{}_ar", d));
+        let b_raw_i = self.local_idx(&format!("__pa{}_br", d));
+        let a_len_i = self.local_idx(&format!("__pa{}_al", d));
+        let a_ptr_i = self.local_idx(&format!("__pa{}_ap", d));
+        let b_len_i = self.local_idx(&format!("__pa{}_bl", d));
+        let b_ptr_i = self.local_idx(&format!("__pa{}_bp", d));
+        let dst_i = self.local_idx(&format!("__pa{}_dst", d));
+        let dst_save_i = self.local_idx(&format!("__pa{}_ds", d));
+        let total_i = self.local_idx(&format!("__pa{}_tot", d));
+        let qwords_i = self.local_idx(&format!("__pa{}_qw", d));
+        let remain_i = self.local_idx(&format!("__pa{}_rem", d));
+        let ma = wasm_encoder::MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 0,
+        };
+        let mut v = Vec::new();
+        v.extend(self.expr(&folded[0])?);
+        v.push(Instruction::LocalSet(acc_i));
+        for arg in &folded[1..] {
+            v.extend(self.expr(arg)?);
+            v.push(Instruction::LocalSet(cur_i));
+            // if ((acc & 7) == TAG_STR) || ((cur & 7) == TAG_STR) → concat
+            // (mask = (1<<TAG_BITS)-1 = 7 — TAG_BITS itself is only 0b11)
+            v.push(Instruction::LocalGet(acc_i));
+            v.push(Instruction::I64Const((1 << TAG_BITS) - 1));
+            v.push(Instruction::I64And);
+            v.push(Instruction::I64Const(TAG_STR));
+            v.push(Instruction::I64Eq);
+            v.push(Instruction::LocalGet(cur_i));
+            v.push(Instruction::I64Const((1 << TAG_BITS) - 1));
+            v.push(Instruction::I64And);
+            v.push(Instruction::I64Const(TAG_STR));
+            v.push(Instruction::I64Eq);
+            v.push(Instruction::I32Or);
+            v.push(Instruction::If(BlockType::Empty));
+            // ── concat branch (tag check passed) ──
+            let ts_idx = self.ensure_to_string_func();
+            v.push(Instruction::LocalGet(acc_i));
+            v.push(Instruction::Call(crate::wasm_emit::USER_BASE | ts_idx));
+            v.extend(self.emit_untag());
+            v.push(Instruction::LocalSet(a_raw_i));
+            v.push(Instruction::LocalGet(cur_i));
+            v.push(Instruction::Call(crate::wasm_emit::USER_BASE | ts_idx));
+            v.extend(self.emit_untag());
+            v.push(Instruction::LocalSet(b_raw_i));
+            // lens / ptrs
+            v.push(Instruction::LocalGet(a_raw_i));
+            v.push(Instruction::I64Const(32));
+            v.push(Instruction::I64ShrU);
+            v.push(Instruction::LocalSet(a_len_i));
+            v.push(Instruction::LocalGet(a_raw_i));
+            v.push(Instruction::I32WrapI64);
+            v.push(Instruction::I64ExtendI32U);
+            v.push(Instruction::LocalSet(a_ptr_i));
+            v.push(Instruction::LocalGet(b_raw_i));
+            v.push(Instruction::I64Const(32));
+            v.push(Instruction::I64ShrU);
+            v.push(Instruction::LocalSet(b_len_i));
+            v.push(Instruction::LocalGet(b_raw_i));
+            v.push(Instruction::I32WrapI64);
+            v.push(Instruction::I64ExtendI32U);
+            v.push(Instruction::LocalSet(b_ptr_i));
+            // total = a_len + b_len; dst = rtheap_alloc(total)
+            v.push(Instruction::LocalGet(a_len_i));
+            v.push(Instruction::LocalGet(b_len_i));
+            v.push(Instruction::I64Add);
+            v.push(Instruction::LocalSet(total_i));
+            v.extend(self.emit_rtheap_alloc(dst_i, total_i));
+            v.push(Instruction::LocalGet(dst_i));
+            v.push(Instruction::LocalSet(dst_save_i));
+            // Copy A (word loop + remainder), then B — same shape as the
+            // correct NEAR 2-arg str-cat statement path.
+            for (len_i, ptr_i) in [(a_len_i, a_ptr_i), (b_len_i, b_ptr_i)] {
+                v.push(Instruction::LocalGet(len_i));
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(qwords_i));
+                v.push(Instruction::LocalGet(len_i));
+                v.push(Instruction::I64Const(7));
+                v.push(Instruction::I64And);
+                v.push(Instruction::LocalSet(remain_i));
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(qwords_i));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::BrIf(1));
+                v.push(Instruction::LocalGet(dst_i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(ptr_i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load(ma.clone()));
+                v.push(Instruction::I64Store(ma.clone()));
+                v.push(Instruction::LocalGet(ptr_i));
+                v.push(Instruction::I64Const(8));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(ptr_i));
+                v.push(Instruction::LocalGet(dst_i));
+                v.push(Instruction::I64Const(8));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(dst_i));
+                v.push(Instruction::LocalGet(qwords_i));
+                v.push(Instruction::I64Const(-1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(qwords_i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End);
+                v.push(Instruction::End);
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(remain_i));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::BrIf(1));
+                v.push(Instruction::LocalGet(dst_i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(ptr_i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Load8U(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }));
+                v.push(Instruction::I64Store8(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }));
+                v.push(Instruction::LocalGet(ptr_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(ptr_i));
+                v.push(Instruction::LocalGet(dst_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(dst_i));
+                v.push(Instruction::LocalGet(remain_i));
+                v.push(Instruction::I64Const(-1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(remain_i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End);
+                v.push(Instruction::End);
+            }
+            // acc = ((total << 32) | dst_save) tagged TAG_STR
+            v.push(Instruction::LocalGet(total_i));
+            v.push(Instruction::I64Const(32));
+            v.push(Instruction::I64Shl);
+            v.push(Instruction::LocalGet(dst_save_i));
+            v.push(Instruction::I64Or);
+            v.extend(self.emit_tag_str());
+            v.push(Instruction::LocalSet(acc_i));
+            // ── numeric branch: exact old behavior ──
+            v.push(Instruction::Else);
+            v.push(Instruction::LocalGet(acc_i));
+            v.push(Instruction::LocalGet(cur_i));
+            v.extend(self.emit_checked_add());
+            v.push(Instruction::LocalSet(acc_i));
+            v.push(Instruction::End);
+        }
+        v.push(Instruction::LocalGet(acc_i));
+        self.str_cat_depth -= 1;
+        Ok(v)
+    }
 }
