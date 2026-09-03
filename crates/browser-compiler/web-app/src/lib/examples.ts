@@ -48,7 +48,9 @@ export const examples: Example[] = [
 (define (set_counter val) (near/store "c" val))
 (define (new) (set_counter 0))
 (define (increment) (set_counter (+ (get_counter) 1)))
-(define (get) (near/return (get_counter)))
+;; to-string before return — a raw number returns as 8 binary bytes,
+;; which renders empty; the string form displays correctly
+(define (get) (near/return (to-string (get_counter))))
 (export "new" new false)
 (export "increment" increment false)
 (export "get" get true)`,
@@ -176,13 +178,18 @@ export function get_profile(): string {
   return near.storageGet("profile") ?? "{}";
 }
 
-// Nested reads: args { "cfg": { "server": { "port": "80" } } }
+// Nested reads: pass nested objects as a JSON STRING (objects are JSON
+// strings in this dialect — a raw nested literal in the args box is not
+// yet decoded by the input scanner):
+//   { "cfg": "{\\"server\\":{\\"port\\":\\"80\\"}}" }
 export function get_port(cfg: any): any {
   return cfg.server.port;
 }
 
 // ── Typed object params ──────────────────────────────────────
 // Inline shape or a type alias — numeric props AUTO-DECODE.
+// Same note: pass the object as a JSON string —
+//   { "b": "{\\"title\\":\\"prez\\",\\"votes\\":5}" }
 type Ballot = { title: string; votes: number };
 
 export function cast(b: Ballot) {
