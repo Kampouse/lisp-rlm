@@ -1516,6 +1516,7 @@ export function estimateGas(wasmBytes: Uint8Array, methodName: string): GasEstim
 export function clearNearStorage(): void {
   nearStorage.clear();
   localStorage.removeItem('near_mock_storage');
+  try { localStorage.removeItem('pg_multi_storage'); } catch { /* noop */ }
 }
 
 /** Run P2 WASI WASM in the browser with polyfilled imports. */

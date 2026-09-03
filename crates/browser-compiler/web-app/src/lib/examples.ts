@@ -1,9 +1,17 @@
+export interface Sidecar {
+  account: string;   // sandbox account this contract is bound to (e.g. "ft.pg")
+  name: string;
+  source: string;
+}
+
 export interface Example {
   name: string;
   icon: string;
   source: string;
   target: 'p1' | 'p2' | 'pure' | 'near';
   lang?: 'ts';
+  account?: string;      // sandbox account for the MAIN contract (multi-contract examples)
+  sidecars?: Sidecar[];  // extra contracts deployed alongside — run via the receipt engine
 }
 
 export const examples: Example[] = [
@@ -794,5 +802,71 @@ export function swapRefundB(id: bigint): string {
   return "refundedB:" + rec.amtB;
 }
 `,
+  },
+  {
+    name: 'Cross-Contract FT (TS)',
+    icon: '🔗',
+    target: 'near',
+    lang: 'ts',
+    account: 'vault.pg',
+    source: `// Cross-contract lending vault. This contract holds tokens in a
+// SEPARATE token contract (sidecar ft.pg, shown below the editor) and
+// pays borrowers with a genuine promise call: ftTransfer executes ON
+// the FT contract, and the callback records debt ONLY if the callee
+// returned ok — fail-closed, NEP-141 discipline.
+// Try: bootstrap {} → lend {to:"bob.testnet",amount:2000} →
+//      debtOf {who:"bob.testnet"} — then check the FT sidecar balances.
+
+export function bootstrap(): string {
+  near.callAwait("ft.pg", "ftMint", "{\\"to\\":\\"vault.pg\\",\\"amount\\":\\"10000\\"}", 50000000000000, "onMint", 50000000000000, "{}");
+  return "scheduled";
+}
+export function onMint(): string {
+  if (near.promiseResult(0) != "minted") { near.abort("mint failed"); }
+  return "vault funded";
+}
+export function lend(to: string, amount: bigint): string {
+  let args = "{\\"to\\":\\"" + to + "\\",\\"amount\\":\\"" + amount + "\\"}";
+  let cb = "{\\"who\\":\\"" + to + "\\",\\"amount\\":\\"" + amount + "\\"}";
+  near.callAwait("ft.pg", "ftTransfer", args, 50000000000000, "onPaid", 50000000000000, cb);
+  return "scheduled";
+}
+export function onPaid(who: string, amount: string): string {
+  if (near.promiseResult(0) != "ok") { near.abort("transfer failed — nothing recorded"); }
+  let d = near.storageGet("debt:" + who) ?? 0n;
+  near.storageSet("debt:" + who, d + amount);
+  return "lent:" + (d + amount);
+}
+export function debtOf(who: string): string {
+  return "debt:" + (near.storageGet("debt:" + who) ?? 0n);
+}`,
+    sidecars: [
+      {
+        account: 'ft.pg',
+        name: 'FT',
+        source: `// NEP-141-style token (sidecar contract). ftTransfer spends the
+// PREDECESSOR account's balance — in cross-contract calls that is the
+// CALLING contract. Real NEAR security: a contract can only spend
+// what it owns; the vault can mint to itself but can never spend a
+// user's balance.
+export function ftMint(to: string, amount: bigint): string {
+  let bal = near.storageGet("ft:" + to) ?? 0n;
+  near.storageSet("ft:" + to, bal + amount);
+  return "minted";
+}
+export function ftTransfer(to: string, amount: bigint): string {
+  let from = near.predecessorAccountId();
+  let bal = near.storageGet("ft:" + from) ?? 0n;
+  if (bal < amount) { near.abort("insufficient balance: " + from); }
+  let toBal = near.storageGet("ft:" + to) ?? 0n;
+  near.storageSet("ft:" + from, bal - amount);
+  near.storageSet("ft:" + to, toBal + amount);
+  return "ok";
+}
+export function ftBalanceOf(who: string): string {
+  return "bal:" + (near.storageGet("ft:" + who) ?? 0n);
+}`,
+      },
+    ],
   },
 ];

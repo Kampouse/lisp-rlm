@@ -29,12 +29,48 @@ fn extract() -> Vec<(String, String)> {
         // source block for this entry (before the next entry's name)
         let next = rest.find("\n  {\n").map(|n| n).unwrap_or(rest.len());
         let entry = &rest[..next];
-        let Some(s) = entry.find("source: `") else { continue };
-        let lit = &entry[s + 9..];
-        let Some(e) = lit.find("`,") else { continue };
-        let code = &lit[..e];
-        if code.contains("export function") {
-            out.push((name, code.to_string()));
+        // gate EVERY source block in the entry (main + sidecars — the app
+        // compiles both; the playground must ship both clean)
+        let mut cursor = 0usize;
+        while let Some(rel) = entry[cursor..].find("source: `") {
+            let s = cursor + rel;
+            let lit = &entry[s + 9..];
+            let Some(e) = lit.find("`,") else { break };
+            let code = unescape_template_literal(&lit[..e]);
+            cursor = s + 9 + e;
+            if code.contains("export function") {
+                out.push((name.clone(), code));
+            }
+        }
+    }
+    out
+}
+
+/// Mirror JS template-literal unescaping for the escape subset examples.ts
+/// is allowed to use (`\\`, `\n`, `\r`, `\t`, `` \` ``, `\$`). Raw-text
+/// extraction without this makes `\\"` in examples parse as `\\"` in TS
+/// (Invalid Unicode escape) — while the real app evaluates it to `\"`.
+/// Found 2026-09-03 via the Cross-Contract FT example.
+fn unescape_template_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('\\') => out.push('\\'),
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('t') => out.push('\t'),
+            Some('`') => out.push('`'),
+            Some('$') => out.push('$'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
         }
     }
     out

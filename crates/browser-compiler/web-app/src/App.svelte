@@ -25,6 +25,7 @@
   import { initCompiler, compile, runPure, runNear, compileP2Core, toHexDump, getNearStorage, clearNearStorage, getNearContext, setNearContext, resetNearContext, decodeReturnValue, formatGas, lowerTs, type CompileTarget, type CompileResult, type NearContext, type SourceLang } from './lib/compiler.ts';
   import { runWasiWithWorker } from './lib/runWasiWithWorker.ts';
   import { examples } from './lib/examples.ts';
+  import { runMulti } from './lib/contracts-runtime.ts';
   import { connectWallet, disconnectWallet, deployP1, deployP2, getWalletState, type WalletState, type DeployResult, type Network } from './lib/wallet.ts';
   import { parseTests, buildTestCode, type TestRunResult } from './lib/test-runner.ts';
   import { Play, Box, Cloud, Zap, Link, FlaskConical, Wallet, Rocket, CircleDot, Loader2, ChevronDown, ChevronUp, Menu, X, BookOpen, CheckCircle, XCircle, Hammer, Database, Trash2, FolderOpen, FileCode, ChevronRight } from '@lucide/svelte';
@@ -1118,6 +1119,36 @@
         // NEAR contract — run with mocked runtime
         const method = selectedMethod || undefined;
         runResult = method ? `Calling ${method}()...` : 'Running all methods...';
+
+        // Multi-contract example: route through the local receipt engine
+        const ex = examples[activeExample];
+        if (ex?.sidecars?.length && method) {
+          const mr = await runMulti(
+            { account: ex.account ?? 'main.pg', name: ex.name, source },
+            ex.sidecars,
+            { method, input: nearInputJson },
+            { signerAccount: nearCtx.signerAccount },
+          );
+          nearLogs = mr.logs;
+          nearPanic = mr.panic;
+          nearStorageDiff = [];
+          nearReceipts = mr.receipts.map(t => ({
+            index: t.id, accountId: t.to, methodName: t.method,
+            argsSize: t.args.length,
+            result: t.ret !== null ? new TextEncoder().encode(t.ret) : undefined,
+            type: t.ok ? (t.from === t.to ? 'callback' : 'cross-contract') : 'aborted',
+          }));
+          const outLines = [mr.stdout];
+          if (mr.returnValue) outLines.push(`\nReturn: ${new TextDecoder().decode(mr.returnValue)}`);
+          if (mr.panic) outLines.push(`\n⛔ ${mr.panic}`);
+          if (mr.storage.size > 0) {
+            outLines.push('\nContract storage:');
+            for (const [acct, dump] of mr.storage) if (dump) outLines.push(`— ${acct} —\n${dump}`);
+          }
+          runResult = outLines.join('\n');
+          return;
+        }
+
         const nearResult = await runNear(result.wasmBytes!, { method, input: nearInput });
         nearMethods = nearResult.methods;
 
@@ -2306,6 +2337,19 @@
                                 <span class="near-receipt-result">{new TextDecoder().decode(receipt.result)}</span>
                               {/if}
                             </div>
+                          {/each}
+                        </div>
+                      {/if}
+
+                      <!-- Sidecar contracts (multi-contract examples) -->
+                      {#if examples[activeExample]?.sidecars?.length}
+                        <div class="near-receipts-section">
+                          <div class="near-receipts-title">Sidecar Contracts (local sandbox)</div>
+                          {#each examples[activeExample].sidecars as sc}
+                            <details class="sidecar-details">
+                              <summary class="sidecar-summary">🔗 {sc.account} — {sc.name}</summary>
+                              <pre class="sidecar-source">{sc.source}</pre>
+                            </details>
                           {/each}
                         </div>
                       {/if}
