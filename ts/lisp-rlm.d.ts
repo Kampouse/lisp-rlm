@@ -40,6 +40,10 @@ declare function strJoin(separator: string, parts: LispArr<string>): string;
 // rebuild via jsonSet with an ENCODED value (jsonQuote(s) for strings,
 // toStr(n) for numbers — object literals self-encode).
 declare type LispObj = string;
+/** integer aliases — the compiler treats these as number */
+declare type i32 = number;
+declare type i64 = number;
+declare type u128 = number;
 /** JSON-escape a string and wrap it in quotes → encoded VALUE for jsonSet. */
 declare function jsonQuote(s: string): string;
 /** Set/replace a top-level key → NEW object (immutable; rebind: o = jsonSet(o, k, v)).
@@ -123,10 +127,11 @@ declare const near: {
   // args / returns
   /**
    * Read a string arg from the transaction input JSON.
-   * Missing key → null — pair with `??`:
-   *   let g = near.jsonGetStr("g") ?? "default";
+   * Missing key → "" (verified against the wasm runtime: absent keys
+   * surface as empty strings, so examples can pass the result straight
+   * to str ops; `?? "default"` still works if you prefer it explicit).
    */
-  jsonGetStr(key: string): string | null;
+  jsonGetStr(key: string): string;
   /** {"k": ["a","b"]} → LispArr<string>; max 64 elements, nil if missing */
   jsonArr(key: string): LispArr<string>;
   /**
