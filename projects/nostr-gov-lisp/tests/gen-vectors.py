@@ -13,7 +13,7 @@ v2 semantics under test:
 """
 import json, sys
 sys.path.insert(0, ".")
-from bip340 import gov_event, sign, sha, i2b, mul, b2i
+from bip340 import gov_event, sign, sign_event, sha, i2b, mul, b2i
 
 CONTRACT = "escrow.test.near"
 SK = bytes([0xAA] * 32)          # bootstrap admin (owner_npub0)
@@ -51,6 +51,21 @@ def badflip(evd):
     s[-1] = "0" if s[-1] != "0" else "1"
     d["sig"] = "".join(s)
     return d
+
+def approval_event(sk, pk, contract, wallet, pid, ix, exp, action="approve",
+                   kind=37500, created_at=1, ct_override=None, sig_override=None):
+    """Kind-37500 gasless approval event (FE buildApprovalEvent shape)."""
+    msg = (f"expires {exp}.000000000: approve:{wallet}:{pid}:{ix} "
+           f"| contract: {contract}")
+    tags = [["contract", contract], ["wallet", wallet],
+            ["proposal", str(pid)], ["approver", str(ix)], ["action", action]]
+    ct = ct_override if ct_override is not None else msg
+    sig = sign_event(sk, pk, created_at, kind, tags, ct)
+    if sig_override is not None:
+        sig = sig_override
+    return {"pk": pk, "cat": str(created_at), "kind": str(kind),
+            "tags": json.dumps(tags, separators=(",", ":")),
+            "ct": ct, "sig": sig}
 
 steps = [
     # ── 0. init & public self-test ──────────────────────────────────
@@ -219,7 +234,42 @@ steps = [
      "ok"),
     ("is_paused", {}, "0"),
     ("get_version", {}, "2"),
+    # ── 11. gasless kind-37500 approvals (relay flow) ───────────────
+    ("create_wallet", dict({"name": "gasless", "pks": f"{APR1_PK},{APR2_PK}", "thr": "2"},
+                           **ev("create_wallet:gasless", 5130, sk=OSK, pk=OPK)), "ok", DEP),
+    ("get_wallet_count", {}, "ok"),
+    ("propose", dict({"name": "gasless", "am": "1000000000000000000000000",
+                      "rc": "bob.testnet", "pexp": str(EXPIRES)},
+                     **ev("propose:gasless:5131", 5131, sk=OSK, pk=OPK)), "ok"),
+    ("get_proposal_ids", {"name": "gasless"}, "5131"),
+    ("get_proposal_message", {"name": "gasless", "id": "5131", "ix": "0", "exp": str(EXPIRES)},
+     f"expires {EXPIRES}.000000000: approve:gasless:5131:0 | contract: {CONTRACT}"),
+    # happy: approver 0 signs a 37500 event, watcher submits
+    ("approve_with_event", approval_event(APR1, APR1_PK, CONTRACT, "gasless", "5131", "0", EXPIRES), "ok"),
+    # replay of the SAME event: bitmap rejects, idempotence holds
+    ("approve_with_event", approval_event(APR1, APR1_PK, CONTRACT, "gasless", "5131", "0", EXPIRES),
+     "ERR_ALREADY_APPROVED"),
+    # cancel action tag is not an approval
+    ("approve_with_event", approval_event(APR2, APR2_PK, CONTRACT, "gasless", "5131", "1", EXPIRES,
+                                          action="cancel"), "ERR_EVENT_ACTION"),
+    # tampered content (routing says 1, content says 0)
+    ("approve_with_event", approval_event(APR2, APR2_PK, CONTRACT, "gasless", "5131", "1", EXPIRES,
+                                          ct_override=f"expires {EXPIRES}.000000000: approve:gasless:5131:0 | contract: {CONTRACT}"),
+     "ERR_EVENT_CONTENT"),
+    # wrong kind (plain note)
+    ("approve_with_event", approval_event(APR2, APR2_PK, CONTRACT, "gasless", "5131", "1", EXPIRES,
+                                          kind=1), "ERR_EVENT_KIND"),
+    # garbage signature
+    ("approve_with_event", approval_event(APR2, APR2_PK, CONTRACT, "gasless", "5131", "1", EXPIRES,
+                                          sig_override="00" * 64), "ERR_EVENT_SIG_INVALID"),
+    # wrong contract tag
+    ("approve_with_event", approval_event(APR2, APR2_PK, "other.testnet", "gasless", "5131", "1",
+                                          EXPIRES), "ERR_EVENT_CONTRACT"),
+    # approver 1 completes the threshold via the event path
+    ("approve_with_event", approval_event(APR2, APR2_PK, CONTRACT, "gasless", "5131", "1", EXPIRES), "ok"),
+    ("get_proposal", {"name": "gasless", "id": "5131"}, "approved"),
 ]
+
 
 for name, args, expect, *rest in steps:
     dep = rest[0] if rest else 0

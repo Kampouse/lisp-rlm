@@ -367,6 +367,10 @@ export function create_wallet() {
   const createdAt = near.blockTimestamp();
   const deposit = near.attachedDepositU128();
   near.storageSet(`w:${name}`, `{"name":"${name}","creator":"${creator}","created_at":"${createdAt}","deposit":"${deposit}"}`);
+  // registry (list_wallets/get_wallet_count for clients)
+  const wc = strToNum(numStr("wc"));
+  near.storageSet("wc", toStr(wc + 1));
+  near.storageSet(`wl:${wc}`, name);
   near.log(`wallet created: ${name}`);
   return 0;
 }
@@ -465,17 +469,19 @@ export function propose() {
   // nil-guard: jsonGetStr(missing) is nil, not ""
   const tk = near.jsonGetStr("tk") ?? "";
   near.storageSet(`p:${name}:${id}`, `{"id":"${id}","st":"active","exp":"${pexp}","amt":"${amt}","to":"${to}","tk":"${tk}","act":"${act}","np":"${np}","nt":"${nt}","bl":"0","bh":"0","ac":"0"}`);
+  // per-wallet proposal id registry (get_proposal_ids for clients)
+  const pcK = `pc:${name}`;
+  const pcn = strToNum(numStr(pcK));
+  near.storageSet(pcK, toStr(pcn + 1));
+  near.storageSet(`pl:${name}:${pcn}`, id);
   near.log(`proposal ${id} (${act}) created for ${name}`);
   return 0;
 }
 
-export function approve() {
-  const name = near.jsonGetStr("name") ?? "";
-  const id = near.jsonGetStr("id") ?? "";
-  const ix = near.jsonGetStr("ix") ?? "";
-  const pk = near.jsonGetStr("pubkey_hex") ?? "";
-  const sig = near.jsonGetStr("signature") ?? "";
-  const exp = near.jsonGetStr("expires_at") ?? "";
+// ── approval core (shared by direct approve + gasless event path) ────────
+// Pre-sig checks: proposal liveness, expiry gates, index bounds, pk match.
+// Returns the proposal JSON (caller verifies the signature, then records).
+function approveChecks(name: string, id: string, ix: string, pk: string, exp: string): string {
   const ts = near.blockTimestamp();
   const p = getStr(`p:${name}:${id}`);
   const a = getStr(`a:${name}`);
@@ -489,9 +495,6 @@ export function approve() {
   }
   if (strLength(pk) !== 64) {
     die("ERR_APPROVER_PK_LEN");
-  }
-  if (strLength(sig) !== 128) {
-    die("ERR_APPROVER_SIG_LEN");
   }
   const st = jsonGet("st", p);
   const pexp = jsonGet("exp", p);
@@ -519,15 +522,15 @@ export function approve() {
   if (nthField(pks, ixn) !== pk) {
     die("ERR_APPROVER_PK_MISMATCH");
   }
-  const msg = `expires ${exp}.000000000: approve:${name}:${id}:${ix} | contract: ${near.currentAccountId()}`;
-  const pkb = hexDecode(pk);
-  const sigb = hexDecode(sig);
-  const mh = hexDecode(sha256Hash(msg));
-  const ok = schnorrVerify(pkb, sigb, mh);
-  if (ok !== 1) {
-    die("ERR_APPROVER_SIG_INVALID");
-  }
-  // native i64 bitmap — bl is a decimal u64, approver ix < 64
+  return p;
+}
+
+// Post-sig: bitmap idempotence + threshold transition + rewrite.
+function approveRecord(name: string, id: string, ix: string, p: string): void {
+  const bl = jsonGet("bl", p);
+  const ac = jsonGet("ac", p);
+  const thr = walThr(name);
+  const ixn = strToNum(ix);
   const bln = strToNum(bl);
   if ((bln & (1 << ixn)) !== 0) {
     die("ERR_ALREADY_APPROVED");
@@ -539,8 +542,84 @@ export function approve() {
   const act = jsonGet("act", p);
   const np = jsonGet("np", p);
   const nt = jsonGet("nt", p);
+  const amt = jsonGet("amt", p);
+  const to = jsonGet("to", p);
+  const pexp = jsonGet("exp", p);
   near.storageSet(`p:${name}:${id}`, `{"id":"${id}","st":"${nsth}","exp":"${pexp}","amt":"${amt}","to":"${to}","tk":"${tk}","act":"${act}","np":"${np}","nt":"${nt}","bl":"${nbl}","bh":"0","ac":"${nac}"}`);
   near.log(`approval ${ix} on ${name}:${id}`);
+}
+
+export function approve() {
+  const name = near.jsonGetStr("name") ?? "";
+  const id = near.jsonGetStr("id") ?? "";
+  const ix = near.jsonGetStr("ix") ?? "";
+  const pk = near.jsonGetStr("pubkey_hex") ?? "";
+  const sig = near.jsonGetStr("signature") ?? "";
+  const exp = near.jsonGetStr("expires_at") ?? "";
+  const p = approveChecks(name, id, ix, pk, exp);
+  const msg = `expires ${exp}.000000000: approve:${name}:${id}:${ix} | contract: ${near.currentAccountId()}`;
+  const pkb = hexDecode(pk);
+  const sigb = hexDecode(sig);
+  const mh = hexDecode(sha256Hash(msg));
+  const ok = schnorrVerify(pkb, sigb, mh);
+  if (ok !== 1) {
+    die("ERR_APPROVER_SIG_INVALID");
+  }
+  approveRecord(name, id, ix, p);
+  return 0;
+}
+
+// Gasless approval (kind-37500 relay flow). The approver signs a NIP-01
+// event whose content IS the canonical approve message and whose tags
+// route it: ["contract",…], ["wallet",…], ["proposal",…],
+// ["approver",…], ["action","approve"]. A watcher relays the event to
+// this entry point — no NEAR account (or gas) needed on the signer side.
+// Event signature over the canonical serialization replaces the direct
+// message signature; content is checked against the rebuilt canonical
+// message so routing tags and signed text cannot disagree.
+export function approve_with_event() {
+  const pk = near.jsonGetStr("pk") ?? "";
+  const sig = near.jsonGetStr("sig") ?? "";
+  const kind = near.jsonGetStr("kind") ?? "";
+  const tags = near.jsonGetStr("tags") ?? "";
+  const ct = near.jsonGetStr("ct") ?? "";
+  if (kind !== "37500") {
+    die("ERR_EVENT_KIND");
+  }
+  if (tagGet(tags, "contract") !== near.currentAccountId()) {
+    die("ERR_EVENT_CONTRACT");
+  }
+  if (tagGet(tags, "action") !== "approve") {
+    die("ERR_EVENT_ACTION");
+  }
+  const name = tagGet(tags, "wallet");
+  const id = tagGet(tags, "proposal");
+  const ix = tagGet(tags, "approver");
+  if (strLength(name) === 0 || strLength(id) === 0 || strLength(ix) === 0) {
+    die("ERR_EVENT_TAGS");
+  }
+  if (strLength(pk) !== 64 || strLength(sig) !== 128) {
+    die("ERR_EVENT_FIELD_LEN");
+  }
+  // exp comes from the signed content itself: "expires {exp}.000000000: …"
+  const after = strSlice(ct, 8, strLength(ct));
+  const dot = strIndexOf(after, ".");
+  if (dot <= 0) {
+    die("ERR_EVENT_CONTENT");
+  }
+  const exp = strSlice(after, 0, dot);
+  const cat = near.jsonGetStr("cat") ?? "";
+  const msg = `expires ${exp}.000000000: approve:${name}:${id}:${ix} | contract: ${near.currentAccountId()}`;
+  if (ct !== msg) {
+    die("ERR_EVENT_CONTENT");
+  }
+  const p = approveChecks(name, id, ix, pk, exp);
+  const serialized = eventSerialize(pk, cat, kind, tags, ct);
+  const ok = schnorrVerify(hexDecode(pk), hexDecode(sig), hexDecode(sha256Hash(serialized)));
+  if (ok !== 1) {
+    die("ERR_EVENT_SIG_INVALID");
+  }
+  approveRecord(name, id, ix, p);
   return 0;
 }
 
@@ -602,6 +681,37 @@ export function execute() {
 
 export function get_proposal() {
   return getStr(`p:${near.jsonGetStr("name") ?? ""}:${near.jsonGetStr("id") ?? ""}`);
+}
+
+// canonical approve message for (name,id,ix,exp) — signers build the
+// exact string the contract verifies; wallets UIs stop guessing formats
+export function get_proposal_message() {
+  const name = near.jsonGetStr("name") ?? "";
+  const id = near.jsonGetStr("id") ?? "";
+  const ix = near.jsonGetStr("ix") ?? "";
+  const exp = near.jsonGetStr("exp") ?? "";
+  near.jsonReturnStr(`expires ${exp}.000000000: approve:${name}:${id}:${ix} | contract: ${near.currentAccountId()}`);
+}
+
+// wallet registry for clients
+export function get_wallet_count() {
+  near.jsonReturnStr(numStr("wc"));
+}
+
+export function get_wallet_name() {
+  const i = near.jsonGetStr("i") ?? "";
+  near.jsonReturnStr(getStr(`wl:${i}`));
+}
+
+// comma-joined proposal ids for a wallet (creation order)
+export function get_proposal_ids() {
+  const name = near.jsonGetStr("name") ?? "";
+  const n = strToNum(numStr(`pc:${name}`));
+  let out = "";
+  for (let i = 0; i < n; i++) {
+    out = i === 0 ? getStr(`pl:${name}:${i}`) : out + "," + getStr(`pl:${name}:${i}`);
+  }
+  near.jsonReturnStr(out);
 }
 
 export function get_approvers() {

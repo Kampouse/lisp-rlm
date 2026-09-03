@@ -412,6 +412,10 @@
           (str-cat (str-cat "\",\"created_at\":\"" (near/block_timestamp))
                    (str-cat "\",\"deposit\":\"" (near/attached_deposit_u128)))
           "\"}"))))
+  ;; registry (list_wallets/get_wallet_count for clients)
+  (let ((n (get-num "wc")))
+    (let ((_ (near/storage_set "wc" (to-string (+ n 1)))))
+      (near/storage_set (str-cat "wl:" (to-string n)) (near/json_get_str "name"))))
   (near/log (str-cat "wallet created: " (near/json_get_str "name")))
   0)
 
@@ -560,17 +564,18 @@
                                "\",\"np\":\"" np
                                "\",\"nt\":\"" nt
                                "\",\"bl\":\"0\",\"bh\":\"0\",\"ac\":\"0\"}")))
-      (near/log (str "proposal " id " (" act ") created for " name))
+      ;; per-wallet proposal id registry (get_proposal_ids for clients)
+  (let ((pc (str "pc:" name)))
+    (let ((n (get-num pc)))
+      (let ((_ (near/storage_set pc (to-string (+ n 1)))))
+        (near/storage_set (str "pl:" name ":" (to-string n)) id))))
+  (near/log (str "proposal " id " (" act ") created for " name))
       0)))
 (export "propose" propose #f)
-(define (approve)
-  (let ((name (near/json_get_str "name"))
-        (id (near/json_get_str "id"))
-        (ix (near/json_get_str "ix"))
-        (pk (near/json_get_str "pubkey_hex"))
-        (sig (near/json_get_str "signature"))
-        (exp (near/json_get_str "expires_at"))
-        (ts (near/block_timestamp)))
+(define (approve-checks name id ix pk exp)
+  ;; shared pre-sig checks: liveness, expiry gates, index bounds, pk match.
+  ;; returns the proposal JSON; callers verify the signature then record.
+  (let ((ts (near/block_timestamp)))
     (let ((p (get-str (str "p:" name ":" id)))
           (a (get-str (str "a:" name))))
       (if (= (str-length p) 0)
@@ -586,15 +591,8 @@
       (if (= (str-length pk) 64)
           0
           (die "ERR_APPROVER_PK_LEN"))
-      (if (= (str-length sig) 128)
-          0
-          (die "ERR_APPROVER_SIG_LEN"))
       (let ((st (json-get-str "st" p))
             (pexp (json-get-str "exp" p))
-            (bl (json-get-str "bl" p))
-            (ac (json-get-str "ac" p))
-            (amt (json-get-str "amt" p))
-            (to (json-get-str "to" p))
             (pks (wal-pks name))
             (thr (wal-thr name)))
         (if (= st "active")
@@ -612,37 +610,117 @@
         (if (= (nth-field pks (str->num ix)) pk)
             0
             (die "ERR_APPROVER_PK_MISMATCH"))
-        (if (= (schnorr-verify (hex-decode pk)
-                               (hex-decode sig)
-                               (hex-decode (sha256-hash (str "expires " exp ".000000000: approve:"
-                                                 name ":" id ":" ix
-                                                 " | contract: " (near/current_account_id)))))
-             1)
-            0
-            (die "ERR_APPROVER_SIG_INVALID"))
-        ;; native i64 bitmap — bl is a decimal u64, approver ix < 64
-        (let ((bln (str->num bl))
-              (ixn (str->num ix)))
-          (if (!= (band bln (shl 1 ixn)) 0)
-              (die "ERR_ALREADY_APPROVED")
-              0))
-        (let ((nac (+ (str->num ac) 1))
-              (nbl (to-string (bor (str->num bl) (shl 1 (str->num ix)))))
-              (nsth (if (>= (+ (str->num ac) 1) (str->num thr))
-                        "approved"
-                        "active")))
-          (near/storage_set (str "p:" name ":" id)
-                            (str "{\"id\":\"" id "\",\"st\":\"" nsth
-                                 "\",\"exp\":\"" pexp "\",\"amt\":\"" amt
-                                 "\",\"to\":\"" to "\",\"tk\":\"" (json-get-str "tk" p)
-                                 "\",\"act\":\"" (json-get-str "act" p)
-                                 "\",\"np\":\"" (json-get-str "np" p)
-                                 "\",\"nt\":\"" (json-get-str "nt" p)
-                                 "\",\"bl\":\"" nbl
-                                 "\",\"bh\":\"0\",\"ac\":\"" (to-string nac) "\"}"))
-          (near/log (str "approval " ix " on " name ":" id))
+        p))))
+
+(define (approve-record name id ix p)
+  ;; post-sig: bitmap idempotence + threshold transition + rewrite
+  (let ((bl (json-get-str "bl" p))
+        (ac (json-get-str "ac" p))
+        (thr (wal-thr name))
+        (ixn (str->num ix)))
+    (if (!= (band (str->num bl) (shl 1 ixn)) 0)
+        (die "ERR_ALREADY_APPROVED")
+        0)
+    (let ((nac (+ (str->num ac) 1))
+          (nbl (to-string (bor (str->num bl) (shl 1 ixn))))
+          (nsth (if (>= (+ (str->num ac) 1) (str->num thr))
+                    "approved"
+                    "active")))
+      (let ((_ (near/storage_set (str "p:" name ":" id)
+                                 (str "{\"id\":\"" id "\",\"st\":\"" nsth
+                                      "\",\"exp\":\"" (json-get-str "exp" p)
+                                      "\",\"amt\":\"" (json-get-str "amt" p)
+                                      "\",\"to\":\"" (json-get-str "to" p)
+                                      "\",\"tk\":\"" (json-get-str "tk" p)
+                                      "\",\"act\":\"" (json-get-str "act" p)
+                                      "\",\"np\":\"" (json-get-str "np" p)
+                                      "\",\"nt\":\"" (json-get-str "nt" p)
+                                      "\",\"bl\":\"" nbl
+                                      "\",\"bh\":\"0\",\"ac\":\"" (to-string nac) "\"}"))))
+        (let ((_ (near/log (str "approval " ix " on " name ":" id))))
           0)))))
+
+(define (approve)
+  (let ((name (default (near/json_get_str "name") ""))
+        (id (default (near/json_get_str "id") ""))
+        (ix (default (near/json_get_str "ix") ""))
+        (pk (default (near/json_get_str "pubkey_hex") ""))
+        (sig (default (near/json_get_str "signature") ""))
+        (exp (default (near/json_get_str "expires_at") "")))
+    (let ((p (approve-checks name id ix pk exp)))
+      (if (= (schnorr-verify (hex-decode pk)
+                             (hex-decode sig)
+                             (hex-decode (sha256-hash (str "expires " exp ".000000000: approve:"
+                                               name ":" id ":" ix
+                                               " | contract: " (near/current_account_id)))))
+             1)
+          0
+          (die "ERR_APPROVER_SIG_INVALID"))
+      (approve-record name id ix p))))
 (export "approve" approve #f)
+
+;; gasless approval (kind-37500 relay flow): content IS the canonical
+;; approve message; tags route it. the event signature replaces the
+;; direct message signature; content is re-derived and compared so
+;; routing tags and signed text cannot disagree.
+(define (approve-with-event)
+  (let ((pk (default (near/json_get_str "pk") ""))
+        (sig (default (near/json_get_str "sig") ""))
+        (kind (default (near/json_get_str "kind") ""))
+        (tags (default (near/json_get_str "tags") ""))
+        (ct (default (near/json_get_str "ct") ""))
+        (cat (default (near/json_get_str "cat") "")))
+    (if (= kind "37500")
+        0
+        (die "ERR_EVENT_KIND"))
+    (if (= (tag-contract tags) (near/current_account_id))
+        0
+        (die "ERR_EVENT_CONTRACT"))
+    (if (= (tag-action tags) "approve")
+        0
+        (die "ERR_EVENT_ACTION"))
+    (let ((name (tag-get tags "wallet"))
+          (id (tag-get tags "proposal"))
+          (ix (tag-get tags "approver")))
+      (if (= (str-length name) 0)
+          (die "ERR_EVENT_TAGS")
+          0)
+      (if (= (str-length id) 0)
+          (die "ERR_EVENT_TAGS")
+          0)
+      (if (= (str-length ix) 0)
+          (die "ERR_EVENT_TAGS")
+          0)
+      (if (= (str-length pk) 64)
+          0
+          (die "ERR_EVENT_FIELD_LEN"))
+      (if (= (str-length sig) 128)
+          0
+          (die "ERR_EVENT_FIELD_LEN"))
+      ;; exp comes from the signed content prefix: expires {exp}.000000000:
+      (let ((after (str-slice ct 8 (str-length ct)))
+            (dot (str-index-of (str-slice ct 8 (str-length ct)) ".")))
+        (if (<= dot 0)
+            (die "ERR_EVENT_CONTENT")
+            0)
+        (let ((exp (str-slice after 0 dot)))
+          (let ((msg (str "expires " exp ".000000000: approve:"
+                          name ":" id ":" ix
+                          " | contract: " (near/current_account_id))))
+            (if (= ct msg)
+                0
+                (die "ERR_EVENT_CONTENT"))
+            (let ((p (approve-checks name id ix pk exp)))
+              (let ((ser (event-serialize pk cat kind tags ct)))
+                (if (= (schnorr-verify (hex-decode pk)
+                                       (hex-decode sig)
+                                       (hex-decode (sha256-hash ser)))
+                       1)
+                    0
+                    (die "ERR_EVENT_SIG_INVALID"))
+                (approve-record name id ix p)))))))))
+(export "approve_with_event" approve-with-event #f)
+
 (define (execute)
   (let ((name (near/json_get_str "name"))
         (id (near/json_get_str "id"))
@@ -725,3 +803,37 @@
 (define (get_approvers)
   (near/json_return_str (get-str (str "a:" (near/json_get_str "name")))))
 (export "get_approvers" get_approvers #t)
+
+;; canonical approve message — signers stop guessing formats
+(define (get_proposal_message)
+  (near/json_return_str
+    (str "expires " (default (near/json_get_str "exp") "") ".000000000: approve:"
+         (default (near/json_get_str "name") "") ":"
+         (default (near/json_get_str "id") "") ":"
+         (default (near/json_get_str "ix") "")
+         " | contract: " (near/current_account_id))))
+(export "get_proposal_message" get_proposal_message #t)
+
+(define (get_wallet_count)
+  (near/json_return_str (num-str "wc")))
+(export "get_wallet_count" get_wallet_count #t)
+
+(define (get_wallet_name)
+  (near/json_return_str (get-str (str "wl:" (default (near/json_get_str "i") "")))))
+(export "get_wallet_name" get_wallet_name #t)
+
+(define (ids-join name i n acc)
+  (if (< i n)
+      (let ((pid (get-str (str "pl:" name ":" (to-string i)))))
+        (if (= i 0)
+            (ids-join name (+ i 1) n pid)
+            (ids-join name (+ i 1) n (str acc "," pid))))
+      acc))
+
+(define (get_proposal_ids)
+  (let ((name (default (near/json_get_str "name") ""))
+        (n (get-num (str "pc:" (default (near/json_get_str "name") "")))))
+    (near/json_return_str
+      (ids-join name 0 n ""))))
+(export "get_proposal_ids" get_proposal_ids #t)
+

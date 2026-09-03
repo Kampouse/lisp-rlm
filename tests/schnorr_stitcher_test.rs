@@ -373,6 +373,15 @@ fn stitcher_bip340_vector1_valid() {
 
 #[test]
 fn nostr_gov_owner_signature_recovers() {
+    std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(nostr_gov_owner_signature_recovers_inner)
+        .expect("spawn")
+        .join()
+        .expect("join")
+}
+
+fn nostr_gov_owner_signature_recovers_inner() {
     let ts_src =
         std::fs::read_to_string("projects/nostr-gov-lisp/src/main.ts").expect("main.ts readable");
     let wasm = compile_ts(&ts_src);
