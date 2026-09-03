@@ -7218,6 +7218,7 @@ pub fn eval_builtin(
         "sha256" => return crate::builtin_schnorr::builtin_sha256(args),
         "tagged-hash" => return crate::builtin_schnorr::builtin_tagged_hash(args),
         "schnorr-verify" => return crate::builtin_schnorr::builtin_schnorr_verify(args),
+        "ed25519-verify" => return crate::builtin_ed25519::builtin_ed25519_verify(args),
         _ => {
             // Intercept load-file: use run_program (VM) instead of lisp_eval (tree-walker)
             if name == "load-file" {

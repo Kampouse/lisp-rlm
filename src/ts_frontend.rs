@@ -3315,6 +3315,7 @@ fn map_member_fn(obj: &str, prop: &str) -> String {
             "sha256Hash" => Some("sha256-hash"),
             "hexDecode" => Some("hex-decode"),
             "schnorrVerify" => Some("schnorr-verify"),
+            "ed25519Verify" => Some("ed25519-verify"),
             _ => None,
         } {
             return kebab.into();
@@ -3342,6 +3343,7 @@ fn map_builtin_call(name: &str) -> String {
         "hexDecode" => "hex-decode",
         "sha256Hash" => "sha256-hash",
         "schnorrVerify" => "schnorr-verify",
+        "ed25519Verify" => "ed25519-verify",
         "jsonSet" => "json-set",
         "jsonQuote" => "json-quote",
         // u128-precision arithmetic (decimal-string ABI, both runtimes)

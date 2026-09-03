@@ -16,3 +16,4 @@ near-vm-run/target/
 sandbox-tests/target/
 deploy/safe-sandbox/
 __pycache__/
+.wrangler/

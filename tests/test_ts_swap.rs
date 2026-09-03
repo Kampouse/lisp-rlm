@@ -35,7 +35,7 @@ fn run(method: &str, input: &str, signer: Option<&str>, ts: Option<i64>) -> Stri
 #[test]
 fn swap_happy_path_and_aborts() {
     let _lock = state_lock();
-    let _ = std::fs::remove_file("/tmp/near-mock-state.bin");
+    let _ = std::fs::remove_file(lisp_rlm_wasm::near_mock_state_file());
     let u: u128 = 10u128.pow(18);
     let (mint, amt_a, amt_b) = (1_000_000*u, 300_000*u, 250_000*u);
     let t0: i64 = 1_800_000_000_000_000_000;
@@ -74,7 +74,7 @@ fn swap_happy_path_and_aborts() {
 #[test]
 fn swap_abandonment_refunds() {
     let _lock = state_lock();
-    let _ = std::fs::remove_file("/tmp/near-mock-state.bin");
+    let _ = std::fs::remove_file(lisp_rlm_wasm::near_mock_state_file());
     let u: u128 = 10u128.pow(18);
     let (mint, amt_a, amt_b) = (1_000_000*u, 100_000*u, 80_000*u);
     let t0: i64 = 1_800_000_000_000_000_000;

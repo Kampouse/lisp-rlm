@@ -40,7 +40,7 @@ fn run(method: &str, input: &str, signer: Option<&str>) -> String {
 #[test]
 fn ft_full_lifecycle() {
     let _lock = state_lock();
-    let _ = std::fs::remove_file("/tmp/near-mock-state.bin");
+    let _ = std::fs::remove_file(lisp_rlm_wasm::near_mock_state_file());
 
     // first minter becomes owner; mints 2.5M (24-digit, 18dp-style)
     let out = run("ftMint", r#"{"to":"owner.test.near","amount":"2500000000000000000000000"}"#, Some("owner.test.near"));
@@ -78,7 +78,7 @@ fn ft_full_lifecycle() {
 #[test]
 fn ft_allowances_nep141() {
     let _lock = state_lock();
-    let _ = std::fs::remove_file("/tmp/near-mock-state.bin");
+    let _ = std::fs::remove_file(lisp_rlm_wasm::near_mock_state_file());
 
     // fresh deployment: mint 2.5M to owner
     let out = run("ftMint", r#"{"to":"owner.test.near","amount":"2500000000000000000000000"}"#, Some("owner.test.near"));

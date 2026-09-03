@@ -30,6 +30,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 pub mod bls_validate;
 pub mod builtin_schnorr;
+pub mod builtin_ed25519;
 pub mod bytecode;
 pub mod clojure;
 mod dispatch;
@@ -48,6 +49,14 @@ pub mod typing;
 pub mod verifier;
 pub mod wasi;
 pub mod wasm_emit;
+
+/// Canonical on-disk state path for the near-mock driver (single source of
+/// truth; `src/bin/near_mock.rs` and the test suite both resolve through
+/// this). `NEAR_MOCK_STATE` overrides the default so parallel sessions and
+/// concurrent runners never share one wallet DB (2026-09-02 board corruption).
+pub fn near_mock_state_file() -> String {
+    std::env::var("NEAR_MOCK_STATE").unwrap_or_else(|_| "/tmp/near-mock-state.bin".to_string())
+}
 
 pub use bytecode::{exec_compiled_loop, run_compiled_lambda, try_compile_lambda, try_compile_loop};
 #[cfg(not(target_arch = "wasm32"))]

@@ -34,7 +34,7 @@ const T100D: &str = "1808640000000000000"; // TS0 + 8_640_000s (machine-derived)
 
 #[test]
 fn lending_liquidations_full_guard_battery() {
-    let _ = std::fs::remove_file("/tmp/near-mock-state.bin");
+    let _ = std::fs::remove_file(lisp_rlm_wasm::near_mock_state_file());
 
     let out = run("deposit", r#"{"amt":"10000000000000000000000000"}"#, TS0, None);
     assert!(out.contains(r#""dep":"10000000000000000000000000""#), "{out}"); // 2026-09-01: jsonSet self-encodes (bug #22) — values now valid-JSON quoted

@@ -1304,6 +1304,15 @@ impl TcEnv {
                 Box::new(int_ty.clone()),
             ),
         );
+        // ed25519-verify : str -> str -> str -> int (hex-string spelling,
+        // compile-time decode; raw bytes stay on near/ed25519_verify)
+        env.insert_mono(
+            "ed25519-verify".into(),
+            TcType::Arrow(
+                vec![str_ty.clone(), str_ty.clone(), str_ty.clone()],
+                Box::new(int_ty.clone()),
+            ),
+        );
         // near/sha256 : str → str
         env.insert_mono(
             "near/sha256".into(),

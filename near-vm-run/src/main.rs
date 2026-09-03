@@ -24,7 +24,12 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-const STATE_FILE: &str = "/tmp/near-vm-run-state.bin";
+// Overridable via NEAR_VM_RUN_STATE so parallel sessions never share one
+// wallet DB (same hazard as near-mock's /tmp/near-mock-state.bin).
+const STATE_FILE_DEFAULT: &str = "/tmp/near-vm-run-state.bin";
+fn state_file() -> String {
+    std::env::var("NEAR_VM_RUN_STATE").unwrap_or_else(|_| STATE_FILE_DEFAULT.to_string())
+}
 
 // Context defaults — parity with near-mock
 const CURRENT: &str = "escrow.test.near";
@@ -68,13 +73,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args_json = args.get(3).cloned().unwrap_or_else(|| "{}".to_string());
 
     if method == "reset" {
-        let _ = std::fs::remove_file(STATE_FILE);
+        let _ = std::fs::remove_file(state_file());
         println!("🗑️  State cleared");
         return Ok(());
     }
 
     // Load persisted storage into the mocked external
-    let persisted: HashMap<Vec<u8>, Vec<u8>> = std::fs::read(STATE_FILE)
+    let persisted: HashMap<Vec<u8>, Vec<u8>> = std::fs::read(state_file())
         .ok()
         .and_then(|d| bincode::deserialize(&d).ok())
         .unwrap_or_default();
@@ -247,7 +252,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Persist storage snapshot (public fake_trie field)
     let store: HashMap<Vec<u8>, Vec<u8>> = ext.fake_trie.clone();
     let encoded = bincode::serialize(&store)?;
-    std::fs::write(STATE_FILE, encoded)?;
+    std::fs::write(state_file(), encoded)?;
     println!("💾 Saved {} keys", store.len());
 
     Ok(())

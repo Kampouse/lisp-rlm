@@ -10,4 +10,9 @@ verify-safe:
 	cargo build
 	./scripts/verify.sh deploy/safe
 
-.PHONY: verify-erc20 verify-safe
+# Full verification board: battery (cargo test) + gauntlet + twins,
+# serialized, each leg on an isolated mock state file.
+board:
+	./scripts/board.sh
+
+.PHONY: verify-erc20 verify-safe board

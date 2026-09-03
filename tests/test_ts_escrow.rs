@@ -40,7 +40,7 @@ fn compile(src: &str, tag: &str) -> String {
 #[test]
 fn htlc_full_lifecycle() {
     let _lock = state_lock();
-    let _ = std::fs::remove_file("/tmp/near-mock-state.bin");
+    let _ = std::fs::remove_file(lisp_rlm_wasm::near_mock_state_file());
     let w = compile(SRC, "main");
     let u: u128 = 10u128.pow(18);
     let (mint, esc1, esc2) = (2_000_000*u, 500_000*u, 100_000*u);
@@ -74,7 +74,7 @@ fn sha256_hash_is_hex_and_exact() {
     "#;
     let w = compile(src, "hex");
     let _lock = state_lock();
-    let _ = std::fs::remove_file("/tmp/near-mock-state.bin");
+    let _ = std::fs::remove_file(lisp_rlm_wasm::near_mock_state_file());
     for (input, digest) in [
         ("", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
         ("abc", "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"),
@@ -93,7 +93,7 @@ fn chained_jsonset_with_hash_no_longer_loses_keys() {
     let src = include_str!("../fixtures/repro_jsonset_chain_aliasing.ts");
     let w = compile(src, "r12");
     let _lock = state_lock();
-    let _ = std::fs::remove_file("/tmp/near-mock-state.bin");
+    let _ = std::fs::remove_file(lisp_rlm_wasm::near_mock_state_file());
     let out = run(&w, "t", r#"{"recipient":"alice.test.near","secret":"s3cr3t-demo","amount":"500000000000000000000000","timeoutSec":"600"}"#, Some("owner.test.near"), Some(1_800_000_000_000_000_000));
     // 2026-09-01: jsonSet now self-encodes values (bug #22) — records are
     // VALID JSON, so values are quoted. Keys-present assertions unchanged.

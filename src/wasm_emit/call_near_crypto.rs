@@ -1195,6 +1195,44 @@ impl WasmEmitter {
                 v.push(Instruction::End);
                 Ok(v)
             }
+            "ed25519-verify" => {
+                // (ed25519-verify sig_hex msg_hex pk_hex) -> int (1/0)
+                // Hex-string spelling (matches the TS near.ed25519Verify API).
+                // Compile-time hex decode: hex string literals -> raw bytes in
+                // the data section — mirrors near/schnorr_verify. The raw
+                // byte-string spelling stays on near/ed25519_verify.
+                // Real host ABI (idx 24):
+                //   (sig_len, sig_ptr, msg_len, msg_ptr, pk_len, pk_ptr) -> i64
+                if a.len() != 3 {
+                    return Err("ed25519-verify: need 3 args (sig_hex, msg_hex, pk_hex)".into());
+                }
+                let mut bufs: [u32; 3] = [0; 3];
+                let mut lens: [u32; 3] = [0; 3];
+                for (i, arg) in a.iter().enumerate().take(3) {
+                    let hex_str = match arg {
+                        LispVal::Str(s) => s.clone(),
+                        _ => return Err(format!(
+                            "ed25519-verify arg {} must be a string literal (hex), got {:?} — decode runtime values with hex-decode and use near/ed25519_verify",
+                            i, arg
+                        )),
+                    };
+                    let bytes = hex_decode(&hex_str)
+                        .map_err(|e| format!("ed25519-verify: invalid hex in arg {}: {}", i, e))?;
+                    lens[i] = bytes.len() as u32;
+                    bufs[i] = self.alloc_data(&bytes);
+                }
+                let mut v = Vec::new();
+                v.push(Instruction::I64Const(lens[0] as i64)); // sig_len
+                v.push(Instruction::I64Const(bufs[0] as i64)); // sig_ptr
+                v.push(Instruction::I64Const(lens[1] as i64)); // msg_len
+                v.push(Instruction::I64Const(bufs[1] as i64)); // msg_ptr
+                v.push(Instruction::I64Const(lens[2] as i64)); // pk_len
+                v.push(Instruction::I64Const(bufs[2] as i64)); // pk_ptr
+                self.need_host(24); // registers ed25519_verify trampoline (compile.rs filters by host_needed)
+                v.push(Self::host_call(24)); // ed25519_verify — 1=valid, 0=invalid
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
             "near/schnorr_verify" => {
                 // (near/schnorr_verify pk_hex sig_hex msg_hex) -> int
                 // Compile-time hex decode: hex string literals -> raw bytes in data section.

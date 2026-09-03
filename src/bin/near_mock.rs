@@ -14,9 +14,16 @@ use std::sync::{Arc, Mutex};
 use std::rc::Rc;
 use wasmtime::*;
 use lisp_rlm_wasm::bls_validate;
+use lisp_rlm_wasm::builtin_ed25519::ed25519_verify_impl;
 use lisp_rlm_wasm::builtin_schnorr::schnorr_verify_impl;
 
-const STATE_FILE: &str = "/tmp/near-mock-state.bin";
+// State file: /tmp/near-mock-state.bin by default, overridable via
+// NEAR_MOCK_STATE (single source of truth: lisp_rlm_wasm::near_mock_state_file)
+// so parallel sessions / concurrent test runners never stomp each other.
+fn state_file() -> String {
+    // single source of truth lives in the library (tests use it too)
+    lisp_rlm_wasm::near_mock_state_file()
+}
 
 
 
@@ -2014,6 +2021,70 @@ fn build_env_linker(
         },
     );
     linker.define(&*store, "env", "schnorr_verify_bip340", schnorr_fn)?;
+    // ed25519_verify — real host ABI: (sig_len: i64, sig_ptr: i64,
+    // msg_len: i64, msg_ptr: i64, pk_len: i64, pk_ptr: i64) -> i64 (1/0).
+    // Signature is 64 bytes (R||s), pk 32 bytes; pk_len/sig_len must match
+    // or reject, mirroring VMLogic's length checks.
+    let ed25519_fn = Func::new(
+        &mut *store,
+        FuncType::new(&engine, vec![ValType::I64; 6], vec![ValType::I64]),
+        |mut caller, params, results| {
+            let sig_len = params[0].unwrap_i64() as usize;
+            let sig_ptr = params[1].unwrap_i64() as usize;
+            let msg_len = params[2].unwrap_i64() as usize;
+            let msg_ptr = params[3].unwrap_i64() as usize;
+            let pk_len = params[4].unwrap_i64() as usize;
+            let pk_ptr = params[5].unwrap_i64() as usize;
+            let mem = caller.get_export("memory")
+                .and_then(|e| e.into_memory())
+                .expect("missing memory export");
+            let data = mem.data(&caller);
+            if pk_len != 32 || sig_len != 64
+                || pk_ptr + 32 > data.len()
+                || sig_ptr + 64 > data.len()
+                || msg_ptr + msg_len > data.len()
+            {
+                results[0] = Val::I64(0);
+                return Ok(());
+            }
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let pk: [u8; 32] = data[pk_ptr..pk_ptr + 32].try_into().unwrap();
+                let sig: [u8; 64] = data[sig_ptr..sig_ptr + 64].try_into().unwrap();
+                let msg = &data[msg_ptr..msg_ptr + msg_len];
+                ed25519_verify_impl(&pk, &sig, msg) as i64
+            }))
+            .unwrap_or(0);
+            results[0] = Val::I64(result);
+            Ok(())
+        },
+    );
+    linker.define(&*store, "env", "ed25519_verify", ed25519_fn)?;
+    // log_utf16(len: i64, ptr: i64) — utf16 log; mock decodes lossily for
+    // display (same fee model as log_utf8).
+    let log_utf16_fn = Func::new(
+        &mut *store,
+        FuncType::new(&engine, vec![ValType::I64; 2], vec![]),
+        move |mut caller, args, _| {
+            let (len, ptr) = (args[0].unwrap_i64() as usize, args[1].unwrap_i64() as usize);
+            let cost = 13_181_732u64 + 19_335_348u64 * len as u64;
+            caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
+            if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                let data = mem.data(&caller);
+                if ptr + len <= data.len() {
+                    let units: Vec<u16> = data[ptr..ptr + len]
+                        .chunks_exact(2)
+                        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                        .collect();
+                    let msg = String::from_utf16_lossy(&units);
+                    println!("  LOG: {}  [debug len={} ptr={}] (utf16)", msg, len, ptr);
+                } else {
+                    println!("  LOG: <out-of-range> [debug len={} ptr={}] (utf16)", len, ptr);
+                }
+            }
+            Ok(())
+        },
+    );
+    linker.define(&*store, "env", "log_utf16", log_utf16_fn)?;
     linker.define(&*store, "env", "keccak256", keccak256_fn)?;
     linker.define(&*store, "env", "log", noop1.clone())?;
     linker.define(&*store, "env", "validator_stake", noop_3i.clone())?;
@@ -2188,7 +2259,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     if method == "reset" {
-        let _ = std::fs::remove_file(STATE_FILE);
+        let _ = std::fs::remove_file(state_file());
         println!("🗑️  State cleared");
         return Ok(());
     }
@@ -2220,7 +2291,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Load persisted storage
-    let loaded_storage: HashMap<Vec<u8>, Vec<u8>> = std::fs::read(STATE_FILE)
+    let loaded_storage: HashMap<Vec<u8>, Vec<u8>> = std::fs::read(state_file())
         .ok()
         .and_then(|d| bincode::deserialize(&d).ok())
         .unwrap_or_default();
@@ -2460,7 +2531,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let st = state.lock().unwrap();
         let encoded = bincode::serialize(&st.storage)?;
-        std::fs::write(STATE_FILE, encoded)?;
+        std::fs::write(state_file(), encoded)?;
         println!("💾 Saved {} keys", st.storage.len());
     }
 
@@ -2479,17 +2550,18 @@ struct MockState {
 /// Register write with near-core limit semantics (logic/tests/registers.rs):
 /// max 100 registers, max 1MiB per register.
 
-/// Production trie-access charging (near-parameters 0.37):
-///   touching_trie_node   = 5_367_318_642 gas / node
-///   read_cached_trie_node =   760_000_000 gas / node
+/// Production trie-access charging (testnet PV85, EXPERIMENTAL_protocol_config
+/// at block 266,843,869, fetched 2026-09-02):
+///   touching_trie_node    = 2_280_000_000 gas / node
+///   read_cached_trie_node = 2_280_000_000 gas / node (no read discount at PV85)
 /// First touch of a key walks ~16 trie nodes (32-byte key depth in the mock
-/// trie); repeats are cache hits. Calibrated against the near-vm-run oracle:
-/// view reads land within ~10% of production.
+/// trie); repeats charge at the cached-read rate. Calibrated against the
+/// near-vm-run oracle: view reads land within ~10% of production.
 fn trie_charge(st: &mut MockState, key: &[u8]) -> u64 {
     if st.touched.insert(key.to_vec()) {
-        16 * 5_367_318_642
+        16 * 2_280_000_000
     } else {
-        760_000_000
+        2_280_000_000
     }
 }
 
@@ -2497,7 +2569,7 @@ fn trie_charge(st: &mut MockState, key: &[u8]) -> u64 {
 /// the read cache never subsidizes a write.
 fn trie_charge_write(st: &mut MockState, key: &[u8]) -> u64 {
     st.touched.insert(key.to_vec());
-    16 * 5_367_318_642
+    16 * 2_280_000_000
 }
 
 fn write_reg_checked(st: &mut MockState, rid: u64, data: Vec<u8>) -> Result<(), String> {

@@ -32,7 +32,7 @@ fn run(method: &str, input: &str, signer: Option<&str>) -> String {
 #[test]
 fn ftlend_cdp_lifecycle() {
     let _lock = state_lock();
-    let _ = std::fs::remove_file("/tmp/near-mock-state.bin");
+    let _ = std::fs::remove_file(lisp_rlm_wasm::near_mock_state_file());
 
     let u = 10u128.pow(18);
     let m = 10u128.pow(6);

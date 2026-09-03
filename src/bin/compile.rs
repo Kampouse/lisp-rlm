@@ -45,6 +45,14 @@ fn main() {
         } else if is_outlayer {
             eprintln!("Target: OutLayer (WASI P1)");
             lisp_rlm_wasm::wasi::compile_outlayer(&src)
+        } else if args[1].ends_with(".ts") {
+            // TypeScript twin pipeline (same chain as tests/test_ts_lending.rs):
+            // ts_frontend lowers TS → lisp source, then parse → typecheck → emit.
+            eprintln!("Target: NEAR (TypeScript frontend)");
+            let ir = lisp_rlm_wasm::ts_frontend::ts_to_lisp_source(&src)?;
+            let exprs = lisp_rlm_wasm::parse_all(&ir)?;
+            lisp_rlm_wasm::typing::type_check_program(&exprs, true)?;
+            lisp_rlm_wasm::compile_near_from_exprs(&exprs)
         } else {
             compile_near(&src)
         }
