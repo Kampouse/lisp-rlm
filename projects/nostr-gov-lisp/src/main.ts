@@ -1,5 +1,7 @@
 /// <reference path="../../../ts/lisp-rlm.d.ts" />
 // nostr-gov Phase-1 — TypeScript port (differential twin of main.lisp)
+// CANONICAL TS HOME: github.com/Kampouse/nostr-gov → contract-ts/src/main.ts
+// (this copy is the differential oracle twin — behavioral changes land in BOTH)
 // Scope: legacy (owner-key) auth path. Event-auth (`ev` param) paths stub out.
 // Helpers are internal; `export function` = contract method. `get_*` = view.
 
