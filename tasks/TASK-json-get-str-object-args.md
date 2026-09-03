@@ -1,3 +1,5 @@
+> **Status: QUEUED** — found in 2026-09-03 example sweep; engine gap (devtree territory)
+
 # TASK: json_get_str — extract object/array-valued input args as raw JSON substrings
 
 ## Symptom (found 2026-09-03 via the playground Objects example)

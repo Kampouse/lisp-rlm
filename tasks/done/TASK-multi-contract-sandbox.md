@@ -1,5 +1,7 @@
 # TASK: Playground multi-contract sandbox — local promises & receipts
 
+> **Status: DONE** — 4cdbc3f. Full history in `git log`.
+
 ## Goal
 The browser playground can host MULTIPLE contracts (separate accounts), and
 cross-contract promises (`near.callAwait`, `promiseCreate`+`promiseThen`,

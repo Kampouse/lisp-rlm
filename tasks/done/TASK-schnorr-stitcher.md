@@ -1,5 +1,7 @@
 # TASK: Fix schnorr stitcher regression — call site vanishes, lib never merged
 
+> **Status: DONE** — e2aa618. Full history in `git log`.
+
 ## Summary
 `(schnorr-verify pk sig msg)` through the CURRENT wasm_emit produces a wasm
 where (a) the 768KB stitched schnorr library is NOT merged and (b) the call

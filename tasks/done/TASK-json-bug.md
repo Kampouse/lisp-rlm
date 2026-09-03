@@ -1,5 +1,7 @@
 # TASK: fix json_get_str input-size corruption (BLOCKER for protocol #16)
 
+> **Status: DONE** — 1e86f26. Full history in `git log`.
+
 ## Symptom matrix (all reproduced 2026-09-02, mock + engine b6478f4+)
 echo fn m(a,b,c,d: string) returns `${a.length}:${b.length}:${c.length}:${d.length}`:
 - {"a":"a"*10, "b":"b"*192, "c":"c"*384, "d":"01"+"1"*64} → d = 0 (empty)

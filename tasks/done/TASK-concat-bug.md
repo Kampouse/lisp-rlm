@@ -1,5 +1,7 @@
 # TASK: Engine str-concat expression path zeroes prefix operands
 
+> **Status: DONE** — bf02ea8. Full history in `git log`.
+
 ## Summary
 A single-expression multi-operand string concat `a + b + c + d` (and in some
 shapes even `x + y` of let-bound long strings) returns CORRUPTED output:
