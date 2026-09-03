@@ -284,12 +284,17 @@ impl WasmEmitter {
                     v.extend(self.emit_tag_str());
                     return Ok(v);
                 }
-                // Runtime fallback: for mixed args, use emit_str_concat
+                // Runtime fallback: pairwise shared __str_concat CALLS
+                // (2026-09-02). Was: inline emit_str_concat per pair — n-ary
+                // (str ...) chains (TS template literals!) inlined ~700B ×
+                // (n-1) copies per site; the TS twin wasm was +46% over lisp
+                // almost entirely from this. Left-fold order preserved.
+                let ci = self.ensure_str_concat_func();
                 let mut v = Vec::new();
                 v.extend(self.expr(&a[0])?);
                 for arg in &a[1..] {
                     v.extend(self.expr(arg)?);
-                    v.extend(self.emit_str_concat());
+                    v.push(Instruction::Call(crate::wasm_emit::USER_BASE | ci));
                 }
                 Ok(v)
             }

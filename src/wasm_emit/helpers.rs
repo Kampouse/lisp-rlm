@@ -863,6 +863,16 @@ impl WasmEmitter {
     }
 
     pub(crate) fn emit_str_concat(&mut self) -> Vec<Instruction<'static>> {
+        self.emit_str_concat_opt(true)
+    }
+
+    /// site_ok=false: never reuse the per-site 128B buffer — always the
+    /// monotonic runtime heap. Required for the SHARED __str_concat helper:
+    /// with one site buffer for all callers, a nested concat feeding the b
+    /// operand ((str x (str y z))) would have its input clobbered by the
+    /// outer copy before it is read. Inline per-site callers keep true
+    /// (isolated buffers, left-folded — b is never a site result there).
+    pub(crate) fn emit_str_concat_opt(&mut self, site_ok: bool) -> Vec<Instruction<'static>> {
         let a_local = self.local_idx("__str_a");
         let b_local = self.local_idx("__str_b");
         let a_raw = self.local_idx("__str_araw");
@@ -940,16 +950,20 @@ impl WasmEmitter {
             Instruction::LocalSet(total),
             // block $dst_done
             Instruction::Block(BlockType::Empty),
-            // if total <=u 128 → dst = site; br $dst_done
-            Instruction::LocalGet(total),
-            Instruction::I64Const(128),
-            Instruction::I64LeU,
-            Instruction::If(BlockType::Empty),
-            Instruction::I64Const(alloc_base as i64),
-            Instruction::LocalSet(dst),
-            Instruction::Br(1),
-            Instruction::End,
         ]);
+        // if total <=u 128 → dst = site; br $dst_done (inline sites only)
+        if site_ok {
+            v.extend(vec![
+                Instruction::LocalGet(total),
+                Instruction::I64Const(128),
+                Instruction::I64LeU,
+                Instruction::If(BlockType::Empty),
+                Instruction::I64Const(alloc_base as i64),
+                Instruction::LocalSet(dst),
+                Instruction::Br(1),
+                Instruction::End,
+            ]);
+        }
         // else: dst = rtheap_alloc(total) — bumps RUNTIME_HEAP_PTR (mem[56]),
         // traps past mem limit. Inline (label-free) so it can live in the block.
         v.extend(self.emit_rtheap_alloc(dst, total));
@@ -1311,6 +1325,44 @@ impl WasmEmitter {
     /// Converts TAG_NUM->decimal, TAG_BOOL->"true"/"false", TAG_NIL->"nil".
     /// TAG_STR passes through unchanged.
     /// All locals are i64 to avoid type mismatches. I32WrapI64 at memory boundaries.
+    /// Shared runtime str-concat (2026-09-02): the (str ...)/emit_str_concat
+    /// routine was INLINED at every call site — pairwise for n-ary (str ...)
+    /// chains, which TS template literals generate heavily (a 9-field JSON
+    /// record = 18 parts = 17 inline ~700B copies ≈ 12KB per site; that is
+    /// why the TS twin wasm was +46% over lisp). Same trick as __to_string:
+    /// emit the body ONCE as __str_concat(a,b) and Call it from sites.
+    pub(crate) fn ensure_str_concat_func(&mut self) -> u32 {
+        if let Some(idx) = self.funcs.iter().position(|f| f.name == "__str_concat") {
+            return idx as u32;
+        }
+        // Body: args arrive as params 0(a),1(b). emit_str_concat expects
+        // [... a b] on stack with b on top — push params in that order.
+        let mut body: Vec<Instruction<'static>> =
+            vec![Instruction::LocalGet(0), Instruction::LocalGet(1)];
+        // site_ok=false: shared callers must not share one 128B site buffer
+        body.extend(self.emit_str_concat_opt(false));
+        let n_locals = body
+            .iter()
+            .filter_map(|i| match i {
+                Instruction::LocalSet(k) | Instruction::LocalGet(k) | Instruction::LocalTee(k) => {
+                    Some(*k as usize + 1)
+                }
+                _ => None,
+            })
+            .max()
+            .unwrap_or(2);
+        let extra = n_locals.saturating_sub(2);
+        self.funcs.push(FuncDef {
+            name: "__str_concat".to_string(),
+            param_count: 2,
+            local_count: extra,
+            instrs: body,
+            local_entries: Some(vec![(extra as u32, ValType::I64)]),
+            custom_type: None,
+        });
+        (self.funcs.len() - 1) as u32
+    }
+
     pub(crate) fn ensure_to_string_func(&mut self) -> u32 {
         if let Some(idx) = self.funcs.iter().position(|f| f.name == "__to_string") {
             return idx as u32;
