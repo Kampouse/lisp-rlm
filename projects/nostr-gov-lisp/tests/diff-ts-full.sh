@@ -3,6 +3,10 @@
 # Same step sequence, fresh state per wasm, compare per-step outcome
 # (abort ERR_* or view return) and the full log trace.
 set -u
+# Isolated state: never share /tmp/near-mock-state.bin across runs/sessions.
+STATE_DIR="$(mktemp -d)"
+trap 'rm -rf "$STATE_DIR"' EXIT
+export NEAR_MOCK_STATE="$STATE_DIR/state.bin"
 cd "$(dirname "$0")/../../.."   # lisp-rlm root
 LISP_W=projects/nostr-gov-lisp/target/nostr-gov-lisp.wasm
 TS_W=/tmp/gov-ts.wasm
@@ -47,7 +51,9 @@ run_all () {  # $1=wasm $2=outfile
 s=sys.argv[1]
 try:
   d=json.loads(s); print(d.get("result",""))
-except Exception: print("")' "$RET")
+except Exception:
+  # raw-display line: {"result": "..."} with UNESCAPED inner quotes — slice it
+  print(s[12:-2] if s.startswith(chr(123)+chr(34)+"result"+chr(34)+": ") and s.endswith(chr(34)+chr(125)) else "")' "$RET")
     if [ -n "$ERR" ]; then R="$ERR"; elif [ -n "$MCF" ]; then R="$MCF"; else R="$RVAL"; fi
     echo "#$i $M -> $R" >> "$OUT"
     echo "$OUT1" | grep -E 'LOG:|📄|❌' | sed "s|^|#$i |" >> "$OUT.full"

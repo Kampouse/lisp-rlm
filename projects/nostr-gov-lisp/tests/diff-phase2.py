@@ -4,7 +4,16 @@ Drives BOTH wasms through identical vm-run sequences (fresh state each):
 wallet create (with deposit), set_approvers, propose, approve x2, execute,
 and view reads — comparing returns, LOG traces, and abort codes.
 """
-import json, os, subprocess, sys, time
+import atexit
+import json, os, subprocess, sys, tempfile, time
+# Isolated state per process (near-vm-run honors NEAR_VM_RUN_STATE) unless
+# the caller pins one explicitly — parallel sessions never share a wallet DB.
+if os.environ.get("NEAR_VM_RUN_STATE"):
+    STATE = os.environ["NEAR_VM_RUN_STATE"]
+else:
+    _sd = tempfile.mkdtemp(prefix="nvr-diff-")
+    atexit.register(lambda: __import__("shutil").rmtree(_sd, ignore_errors=True))
+    STATE = os.path.join(_sd, "state.bin")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tests"))
 from bip340 import sign, sha
 
@@ -12,7 +21,6 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")
 VM = os.path.join(ROOT, "near-vm-run", "target", "release", "near-vm-run")
 LISP = os.path.join(ROOT, "projects/nostr-gov-lisp/target/nostr-gov-lisp.wasm")
 TS = "/tmp/gov-ts.wasm"
-STATE = "/tmp/near-vm-run-state.bin"
 CONTRACT = "escrow.test.near"
 SK = bytes([0xAA] * 32)
 from bip340 import i2b, mul, b2i

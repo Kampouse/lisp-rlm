@@ -3,6 +3,10 @@
 # replay 7 (expect ALREADY_USED), then 0 (expect TOO_LOW → but 0 is IN
 # window when base=0… k=0 sets bit0 → slide → ononce=1), then read state.
 set -e
+# Isolated state: never share /tmp/near-mock-state.bin across runs/sessions.
+STATE_DIR="$(mktemp -d)"
+trap 'rm -rf "$STATE_DIR"' EXIT
+export NEAR_MOCK_STATE="$STATE_DIR/state.bin"
 cd "$(dirname "$0")/../../.."   # lisp-rlm root
 W=projects/nostr-gov-lisp/target/nostr-gov-lisp.wasm
 MOCK=./target/release/near-mock
@@ -46,4 +50,4 @@ while IFS= read -r line; do
   echo "$M → ${LOG:-$RET:-?}"
 done < /tmp/steps.jsonl
 echo "── storage:"
-strings /tmp/near-mock-state.bin | grep -E "^(obm_lo|obm_hi|ononce|owner)" -A1 | head -8
+strings "$NEAR_MOCK_STATE" | grep -E "^(obm_lo|obm_hi|ononce|owner)" -A1 | head -8

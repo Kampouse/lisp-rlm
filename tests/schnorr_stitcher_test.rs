@@ -387,8 +387,11 @@ fn nostr_gov_owner_signature_recovers() {
         r.logs
     );
 
-    // create_wallet with a VALID owner signature: must get past signature
-    // verification and abort at the (zero) deposit gate, NOT at sig check.
+    // v2 governance (2026-09-02): admin actions are EVENT-auth only —
+    // the legacy single-key dialect is closed. The legacy sig must be
+    // rejected with ERR_EV_REQUIRED BEFORE any signature verification
+    // runs. (The schnorr digest chain itself is still covered by the
+    // BIP-340 vectors above and the event-auth gauntlet.)
     let r = c.call(
         "create_wallet",
         &format!(
@@ -397,13 +400,8 @@ fn nostr_gov_owner_signature_recovers() {
         ),
     );
     assert!(
-        !r.logs.iter().any(|l| l == "ERR_INVALID_OWNER_SIGNATURE"),
-        "valid owner sig rejected — digest chain broken: {:?}",
-        r.logs
-    );
-    assert!(
-        r.logs.iter().any(|l| l == "ERR_STORAGE_DEPOSIT"),
-        "expected to reach deposit gate, logs: {:?}",
+        r.logs.iter().any(|l| l == "ERR_EV_REQUIRED"),
+        "v2 must reject the legacy dialect up front, logs: {:?}",
         r.logs
     );
 }

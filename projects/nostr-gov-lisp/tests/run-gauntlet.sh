@@ -2,6 +2,10 @@
 # run-gauntlet.sh — drive near-mock through gen-vectors.py steps and diff
 # against expected outcomes. Usage: tests/run-gauntlet.sh [ts_ns]
 set -u
+# Isolated state: never share /tmp/near-mock-state.bin across runs/sessions.
+STATE_DIR="$(mktemp -d)"
+trap 'rm -rf "$STATE_DIR"' EXIT
+export NEAR_MOCK_STATE="$STATE_DIR/state.bin"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../../.." && pwd)"
 MOCK="$ROOT/target/release/near-mock"
@@ -31,7 +35,9 @@ while IFS= read -r line; do
 s=sys.argv[1]
 try:
   d=json.loads(s); print(d.get("result",""))
-except Exception: print("")' "$RET")
+except Exception:
+  # raw-display line: {"result": "..."} with UNESCAPED inner quotes — slice it
+  print(s[12:-2] if s.startswith(chr(123)+chr(34)+"result"+chr(34)+": ") and s.endswith(chr(34)+chr(125)) else "")' "$RET")
   if [ -n "$ERR" ]; then R="$ERR"; elif [ -n "$MCF" ]; then R="$MCF"; else R="$RVAL"; fi
   if [ "$E" = "ok" ]; then
     OK=$([ -z "$ERR" ] && echo 1 || echo 0)

@@ -3,6 +3,10 @@
 # Same step sequence, fresh state per wasm, compare per-step outcome
 # (abort ERR_* or view return) and the full log trace.
 set -u
+# Isolated state: never share /tmp/near-mock-state.bin across runs/sessions.
+STATE_DIR="$(mktemp -d)"
+trap 'rm -rf "$STATE_DIR"' EXIT
+export NEAR_MOCK_STATE="$STATE_DIR/state.bin"
 cd "$(dirname "$0")/../../.."   # lisp-rlm root
 LISP_W=projects/nostr-gov-lisp/target/nostr-gov-lisp.wasm
 TS_W=/tmp/gov-ts.wasm

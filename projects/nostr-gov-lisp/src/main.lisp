@@ -30,7 +30,7 @@
 ;;;     (near/abort is int-typed; storage_set/json_return are nil).
 ;;;
 
-(define VERSION "1")
+(define VERSION "2")
 (define EMPTY "")
 
 ;; 0.5 NEAR storage deposit = 500000000000000000000000 yocto
@@ -148,64 +148,13 @@
 ;; Wire format (Rust parity):
 ;;   'expires {exp}.000000000: {action} | nonce: {n} | contract: {id}'
 ;;   BIP-340 over SHA256(msg), hex pk + hex sig.
-(define (verify-owner action sig expires nonce)
-  (let ((ts (near/block_timestamp)))
-    (if (u128/gt ts expires)
-        (die "ERR_SIG_EXPIRED")
-        0)
-    (let ((msg (str-cat
-                 (str-cat
-                   (str-cat
-                     (str-cat
-                       (str-cat (str-cat "expires " expires)
-                                ".000000000: ")
-                       action)
-                     " | nonce: ")
-                   nonce)
-                 (str-cat " | contract: " (near/current_account_id))))
-          (pk (get-str "owner_npub0")))
-      (if (= (str-length pk) 0)
-          (die "ERR_NOT_INITIALIZED")
-          0)
-      ;; NOTE: hex/sha/schnorr args are de-nested into bindings — nested
-      ;; inline calls hit emitter scratch-local aliasing (see GAPS.md)
-      (let ((pkb (hex-decode pk))
-            (sigb (hex-decode sig))
-            (mh (hex-decode (sha256-hash msg))))
-        (let ((ok (schnorr-verify pkb sigb mh)))
-          (if (= ok 1)
-              (consume-nonce (str->num nonce))
-              (die "ERR_INVALID_OWNER_SIGNATURE")))))))
-
-;; pause has NO nonce slot (Rust: owner-or-guardian, no consume_nonce)
-(define (pause-legacy)
-  (let ((sig (near/json_get_str "signature"))
-        (expires (near/json_get_str "expires_at"))
-        (ts (near/block_timestamp)))
-    (if (u128/gt ts expires)
-        (die "ERR_SIG_EXPIRED")
-        0)
-    (let ((msg (str-cat
-                 (str-cat (str-cat "expires " expires)
-                          ".000000000: pause")
-                 (str-cat " | contract: " (near/current_account_id))))
-          (pk (get-str "owner_npub0")))
-      (if (= (str-length pk) 0)
-          (die "ERR_NOT_INITIALIZED")
-          0)
-      (let ((ok (schnorr-verify (hex-decode pk)
-                                (hex-decode sig)
-                                (hex-decode (sha256-hash msg)))))
-        (if (= ok 1)
-            0
-            (die "ERR_NOT_AUTHORIZED_TO_PAUSE"))
-        (near/storage_set "paused" "1")))))
-
 (define (pause)
+  ;; v2: any admin (1-of-N) trips the breaker — cheap on purpose.
   (if (= (str-length (near/json_get_str "ev")) 0)
-      (pause-legacy)
-      (let ((ok (verify-guardian-event "pause")))
-        (near/storage_set "paused" "1"))))
+      (die "ERR_EV_REQUIRED")
+      0)
+  (let ((ok (verify-guardian-event "pause")))
+    (near/storage_set "paused" "1")))
 
 ;; ── Phase 1.5: event auth ────────────────────────────────────────
 
@@ -259,6 +208,47 @@
           (str-cat tags (str-cat ",\""
             (str-cat content "\"]")))))))))))
 
+;; ── v2 governance (2026-09-02 evening): the admin set = approvers of
+;; the governance wallet "gov". Bootstrap: while a:gov is absent, the
+;; admin set is the legacy single owner_npub0 with threshold 1 — pre-v2
+;; state keeps working untouched. Admins rotate THEMSELVES via an
+;; appr-type proposal on "gov" (current admins must approve it). The
+;; single-owner "pope" bypass (set_approvers by admin fiat) is gone.
+(define (adm-pks)
+  (let ((a (get-str "a:gov")))
+    (if (= (str-length a) 0)
+        (get-str "owner_npub0")
+        (json-get-str "pks" a))))
+(define (adm-thr)
+  (let ((a (get-str "a:gov")))
+    (if (= (str-length a) 0)
+        "1"
+        (json-get-str "thr" a))))
+(define (pk-member-loop pk pks i n)
+  (if (> i n)
+      0
+      (if (= (nth-field pks i) pk)
+          1
+          (pk-member-loop pk pks (+ i 1) n))))
+(define (pk-member pk pks)
+  (pk-member-loop pk pks 0 (- (approver-count pks) 1)))
+;; wallet-or-gov existence: "gov" is an implicit wallet (no w:gov key)
+(define (wallet-live-check name)
+  (if (= name "gov")
+      0
+      (if (!= (str-length (get-str (str "w:" name))) 0)
+          0
+          (die "ERR_WALLET_NOT_FOUND"))))
+;; per-wallet approver resolution; gov falls back to the admin set
+(define (wal-pks name)
+  (if (= name "gov")
+      (adm-pks)
+      (json-get-str "pks" (get-str (str "a:" name)))))
+(define (wal-thr name)
+  (if (= name "gov")
+      (adm-thr)
+      (json-get-str "thr" (get-str (str "a:" name)))))
+
 (define (verify-owner-event action-str)
   (let ((pk (near/json_get_str "pk"))
         (kind (near/json_get_str "kind"))
@@ -275,7 +265,7 @@
     (if (!= kind "37500")
         (die "ERR_EVENT_KIND")
         0)
-    (if (= pk (get-str "owner_npub0"))
+    (if (= (pk-member pk (adm-pks)) 1)
         0
         (die "ERR_EVENT_PK_MISMATCH"))
     (let ((ta (tag-action tags))
@@ -317,7 +307,7 @@
     (if (!= kind "37500")
         (die "ERR_EVENT_KIND")
         0)
-    (if (= pk (get-str "owner_npub0"))
+    (if (= (pk-member pk (adm-pks)) 1)
         0
         (die "ERR_EVENT_PK_MISMATCH"))
     (let ((ta (tag-action tags))
@@ -396,22 +386,17 @@
   (if (!= (str-length (get-str "paused")) 0)
       (die "ERR_PAUSED")
       0)
-  (let ((name (near/json_get_str "name"))
-        (sig (near/json_get_str "signature"))
-        (expires (near/json_get_str "expires_at"))
-        (nonce (near/json_get_str "nonce")))
-    ;; ev routing next (mirrors the Rust reference): event-auth calls carry
-    ;; tags, not legacy expires_at/nonce, so arg validation is legacy-only.
+  (let ((name (near/json_get_str "name")))
+    ;; "gov" is the implicit governance wallet — not creatable
+    (if (= name "gov")
+        (die "ERR_NAME_RESERVED")
+        0)
+    ;; v2: admin actions are EVENT-auth only — the legacy single-key
+    ;; dialect on admin paths was the pope backdoor
     (if (= (str-length (near/json_get_str "ev")) 0)
-      (begin
-        (if (= (str-length expires) 0)
-            (die "ERR_ARG_EXPIRES")
-            0)
-        (if (= (str-length nonce) 0)
-            (die "ERR_ARG_NONCE")
-            0)
-        (verify-owner (str-cat "create_wallet:" name) sig expires nonce))
-      (verify-owner-event (str-cat "create_wallet:" name))))
+        (die "ERR_EV_REQUIRED")
+        0)
+    (verify-owner-event (str-cat "create_wallet:" name)))
   (let ((name (near/json_get_str "name")))
     (if (near/deposit-gte 1001882102603448320 27105)
         0
@@ -422,6 +407,20 @@
     (if (= (name-valid name) 0)
         (die "ERR_NAME_INVALID_CHARS")
         0)
+    ;; v2: wallets are BORN with their approver set (admin chooses at
+    ;; creation — nothing at stake yet). Later rotation is approver-
+    ;; gated; the admin can never swap approvers of a live wallet.
+    (let ((pks (default (near/json_get_str "pks") ""))
+          (thr (default (near/json_get_str "thr") "")))
+      (if (= (str-length pks) 0)
+          (die "ERR_APPROVERS_EMPTY")
+          0)
+      (if (or (= (str->num thr) 0)
+              (> (str->num thr) (approver-count pks)))
+          (die "ERR_THRESHOLD_INVALID")
+          0)
+      (near/storage_set (str "a:" name)
+                        (str "{\"thr\":\"" thr "\",\"pks\":\"" pks "\"}")))
     (near/storage_set (str-cat "w:" name)
       (str-cat
         (str-cat
@@ -435,25 +434,6 @@
   0)
 
 ;; ── unpause ────────────────────────────────────────────────────────
-
-(define (unpause)
-  (let ((sig (near/json_get_str "signature"))
-        (expires (near/json_get_str "expires_at"))
-        (nonce (near/json_get_str "nonce")))
-    (if (= (str-length (near/json_get_str "ev")) 0)
-        (begin
-          (if (= (str-length expires) 0)
-              (die "ERR_ARG_EXPIRES")
-              0)
-          (if (= (str-length nonce) 0)
-              (die "ERR_ARG_NONCE")
-              0)
-          (verify-owner "unpause" sig expires nonce))
-        (verify-owner-event "unpause")))
-  (near/storage_remove "paused")
-  0)
-
-;; ── views ─────────────────────────────────────────────────────────
 
 (define (get_wallet)
   (let ((name (near/json_get_str "name")))
@@ -514,6 +494,20 @@
     (if (= (name-valid name) 0)
         (die "ERR_NAME_INVALID_CHARS")
         0)
+    ;; v2: wallets are BORN with their approver set (admin chooses at
+    ;; creation — nothing at stake yet). Later rotation is approver-
+    ;; gated; the admin can never swap approvers of a live wallet.
+    (let ((pks (default (near/json_get_str "pks") ""))
+          (thr (default (near/json_get_str "thr") "")))
+      (if (= (str-length pks) 0)
+          (die "ERR_APPROVERS_EMPTY")
+          0)
+      (if (or (= (str->num thr) 0)
+              (> (str->num thr) (approver-count pks)))
+          (die "ERR_THRESHOLD_INVALID")
+          0)
+      (near/storage_set (str "a:" name)
+                        (str "{\"thr\":\"" thr "\",\"pks\":\"" pks "\"}")))
     (near/storage_set (str-cat "w:" name)
       (str-cat
         (str-cat
@@ -530,7 +524,6 @@
 (export "dbg_state" dbg_state #t)
 (export "create_wallet" create_wallet #f)
 (export "pause" pause #f)
-(export "unpause" unpause #f)
 (export "test_verify_nostr" test_verify_nostr #t)
 (export "get_wallet" get_wallet #t)
 (export "get_owner_nonce" get_owner_nonce #t)
@@ -569,68 +562,66 @@
   (= (u128/mod (u128/div bm (pow2 k)) "2") "1"))
 (define (set-bit bm k)
   (u128/add bm (pow2 k)))
-(define (auth-owner action)
-  (let ((sig (near/json_get_str "signature"))
-        (expires (near/json_get_str "expires_at"))
-        (nonce (near/json_get_str "nonce")))
-    (if (= (str-length (get-str "paused")) 0)
-        0
-        (die "ERR_PAUSED"))
-    (if (= (str-length (near/json_get_str "ev")) 0)
-        ;; legacy sig path: expires/nonce are top-level args
-        (if (= (str-length expires) 0)
-            (die "ERR_ARG_EXPIRES")
-            (if (= (str-length nonce) 0)
-                (die "ERR_ARG_NONCE")
-                (verify-owner action sig expires nonce)))
-        ;; event-auth path: expires/nonce live in event tags
-        (verify-owner-event action))))
-(define (set_approvers)
-  (let ((name (near/json_get_str "name")))
-    (if (= (str-length (get-str (str "w:" name))) 0)
-        (die "ERR_WALLET_NOT_FOUND")
-        0)
-    (auth-owner (str "set_approvers:" name)))
-  (let ((name (near/json_get_str "name"))
-        (pks (near/json_get_str "pks"))
-        (thr (near/json_get_str "thr")))
-    (if (= (str-length pks) 0)
-        (die "ERR_APPROVERS_EMPTY")
-        0)
-    (if (or (= (str->num thr) 0)
-            (> (str->num thr) (approver-count pks)))
-        (die "ERR_THRESHOLD_INVALID")
-        0)
-    (near/storage_set (str "a:" name)
-                      (str "{\"thr\":\"" thr "\",\"pks\":\"" pks "\"}"))
-    (near/log (str "approvers set: " name))
-    0))
-(export "set_approvers" set_approvers #f)
 (define (propose)
+  ;; v2: proposals are TYPED. act "" = payout (legacy shape), "appr" =
+  ;; rotate this wallet's approvers (current approvers must approve),
+  ;; "unp" = unpause the contract (governance wallet only). Admin
+  ;; proposes; the wallet's own approvers still gate execution.
   (let ((name (near/json_get_str "name")))
-    (if (= (str-length (get-str (str "w:" name))) 0)
-        (die "ERR_WALLET_NOT_FOUND")
-        0)
+    (wallet-live-check name)
     (let ((id (if (= (str-length (get-str (str "pi:" name))) 0)
                   "0"
                   (get-str (str "pi:" name)))))
-      (auth-owner (str "propose:" name ":" id))))
+      (if (= (str-length (near/json_get_str "ev")) 0)
+          (die "ERR_EV_REQUIRED")
+          0)
+      (verify-owner-event (str "propose:" name ":" id))))
   (let ((name (near/json_get_str "name"))
         (pexp (near/json_get_str "pexp"))
         (amt (near/json_get_str "am"))
         (to (near/json_get_str "rc"))
+        (act (default (near/json_get_str "act") ""))
+        (np (default (near/json_get_str "np") ""))
+        (nt (default (near/json_get_str "nt") ""))
         (ts (near/block_timestamp)))
     (let ((id (if (= (str-length (get-str (str "pi:" name))) 0)
                   "0"
                   (get-str (str "pi:" name)))))
-      (if (= (str-length to) 0)
-          (die "ERR_MISSING_RECIPIENT")
-          0)
-      (if (= (str-length amt) 0)
-          (die "ERR_MISSING_AMOUNT")
-          0)
       (if (u128/lt pexp (to-string ts))
           (die "ERR_EXPIRED")
+          0)
+      (if (= act "")
+          (begin
+            (if (= (str-length to) 0)
+                (die "ERR_MISSING_RECIPIENT")
+                0)
+            (if (= (str-length amt) 0)
+                (die "ERR_MISSING_AMOUNT")
+                0))
+          0)
+      (if (= act "appr")
+          (begin
+            (if (= (str-length np) 0)
+                (die "ERR_APPROVERS_EMPTY")
+                0)
+            (if (or (= (str->num nt) 0)
+                    (> (str->num nt) (approver-count np)))
+                (die "ERR_THRESHOLD_INVALID")
+                0))
+          0)
+      (if (= act "unp")
+          (if (= name "gov")
+              0
+              (die "ERR_NOT_GOVERNANCE"))
+          0)
+      (if (and (!= act "") (and (!= act "appr") (!= act "unp")))
+          (die "ERR_ACTION_UNKNOWN")
+          0)
+      ;; while paused, ONLY the unpause recovery path may run
+      (if (!= (str-length (get-str "paused")) 0)
+          (if (= act "unp")
+              0
+              (die "ERR_PAUSED"))
           0)
       ;; nil-guard: json_get_str(missing) is nil — default to "" so a
       ;; tk-less proposal stores "" (NEAR payout) instead of routing the
@@ -640,10 +631,13 @@
                           (str "{\"id\":\"" id "\",\"st\":\"active\",\"exp\":\"" pexp
                                "\",\"amt\":\"" amt "\",\"to\":\"" to
                                "\",\"tk\":\"" tk
+                               "\",\"act\":\"" act
+                               "\",\"np\":\"" np
+                               "\",\"nt\":\"" nt
                                "\",\"bl\":\"0\",\"bh\":\"0\",\"ac\":\"0\"}")))
       (near/storage_set (str "pi:" name)
                         (to-string (+ (str->num id) 1)))
-      (near/log (str "proposal " id " created for " name))
+      (near/log (str "proposal " id " (" act ") created for " name))
       0)))
 (export "propose" propose #f)
 (define (approve)
@@ -659,8 +653,12 @@
       (if (= (str-length p) 0)
           (die "ERR_PROPOSAL_NOT_FOUND")
           0)
+      ;; gov proposals are approved by the ADMIN set (bootstrap:
+      ;; owner_npub0 alone until admins rotate themselves)
       (if (= (str-length a) 0)
-          (die "ERR_APPROVERS_NOT_SET")
+          (if (= name "gov")
+              0
+              (die "ERR_APPROVERS_NOT_SET"))
           0)
       (if (= (str-length pk) 64)
           0
@@ -674,8 +672,8 @@
             (ac (json-get-str "ac" p))
             (amt (json-get-str "amt" p))
             (to (json-get-str "to" p))
-            (pks (json-get-str "pks" a))
-            (thr (json-get-str "thr" a)))
+            (pks (wal-pks name))
+            (thr (wal-thr name)))
         (if (= st "active")
             0
             (die "ERR_NOT_ACTIVE"))
@@ -711,6 +709,9 @@
                             (str "{\"id\":\"" id "\",\"st\":\"" nsth
                                  "\",\"exp\":\"" pexp "\",\"amt\":\"" amt
                                  "\",\"to\":\"" to "\",\"tk\":\"" (json-get-str "tk" p)
+                                 "\",\"act\":\"" (json-get-str "act" p)
+                                 "\",\"np\":\"" (json-get-str "np" p)
+                                 "\",\"nt\":\"" (json-get-str "nt" p)
                                  "\",\"bl\":\"" nbl
                                  "\",\"bh\":\"0\",\"ac\":\"" (to-string nac) "\"}"))
           (near/log (str "approval " ix " on " name ":" id))
@@ -724,33 +725,64 @@
       (if (= (str-length p) 0)
           (die "ERR_PROPOSAL_NOT_FOUND")
           0)
-      (auth-owner (str "execute:" name ":" id))
+      (if (= (str-length (near/json_get_str "ev")) 0)
+          (die "ERR_EV_REQUIRED")
+          0)
+      (verify-owner-event (str "execute:" name ":" id))
       (if (= (json-get-str "st" p) "approved")
           0
           (die "ERR_NOT_APPROVED"))
       (if (u128/lt (json-get-str "exp" p) (to-string ts))
           (die "ERR_PROPOSAL_EXPIRED")
           0)
-      ;; FT branch restored 2026-09-02 (G-14 was a mock-driver bug — silent
-      ;; promise noops in single-contract mode — not an emitter bug):
-      (if (= (str-length (json-get-str "tk" p)) 0)
-          (near/transfer_u128 (json-get-str "to" p) (json-get-str "amt" p))
-          (let ((pi (near/promise_batch_create (json-get-str "tk" p))))
-            (near/promise_batch_action_function_call pi "ft_transfer"
-              (str "{\"receiver_id\":\"" (json-get-str "to" p)
-                   "\",\"amount\":\"" (json-get-str "amt" p)
-                   "\",\"memo\":\"nostr-gov\"}")
-              "1" 5000000000000)))
-      (near/storage_set (str "p:" name ":" id)
-                        (str "{\"id\":\"" id "\",\"st\":\"executed\",\"exp\":\""
-                             (json-get-str "exp" p) "\",\"amt\":\"" (json-get-str "amt" p)
-                             "\",\"to\":\"" (json-get-str "to" p)
-                             "\",\"tk\":\"" (json-get-str "tk" p)
-                             "\",\"bl\":\"" (json-get-str "bl" p)
-                             "\",\"bh\":\"0\",\"ac\":\""
-                             (json-get-str "ac" p) "\"}"))
-      (near/log (str "proposal " id " executed: " name))
-      0)))
+      (let ((act (json-get-str "act" p)))
+        ;; while paused, only the unpause recovery path may execute
+        (if (!= (str-length (get-str "paused")) 0)
+            (if (= act "unp")
+                0
+                (die "ERR_PAUSED"))
+            0)
+        (if (= act "appr")
+            (begin
+              (near/storage_set (str "a:" name)
+                                (str "{\"thr\":\"" (json-get-str "nt" p)
+                                     "\",\"pks\":\"" (json-get-str "np" p) "\"}"))
+              (near/log (str "approvers rotated: " name)))
+            0)
+        (if (= act "unp")
+            (begin
+              (near/storage_remove "paused")
+              (near/log "contract unpaused"))
+            0)
+        ;; payout (act "") — FT branch restored 2026-09-02 (G-14 was a
+        ;; mock-driver bug, not an emitter bug)
+        (if (and (= act "")
+                 (= (str-length (json-get-str "tk" p)) 0))
+            (near/transfer_u128 (json-get-str "to" p) (json-get-str "amt" p))
+            0)
+        (if (and (= act "")
+                 (!= (str-length (json-get-str "tk" p)) 0))
+            (let ((pi (near/promise_batch_create (json-get-str "tk" p))))
+              (near/promise_batch_action_function_call pi "ft_transfer"
+                (str "{\"receiver_id\":\"" (json-get-str "to" p)
+                     "\",\"amount\":\"" (json-get-str "amt" p)
+                     "\",\"memo\":\"nostr-gov\"}")
+                "1" 5000000000000))
+            0)
+        (near/storage_set (str "p:" name ":" id)
+                          (str "{\"id\":\"" id "\",\"st\":\"executed\",\"exp\":\""
+                               (json-get-str "exp" p) "\",\"amt\":\"" (json-get-str "amt" p)
+                               "\",\"to\":\"" (json-get-str "to" p)
+                               "\",\"tk\":\"" (json-get-str "tk" p)
+                               "\",\"act\":\"" act
+                               "\",\"np\":\"" (json-get-str "np" p)
+                               "\",\"nt\":\"" (json-get-str "nt" p)
+                               "\",\"bl\":\"" (json-get-str "bl" p)
+                               "\",\"bh\":\"0\",\"ac\":\""
+                               (json-get-str "ac" p) "\"}"))
+        (near/log (str "proposal " id " (" act ") executed: " name))
+        0))))
+
 (export "execute" execute #f)
 (define (get_proposal)
   (near/json_return_str (get-str (str "p:" (near/json_get_str "name")

@@ -4,7 +4,7 @@
 // Helpers are internal; `export function` = contract method. `get_*` = view.
 
 // ── constants ────────────────────────────────────────────────────────────
-const VERSION = "1";
+const VERSION = "2";
 const NAME_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_";
 
 // ── helpers ──────────────────────────────────────────────────────────────
@@ -82,27 +82,6 @@ function consumeNonce(n: number) {
   near.storageSet("obm_lo", toStr(nonceBitSet(k, lo, hi)));
   near.storageSet("obm_hi", toStr(nonceBitSetHi(k, hi)));
   slideWindow(nonceBitSet(k, lo, hi), nonceBitSetHi(k, hi));
-}
-
-function verifyOwner(action: string, sig: string, expires: string, nonce: string) {
-  const ts = near.blockTimestamp();
-  if (u128.gt(ts, expires)) {
-    die("ERR_SIG_EXPIRED");
-  }
-  const msg = `expires ${expires}.000000000: ${action} | nonce: ${nonce} | contract: ${near.currentAccountId()}`;
-  const pk = getStr("owner_npub0");
-  if (strLength(pk) === 0) {
-    die("ERR_NOT_INITIALIZED");
-  }
-  const pkb = hexDecode(pk);
-  const sigb = hexDecode(sig);
-  const mh = hexDecode(sha256Hash(msg));
-  const ok = schnorrVerify(pkb, sigb, mh);
-  if (ok === 1) {
-    consumeNonce(strToNum(nonce));
-  } else {
-    die("ERR_INVALID_OWNER_SIGNATURE");
-  }
 }
 
 // name validation: chars must be in NAME_CHARS (scan — str-index-of needs literals)
@@ -260,6 +239,35 @@ function eventSerialize(pk: string, cat: string, kind: string, tags: string, con
   return `[0,"${pk}",${cat},${kind},${tags},"${content}"]`;
 }
 
+// ── v2 governance: admin set = approvers of wallet "gov" ──
+// Bootstrap: while a:gov is absent, admin set = owner_npub0, thr 1.
+function admPks(): string {
+  const a = getStr("a:gov");
+  return strLength(a) === 0 ? getStr("owner_npub0") : jsonGet("pks", a);
+}
+function admThr(): string {
+  const a = getStr("a:gov");
+  return strLength(a) === 0 ? "1" : jsonGet("thr", a);
+}
+function pkMember(pk: string, pks: string): i32 {
+  const n = approverCount(pks);
+  for (let i = 0; i < n; i++) {
+    if (nthField(pks, i) === pk) { return 1; }
+  }
+  return 0;
+}
+function walletLiveCheck(name: string): void {
+  if (name !== "gov" && strLength(getStr(`w:${name}`)) === 0) {
+    die("ERR_WALLET_NOT_FOUND");
+  }
+}
+function walPks(name: string): string {
+  return name === "gov" ? admPks() : jsonGet("pks", getStr(`a:${name}`));
+}
+function walThr(name: string): string {
+  return name === "gov" ? admThr() : jsonGet("thr", getStr(`a:${name}`));
+}
+
 function verifyOwnerEvent(actionStr: string) {
   const pk = near.jsonGetStr("pk");
   const kind = near.jsonGetStr("kind");
@@ -276,7 +284,7 @@ function verifyOwnerEvent(actionStr: string) {
   if (kind !== "37500") {
     die("ERR_EVENT_KIND");
   }
-  if (pk !== getStr("owner_npub0")) {
+  if (pkMember(pk, admPks()) !== 1) {
     die("ERR_EVENT_PK_MISMATCH");
   }
   const ta = tagAction(tags);
@@ -322,7 +330,7 @@ function verifyGuardianEvent(actionStr: string) {
   if (kind !== "37500") {
     die("ERR_EVENT_KIND");
   }
-  if (pk !== getStr("owner_npub0")) {
+  if (pkMember(pk, admPks()) !== 1) {
     die("ERR_EVENT_PK_MISMATCH");
   }
   const ta = tagAction(tags);
@@ -349,29 +357,6 @@ function verifyGuardianEvent(actionStr: string) {
   return 0;
 }
 
-function authOwner(action: string) {
-  const sig = near.jsonGetStr("signature");
-  const expires = near.jsonGetStr("expires_at");
-  const nonce = near.jsonGetStr("nonce");
-  // pause gates all owner-auth'd actions, both auth dialects
-  if (strLength(getStr("paused")) !== 0) {
-    die("ERR_PAUSED");
-  }
-  if (strLength(near.jsonGetStr("ev")) === 0) {
-    // legacy sig path: expires/nonce are top-level args
-    if (strLength(expires) === 0) {
-      die("ERR_ARG_EXPIRES");
-    }
-    if (strLength(nonce) === 0) {
-      die("ERR_ARG_NONCE");
-    }
-    verifyOwner(action, sig, expires, nonce);
-  } else {
-    // event-auth path: expires/nonce live in event tags
-    verifyOwnerEvent(action);
-  }
-}
-
 // ── lifecycle ────────────────────────────────────────────────────────────
 
 export function init() {
@@ -387,31 +372,21 @@ export function init() {
 }
 
 export function create_wallet() {
-  // pause gate FIRST and dialect-independent (2026-09-02 live catch:
-  // event-auth'd create sailed through a paused contract).
+  // pause gate FIRST and dialect-independent (2026-09-02 live catch).
   if (strLength(getStr("paused")) !== 0) {
     die("ERR_PAUSED");
   }
   const name = near.jsonGetStr("name");
-  const sig = near.jsonGetStr("signature");
-  const expires = near.jsonGetStr("expires_at");
-  const nonce = near.jsonGetStr("nonce");
-  // ev routing next (mirrors the Rust reference): event-auth calls carry
-  // tags, not legacy expires_at/nonce, so arg validation is legacy-only.
-  if (strLength(near.jsonGetStr("ev")) === 0) {
-    if (strLength(expires) === 0) {
-      die("ERR_ARG_EXPIRES");
-    }
-    if (strLength(nonce) === 0) {
-      die("ERR_ARG_NONCE");
-    }
-    if (strLength(getStr("paused")) !== 0) {
-      die("ERR_PAUSED");
-    }
-    verifyOwner(`create_wallet:${name}`, sig, expires, nonce);
-  } else {
-    verifyOwnerEvent(`create_wallet:${name}`);
+  // "gov" is the implicit governance wallet — not creatable
+  if (name === "gov") {
+    die("ERR_NAME_RESERVED");
   }
+  // v2: admin actions are EVENT-auth only — the legacy single-key
+  // dialect on admin paths was the pope backdoor
+  if (strLength(near.jsonGetStr("ev")) === 0) {
+    die("ERR_EV_REQUIRED");
+  }
+  verifyOwnerEvent(`create_wallet:${name}`);
   if (!near.depositGte(1001882102603448320, 27105)) {
     die("ERR_STORAGE_DEPOSIT");
   }
@@ -421,6 +396,18 @@ export function create_wallet() {
   if (nameValid(name) === 0) {
     die("ERR_NAME_INVALID_CHARS");
   }
+  // v2: wallets are BORN with their approver set (admin chooses at
+  // creation — nothing at stake yet). Later rotation is approver-
+  // gated; the admin can never swap approvers of a live wallet.
+  const pks = near.jsonGetStr("pks") ?? "";
+  const thr = near.jsonGetStr("thr") ?? "";
+  if (strLength(pks) === 0) {
+    die("ERR_APPROVERS_EMPTY");
+  }
+  if (strToNum(thr) === 0 || strToNum(thr) > approverCount(pks)) {
+    die("ERR_THRESHOLD_INVALID");
+  }
+  near.storageSet(`a:${name}`, `{"thr":"${thr}","pks":"${pks}"}`);
   const creator = near.predecessorAccountId();
   const createdAt = near.blockTimestamp();
   const deposit = near.attachedDepositU128();
@@ -430,51 +417,12 @@ export function create_wallet() {
 }
 
 export function pause() {
+  // v2: any admin (1-of-N) trips the breaker — cheap on purpose.
   if (strLength(near.jsonGetStr("ev")) === 0) {
-    // legacy: owner signature
-    const sig = near.jsonGetStr("signature");
-    const expires = near.jsonGetStr("expires_at");
-    const ts = near.blockTimestamp();
-    if (u128.gt(ts, expires)) {
-      die("ERR_SIG_EXPIRED");
-    }
-    const msg = `expires ${expires}.000000000: pause | contract: ${near.currentAccountId()}`;
-    const pk = getStr("owner_npub0");
-    if (strLength(pk) === 0) {
-      die("ERR_NOT_INITIALIZED");
-    }
-    const pkb = hexDecode(pk);
-    const sigb = hexDecode(sig);
-    const mh = hexDecode(sha256Hash(msg));
-    const ok = schnorrVerify(pkb, sigb, mh);
-    if (ok === 1) {
-      near.storageSet("paused", "1");
-    } else {
-      die("ERR_NOT_AUTHORIZED_TO_PAUSE");
-    }
-  } else {
-    verifyGuardianEvent("pause");
-    near.storageSet("paused", "1");
+    die("ERR_EV_REQUIRED");
   }
-  return 0;
-}
-
-export function unpause() {
-  const sig = near.jsonGetStr("signature");
-  const expires = near.jsonGetStr("expires_at");
-  const nonce = near.jsonGetStr("nonce");
-  if (strLength(near.jsonGetStr("ev")) === 0) {
-    if (strLength(expires) === 0) {
-      die("ERR_ARG_EXPIRES");
-    }
-    if (strLength(nonce) === 0) {
-      die("ERR_ARG_NONCE");
-    }
-    verifyOwner("unpause", sig, expires, nonce);
-  } else {
-    verifyOwnerEvent("unpause");
-  }
-  near.storageRemove("paused");
+  verifyGuardianEvent("pause");
+  near.storageSet("paused", "1");
   return 0;
 }
 
@@ -499,56 +447,66 @@ export function get_version() {
 
 // ── Phase 2: proposals ───────────────────────────────────────────────────
 
-export function set_approvers() {
-  const name0 = near.jsonGetStr("name");
-  if (strLength(getStr(`w:${name0}`)) === 0) {
-    die("ERR_WALLET_NOT_FOUND");
-  }
-  authOwner(`set_approvers:${name0}`);
-  const name = near.jsonGetStr("name");
-  const pks = near.jsonGetStr("pks");
-  const thr = near.jsonGetStr("thr");
-  if (strLength(pks) === 0) {
-    die("ERR_APPROVERS_EMPTY");
-  }
-  if (strToNum(thr) === 0 || strToNum(thr) > approverCount(pks)) {
-    die("ERR_THRESHOLD_INVALID");
-  }
-  near.storageSet(`a:${name}`, `{"thr":"${thr}","pks":"${pks}"}`);
-  near.log(`approvers set: ${name}`);
-  return 0;
-}
-
 export function propose() {
+  // v2: proposals are TYPED. act "" = payout, "appr" = rotate this
+  // wallet's approvers (current approvers must approve), "unp" =
+  // unpause (governance wallet only). Admin proposes; the wallet's own
+  // approvers still gate execution.
   const name0 = near.jsonGetStr("name");
-  if (strLength(getStr(`w:${name0}`)) === 0) {
-    die("ERR_WALLET_NOT_FOUND");
-  }
+  walletLiveCheck(name0);
   const id0 = strLength(getStr(`pi:${name0}`)) === 0 ? "0" : getStr(`pi:${name0}`);
-  authOwner(`propose:${name0}:${id0}`);
+  if (strLength(near.jsonGetStr("ev")) === 0) {
+    die("ERR_EV_REQUIRED");
+  }
+  verifyOwnerEvent(`propose:${name0}:${id0}`);
 
   const name = near.jsonGetStr("name");
   const pexp = near.jsonGetStr("pexp");
   const amt = near.jsonGetStr("am");
   const to = near.jsonGetStr("rc");
+  const act = near.jsonGetStr("act") ?? "";
+  const np = near.jsonGetStr("np") ?? "";
+  const nt = near.jsonGetStr("nt") ?? "";
   const ts = near.blockTimestamp();
   const id = strLength(getStr(`pi:${name}`)) === 0 ? "0" : getStr(`pi:${name}`);
-  if (strLength(to) === 0) {
-    die("ERR_MISSING_RECIPIENT");
-  }
-  if (strLength(amt) === 0) {
-    die("ERR_MISSING_AMOUNT");
-  }
   if (u128.lt(pexp, toStr(ts))) {
     die("ERR_EXPIRED");
   }
-  // nil-guard: jsonGetStr(missing) is nil, not "" — without the default a
-  // tk-less (native NEAR) proposal would store "tk":"nil" and execute would
-  // route the payout to an FT promise on account "nil" (live-caught 2026-09-02)
+  if (act === "") {
+    if (strLength(to) === 0) {
+      die("ERR_MISSING_RECIPIENT");
+    }
+    if (strLength(amt) === 0) {
+      die("ERR_MISSING_AMOUNT");
+    }
+  }
+  if (act === "appr") {
+    if (strLength(np) === 0) {
+      die("ERR_APPROVERS_EMPTY");
+    }
+    if (strToNum(nt) === 0 || strToNum(nt) > approverCount(np)) {
+      die("ERR_THRESHOLD_INVALID");
+    }
+  }
+  if (act === "unp") {
+    if (name !== "gov") {
+      die("ERR_NOT_GOVERNANCE");
+    }
+  }
+  if (act !== "" && act !== "appr" && act !== "unp") {
+    die("ERR_ACTION_UNKNOWN");
+  }
+  // while paused, ONLY the unpause recovery path may run
+  if (strLength(getStr("paused")) !== 0) {
+    if (act !== "unp") {
+      die("ERR_PAUSED");
+    }
+  }
+  // nil-guard: jsonGetStr(missing) is nil, not ""
   const tk = near.jsonGetStr("tk") ?? "";
-  near.storageSet(`p:${name}:${id}`, `{"id":"${id}","st":"active","exp":"${pexp}","amt":"${amt}","to":"${to}","tk":"${tk}","bl":"0","bh":"0","ac":"0"}`);
+  near.storageSet(`p:${name}:${id}`, `{"id":"${id}","st":"active","exp":"${pexp}","amt":"${amt}","to":"${to}","tk":"${tk}","act":"${act}","np":"${np}","nt":"${nt}","bl":"0","bh":"0","ac":"0"}`);
   near.storageSet(`pi:${name}`, toStr(strToNum(id) + 1));
-  near.log(`proposal ${id} created for ${name}`);
+  near.log(`proposal ${id} (${act}) created for ${name}`);
   return 0;
 }
 
@@ -565,7 +523,9 @@ export function approve() {
   if (strLength(p) === 0) {
     die("ERR_PROPOSAL_NOT_FOUND");
   }
-  if (strLength(a) === 0) {
+  // gov proposals are approved by the ADMIN set (bootstrap:
+  // owner_npub0 alone until admins rotate themselves)
+  if (strLength(a) === 0 && name !== "gov") {
     die("ERR_APPROVERS_NOT_SET");
   }
   if (strLength(pk) !== 64) {
@@ -580,8 +540,8 @@ export function approve() {
   const ac = jsonGet("ac", p);
   const amt = jsonGet("amt", p);
   const to = jsonGet("to", p);
-  const pks = jsonGet("pks", a);
-  const thr = jsonGet("thr", a);
+  const pks = walPks(name);
+  const thr = walThr(name);
   if (st !== "active") {
     die("ERR_NOT_ACTIVE");
   }
@@ -615,7 +575,10 @@ export function approve() {
   const nbl = bmBitSet(bl, ixn);
   const nsth = nac >= strToNum(thr) ? "approved" : "active";
   const tk = jsonGet("tk", p);
-  near.storageSet(`p:${name}:${id}`, `{"id":"${id}","st":"${nsth}","exp":"${pexp}","amt":"${amt}","to":"${to}","tk":"${tk}","bl":"${nbl}","bh":"0","ac":"${nac}"}`);
+  const act = jsonGet("act", p);
+  const np = jsonGet("np", p);
+  const nt = jsonGet("nt", p);
+  near.storageSet(`p:${name}:${id}`, `{"id":"${id}","st":"${nsth}","exp":"${pexp}","amt":"${amt}","to":"${to}","tk":"${tk}","act":"${act}","np":"${np}","nt":"${nt}","bl":"${nbl}","bh":"0","ac":"${nac}"}`);
   near.log(`approval ${ix} on ${name}:${id}`);
   return 0;
 }
@@ -628,24 +591,43 @@ export function execute() {
   if (strLength(p) === 0) {
     die("ERR_PROPOSAL_NOT_FOUND");
   }
-  authOwner(`execute:${name}:${id}`);
+  if (strLength(near.jsonGetStr("ev")) === 0) {
+    die("ERR_EV_REQUIRED");
+  }
+  verifyOwnerEvent(`execute:${name}:${id}`);
   if (jsonGet("st", p) !== "approved") {
     die("ERR_NOT_APPROVED");
   }
   if (u128.lt(jsonGet("exp", p), toStr(ts))) {
     die("ERR_PROPOSAL_EXPIRED");
   }
+  const act = jsonGet("act", p);
+  // while paused, only the unpause recovery path may execute
+  if (strLength(getStr("paused")) !== 0) {
+    if (act !== "unp") {
+      die("ERR_PAUSED");
+    }
+  }
+  if (act === "appr") {
+    near.storageSet(`a:${name}`, `{"thr":"${jsonGet("nt", p)}","pks":"${jsonGet("np", p)}"}`);
+    near.log(`approvers rotated: ${name}`);
+  }
+  if (act === "unp") {
+    near.storageRemove("paused");
+    near.log("contract unpaused");
+  }
   const tk = jsonGet("tk", p);
-  if (strLength(tk) === 0) {
+  if (act === "" && strLength(tk) === 0) {
     // native NEAR payout
     near.transferU128(jsonGet("to", p), jsonGet("amt", p));
-  } else {
+  }
+  if (act === "" && strLength(tk) !== 0) {
     // FT payout: NEP-141 ft_transfer on the token contract named by tk
     const pi = near.promiseBatchCreate(tk);
     near.promiseBatchActionFunctionCall(pi, "ft_transfer", `{"receiver_id":"${jsonGet("to", p)}","amount":"${jsonGet("amt", p)}","memo":"nostr-gov"}`, "1", 5000000000000);
   }
-  near.storageSet(`p:${name}:${id}`, `{"id":"${id}","st":"executed","exp":"${jsonGet("exp", p)}","amt":"${jsonGet("amt", p)}","to":"${jsonGet("to", p)}","tk":"${jsonGet("tk", p)}","bl":"${jsonGet("bl", p)}","bh":"0","ac":"${jsonGet("ac", p)}"}`);
-  near.log(`proposal ${id} executed: ${name}`);
+  near.storageSet(`p:${name}:${id}`, `{"id":"${id}","st":"executed","exp":"${jsonGet("exp", p)}","amt":"${jsonGet("amt", p)}","to":"${jsonGet("to", p)}","tk":"${jsonGet("tk", p)}","act":"${act}","np":"${jsonGet("np", p)}","nt":"${jsonGet("nt", p)}","bl":"${jsonGet("bl", p)}","bh":"0","ac":"${jsonGet("ac", p)}"}`);
+  near.log(`proposal ${id} (${act}) executed: ${name}`);
   return 0;
 }
 
