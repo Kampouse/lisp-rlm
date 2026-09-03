@@ -447,17 +447,6 @@
 ;; ── exports ───────────────────────────────────────────────────────
 
 ;; BENCH-ONLY: raw nonce consumption probe (remove before deploy)
-(define (dbg_nonce)
-  (let ((n (str->num (near/json_get_str "n"))))
-    (let ((r (consume-nonce n)))
-      (near/json_return_str (to-string r)))))
-
-(define (dbg_state)
-  (near/json_return_str
-    (str-cat (str-cat "ononce=" (num-str "ononce"))
-             (str-cat (str-cat " lo=" (num-str "obm_lo"))
-                      (str-cat " hi=" (num-str "obm_hi"))))))
-
 ;; BENCH-ONLY: probe json_get_str absent-key semantics
 
 ;; BENCH-ONLY: index-returning probes (discriminate needle vs hay corruption)
@@ -465,45 +454,6 @@
 ;; BENCH-ONLY: does the SCAN see backslashes the slice doesn't?
 (export "init" init #f)
 ;; BENCH-ONLY: post-auth half of create_wallet (no signature)
-(define (dbg_cw)
-  (let ((name (near/json_get_str "name")))
-    (if (near/deposit-gte 1001882102603448320 27105)
-        0
-        (die "ERR_STORAGE_DEPOSIT"))
-    (if (!= (str-length (get-str (str-cat "w:" name))) 0)
-        (die "ERR_WALLET_EXISTS")
-        0)
-    (if (= (name-valid name) 0)
-        (die "ERR_NAME_INVALID_CHARS")
-        0)
-    ;; v2: wallets are BORN with their approver set (admin chooses at
-    ;; creation — nothing at stake yet). Later rotation is approver-
-    ;; gated; the admin can never swap approvers of a live wallet.
-    (let ((pks (default (near/json_get_str "pks") ""))
-          (thr (default (near/json_get_str "thr") "")))
-      (if (= (str-length pks) 0)
-          (die "ERR_APPROVERS_EMPTY")
-          0)
-      (if (or (= (str->num thr) 0)
-              (> (str->num thr) (approver-count pks)))
-          (die "ERR_THRESHOLD_INVALID")
-          0)
-      (near/storage_set (str "a:" name)
-                        (str "{\"thr\":\"" thr "\",\"pks\":\"" pks "\"}")))
-    (near/storage_set (str-cat "w:" name)
-      (str-cat
-        (str-cat
-          (str-cat (str-cat "{\"name\":\"" name) "\",\"creator\":\"\"")
-          (near/predecessor_account_id))
-        (str-cat
-          (str-cat (str-cat "\",\"created_at\":\"\"" (near/block_timestamp))
-                   (str-cat "\",\"deposit\":\"\"" (near/attached_deposit_u128)))
-          "\"}"))))
-  (near/log (str-cat "wallet created: " (near/json_get_str "name")))
-  0)
-(export "dbg_nonce" dbg_nonce #f)
-(export "dbg_cw" dbg_cw #f)
-(export "dbg_state" dbg_state #t)
 (export "create_wallet" create_wallet #f)
 (export "pause" pause #f)
 (export "test_verify_nostr" test_verify_nostr #t)
