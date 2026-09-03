@@ -444,7 +444,13 @@ export function ftTransferFrom(from: string, to: string, amount: bigint): string
 // token against it. Cap = locked * 5000 / 10000 (50% LTV, no price
 // feed needed — same token both sides). Keys: ft:<who> balance,
 // lt:<who> locked, ld:<who> debt.
-// Try: ftMint {to,amount}, lendDeposit {amount}, lendBorrow {amount}…
+// Two-actor walkthrough (switch Signer in the NEAR panel between steps):
+// 1. ftMint {to,amount} — owner funds Alice
+// 2. ftTransfer {to:"bob.testnet",amount} — Alice sends to Bob
+// 3. as Bob: lendDeposit {amount} — locks collateral (ft: → lt:)
+// 4. lendBorrow {amount} — mints debt up to 50% of locked
+// 5. lendRepay {amount} — burns debt, capped at what you owe
+// 6. lendHealth {} — cap vs debt; lendWithdraw {amount} — unlock
 
 const ZERO = 0n;
 const LTV = 5000n;
@@ -462,6 +468,16 @@ export function ftMint(to: string, amount: bigint): string {
   near.storageSet("ft:" + to, bal + amount);
   near.storageSet("ft:supply", supply + amount);
   return "supply:" + (supply + amount);
+}
+
+export function ftTransfer(to: string, amount: bigint): string {
+  let who = near.signerAccountId();
+  let bal = near.storageGet("ft:" + who) ?? ZERO;
+  if (bal < amount) { near.abort("insufficient balance"); }
+  let toBal = near.storageGet("ft:" + to) ?? ZERO;
+  near.storageSet("ft:" + who, bal - amount);
+  near.storageSet("ft:" + to, toBal + amount);
+  return "sent:" + amount + " to " + to;
 }
 
 export function lendDeposit(amount: bigint): string {
@@ -483,6 +499,18 @@ export function lendBorrow(amount: bigint): string {
   near.storageSet("ld:" + who, debt + amount);
   near.storageSet("ft:" + who, bal + amount);
   return "debt:" + (debt + amount);
+}
+
+export function lendRepay(amount: bigint): string {
+  let who = near.signerAccountId();
+  let debt = near.storageGet("ld:" + who) ?? ZERO;
+  let pay = amount;
+  if (pay > debt) { pay = debt; }
+  let bal = near.storageGet("ft:" + who) ?? ZERO;
+  if (bal < pay) { near.abort("insufficient balance"); }
+  near.storageSet("ft:" + who, bal - pay);
+  near.storageSet("ld:" + who, debt - pay);
+  return "debt:" + (debt - pay);
 }
 
 export function lendWithdraw(amount: bigint): string {
