@@ -397,6 +397,11 @@
       (if (= (str-length pks) 0)
           (die "ERR_APPROVERS_EMPTY")
           0)
+      ;; approval bitmap is one u64 — at most 64 approvers per wallet
+      (if (or (> (approver-count pks) 64)
+              (= (approver-count pks) 0))
+          (die "ERR_APPROVERS_TOO_MANY")
+          0)
       (if (or (= (str->num thr) 0)
               (> (str->num thr) (approver-count pks)))
           (die "ERR_THRESHOLD_INVALID")
@@ -532,6 +537,10 @@
           (begin
             (if (= (str-length np) 0)
                 (die "ERR_APPROVERS_EMPTY")
+                0)
+            (if (or (> (approver-count np) 64)
+                    (= (approver-count np) 0))
+                (die "ERR_APPROVERS_TOO_MANY")
                 0)
             (if (or (= (str->num nt) 0)
                     (> (str->num nt) (approver-count np)))

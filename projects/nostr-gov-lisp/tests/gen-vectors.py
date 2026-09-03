@@ -52,6 +52,11 @@ def badflip(evd):
     d["sig"] = "".join(s)
     return d
 
+
+def pk_family(seed, n):
+    """n distinct pks from one seed (mirrors bip340 mul)."""
+    return ",".join(i2b(mul(b2i(bytes([seed] * 32) + i.to_bytes(1, "big")))[0]).hex() for i in range(n))
+
 def approval_event(sk, pk, contract, wallet, pid, ix, exp, action="approve",
                    kind=37500, created_at=1, ct_override=None, sig_override=None):
     """Kind-37500 gasless approval event (FE buildApprovalEvent shape)."""
@@ -234,7 +239,11 @@ steps = [
      "ok"),
     ("is_paused", {}, "0"),
     ("get_version", {}, "2"),
-    # ── 11. gasless kind-37500 approvals (relay flow) ───────────────
+    # ── 11. hardening: >64 approvers rejected (i64 bitmap limit) ────
+    ("create_wallet", dict({"name": "toomany", "pks": pk_family(0x9F, 65), "thr": "2"},
+                           **ev("create_wallet:toomany", 5128, sk=OSK, pk=OPK)), "ERR_APPROVERS_TOO_MANY", DEP),
+
+    # ── 12. gasless kind-37500 approvals (relay flow) ───────────────
     ("create_wallet", dict({"name": "gasless", "pks": f"{APR1_PK},{APR2_PK}", "thr": "2"},
                            **ev("create_wallet:gasless", 5130, sk=OSK, pk=OPK)), "ok", DEP),
     ("get_wallet_count", {}, "ok"),

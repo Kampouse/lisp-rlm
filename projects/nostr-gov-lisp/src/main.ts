@@ -359,6 +359,10 @@ export function create_wallet() {
   if (strLength(pks) === 0) {
     die("ERR_APPROVERS_EMPTY");
   }
+  // approval bitmap is one u64 — at most 64 approvers per wallet
+  if (approverCount(pks) > 64 || approverCount(pks) === 0) {
+    die("ERR_APPROVERS_TOO_MANY");
+  }
   if (strToNum(thr) === 0 || strToNum(thr) > approverCount(pks)) {
     die("ERR_THRESHOLD_INVALID");
   }
@@ -447,6 +451,9 @@ export function propose() {
   if (act === "appr") {
     if (strLength(np) === 0) {
       die("ERR_APPROVERS_EMPTY");
+    }
+    if (approverCount(np) > 64 || approverCount(np) === 0) {
+      die("ERR_APPROVERS_TOO_MANY");
     }
     if (strToNum(nt) === 0 || strToNum(nt) > approverCount(np)) {
       die("ERR_THRESHOLD_INVALID");
