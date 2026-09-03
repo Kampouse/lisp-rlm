@@ -605,3 +605,15 @@ export function get_proposal() {
 export function get_approvers() {
   return getStr(`a:${near.jsonGetStr("name")}`);
 }
+
+// ── public self-test (port of lisp test_verify_nostr) ───────────────────
+export function test_verify_nostr() {
+  const msg = near.jsonGetStr("message");
+  const pk = near.jsonGetStr("pubkey_hex");
+  const sig = near.jsonGetStr("sig_hex");
+  const ok = schnorrVerify(hexDecode(pk), hexDecode(sig), hexDecode(sha256Hash(msg)));
+  if (ok !== 1) {
+    die("Invalid schnorr signature: verification failed");
+  }
+  return "true";
+}
