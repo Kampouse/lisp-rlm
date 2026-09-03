@@ -164,41 +164,23 @@
 ;; tag extractors — LITERAL needles inlined per landmine (index-of
 (memory 48)
 
-(define (tag-action tags)
-  (let ((i (str-index-of tags "[\"action\",\"")))
-    (if (= i -1)
-        EMPTY
-        (let ((rest (str-slice tags (+ i (str-length "[\"action\",\"")) (str-length tags))))
-          (if (= (str-length rest) 0)
-              EMPTY
-              (str-slice rest 0 (str-index-of rest "\"")))))))
+;; generic tag extractor — ONE body, dynamic needle (2026-09-02: the
+;; emitter now accepts runtime needles, matching the interpreter; the
+;; four per-key copies existed only because needles had to be literals)
+(define (tag-get tags key)
+  (let ((nd (str-cat "[\"" key "\",\"")))
+    (let ((i (str-index-of tags nd)))
+      (if (= i -1)
+          EMPTY
+          (let ((rest (str-slice tags (+ i (str-length nd)) (str-length tags))))
+            (if (= (str-length rest) 0)
+                EMPTY
+                (str-slice rest 0 (str-index-of rest "\""))))))))
 
-(define (tag-contract tags)
-  (let ((i (str-index-of tags "[\"contract\",\"")))
-    (if (= i -1)
-        EMPTY
-        (let ((rest (str-slice tags (+ i (str-length "[\"contract\",\"")) (str-length tags))))
-          (if (= (str-length rest) 0)
-              EMPTY
-              (str-slice rest 0 (str-index-of rest "\"")))))))
-
-(define (tag-nonce tags)
-  (let ((i (str-index-of tags "[\"nonce\",\"")))
-    (if (= i -1)
-        EMPTY
-        (let ((rest (str-slice tags (+ i (str-length "[\"nonce\",\"")) (str-length tags))))
-          (if (= (str-length rest) 0)
-              EMPTY
-              (str-slice rest 0 (str-index-of rest "\"")))))))
-
-(define (tag-expires tags)
-  (let ((i (str-index-of tags "[\"expires\",\"")))
-    (if (= i -1)
-        EMPTY
-        (let ((rest (str-slice tags (+ i (str-length "[\"expires\",\"")) (str-length tags))))
-          (if (= (str-length rest) 0)
-              EMPTY
-              (str-slice rest 0 (str-index-of rest "\"")))))))
+(define (tag-action tags) (tag-get tags "action"))
+(define (tag-contract tags) (tag-get tags "contract"))
+(define (tag-nonce tags) (tag-get tags "nonce"))
+(define (tag-expires tags) (tag-get tags "expires"))
 
 (define (event-serialize pk cat kind tags content)
   (str-cat "[0,\""
@@ -559,9 +541,14 @@
   ;; proposes; the wallet's own approvers still gate execution.
   (let ((name (near/json_get_str "name")))
     (wallet-live-check name)
-    (let ((id (if (= (str-length (get-str (str "pi:" name))) 0)
-                  "0"
-                  (get-str (str "pi:" name)))))
+    ;; proposal id = the event NONCE (2026-09-02): unique, monotonic,
+    ;; signed inside the action tag, replay-protected by the nonce
+    ;; window — and it eliminates the pi:<name> counter write entirely
+    ;; (propose is now a single storage write: ~0.35 Tgas cheaper)
+    (let ((id (tag-nonce (near/json_get_str "tags"))))
+      (if (= (str-length id) 0)
+          (die "ERR_EVENT_NONCE")
+          0)
       (if (= (str-length (near/json_get_str "ev")) 0)
           (die "ERR_EV_REQUIRED")
           0)
@@ -574,9 +561,7 @@
         (np (default (near/json_get_str "np") ""))
         (nt (default (near/json_get_str "nt") ""))
         (ts (near/block_timestamp)))
-    (let ((id (if (= (str-length (get-str (str "pi:" name))) 0)
-                  "0"
-                  (get-str (str "pi:" name)))))
+    (let ((id (tag-nonce (near/json_get_str "tags"))))
       (if (u128/lt pexp (to-string ts))
           (die "ERR_EXPIRED")
           0)
@@ -625,8 +610,6 @@
                                "\",\"np\":\"" np
                                "\",\"nt\":\"" nt
                                "\",\"bl\":\"0\",\"bh\":\"0\",\"ac\":\"0\"}")))
-      (near/storage_set (str "pi:" name)
-                        (to-string (+ (str->num id) 1)))
       (near/log (str "proposal " id " (" act ") created for " name))
       0)))
 (export "propose" propose #f)

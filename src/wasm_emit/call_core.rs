@@ -300,6 +300,21 @@ impl WasmEmitter {
             "=" => self.eq(a),
             "!=" => self.neq(a),
             "and" => {
+                if a.len() < 2 {
+                    return Err("and: need at least 2 args".into());
+                }
+                if a.len() > 2 {
+                    // n-ary desugar (2026-09-02): (and x1 x2 .. xn) →
+                    // (and x1 (and x2 .. xn)). The bytecode interpreter has
+                    // ALWAYS been n-ary; the emitter silently dropped
+                    // operands 3+ — a live footgun caught in nostr-gov
+                    // (act="unp" died ERR_ACTION_UNKNOWN).
+                    let mut acc = a[a.len() - 1].clone();
+                    for x in a[1..a.len() - 1].iter().rev() {
+                        acc = LispVal::List(vec![LispVal::Sym("and".into()), x.clone(), acc]);
+                    }
+                    return self.expr(&LispVal::List(vec![LispVal::Sym("and".into()), a[0].clone(), acc]));
+                }
                 let tmp = self.local_idx("__and_val");
                 let mut v = self.expr(&a[0])?;
                 v.push(Instruction::LocalSet(tmp)); // save first value
@@ -313,6 +328,16 @@ impl WasmEmitter {
                 Ok(v)
             }
             "or" => {
+                if a.len() < 2 {
+                    return Err("or: need at least 2 args".into());
+                }
+                if a.len() > 2 {
+                    let mut acc = a[a.len() - 1].clone();
+                    for x in a[1..a.len() - 1].iter().rev() {
+                        acc = LispVal::List(vec![LispVal::Sym("or".into()), x.clone(), acc]);
+                    }
+                    return self.expr(&LispVal::List(vec![LispVal::Sym("or".into()), a[0].clone(), acc]));
+                }
                 let tmp = self.local_idx("__or_val");
                 let mut v = self.expr(&a[0])?;
                 v.push(Instruction::LocalSet(tmp)); // save first value

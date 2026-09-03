@@ -4820,10 +4820,19 @@ impl WasmEmitter {
         v.push(Instruction::I64And);
         v.push(Instruction::LocalSet(hay_ptr_i));
 
-        let needle_str = match &a[1] {
-            LispVal::Str(s) => s.clone(),
-            _ => return Err("str-index-of: needle must be a string literal".into()),
+        // Needle policy (2026-09-02): a string LITERAL keeps the
+        // compile-time-embedded fast path; any other expression emits the
+        // dynamic scan (needle len/ptr extracted at runtime). This
+        // converges the emitter with the interpreter, which has always
+        // evaluated the needle dynamically.
+        let needle_lit = match &a[1] {
+            LispVal::Str(s) => Some(s.clone()),
+            _ => None,
         };
+        if needle_lit.is_none() {
+            return self.str_index_of_dyn(a);
+        }
+        let needle_str = needle_lit.unwrap();
         let needle_bytes = needle_str.as_bytes();
         let needle_len = needle_bytes.len() as i64;
 
@@ -4925,6 +4934,132 @@ impl WasmEmitter {
     /// (str-upcase s)/(str-downcase s) → new string via runtime bump alloc.
     /// ASCII-only case mapping; interp uses Rust Unicode case mapping —
     /// documented divergence (COVERAGE.md §D): non-ASCII input diverges.
+
+    /// (str-index-of haystack needle-expr) — dynamic-needle variant: the
+    /// needle is a runtime string (len/ptr locals), byte-compare loop
+    /// identical to the literal path. Empty needle → 0 (both surfaces).
+    #[allow(clippy::too_many_locals)]
+    fn str_index_of_dyn(&mut self, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
+        let ma = wasm_encoder::MemArg {
+            offset: 0,
+            align: 0,
+            memory_index: 0,
+        };
+        let hay_i = self.local_idx("__siod_hay");
+        let hay_len_i = self.local_idx("__siod_hlen");
+        let hay_ptr_i = self.local_idx("__siod_hptr");
+        let ndl_i = self.local_idx("__siod_ndl");
+        let ndl_len_i = self.local_idx("__siod_nlen");
+        let ndl_ptr_i = self.local_idx("__siod_nptr");
+        let idx_i = self.local_idx("__siod_idx");
+        let j_i = self.local_idx("__siod_j");
+        let match_i = self.local_idx("__siod_match");
+        let result_i = self.local_idx("__siod_result");
+        let mut v = Vec::new();
+        // eval haystack + needle
+        v.extend(self.expr(&a[0])?);
+        v.extend(self.emit_untag());
+        v.push(Instruction::LocalSet(hay_i));
+        v.extend(self.expr(&a[1])?);
+        v.extend(self.emit_untag());
+        v.push(Instruction::LocalSet(ndl_i));
+        // hay len/ptr
+        v.push(Instruction::LocalGet(hay_i));
+        v.push(Instruction::I64Const(32));
+        v.push(Instruction::I64ShrU);
+        v.push(Instruction::LocalSet(hay_len_i));
+        v.push(Instruction::LocalGet(hay_i));
+        v.push(Instruction::I64Const(0xFFFF_FFFF));
+        v.push(Instruction::I64And);
+        v.push(Instruction::LocalSet(hay_ptr_i));
+        // needle len/ptr
+        v.push(Instruction::LocalGet(ndl_i));
+        v.push(Instruction::I64Const(32));
+        v.push(Instruction::I64ShrU);
+        v.push(Instruction::LocalSet(ndl_len_i));
+        v.push(Instruction::LocalGet(ndl_i));
+        v.push(Instruction::I64Const(0xFFFF_FFFF));
+        v.push(Instruction::I64And);
+        v.push(Instruction::LocalSet(ndl_ptr_i));
+        // result = -1, idx = 0
+        v.push(Instruction::I64Const(-1));
+        v.push(Instruction::LocalSet(result_i));
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::LocalSet(idx_i));
+        // Block A { Loop L1 { ... } }
+        v.push(Instruction::Block(BlockType::Empty));
+        v.push(Instruction::Loop(BlockType::Empty));
+        // idx + ndl_len > hay_len → exit
+        v.push(Instruction::LocalGet(idx_i));
+        v.push(Instruction::LocalGet(ndl_len_i));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::LocalGet(hay_len_i));
+        v.push(Instruction::I64GtU);
+        v.push(Instruction::BrIf(1));
+        // match = 1; j = 0
+        v.push(Instruction::I64Const(1));
+        v.push(Instruction::LocalSet(match_i));
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::LocalSet(j_i));
+        // Block B { Loop L2 { byte compare } }
+        v.push(Instruction::Block(BlockType::Empty));
+        v.push(Instruction::Loop(BlockType::Empty));
+        v.push(Instruction::LocalGet(j_i));
+        v.push(Instruction::LocalGet(ndl_len_i));
+        v.push(Instruction::I64GeU);
+        v.push(Instruction::BrIf(1));
+        v.push(Instruction::LocalGet(hay_ptr_i));
+        v.push(Instruction::LocalGet(idx_i));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::LocalGet(j_i));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma.clone()));
+        v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::LocalGet(ndl_ptr_i));
+        v.push(Instruction::LocalGet(j_i));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma.clone()));
+        v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::I64Ne);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::LocalSet(match_i));
+        v.push(Instruction::End);
+        v.push(Instruction::LocalGet(match_i));
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::BrIf(1));
+        v.push(Instruction::LocalGet(j_i));
+        v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::LocalSet(j_i));
+        v.push(Instruction::Br(0));
+        v.push(Instruction::End);
+        v.push(Instruction::End);
+        // match → result = idx, exit
+        v.push(Instruction::LocalGet(match_i));
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::I64Ne);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(idx_i));
+        v.push(Instruction::LocalSet(result_i));
+        v.push(Instruction::Br(2));
+        v.push(Instruction::End);
+        v.push(Instruction::LocalGet(idx_i));
+        v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::LocalSet(idx_i));
+        v.push(Instruction::Br(0));
+        v.push(Instruction::End);
+        v.push(Instruction::End);
+        // return result (tagged num)
+        v.push(Instruction::LocalGet(result_i));
+        v.extend(self.emit_tag_num());
+        Ok(v)
+    }
+
     fn str_case(&mut self, a: &[LispVal], upper: bool) -> Result<Vec<Instruction<'static>>, String> {
         let ma0 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
         let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };

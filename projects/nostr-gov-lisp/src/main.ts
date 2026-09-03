@@ -162,56 +162,32 @@ function nthField(s: string, k: number) {
 
 const EMPTY = "";
 
+function tagGet(tags: string, key: string): string {
+  const nd = `["${key}","`;
+  const i = strIndexOf(tags, nd);
+  if (i === -1) {
+    return EMPTY;
+  }
+  const rest = strSlice(tags, i + strLength(nd), strLength(tags));
+  if (strLength(rest) === 0) {
+    return EMPTY;
+  }
+  return strSlice(rest, 0, strIndexOf(rest, "\""));
+}
+
 function tagAction(tags: string) {
-  const i = strIndexOf(tags, "[\"action\",\"");
-  if (i === -1) {
-    return EMPTY;
-  }
-  const rest = strSlice(tags, i + 11, strLength(tags));
-  if (strLength(rest) === 0) {
-    return EMPTY;
-  }
-  return strSlice(rest, 0, strIndexOf(rest, "\""));
+  return tagGet(tags, "action");
 }
-
 function tagContract(tags: string) {
-  const i = strIndexOf(tags, "[\"contract\",\"");
-  if (i === -1) {
-    return EMPTY;
-  }
-  const rest = strSlice(tags, i + 13, strLength(tags));
-  if (strLength(rest) === 0) {
-    return EMPTY;
-  }
-  return strSlice(rest, 0, strIndexOf(rest, "\""));
+  return tagGet(tags, "contract");
 }
-
 function tagNonce(tags: string) {
-  const i = strIndexOf(tags, "[\"nonce\",\"");
-  if (i === -1) {
-    return EMPTY;
-  }
-  const rest = strSlice(tags, i + 10, strLength(tags));
-  if (strLength(rest) === 0) {
-    return EMPTY;
-  }
-  return strSlice(rest, 0, strIndexOf(rest, "\""));
+  return tagGet(tags, "nonce");
 }
-
 function tagExpires(tags: string) {
-  const i = strIndexOf(tags, "[\"expires\",\"");
-  if (i === -1) {
-    return EMPTY;
-  }
-  const rest = strSlice(tags, i + 12, strLength(tags));
-  if (strLength(rest) === 0) {
-    return EMPTY;
-  }
-  return strSlice(rest, 0, strIndexOf(rest, "\""));
+  return tagGet(tags, "expires");
 }
 
-// canonical nostr event serialization for signing:
-// [0,"<pk>",<created_at>,<kind>,<tags json>,"<content>"]
 function eventSerialize(pk: string, cat: string, kind: string, tags: string, content: string) {
   return `[0,"${pk}",${cat},${kind},${tags},"${content}"]`;
 }
@@ -431,7 +407,12 @@ export function propose() {
   // approvers still gate execution.
   const name0 = near.jsonGetStr("name");
   walletLiveCheck(name0);
-  const id0 = strLength(getStr(`pi:${name0}`)) === 0 ? "0" : getStr(`pi:${name0}`);
+  // proposal id = the event NONCE (2026-09-02): unique, signed inside
+  // the action tag, replay-protected — no pi:<name> counter write
+  const id0 = tagNonce(near.jsonGetStr("tags"));
+  if (strLength(id0) === 0) {
+    die("ERR_EVENT_NONCE");
+  }
   if (strLength(near.jsonGetStr("ev")) === 0) {
     die("ERR_EV_REQUIRED");
   }
@@ -445,7 +426,7 @@ export function propose() {
   const np = near.jsonGetStr("np") ?? "";
   const nt = near.jsonGetStr("nt") ?? "";
   const ts = near.blockTimestamp();
-  const id = strLength(getStr(`pi:${name}`)) === 0 ? "0" : getStr(`pi:${name}`);
+  const id = tagNonce(near.jsonGetStr("tags"));
   if (u128.lt(pexp, toStr(ts))) {
     die("ERR_EXPIRED");
   }
@@ -482,7 +463,6 @@ export function propose() {
   // nil-guard: jsonGetStr(missing) is nil, not ""
   const tk = near.jsonGetStr("tk") ?? "";
   near.storageSet(`p:${name}:${id}`, `{"id":"${id}","st":"active","exp":"${pexp}","amt":"${amt}","to":"${to}","tk":"${tk}","act":"${act}","np":"${np}","nt":"${nt}","bl":"0","bh":"0","ac":"0"}`);
-  near.storageSet(`pi:${name}`, toStr(strToNum(id) + 1));
   near.log(`proposal ${id} (${act}) created for ${name}`);
   return 0;
 }
