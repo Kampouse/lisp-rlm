@@ -127,11 +127,13 @@ declare const near: {
   // args / returns
   /**
    * Read a string arg from the transaction input JSON.
-   * Missing key → "" (verified against the wasm runtime: absent keys
-   * surface as empty strings, so examples can pass the result straight
-   * to str ops; `?? "default"` still works if you prefer it explicit).
+   * Missing key → null (nil at runtime, 2026-08-31 semantics) — pair
+   * with `??`:
+   *   let g = near.jsonGetStr("g") ?? "default";
+   * Bare use on a miss yields nil: strLength sees 0, but str-concat
+   * renders "nil" — guard explicitly.
    */
-  jsonGetStr(key: string): string;
+  jsonGetStr(key: string): string | null;
   /** {"k": ["a","b"]} → LispArr<string>; max 64 elements, nil if missing */
   jsonArr(key: string): LispArr<string>;
   /**

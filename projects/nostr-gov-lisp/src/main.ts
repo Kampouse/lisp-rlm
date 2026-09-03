@@ -222,12 +222,12 @@ function walThr(name: string): string {
 }
 
 function verifyOwnerEvent(actionStr: string) {
-  const pk = near.jsonGetStr("pk");
-  const kind = near.jsonGetStr("kind");
-  const tags = near.jsonGetStr("tags");
-  const content = near.jsonGetStr("ct");
-  const sig = near.jsonGetStr("sig");
-  const cat = near.jsonGetStr("cat");
+  const pk = near.jsonGetStr("pk") ?? "";
+  const kind = near.jsonGetStr("kind") ?? "";
+  const tags = near.jsonGetStr("tags") ?? "";
+  const content = near.jsonGetStr("ct") ?? "";
+  const sig = near.jsonGetStr("sig") ?? "";
+  const cat = near.jsonGetStr("cat") ?? "";
   if (strLength(pk) !== 64) {
     die("ERR_EVENT_PK_LEN");
   }
@@ -268,12 +268,12 @@ function verifyOwnerEvent(actionStr: string) {
 
 // guardian variant: pause carries NO nonce (mirrors legacy pause)
 function verifyGuardianEvent(actionStr: string) {
-  const pk = near.jsonGetStr("pk");
-  const kind = near.jsonGetStr("kind");
-  const tags = near.jsonGetStr("tags");
-  const content = near.jsonGetStr("ct");
-  const sig = near.jsonGetStr("sig");
-  const cat = near.jsonGetStr("cat");
+  const pk = near.jsonGetStr("pk") ?? "";
+  const kind = near.jsonGetStr("kind") ?? "";
+  const tags = near.jsonGetStr("tags") ?? "";
+  const content = near.jsonGetStr("ct") ?? "";
+  const sig = near.jsonGetStr("sig") ?? "";
+  const cat = near.jsonGetStr("cat") ?? "";
   if (strLength(pk) !== 64) {
     die("ERR_EVENT_PK_LEN");
   }
@@ -316,7 +316,7 @@ export function init() {
   if (strLength(getStr("owner_npub0")) !== 0) {
     die("ERR_ALREADY_INITIALIZED");
   }
-  const npub = near.jsonGetStr("npub");
+  const npub = near.jsonGetStr("npub") ?? "";
   if (strLength(npub) !== 64) {
     die("ERR_BAD_NPUB");
   }
@@ -329,14 +329,14 @@ export function create_wallet() {
   if (strLength(getStr("paused")) !== 0) {
     die("ERR_PAUSED");
   }
-  const name = near.jsonGetStr("name");
+  const name = near.jsonGetStr("name") ?? "";
   // "gov" is the implicit governance wallet — not creatable
   if (name === "gov") {
     die("ERR_NAME_RESERVED");
   }
   // v2: admin actions are EVENT-auth only — the legacy single-key
   // dialect on admin paths was the pope backdoor
-  if (strLength(near.jsonGetStr("ev")) === 0) {
+  if (strLength(near.jsonGetStr("ev") ?? "") === 0) {
     die("ERR_EV_REQUIRED");
   }
   verifyOwnerEvent(`create_wallet:${name}`);
@@ -371,7 +371,7 @@ export function create_wallet() {
 
 export function pause() {
   // v2: any admin (1-of-N) trips the breaker — cheap on purpose.
-  if (strLength(near.jsonGetStr("ev")) === 0) {
+  if (strLength(near.jsonGetStr("ev") ?? "") === 0) {
     die("ERR_EV_REQUIRED");
   }
   verifyGuardianEvent("pause");
@@ -382,7 +382,7 @@ export function pause() {
 // ── views ────────────────────────────────────────────────────────────────
 
 export function get_wallet() {
-  const name = near.jsonGetStr("name");
+  const name = near.jsonGetStr("name") ?? "";
   return getStr(`w:${name}`);
 }
 
@@ -405,28 +405,28 @@ export function propose() {
   // wallet's approvers (current approvers must approve), "unp" =
   // unpause (governance wallet only). Admin proposes; the wallet's own
   // approvers still gate execution.
-  const name0 = near.jsonGetStr("name");
+  const name0 = near.jsonGetStr("name") ?? "";
   walletLiveCheck(name0);
   // proposal id = the event NONCE (2026-09-02): unique, signed inside
   // the action tag, replay-protected — no pi:<name> counter write
-  const id0 = tagNonce(near.jsonGetStr("tags"));
+  const id0 = tagNonce(near.jsonGetStr("tags") ?? "");
   if (strLength(id0) === 0) {
     die("ERR_EVENT_NONCE");
   }
-  if (strLength(near.jsonGetStr("ev")) === 0) {
+  if (strLength(near.jsonGetStr("ev") ?? "") === 0) {
     die("ERR_EV_REQUIRED");
   }
   verifyOwnerEvent(`propose:${name0}:${id0}`);
 
-  const name = near.jsonGetStr("name");
-  const pexp = near.jsonGetStr("pexp");
-  const amt = near.jsonGetStr("am");
-  const to = near.jsonGetStr("rc");
+  const name = near.jsonGetStr("name") ?? "";
+  const pexp = near.jsonGetStr("pexp") ?? "";
+  const amt = near.jsonGetStr("am") ?? "";
+  const to = near.jsonGetStr("rc") ?? "";
   const act = near.jsonGetStr("act") ?? "";
   const np = near.jsonGetStr("np") ?? "";
   const nt = near.jsonGetStr("nt") ?? "";
   const ts = near.blockTimestamp();
-  const id = tagNonce(near.jsonGetStr("tags"));
+  const id = tagNonce(near.jsonGetStr("tags") ?? "");
   if (u128.lt(pexp, toStr(ts))) {
     die("ERR_EXPIRED");
   }
@@ -468,12 +468,12 @@ export function propose() {
 }
 
 export function approve() {
-  const name = near.jsonGetStr("name");
-  const id = near.jsonGetStr("id");
-  const ix = near.jsonGetStr("ix");
-  const pk = near.jsonGetStr("pubkey_hex");
-  const sig = near.jsonGetStr("signature");
-  const exp = near.jsonGetStr("expires_at");
+  const name = near.jsonGetStr("name") ?? "";
+  const id = near.jsonGetStr("id") ?? "";
+  const ix = near.jsonGetStr("ix") ?? "";
+  const pk = near.jsonGetStr("pubkey_hex") ?? "";
+  const sig = near.jsonGetStr("signature") ?? "";
+  const exp = near.jsonGetStr("expires_at") ?? "";
   const ts = near.blockTimestamp();
   const p = getStr(`p:${name}:${id}`);
   const a = getStr(`a:${name}`);
@@ -543,14 +543,14 @@ export function approve() {
 }
 
 export function execute() {
-  const name = near.jsonGetStr("name");
-  const id = near.jsonGetStr("id");
+  const name = near.jsonGetStr("name") ?? "";
+  const id = near.jsonGetStr("id") ?? "";
   const ts = near.blockTimestamp();
   const p = getStr(`p:${name}:${id}`);
   if (strLength(p) === 0) {
     die("ERR_PROPOSAL_NOT_FOUND");
   }
-  if (strLength(near.jsonGetStr("ev")) === 0) {
+  if (strLength(near.jsonGetStr("ev") ?? "") === 0) {
     die("ERR_EV_REQUIRED");
   }
   verifyOwnerEvent(`execute:${name}:${id}`);
@@ -599,18 +599,18 @@ export function execute() {
 }
 
 export function get_proposal() {
-  return getStr(`p:${near.jsonGetStr("name")}:${near.jsonGetStr("id")}`);
+  return getStr(`p:${near.jsonGetStr("name") ?? ""}:${near.jsonGetStr("id") ?? ""}`);
 }
 
 export function get_approvers() {
-  return getStr(`a:${near.jsonGetStr("name")}`);
+  return getStr(`a:${near.jsonGetStr("name") ?? ""}`);
 }
 
 // ── public self-test (port of lisp test_verify_nostr) ───────────────────
 export function test_verify_nostr() {
-  const msg = near.jsonGetStr("message");
-  const pk = near.jsonGetStr("pubkey_hex");
-  const sig = near.jsonGetStr("sig_hex");
+  const msg = near.jsonGetStr("message") ?? "";
+  const pk = near.jsonGetStr("pubkey_hex") ?? "";
+  const sig = near.jsonGetStr("sig_hex") ?? "";
   const ok = schnorrVerify(hexDecode(pk), hexDecode(sig), hexDecode(sha256Hash(msg)));
   if (ok !== 1) {
     die("Invalid schnorr signature: verification failed");
