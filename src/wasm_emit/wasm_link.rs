@@ -1203,6 +1203,38 @@ fn merge_lib_wasm_multi(
     }
     m.section(&data_sec);
 
+    // Name custom section: remap contract names into merged index space.
+    // A resolved import keeps its import-derived name but moves to its new
+    // lib slot; remaining imports shift down via contract_remap; contract
+    // defined funcs keep their index. Lib-internal functions have no names
+    // in the contract map and are dropped.
+    if let Some(entries) = crate::wasm_emit::name_map::decode_function_names(contract_wasm) {
+        let mut resolved_pos: std::collections::HashMap<u32, usize> =
+            std::collections::HashMap::new();
+        for (k, &ci) in contract_import_indices.iter().enumerate() {
+            resolved_pos.insert(ci, k);
+        }
+        let total_funcs = import_func_count + contract.func_type_indices.len() as u32;
+        let mapped: Vec<(u32, String)> = entries
+            .into_iter()
+            .filter_map(|(idx, name)| {
+                let new_idx = if idx < import_func_count {
+                    match resolved_pos.get(&idx) {
+                        Some(&k) => Some(new_import_count + k as u32),
+                        None => Some(contract_remap(idx)),
+                    }
+                } else if idx < total_funcs {
+                    Some(idx)
+                } else {
+                    None
+                };
+                new_idx.map(|n| (n, name))
+            })
+            .collect();
+        let sec = crate::wasm_emit::name_map::name_section(&mapped);
+        m.section(&sec);
+    }
+
     let result = m.finish();
     Ok(result)
 }

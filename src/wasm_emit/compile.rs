@@ -565,6 +565,33 @@ stitched module region at 1MiB. Split literals or shrink allocations",
             for (o, l) in offs.iter().rev().take(8).rev() { eprintln!("   seg @{o} len {l}"); }
         }
 
+        // Name custom section (function names) — trap symbolication.
+        // Emitted after tree-shake/DCE so indices match the final module;
+        // the schnorr stitcher (if any) remaps them, and wasm-opt -g carries
+        // them through its renumbering. `near-mock symbolicate` decodes this
+        // section and resolves the name against the .wasm.map sidecar.
+        let mut name_entries: Vec<(u32, String)> = Vec::new();
+        for (i, &hi) in host_list.iter().enumerate() {
+            name_entries.push((i as u32, format!("env.{}", HOST_FUNCS[hi].0)));
+        }
+        for (i, (name, _, _)) in self.wasm_imports.iter().enumerate() {
+            name_entries.push((host_count + i as u32, format!("env.{}", name)));
+        }
+        for (i, f) in self.funcs.iter().enumerate() {
+            name_entries.push((internal_base + i as u32, f.name.clone()));
+        }
+        for (i, (fn_name, en, _)) in self.exports.iter().enumerate() {
+            name_entries.push((wrapper_base + i as u32, format!("{}:{}", en, fn_name)));
+        }
+        if self.exports.is_empty() && !self.funcs.is_empty() {
+            // default wrapper: mirrors the auto-generated _run wrapper above
+            if let Some(f) = self.funcs.iter().rev().find(|f| !f.name.starts_with("__h_")) {
+                name_entries.push((wrapper_base, format!("_run:{}", f.name)));
+            }
+        }
+        let name_sec = crate::wasm_emit::name_map::name_section(&name_entries);
+        m.section(&name_sec);
+
         let bytes = m.finish();
 
         // WASM imports (e.g. schnorr_verify_bip340, sha256_hash) are inlined from WAT.
@@ -1138,38 +1165,45 @@ pub fn compile_fuzz(source: &str) -> Result<Vec<u8>, String> {
     Ok(em.finish("run"))
 }
 
-pub fn compile_near(source: &str) -> Result<Vec<u8>, String> {
+/// Compile NEAR WASM from source, also returning the symbolication sidecar:
+/// `{ function-name → source form }` for every function that survived
+/// tree-shaking. Keyed by NAME (not index), so it stays valid across the
+/// schnorr stitch and wasm-opt renumbering. `compile_near` delegates here.
+pub fn compile_near_with_map(source: &str) -> Result<(Vec<u8>, serde_json::Value), String> {
     let resolved = resolve_modules(source, std::path::Path::new("."))?;
     let mut em = parse_and_compile(&resolved, true)?;
     if std::env::var("DEBUG_FUNCS").is_ok() {
-        eprintln!("FUNCS: {:?}", em.funcs.iter().map(|f| f.name.clone()).collect::<Vec<_>>());
+        eprintln!(
+            "FUNCS: {:?}",
+            em.funcs.iter().map(|f| f.name.clone()).collect::<Vec<_>>()
+        );
     }
-    // If no explicit exports, auto-export the "run" function as "_run"
-    // so tree-shaking keeps it and all functions it calls.
     if em.exports.is_empty() {
-        // Auto-export: prefer explicit run/main by NAME. The old "last
-        // non-__h_ func" heuristic grabbed helpers appended AFTER user code
-        // (e.g. __to_string ensured during main's body emission) — exporting
-        // the helper, tree-shaking main away, silently emitting an
-        // input-passthrough stub (found via str-join, round 3, 2026-08-27).
         if let Some(f) = em.funcs.iter().find(|f| f.name == "run") {
             em.add_export(&f.name.clone(), "_run", false);
         } else if let Some(f) = em.funcs.iter().find(|f| f.name == "main") {
             em.add_export(&f.name.clone(), "_run", false);
-        } else if let Some(f) = em
-            .funcs
-            .iter()
-            .rev()
-            .find(|f| !f.name.starts_with("__"))
-        {
+        } else if let Some(f) = em.funcs.iter().rev().find(|f| !f.name.starts_with("__")) {
             em.add_export(&f.name.clone(), "_run", false);
         }
     }
-    // Emit gas estimates before finish consumes the emitter
     em.print_gas_table();
 
     let wasm = em.finish("_run");
-    Ok(wasm)
+
+    // finish() takes &mut self, so fn_sources survives. em.funcs is post-DCE —
+    // exactly the functions the name section names.
+    let mut map = serde_json::Map::new();
+    for f in &em.funcs {
+        if let Some(src) = em.fn_sources.get(&f.name) {
+            map.insert(f.name.clone(), serde_json::Value::String(src.clone()));
+        }
+    }
+    Ok((wasm, serde_json::Value::Object(map)))
+}
+
+pub fn compile_near(source: &str) -> Result<Vec<u8>, String> {
+    Ok(compile_near_with_map(source)?.0)
 }
 
 /// Compile NEAR WASM from source, skipping type checking.
@@ -1192,7 +1226,11 @@ pub fn compile_near_untyped(source: &str) -> Result<Vec<u8>, String> {
    Ok(wasm)
 }
 
-pub fn compile_near_from_exprs(exprs: &[LispVal]) -> Result<Vec<u8>, String> {
+/// Compile NEAR WASM from pre-parsed exprs, also returning the symbolication
+/// sidecar (function name → source form) for tree-shake survivors.
+pub fn compile_near_from_exprs_with_map(
+    exprs: &[LispVal],
+) -> Result<(Vec<u8>, serde_json::Value), String> {
     // Type check pass
     crate::typing::type_check_program(exprs, true)?;
 
@@ -1288,7 +1326,18 @@ pub fn compile_near_from_exprs(exprs: &[LispVal]) -> Result<Vec<u8>, String> {
         }
     }
     em.print_gas_table();
-    Ok(em.finish("_run"))
+    let wasm = em.finish("_run");
+    let mut map = serde_json::Map::new();
+    for f in &em.funcs {
+        if let Some(s) = em.fn_sources.get(&f.name) {
+            map.insert(f.name.clone(), serde_json::Value::String(s.clone()));
+        }
+    }
+    Ok((wasm, serde_json::Value::Object(map)))
+}
+
+pub fn compile_near_from_exprs(exprs: &[LispVal]) -> Result<Vec<u8>, String> {
+    Ok(compile_near_from_exprs_with_map(exprs)?.0)
 }
 
 pub fn compile_near_to_wat_from_exprs(exprs: &[LispVal]) -> Result<String, String> {

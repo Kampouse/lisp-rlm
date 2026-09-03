@@ -1,4 +1,3 @@
-use lisp_rlm_wasm::wasm_emit::compile_near;
 fn main() {
     std::panic::set_hook(Box::new(|info| {
         eprintln!("PANIC: {}", info);
@@ -35,6 +34,7 @@ fn main() {
     }) || args.iter().any(|a| a == "outlayer-p2");
     let is_wasi_p1 = args.iter().any(|a| a == "wasi-p1");
 
+    let sidecar: std::cell::RefCell<Option<serde_json::Value>> = std::cell::RefCell::new(None);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if is_p2 {
             eprintln!("Target: OutLayer P2 (Component Model)");
@@ -52,9 +52,13 @@ fn main() {
             let ir = lisp_rlm_wasm::ts_frontend::ts_to_lisp_source(&src)?;
             let exprs = lisp_rlm_wasm::parse_all(&ir)?;
             lisp_rlm_wasm::typing::type_check_program(&exprs, true)?;
-            lisp_rlm_wasm::compile_near_from_exprs(&exprs)
+            let (w, m) = lisp_rlm_wasm::wasm_emit::compile_near_from_exprs_with_map(&exprs)?;
+            sidecar.replace(Some(m));
+            Ok(w)
         } else {
-            compile_near(&src)
+            let (w, m) = lisp_rlm_wasm::wasm_emit::compile_near_with_map(&src)?;
+            sidecar.replace(Some(m));
+            Ok(w)
         }
     }));
 
@@ -76,6 +80,13 @@ fn main() {
                 .unwrap_or_else(|| args[1].replace(".lisp", ".wasm"));
             std::fs::write(&out, &wasm).unwrap();
             eprintln!("✅ {} ({} bytes)", out, wasm.len());
+            // Symbolication sidecar: fn name → source form (NEAR targets only;
+            // the OutLayer/WASI paths don't emit a name section today).
+            if let Some(m) = sidecar.borrow_mut().take() {
+                let map_path = out.replacen(".wasm", ".wasm.map", 1);
+                std::fs::write(&map_path, serde_json::to_vec_pretty(&m).unwrap()).unwrap();
+                eprintln!("🗺️  {} ({} entries)", map_path, m.as_object().map(|o| o.len()).unwrap_or(0));
+            }
         }
         Ok(Err(e)) => {
             eprintln!("Error: {}", e);

@@ -22,6 +22,7 @@ use wasm_encoder::{
 pub mod helpers;
 pub mod intrinsics;
 pub mod lambda;
+pub mod name_map;
 pub mod gas;
 pub mod const_fold;
 pub mod dynamic_call;
@@ -58,7 +59,7 @@ pub mod compile;
 pub mod int_emit;
 
 // Re-exports: public API lives in compile.rs
-pub use compile::{compile_pure, compile_standalone, compile_standalone_opts, compile_fuzz, compile_near, compile_near_untyped, compile_near_from_exprs, compile_near_to_wat_from_exprs, compile_pure_to_wat, compile_near_to_wat, resolve_modules};
+pub use compile::{compile_pure, compile_standalone, compile_standalone_opts, compile_fuzz, compile_near, compile_near_with_map, compile_near_untyped, compile_near_from_exprs, compile_near_from_exprs_with_map, compile_near_to_wat_from_exprs, compile_pure_to_wat, compile_near_to_wat, resolve_modules};
 
 
 // ── NEAR host functions (name, params, results) ──
@@ -323,6 +324,11 @@ pub struct WasmEmitter {
     pub(crate) u128h: Option<U128Helpers>, // string-based u128 helper func indices (lazily synthesized)
     pub(crate) fn_int_annotations: std::collections::HashMap<String, (usize, bool)>, // name → (n int params, ret int)
     pub(crate) raw_twins: std::collections::HashMap<String, u32>, // fn name → raw twin func idx
+    /// fn name → pretty-printed source form (defines + lambdas), for the
+    /// symbolication sidecar (.wasm.map) consumed by `near-mock symbolicate`.
+    pub(crate) fn_sources: std::collections::HashMap<String, String>,
+    /// Top-level source forms in order (same sidecar, file-level view).
+    pub(crate) source_forms: Vec<String>,
     pub(crate) need_outlayer: bool, // true if outlayer/* dispatch forms are used
     pub(crate) need_wasi_http: bool, // true if http-get is used (for P2 wasi:http path)
     pub(crate) http_urls: Vec<(String, String)>, // (authority, path) per http-get call in p2_mode
@@ -366,7 +372,7 @@ impl WasmEmitter {
             locals: HashMap::new(), next_local: 0, free_locals: Vec::new(), local_type_map: Vec::new(), current_func: None, current_param_count: 0, tc_depth: 0, try_stack: Vec::new(),
             while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 64, exports: Vec::new(),
             data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(),
-            gas_local: None, needs_frame: false, heap_ptr: 0, lambda_counter: 0, str_cat_depth: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), http_post_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false, u128h: None, fn_int_annotations: std::collections::HashMap::new(), raw_twins: std::collections::HashMap::new(), borsh_schemas: HashMap::new(), storage_get_count: 0, u128_call_count: 0, http_post_call_count: 0, env_get_count: 0,
+            gas_local: None, needs_frame: false, heap_ptr: 0, lambda_counter: 0, str_cat_depth: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), http_post_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false, u128h: None, fn_int_annotations: std::collections::HashMap::new(), raw_twins: std::collections::HashMap::new(), fn_sources: std::collections::HashMap::new(), source_forms: Vec::new(), borsh_schemas: HashMap::new(), storage_get_count: 0, u128_call_count: 0, http_post_call_count: 0, env_get_count: 0,
             func_defs: HashMap::new(),
             wasm_imports: Vec::new(),
             list_ptr_counter: 0,
@@ -691,6 +697,14 @@ impl WasmEmitter {
     pub fn emit_define(&mut self, name: &str, params: &[String], body: &LispVal) -> Result<(), String> {
         // Store AST for compile-time inlining
         self.func_defs.insert(name.to_string(), (params.to_vec(), body.clone()));
+        // Capture source for symbolication sidecar (pretty form via Display)
+        self.fn_sources.insert(name.to_string(), format!("{}", LispVal::List(
+            std::iter::once(LispVal::Sym(name.to_string()))
+                .chain(std::iter::once(LispVal::List(params.iter().map(|p| LispVal::Sym(p.clone())).collect())))
+                .chain(std::iter::once(body.clone()))
+                .collect::<Vec<_>>(),
+        )));
+        self.source_forms.push(self.fn_sources.get(name).cloned().unwrap_or_default());
         self.locals.clear(); self.next_local = 0; self.free_locals.clear(); self.local_type_map.clear(); self.needs_frame = false;
         for p in params { self.local_idx(p); }
         self.current_func = Some(name.to_string());
@@ -1266,8 +1280,11 @@ mod tests {
         // Count "call 0" occurrences — should be 0 inside the function body
         // (only the wrapper calls func 0)
         let lines: Vec<&str> = wat.lines().collect();
-        let func_start = lines.iter().position(|l| l.contains("(func (;0;)")).unwrap();
-        let func_end = lines.iter().rposition(|l| l.contains("(func (;1;)")).unwrap();
+        // match on the `(;N;)` index comment, not the raw `(func (;N;)` form —
+        // with a name section present, wasmprinter adds symbolic names
+        // (`(func $count (;0;) ...`) between the keyword and the index
+        let func_start = lines.iter().position(|l| l.contains("(func ") && l.contains(";0;)")).unwrap();
+        let func_end = lines.iter().rposition(|l| l.contains("(func ") && l.contains(";1;)")).unwrap();
         let func_body = &lines[func_start..func_end];
         let call_count = func_body.iter().filter(|l| l.trim().starts_with("call")).count();
         assert_eq!(call_count, 0, "TC body should not contain any call instructions, found {}", call_count);

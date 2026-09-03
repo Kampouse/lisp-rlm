@@ -291,6 +291,12 @@ impl WasmEmitter {
         // Pre-insert placeholder
         let total_params = params.len() + 1;
         let placeholder_idx = self.funcs.len();
+        self.fn_sources.insert(name.clone(), format!("{}", LispVal::List(
+            std::iter::once(LispVal::Sym("lambda".to_string()))
+                .chain(std::iter::once(LispVal::List(params.iter().map(|p| LispVal::Sym(p.clone())).collect())))
+                .chain(std::iter::once(body.clone()))
+                .collect::<Vec<_>>(),
+        )));
         self.funcs.push(FuncDef {
             name: name.clone(),
             param_count: total_params,

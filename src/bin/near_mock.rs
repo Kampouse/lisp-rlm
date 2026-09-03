@@ -4,6 +4,7 @@
 //! Usage:
 //!   cargo run --bin near-mock -- <wasm> <method> [args-json] [--once] [--view] [--prepaid <TGAS>]
 //!   cargo run --bin near-mock -- <wasm> exports|imports|reset
+//!   cargo run --bin near-mock -- <wasm> symbolicate <idx-or-name> [map-file]
 //!
 //! Gas model (v2, 2026-08-27): wasmtime fuel, 1 fuel = 1 gas unit.
 //! Host-call costs are indicative legacy NEAR fee-schedule values.
@@ -2261,6 +2262,67 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if method == "reset" {
         let _ = std::fs::remove_file(state_file());
         println!("🗑️  State cleared");
+        return Ok(());
+    }
+
+    // near-mock <wasm> symbolicate <idx-or-name> [map-file]
+    // Resolve a trap frame ("wasm function 22" or a name-section name like
+    // "run:run") to its source form via the compile-time .wasm.map sidecar.
+    // Also serves testnet traps: download the deployed wasm, keep the .wasm.map
+    // you compiled with, and decode locally — same name section everywhere.
+    if method == "symbolicate" {
+        let target = args
+            .get(3)
+            .map(|s| s.trim_matches('"').to_string())
+            .ok_or("symbolicate: need <idx-or-name> [map-file]?")?;
+        let map_path = args
+            .get(4)
+            .map(|s| s.clone())
+            .unwrap_or_else(|| format!("{}.map", wasm_path));
+        let map: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_slice(&std::fs::read(&map_path).map_err(|e| {
+                format!("cannot read sidecar {}: {} (compile with ./target/release/compile)", map_path, e)
+            })?)
+            .map_err(|e| format!("bad sidecar {}: {}", map_path, e))?;
+        let wasm_bytes = std::fs::read(wasm_path)?;
+        let names =
+            lisp_rlm_wasm::wasm_emit::name_map::decode_function_names(&wasm_bytes)
+                .unwrap_or_default();
+        // Resolve: numeric index → name via the section; otherwise direct name
+        // match ("run:run" or "run"); wrapper names match their inner fn.
+        let key: Option<String> = if let Ok(idx) = target.parse::<u32>() {
+            names
+                .iter()
+                .find(|(i, _)| *i == idx)
+                .map(|(_, n)| n.clone())
+        } else {
+            Some(target.to_string())
+        };
+        let resolve = |k: &str| -> Option<&str> {
+            if let Some(v) = map.get(k) {
+                return v.as_str();
+            }
+            if let Some((_, inner)) = k.split_once(':') {
+                if let Some(v) = map.get(inner) {
+                    return v.as_str();
+                }
+            }
+            for (name, v) in map.iter() {
+                if name.ends_with(&format!(":{}", k)) {
+                    return v.as_str();
+                }
+            }
+            None
+        };
+        match key.as_deref().and_then(resolve) {
+            Some(form) => {
+                println!("symbolicate: {} → {}", target, form);
+            }
+            None => {
+                println!("symbolicate: {} → <no mapping>", target);
+                println!("  known names: {:?}", names.iter().map(|(_, n)| n).collect::<Vec<_>>());
+            }
+        }
         return Ok(());
     }
 

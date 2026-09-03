@@ -20,9 +20,11 @@ rm -f "$OUT"   # never pass on a stale artifact
 [ -f "$OUT" ] || { echo "✗ compile failed — $OUT not produced"; exit 1; }
 
 # Optional wasm-opt shrink pass (--enable-bulk-memory-opt required: emitted
-# code uses memory.copy). Trace-equivalence re-verified after enabling.
+# code uses memory.copy). -g keeps the `name` custom section (and remaps
+# indices through -Oz deletions) so wasm traps symbolicate to fn names.
+# Trace-equivalence re-verified after enabling.
 if command -v wasm-opt >/dev/null 2>&1; then
-  wasm-opt --enable-bulk-memory-opt -Oz "$OUT" -o "$OUT.opt" \
+  wasm-opt --enable-bulk-memory-opt -g -Oz "$OUT" -o "$OUT.opt" \
     && wasm-tools validate "$OUT.opt" 2>/dev/null || true
   if [ -f "$OUT.opt" ]; then
     mv "$OUT.opt" "$OUT"
