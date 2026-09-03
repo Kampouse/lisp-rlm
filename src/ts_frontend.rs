@@ -438,6 +438,11 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
         if kind == 4 {
             BIGINT_NAMES.with(|s| s.borrow_mut().push(n.clone()));
         }
+        if kind == 0 {
+            // See lower_function: string params skip the to-string
+            // interpolation wrap (2026-09-02).
+            mark_string_local(&n);
+        }
         param_names.push((n.clone(), kind));
     }
 
@@ -683,6 +688,13 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, LispVal
         };
         if kind == 4 {
             BIGINT_NAMES.with(|s| s.borrow_mut().push(n.clone()));
+        }
+        if kind == 0 {
+            // String-typed params (unannotated defaults to str in this
+            // dialect) register as string locals: template interpolation
+            // skips the defensive to-string wrap, and `+` dispatch sees
+            // stringness the same way the checker does (2026-09-02).
+            mark_string_local(&n);
         }
         param_names.push((n.clone(), kind));
     }
@@ -1427,7 +1439,7 @@ fn lower_while_parts_core(w: &oxc_ast::ast::WhileStatement<'_>) -> Result<(bool,
         }
         let binds: Vec<LispVal> = hoisted
             .iter()
-            .map(|(n, _)| list(vec![Sym(n.clone()), Num(0)]))
+            .map(|(n, _)| list(vec![Sym(n.clone()), list(vec![Sym("quote"), LispVal::Nil])]))
             .collect();
         return Ok((false, list(vec![Sym("let"), list(binds), while_e])));
     }
@@ -1492,7 +1504,7 @@ fn lower_while_parts_core(w: &oxc_ast::ast::WhileStatement<'_>) -> Result<(bool,
     // AFTER the loop, so the flags must outlive this let.
     let mut binds = Vec::new();
     for (n, _) in &hoisted {
-        binds.push(list(vec![Sym(n.clone()), Num(0)]));
+        binds.push(list(vec![Sym(n.clone()), list(vec![Sym("quote"), LispVal::Nil])]));
     }
     let while_e = list(vec![Sym("while"), cond_e, body_e]);
     if binds.is_empty() {
@@ -2204,6 +2216,110 @@ fn is_string_local(n: &str) -> bool {
     STRING_LOCALS.with(|s| s.borrow().iter().any(|x| x == n))
 }
 
+/// CERTAINTY check for template interpolation: does this expression lower to
+/// a string without needing the defensive (to-string …) wrap? Whitelist-only
+/// — every false answer keeps today's correct-but-costly wrap, so unknown
+/// shapes can never regress the int-arg-renders-empty protection.
+/// (2026-09-02: the wrap costs a constant ~622 emitted instructions per
+/// interpolation — probes hand_str h2−h1 and hand_let h4−h5; nostr-gov
+/// carried 131 wraps. Trust basis = the same predicates `+` dispatch
+/// already uses for str-cat vs num-add, plus STRING_LOCALS/CONST_FOLDS.)
+fn interp_arg_is_string(e: &Expression<'_>) -> bool {
+    match e {
+        Expression::StringLiteral(_) | Expression::TemplateLiteral(_) => true,
+        Expression::Identifier(id) => {
+            is_string_local(id.name.as_str())
+                || BIGINT_LOCALS.with(|m| m.borrow().iter().any(|x| *x == id.name.as_str()))
+                || CONST_FOLDS.with(|m| {
+                    m.borrow()
+                        .iter()
+                        .any(|(k, v)| k == id.name.as_str() && matches!(v, LispVal::Str(_)))
+                })
+        }
+        Expression::BinaryExpression(b) => {
+            if b.operator == BinaryOperator::Addition
+                && (interp_arg_is_string(&b.left) || interp_arg_is_string(&b.right))
+            {
+                return true;
+            }
+            // u128 arithmetic family: results are decimal STRINGS in this
+            // ABI — the checker types u128/* as str (str-cat accepts a raw
+            // (u128/add …) operand; the ft suite asserted that exact IR).
+            // Certainty needs BOTH sides bigint-shaped; comparisons
+            // (lt/gt/…) emit ints and stay excluded.
+            matches!(
+                b.operator,
+                BinaryOperator::Addition
+                    | BinaryOperator::Subtraction
+                    | BinaryOperator::Multiplication
+                    | BinaryOperator::Division
+                    | BinaryOperator::Remainder
+            ) && expr_is_bigint(&b.left)
+                && expr_is_bigint(&b.right)
+        }
+        // parens hide the inner expression — look through them
+        // (expr_is_bigint does the same; `"x" + (a + b)` lands here)
+        Expression::ParenthesizedExpression(pe) => interp_arg_is_string(&pe.expression),
+        Expression::CallExpression(c) => {
+            if let Expression::Identifier(id) = &c.callee {
+                // u128 ops return DECIMAL STRINGS at runtime (bigint surface
+                // convention) — str-cat takes them raw; wrapping in to-string
+                // would corrupt the exact-IR contract (FT supply test).
+                if id.name.as_str().starts_with("u128/") {
+                    return true;
+                }
+                match id.name.as_str() {
+                    // explicit converters + the string-returning json getter
+                    "toStr" | "toString" | "strCat" | "jsonGetStr" => return true,
+                    _ => {}
+                }
+            }
+            // S.slice/S.charAt/S.concat/… return str — but ONLY the
+            // string-returning ones: indexOf/charCodeAt/codePointAt/
+            // lastIndexOf/search return NUMBERS, and a bare num inside
+            // (str …) renders empty (the quirk the to-string wrap exists
+            // to shield). Whitelist strictly (tour2 indexOf, 2026-09-02).
+            expr_returns_str_method(e)
+        }
+        _ => false,
+    }
+}
+
+/// str-cat operand lowering: operands not PROVABLY strings get wrapped in
+/// (to-string …) — the checker rejects raw nums in str-cat even though the
+/// variadic emitter coerces at runtime (2026-09-02: `s + x` with a string
+/// param s reached str-cat with a bare number and failed type_check).
+fn lower_strcat_operand(e: &Expression<'_>) -> Result<LispVal, String> {
+    if interp_arg_is_string(e) {
+        lower_expr(e)
+    } else {
+        Ok(list(vec![Sym("to-string"), lower_expr(e)?]))
+    }
+}
+
+/// Strictly string-RETURNING string methods (safe to skip the to-string
+/// wrap). Complement of expr_is_str_method_call, which is dispatch-trust
+/// only (any method call makes `+` concat) and includes number-returning
+/// members like indexOf.
+fn expr_returns_str_method(e: &Expression<'_>) -> bool {
+    match e {
+        Expression::CallExpression(c) => {
+            if let Expression::StaticMemberExpression(m) = &c.callee {
+                let prop = m.property.name.as_str();
+                return matches!(
+                    prop,
+                    "slice" | "substring" | "substr" | "charAt" | "concat"
+                        | "toUpperCase" | "toLowerCase" | "trim"
+                        | "trimStart" | "trimEnd" | "repeat"
+                        | "padStart" | "padEnd" | "at" | "toString"
+                );
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
 fn mark_string_local(n: &str) {
     STRING_LOCALS.with(|s| {
         let mut b = s.borrow_mut();
@@ -2297,8 +2413,16 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                 }
                 if i < t.expressions.len() {
                     // Auto to-string: shields TS authors from the (str)
-                    // int-arg renders-empty quirk.
-                    parts.push(list(vec![Sym("to-string"), lower_expr(&t.expressions[i])?]));
+                    // int-arg renders-empty quirk. SKIP the wrap when the
+                    // expression is CERTAIN to lower to a string (same
+                    // trust basis `+` uses for str-cat dispatch — see
+                    // interp_arg_is_string): the wrap costs ~622 emitted
+                    // instructions per interpolation (2026-09-02 probes).
+                    if interp_arg_is_string(&t.expressions[i]) {
+                        parts.push(lower_expr(&t.expressions[i])?);
+                    } else {
+                        parts.push(list(vec![Sym("to-string"), lower_expr(&t.expressions[i])?]));
+                    }
                 }
             }
             if parts.is_empty() {
@@ -2466,8 +2590,17 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                         }
                     }
                     if stringy_nonnumeric(&b.left) || stringy_nonnumeric(&b.right) {
-                        let l = lower_expr(&b.left)?;
-                        let r = lower_expr(&b.right)?;
+                        // str-cat dispatch: wrap operands that are NOT
+                        // provably strings in (to-string …) — the checker
+                        // rejects raw nums in str-cat (2026-09-02: string
+                        // PARAMS became stringy via mark_string_local, so
+                        // `s + x` reached str-cat with a bare number and
+                        // failed type_check "args must all be str"; the
+                        // variadic emitter coerces at runtime but the
+                        // checker is stricter — make both sides provably
+                        // str).
+                        let l = lower_strcat_operand(&b.left)?;
+                        let r = lower_strcat_operand(&b.right)?;
                         return Ok(list(vec![Sym("str-cat"), l, r]));
                     }
                 }
@@ -2524,8 +2657,8 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
             if b.operator == BinaryOperator::Addition
                 && (expr_is_stringy(&b.left) || expr_is_stringy(&b.right))
             {
-                let l = lower_expr(&b.left)?;
-                let r = lower_expr(&b.right)?;
+                let l = lower_strcat_operand(&b.left)?;
+                let r = lower_strcat_operand(&b.right)?;
                 return Ok(list(vec![Sym("str-cat"), l, r]));
             }
             // String-METHOD receivers concat too: `acc + S.slice(...)`,
@@ -2536,8 +2669,8 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
             if b.operator == BinaryOperator::Addition
                 && (expr_is_str_method_call(&b.left) || expr_is_str_method_call(&b.right))
             {
-                let l = lower_expr(&b.left)?;
-                let r = lower_expr(&b.right)?;
+                let l = lower_strcat_operand(&b.left)?;
+                let r = lower_strcat_operand(&b.right)?;
                 return Ok(list(vec![Sym("str-cat"), l, r]));
             }
             // String-TYPED LOCAL operands concat: `out + x` where `out` was
@@ -2551,8 +2684,8 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                     matches!(e, Expression::Identifier(id) if is_string_local(id.name.as_str()))
                 };
                 if side_is_string_local(&b.left) || side_is_string_local(&b.right) {
-                    let l = lower_expr(&b.left)?;
-                    let r = lower_expr(&b.right)?;
+                    let l = lower_strcat_operand(&b.left)?;
+                    let r = lower_strcat_operand(&b.right)?;
                     return Ok(list(vec![Sym("str-cat"), l, r]));
                 }
             }

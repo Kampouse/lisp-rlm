@@ -1576,6 +1576,10 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
         let entry_pos = run_pos.or_else(|| {
             em.funcs.iter().rposition(|f| !f.name.starts_with("__"))
         }).unwrap_or(em.funcs.len() - 1);
+        if std::env::var("OUTLAYER_DEBUG").is_ok() {
+            eprintln!("funcs: {:?}", em.funcs.iter().map(|f| f.name.as_str()).collect::<Vec<_>>());
+            eprintln!("entry_pos={entry_pos} name={}", em.funcs[entry_pos].name);
+        }
         let last_idx = internal_base + entry_pos as u32;
         let last_func = &em.funcs[entry_pos];
         let param_count = last_func.param_count;

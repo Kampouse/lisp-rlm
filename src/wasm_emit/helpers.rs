@@ -1331,6 +1331,104 @@ impl WasmEmitter {
     /// record = 18 parts = 17 inline ~700B copies ≈ 12KB per site; that is
     /// why the TS twin wasm was +46% over lisp). Same trick as __to_string:
     /// emit the body ONCE as __str_concat(a,b) and Call it from sites.
+/// Generic shared-helper emitter: body = params on stack + generator.
+    /// Scans max local index to size the frame (same pattern as
+    /// __to_string / __str_concat).
+    #[allow(clippy::type_complexity)]
+    fn ensure_shared_fn<F>(
+        &mut self,
+        name: &str,
+        n_params: usize,
+        build: F,
+    ) -> u32
+    where
+        F: FnOnce(&mut Self) -> Result<Vec<Instruction<'static>>, String>,
+    {
+        if let Some(idx) = self.funcs.iter().position(|f| f.name == name) {
+            return idx as u32;
+        }
+        // Fresh local frame for the helper (params are the first I64
+        // locals), so its local_idx/local_idx_i32 mix is captured exactly
+        // (2026-09-02: an all-I64 declaration broke validation — str_to_num
+        // uses I32 ptr/len locals). Same save/restore as int_emit twins.
+        let saved = (
+            std::mem::take(&mut self.locals),
+            self.next_local,
+            std::mem::take(&mut self.free_locals),
+            std::mem::take(&mut self.local_type_map),
+        );
+        self.locals.clear();
+        self.next_local = n_params as u32;
+        self.free_locals.clear();
+        self.local_type_map = vec![ValType::I64; n_params];
+        let body = build(self).unwrap_or_else(|e| panic!("shared fn {name}: {e}"));
+        let types = std::mem::take(&mut self.local_type_map);
+        // restore the interrupted compilation's frame
+        self.locals = saved.0;
+        self.next_local = saved.1;
+        self.free_locals = saved.2;
+        self.local_type_map = saved.3;
+        // locals section entries: runs of same type
+        let mut entries: Vec<(u32, ValType)> = Vec::new();
+        let mut cur = None;
+        let mut n = 0u32;
+        for t in types.into_iter().skip(n_params) {
+            if cur == Some(t) {
+                n += 1;
+            } else {
+                if n > 0 {
+                    if let Some(ty) = cur {
+                        entries.push((n, ty));
+                    }
+                }
+                cur = Some(t);
+                n = 1;
+            }
+        }
+        if n > 0 {
+            if let Some(ty) = cur {
+                entries.push((n, ty));
+            }
+        }
+        let total = n_params + entries.iter().map(|(c, _)| *c as usize).sum::<usize>();
+        self.funcs.push(FuncDef {
+            name: name.to_string(),
+            param_count: n_params,
+            local_count: total,
+            instrs: body,
+            local_entries: if entries.is_empty() { None } else { Some(entries) },
+            custom_type: None,
+        });
+        (self.funcs.len() - 1) as u32
+    }
+
+    /// Shared (to-string x): the int_to_str_clean routine, emitted ONCE
+    /// per module (2026-09-02). Was inlined per call site — TS template
+    /// lowering auto-wraps every interpolation, so TS contracts carried
+    /// dozens of inline digit-conversion copies.
+    pub(crate) fn ensure_int_to_str_func(&mut self) -> u32 {
+        self.ensure_shared_fn("__int_to_str", 1, |s| {
+            let pre: Vec<Instruction<'static>> = vec![Instruction::LocalGet(0)];
+            s.int_to_str_clean_from(pre)
+        })
+    }
+
+    /// Shared (str->num x): the str_to_num parse routine, ONCE per module.
+    pub(crate) fn ensure_str_to_num_func(&mut self) -> u32 {
+        self.ensure_shared_fn("__str_to_num", 1, |s| {
+            let pre: Vec<Instruction<'static>> = vec![Instruction::LocalGet(0)];
+            s.str_to_num_from(pre)
+        })
+    }
+
+    /// Shared (json-quote x): the escaping routine, ONCE per module.
+    pub(crate) fn ensure_json_quote_func(&mut self) -> u32 {
+        self.ensure_shared_fn("__json_quote", 1, |s| {
+            let pre: Vec<Instruction<'static>> = vec![Instruction::LocalGet(0)];
+            s.json_quote_emit_from(pre)
+        })
+    }
+
     pub(crate) fn ensure_str_concat_func(&mut self) -> u32 {
         if let Some(idx) = self.funcs.iter().position(|f| f.name == "__str_concat") {
             return idx as u32;

@@ -52,9 +52,14 @@ impl WasmEmitter {
                 queue.push_back(func_idx);
             }
         }
-        // If no exports, keep last user function (skip __ helpers)
+        // If no exports, keep last user function. Skip ALL "__"-prefixed
+        // helpers — matching the outlayer entry selector (rposition
+        // !starts_with("__")). 2026-09-02: shared helpers (__int_to_str,
+        // __str_to_num, __json_quote, __str_concat) are appended AFTER the
+        // last user fn; the old "__h_"-only filter let them win the
+        // "last function" slot and shook main/id out of no-export programs.
         if self.exports.is_empty() && !self.funcs.is_empty() {
-            if let Some(idx) = (0..self.funcs.len()).rev().find(|&i| !self.funcs[i].name.starts_with("__h_")) {
+            if let Some(idx) = (0..self.funcs.len()).rev().find(|&i| !self.funcs[i].name.starts_with("__")) {
                 if !reachable[idx] { reachable[idx] = true; queue.push_back(idx); }
             }
         }
@@ -136,6 +141,23 @@ impl WasmEmitter {
             }
         }
         estimates
+    }
+
+    /// Print the per-export instruction/gas estimate table (stderr).
+    /// Single source of truth — used by compile_near (lisp path) and
+    /// compile_near_from_exprs (TS frontend path).
+    pub fn print_gas_table(&self) {
+        let estimates = self.gas_estimate();
+        if estimates.is_empty() {
+            return;
+        }
+        eprintln!("╔════════════════════════════════════════════════════╗");
+        eprintln!("║  Gas Estimation (per export)                       ║");
+        eprintln!("╠════════════════════════════════════════════════════╣");
+        for (name, instrs, gas) in &estimates {
+            eprintln!("║  {:<24} {:>4} instrs  ~{:.0} gas", name, instrs, gas);
+        }
+        eprintln!("╚════════════════════════════════════════════════════╝");
     }
 
     pub fn finish(&mut self, default_export: &str) -> Vec<u8> {
@@ -1144,16 +1166,7 @@ pub fn compile_near(source: &str) -> Result<Vec<u8>, String> {
         }
     }
     // Emit gas estimates before finish consumes the emitter
-    let estimates = em.gas_estimate();
-    if !estimates.is_empty() {
-        eprintln!("╔════════════════════════════════════════════════════╗");
-        eprintln!("║  Gas Estimation (per export)                       ║");
-        eprintln!("╠════════════════════════════════════════════════════╣");
-        for (name, instrs, gas) in &estimates {
-            eprintln!("║  {:<24} {:>4} instrs  ~{:.0} gas", name, instrs, gas);
-        }
-        eprintln!("╚════════════════════════════════════════════════════╝");
-    }
+    em.print_gas_table();
 
     let wasm = em.finish("_run");
     Ok(wasm)
@@ -1274,6 +1287,7 @@ pub fn compile_near_from_exprs(exprs: &[LispVal]) -> Result<Vec<u8>, String> {
             }
         }
     }
+    em.print_gas_table();
     Ok(em.finish("_run"))
 }
 

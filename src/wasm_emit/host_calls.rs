@@ -334,6 +334,18 @@ impl WasmEmitter {
         a: &[LispVal],
     ) -> Result<Vec<Instruction<'static>>, String> {
         let n = self.expr(&a[0])?;
+        self.int_to_str_clean_from(n)
+    }
+
+    /// Body of int_to_str_clean given pre-evaluated input instrs.
+    /// Split (2026-09-02) so ensure_int_to_str_func can emit the routine
+    /// ONCE per module — it was inlined at every (to-string x) call site,
+    /// and TS template lowering auto-wraps every interpolation, so TS
+    /// contracts carried 30+ inline copies (execute alone had ~35).
+    pub(crate) fn int_to_str_clean_from(
+        &mut self,
+        n: Vec<Instruction<'static>>,
+    ) -> Result<Vec<Instruction<'static>>, String> {
         let n_i = self.local_idx("__its2_n");
         let neg_i = self.local_idx("__its2_neg");
         let len_i = self.local_idx("__its2_len");

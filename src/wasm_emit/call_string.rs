@@ -4277,13 +4277,28 @@ impl WasmEmitter {
                 if a.len() != 1 {
                     return Err("string->number: expected 1 arg".into());
                 }
-                self.str_to_num(&a[0])
+                // Shared __str_to_num call (2026-09-02): parse routine was
+                // inlined per site; TS/lisp storage coercions repeat it.
+                let idx = self.ensure_str_to_num_func();
+                let mut v = self.expr(&a[0])?;
+                v.push(Instruction::Call(crate::wasm_emit::USER_BASE | idx));
+                return Ok(v);
             }
             "to-string" | "int_to_str" => {
-                return self.int_to_str_clean(&a);
+                // Shared __int_to_str call (2026-09-02): TS templates wrap
+                // every interpolation — inline copies were 30+/contract.
+                let idx = self.ensure_int_to_str_func();
+                let mut v = self.expr(&a[0])?;
+                v.push(Instruction::Call(crate::wasm_emit::USER_BASE | idx));
+                return Ok(v);
             }
             "json-quote" => {
-                return self.json_quote_emit(&a);
+                // Shared __json_quote call (2026-09-02): TS frontend
+                // auto-inserts json-quote around interpolated JSON values.
+                let idx = self.ensure_json_quote_func();
+                let mut v = self.expr(&a[0])?;
+                v.push(Instruction::Call(crate::wasm_emit::USER_BASE | idx));
+                return Ok(v);
             }
             "str-len" => {
                 if a.len() != 1 {
@@ -4444,6 +4459,16 @@ impl WasmEmitter {
         if a.len() != 1 {
             return Err("json-quote: expected 1 arg".into());
         }
+        let pre = self.expr(&a[0])?;
+        self.json_quote_emit_from(pre)
+    }
+
+    /// Body of json_quote_emit given pre-evaluated input (2026-09-02 split
+    /// for the shared __json_quote helper — the TS frontend auto-inserts
+    /// (json-quote ...) around interpolated values when building JSON, so
+    /// TS contracts carried one inline escaping routine per site).
+    pub(crate) fn json_quote_emit_from(&mut self, pre: Vec<Instruction<'static>>) -> Result<Vec<Instruction<'static>>, String> {
+        use wasm_encoder::Instruction as I;
         let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
         let v_i = self.local_idx("__jq_v");
         let p_i = self.local_idx("__jq_p");
@@ -4456,8 +4481,8 @@ impl WasmEmitter {
         let dst_i = self.local_idx("__jq_dst");
         let ts_idx = self.ensure_to_string_func();
         let mut v = Vec::new();
-        // eval arg once
-        v.extend(self.expr(&a[0])?);
+        // eval arg once — pre-evaluated by caller
+        v.extend(pre);
         v.push(I::LocalSet(v_i));
         // runtime dispatch on tag
         v.push(I::Block(BlockType::Result(ValType::I64)));
@@ -5747,6 +5772,13 @@ impl WasmEmitter {
     }
 
     fn str_to_num(&mut self, arg: &LispVal) -> Result<Vec<Instruction<'static>>, String> {
+        let pre = self.expr(arg)?;
+        self.str_to_num_from(pre)
+    }
+
+    /// Body of str_to_num given pre-evaluated input instrs (2026-09-02
+    /// split for the shared __str_to_num helper — was inline per site).
+    pub(crate) fn str_to_num_from(&mut self, pre: Vec<Instruction<'static>>) -> Result<Vec<Instruction<'static>>, String> {
         let ma = wasm_encoder::MemArg {
             offset: 0,
             align: 0,
@@ -5761,8 +5793,8 @@ impl WasmEmitter {
         let all_i = self.local_idx_i32("__stn_all"); // 1 iff every char so far is a digit
         let mut v = Vec::new();
 
-        // Evaluate arg (tagged string)
-        v.extend(self.expr(arg)?);
+        // Evaluate arg (tagged string) — pre-evaluated by caller
+        v.extend(pre);
         v.push(Instruction::LocalSet(str_i));
 
         // Untag: get ptr and len
