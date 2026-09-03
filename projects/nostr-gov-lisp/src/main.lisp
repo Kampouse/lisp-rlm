@@ -552,16 +552,6 @@
       (if (= (str-slice s i (+ i 1)) ",")
           (if (= k 0) (str-slice s start i) (nth-field-loop s (- k 1) (+ i 1) n (+ i 1)))
           (nth-field-loop s k (+ i 1) n start))))
-(define (pow2 k)
-  (pow2-loop k "1"))
-(define (pow2-loop k acc)
-  (if (= k 0)
-      acc
-      (pow2-loop (- k 1) (u128/mul acc "2"))))
-(define (bit-set? bm k)
-  (= (u128/mod (u128/div bm (pow2 k)) "2") "1"))
-(define (set-bit bm k)
-  (u128/add bm (pow2 k)))
 (define (propose)
   ;; v2: proposals are TYPED. act "" = payout (legacy shape), "appr" =
   ;; rotate this wallet's approvers (current approvers must approve),
@@ -697,11 +687,14 @@
              1)
             0
             (die "ERR_APPROVER_SIG_INVALID"))
-        (if (bit-set? bl (str->num ix))
-            (die "ERR_ALREADY_APPROVED")
-            0)
+        ;; native i64 bitmap — bl is a decimal u64, approver ix < 64
+        (let ((bln (str->num bl))
+              (ixn (str->num ix)))
+          (if (!= (band bln (shl 1 ixn)) 0)
+              (die "ERR_ALREADY_APPROVED")
+              0))
         (let ((nac (+ (str->num ac) 1))
-              (nbl (set-bit bl (str->num ix)))
+              (nbl (to-string (bor (str->num bl) (shl 1 (str->num ix)))))
               (nsth (if (>= (+ (str->num ac) 1) (str->num thr))
                         "approved"
                         "active")))
@@ -735,7 +728,15 @@
       (if (u128/lt (json-get-str "exp" p) (to-string ts))
           (die "ERR_PROPOSAL_EXPIRED")
           0)
-      (let ((act (json-get-str "act" p)))
+      (let ((act (json-get-str "act" p))
+            (expp (json-get-str "exp" p))
+            (amtp (json-get-str "amt" p))
+            (top (json-get-str "to" p))
+            (tkp (json-get-str "tk" p))
+            (npp (json-get-str "np" p))
+            (ntp (json-get-str "nt" p))
+            (blp (json-get-str "bl" p))
+            (acp (json-get-str "ac" p)))
         ;; while paused, only the unpause recovery path may execute
         (if (!= (str-length (get-str "paused")) 0)
             (if (= act "unp")
@@ -771,15 +772,15 @@
             0)
         (near/storage_set (str "p:" name ":" id)
                           (str "{\"id\":\"" id "\",\"st\":\"executed\",\"exp\":\""
-                               (json-get-str "exp" p) "\",\"amt\":\"" (json-get-str "amt" p)
-                               "\",\"to\":\"" (json-get-str "to" p)
-                               "\",\"tk\":\"" (json-get-str "tk" p)
+                               expp "\",\"amt\":\"" amtp
+                               "\",\"to\":\"" top
+                               "\",\"tk\":\"" tkp
                                "\",\"act\":\"" act
-                               "\",\"np\":\"" (json-get-str "np" p)
-                               "\",\"nt\":\"" (json-get-str "nt" p)
-                               "\",\"bl\":\"" (json-get-str "bl" p)
+                               "\",\"np\":\"" npp
+                               "\",\"nt\":\"" ntp
+                               "\",\"bl\":\"" blp
                                "\",\"bh\":\"0\",\"ac\":\""
-                               (json-get-str "ac" p) "\"}"))
+                               acp "\"}"))
         (near/log (str "proposal " id " (" act ") executed: " name))
         0))))
 

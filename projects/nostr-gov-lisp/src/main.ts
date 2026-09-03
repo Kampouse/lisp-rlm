@@ -160,29 +160,6 @@ function nthField(s: string, k: number) {
   return done === 1 ? out : kk === 0 ? strSlice(s, start, n) : "";
 }
 
-// u128-string bitmap powers of two
-function pow2(k: number) {
-  let acc = "1";
-  let i = 0;
-  while (i < k) {
-    acc = u128.mul(acc, "2");
-    i = i + 1;
-  }
-  return acc;
-}
-
-function bmBitSet(bm: string, k: number) {
-  return u128.add(bm, pow2(k));
-}
-
-function bmBitIsSet(bm: string, k: number) {
-  return u128.mod(u128.div(bm, pow2(k)), "2") === "1" ? 1 : 0;
-}
-
-// ── Phase 1.5: event auth (nostr kind 37500) ─────────────────────────────
-// Tag parsing with LITERAL needles only (str-index-of constraint at emit
-// time) — each extractor inlines its own needle, mirroring the lisp twin.
-
 const EMPTY = "";
 
 function tagAction(tags: string) {
@@ -568,11 +545,13 @@ export function approve() {
   if (ok !== 1) {
     die("ERR_APPROVER_SIG_INVALID");
   }
-  if (bmBitIsSet(bl, ixn) === 1) {
+  // native i64 bitmap — bl is a decimal u64, approver ix < 64
+  const bln = strToNum(bl);
+  if ((bln & (1 << ixn)) !== 0) {
     die("ERR_ALREADY_APPROVED");
   }
   const nac = strToNum(ac) + 1;
-  const nbl = bmBitSet(bl, ixn);
+  const nbl = toStr(bln | (1 << ixn));
   const nsth = nac >= strToNum(thr) ? "approved" : "active";
   const tk = jsonGet("tk", p);
   const act = jsonGet("act", p);
@@ -602,6 +581,14 @@ export function execute() {
     die("ERR_PROPOSAL_EXPIRED");
   }
   const act = jsonGet("act", p);
+  const expp = jsonGet("exp", p);
+  const amtp = jsonGet("amt", p);
+  const top = jsonGet("to", p);
+  const tkp = jsonGet("tk", p);
+  const npp = jsonGet("np", p);
+  const ntp = jsonGet("nt", p);
+  const blp = jsonGet("bl", p);
+  const acp = jsonGet("ac", p);
   // while paused, only the unpause recovery path may execute
   if (strLength(getStr("paused")) !== 0) {
     if (act !== "unp") {
@@ -626,7 +613,7 @@ export function execute() {
     const pi = near.promiseBatchCreate(tk);
     near.promiseBatchActionFunctionCall(pi, "ft_transfer", `{"receiver_id":"${jsonGet("to", p)}","amount":"${jsonGet("amt", p)}","memo":"nostr-gov"}`, "1", 5000000000000);
   }
-  near.storageSet(`p:${name}:${id}`, `{"id":"${id}","st":"executed","exp":"${jsonGet("exp", p)}","amt":"${jsonGet("amt", p)}","to":"${jsonGet("to", p)}","tk":"${jsonGet("tk", p)}","act":"${act}","np":"${jsonGet("np", p)}","nt":"${jsonGet("nt", p)}","bl":"${jsonGet("bl", p)}","bh":"0","ac":"${jsonGet("ac", p)}"}`);
+  near.storageSet(`p:${name}:${id}`, `{"id":"${id}","st":"executed","exp":"${expp}","amt":"${amtp}","to":"${top}","tk":"${tkp}","act":"${act}","np":"${npp}","nt":"${ntp}","bl":"${blp}","bh":"0","ac":"${acp}"}`);
   near.log(`proposal ${id} (${act}) executed: ${name}`);
   return 0;
 }
