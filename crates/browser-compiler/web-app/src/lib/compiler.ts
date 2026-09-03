@@ -612,23 +612,30 @@ function buildNearEnv(): Record<string, Function> {
     },
 
     // ===== Context =====
-    current_account_id: (resultPtr: bigint) => {
-      writeNearString(Number(resultPtr), nearContext.currentAccount);
+    // Register-based per NEAR spec (nearcore imports.rs) and the wasm
+    // emitter's HOST_FUNCS table: current_account_id(register_id) writes
+    // the value into the register; the contract then read_register()s it.
+    // (2026-09-03: the mock used a legacy direct-write + length-prefix-at-
+    // ptr-4 convention. The emitter calls these with register_id 0, so the
+    // mock wrote at ptr 0 then setUint32(-4) → DataView RangeError — every
+    // signer-using TS example crashed at instantiation/first call.)
+    current_account_id: (registerId: bigint) => {
+      nearRegisters.set(Number(registerId), new TextEncoder().encode(nearContext.currentAccount));
     },
-    signer_account_id: (resultPtr: bigint) => {
-      writeNearString(Number(resultPtr), nearContext.signerAccount);
+    signer_account_id: (registerId: bigint) => {
+      nearRegisters.set(Number(registerId), new TextEncoder().encode(nearContext.signerAccount));
     },
-    predecessor_account_id: (resultPtr: bigint) => {
-      writeNearString(Number(resultPtr), nearContext.predecessorAccount);
+    predecessor_account_id: (registerId: bigint) => {
+      nearRegisters.set(Number(registerId), new TextEncoder().encode(nearContext.predecessorAccount));
     },
     block_index: (): bigint => nearContext.blockIndex,
     block_timestamp: (): bigint => nearContext.blockTimestamp,
     epoch_height: (): bigint => nearContext.epochHeight,
-    account_balance: (resultPtr: bigint) => {
-      writeNearU128(Number(resultPtr), nearContext.accountBalance);
+    account_balance: (registerId: bigint) => {
+      writeRegisterU128(registerId, nearContext.accountBalance);
     },
-    attached_deposit: (resultPtr: bigint) => {
-      writeNearU128(Number(resultPtr), nearContext.attachedDeposit);
+    attached_deposit: (registerId: bigint) => {
+      writeRegisterU128(registerId, nearContext.attachedDeposit);
     },
     prepaid_gas: (): bigint => nearContext.prepaidGas,
     used_gas: (): bigint => BigInt(1_000_000_000_000),
@@ -637,16 +644,20 @@ function buildNearEnv(): Record<string, Function> {
     },
 
     // ===== Crypto (stubs) =====
-    sha256: (dataPtr: bigint, dataLen: bigint, resultPtr: bigint) => {
-      nearMemBytes().set(new Uint8Array(32), Number(resultPtr));
+    // Spec arg order: sha256(value_len, value_ptr, output_ptr) — hash is
+    // written as 32 raw bytes at output_ptr. (Stub digest: zeros. TS
+    // contracts calling near.sha256Hash get an INLINED implementation in
+    // the emitted wasm and never hit this import.)
+    sha256: (valueLen: bigint, valuePtr: bigint, outputPtr: bigint) => {
+      nearMemBytes().set(new Uint8Array(32), Number(outputPtr));
     },
-    random_seed: (resultPtr: bigint) => {
+    random_seed: (registerId: bigint) => {
       const seed = new Uint8Array(32);
       crypto.getRandomValues(seed);
-      nearMemBytes().set(seed, Number(resultPtr));
+      nearRegisters.set(Number(registerId), seed);
     },
-    keccak256: (dataPtr: bigint, dataLen: bigint, resultPtr: bigint) => {
-      nearMemBytes().set(new Uint8Array(32), Number(resultPtr));
+    keccak256: (valueLen: bigint, valuePtr: bigint, outputPtr: bigint) => {
+      nearMemBytes().set(new Uint8Array(32), Number(outputPtr));
     },
     ed25519_verify: (): bigint => 1n,
     // p256_verify(sig_len, sig_ptr, msg_len, msg_ptr, pk_len, pk_ptr) → u64
@@ -734,11 +745,11 @@ function buildNearEnv(): Record<string, Function> {
 
     // ===== Misc =====
     storage_usage: (): bigint => BigInt(nearStorage.size * 64),
-    signer_account_pk: (resultPtr: bigint) => {
-      writeNearString(Number(resultPtr), nearContext.signerPublicKey);
+    signer_account_pk: (registerId: bigint) => {
+      nearRegisters.set(Number(registerId), new TextEncoder().encode(nearContext.signerPublicKey));
     },
-    account_locked_balance: (resultPtr: bigint) => {
-      writeNearU128(Number(resultPtr), nearContext.accountLockedBalance);
+    account_locked_balance: (registerId: bigint) => {
+      writeRegisterU128(registerId, nearContext.accountLockedBalance);
     },
     storage_iter_prefix: (): bigint => BigInt(0),
     storage_iter_range: (): bigint => BigInt(0),
@@ -775,15 +786,13 @@ function buildNearEnv(): Record<string, Function> {
   };
 }
 
-function writeNearString(ptr: number, str: string) {
-  const bytes = new TextEncoder().encode(str);
-  nearMemBytes().set(bytes, ptr);
-  nearMemView().setUint32(ptr - 4, bytes.length, true); // Length prefix
-}
-
-function writeNearU128(ptr: number, value: bigint) {
-  nearMemView().setBigUint64(ptr, value & ((1n << 64n) - 1n), true); // lo
-  nearMemView().setBigUint64(ptr + 8, value >> 64n, true); // hi
+/** Write a u128 (16 bytes, little-endian lo/hi) into a NEAR register. */
+function writeRegisterU128(registerId: bigint, value: bigint) {
+  const out = new Uint8Array(16);
+  const view = new DataView(out.buffer);
+  view.setBigUint64(0, value & ((1n << 64n) - 1n), true); // lo
+  view.setBigUint64(8, value >> 64n, true);               // hi
+  nearRegisters.set(Number(registerId), out);
 }
 
 function saveNearStorage() {
