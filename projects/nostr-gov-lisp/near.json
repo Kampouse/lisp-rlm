@@ -1,0 +1,8 @@
+{
+  "name": "nostr-gov-ts",
+  "src": "src/main.ts",
+  "output": "target/nostr-gov-ts.wasm",
+  "account": "gov2.kampy.testnet",
+  "network": "testnet",
+  "contract": "gov2.kampy.testnet"
+}
