@@ -18,3 +18,5 @@ deploy/safe-sandbox/
 __pycache__/
 .wrangler/
 '{}'
+*.fst.checked
+verification/**/*.checked
