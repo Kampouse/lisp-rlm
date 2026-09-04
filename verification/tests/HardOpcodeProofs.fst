@@ -208,6 +208,9 @@ val step_typedbinop_mod_i64 : a:int -> b:int -> Lemma
     s2.ok = true && (match s2.stack with | Num r :: _ -> r = a % b | _ -> false)))
 let step_typedbinop_mod_i64 a b = ()
 
+// 2026-09-03: Mod-by-zero now sets ok=false (Rust Op::TypedBinOp errors on
+// modulo by zero; the old model silently returned Num 0 — see
+// tests/RegressionGuards.fst Pin 2b).
 val step_typedbinop_mod_zero : a:int -> Lemma
   (let vm : closure_vm = {
     stack = [Num 0; Num a]; slots = []; pc = 0;
@@ -216,8 +219,7 @@ val step_typedbinop_mod_zero : a:int -> Lemma
     num_slots = 0; captured = []; closure_envs = []; env = [];
   } in
    let s1 = closure_eval_op vm in
-   let s2 = closure_eval_op s1 in
-   s2.ok = true && (match s2.stack with | Num r :: _ -> r = 0 | _ -> false))
+   s1.ok = false)
 let step_typedbinop_mod_zero a = ()
 
 val step_typedbinop_add_f64 : a:int -> b:int -> Lemma

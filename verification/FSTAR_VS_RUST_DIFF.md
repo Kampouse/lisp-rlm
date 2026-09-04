@@ -270,3 +270,45 @@ capture.
 11. **Tagged field representation** — Named vs positional (same semantics for correct programs).
 12. **Op enum comment bug** — Rust SlotAddImm comment says "write back" but code doesn't.
 13. **Two F* models diverge internally** — LispIR.Semantics vs LispIR.ClosureVM disagree on 6+ opcodes.
+
+---
+
+## 8. Tightening Pass — 2026-09-03
+
+Status of the gaps above after the 2026-09-03 pass:
+
+### Fixed in the F* models (now match Rust)
+
+1. **ClosureVM TypedBinOp I64 Div** — was `Num na` (dividend, no division). Now
+   `Num (na / nb)` gated on `typed_div0_ok`; Div-by-zero sets `ok=false`
+   (Rust hard-errors; the model's error channel is `ok=false`). Mod-by-zero
+   likewise. Guard: `tests/RegressionGuards.fst` Pins 1, 2a, 2b (mutation-tested).
+2. **Semantics OpMod float truncation** — was `num_val` truncation (Float(2.5)
+   mod Float(1.5) → Num 0). Now float-aware via `num_arith ... ff_rem`, matching
+   `num_arith_checked` + `check_float_zero`. Float-zero decidable via the new
+   `ff_of_int_eq` axiom (Lisp.Types). Guard: Pin 3.
+3. **Lenient `num_arith` fallback** — the silent `Num 0` on non-numerics is now
+   documented as historical; `num_arith_strict` (option-returning) mirrors Rust's
+   hard error, with `num_arith_strict_agrees` pinning their agreement on numeric
+   inputs. Guards: Pins 4, 5.
+
+### Fixed in the harness
+
+4. **verify.sh** — `set -e` + command-capture aborts on the first failing module
+   (the FAIL counter never ran; 6 modules after the failure were invisible and
+   the script exited 0 on failure). Now: `|| true` on captures, `--split_queries
+   always` everywhere (fixes Z3-flaky ShadowingFix/StepProofs/VmIfTest), and a
+   real `exit 1` on failure.
+5. **TestFalse* quartet** — deliberate negative tests (`run "42" = 999`) were
+   unmarked, so they failed invisibly since May. Now `[@@expect_failure]`
+   refutation tests: they verify that the model REFUTES the wrong implementation.
+
+### Still open (unchanged)
+
+- TypedBinOp I64 operand 0-coercion: Rust executor coerces non-Num to 0 while
+  bare Op::Add hard-errors — an INTERNAL Rust inconsistency, unmodeled.
+- PushTry/PopTry, CaseLambda, Macro, Recur, Memoized, rest params: unverified.
+- 190+ builtins unverified (10 modeled).
+- Payload range: Rust pins Num to [-2^60, 2^60-1] via check_num_range; F* Num of
+  int is unbounded. Modeling it needs a refinement type on the constructor —
+  next tightening pass.

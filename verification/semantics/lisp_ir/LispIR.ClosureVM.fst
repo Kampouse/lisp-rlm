@@ -284,6 +284,13 @@ let typed_ge_i64 a b = Bool (a >= b)
 val typed_mod_i64 : a:int -> b:int -> lisp_val
 let typed_mod_i64 a b = if b = 0 then Num 0 else Num (a % b)
 
+// Div/mod by zero: Rust hard-errors (bytecode.rs:8443, 8450). The model has no Err
+// channel on the stack path, so callers must gate on typed_div0_ok first — a Div/Mod
+// with divisor 0 sets ok=false, mirroring the Rust error. (The old `Num na` Div arm
+// returned the DIVIDEND unchanged — no division happened at all.)
+val typed_div0_ok : b:int -> bool
+let typed_div0_ok b = b <> 0
+
 // F64 typed ops: coerce to ffloat, return Float for arithmetic, Bool for comparison
 // Matches Rust bytecode.rs:2325-2346 — accepts Float or Num (coerced via ff_of_int)
 val typed_add_f64 : a:ffloat -> b:ffloat -> lisp_val
@@ -460,13 +467,15 @@ let closure_eval_op s =
                 | Add -> { s with stack = typed_add_i64 na nb :: rest; pc = pc }
                 | Sub -> { s with stack = typed_sub_i64 na nb :: rest; pc = pc }
                 | Mul -> { s with stack = typed_mul_i64 na nb :: rest; pc = pc }
-                | Div -> { s with stack = Num na :: rest; pc = pc }
+                | Div -> if typed_div0_ok nb then { s with stack = Num (na / nb) :: rest; pc = pc }
+                         else { s with ok = false }
                 | Eq -> { s with stack = typed_eq_i64 na nb :: rest; pc = pc }
                 | Lt -> { s with stack = typed_lt_i64 na nb :: rest; pc = pc }
                 | Le -> { s with stack = typed_le_i64 na nb :: rest; pc = pc }
                 | Gt -> { s with stack = typed_gt_i64 na nb :: rest; pc = pc }
                 | Ge -> { s with stack = typed_ge_i64 na nb :: rest; pc = pc }
-                | Mod -> { s with stack = typed_mod_i64 na nb :: rest; pc = pc })
+                | Mod -> if typed_div0_ok nb then { s with stack = typed_mod_i64 na nb :: rest; pc = pc }
+                         else { s with ok = false })
              | _ -> { s with ok = false })
           | F64 ->
             (let fa = to_ffloat a in

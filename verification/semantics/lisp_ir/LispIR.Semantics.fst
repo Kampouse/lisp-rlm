@@ -186,13 +186,17 @@ let eval_op op s =
 
   | OpMod -> (match s.stack with
     | b :: a :: rest ->
-      // Matches Rust bytecode.rs:3618-3625 — uses num_val (truncates floats to int)
-      let av = (match a with Num n -> n | Float f -> ff_to_int f | _ -> 0) in
-      let bv = (match b with Num n -> n | Float f -> ff_to_int f | _ -> 0) in
-      if bv = 0 then Err "modulo by zero"
-      else
-        let r = int_mod av bv in  // int_div-style safe wrapper
-        Ok {s with stack = Num r :: rest; pc = s.pc + 1}
+      // Mirrors Rust bytecode.rs:8371-8382: check_float_zero errors on a float-zero
+      // divisor, then num_arith_checked — Float args promote to Float (fmod), Num
+      // args take checked_rem. (The old model truncated floats via num_val, so
+      // Float(2.5) mod Float(1.5) gave Num 0 where Rust gives Float 1.0.)
+      (match b with
+       | Num 0 -> Err "modulo by zero"
+       | Float fb ->
+         let fbz = ff_eq fb (ff_of_int 0) in
+         if fbz then Err "modulo by zero"
+         else Ok {s with stack = num_arith a b int_mod ff_rem :: rest; pc = s.pc + 1}
+       | _ -> Ok {s with stack = num_arith a b int_mod ff_rem :: rest; pc = s.pc + 1})
     | _ -> Err "OpMod: stack underflow")
 
   | OpEq -> (match s.stack with
