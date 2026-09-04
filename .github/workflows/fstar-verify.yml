@@ -23,7 +23,7 @@ jobs:
       
       - name: Install Z3 4.13.3 (F* solver)
         run: |
-          curl -sL https://github.com/Z3Prover/z3/releases/download/z3-4.13.3/z3-4.13.3-arm64-osx-11.0.zip -o /tmp/z3.zip
+          curl -sfL https://github.com/Z3Prover/z3/releases/download/z3-4.13.3/z3-4.13.3-arm64-osx-13.7.zip -o /tmp/z3.zip
           mkdir -p "$HOME/.local/bin"
           unzip -oqj /tmp/z3.zip '*/bin/z3' -d "$HOME/.local/bin"
           mv "$HOME/.local/bin/z3" "$HOME/.local/bin/z3-4.13.3"
