@@ -25,7 +25,7 @@ jobs:
         run: |
           eval $(opam env)
           cd verification/sim
-          ~/.opam/fstar/bin/fstar.exe CoreTypes.fst ValueCorrespondence.fst Simulation.fst HttpStateMachine.fst Integration.fst RuntimeAssertions.fst
+          fstar.exe CoreTypes.fst ValueCorrespondence.fst Simulation.fst HttpStateMachine.fst Integration.fst RuntimeAssertions.fst
       
       - name: Check invariants match Rust
         run: |
