@@ -15,7 +15,7 @@
 ;;;   on_price  — result lands here: stores "tag|json" at "last"
 ;;;   last      — view the stored result
 
-(define TARGET "btc-oracle.kampy.testnet")
+(define TARGET "btc-oracle.kampy.test.near")
 (define TTL "{\"ttl\":\"300\"}")
 (define CBGAS 20000000000000)
 (define GAS 20000000000000)
@@ -29,14 +29,16 @@
 (define (on_price)
   (begin
     (let ((tag (near/json_get_str "tag"))
-          (res (near/promise_result 0)))
+          ;; storage_get yields (opt str) — (default ...) unwraps, "" on miss;
+          ;; promise_result is fail-closed: "" when the callee errored.
+          (res (default (near/promise_result 0) "")))
       (if (= (str-length res) 0)
           (near/storage_set "last" (str-cat tag "|FAIL"))
           (near/storage_set "last" (str-cat tag (str-cat "|" res)))))
     0))
 
 (define (last)
-  (near/return_str (near/storage_get "last")))
+  (near/return_str (default (near/storage_get "last") "")))
 
 (export "pull" pull #f)
 (export "pull_bad" pull_bad #f)

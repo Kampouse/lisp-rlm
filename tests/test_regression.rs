@@ -909,4 +909,74 @@ mod outlayer_e2e {
         let ret = extract_return(&out).expect("should have return value");
         assert!(ret.contains("hello world"), "expected 'hello world', got: {}", ret);
     }
+
+    /// Scenario runner E2E (2026-09-05): compile the LIVE repo example,
+    /// drive it with `near-mock scenario` — happy path, missing-method
+    /// fail-closed, forced receipt failure (--fail-receipt), state checks.
+    /// Uses a raw-wasm oracle stub (tests/fixtures/oracle_stub.wasm;
+    /// value_return takes (len, ptr) — see the .wat). Compiling the example
+    /// here means the docs example can never silently rot.
+    #[test]
+    fn nm_scenario_runner_e2e() {
+        if !has_near_mock() { return; }
+        let src = include_str!("../examples/price_consumer.lisp");
+        let wasm = lisp_rlm_wasm::compile_near(src)
+            .expect("repo example must compile");
+        static NM_SEQ2: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+        let tag = format!(
+            "sc_{}_{}",
+            std::process::id(),
+            NM_SEQ2.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let tmp = std::env::temp_dir().join(format!("nm_{tag}.wasm"));
+        std::fs::write(&tmp, &wasm).unwrap();
+        let scenario = std::env::temp_dir().join(format!("nm_{tag}.json"));
+        let oracle = std::env::temp_dir().join(format!("nm_{tag}_oracle.wasm"));
+        std::fs::copy("tests/fixtures/oracle_stub.wasm", &oracle).unwrap();
+        let state = std::env::temp_dir().join(format!("nm_{tag}_state.bin"));
+        let _ = std::fs::remove_file(&state); // fresh state each run
+        std::fs::write(
+            &scenario,
+            format!(
+                r#"{{
+  "name": "ci-chaos",
+  "manifest": "btc-oracle.kampy.test.near={},consumer.kampy.test.near={}",
+  "state": "{}",
+  "steps": [
+    {{"contract": "consumer.kampy.test.near", "method": "pull", "expect": "ok"}},
+    {{"contract": "consumer.kampy.test.near", "method": "last", "view": true, "contains": "pull-1|12345.6"}},
+    {{"contract": "consumer.kampy.test.near", "method": "pull_bad", "expect": "ok"}},
+    {{"contract": "consumer.kampy.test.near", "method": "last", "view": true, "contains": "pull-bad|FAIL"}},
+    {{"contract": "consumer.kampy.test.near", "method": "pull", "expect": "ok", "fail_receipt": 0}},
+    {{"contract": "consumer.kampy.test.near", "method": "last", "view": true, "contains": "pull-1|FAIL"}}
+  ]
+}}"#,
+                oracle.display(),
+                tmp.display(),
+                state.display()
+            ),
+        )
+        .unwrap();
+        let output = Command::new("./target/release/near-mock")
+            .arg("scenario")
+            .arg(&scenario)
+            .env("NEAR_MOCK_STATE", &state)
+            .output()
+            .expect("near-mock scenario should run");
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(&scenario);
+        let _ = std::fs::remove_file(&oracle);
+        let _ = std::fs::remove_file(&state);
+        assert!(
+            stdout.contains("6 pass / 0 fail"),
+            "scenario should pass 6/6, got:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("[FORCED-FAIL]"),
+            "forced-fail receipt should be annotated in the DAG map:\n{stderr}"
+        );
+    }
 }

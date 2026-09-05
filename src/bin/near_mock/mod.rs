@@ -35,7 +35,10 @@ pub(crate) use gas::{
     GasSchedule, RunCfg, STAKING_COST_PER_BYTE,
 };
 pub(crate) use hosts::build_env_linker;
-pub(crate) use promises::{dag_push, execute_promise, sub_execute, PAction, PromiseBatch};
+pub(crate) use promises::{
+    dag_push, execute_promise, fail_receipts_any, fail_receipts_set, print_dag_map, sub_execute,
+    PAction, PromiseBatch,
+};
 pub(crate) use state::{
     prefixed_key, restore_partition, snapshot_partition, state_file, write_reg_checked, MockState,
 };
@@ -52,16 +55,35 @@ pub(crate) use state::{
 fn run_cross(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     if args.len() < 5 {
         eprintln!(
-            "Usage: near-mock cross <state.bin> <acct=wasm,...> <contract-acct> <method> [args-json]"
+            "Usage: near-mock cross <state.bin> <acct=wasm,...> <contract-acct> <method> [args-json] [--fail-receipt N]\n       near-mock scenario <file.json>  (multi-step runner; steps support view/expect/fail_receipt)",
         );
         std::process::exit(1);
     }
-    let state_path = &args[2];
-    let manifest = &args[3];
-    let contract_acct = &args[4];
-    let method = &args[5];
-    let args_json = args.get(6).cloned().unwrap_or_else(|| "{}".into());
-    let run_view = args.iter().any(|a| a == "--view");
+    // Flags may appear anywhere after the `cross` keyword: --fail-receipt N (repeatable).
+    let mut fail_receipts: Vec<usize> = Vec::new();
+    let mut pos: Vec<String> = Vec::new();
+    {
+        let mut it = args[2..].iter();
+        while let Some(t) = it.next() {
+            if t == "--fail-receipt" {
+                let n = it.next().and_then(|x| x.parse::<usize>().ok())
+                    .ok_or("--fail-receipt requires a receipt index N (see the [map] printout)")?;
+                fail_receipts.push(n);
+            } else {
+                pos.push(t.clone());
+            }
+        }
+    }
+    if pos.len() < 4 {
+        eprintln!("Usage: near-mock cross <state.bin> <acct=wasm,...> <contract-acct> <method> [args-json] [--fail-receipt N]");
+        std::process::exit(1);
+    }
+    let state_path = &pos[0];
+    let manifest = &pos[1];
+    let contract_acct = &pos[2];
+    let method = &pos[3];
+    let args_json = pos.get(4).cloned().unwrap_or_else(|| "{}".into());
+    let run_view = pos.iter().any(|a| a == "--view");
 
     let mut fuel_cfg = Config::new();
     fuel_cfg.consume_fuel(true);
@@ -69,34 +91,10 @@ fn run_cross(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     fuel_cfg.async_stack_size(64 * 1024 * 1024);
     let engine = Rc::new(wasmtime::Engine::new(&fuel_cfg)?);
 
-    let mut modules: HashMap<String, wasmtime::Module> = HashMap::new();
-    for pair in manifest.split(',') {
-        let (acct, path) = pair.split_once('=').ok_or("manifest entries must be acct=/path")?;
-        let bytes = std::fs::read(path)?;
-        eprintln!("📦 {} → {}", acct, path);
-        modules.insert(acct.to_string(), wasmtime::Module::from_binary(&engine, &bytes)?);
+    let state = init_sandbox(engine.clone(), manifest, state_path, run_view)?;
+    if !fail_receipts.is_empty() {
+        fail_receipts_set(&fail_receipts);
     }
-
-    let loaded_storage: HashMap<Vec<u8>, Vec<u8>> = std::fs::read(state_path)
-        .ok()
-        .and_then(|d| bincode::deserialize(&d).ok())
-        .unwrap_or_default();
-    if loaded_storage.is_empty() {
-        println!("🆕 Fresh state");
-    } else {
-        println!("📂 Loaded {} storage keys", loaded_storage.len());
-    }
-    let state: Arc<Mutex<MockState>> = Arc::new(Mutex::new(MockState {
-        storage: loaded_storage,
-        touched: Default::default(),
-        registers: HashMap::new(),
-        return_data: None,
-        view: run_view,
-    }));
-
-    MODULES.with(|m| *m.borrow_mut() = Some(Arc::new(modules)));
-    STATE_ARC.with(|s| *s.borrow_mut() = Some(state.clone()));
-    ENGINE_TLS.with(|e| *e.borrow_mut() = Some(engine.clone()));
 
     let signer = std::env::var("NEAR_MOCK_SIGNER").unwrap_or_else(|_| "caller.test.near".into());
     EXEC_CTX.with(|c| {
@@ -194,6 +192,9 @@ fn run_cross(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             // Resolve any promise returned by the entry
             if let Some(idx) = pending {
                 eprintln!("  ⛓ resolving promise DAG (root {})", idx);
+                if fail_receipts_any() {
+                    print_dag_map();
+                }
                 let dag = execute_promise(idx);
                 if let Err(e) = &dag {
                     println!("❌ receipt chain failed: {}", e);
@@ -815,10 +816,287 @@ fn exec_ctx_view(state: &std::sync::Arc<Mutex<MockState>>) -> bool {
 }
 
 
+/// Shared bootstrap for `cross` and `scenario`: load a multi-contract
+/// manifest (acct=path.wasm,...), load persistent state, install TLS.
+pub(crate) fn init_sandbox(
+    engine: Rc<wasmtime::Engine>,
+    manifest: &str,
+    state_path: &str,
+    view: bool,
+) -> Result<Arc<Mutex<MockState>>, Box<dyn std::error::Error>> {
+    let mut modules: HashMap<String, wasmtime::Module> = HashMap::new();
+    for pair in manifest.split(',') {
+        let (acct, path) = pair
+            .split_once('=')
+            .ok_or("manifest entries must be acct=/path")?;
+        let bytes = std::fs::read(path)?;
+        eprintln!("📦 {} → {}", acct, path);
+        modules.insert(
+            acct.to_string(),
+            wasmtime::Module::from_binary(&engine, &bytes)?,
+        );
+    }
+
+    let loaded_storage: HashMap<Vec<u8>, Vec<u8>> = std::fs::read(state_path)
+        .ok()
+        .and_then(|d| bincode::deserialize(&d).ok())
+        .unwrap_or_default();
+    if loaded_storage.is_empty() {
+        println!("🆕 Fresh state");
+    } else {
+        println!("📂 Loaded {} storage keys", loaded_storage.len());
+    }
+    let state: Arc<Mutex<MockState>> = Arc::new(Mutex::new(MockState {
+        storage: loaded_storage,
+        touched: Default::default(),
+        registers: HashMap::new(),
+        return_data: None,
+        view,
+    }));
+
+    MODULES.with(|m| *m.borrow_mut() = Some(Arc::new(modules)));
+    STATE_ARC.with(|s| *s.borrow_mut() = Some(state.clone()));
+    ENGINE_TLS.with(|e| *e.borrow_mut() = Some(engine.clone()));
+    Ok(state)
+}
+
+/// `scenario <file.json>` — multi-step multi-contract runner in ONE process.
+/// One sandbox init, one DAG; failures recorded, run continues. Step fields:
+///   method (req), args, contract (account), view, expect (substring of output),
+///   fail_receipt (N — force receipt N to fail during this step).
+/// Compatible with examples/ft/tests/scenarios/*.json (name/steps/method/args/view/expect).
+pub(crate) fn run_scenario(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let spec: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?)
+            .map_err(|e| format!("bad scenario JSON {path}: {e}"))?;
+    let steps = spec
+        .get("steps")
+        .and_then(|s| s.as_array())
+        .ok_or("scenario needs {\"name\":..., \"steps\":[...]}")?;
+
+    // Sandbox defaults: state.bin next to the scenario file; single-contract
+    // manifest = the FT convention (contract.wasm deployed at contract.acct,
+    // defaulting to owner.test.near).
+    let dir = std::path::Path::new(path)
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_default();
+    let state_path = match spec.get("state").and_then(|s| s.as_str()) {
+        Some(p) => p.to_string(),
+        None => dir.join("state.bin").to_string_lossy().into_owned(),
+    };
+    let wasm_path = dir.join("contract.wasm").to_string_lossy().into_owned();
+    let manifest = spec
+        .get("manifest")
+        .and_then(|m| m.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("owner.test.near={}", wasm_path));
+    let default_acct = manifest
+        .split(',')
+        .next()
+        .and_then(|p| p.split_once('='))
+        .map(|(a, _)| a.to_string())
+        .unwrap_or_else(|| "owner.test.near".into());
+
+    let mut fuel_cfg = Config::new();
+    fuel_cfg.consume_fuel(true);
+    fuel_cfg.max_wasm_stack(64 * 1024 * 1024);
+    fuel_cfg.async_stack_size(64 * 1024 * 1024);
+    let engine = Rc::new(wasmtime::Engine::new(&fuel_cfg)?);
+    let state = init_sandbox(engine.clone(), &manifest, &state_path, false)?;
+
+    let name = spec.get("name").and_then(|n| n.as_str()).unwrap_or(path);
+    println!("🎬 scenario: {} ({} steps)", name, steps.len());
+
+    let mut pass = 0u32;
+    let mut fail = 0u32;
+    let mut expect_out: Vec<String> = Vec::new();
+
+    for (i, step) in steps.iter().enumerate() {
+        let method = step
+            .get("method")
+            .and_then(|m| m.as_str())
+            .ok_or(format!("step {}: missing method", i))?
+            .to_string();
+        let args_json = step
+            .get("args")
+            .map(|a| a.to_string())
+            .unwrap_or_else(|| "{}".into());
+        let contract = step
+            .get("contract")
+            .and_then(|c| c.as_str())
+            .unwrap_or(&default_acct)
+            .to_string();
+        let is_view = step.get("view").and_then(|v| v.as_bool()).unwrap_or(false);
+        let fail_receipt = step
+            .get("fail_receipt")
+            .and_then(|f| f.as_u64())
+            .map(|n| n as usize);
+
+        // set view + forced receipts for this step
+        let old_view = state.lock().unwrap().view;
+        state.lock().unwrap().view = is_view;
+        fail_receipts_set(&fail_receipt.iter().copied().collect::<Vec<usize>>());
+
+        println!("\n── step {} ▶ {}.{}{}{} ──", i, contract, method, if args_json == "{}" { "".into() } else { format!(" {}", args_json) }, if is_view { " (view)" } else { "" });
+        let module = MODULES
+            .with(|m| m.borrow().as_ref().unwrap().get(&contract).cloned())
+            .ok_or(format!("step {}: contract {} not in manifest", i, contract))?;
+        EXEC_CTX.with(|c| {
+            *c.borrow_mut() = Some(ExecCtx {
+                input: args_json.clone().into_bytes(),
+                signer: "owner.test.near".into(),
+                predecessor: "owner.test.near".into(),
+                contract: contract.clone(),
+                view: is_view,
+            })
+        });
+        let mut store = wasmtime::Store::new(&*engine, ());
+        store.set_fuel(PREPAID_FUEL.with(|f| *f.borrow()))?;
+        let linker = build_env_linker(&mut store, &*engine, state.clone(), args_json.into_bytes())?;
+        let instance = linker.instantiate(&mut store, &module)?;
+        let result = instance
+            .get_func(&mut store, &method)
+            .ok_or(format!("step {}: method '{}' not found on {}", i, method, contract))?
+            .call(&mut store, &[], &mut []);
+        let mut step_failed = false;
+
+        match &result {
+            Ok(()) => {
+                println!("✅ ok");
+                // resolve the entry's promise chain (receipt DAG), if any
+                let pending = PENDING_RETURN.with(|p| *p.borrow());
+                if let Some(idx) = pending {
+                    if fail_receipts_any() {
+                        print_dag_map();
+                    }
+                    eprintln!("  ⛓ resolving promise DAG (root {})", idx);
+                    match execute_promise(idx) {
+                        Err(e) => {
+                            println!("❌ receipt chain failed: {}", e);
+                            step_failed = true;
+                        }
+                        Ok(results) => {
+                            for (ri, r) in results.iter().enumerate() {
+                                if let Some(bytes) = r {
+                                    let s = String::from_utf8_lossy(bytes).into_owned();
+                                    println!("  ⤷ result[{ri}]: {s}");
+                                    expect_out.push(s);
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // no promise: surface the entry's own return data
+                    let st = state.lock().unwrap();
+                    if let Some(ref data) = st.return_data {
+                        let s = String::from_utf8_lossy(data);
+                        if !s.is_empty() {
+                            println!("📄 {}", s);
+                            expect_out.push(s.into_owned());
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                println!("❌ trap: {}", e);
+                step_failed = true;
+            }
+        }
+
+        // drain orphaned receipts (fire-and-forget promises)
+        loop {
+            let next = PROMISE_DAG.with(|d| {
+                d.borrow()
+                    .iter()
+                    .enumerate()
+                    .find(|(i, _)| !EXECUTED_PROMISES.with(|e| e.borrow().contains(i)))
+                    .map(|(i, _)| i)
+            });
+            let Some(idx) = next else { break };
+            if let Err(e) = execute_promise(idx) {
+                println!("❌ orphan receipt {} failed: {}", idx, e);
+                step_failed = true;
+            }
+        }
+        PROMISE_DAG.with(|d| d.borrow_mut().clear());
+        EXECUTED_PROMISES.with(|e| e.borrow_mut().clear());
+        fail_receipts_set(&[]); // clear between steps
+        PENDING_RETURN.with(|p| *p.borrow_mut() = None);
+        state.lock().unwrap().view = old_view;
+
+        // checks: expect ("ok" = no trap / no receipt-chain failure, else
+        // substring against 📄 outputs or storage) and contains (substring
+        // against 📄 outputs or the step contract's storage partition —
+        // callbacks express results via storage_write, and receipt result
+        // buffers don't always carry them)
+        let stored: Vec<String> = {
+            let st = state.lock().unwrap();
+            let pre = prefixed_key(&contract, b"");
+            st.storage
+                .iter()
+                .filter(|(k, _)| k.starts_with(&pre))
+                .map(|(k, v)| {
+                    format!(
+                        "{}={}",
+                        String::from_utf8_lossy(&k[pre.len()..]),
+                        String::from_utf8_lossy(v)
+                    )
+                })
+                .collect()
+        };
+        if let Some(want) = step.get("expect").and_then(|e| e.as_str()) {
+            let hit = if want == "ok" {
+                !step_failed
+            } else {
+                expect_out.iter().any(|s| s.contains(want))
+                    || stored.iter().any(|kv| kv.contains(want))
+            };
+            if hit {
+                println!("✓ expect '{}' ✓", want);
+            } else {
+                println!("✗ expect '{}' — got {:?} storage {:?}", want, expect_out, stored);
+                step_failed = true;
+            }
+        }
+        if let Some(want) = step.get("contains").and_then(|c| c.as_str()) {
+            let in_storage = stored.iter().any(|kv| kv.contains(want));
+            if expect_out.iter().any(|s| s.contains(want)) || in_storage {
+                println!("✓ contains '{}' ✓", want);
+            } else {
+                println!("✗ contains '{}' — storage: {:?}", want, stored);
+                step_failed = true;
+            }
+        }
+
+        if step_failed {
+            fail += 1;
+            println!("step {} ⇒ FAIL", i);
+        } else {
+            pass += 1;
+        }
+        expect_out.clear();
+    }
+
+    // persist final state (single write at end of scenario)
+    let st = state.lock().unwrap();
+    let encoded = bincode::serialize(&st.storage)?;
+    std::fs::write(&state_path, encoded)?;
+    println!("\n🎬 scenario {}: {} pass / {} fail — state → {}", name, pass, fail, state_path);
+    if fail > 0 {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(|s| s.as_str()) == Some("cross") {
         return run_cross(&args);
+    }
+    if args.get(1).map(|s| s.as_str()) == Some("scenario") {
+        let path = args.get(2).ok_or("usage: near-mock scenario <file.json>")?;
+        return run_scenario(path);
     }
     fn print_main_usage() {
         println!("near-mock — local NEAR contract runner (wasmtime, no node)");

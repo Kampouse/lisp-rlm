@@ -35,6 +35,43 @@ pub(crate) fn dag_push(deps: Vec<usize>, account: String, actions: Vec<PAction>)
     })
 }
 
+/// Chaos testing: receipt indices forced to FAIL by --fail-receipt /
+/// scenario step fail_receipt. Forced receipts execute NO actions and
+/// return zero results, so dependents see promiseSucceeded=0 / empty
+/// promise_result, exactly like a trapped receipt on-chain.
+thread_local! {
+    static FAIL_RECEIPTS: std::cell::RefCell<std::collections::HashSet<usize>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+/// Install the forced-failure set (CLI --fail-receipt / scenario fail_receipt).
+pub(crate) fn fail_receipts_set(v: &[usize]) {
+    FAIL_RECEIPTS.with(|f| *f.borrow_mut() = v.iter().copied().collect());
+}
+
+/// True when at least one receipt is force-failed.
+pub(crate) fn fail_receipts_any() -> bool {
+    FAIL_RECEIPTS.with(|f| !f.borrow().is_empty())
+}
+
+/// Print the pending promise DAG (receipt map) so operators know which
+/// N to target with --fail-receipt.
+pub(crate) fn print_dag_map() {
+    let dag = PROMISE_DAG.with(|d| d.borrow().clone());
+    for (i, b) in dag.iter().enumerate() {
+        let acct = if b.account.is_empty() { "(combinator)" } else { &b.account };
+        let forced = FAIL_RECEIPTS.with(|f| f.borrow().contains(&i));
+        eprintln!(
+            "  [map] receipt {}: {} actions={} deps={:?}{}",
+            i,
+            acct,
+            b.actions.len(),
+            b.deps,
+            if forced { " [FORCED-FAIL]" } else { "" }
+        );
+    }
+}
+
 pub(crate) fn sub_execute(
     account: &str,
     method: &str,
@@ -148,7 +185,18 @@ pub(crate) fn sub_execute(
 pub(crate) fn execute_promise(idx: usize) -> Result<Vec<Option<Vec<u8>>>, Box<dyn std::error::Error>> {
     let batch = PROMISE_DAG.with(|d| d.borrow()[idx].clone());
     EXECUTED_PROMISES.with(|e| e.borrow_mut().insert(idx));
+    let forced = FAIL_RECEIPTS.with(|f| f.borrow().contains(&idx));
     let mut dep_results: Vec<Option<Vec<u8>>> = Vec::new();
+    if forced {
+        eprintln!("  [boom] receipt {} FORCED to fail (--fail-receipt)", idx);
+        // Deps still execute: they are temporally earlier receipts and
+        // commit on-chain even when this one fails. The actions of this
+        // batch never run, so the result is FAILED.
+        for dep in &batch.deps {
+            dep_results.extend(execute_promise(*dep)?);
+        }
+        return Ok(Vec::new());
+    }
     for dep in &batch.deps {
         dep_results.extend(execute_promise(*dep)?);
     }
