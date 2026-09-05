@@ -340,6 +340,273 @@ thread_local! {
         std::cell::RefCell::new(std::collections::HashSet::new());
 }
 
+// ============ Run configuration (CLI flags + env, 2026-09-05) ============
+/// Per-host gas schedule. Defaults = the legacy indicative constants that
+/// were previously hardcoded at each call site. Override per-run with
+/// `--gas-schedule file.json` (missing fields fall back to these defaults)
+/// after calibrating against a real sandbox / near-vm-run oracle.
+#[derive(Clone, Debug)]
+struct GasSchedule {
+    log_base: u64,
+    log_byte: u64,
+    value_return_base: u64,
+    value_return_byte: u64,
+    read_register_base: u64,
+    read_register_byte: u64,
+    storage_write_base: u64,
+    storage_write_key_byte: u64,
+    storage_write_value_byte: u64,
+    storage_read_base: u64,
+    storage_read_key_byte: u64,
+    storage_read_value_byte: u64,
+    storage_remove_base: u64,
+    storage_remove_key_byte: u64,
+    storage_has_key_base: u64,
+    storage_has_key_key_byte: u64,
+    trie_node: u64,
+    trie_walk_nodes: u64,
+}
+
+impl Default for GasSchedule {
+    fn default() -> Self {
+        GasSchedule {
+            log_base: 13_181_732,
+            log_byte: 19_335_348,
+            value_return_base: 4_141_250,
+            value_return_byte: 3_574_166,
+            read_register_base: 24_108_449,
+            read_register_byte: 3_574_166,
+            storage_write_base: 64_000_000,
+            storage_write_key_byte: 90_563,
+            storage_write_value_byte: 3_548_576,
+            storage_read_base: 56_356_995,
+            storage_read_key_byte: 81_569,
+            storage_read_value_byte: 3_574_166,
+            storage_remove_base: 64_000_000,
+            storage_remove_key_byte: 90_563,
+            storage_has_key_base: 56_356_995,
+            storage_has_key_key_byte: 81_569,
+            trie_node: 2_280_000_000,
+            trie_walk_nodes: 16,
+        }
+    }
+}
+
+impl GasSchedule {
+    fn from_json_file(path: &str) -> Result<GasSchedule, String> {
+        let raw = std::fs::read(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+        let v: serde_json::Value =
+            serde_json::from_slice(&raw).map_err(|e| format!("bad JSON in {path}: {e}"))?;
+        let d = GasSchedule::default();
+        // Strict: an explicitly present field with the wrong type/value is an
+        // error, not a silent fall-back to the default (a typo'd schedule must
+        // never masquerade as a calibrated one). Missing fields still default.
+        let g = |k: &str, def: u64| -> Result<u64, String> {
+            match v.get(k) {
+                None | Some(serde_json::Value::Null) => Ok(def),
+                Some(x) => match x.as_u64() {
+                    Some(n) if n > 0 => Ok(n),
+                    Some(0) => Err(format!("gas schedule field '{k}' must be > 0")),
+                    _ => Err(format!(
+                        "gas schedule field '{k}' must be a positive integer, got {x}"
+                    )),
+                },
+            }
+        };
+        Ok(GasSchedule {
+            log_base: g("log_base", d.log_base)?,
+            log_byte: g("log_byte", d.log_byte)?,
+            value_return_base: g("value_return_base", d.value_return_base)?,
+            value_return_byte: g("value_return_byte", d.value_return_byte)?,
+            read_register_base: g("read_register_base", d.read_register_base)?,
+            read_register_byte: g("read_register_byte", d.read_register_byte)?,
+            storage_write_base: g("storage_write_base", d.storage_write_base)?,
+            storage_write_key_byte: g("storage_write_key_byte", d.storage_write_key_byte)?,
+            storage_write_value_byte: g("storage_write_value_byte", d.storage_write_value_byte)?,
+            storage_read_base: g("storage_read_base", d.storage_read_base)?,
+            storage_read_key_byte: g("storage_read_key_byte", d.storage_read_key_byte)?,
+            storage_read_value_byte: g("storage_read_value_byte", d.storage_read_value_byte)?,
+            storage_remove_base: g("storage_remove_base", d.storage_remove_base)?,
+            storage_remove_key_byte: g("storage_remove_key_byte", d.storage_remove_key_byte)?,
+            storage_has_key_base: g("storage_has_key_base", d.storage_has_key_base)?,
+            storage_has_key_key_byte: g("storage_has_key_key_byte", d.storage_has_key_key_byte)?,
+            trie_node: g("trie_node", d.trie_node)?,
+            trie_walk_nodes: g("trie_walk_nodes", d.trie_walk_nodes)?,
+        })
+    }
+
+    fn to_json(&self) -> String {
+        let j = serde_json::json!({
+            "log_base": self.log_base, "log_byte": self.log_byte,
+            "value_return_base": self.value_return_base, "value_return_byte": self.value_return_byte,
+            "read_register_base": self.read_register_base, "read_register_byte": self.read_register_byte,
+            "storage_write_base": self.storage_write_base,
+            "storage_write_key_byte": self.storage_write_key_byte,
+            "storage_write_value_byte": self.storage_write_value_byte,
+            "storage_read_base": self.storage_read_base,
+            "storage_read_key_byte": self.storage_read_key_byte,
+            "storage_read_value_byte": self.storage_read_value_byte,
+            "storage_remove_base": self.storage_remove_base,
+            "storage_remove_key_byte": self.storage_remove_key_byte,
+            "storage_has_key_base": self.storage_has_key_base,
+            "storage_has_key_key_byte": self.storage_has_key_key_byte,
+            "trie_node": self.trie_node, "trie_walk_nodes": self.trie_walk_nodes,
+        });
+        serde_json::to_string_pretty(&j).unwrap_or_default()
+    }
+}
+
+/// Real NEAR storage staking: 1e20 yoctoNEAR (0.1 NEAR) locked per byte.
+const STAKING_COST_PER_BYTE: u128 = 100_000_000_000_000_000_000;
+
+#[derive(Clone)]
+struct RunCfg {
+    gas: GasSchedule,
+    /// --staking: charge storage staking (account_balance shrinks, locked
+    /// balance grows, remove refunds). Default off (legacy behavior).
+    staking: bool,
+    /// --dry-run: execute + report, but do NOT persist state.
+    dry_run: bool,
+    /// NEAR_MOCK_DEBUG=1 or --debug: verbose host traces ([schnorr-dbg] etc).
+    debug: bool,
+    /// NEAR_MOCK_WARN_STUBS=1: eprintln on every unimplemented host stub call.
+    warn_stubs: bool,
+    /// --now <unix-seconds> | NEAR_MOCK_NOW: fixed base timestamp.
+    base_ts: Option<i64>,
+    /// --advance <seconds>: added to the base timestamp (time travel).
+    advance_secs: i64,
+}
+
+impl Default for RunCfg {
+    fn default() -> Self {
+        RunCfg {
+            gas: GasSchedule::default(),
+            staking: false,
+            dry_run: false,
+            debug: std::env::var("NEAR_MOCK_DEBUG").map(|v| v == "1").unwrap_or(false),
+            warn_stubs: std::env::var("NEAR_MOCK_WARN_STUBS").map(|v| v == "1").unwrap_or(false),
+            base_ts: std::env::var("NEAR_MOCK_NOW").ok().and_then(|s| s.parse().ok()),
+            advance_secs: 0,
+        }
+    }
+}
+
+thread_local! {
+    static RUN_CFG: std::cell::RefCell<Option<RunCfg>> = const { std::cell::RefCell::new(None) };
+}
+
+fn mock_cfg() -> RunCfg {
+    RUN_CFG.with(|c| c.borrow().clone()).unwrap_or_default()
+}
+
+/// Effective block timestamp in ns: (base_ts + advance) scaled, real clock
+/// otherwise. --now/--advance (or NEAR_MOCK_NOW) make time-based contracts
+/// deterministic; scripts time-travel by re-invoking with --advance.
+fn mock_now_nanos() -> i64 {
+    let c = mock_cfg();
+    let base = c.base_ts.unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+    });
+    (base + c.advance_secs) * 1_000_000_000
+}
+
+/// Warn once per host name when a stub backed by zeros/empties is called.
+fn stub_warn(name: &str) {
+    if mock_cfg().warn_stubs {
+        eprintln!("  ⚠ STUB {name}: not implemented — returns 0/empty (NEAR_MOCK_WARN_STUBS)");
+    }
+}
+
+/// SplitMix64 — cheap mixing for the per-call random_seed entropy.
+fn splitmix64(z: &mut u64) -> u64 {
+    *z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut x = *z;
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^ (x >> 31)
+}
+
+// ============ NEP-297 event capture + log counting (--json) ============
+thread_local! {
+    /// Event JSON strings (NEP-297 EVENT_JSON: logs), for --json output.
+    static JSON_EVENTS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    static LOG_COUNT: std::cell::RefCell<usize> = const { std::cell::RefCell::new(0) };
+}
+
+/// Route one decoded log line: NEP-297 EVENT_JSON: gets structured decoding,
+/// everything else prints as LOG. Never panics on weird payloads.
+fn handle_log_line(msg: &str, debug: bool, suffix: &str) {
+    LOG_COUNT.with(|c| *c.borrow_mut() += 1);
+    if let Some(rest) = msg.strip_prefix("EVENT_JSON:") {
+        match serde_json::from_str::<serde_json::Value>(rest) {
+            Ok(v) => {
+                JSON_EVENTS.with(|e| e.borrow_mut().push(v.to_string()));
+                let std_name = v.get("standard").and_then(|x| x.as_str()).unwrap_or("?");
+                let ver = v.get("version").and_then(|x| x.as_str()).unwrap_or("?");
+                let ev = v.get("event").and_then(|x| x.as_str()).unwrap_or("?");
+                let data = v.get("data").map(|d| d.to_string()).unwrap_or_default();
+                println!("  📣 EVENT {std_name} v{ver} :: {ev} {data}");
+            }
+            Err(_) => println!("  LOG: {msg}{suffix} (EVENT_JSON but malformed)"),
+        }
+    } else if debug {
+        println!("  LOG: {msg}{suffix}");
+    } else {
+        println!("  LOG: {msg}");
+    }
+}
+
+/// Run a pretty-printing section with panic containment: a reporting bug must
+/// never eat a successful run (the 2026-09-05 storage-dump char-boundary
+/// panic turned ✅ contract successes into exit 101).
+fn safe_report<F: FnOnce()>(label: &str, f: F) {
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    if r.is_err() {
+        eprintln!("⚠ {label}: reporting section panicked (contract result unaffected)");
+    }
+}
+
+/// Storage currently locked (staked) for an account = bytes × 1e20 yocto.
+/// The balance entry itself is excluded.
+fn locked_balance_for(st: &MockState, acct: &str) -> u128 {
+    if !mock_cfg().staking {
+        return 0;
+    }
+    let prefix = prefixed_key(acct, b"");
+    st.storage
+        .iter()
+        .filter(|(k, _)| k.starts_with(&prefix) && !k.ends_with(b"\x00near-bal"))
+        .map(|(k, v)| (k.len() + v.len()) as u128)
+        .sum::<u128>()
+        .saturating_mul(STAKING_COST_PER_BYTE)
+}
+
+/// Credit/debit the account's storage-staking locked amount when raw bytes
+/// are added/removed under its namespace. No-op unless --staking.
+fn apply_staking_delta(st: &mut MockState, acct: &str, bytes_delta: i64) {
+    if !mock_cfg().staking || bytes_delta == 0 {
+        return;
+    }
+    let bk = prefixed_key(acct, b"\x00near-bal");
+    let bal: u128 = st
+        .storage
+        .get(&bk)
+        .and_then(|v| std::str::from_utf8(v).ok())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let locked_delta = (bytes_delta.unsigned_abs() as u128).saturating_mul(STAKING_COST_PER_BYTE);
+    let new_bal = if bytes_delta > 0 { bal.saturating_sub(locked_delta) } else { bal + locked_delta };
+    st.storage.insert(bk, new_bal.to_string().into_bytes());
+    if bytes_delta > 0 {
+        eprintln!("  🔒 staking: locked {locked_delta} yocto (+{bytes_delta} bytes)");
+    } else {
+        eprintln!("  🔓 staking: released {locked_delta} yocto (-{} bytes)", -bytes_delta);
+    }
+}
+
 /// Snapshot + revert one account's storage partition (failed receipts).
 fn snapshot_partition(st: &MockState, acct: &str) -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
     let pre = prefixed_key(acct, b"");
@@ -1017,14 +1284,15 @@ fn build_env_linker(
         FuncType::new(&engine, vec![ValType::I64; 2], vec![]),
         move |mut caller, args, _| {
             let (len, ptr) = (args[0].unwrap_i64() as usize, args[1].unwrap_i64() as usize);
-            // Indicative legacy fees: utf8 log base + per byte
-            let cost = 13_181_732u64 + 19_335_348u64 * len as u64;
+            // Fee schedule (legacy indicative defaults, --gas-schedule to override)
+            let cost = mock_cfg().gas.log_base + mock_cfg().gas.log_byte * len as u64;
             caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 let data = mem.data(&caller);
                 if ptr + len <= data.len() {
                     let msg = String::from_utf8_lossy(&data[ptr..ptr + len]).to_string();
-                    println!("  LOG: {}  [debug len={} ptr={}]", msg, len, ptr);
+                    // NEP-297 EVENT_JSON decoded; suffix shows ptr/len in --debug
+                    handle_log_line(&msg, mock_cfg().debug, &format!("  [debug len={ptr} ptr={len}]"));
                 } else {
                     println!("  LOG: <out-of-range> [debug len={} ptr={}]", len, ptr);
                 }
@@ -1040,8 +1308,9 @@ fn build_env_linker(
         move |mut caller, args, _| {
             let (len, ptr) = (args[0].unwrap_i64() as usize, args[1].unwrap_i64() as usize);
             eprintln!("  → value_return(len={}, ptr={})", len, ptr);
-            // Indicative legacy fees: read_memory base + per byte
-            let cost = 4_141_250u64 + 3_574_166u64 * len as u64;
+            // Fee schedule: read_memory base + per byte
+            let cost =
+                mock_cfg().gas.value_return_base + mock_cfg().gas.value_return_byte * len as u64;
             caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 let data = mem.data(&caller);
@@ -1064,8 +1333,9 @@ fn build_env_linker(
             let (rid, ptr) = (args[0].unwrap_i64() as u64, args[1].unwrap_i64() as usize);
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 if let Some(data) = s3.lock().unwrap().registers.get(&rid).cloned() {
-                    // Indicative legacy fees: base + per byte
-                    let cost = 24_108_449u64 + 3_574_166u64 * data.len() as u64;
+                    // Fee schedule: base + per byte
+                    let cost = mock_cfg().gas.read_register_base
+                        + mock_cfg().gas.read_register_byte * data.len() as u64;
                     caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
                     let md = mem.data_mut(&mut caller);
                     if ptr + data.len() <= md.len() {
@@ -1165,14 +1435,23 @@ fn build_env_linker(
                         String::from_utf8_lossy(&raw_key),
                         vl
                     );
-                    // Indicative legacy fees: base + key/value bytes
-                    let cost = 64_000_000u64
-                        + 90_563u64 * kl as u64
-                        + 3_548_576u64 * vl as u64;
+                    // Fee schedule (legacy indicative defaults, --gas-schedule to override)
+                    let gas = &mock_cfg().gas;
+                    let cost = gas.storage_write_base
+                        + gas.storage_write_key_byte * kl as u64
+                        + gas.storage_write_value_byte * vl as u64;
                     caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
                     let mut st = s6.lock().unwrap();
                     let trie = trie_charge_write(&mut st, &key);
+                    let (klen, vlen) = (key.len(), val.len());
                     let old = st.storage.insert(key, val);
+                    // Storage staking: lock for net new bytes (refund replaced).
+                    // Prefixed key = acct + '\0' + raw key → raw key = klen - acct - 1.
+                    let old_raw_len = old
+                        .as_ref()
+                        .map(|o| klen - acct.len() - 1 + o.len())
+                        .unwrap_or(0);
+                    apply_staking_delta(&mut st, &acct, (klen + vlen) as i64 - old_raw_len as i64);
                     drop(st);
                     caller.set_fuel(caller.get_fuel()?.saturating_sub(trie))?;
                     let mut st = s6.lock().unwrap();
@@ -1222,11 +1501,12 @@ fn build_env_linker(
                 let mut st = s7.lock().unwrap();
                 if let Some(val) = st.storage.get(key).cloned() {
                     eprintln!("  → storage_read found {}b", val.len());
-                    // Indicative flat fees + production trie-node access
+                    // Fee schedule + production trie-node access
+                    let gas = &mock_cfg().gas;
                     let trie = trie_charge(&mut st, key);
-                    let cost = 56_356_995u64
-                        + 81_569u64 * kl as u64
-                        + 3_574_166u64 * val.len() as u64
+                    let cost = gas.storage_read_base
+                        + gas.storage_read_key_byte * kl as u64
+                        + gas.storage_read_value_byte * val.len() as u64
                         + trie;
                     drop(st);
                     caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
@@ -1239,8 +1519,9 @@ fn build_env_linker(
                         String::from_utf8_lossy(key)
                     );
                     // production charges the read base + trie walk even on miss
+                    let gas = &mock_cfg().gas;
                     let trie = trie_charge(&mut st, key);
-                    let cost = 56_356_995u64 + 81_569u64 * kl as u64 + trie;
+                    let cost = gas.storage_read_base + gas.storage_read_key_byte * kl as u64 + trie;
                     drop(st);
                     caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
                     false
@@ -1280,8 +1561,16 @@ fn build_env_linker(
                         (st.storage.remove(&rkey), trie_charge_write(&mut st, &rkey))
                     };
                     if let Some(val) = val {
-                        // Indicative legacy fees: base + key bytes + trie access
-                        let cost = 64_000_000u64 + 90_563u64 * kl as u64 + trie;
+                        // Fee schedule: base + key bytes + trie access
+                        let gas = &mock_cfg().gas;
+                        let cost =
+                            gas.storage_remove_base + gas.storage_remove_key_byte * kl as u64 + trie;
+                        // Storage staking: refund the removed bytes
+                        apply_staking_delta(
+                            &mut s8.lock().unwrap(),
+                            &exec_ctx_or_default().contract,
+                            -((kl + val.len()) as i64),
+                        );
                         caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
                         if rid != u64::MAX {
                             let mut st = s8.lock().unwrap();
@@ -1316,8 +1605,9 @@ fn build_env_linker(
                         let mut st = s9.lock().unwrap();
                         (st.storage.contains_key(&hkey), trie_charge(&mut st, &hkey))
                     };
-                    // Indicative legacy fees + trie-node access
-                    let cost = 56_356_995u64 + 81_569u64 * kl as u64 + trie;
+                    // Fee schedule + trie-node access
+                    let gas = &mock_cfg().gas;
+                    let cost = gas.storage_has_key_base + gas.storage_has_key_key_byte * kl as u64 + trie;
                     caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
                     results[0] = Val::I64(if has { 1 } else { 0 });
                     return Ok(());
@@ -1433,17 +1723,12 @@ fn build_env_linker(
             r[0] = Val::I64(
                 // NEAR host returns NANoseconds — mock must match the real
                 // scale (was millis: silent 1e6x unit divergence).
-                // NEAR_MOCK_BLOCK_TS pins it for deterministic time tests
-                // (interest accrual): real clock otherwise.
+                // Precedence: NEAR_MOCK_BLOCK_TS (exact ns pin) > --now/--advance
+                // (deterministic seconds base + travel) > real clock.
                 std::env::var("NEAR_MOCK_BLOCK_TS")
                     .ok()
                     .and_then(|s| s.parse::<i64>().ok())
-                    .unwrap_or_else(|| {
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap()
-                            .as_nanos() as i64
-                    }),
+                    .unwrap_or_else(mock_now_nanos),
             );
             Ok(())
         },
@@ -1468,6 +1753,14 @@ fn build_env_linker(
                         .and_then(|s| s.parse().ok())
                 })
                 .unwrap_or(0);
+            // --staking: liquid balance excludes the storage-staked amount
+            let amt = match STATE_ARC.with(|s| s.borrow().clone()) {
+                Some(st) => {
+                    let guard = st.lock().unwrap();
+                    amt.saturating_sub(locked_balance_for(&guard, &contract))
+                }
+                None => amt,
+            };
             let ptr = args[0].unwrap_i64() as usize;
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 let md = mem.data_mut(&mut caller);
@@ -1969,14 +2262,35 @@ fn build_env_linker(
         FuncType::new(&engine, vec![ValType::I64], vec![]),
         move |_caller, args, _| {
             let rid = args[0].unwrap_i64() as u64;
-            // Deterministic 32B seed → 64-char lowercase hex (real NEAR
-            // returns raw bytes; the compiler's read_to_register path keeps
-            // bytes, but the TS surface stringifies as hex — parity with
-            // the ctx battery's `seed.length == 64` probe).
-            let seed: Vec<u8> = (0u32..8)
-                .flat_map(|i| (0x5EED_0000u32.wrapping_add(i)).to_le_bytes())
-                .collect();
-            let hex: String = seed.iter().map(|b| format!("{b:02x}")).collect();
+            // Entropy source, in priority order:
+            //   1. NEAR_MOCK_SEED pin (explicit reproducibility)
+            //   2. --now / NEAR_MOCK_BLOCK_HEIGHT pin → seed = SplitMix64 of
+            //      (height, ts): fully deterministic, yet differs per block —
+            //      matches real NEAR's per-block random_seed semantics.
+            //   3. Wall clock ^ pid (real-ish entropy for non-pinned runs).
+            let height = std::env::var("NEAR_MOCK_BLOCK_HEIGHT")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(1000);
+            let pinned_ts = mock_cfg().base_ts.map(|t| t as u64);
+            let mut z = match (pinned_ts, std::env::var("NEAR_MOCK_SEED").ok()) {
+                (Some(ts), None) => {
+                    let mut h = height;
+                    splitmix64(&mut h) ^ splitmix64(&mut { let mut t = ts; t })
+                }
+                _ => {
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_nanos() as u64)
+                        .unwrap_or(0x5EED)
+                        ^ ((std::process::id() as u64) << 32)
+                }
+            };
+            let seed: Vec<u8> = (0..4).flat_map(|_| splitmix64(&mut z).to_le_bytes()).collect();
+            let hex: String = match std::env::var("NEAR_MOCK_SEED") {
+                Ok(pin) => format!("{:0<64}", pin.trim()),
+                _ => seed.iter().map(|b| format!("{b:02x}")).collect(),
+            };
             let mut st = rs1.lock().unwrap();
             write_reg_checked(&mut st, rid, hex.into_bytes())
                 .map_err(|e| wasmtime::Error::msg(e))?;
@@ -2000,9 +2314,13 @@ fn build_env_linker(
                 .expect("missing memory export");
             let data = mem.data(&caller);
             
-            eprintln!("[schnorr-dbg] entry pk_ptr={} sig_ptr={} msg_ptr={} msg_len={} mem_len={}", pk_ptr, sig_ptr, msg_ptr, msg_len, data.len());
+            if mock_cfg().debug {
+                eprintln!("[schnorr-dbg] entry pk_ptr={pk_ptr} sig_ptr={sig_ptr} msg_ptr={msg_ptr} msg_len={msg_len} mem_len={}", data.len());
+            }
             if pk_ptr + 32 > data.len() || sig_ptr + 64 > data.len() || msg_ptr + msg_len > data.len() {
-                eprintln!("[schnorr-dbg] BOUNDS REJECT");
+                if mock_cfg().debug {
+                    eprintln!("[schnorr-dbg] BOUNDS REJECT");
+                }
                 results[0] = Val::I32(0);
                 return Ok(());
             }
@@ -2010,12 +2328,21 @@ fn build_env_linker(
                 let pk: [u8; 32] = data[pk_ptr..pk_ptr+32].try_into().unwrap();
                 let sig: [u8; 64] = data[sig_ptr..sig_ptr+64].try_into().unwrap();
                 let msg = &data[msg_ptr..msg_ptr+msg_len];
-                eprintln!("[schnorr-dbg] pk_ptr={} sig_ptr={} msg_ptr={} msg_len={}", pk_ptr, sig_ptr, msg_ptr, msg_len);
-                eprintln!("[schnorr-dbg] pk[0..8]={:02x?} sig[0..8]={:02x?} msg[0..8]={:02x?}", &pk[0..8], &sig[0..8], &msg[msg.len().min(8)..msg.len().min(16).max(8)]);
+                if mock_cfg().debug {
+                    eprintln!("[schnorr-dbg] pk_ptr={pk_ptr} sig_ptr={sig_ptr} msg_ptr={msg_ptr} msg_len={msg_len}");
+                }
                 let r = schnorr_verify_impl(&pk, &sig, msg) as i32;
-                eprintln!("[schnorr-dbg] result={}", r);
+                if mock_cfg().debug {
+                    eprintln!("[schnorr-dbg] result={r}");
+                }
                 r
-            })).unwrap_or_else(|_| { eprintln!("[schnorr-dbg] PANIC"); 0 });
+            }))
+            .unwrap_or_else(|_| {
+                if mock_cfg().debug {
+                    eprintln!("[schnorr-dbg] PANIC");
+                }
+                0
+            });
             
             results[0] = Val::I32(result);
             Ok(())
@@ -2067,7 +2394,7 @@ fn build_env_linker(
         FuncType::new(&engine, vec![ValType::I64; 2], vec![]),
         move |mut caller, args, _| {
             let (len, ptr) = (args[0].unwrap_i64() as usize, args[1].unwrap_i64() as usize);
-            let cost = 13_181_732u64 + 19_335_348u64 * len as u64;
+            let cost = mock_cfg().gas.log_base + mock_cfg().gas.log_byte * len as u64;
             caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 let data = mem.data(&caller);
@@ -2077,7 +2404,11 @@ fn build_env_linker(
                         .map(|c| u16::from_le_bytes([c[0], c[1]]))
                         .collect();
                     let msg = String::from_utf16_lossy(&units);
-                    println!("  LOG: {}  [debug len={} ptr={}] (utf16)", msg, len, ptr);
+                    handle_log_line(
+                        &msg,
+                        mock_cfg().debug,
+                        &format!("  [debug len={len} ptr={ptr}] (utf16)"),
+                    );
                 } else {
                     println!("  LOG: <out-of-range> [debug len={} ptr={}] (utf16)", len, ptr);
                 }
@@ -2088,8 +2419,24 @@ fn build_env_linker(
     linker.define(&*store, "env", "log_utf16", log_utf16_fn)?;
     linker.define(&*store, "env", "keccak256", keccak256_fn)?;
     linker.define(&*store, "env", "log", noop1.clone())?;
-    linker.define(&*store, "env", "validator_stake", noop_3i.clone())?;
-    linker.define(&*store, "env", "validator_total_stake", noop1.clone())?;
+    let vs0 = Func::new(
+        &mut *store,
+        FuncType::new(&engine, vec![ValType::I64; 3], vec![]),
+        |_, _, _| {
+            stub_warn("validator_stake");
+            Ok(())
+        },
+    );
+    linker.define(&*store, "env", "validator_stake", vs0)?;
+    let vts0 = Func::new(
+        &mut *store,
+        FuncType::new(&engine, vec![ValType::I64], vec![]),
+        |_, _, _| {
+            stub_warn("validator_total_stake");
+            Ok(())
+        },
+    );
+    linker.define(&*store, "env", "validator_total_stake", vts0)?;
     linker.define(&*store, "env", "alt_bn128_g1_multiexp", precompile_fns[1].clone())?;
     linker.define(&*store, "env", "alt_bn128_g1_sum", precompile_fns[0].clone())?;
     // alt_bn128_pairing_check(data_len, data_ptr) -> i64 (0 = pairing OK per
@@ -2124,12 +2471,54 @@ fn build_env_linker(
     linker.define(&*store, "env", "bls12381_pairing_check", bls_pairing_fn)?;
 
     linker.define(&*store, "env", "epoch_height", noop0r.clone())?;
-    linker.define(&*store, "env", "storage_usage", noop0r.clone())?;
+    // storage_usage() -> u64: bytes used by THIS contract's namespace
+    // (was a silent 0 — flashpool-style checks saw free storage forever).
+    let su0 = state.clone();
+    let storage_usage_fn = Func::new(
+        &mut *store,
+        FuncType::new(&engine, vec![], vec![ValType::I64]),
+        move |_, _, r| {
+            let contract = exec_ctx_or_default().contract;
+            let bytes: u64 = su0
+                .lock()
+                .unwrap()
+                .storage
+                .iter()
+                .filter(|(k, _)| k.starts_with(&prefixed_key(&contract, b"")))
+                .map(|(k, v)| (k.len() + v.len()) as u64)
+                .sum();
+            r[0] = Val::I64(bytes as i64);
+            Ok(())
+        },
+    );
+    linker.define(&*store, "env", "storage_usage", storage_usage_fn)?;
     linker.define(&*store, "env", "log_s", noop1.clone())?;
     linker.define(&*store, "env", "validator_account_id", noop1.clone())?;
     linker.define(&*store, "env", "promise_results", noop1.clone())?;
     // (yield hosts defined below — cross engine or noop, never twice)
-    linker.define(&*store, "env", "account_locked_balance", noop1.clone())?;
+    // account_locked_balance(balance_ptr): 16-byte u128 write of the
+    // storage-staked amount (was a silent 0).
+    let alb0 = state.clone();
+    let account_locked_balance_fn = Func::new(
+        &mut *store,
+        FuncType::new(&engine, vec![ValType::I64], vec![]),
+        move |mut caller, args, _| {
+            let contract = exec_ctx_or_default().contract;
+            let amt = match alb0.try_lock() {
+                Ok(g) => locked_balance_for(&g, &contract),
+                Err(_) => 0u128,
+            };
+            let ptr = args[0].unwrap_i64() as usize;
+            if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                let md = mem.data_mut(&mut caller);
+                if ptr + 16 <= md.len() {
+                    md[ptr..ptr + 16].copy_from_slice(&amt.to_le_bytes());
+                }
+            }
+            Ok(())
+        },
+    );
+    linker.define(&*store, "env", "account_locked_balance", account_locked_balance_fn)?;
     linker.define(&*store, "env", "storage_iter_prefix", noop_2i_1o.clone())?;
     linker.define(&*store, "env", "storage_iter_range", noop_4i_1o.clone())?;
     linker.define(&*store, "env", "storage_iter_next", noop_3i_1o.clone())?;
@@ -2224,21 +2613,114 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.get(1).map(|s| s.as_str()) == Some("cross") {
         return run_cross(&args);
     }
+    fn print_main_usage() {
+        println!("near-mock — local NEAR contract runner (wasmtime, no node)");
+        println!();
+        println!("USAGE:");
+        println!("  near-mock <wasm> <method> [args-json] [flags]");
+        println!("  near-mock <wasm> exports|imports|reset");
+        println!("  near-mock <wasm> symbolicate <idx-or-name> [map-file]");
+        println!("  near-mock cross <state.bin> <acct=/path.wasm,...> <contract-acct> <method> [args-json]");
+        println!();
+        println!("ARGS:");
+        println!("  <args-json>  JSON string, or @file for raw bytes (NUL/invalid UTF-8 ok)");
+        println!();
+        println!("FLAGS:");
+        println!("  --view               read-only call (ProhibitedInView enforced, no persist)");
+        println!("  --prepaid <TGAS>     prepaid gas, default 200");
+        println!("  --deposit <yocto>    attached deposit (decimal yocto)");
+        println!("  --gas-schedule <f>   JSON gas table (see: near-mock --gas-schedule-help)");
+        println!("  --staking            enforce 1e20 yocto/byte storage staking");
+        println!("  --dry-run            execute + report, do NOT persist state");
+        println!("  --now <unix-secs>    fixed block_timestamp base (deterministic time)");
+        println!("  --advance <secs>     time-travel: added to the --now base");
+        println!("  --json               machine-readable result line (JSON {{...}})");
+        println!("  --debug              verbose host traces ([schnorr-dbg], ptr/len)");
+        println!("  --once               accepted no-op (kept for script compat)");
+        println!();
+        println!("ENV:");
+        println!("  NEAR_MOCK_STATE       state file path (default /tmp/near-mock-state.bin)");
+        println!("  NEAR_MOCK_ATTACH      attached deposit (decimal yocto)");
+        println!("  NEAR_MOCK_SIGNER      signer account (default owner.test.near)");
+        println!("  NEAR_MOCK_CONTRACT    contract account (default escrow.test.near)");
+        println!("  NEAR_MOCK_NOW         fixed timestamp base (unix seconds)");
+        println!("  --state <path>        state file (default /tmp/near-mock-state.bin; = NEAR_MOCK_STATE)");
+    println!("  NEAR_MOCK_SEED        pin random_seed (string, zero-padded to 64 hex)");
+        println!("  NEAR_MOCK_DEBUG=1     same as --debug");
+        println!("  NEAR_MOCK_WARN_STUBS=1  warn on unimplemented host stubs");
+    }
+
+    fn print_gas_schedule_default() {
+        println!("{}", GasSchedule::default().to_json());
+    }
+
+    if args.iter().skip(1).any(|a| a == "--help" || a == "-h") {
+        print_main_usage();
+        return Ok(()); // exit 0 — scripts probe this for availability
+    }
+    if args.iter().any(|a| a == "--gas-schedule-help") {
+        print_gas_schedule_default();
+        return Ok(());
+    }
     if args.len() < 3 {
-        eprintln!("Usage: near-mock <wasm> <method> [args-json]");
+        eprintln!("Usage: near-mock <wasm> <method> [args-json] [flags]");
         eprintln!("       near-mock <wasm> exports|imports|reset");
+        eprintln!("       near-mock --help   (full flag reference)");
         std::process::exit(1);
+    }
+
+    fn hex_key(k: &[u8]) -> String {
+        k.iter().map(|b| format!("{b:02x}")).collect()
     }
 
     // Flags (parsed early — view/prepaid shape host fn construction)
     let run_view = args.iter().any(|a| a == "--view");
-    let prepaid_tgas: f64 = args
-        .iter()
-        .position(|a| a == "--prepaid")
-        .and_then(|i| args.get(i + 1))
+    let flag_val = |name: &str| -> Option<String> {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
+    let prepaid_tgas: f64 = flag_val("--prepaid")
         .and_then(|v| v.parse::<f64>().ok())
         .unwrap_or(200.0); // NEAR default prepaid gas per function call
     let prepaid_g: u64 = (prepaid_tgas * 1e12) as u64;
+    // --deposit <yocto>: wired into the same path the cross driver uses
+    // (NEAR_MOCK_ATTACH) so attached_deposit() sees it. Was silently ignored.
+    if let Some(d) = flag_val("--deposit") {
+        std::env::set_var("NEAR_MOCK_ATTACH", d.trim());
+    }
+    // --state <path> mirrors the NEAR_MOCK_STATE env var (same single source
+    // of truth); flag wins over a pre-set env value.
+    if let Some(p) = flag_val("--state") {
+        std::env::set_var("NEAR_MOCK_STATE", p.trim());
+    }
+    let mut cfg = RunCfg::default();
+    cfg.staking = args.iter().any(|a| a == "--staking");
+    cfg.dry_run = args.iter().any(|a| a == "--dry-run");
+    if args.iter().any(|a| a == "--debug") {
+        cfg.debug = true;
+    }
+    if let Some(p) = flag_val("--gas-schedule") {
+        cfg.gas =
+            GasSchedule::from_json_file(p.trim()).map_err(|e| format!("--gas-schedule: {e}"))?;
+        eprintln!("📏 gas schedule loaded from {}", p.trim());
+    }
+    if let Some(n) = flag_val("--now") {
+        cfg.base_ts = Some(
+            n.trim()
+                .parse::<i64>()
+                .map_err(|_| "--now must be unix seconds")?,
+        );
+    }
+    if let Some(a) = flag_val("--advance") {
+        cfg.advance_secs = a
+            .trim()
+            .parse::<i64>()
+            .map_err(|_| "--advance must be seconds")?;
+    }
+    RUN_CFG.with(|c| *c.borrow_mut() = Some(cfg));
+    let json_out = args.iter().any(|a| a == "--json");
 
     let wasm_path = &args[1];
     let method = &args[2];
@@ -2428,9 +2910,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Call the target method
-    let func = instance
-        .get_func(&mut store, method)
-        .ok_or_else(|| format!("Method '{}' not found", method))?;
+    let func = instance.get_func(&mut store, method).ok_or_else(|| {
+        let mut avail: Vec<String> = module
+            .exports()
+            .filter_map(|e| match e.ty() {
+                wasmtime::ExternType::Func(_) => Some(e.name().to_string()),
+                _ => None,
+            })
+            .collect();
+        avail.sort();
+        format!(
+            "Method '{}' not found. Available exports:\n  {}",
+            method,
+            avail.join("\n  ")
+        )
+    })?;
     let args_display = if args_bytes == b"{}" {
         String::new()
     } else {
@@ -2476,10 +2970,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    let mut run_outcome: &str = "ok";
+    let mut json_return: Option<String> = None;
     match result {
         Ok(_) => {
             println!("✅ Success");
             let st = state.lock().unwrap();
+            // G-15: the result/storage printer must NEVER turn a successful
+            // contract call into a process failure (exit 101 after a committed
+            // mutation was exactly this bug class). Panic → report, exit 0.
+            safe_report("result/storage printer", || {
             if let Some(ref data) = st.return_data {
                 if data.len() == 8 {
                     let val = i64::from_le_bytes(data[..8].try_into().unwrap());
@@ -2508,15 +3008,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 for (k, v) in st.storage.iter().take(10) {
                     let ks = String::from_utf8_lossy(k);
                     let vs = String::from_utf8_lossy(v);
+                    // char-boundary-safe truncation (byte-slicing panics on multibyte chars)
+                    let kshow: String = ks.chars().take(20).collect();
+                    let vshow: String = vs.chars().take(60).collect();
                     println!(
                         "  [{}b]={} → [{}b]={}",
                         k.len(),
-                        &ks[..ks.len().min(20)],
+                        kshow,
                         v.len(),
-                        &vs[..vs.len().min(60)]
+                        vshow
                     );
                 }
             }
+            });
+            json_return = st
+                .return_data
+                .as_ref()
+                .map(|d| String::from_utf8_lossy(d).into_owned());
             // G-14: resolve receipts exactly like the cross driver — the
             // returned DAG first, then fire-and-forget orphans (their
             // failures do NOT roll back the parent tx: receipt independence).
@@ -2566,8 +3074,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             state.lock().unwrap().storage = tx_snapshot.clone();
             let msg = format!("{}", e);
             if msg.contains("all fuel consumed") {
+                run_outcome = "out_of_gas";
                 println!("❌ OutOfGas — exceeded {:.6} Tgas prepaid", prepaid_tgas);
             } else {
+                run_outcome = "trap";
                 println!("❌ {}", e);
                 // Surface the root host error (e.g. ProhibitedInView,
                 // InvalidRegisterId) — wasmtime's display leads with the
@@ -2580,17 +3090,81 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Gas report (1 fuel = 1 gas unit; host-call table is indicative-legacy)
+    let mut gas_burnt = prepaid_g;
     if let Ok(remaining) = store.get_fuel() {
-        let burnt = prepaid_g.saturating_sub(remaining);
+        gas_burnt = prepaid_g.saturating_sub(remaining);
         println!(
             "⛽ gas: {:.6} Tgas burnt / {:.6} Tgas prepaid",
-            burnt as f64 / 1e12,
+            gas_burnt as f64 / 1e12,
             prepaid_tgas
         );
     }
 
-    // Persist storage
-    {
+    // Storage diff vs the pre-call snapshot (human summary + --json payload)
+    let (added, changed, removed) = {
+        let st = state.lock().unwrap();
+        let mut added: Vec<(String, usize)> = Vec::new();
+        let mut changed: Vec<(String, usize, usize)> = Vec::new();
+        let mut removed: Vec<String> = Vec::new();
+        for (k, v) in &st.storage {
+            match tx_snapshot.get(k) {
+                None => added.push((hex_key(k), v.len())),
+                Some(old) if old != v => changed.push((hex_key(k), old.len(), v.len())),
+                _ => {}
+            }
+        }
+        for k in tx_snapshot.keys() {
+            if !st.storage.contains_key(k) {
+                removed.push(hex_key(k));
+            }
+        }
+        (added, changed, removed)
+    };
+    if !(added.is_empty() && changed.is_empty() && removed.is_empty()) {
+        println!(
+            "📦 diff: +{} ~{} -{} keys",
+            added.len(),
+            changed.len(),
+            removed.len()
+        );
+    }
+
+    // --json: one machine-readable blob for harnesses/CI assertions
+    if json_out {
+        let events = JSON_EVENTS.with(|e| e.borrow().clone());
+        let log_count = LOG_COUNT.with(|l| *l.borrow());
+        let st = state.lock().unwrap();
+        let locked = if mock_cfg().staking {
+            Some(locked_balance_for(&st, &exec_ctx_or_default().contract))
+        } else {
+            None
+        };
+        let j = serde_json::json!({
+            "outcome": run_outcome,
+            "return": json_return,
+            "gas_burnt_tgas": gas_burnt as f64 / 1e12,
+            "gas_prepaid_tgas": prepaid_tgas,
+            "logs": log_count,
+            "events": events,
+            "storage": {
+                "keys_total": st.storage.len(),
+                "added": added,
+                "changed": changed,
+                "removed": removed,
+                "locked_yocto": locked.map(|l| l.to_string()),
+            },
+            "dry_run": mock_cfg().dry_run,
+        });
+        println!("JSON {}", serde_json::to_string(&j).unwrap_or_default());
+    }
+
+    // Persist storage. --dry-run inspects without committing; --view never
+    // persists either (real NEAR view calls can't write state).
+    if mock_cfg().dry_run {
+        println!("🏜  dry-run: state NOT persisted");
+    } else if run_view {
+        println!("👁  view call: state NOT persisted");
+    } else {
         let st = state.lock().unwrap();
         let encoded = bincode::serialize(&st.storage)?;
         std::fs::write(state_file(), encoded)?;
@@ -2620,18 +3194,20 @@ struct MockState {
 /// trie); repeats charge at the cached-read rate. Calibrated against the
 /// near-vm-run oracle: view reads land within ~10% of production.
 fn trie_charge(st: &mut MockState, key: &[u8]) -> u64 {
+    let g = mock_cfg().gas;
     if st.touched.insert(key.to_vec()) {
-        16 * 2_280_000_000
+        g.trie_walk_nodes * g.trie_node
     } else {
-        2_280_000_000
+        g.trie_node
     }
 }
 
 /// Writes re-walk the trie unconditionally (locate node + persist mutation) —
 /// the read cache never subsidizes a write.
 fn trie_charge_write(st: &mut MockState, key: &[u8]) -> u64 {
+    let g = mock_cfg().gas;
     st.touched.insert(key.to_vec());
-    16 * 2_280_000_000
+    g.trie_walk_nodes * g.trie_node
 }
 
 fn write_reg_checked(st: &mut MockState, rid: u64, data: Vec<u8>) -> Result<(), String> {

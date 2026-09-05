@@ -548,6 +548,12 @@ impl WasmEmitter {
                         if let LispVal::List(p) = b {
                             if p.len() == 2 {
                                 if let LispVal::Sym(n) = &p[0] {
+                                    // INIT FIRST, then bind: let* inits evaluate in
+                                    // the OUTER scope — binding the name before
+                                    // compiling the init made (let* ((x (+ x 1))))
+                                    // read its own fresh zero-initialized slot
+                                    // (returned 1, not 2). Fix 2026-09-05.
+                                    let init = self.expr(&p[1])?;
                                     let old = self.locals.get(n).copied();
                                     let i = self.free_locals.pop().unwrap_or(self.next_local);
                                     if i == self.next_local {
@@ -556,7 +562,7 @@ impl WasmEmitter {
                                     }
                                     self.locals.insert(n.clone(), i);
                                     saved.push((n.clone(), old));
-                                    v.extend(self.expr(&p[1])?);
+                                    v.extend(init);
                                     v.push(Instruction::LocalSet(i));
                                 }
                             }

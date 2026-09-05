@@ -682,15 +682,30 @@ mod outlayer_e2e {
     fn run_near_mock(src: &str, method: &str, args: &str, deposit: Option<&str>) -> String {
         let wasm = lisp_rlm_wasm::compile_near(src)
             .unwrap_or_else(|e| panic!("compile_near failed: {}", e));
-        let tmp = std::env::temp_dir().join("nm_test.wasm");
+        // Per-test unique wasm + state paths: tests run in PARALLEL and used
+        // to share /tmp/nm_test.wasm + /tmp/near-mock-state.bin, racing each
+        // other (module A's _run executing module B's code). The skip-on-missing
+        // binary gate hid this for months; with --help exiting 0 the tier
+        // actually runs, so isolation is mandatory now.
+        static NM_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let tag = format!(
+            "{}_{}",
+            std::process::id(),
+            NM_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let tmp = std::env::temp_dir().join(format!("nm_test_{tag}.wasm"));
         std::fs::write(&tmp, &wasm).unwrap();
+        let state = std::env::temp_dir().join(format!("nm_state_{tag}.bin"));
 
         let mut cmd = Command::new("./target/release/near-mock");
         cmd.arg(&tmp).arg(method).arg(args);
+        cmd.env("NEAR_MOCK_STATE", &state);
         if let Some(d) = deposit {
             cmd.arg("--deposit").arg(d);
         }
         let output = cmd.output().expect("near-mock should run");
+        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(&state);
         String::from_utf8_lossy(&output.stdout).to_string()
     }
 
@@ -808,7 +823,7 @@ mod outlayer_e2e {
                   (let* ((x 9))
                     (let* ((x 10))
                       (let* ((x 11))
-                        x)))))))))))
+                        x))))))))))))
 "#, "_run", "{}", None);
         let ret = extract_return(&out).expect("should have return value");
         assert!(ret.contains("11"), "expected 11, got: {}", ret);
@@ -827,11 +842,20 @@ mod outlayer_e2e {
     #[test]
     fn nm_mul_overflow_traps() {
         if !has_near_mock() { return; }
-        // 2^30 * 2^30 = 2^60 which overflows i32 but fits i64 — should succeed
-        let out = run_near_mock("(define (main) (* 1073741824 1073741824))", "_run", "{}", None);
+        // 2^30 * 2^30 = 2^60 is OUTSIDE the tagged payload range [-2^60, 2^60):
+        // the compiler now rejects that literal at compile time (silent-corruption
+        // guard). The largest exact product must stay strictly below 2^60.
+        let out = run_near_mock(
+            "(define (main) (* 1073741824 1073741823))",
+            "_run", "{}", None,
+        );
         let ret = extract_return(&out).expect("should have return value");
-        // 2^60 = 1152921504606846976
-        assert!(ret.contains("1152921504606846976"), "expected 2^60, got: {}", ret);
+        // 2^30 * (2^30 - 1) = 1152921503533105152
+        assert!(
+            ret.contains("1152921503533105152"),
+            "expected 2^60 - 2^30, got: {}",
+            ret
+        );
     }
 
     #[test]
@@ -862,15 +886,19 @@ mod outlayer_e2e {
     #[test]
     fn nm_deposit() {
         if !has_near_mock() { return; }
-        let out = run_near_mock(r#"
-(define (main)
-  (let* ((bal (attached-deposit)))
-    (to-string bal)))
-"#, "_run", "{}", Some("2000000000000000000"));
+        // near/attached_deposit_u128 renders the EXACT decimal u128 (the low-64
+        // (attached-deposit) form corrupts values >= 2^60 by design — payload
+        // range). Round-trip verified 2026-09-05.
+        let out = run_near_mock(
+            r#"(define (main) (near/attached_deposit_u128))"#,
+            "_run", "{}", Some("2000000000000000000"),
+        );
         let ret = extract_return(&out).expect("should have return value");
-        // Should log or return something with the deposit value
-        assert!(out.contains("2000000000") || out.contains("2e18") || out.contains("2000000000000000000"),
-            "expected deposit value in output, got: {}", out);
+        assert!(
+            ret.contains("2000000000000000000"),
+            "expected exact deposit 2000000000000000000, got: {}",
+            ret
+        );
     }
 
     /// Fix 1: near/return auto-detects string vs non-string
