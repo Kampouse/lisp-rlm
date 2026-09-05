@@ -1171,10 +1171,13 @@ impl WasmEmitter {
                 }
             }
             LispVal::Str(s) => {
-                // Process \xNN hex escapes to raw bytes (e.g., ed25519 signatures).
-                // The tokenizer preserves \x as literal chars, so we decode them here.
-                let raw = Self::process_hex_escapes(s.as_bytes());
-                let off = self.alloc_data(&raw) as u64;
+                // Str is already unescaped exactly once by parse_atom
+                // (single-pass, in lockstep with the interpreter — corpus
+                // e32 finding, 2026-08-27). Do NOT decode again here: the
+                // second pass ate `\\` sequences (`\\\"` lost its backslash,
+                // breaking the json-set escaped-quote round-trip).
+                let raw = s.as_bytes();
+                let off = self.alloc_data(raw) as u64;
                 let encoded = (off | ((raw.len() as u64) << 32)) as i64;
                 let mut v = vec![Instruction::I64Const(encoded)];
                 v.extend(self.emit_tag_str());
