@@ -98,7 +98,7 @@ path = "src/bin/emit_wasm.rs"
 
 [[bin]]
 name = "near-mock"
-path = "src/bin/near_mock.rs"
+path = "src/bin/near_mock/mod.rs"
 
 [[bin]]
 name = "compile"
