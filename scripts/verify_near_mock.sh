@@ -95,6 +95,63 @@ out=$($NM "$WASM" sign '{"message":"héllo wörld ünïcode ☕ exile"}' --state
 check "unicode sign ok" "Success" "$out"
 [ $rc -eq 0 ] && ok "exit 0 with unicode state" || bad "exit $rc with unicode state"
 
+echo "== str= / str!= (wasm emit; broke silently pre-2026-09-06) =="
+cat > "$WORK/eq.lisp" <<'EOF'
+(define (eq_yes) (if (str= "ab" "ab") (near/return_str "EQ") (near/return_str "NE")))
+(define (eq_no)  (if (str= "abc" "abd") (near/return_str "EQ") (near/return_str "NE")))
+(define (ne_yes) (if (str!= "a" "b") (near/return_str "DIFF") (near/return_str "SAME")))
+(define (ne_no)  (if (str!= "a" "a") (near/return_str "DIFF") (near/return_str "SAME")))
+(export "eq_yes" eq_yes)
+(export "eq_no" eq_no)
+(export "ne_yes" ne_yes)
+(export "ne_no" ne_no)
+EOF
+"$NC" "$WORK/eq.lisp" "$WORK/eq.wasm" >/dev/null 2>&1
+for c in "eq_yes:EQ" "eq_no:NE" "ne_yes:DIFF" "ne_no:SAME"; do
+  m=${c%%:*}; want=${c##*:}
+  out=$($NM "$WORK/eq.wasm" "$m" '{}' --state "$WORK/$m.bin" 2>/dev/null)
+  check "wasm $m → $want" "📄 $want" "$out"
+done
+
+echo "== scenario: per-step as/predecessor + now/advance =="
+cat > "$WORK/scen.lisp" <<'EOF'
+(define (whoami) (near/return_str (near/predecessor_account_id)))
+(define (clock) (near/return_str (near/block_timestamp)))
+(define (gate)
+  (begin
+    (near/store-bytes "breach" (near/signer_account_id))
+    (if (str= (near/signer_account_id) "alice.test.near")
+        (near/return_str "allowed")
+        (near/panic "forbidden"))))
+(export "whoami" whoami)
+(export "clock" clock)
+(export "gate" gate)
+EOF
+"$NC" "$WORK/scen.lisp" "$WORK/contract.wasm" >/dev/null 2>&1
+cat > "$WORK/scen.json" <<'EOF'
+{"name": "verify: identity + time travel",
+ "steps": [
+   {"method": "whoami", "expect": "owner.test.near"},
+   {"method": "whoami", "as": "alice.test.near", "expect": "alice.test.near"},
+   {"method": "whoami", "as": "bob.test.near", "predecessor": "vault.test.near", "expect": "vault.test.near"},
+   {"method": "clock", "now": 1700000000, "expect": "1700000000000000000"},
+   {"method": "clock", "advance": 60, "expect": "1700000060000000000"},
+   {"method": "clock", "expect": "1700000060000000000"},
+   {"method": "gate", "as": "alice.test.near", "expect": "allowed"},
+   {"method": "gate", "as": "eve.test.near", "expect": "trap"}
+ ]}
+EOF
+out=$(cd "$WORK" && $NM scenario scen.json 2>&1); rc=$?
+check "scenario runner banner" "scenario: verify: identity + time travel" "$out"
+check "per-step as honored" "👤 as alice" "$out"
+check "per-step predecessor honored" "predecessor vault" "$out"
+check "step now" "1700000000000000000" "$out"
+check "advance accumulates + persists" "1700000060000000000" "$out"
+check "caller gate allowed (str= works)" "allowed" "$out"
+check "caller gate traps for eve" "trap as expected" "$out"
+[ $rc -eq 0 ] && ok "scenario exit 0 (9/9)" || bad "scenario exit $rc"
+[ -f "$WORK/state.bin" ] && ok "scenario persisted state.bin" || bad "scenario state.bin missing"
+
 echo
 echo "RESULT: $pass passed, $fail failed"
 [ $fail -eq 0 ]

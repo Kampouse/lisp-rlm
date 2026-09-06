@@ -893,6 +893,11 @@ pub(crate) fn credit_attach(
 ///   fail_receipt (N — force receipt N to fail during this step).
 ///   gas (TGas cap on the entry call — die by out-of-gas instead of trap),
 ///   attach (decimal yocto deposited to the callee before the call),
+///   as (signer account; predecessor defaults to it — a direct tx from
+///   that account), predecessor (override — models a call arriving from
+///   another contract), now (unix-secs time base), advance (secs ADDED to
+///   the time base). Time is monotonic: clock changes persist for later
+///   steps, like real blocks.
 ///   snapshot / restore (named full-storage forks),
 ///   expect_same_storage_as (storage must equal a snapshot — branch compare),
 ///   expect: "trap" requires the entry call to trap.
@@ -1015,6 +1020,31 @@ pub(crate) fn run_scenario(path: &str) -> Result<(), Box<dyn std::error::Error>>
             .get("fail_receipt")
             .and_then(|f| f.as_u64())
             .map(|n| n as usize);
+        // per-step identity: `as` sets signer; predecessor defaults to it
+        // (direct tx from that account) — an explicit `predecessor` models
+        // a call arriving from another contract. Overrides the runner
+        // default (owner.test.near) for THIS step only.
+        let step_signer = step
+            .get("as")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_else(|| "owner.test.near".into());
+        let step_pred = step
+            .get("predecessor")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_else(|| step_signer.clone());
+        // per-step time travel: `now` jumps the chain clock to an absolute
+        // unix-secs base, `advance` shifts it forward. CHAIN SEMANTICS:
+        // time is monotonic — the mutation PERSISTS for later steps (like
+        // real blocks; a timelock test sets advance once, later steps run
+        // at the later time). String OR number accepted (see gas above).
+        let step_now = step.get("now").and_then(|v| {
+            v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+        });
+        let step_advance = step.get("advance").and_then(|v| {
+            v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+        });
         // gas budget: TGas cap on this step's entry call (out-of-gas ≠ trap)
         // accept number OR string ("2") — a stringy gas silently un-capping
         // the step would turn a chaos test into a 20s-per-spin hang
@@ -1092,17 +1122,39 @@ pub(crate) fn run_scenario(path: &str) -> Result<(), Box<dyn std::error::Error>>
         }
 
         println!("\n── step {} ▶ {}.{}{}{} ──", i, contract, method, if args_json == "{}" { "".into() } else { format!(" {}", args_json) }, if is_view { " (view)" } else { "" });
+        if step_signer != "owner.test.near" || step_pred != step_signer {
+            println!(
+                "  👤 as {} (predecessor {})",
+                step_signer, step_pred
+            );
+        }
         let module = MODULES
             .with(|m| m.borrow().as_ref().unwrap().get(&contract).cloned())
             .ok_or(format!("step {}: contract {} not in manifest", i, contract))?;
         EXEC_CTX.with(|c| {
             *c.borrow_mut() = Some(ExecCtx {
                 input: args_json.clone().into_bytes(),
-                signer: "owner.test.near".into(),
-                predecessor: "owner.test.near".into(),
+                signer: step_signer.clone(),
+                predecessor: step_pred.clone(),
                 contract: contract.clone(),
                 view: is_view,
             })
+        });
+        // Apply the step's clock BEFORE the call (promise DAG resolution in
+        // the Ok arm sees it too — receipts inherit the step's clock, like
+        // real receipts). Scenario mode never populates RUN_CFG (flag
+        // parsing lives in the single-call path), so get_or_insert a
+        // default here — mock_now_nanos would otherwise read env-only
+        // values and per-step now/advance would silently no-op.
+        RUN_CFG.with(|c| {
+            let mut slot = c.borrow_mut();
+            let cfg = slot.get_or_insert_with(RunCfg::default);
+            if let Some(n) = step_now {
+                cfg.base_ts = Some(n);
+            }
+            if let Some(a) = step_advance {
+                cfg.advance_secs += a; // accumulates — monotonic chain time
+            }
         });
         // NEAR-scale fuel: 1 TGas = 1e12 fuel units, matching host-call
         // costs and the ⛽ reporting (÷1e12). Runaway compute is bounded by
@@ -1213,6 +1265,7 @@ pub(crate) fn run_scenario(path: &str) -> Result<(), Box<dyn std::error::Error>>
         fail_receipts_set(&[]); // clear between steps
         PENDING_RETURN.with(|p| *p.borrow_mut() = None);
         state.lock().unwrap().view = old_view;
+        // (clock intentionally NOT restored — monotonic chain time, see above)
 
         // checks: expect ("ok" = no trap / no receipt-chain failure, else
         // substring against 📄 outputs or storage) and contains (substring
@@ -1461,6 +1514,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  near-mock <wasm> exports|imports|reset");
         println!("  near-mock <wasm> symbolicate <idx-or-name> [map-file]");
         println!("  near-mock cross <state.bin> <acct=/path.wasm,...> <contract-acct> <method> [args-json]");
+        println!("  near-mock scenario <file.json>  (steps: method/contract/args/view/as/");
+        println!("                                  predecessor/now/advance/gas/attach/expect/...)");
         println!("  near-mock state import <state.bin> <dump.json>");
         println!("  near-mock state dump <state.bin>");
         println!();
