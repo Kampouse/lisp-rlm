@@ -29,7 +29,7 @@ fn run(c: Call) -> String {
     std::fs::write(&p, wasm()).unwrap();
     let manifest = format!("st2.t.near={}", p.display());
     let out = std::process::Command::new("./target/release/near-mock")
-        .arg("cross").arg("{}").arg(&manifest)
+        .arg("cross").arg(std::env::temp_dir().join(format!("st2_{}.bin", std::process::id())).to_str().unwrap()).arg(&manifest)
         .arg("st2.t.near").arg(c.method).arg(c.args)
         .output()
         .expect("near-mock spawn");

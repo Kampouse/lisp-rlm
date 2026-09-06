@@ -142,21 +142,39 @@ pub(crate) fn sub_execute(
     let part_snap = { snapshot_partition(&state.lock().unwrap(), account) };
 
     let mut sub_store = wasmtime::Store::new(&*engine, ());
-    sub_store.set_fuel(PREPAID_FUEL.with(|f| *f.borrow()))?;
+    sub_store.set_fuel(PREPAID_FUEL.with(|r| *r.borrow()))?;
+    // sub_execute runs on the promise worker thread, where the scenario's
+    // epoch ticker never ticks — but wasmtime's DEFAULT epoch deadline is 0,
+    // so under epoch_interruption the first epoch check (current >= deadline)
+    // fires as soon as the main thread's ticker has advanced once → instant
+    // Interrupt. Give receipt stores an unbounded epoch deadline; fuel still
+    // bounds runaway child compute.
+    sub_store.set_epoch_deadline(u64::MAX);
     let linker = build_env_linker(&mut sub_store, &*engine, state.clone(), Vec::new())?;
     let instance = linker.instantiate(&mut sub_store, &module)?;
     let ok = instance
         .get_func(&mut sub_store, method)
         .map(|f| f.call(&mut sub_store, &[], &mut []));
-    let (trap, ret) = match ok {
-        None => (true, None), // missing method = failed receipt
+    let (trap, ret, trap_why) = match ok {
+        None => (true, None, "missing method (failed receipt)".to_string()),
         Some(res) => match res {
-            Ok(()) => (false, state.lock().unwrap().return_data.clone()),
-            Err(_) => (true, None),
+            Ok(()) => (false, state.lock().unwrap().return_data.clone(), String::new()),
+            Err(e) => {
+                let code = e
+                    .downcast_ref::<wasmtime::Trap>()
+                    .map(|t| format!("{:?}", t))
+                    .unwrap_or_else(|| "n/a".into());
+                (true, None, format!("{} [trap-code: {}]", e, code))
+            }
         },
     };
     if trap {
-        eprintln!("  ⚠ cross: {}.{} TRAPPED — reverting partition", account, method);
+        eprintln!(
+            "  ⚠ cross: {}.{} TRAPPED — reverting partition ({})",
+            account,
+            method,
+            trap_why.lines().last().unwrap_or("unknown")
+        );
         restore_partition(&mut state.lock().unwrap(), part_snap, account);
         if deposit > 0 {
             // failed receipt refunds its deposit to the sender

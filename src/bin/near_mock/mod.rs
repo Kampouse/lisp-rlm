@@ -89,7 +89,8 @@ fn run_cross(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     fuel_cfg.consume_fuel(true);
     fuel_cfg.max_wasm_stack(64 * 1024 * 1024);
     fuel_cfg.async_stack_size(64 * 1024 * 1024);
-    let engine = Rc::new(wasmtime::Engine::new(&fuel_cfg)?);
+    let sync_engine = wasmtime::Engine::new(&fuel_cfg)?;
+    let engine = Rc::new(sync_engine);
 
     let state = init_sandbox(engine.clone(), manifest, state_path, run_view)?;
     if !fail_receipts.is_empty() {
@@ -860,10 +861,41 @@ pub(crate) fn init_sandbox(
     Ok(state)
 }
 
+/// Credit an attached deposit to the callee's NEAR balance (real receipt
+/// semantics: value arrives before the entry runs). Shared by `cross` and
+/// `scenario`.
+pub(crate) fn credit_attach(
+    state: &std::sync::Arc<std::sync::Mutex<MockState>>,
+    contract_acct: &str,
+    amt: u128,
+) -> Result<(), String> {
+    let mut st = state.lock().unwrap();
+    let key = prefixed_key(contract_acct, b"\x00near-bal");
+    let bal: u128 = st
+        .storage
+        .get(&key)
+        .and_then(|v| std::str::from_utf8(v).ok())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0u128);
+    st.storage.insert(key, (bal + amt).to_string().into_bytes());
+    eprintln!(
+        "  💰 attached {} yocto → {} (bal {})",
+        amt,
+        contract_acct,
+        bal + amt
+    );
+    Ok(())
+}
+
 /// `scenario <file.json>` — multi-step multi-contract runner in ONE process.
 /// One sandbox init, one DAG; failures recorded, run continues. Step fields:
 ///   method (req), args, contract (account), view, expect (substring of output),
 ///   fail_receipt (N — force receipt N to fail during this step).
+///   gas (TGas cap on the entry call — die by out-of-gas instead of trap),
+///   attach (decimal yocto deposited to the callee before the call),
+///   snapshot / restore (named full-storage forks),
+///   expect_same_storage_as (storage must equal a snapshot — branch compare),
+///   expect: "trap" requires the entry call to trap.
 /// Compatible with examples/ft/tests/scenarios/*.json (name/steps/method/args/view/expect).
 pub(crate) fn run_scenario(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let spec: serde_json::Value =
@@ -900,9 +932,25 @@ pub(crate) fn run_scenario(path: &str) -> Result<(), Box<dyn std::error::Error>>
 
     let mut fuel_cfg = Config::new();
     fuel_cfg.consume_fuel(true);
+    // epoch_interruption MUST be on or set_epoch_deadline is inert —
+    // no epoch checks get compiled into wasm, so spin loops run forever.
+    fuel_cfg.epoch_interruption(true);
     fuel_cfg.max_wasm_stack(64 * 1024 * 1024);
     fuel_cfg.async_stack_size(64 * 1024 * 1024);
     let engine = Rc::new(wasmtime::Engine::new(&fuel_cfg)?);
+    // Epoch ticker: 1 tick ≈ 1 ms ⇒ a `gas: T` step's deadline ≈ T ms of
+    // wall clock (1 TGas ≈ 1 ms of NEAR compute). Wasmtime fuel alone can't
+    // bound pure-compute loops at NEAR-honest rates (1 fuel/instr ⇒ 1 TGas
+    // ≈ 16 min). Detached thread; process exits when the scenario ends.
+    if steps.iter().any(|s| s.get("gas").is_some()) {
+        // Clone the INNER engine — Rc<Engine> can't cross threads, but
+        // wasmtime::Engine is internally Arc'd, so this shares the epoch.
+        let tick: wasmtime::Engine = (*engine).clone();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            tick.increment_epoch();
+        });
+    }
     let state = init_sandbox(engine.clone(), &manifest, &state_path, false)?;
 
     let name = spec.get("name").and_then(|n| n.as_str()).unwrap_or(path);
@@ -911,13 +959,48 @@ pub(crate) fn run_scenario(path: &str) -> Result<(), Box<dyn std::error::Error>>
     let mut pass = 0u32;
     let mut fail = 0u32;
     let mut expect_out: Vec<String> = Vec::new();
+    // named full-storage forks (snapshot/restore/expect_same_storage_as)
+    let mut snapshots: HashMap<String, HashMap<Vec<u8>, Vec<u8>>> = HashMap::new();
 
     for (i, step) in steps.iter().enumerate() {
-        let method = step
-            .get("method")
-            .and_then(|m| m.as_str())
-            .ok_or(format!("step {}: missing method", i))?
-            .to_string();
+        let method: Option<String> =
+            step.get("method").and_then(|m| m.as_str()).map(String::from);
+        // Bookkeeping-only step (no `method`): fork operations on storage.
+        let Some(method) = method else {
+            let mut did = false;
+            if let Some(name) = step.get("snapshot").and_then(|s| s.as_str()) {
+                let snap = state.lock().unwrap().storage.clone();
+                snapshots.insert(name.to_string(), snap);
+                println!("  📸 snapshot '{}'", name);
+                did = true;
+            }
+            if let Some(name) = step.get("restore").and_then(|s| s.as_str()) {
+                let snap = snapshots
+                    .get(name)
+                    .ok_or(format!("step {}: unknown snapshot '{}'", i, name))?
+                    .clone();
+                state.lock().unwrap().storage = snap;
+                println!("  ♻️ restored '{}'", name);
+                did = true;
+            }
+            if let Some(other) = step.get("expect_same_storage_as").and_then(|s| s.as_str()) {
+                let cur = state.lock().unwrap().storage.clone();
+                let want = snapshots
+                    .get(other)
+                    .ok_or(format!("step {}: unknown snapshot '{}'", i, other))?;
+                if &cur == want {
+                    println!("  ✓ storage identical to snapshot '{}'", other);
+                } else {
+                    println!("  ✗ storage DIVERGED from snapshot '{}'", other);
+                    fail += 1;
+                }
+                did = true;
+            }
+            if !did {
+                return Err(format!("step {}: no method, no bookkeeping keys", i).into());
+            }
+            continue;
+        };
         let args_json = step
             .get("args")
             .map(|a| a.to_string())
@@ -932,11 +1015,81 @@ pub(crate) fn run_scenario(path: &str) -> Result<(), Box<dyn std::error::Error>>
             .get("fail_receipt")
             .and_then(|f| f.as_u64())
             .map(|n| n as usize);
+        // gas budget: TGas cap on this step's entry call (out-of-gas ≠ trap)
+        // accept number OR string ("2") — a stringy gas silently un-capping
+        // the step would turn a chaos test into a 20s-per-spin hang
+        let gas_cap_tgas = step
+            .get("gas")
+            .and_then(|g| g.as_u64().or_else(|| g.as_str().and_then(|s| s.parse().ok())));
+        // attached deposit for this step (decimal yocto string, or number)
+        let attach_amt: Option<u128> = match step.get("attach") {
+            None => None,
+            Some(serde_json::Value::String(s)) => Some(
+                s.trim()
+                    .parse()
+                    .map_err(|_| format!("step {}: attach must be decimal yocto", i))?,
+            ),
+            Some(serde_json::Value::Number(n)) => Some(
+                n.as_u64()
+                    .ok_or_else(|| format!("step {}: attach too large", i))?
+                    as u128,
+            ),
+            Some(_) => {
+                return Err(format!("step {}: attach must be a string or number", i).into())
+            }
+        };
+        let snap_name = step.get("snapshot").and_then(|s| s.as_str()).map(String::from);
+        let restore_name = step
+            .get("restore")
+            .and_then(|s| s.as_str())
+            .map(String::from);
+        let same_as = step
+            .get("expect_same_storage_as")
+            .and_then(|s| s.as_str())
+            .map(String::from);
+        // expect:"trap" — chaos step that MUST revert
+        let expect_trap = step.get("expect").and_then(|e| e.as_str()) == Some("trap");
+
+        // per-step hygiene: a scenario runs many entries in ONE process,
+        // so leftover TLS from step N-1 must not bleed into step N (the
+        // cross runner never noticed — it's one call per process)
+        expect_out.clear();
+        state.lock().unwrap().return_data = None;
+        PROMISE_RESULTS.with(|r| *r.borrow_mut() = Vec::new());
+        PENDING_RETURN.with(|p| *p.borrow_mut() = None);
 
         // set view + forced receipts for this step
         let old_view = state.lock().unwrap().view;
         state.lock().unwrap().view = is_view;
         fail_receipts_set(&fail_receipt.iter().copied().collect::<Vec<usize>>());
+
+        // forks + attached deposit, ordered like a real tx: restore lands
+        // BEFORE the deposit credit, snapshot sees the pre-call state
+        if let Some(name) = &restore_name {
+            let snap = snapshots
+                .get(name)
+                .cloned()
+                .ok_or_else(|| format!("step {}: unknown snapshot '{}'", i, name))?;
+            state.lock().unwrap().storage = snap;
+            println!("  ↩ restored storage fork '{}'", name);
+        }
+        if let Some(name) = &snap_name {
+            let snap = state.lock().unwrap().storage.clone();
+            snapshots.insert(name.clone(), snap);
+            println!("  📸 snapshot '{}'", name);
+        }
+        // pre-call copy for NEAR transaction atomicity: a trapped entry
+        // rolls back ALL of this step's writes (and its attached-deposit
+        // credit — the deposit is refunded on failure), and its promises
+        // are never scheduled.
+        let pre_call = state.lock().unwrap().storage.clone();
+        if let Some(amt) = attach_amt {
+            credit_attach(&state, &contract, amt)
+                .map_err(|e| format!("step {}: {}", i, e))?;
+            CURRENT_DEPOSIT.with(|d| *d.borrow_mut() = Some(amt));
+        } else {
+            CURRENT_DEPOSIT.with(|d| *d.borrow_mut() = None);
+        }
 
         println!("\n── step {} ▶ {}.{}{}{} ──", i, contract, method, if args_json == "{}" { "".into() } else { format!(" {}", args_json) }, if is_view { " (view)" } else { "" });
         let module = MODULES
@@ -951,14 +1104,27 @@ pub(crate) fn run_scenario(path: &str) -> Result<(), Box<dyn std::error::Error>>
                 view: is_view,
             })
         });
+        // NEAR-scale fuel: 1 TGas = 1e12 fuel units, matching host-call
+        // costs and the ⛽ reporting (÷1e12). Runaway compute is bounded by
+        // an epoch deadline at ~1 ms per TGas (spawned below) — pure-wasm
+        // fuel burns at only ~1/instr, so without it `gas: 1` would spin
+        // for minutes instead of dying like NEAR's prepaid-gas exhaustion.
+        let prepaid: u64 = gas_cap_tgas
+            .map(|t| t.saturating_mul(1_000_000_000_000))
+            .unwrap_or_else(|| PREPAID_FUEL.with(|f| *f.borrow()));
         let mut store = wasmtime::Store::new(&*engine, ());
-        store.set_fuel(PREPAID_FUEL.with(|f| *f.borrow()))?;
+        store.set_fuel(prepaid)?;
+        // Epoch deadline: ~t ms for gas-capped steps, 20 s wall bound
+        // otherwise (ticker ticks every 1 ms; epochs only advance when a
+        // gas-capped scenario spawned the ticker — otherwise inert).
+        store.set_epoch_deadline(gas_cap_tgas.unwrap_or(20_000).max(1));
         let linker = build_env_linker(&mut store, &*engine, state.clone(), args_json.into_bytes())?;
         let instance = linker.instantiate(&mut store, &module)?;
         let result = instance
             .get_func(&mut store, &method)
             .ok_or(format!("step {}: method '{}' not found on {}", i, method, contract))?
             .call(&mut store, &[], &mut []);
+        let trapped = result.is_err();
         let mut step_failed = false;
 
         match &result {
@@ -1004,19 +1170,42 @@ pub(crate) fn run_scenario(path: &str) -> Result<(), Box<dyn std::error::Error>>
             }
         }
 
-        // drain orphaned receipts (fire-and-forget promises)
-        loop {
-            let next = PROMISE_DAG.with(|d| {
-                d.borrow()
-                    .iter()
-                    .enumerate()
-                    .find(|(i, _)| !EXECUTED_PROMISES.with(|e| e.borrow().contains(i)))
-                    .map(|(i, _)| i)
-            });
-            let Some(idx) = next else { break };
-            if let Err(e) = execute_promise(idx) {
-                println!("❌ orphan receipt {} failed: {}", idx, e);
+        // NEAR transaction atomicity: trapped entry ⇒ full revert (writes
+        // discarded, deposit credit refunded, promises never scheduled).
+        if trapped {
+            state.lock().unwrap().storage = pre_call;
+            PROMISE_DAG.with(|d| d.borrow_mut().clear());
+            EXECUTED_PROMISES.with(|e| e.borrow_mut().clear());
+        }
+
+        // chaos semantics: expect:"trap" means the entry MUST have reverted
+        // (consumes the expect field — not a string-expect)
+        if expect_trap {
+            if trapped {
+                println!("✓ trap as expected (state rolled back)");
+                step_failed = false; // the Err arm flagged it; un-flag
+            } else {
+                println!("✗ expected trap, call succeeded");
                 step_failed = true;
+            }
+        }
+
+        // drain orphaned receipts (fire-and-forget promises) — only for
+        // SUCCESSFUL entries; a trapped tx never schedules its promises
+        if !trapped {
+            loop {
+                let next = PROMISE_DAG.with(|d| {
+                    d.borrow()
+                        .iter()
+                        .enumerate()
+                        .find(|(i, _)| !EXECUTED_PROMISES.with(|e| e.borrow().contains(i)))
+                        .map(|(i, _)| i)
+                });
+                let Some(idx) = next else { break };
+                if let Err(e) = execute_promise(idx) {
+                    println!("❌ orphan receipt {} failed: {}", idx, e);
+                    step_failed = true;
+                }
             }
         }
         PROMISE_DAG.with(|d| d.borrow_mut().clear());
@@ -1046,6 +1235,9 @@ pub(crate) fn run_scenario(path: &str) -> Result<(), Box<dyn std::error::Error>>
                 .collect()
         };
         if let Some(want) = step.get("expect").and_then(|e| e.as_str()) {
+            if want == "trap" {
+                // consumed by the chaos check above (verdict already printed)
+            } else {
             let hit = if want == "ok" {
                 !step_failed
             } else {
@@ -1058,6 +1250,7 @@ pub(crate) fn run_scenario(path: &str) -> Result<(), Box<dyn std::error::Error>>
                 println!("✗ expect '{}' — got {:?} storage {:?}", want, expect_out, stored);
                 step_failed = true;
             }
+            }
         }
         if let Some(want) = step.get("contains").and_then(|c| c.as_str()) {
             let in_storage = stored.iter().any(|kv| kv.contains(want));
@@ -1065,6 +1258,22 @@ pub(crate) fn run_scenario(path: &str) -> Result<(), Box<dyn std::error::Error>>
                 println!("✓ contains '{}' ✓", want);
             } else {
                 println!("✗ contains '{}' — storage: {:?}", want, stored);
+                step_failed = true;
+            }
+        }
+        if let Some(want) = &same_as {
+            let Some(snap) = snapshots.get(want) else {
+                return Err(format!(
+                    "step {}: expect_same_storage_as: unknown snapshot '{}'",
+                    i, want
+                )
+                .into());
+            };
+            let equal = { state.lock().unwrap().storage == *snap };
+            if equal {
+                println!("✓ storage == snapshot '{}' ✓", want);
+            } else {
+                println!("✗ storage diverged from snapshot '{}'", want);
                 step_failed = true;
             }
         }
