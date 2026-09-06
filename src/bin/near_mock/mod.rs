@@ -142,38 +142,30 @@ fn run_cross(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         .get_func(&mut store, method)
         .ok_or_else(|| format!("Method '{}' not found", method))?;
     println!("▶ {}.{}({})", contract_acct, method, if args_json == "{}" { "".into() } else { args_json.clone() });
+    // PRE-call copy for NEAR transaction atomicity: the snapshot must capture
+    // state BEFORE the entry runs, or the Err-branch restore is a no-op and a
+    // trapped call keeps its writes (Ref add_liquidity proved it 2026-09-06).
+    // Taken after the attach credit: the deposit is part of the tx; the Err
+    // branch below subtracts it back out of the snapshot (refund on failure).
+    let mut tx_snapshot: HashMap<Vec<u8>, Vec<u8>> = state.lock().unwrap().storage.clone();
     let result = func.call(&mut store, &[], &mut []);
-    let tx_snapshot: HashMap<Vec<u8>, Vec<u8>> = {
-        // taken AFTER attach credit — the deposit is part of the tx; a
-        // failed tx refunds it (NEAR: attached deposit returns on failure)
-        let st = state.lock().unwrap();
-        let mut s2: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
-        for (k, v) in st.storage.iter() {
-            if k != &prefixed_key(contract_acct, b"\x00near-bal") || result.is_ok() {
-                // keep pre-entry balances only when the entry failed;
-                // on success we snapshot post-attach (deposit sticks)
-            }
-            s2.insert(k.clone(), v.clone());
-        }
-        if result.is_err() {
-            // entry failed: snapshot WITHOUT the attach credit → full refund
-            if let Ok(attach) = std::env::var("NEAR_MOCK_ATTACH") {
-                if let Ok(amt) = attach.trim().parse::<u128>() {
-                    let key = prefixed_key(contract_acct, b"\x00near-bal");
-                    if let Some(v) = s2.get(&key).cloned() {
-                        let bal: u128 = String::from_utf8_lossy(&v).trim().parse().unwrap_or(0);
-                        let pre_bal = bal.saturating_sub(amt);
-                        if pre_bal > 0 {
-                            s2.insert(key, pre_bal.to_string().into_bytes());
-                        } else {
-                            s2.remove(&key);
-                        }
+    if result.is_err() {
+        // entry failed: snapshot WITHOUT the attach credit → full refund
+        if let Ok(attach) = std::env::var("NEAR_MOCK_ATTACH") {
+            if let Ok(amt) = attach.trim().parse::<u128>() {
+                let key = prefixed_key(contract_acct, b"\x00near-bal");
+                if let Some(v) = tx_snapshot.get(&key).cloned() {
+                    let bal: u128 = String::from_utf8_lossy(&v).trim().parse().unwrap_or(0);
+                    let pre_bal = bal.saturating_sub(amt);
+                    if pre_bal > 0 {
+                        tx_snapshot.insert(key, pre_bal.to_string().into_bytes());
+                    } else {
+                        tx_snapshot.remove(&key);
                     }
                 }
             }
         }
-        s2
-    };
+    }
 
     match result {
         Ok(_) => {
