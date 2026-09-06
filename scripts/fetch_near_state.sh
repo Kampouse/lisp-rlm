@@ -21,7 +21,7 @@ CURL="curl -s --max-time 30"
 # 1) contract state (paginated by the node; view_state returns all entries)
 RESP=$($CURL "$RPC" -X POST -H 'Content-Type: application/json' -d "{
   \"jsonrpc\": \"2.0\", \"id\": \"dontcare\", \"method\": \"query\",
-  \"params\": {\"request_type\": \"view_state\", \"finality\": \"final\", \"account_id\": \"$ACCT\"}
+  \"params\": {\"request_type\": \"view_state\", \"finality\": \"final\", \"account_id\": \"$ACCT\", \"prefix_base64\": \"\"}
 }")
 
 # 2) block height for provenance (decorative — the importer ignores it)
