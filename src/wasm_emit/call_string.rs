@@ -2582,17 +2582,36 @@ impl WasmEmitter {
                 if a.len() != 2 {
                     return Err("str=: expected 2 args".into());
                 }
-                // String equality: untag both, compare length then mem-compare.
-                // Result is a tagged bool (1=true, 0=false).
-                self.str_eq(a)
+                // Delegate to the shared emit_str_eq helper (same path the
+                // dict ops use): untag both operands, word-wise compare,
+                // produce a TAGGED bool (8=true / 1=false). The previous
+                // inline byte-loop read len/ptr straight off the TAGGED
+                // values (len×8, ptr×8+5 — garbage addresses) and tagged
+                // its result with TAG_CLOSURE(3), which is truthy — so a
+                // FALSE str= still branched into the then-arm. Found via
+                // the per-step-signer scenario probe (2026-09-06): every
+                // caller identity was "allowed".
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.expr(&a[1])?);
+                v.extend(self.emit_str_eq());
+                Ok(v)
             }
             "str!=" => {
                 if a.len() != 2 {
                     return Err("str!=: expected 2 args".into());
                 }
-                // String inequality: negate str=.
-                self.str_eq(a)?;
-                self.emit_bool_not()
+                // Delegate to emit_str_eq (tagged bool out), then negate the
+                // tagged bool. The old path fed emit_bool_not a RAW 0/1,
+                // which it decodes as ((raw>>3)^1)&1 — for raw 1 that is
+                // (0^1)=1, i.e. "not equal" reported EQUAL. (str!= "a" "b")
+                // returned false; (str!= "a" "a") returned true.
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.expr(&a[1])?);
+                v.extend(self.emit_str_eq());
+                v.extend(self.emit_bool_not()?);
+                Ok(v)
             }
             "str-index-of" => {
                 if a.len() != 2 {
@@ -6019,6 +6038,11 @@ impl WasmEmitter {
     }
 
     fn emit_bool_not(&mut self) -> Result<Vec<Instruction<'static>>, String> {
+        // Tagged bool in → tagged bool out. Payload = tagged>>3, payload^1
+        // flips it, retag with TAG_BOOL (=1). The old retag ORed 3
+        // (TAG_CLOSURE) — both possible outputs (3, 11) are truthy, so NOT
+        // always reported true; only caller (str!=) followed after the
+        // emit_str_eq delegation, which is how it surfaced (2026-09-06).
         let mut v = Vec::new();
         v.push(Instruction::I64Const(3));
         v.push(Instruction::I64ShrU);
@@ -6026,7 +6050,7 @@ impl WasmEmitter {
         v.push(Instruction::I64Xor);
         v.push(Instruction::I64Const(3));
         v.push(Instruction::I64Shl);
-        v.push(Instruction::I64Const(3));
+        v.push(Instruction::I64Const(1));
         v.push(Instruction::I64Or);
         Ok(v)
     }
