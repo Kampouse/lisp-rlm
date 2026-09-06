@@ -1298,6 +1298,148 @@ pub(crate) fn run_scenario(path: &str) -> Result<(), Box<dyn std::error::Error>>
     Ok(())
 }
 
+/// `state` subcommand — offline manipulation of near-mock state files.
+///
+///   near-mock state import <state.bin> <dump.json>
+///   near-mock state dump <state.bin> [account-prefix]
+///
+/// Import accepts the RPC-shaped JSON produced by
+/// `scripts/fetch_near_state.sh <account> <out.json>`:
+///   {"account": "...", "block_height": N, "values": [
+///     {"key": "<base64>", "value": "<base64>"}, ...]}
+/// Values merge into <state.bin> under the account's storage partition
+/// (acct + 0x01 + key — same namespacing the host uses). Other accounts'
+/// keys are untouched; `--replace-acct` drops this account's existing
+/// partition first. Use `-` as <dump.json> to read stdin.
+fn run_state_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let usage = "usage: near-mock state import <state.bin> <dump.json> [--replace-acct]\n       near-mock state dump <state.bin> [account-prefix]";
+    let sub = args.get(2).map(|s| s.as_str()).ok_or(usage)?;
+    let replace_acct = args.iter().any(|a| a == "--replace-acct");
+
+    // base64 (RPC wire format) -> raw trie bytes
+    fn b64(s: &str) -> Result<Vec<u8>, String> {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD
+            .decode(s.trim())
+            .map_err(|e| format!("bad base64: {e}"))
+    }
+
+    match sub {
+        "import" => {
+            let state_path = args.get(3).ok_or(usage)?;
+            let dump_path = args.get(4).ok_or(usage)?;
+
+            let raw: Vec<u8> = if dump_path == "-" {
+                use std::io::Read;
+                let mut buf = Vec::new();
+                std::io::stdin().read_to_end(&mut buf)?;
+                buf
+            } else {
+                std::fs::read(dump_path)?
+            };
+            let dump: serde_json::Value = serde_json::from_slice(&raw)?;
+            let account = dump
+                .get("account")
+                .and_then(|a| a.as_str())
+                .ok_or("dump missing \"account\"")?
+                .to_string();
+            let arr = dump
+                .get("values")
+                .and_then(|v| v.as_array())
+                .ok_or("dump missing \"values\" array")?;
+
+            // parse every entry BEFORE touching the state file (atomic-ish:
+            // a malformed dump never half-applies)
+            let mut entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(arr.len());
+            for (i, v) in arr.iter().enumerate() {
+                let k = v
+                    .get("key")
+                    .and_then(|x| x.as_str())
+                    .ok_or_else(|| format!("values[{i}] missing key"))?;
+                let val = v
+                    .get("value")
+                    .and_then(|x| x.as_str())
+                    .ok_or_else(|| format!("values[{i}] missing value"))?;
+                entries.push((b64(k)?, b64(val)?));
+            }
+
+            // load or start fresh state
+            let mut map: std::collections::HashMap<Vec<u8>, Vec<u8>> = match std::fs::read(state_path) {
+                Ok(d) => bincode::deserialize(&d)
+                    .map_err(|e| format!("{}: not a near-mock state file ({e})", state_path))?,
+                Err(_) => Default::default(),
+            };
+
+            let pre = prefixed_key(&account, b"");
+            let before = map.len();
+            if replace_acct {
+                let stale: Vec<Vec<u8>> = map
+                    .keys()
+                    .filter(|k| k.len() > pre.len() && k.starts_with(&pre))
+                    .cloned()
+                    .collect();
+                for k in stale {
+                    map.remove(&k);
+                }
+            }
+            for (k, v) in entries {
+                map.insert(prefixed_key(&account, &k), v);
+            }
+            let _ = before; // informational only
+
+            std::fs::write(state_path, bincode::serialize(&map)?)?;
+            println!(
+                "📥 imported {} keys for {} → {}{}",
+                arr.len(),
+                account,
+                state_path,
+                if replace_acct { " (partition replaced)" } else { "" }
+            );
+            Ok(())
+        }
+        "dump" => {
+            let state_path = args.get(3).ok_or(usage)?;
+            let prefix: Option<String> = args.get(4).cloned();
+            let data = std::fs::read(state_path)
+                .map_err(|e| format!("{}: {} (create one via a scenario or import)", state_path, e))?;
+            let map: std::collections::HashMap<Vec<u8>, Vec<u8>> = bincode::deserialize(&data)
+                .map_err(|e| format!("{}: not a near-mock state file ({e})", state_path))?;
+
+            use base64::Engine;
+            let mut rows: Vec<(String, String, String)> = map
+                .iter()
+                .filter_map(|(k, v)| {
+                    // namespaced layout: acct + 0x01 + key
+                    let sep = k.iter().position(|&b| b == 0x01)?;
+                    let acct = String::from_utf8(k[..sep].to_vec()).ok()?;
+                    if let Some(p) = &prefix {
+                        if &acct != p && !acct.starts_with(p.as_str()) {
+                            return None;
+                        }
+                    }
+                    let key = String::from_utf8(k[sep + 1..].to_vec())
+                        .unwrap_or_else(|_| "<binary>".to_string());
+                    Some((acct, key, base64::engine::general_purpose::STANDARD.encode(v)))
+                })
+                .collect();
+            rows.sort();
+
+            println!("[");
+            for (i, (acct, key, v)) in rows.iter().enumerate() {
+                let comma = if i + 1 < rows.len() { "," } else { "" };
+                println!(
+                    "  {{\"account\": \"{}\", \"key\": \"{}\", \"value_b64\": \"{}\"}}{}",
+                    acct, key, v, comma
+                );
+            }
+            println!("]");
+            println!("— {} keys{}", rows.len(), prefix.as_deref().map(|p| format!(" for '{p}'")).unwrap_or_default());
+            Ok(())
+        }
+        _ => Err(usage.into()),
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(|s| s.as_str()) == Some("cross") {
@@ -1307,6 +1449,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let path = args.get(2).ok_or("usage: near-mock scenario <file.json>")?;
         return run_scenario(path);
     }
+    // `state import` / `state dump` — offline state file manipulation
+    if args.get(1).map(|s| s.as_str()) == Some("state") {
+        return run_state_cmd(&args);
+    }
     fn print_main_usage() {
         println!("near-mock — local NEAR contract runner (wasmtime, no node)");
         println!();
@@ -1315,6 +1461,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  near-mock <wasm> exports|imports|reset");
         println!("  near-mock <wasm> symbolicate <idx-or-name> [map-file]");
         println!("  near-mock cross <state.bin> <acct=/path.wasm,...> <contract-acct> <method> [args-json]");
+        println!("  near-mock state import <state.bin> <dump.json>");
+        println!("  near-mock state dump <state.bin>");
         println!();
         println!("ARGS:");
         println!("  <args-json>  JSON string, or @file for raw bytes (NUL/invalid UTF-8 ok)");
