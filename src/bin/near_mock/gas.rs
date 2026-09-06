@@ -145,6 +145,9 @@ pub(crate) struct RunCfg {
     pub(crate) base_ts: Option<i64>,
     /// --advance <seconds>: added to the base timestamp (time travel).
     pub(crate) advance_secs: i64,
+    /// --trace | NEAR_MOCK_TRACE=1: record every host call (name, gas, seq)
+    /// into HOST_TRACE and print a per-host summary after the run.
+    pub(crate) trace: bool,
 }
 
 /// Warn once per host name when a stub backed by zeros/empties is called.

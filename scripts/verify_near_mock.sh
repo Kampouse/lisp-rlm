@@ -152,6 +152,19 @@ check "caller gate traps for eve" "trap as expected" "$out"
 [ $rc -eq 0 ] && ok "scenario exit 0 (9/9)" || bad "scenario exit $rc"
 [ -f "$WORK/state.bin" ] && ok "scenario persisted state.bin" || bad "scenario state.bin missing"
 
+# ---- --trace: host-call timeline + per-host gas attribution ----
+tout=$(cd "$WORK" && NEAR_MOCK_TRACE=1 $NM scenario scen.json 2>&1)
+check "trace timeline entries" "] predecessor_account_id" "$tout"
+check "trace per-call gas" "gas=" "$tout"
+check "trace per-step summary" "🔍 host trace —" "$tout"
+check "trace records predecessor_account_id" "predecessor_account_id" "$tout"
+single=$(cd "$WORK" && $NM contract.wasm gate --trace 2>&1)
+check "single-call trace summary" "🔍 host trace —" "$single"
+check "single-call trace shows storage_write cost" "storage_write" "$single"
+jtrace=$(cd "$WORK" && $NM contract.wasm gate --trace --json 2>&1 | grep '^JSON ' | tail -1)
+check "json host_trace field" '"host_trace"' "$jtrace"
+check "json host_trace totals carry calls+gas" '"calls"' "$jtrace"
+
 echo
 echo "RESULT: $pass passed, $fail failed"
 [ $fail -eq 0 ]

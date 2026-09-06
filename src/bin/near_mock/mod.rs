@@ -34,7 +34,7 @@ pub(crate) use gas::{
     apply_staking_delta, locked_balance_for, splitmix64, stub_warn, trie_charge, trie_charge_write,
     GasSchedule, RunCfg, STAKING_COST_PER_BYTE,
 };
-pub(crate) use hosts::build_env_linker;
+pub(crate) use hosts::{build_env_linker, host_fn};
 pub(crate) use promises::{
     dag_push, execute_promise, fail_receipts_any, fail_receipts_set, print_dag_map, sub_execute,
     PAction, PromiseBatch,
@@ -343,6 +343,7 @@ impl Default for RunCfg {
             warn_stubs: std::env::var("NEAR_MOCK_WARN_STUBS").map(|v| v == "1").unwrap_or(false),
             base_ts: std::env::var("NEAR_MOCK_NOW").ok().and_then(|s| s.parse().ok()),
             advance_secs: 0,
+            trace: std::env::var("NEAR_MOCK_TRACE").map(|v| v == "1").unwrap_or(false),
         }
     }
 }
@@ -369,7 +370,109 @@ fn mock_now_nanos() -> i64 {
     (base + c.advance_secs) * 1_000_000_000
 }
 
+// ============ --trace: host-call timeline + per-host gas attribution ============
+// Global (not TLS) on purpose: promise sub-execution runs on worker threads;
+// their host calls must land in the same timeline as the entry call's.
 
+#[derive(Clone)]
+pub(crate) struct TraceEntry {
+    pub(crate) seq: u64,
+    pub(crate) name: String,
+    /// Exact gas charged by THIS host invocation (fuel delta across its body).
+    pub(crate) gas: u64,
+    /// Host returned Err (wasm-level trap follows).
+    pub(crate) err: bool,
+}
+
+static HOST_TRACE: std::sync::Mutex<Option<Vec<TraceEntry>>> = std::sync::Mutex::new(None);
+static HOST_ORDER: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(None);
+static HOST_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Record one host invocation. Called by the host_fn wrapper around every
+/// host closure body when cfg.trace is on. Live line → stderr; buffered
+/// entry for the summary/--json.
+pub(crate) fn trace_host(name: &str, gas: u64, err: bool) {
+    let seq = HOST_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    eprintln!(
+        "  🔍 [{seq:>4}] {name}  gas={:.3}G{}",
+        gas as f64 / 1e9,
+        if err { "  ❌err" } else { "" }
+    );
+    if let Ok(mut g) = HOST_TRACE.lock() {
+        g.get_or_insert_with(Vec::new).push(TraceEntry {
+            seq,
+            name: name.to_string(),
+            gas,
+            err,
+        });
+    }
+    if let Ok(mut o) = HOST_ORDER.lock() {
+        o.get_or_insert_with(Vec::new).push(name.to_string());
+    }
+}
+
+/// Clear the timeline (scenario runner: once per step so summaries are
+/// per-step). Cheap no-op when tracing is off.
+pub(crate) fn host_trace_reset() {
+    if !mock_cfg().trace {
+        return;
+    }
+    if let Ok(mut g) = HOST_TRACE.lock() {
+        g.take();
+    }
+    if let Ok(mut o) = HOST_ORDER.lock() {
+        o.take();
+    }
+}
+
+/// Per-host aggregation: (total_gas, [(host, calls, gas)]) sorted by gas desc.
+/// Returns zeros when tracing is off; drains the buffer.
+pub(crate) fn host_trace_summary() -> (u64, Vec<(String, u64, u64)>) {
+    let entries = match HOST_TRACE.lock() {
+        Ok(mut g) => g.take().unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+    if let Ok(mut o) = HOST_ORDER.lock() {
+        o.take();
+    }
+    if entries.is_empty() {
+        return (0, Vec::new());
+    }
+    let total: u64 = entries.iter().map(|e| e.gas).sum();
+    let mut agg: HashMap<String, (u64, u64)> = HashMap::new();
+    for e in &entries {
+        let slot = agg.entry(e.name.clone()).or_insert((0, 0));
+        slot.0 += 1;
+        slot.1 += e.gas;
+    }
+    let mut rows: Vec<(String, u64, u64)> =
+        agg.into_iter().map(|(k, (c, g))| (k, c, g)).collect();
+    rows.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
+    (total, rows)
+}
+
+/// Human-readable summary block (called by drivers after a call/step).
+pub(crate) fn print_host_trace_summary() {
+    if !mock_cfg().trace {
+        return;
+    }
+    let (total, rows) = host_trace_summary();
+    if rows.is_empty() {
+        println!("🔍 trace: no host calls");
+        return;
+    }
+    println!(
+        "🔍 host trace — {} calls, {:.3}G gas total:",
+        rows.iter().map(|r| r.1).sum::<u64>(),
+        total as f64 / 1e9
+    );
+    for r in rows.iter().take(12) {
+        println!("  {:>12.3}G  {:>4}×  {}", r.2 as f64 / 1e9, r.1, r.0);
+    }
+    if rows.len() > 12 {
+        println!("  … {} more hosts", rows.len() - 12);
+    }
+}
 
 // ============ NEP-297 event capture + log counting (--json) ============
 thread_local! {
@@ -478,7 +581,7 @@ fn build_promise_hosts(
     Box<dyn std::error::Error>,
 > {
     // 39 promise_batch_create(acct_len, acct_ptr) -> idx
-    let pbc = Func::new(
+    let pbc = host_fn("promise_batch_create",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 2], vec![ValType::I64]),
         move |mut caller, args, results| {
@@ -490,7 +593,7 @@ fn build_promise_hosts(
         },
     );
     // 40 promise_batch_then(idx, acct_len, acct_ptr) -> new idx
-    let pbt = Func::new(
+    let pbt = host_fn("promise_batch_then",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 3], vec![ValType::I64]),
         move |mut caller, args, results| {
@@ -502,7 +605,7 @@ fn build_promise_hosts(
         },
     );
     // 43 promise_batch_action_function_call(idx, m_len, m_ptr, a_len, a_ptr, dep_ptr, gas)
-    let pafc = Func::new(
+    let pafc = host_fn("promise_batch_action_function_call",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 7], vec![]),
         move |mut caller, args, _| {
@@ -536,7 +639,7 @@ fn build_promise_hosts(
         },
     );
     // 44 promise_batch_action_transfer(idx, amt_ptr) — u128 LE at ptr (16 bytes)
-    let pbat = Func::new(
+    let pbat = host_fn("promise_batch_action_transfer",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 2], vec![]),
         move |mut caller, args, _| {
@@ -564,7 +667,7 @@ fn build_promise_hosts(
     // 82 promise_yield_create(m_len, m_ptr, a_len, a_ptr, gas, weight, reg) -> idx
     // data_id ("yd:<idx>") lands in the register; the promise index IS the
     // resume handle (documented mock simplification of NEAR's opaque data_id).
-    let pyc = Func::new(
+    let pyc = host_fn("promise_yield_create",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 7], vec![ValType::I64]),
         move |mut caller, args, results| {
@@ -613,7 +716,7 @@ fn build_promise_hosts(
     // NOTE: the host-table ABI is (i64 x4) — idx, d_len, d_ptr, p_len, p_ptr?
     // The table says 4 i64 params; emitter pushes (idx, d_len, d_ptr, p_len, p_ptr)?
     // Keep 4: (idx, payload_len, payload_ptr, _pad) — see emitter's actual pushes.
-    let pyr = Func::new(
+    let pyr = host_fn("promise_yield_resume",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 4], vec![ValType::I64]),
         move |mut caller, args, results| {
@@ -706,7 +809,7 @@ fn build_promise_hosts(
         },
     );
     // 30 promise_create
-    let pc = Func::new(
+    let pc = host_fn("promise_create",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 8], vec![ValType::I64]),
         move |mut caller, args, results| {
@@ -726,7 +829,7 @@ fn build_promise_hosts(
         },
     );
     // 31 promise_then
-    let pt = Func::new(
+    let pt = host_fn("promise_then",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 9], vec![ValType::I64]),
         move |mut caller, args, results| {
@@ -747,7 +850,7 @@ fn build_promise_hosts(
         },
     );
     // 32 promise_and(ptr, count) -> idx
-    let pa = Func::new(
+    let pa = host_fn("promise_and",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 2], vec![ValType::I64]),
         move |mut caller, args, results| {
@@ -768,7 +871,7 @@ fn build_promise_hosts(
         },
     );
     // 33 promise_results_count
-    let prc = Func::new(
+    let prc = host_fn("promise_results_count",
         &mut *store,
         FuncType::new(engine, vec![], vec![ValType::I64]),
         |_, _, results| {
@@ -778,7 +881,7 @@ fn build_promise_hosts(
     );
     // 34 promise_result(idx, reg) -> status
     let state_for_pr = STATE_ARC.with(|s| s.borrow().clone());
-    let pr = Func::new(
+    let pr = host_fn("promise_result",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 2], vec![ValType::I64]),
         move |_, args, results| {
@@ -800,7 +903,7 @@ fn build_promise_hosts(
         },
     );
     // 35 promise_return(idx)
-    let pret = Func::new(
+    let pret = host_fn("promise_return",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64], vec![]),
         |_, args, _| {
@@ -1331,6 +1434,14 @@ pub(crate) fn run_scenario(path: &str) -> Result<(), Box<dyn std::error::Error>>
             }
         }
 
+        // --trace / NEAR_MOCK_TRACE: per-step host summary (timeline already
+        // went to stderr during the step). Buffer resets so the next step's
+        // totals stay isolated.
+        if mock_cfg().trace {
+            print_host_trace_summary();
+            host_trace_reset();
+        }
+
         if step_failed {
             fail += 1;
             println!("step {} ⇒ FAIL", i);
@@ -1532,6 +1643,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  --now <unix-secs>    fixed block_timestamp base (deterministic time)");
         println!("  --advance <secs>     time-travel: added to the --now base");
         println!("  --json               machine-readable result line (JSON {{...}})");
+        println!("  --trace              host-call timeline (stderr) + per-host gas totals");
         println!("  --debug              verbose host traces ([schnorr-dbg], ptr/len)");
         println!("  --once               accepted no-op (kept for script compat)");
         println!();
@@ -1539,6 +1651,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  NEAR_MOCK_STATE       state file path (default /tmp/near-mock-state.bin)");
         println!("  NEAR_MOCK_ATTACH      attached deposit (decimal yocto)");
         println!("  NEAR_MOCK_SIGNER      signer account (default owner.test.near)");
+        println!("  NEAR_MOCK_TRACE       =1 enables --trace (works in scenario steps)");
         println!("  NEAR_MOCK_CONTRACT    contract account (default escrow.test.near)");
         println!("  NEAR_MOCK_NOW         fixed timestamp base (unix seconds)");
         println!("  --state <path>        state file (default /tmp/near-mock-state.bin; = NEAR_MOCK_STATE)");
@@ -1615,6 +1728,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .trim()
             .parse::<i64>()
             .map_err(|_| "--advance must be seconds")?;
+    }
+    if args.iter().any(|a| a == "--trace") {
+        cfg.trace = true;
     }
     RUN_CFG.with(|c| *c.borrow_mut() = Some(cfg));
     let json_out = args.iter().any(|a| a == "--json");
@@ -2051,8 +2167,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "locked_yocto": locked.map(|l| l.to_string()),
             },
             "dry_run": mock_cfg().dry_run,
+            // --json --trace: per-host totals (top hosts first) for CI diffs
+            "host_trace": if mock_cfg().trace {
+                Some(
+                    host_trace_summary()
+                        .1
+                        .into_iter()
+                        .map(|(n, c, g)| {
+                            serde_json::json!({"host": n, "calls": c, "gas_tgas": g as f64 / 1e12})
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                None
+            },
         });
         println!("JSON {}", serde_json::to_string(&j).unwrap_or_default());
+    }
+
+    // --trace human summary (JSON mode puts the same data in "host_trace").
+    // The live per-call timeline already went to stderr during execution.
+    if mock_cfg().trace && !json_out {
+        print_host_trace_summary();
     }
 
     // Persist storage. --dry-run inspects without committing; --view never

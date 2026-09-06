@@ -10,6 +10,35 @@ use lisp_rlm_wasm::bls_validate;
 use lisp_rlm_wasm::builtin_ed25519::ed25519_verify_impl;
 use lisp_rlm_wasm::builtin_schnorr::schnorr_verify_impl;
 
+/// Wrap a host closure with --trace instrumentation: one timeline entry
+/// (seq, name, exact fuel delta across the host body, err flag) per
+/// invocation when tracing is on; a TLS read + branch otherwise.
+/// The fuel delta is EXACT: read before the body, after the body — captures
+/// whatever the host charged via set_fuel, regardless of schedule.
+pub(crate) fn host_fn(
+    name: &'static str,
+    store: &mut wasmtime::Store<()>,
+    ty: wasmtime::FuncType,
+    f: impl Fn(&mut wasmtime::Caller<'_, ()>, &[wasmtime::Val], &mut [wasmtime::Val])
+        -> Result<(), wasmtime::Error>
+    + Send
+    + Sync
+    + 'static,
+) -> wasmtime::Func {
+    wasmtime::Func::new(store, ty, move |mut caller, args, results| {
+        // mock_cfg() falls back to RunCfg::default() on worker threads, so
+        // NEAR_MOCK_TRACE=1 reaches promise sub-execution without TLS setup.
+        let on = mock_cfg().trace;
+        let before = if on { caller.get_fuel().unwrap_or(0) } else { 0 };
+        let r = f(&mut caller, args, results);
+        if on {
+            let after = caller.get_fuel().unwrap_or(before);
+            trace_host(name, before.saturating_sub(after), r.is_err());
+        }
+        r
+    })
+}
+
 pub(crate) fn build_env_linker(
     store: &mut wasmtime::Store<()>,
     engine: &wasmtime::Engine,
@@ -20,9 +49,9 @@ pub(crate) fn build_env_linker(
     // === Host functions (all created before linking) ===
 
     let _s1 = state.clone();
-    let log_fn = Func::new(
+    let log_fn = host_fn("log_utf8",
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 2], vec![]),
+        FuncType::new(engine, vec![ValType::I64; 2], vec![]),
         move |mut caller, args, _| {
             let (len, ptr) = (args[0].unwrap_i64() as usize, args[1].unwrap_i64() as usize);
             // Fee schedule (legacy indicative defaults, --gas-schedule to override)
@@ -43,9 +72,9 @@ pub(crate) fn build_env_linker(
     );
 
     let s2 = state.clone();
-    let value_return_fn = Func::new(
+    let value_return_fn = host_fn("value_return",
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 2], vec![]),
+        FuncType::new(engine, vec![ValType::I64; 2], vec![]),
         move |mut caller, args, _| {
             let (len, ptr) = (args[0].unwrap_i64() as usize, args[1].unwrap_i64() as usize);
             eprintln!("  → value_return(len={}, ptr={})", len, ptr);
@@ -67,9 +96,9 @@ pub(crate) fn build_env_linker(
     );
 
     let s3 = state.clone();
-    let read_register_fn = Func::new(
+    let read_register_fn = host_fn("read_register",
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 2], vec![]),
+        FuncType::new(engine, vec![ValType::I64; 2], vec![]),
         move |mut caller, args, _| {
             let (rid, ptr) = (args[0].unwrap_i64() as u64, args[1].unwrap_i64() as usize);
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
@@ -103,9 +132,9 @@ pub(crate) fn build_env_linker(
     );
 
     let s4 = state.clone();
-    let register_len_fn = Func::new(
+    let register_len_fn = host_fn("register_len",
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64], vec![ValType::I64]),
+        FuncType::new(engine, vec![ValType::I64], vec![ValType::I64]),
         move |mut caller, args, results| {
             let rid = args[0].unwrap_i64() as u64;
             // near-core: len of a missing register is u64::MAX sentinel
@@ -126,9 +155,9 @@ pub(crate) fn build_env_linker(
     );
 
     let s5 = state.clone();
-    let input_fn = Func::new(
+    let input_fn = host_fn("input",
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64], vec![]),
+        FuncType::new(engine, vec![ValType::I64], vec![]),
         move |mut caller, args, _| {
             let single_input = single_input.clone();
             let rid = args[0].unwrap_i64() as u64;
@@ -150,9 +179,9 @@ pub(crate) fn build_env_linker(
     );
 
     let s6 = state.clone();
-    let storage_write_fn = Func::new(
+    let storage_write_fn = host_fn("storage_write",
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 5], vec![ValType::I64]),
+        FuncType::new(engine, vec![ValType::I64; 5], vec![ValType::I64]),
         move |mut caller, args, results| {
             let (kl, kp, vl, vp, rid) = (
                 args[0].unwrap_i64() as usize,
@@ -210,9 +239,9 @@ pub(crate) fn build_env_linker(
     );
 
     let s7 = state.clone();
-    let storage_read_fn = Func::new(
+    let storage_read_fn = host_fn("storage_read",
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 3], vec![ValType::I64]),
+        FuncType::new(engine, vec![ValType::I64; 3], vec![ValType::I64]),
         move |mut caller, args, results| {
             let (kl, kp, rid) = (
                 args[0].unwrap_i64() as usize,
@@ -277,9 +306,9 @@ pub(crate) fn build_env_linker(
     );
 
     let s8 = state.clone();
-    let storage_remove_fn = Func::new(
+    let storage_remove_fn = host_fn("storage_remove",
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 3], vec![ValType::I64]),
+        FuncType::new(engine, vec![ValType::I64; 3], vec![ValType::I64]),
         move |mut caller, args, results| {
             let (kl, kp, rid) = (
                 args[0].unwrap_i64() as usize,
@@ -329,9 +358,9 @@ pub(crate) fn build_env_linker(
     );
 
     let s9 = state.clone();
-    let storage_has_key_fn = Func::new(
+    let storage_has_key_fn = host_fn("storage_has_key",
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 2], vec![ValType::I64]),
+        FuncType::new(engine, vec![ValType::I64; 2], vec![ValType::I64]),
         move |mut caller, args, results| {
             let (kl, kp) = (args[0].unwrap_i64() as usize, args[1].unwrap_i64() as usize);
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
@@ -359,9 +388,9 @@ pub(crate) fn build_env_linker(
         },
     );
 
-    let panic_fn = Func::new(
+    let panic_fn = host_fn("panic_utf8",
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 2], vec![]),
+        FuncType::new(engine, vec![ValType::I64; 2], vec![]),
         move |mut caller, args, _| {
             let (len, ptr) = (args[0].unwrap_i64() as usize, args[1].unwrap_i64() as usize);
             let msg = if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
@@ -378,16 +407,16 @@ pub(crate) fn build_env_linker(
         },
     );
 
-    let abort_fn = Func::new(
+    let abort_fn = host_fn("panic",
         &mut *store,
-        FuncType::new(&engine, vec![], vec![]),
+        FuncType::new(engine, vec![], vec![]),
         |_, _, _| Err(wasmtime::Error::msg("ABORT")),
     );
 
     let s_ca = state.clone();
-    let current_account_fn = Func::new(
+    let current_account_fn = host_fn("current_account_id",
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64], vec![]),
+        FuncType::new(engine, vec![ValType::I64], vec![]),
         move |_, args, _| {
             let acct = exec_ctx_or_default().contract;
             let acct = if acct.is_empty() { "escrow.test.near".to_string() } else { acct };
@@ -400,9 +429,9 @@ pub(crate) fn build_env_linker(
     );
 
     let s_sa = state.clone();
-    let signer_account_fn = Func::new(
+    let signer_account_fn = host_fn("signer_account_id",
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64], vec![]),
+        FuncType::new(engine, vec![ValType::I64], vec![]),
         move |_, args, _| {
             // NEAR_MOCK_SIGNER overrides the tx signer — liquidation tests
             // need caller ≠ account owner (default stays owner.test.near).
@@ -424,9 +453,9 @@ pub(crate) fn build_env_linker(
     );
 
     let s_pa = state.clone();
-    let predecessor_account_fn = Func::new(
+    let predecessor_account_fn = host_fn("predecessor_account_id",
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64], vec![]),
+        FuncType::new(engine, vec![ValType::I64], vec![]),
         move |_, args, _| {
             let pred = {
                 let ctx = exec_ctx_or_default();
@@ -445,9 +474,9 @@ pub(crate) fn build_env_linker(
     );
 
     let s_pk = state.clone();
-    let signer_pk_fn = Func::new(
+    let signer_pk_fn = host_fn("signer_account_pk",
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64], vec![]),
+        FuncType::new(engine, vec![ValType::I64], vec![]),
         move |_, args, _| {
             s_pk.lock().unwrap().registers.insert(
                 args[0].unwrap_i64() as u64,
@@ -457,9 +486,9 @@ pub(crate) fn build_env_linker(
         },
     );
 
-    let block_ts_fn = Func::new(
+    let block_ts_fn = host_fn("block_timestamp",
         &mut *store,
-        FuncType::new(&engine, vec![], vec![ValType::I64]),
+        FuncType::new(engine, vec![], vec![ValType::I64]),
         |_, _, r| {
             r[0] = Val::I64(
                 // NEAR host returns NANoseconds — mock must match the real
@@ -476,9 +505,9 @@ pub(crate) fn build_env_linker(
     );
 
     let s_ab = state.clone();
-    let account_balance_fn = Func::new(
+    let account_balance_fn = host_fn("account_balance",
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64], vec![]),
+        FuncType::new(engine, vec![ValType::I64], vec![]),
         move |mut caller, args, _| {
             // ABI: args[0] = PTR (16-byte write target). Writes the
             // contract's real near-bal (was zeros; also hit a register-id
@@ -514,9 +543,9 @@ pub(crate) fn build_env_linker(
     );
 
     let _s_ad = state.clone();
-    let attached_deposit_fn = Func::new(
+    let attached_deposit_fn = host_fn("attached_deposit",
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64], vec![]),
+        FuncType::new(engine, vec![ValType::I64], vec![]),
         move |mut caller, args, _| {
             let ptr = args[0].unwrap_i64() as usize;
             // Real host shape: 16 LE bytes of THIS receipt's deposit.
@@ -538,18 +567,18 @@ pub(crate) fn build_env_linker(
 
     // Noop stubs with correct arities
     // Real gas accounting: fuel consumed so far (used_gas)
-    let used_gas_fn = Func::new(
+    let used_gas_fn = host_fn("used_gas",
         &mut *store,
-        FuncType::new(&engine, vec![], vec![ValType::I64]),
+        FuncType::new(engine, vec![], vec![ValType::I64]),
         move |mut caller, _, results| {
             let remaining = caller.get_fuel().unwrap_or(PREPAID_FUEL.with(|f| *f.borrow()));
             results[0] = Val::I64(PREPAID_FUEL.with(|f| *f.borrow()).saturating_sub(remaining) as i64);
             Ok(())
         },
     );
-    let prepaid_gas_fn = Func::new(
+    let prepaid_gas_fn = host_fn("prepaid_gas",
         &mut *store,
-        FuncType::new(&engine, vec![], vec![ValType::I64]),
+        FuncType::new(engine, vec![], vec![ValType::I64]),
         move |_, _, results| {
             results[0] = Val::I64(PREPAID_FUEL.with(|f| *f.borrow()) as i64);
             Ok(())
@@ -558,9 +587,9 @@ pub(crate) fn build_env_linker(
 
     // sha256(len, ptr, rid) — real digest to register (was noop)
     let sg1 = state.clone();
-    let sha256_fn = Func::new(
+    let sha256_fn = host_fn("sha256",
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 3], vec![]),
+        FuncType::new(engine, vec![ValType::I64; 3], vec![]),
         move |mut caller, args, _| {
             use sha2::{Digest, Sha256};
             let (len, ptr, rid) = (
@@ -584,9 +613,9 @@ pub(crate) fn build_env_linker(
     );
     // keccak256(len, ptr, rid)
     let sg2 = state.clone();
-    let keccak256_fn = Func::new(
+    let keccak256_fn = host_fn("keccak256",
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 3], vec![]),
+        FuncType::new(engine, vec![ValType::I64; 3], vec![]),
         move |mut caller, args, _| {
             use sha3::Keccak256;
             let (len, ptr, rid) = (
@@ -611,9 +640,9 @@ pub(crate) fn build_env_linker(
     );
     // write_register(len, ptr, rid) — real checked write (was noop)
     let sg3 = state.clone();
-    let write_register_fn = Func::new(
+    let write_register_fn = host_fn("write_register",
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 3], vec![]),
+        FuncType::new(engine, vec![ValType::I64; 3], vec![]),
         move |mut caller, args, _| {
             let (len, ptr, rid) = (
                 args[0].unwrap_i64() as usize,
@@ -641,9 +670,9 @@ pub(crate) fn build_env_linker(
     // signature/precompile families that protocol #16 will exercise on
     // testnet). All digest hosts follow the (len, ptr, rid) register ABI.
     let sg_keccak512 = state.clone();
-    let keccak512_fn = Func::new(
+    let keccak512_fn = host_fn("keccak512",
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 3], vec![]),
+        FuncType::new(engine, vec![ValType::I64; 3], vec![]),
         move |mut caller, args, _| {
             use sha3::digest::{ExtendableOutput, Update, XofReader};
             use sha3::Shake128;
@@ -671,9 +700,9 @@ pub(crate) fn build_env_linker(
         },
     );
     let sg_ripemd = state.clone();
-    let ripemd160_fn = Func::new(
+    let ripemd160_fn = host_fn("ripemd160",
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 3], vec![]),
+        FuncType::new(engine, vec![ValType::I64; 3], vec![]),
         move |mut caller, args, _| {
             use ripemd::{Digest as RipemdDigest, Ripemd160};
             let (len, ptr, rid) = (
@@ -695,9 +724,9 @@ pub(crate) fn build_env_linker(
     );
     // p256_verify(hash_len, hash_ptr, sig_len, sig_ptr, pk_len, pk_ptr) -> i64
     // (NEAR ABI: 6 i64 args → i64). Mock: shape-check then 1 (verify OK).
-    let p256_fn = Func::new(
+    let p256_fn = host_fn("p256_verify",
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 6], vec![ValType::I64]),
+        FuncType::new(engine, vec![ValType::I64; 6], vec![ValType::I64]),
         |_, args, results| {
             let hash_len = args[0].unwrap_i64() as usize;
             let sig_len = args[2].unwrap_i64() as usize;
@@ -713,9 +742,9 @@ pub(crate) fn build_env_linker(
     // ecrecover(7 args) -> i64 (value_return register id); mock writes a
     // 42-char hex address to the register named by the LAST arg and returns it
     let sg_ecr = state.clone();
-    let ecrecover_fn = Func::new(
+    let ecrecover_fn = host_fn("ecrecover",
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 7], vec![ValType::I64]),
+        FuncType::new(engine, vec![ValType::I64; 7], vec![ValType::I64]),
         move |_, args, results| {
             let rid = args[6].unwrap_i64() as u64;
             let addr: Vec<u8> = b"0x1234567890abcdef1234567890abcdef12345678".to_vec();
@@ -740,7 +769,7 @@ pub(crate) fn build_env_linker(
         let out_len = *out_len;
         let tag = tag.as_bytes().to_vec();
         let returns = false; // alt_bn128_*: no return value
-        precompile_fns.push(Func::new(
+        precompile_fns.push(host_fn(_nm,
             &mut *store,
             FuncType::new(
                 &engine,
@@ -784,9 +813,9 @@ pub(crate) fn build_env_linker(
     for (_nm, kind_id) in bls_targets.iter() {
         let st_g = state.clone();
         let kind_id = *kind_id;
-        bls_fns.push(Func::new(
+        bls_fns.push(host_fn(_nm,
             &mut *store,
-            FuncType::new(&engine, vec![ValType::I64; 3], vec![ValType::I64]),
+            FuncType::new(engine, vec![ValType::I64; 3], vec![ValType::I64]),
             move |mut caller, args, results| {
                 let len = args[0].unwrap_i64();
                 let ptr = args[1].unwrap_i64();
@@ -818,9 +847,9 @@ pub(crate) fn build_env_linker(
     // 0 = check passed, 1 = malformed point/encoding, 2 = well-formed but
     // pairing ≠ 1. Empty input is vacuously true → 0. Bad total length is
     // a host error (trap), like BLS12381InvalidInput on testnet.
-    let bls_pairing_fn = Func::new(
+    let bls_pairing_fn = host_fn("bls12381_pairing_check",
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 2], vec![ValType::I64]),
+        FuncType::new(engine, vec![ValType::I64; 2], vec![ValType::I64]),
         move |mut caller, args, results| {
             let len = args[0].unwrap_i64();
             let ptr = args[1].unwrap_i64();
@@ -842,12 +871,12 @@ pub(crate) fn build_env_linker(
 
     let noop1 = Func::new(
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64], vec![]),
+        FuncType::new(engine, vec![ValType::I64], vec![]),
         |_, _, _| Ok(()),
     );
     let noop0r = Func::new(
         &mut *store,
-        FuncType::new(&engine, vec![], vec![ValType::I64]),
+        FuncType::new(engine, vec![], vec![ValType::I64]),
         |_, _, r| {
             r[0] = Val::I64(0);
             Ok(())
@@ -855,7 +884,7 @@ pub(crate) fn build_env_linker(
     );
     let noop_2i_1o = Func::new(
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 2], vec![ValType::I64]),
+        FuncType::new(engine, vec![ValType::I64; 2], vec![ValType::I64]),
         |_, _, r| {
             r[0] = Val::I64(0);
             Ok(())
@@ -863,7 +892,7 @@ pub(crate) fn build_env_linker(
     );
     let noop_3i_1o = Func::new(
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 3], vec![ValType::I64]),
+        FuncType::new(engine, vec![ValType::I64; 3], vec![ValType::I64]),
         |_, _, r| {
             r[0] = Val::I64(0);
             Ok(())
@@ -871,22 +900,22 @@ pub(crate) fn build_env_linker(
     );
     let noop_3i = Func::new(
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 3], vec![]),
+        FuncType::new(engine, vec![ValType::I64; 3], vec![]),
         |_, _, _| Ok(()),
     );
     let noop_2i = Func::new(
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 2], vec![]),
+        FuncType::new(engine, vec![ValType::I64; 2], vec![]),
         |_, _, _| Ok(()),
     );
     let noop_4i = Func::new(
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 4], vec![]),
+        FuncType::new(engine, vec![ValType::I64; 4], vec![]),
         |_, _, _| Ok(()),
     );
     let noop_6i_1o = Func::new(
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 6], vec![ValType::I64]),
+        FuncType::new(engine, vec![ValType::I64; 6], vec![ValType::I64]),
         |_, _, r| {
             r[0] = Val::I64(0);
             Ok(())
@@ -894,12 +923,12 @@ pub(crate) fn build_env_linker(
     );
     let noop_7i = Func::new(
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 7], vec![]),
+        FuncType::new(engine, vec![ValType::I64; 7], vec![]),
         |_, _, _| Ok(()),
     );
     let noop_7i_1o = Func::new(
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 7], vec![ValType::I64]),
+        FuncType::new(engine, vec![ValType::I64; 7], vec![ValType::I64]),
         |_, _, r| {
             r[0] = Val::I64(0);
             Ok(())
@@ -907,17 +936,17 @@ pub(crate) fn build_env_linker(
     );
     let noop_8i = Func::new(
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 8], vec![]),
+        FuncType::new(engine, vec![ValType::I64; 8], vec![]),
         |_, _, _| Ok(()),
     );
     let noop_9i = Func::new(
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 9], vec![]),
+        FuncType::new(engine, vec![ValType::I64; 9], vec![]),
         |_, _, _| Ok(()),
     );
     let _noop_4i_i32 = Func::new(
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 4], vec![ValType::I32]),
+        FuncType::new(engine, vec![ValType::I64; 4], vec![ValType::I32]),
         |_, _, r| {
             r[0] = Val::I32(0);
             Ok(())
@@ -925,7 +954,7 @@ pub(crate) fn build_env_linker(
     );
     let noop_4i_1o = Func::new(
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 4], vec![ValType::I64]),
+        FuncType::new(engine, vec![ValType::I64; 4], vec![ValType::I64]),
         |_, _, r| {
             r[0] = Val::I64(0);
             Ok(())
@@ -933,7 +962,7 @@ pub(crate) fn build_env_linker(
     );
     let noop_8i_1o = Func::new(
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 8], vec![ValType::I64]),
+        FuncType::new(engine, vec![ValType::I64; 8], vec![ValType::I64]),
         |_, _, r| {
             r[0] = Val::I64(0);
             Ok(())
@@ -941,7 +970,7 @@ pub(crate) fn build_env_linker(
     );
     let noop_9i_1o = Func::new(
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 9], vec![ValType::I64]),
+        FuncType::new(engine, vec![ValType::I64; 9], vec![ValType::I64]),
         |_, _, r| {
             r[0] = Val::I64(0);
             Ok(())
@@ -972,9 +1001,9 @@ pub(crate) fn build_env_linker(
         "predecessor_account_id",
         predecessor_account_fn,
     )?;
-    let block_index_fn = Func::new(
+    let block_index_fn = host_fn("block_index",
         &mut *store,
-        FuncType::new(&engine, vec![], vec![ValType::I64]),
+        FuncType::new(engine, vec![], vec![ValType::I64]),
         |_, _, r| {
             r[0] = Val::I64(
                 // NEAR_MOCK_BLOCK_HEIGHT pins it for deterministic
@@ -998,9 +1027,9 @@ pub(crate) fn build_env_linker(
     // contract). Was noop → read_register trapped on the missing register
     // (caught by the API sweep 2026-08-31). Deterministic per-run seed.
     let rs1 = state.clone();
-    let random_seed_fn = Func::new(
+    let random_seed_fn = host_fn("random_seed",
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64], vec![]),
+        FuncType::new(engine, vec![ValType::I64], vec![]),
         move |_caller, args, _| {
             let rid = args[0].unwrap_i64() as u64;
             // Entropy source, in priority order:
@@ -1041,9 +1070,9 @@ pub(crate) fn build_env_linker(
     linker.define(&*store, "env", "random_seed", random_seed_fn)?;
     linker.define(&*store, "env", "sha256", sha256_fn)?;
     // schnorr_verify_bip340(pk_ptr: i32, sig_ptr: i32, msg_ptr: i32, msg_len: i32) -> i32
-    let schnorr_fn = Func::new(
+    let schnorr_fn = host_fn("schnorr_verify_bip340",
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I32; 4], vec![ValType::I32]),
+        FuncType::new(engine, vec![ValType::I32; 4], vec![ValType::I32]),
         |mut caller, params, results| {
             let pk_ptr = params[0].unwrap_i32() as usize;
             let sig_ptr = params[1].unwrap_i32() as usize;
@@ -1094,9 +1123,9 @@ pub(crate) fn build_env_linker(
     // msg_len: i64, msg_ptr: i64, pk_len: i64, pk_ptr: i64) -> i64 (1/0).
     // Signature is 64 bytes (R||s), pk 32 bytes; pk_len/sig_len must match
     // or reject, mirroring VMLogic's length checks.
-    let ed25519_fn = Func::new(
+    let ed25519_fn = host_fn("ed25519_verify",
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 6], vec![ValType::I64]),
+        FuncType::new(engine, vec![ValType::I64; 6], vec![ValType::I64]),
         |mut caller, params, results| {
             let sig_len = params[0].unwrap_i64() as usize;
             let sig_ptr = params[1].unwrap_i64() as usize;
@@ -1130,9 +1159,9 @@ pub(crate) fn build_env_linker(
     linker.define(&*store, "env", "ed25519_verify", ed25519_fn)?;
     // log_utf16(len: i64, ptr: i64) — utf16 log; mock decodes lossily for
     // display (same fee model as log_utf8).
-    let log_utf16_fn = Func::new(
+    let log_utf16_fn = host_fn("log_utf16",
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 2], vec![]),
+        FuncType::new(engine, vec![ValType::I64; 2], vec![]),
         move |mut caller, args, _| {
             let (len, ptr) = (args[0].unwrap_i64() as usize, args[1].unwrap_i64() as usize);
             let cost = mock_cfg().gas.log_base + mock_cfg().gas.log_byte * len as u64;
@@ -1162,7 +1191,7 @@ pub(crate) fn build_env_linker(
     linker.define(&*store, "env", "log", noop1.clone())?;
     let vs0 = Func::new(
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 3], vec![]),
+        FuncType::new(engine, vec![ValType::I64; 3], vec![]),
         |_, _, _| {
             stub_warn("validator_stake");
             Ok(())
@@ -1171,7 +1200,7 @@ pub(crate) fn build_env_linker(
     linker.define(&*store, "env", "validator_stake", vs0)?;
     let vts0 = Func::new(
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64], vec![]),
+        FuncType::new(engine, vec![ValType::I64], vec![]),
         |_, _, _| {
             stub_warn("validator_total_stake");
             Ok(())
@@ -1182,9 +1211,9 @@ pub(crate) fn build_env_linker(
     linker.define(&*store, "env", "alt_bn128_g1_sum", precompile_fns[0].clone())?;
     // alt_bn128_pairing_check(data_len, data_ptr) -> i64 (0 = pairing OK per
     // NEAR ABI convention on the mock's fixed-shape inputs)
-    let pairing_fn = Func::new(
+    let pairing_fn = host_fn("alt_bn128_pairing_check",
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64; 2], vec![ValType::I64]),
+        FuncType::new(engine, vec![ValType::I64; 2], vec![ValType::I64]),
         |_, _, results| {
             results[0] = Val::I64(0);
             Ok(())
@@ -1215,9 +1244,9 @@ pub(crate) fn build_env_linker(
     // storage_usage() -> u64: bytes used by THIS contract's namespace
     // (was a silent 0 — flashpool-style checks saw free storage forever).
     let su0 = state.clone();
-    let storage_usage_fn = Func::new(
+    let storage_usage_fn = host_fn("storage_usage",
         &mut *store,
-        FuncType::new(&engine, vec![], vec![ValType::I64]),
+        FuncType::new(engine, vec![], vec![ValType::I64]),
         move |_, _, r| {
             let contract = exec_ctx_or_default().contract;
             let bytes: u64 = su0
@@ -1240,9 +1269,9 @@ pub(crate) fn build_env_linker(
     // account_locked_balance(balance_ptr): 16-byte u128 write of the
     // storage-staked amount (was a silent 0).
     let alb0 = state.clone();
-    let account_locked_balance_fn = Func::new(
+    let account_locked_balance_fn = host_fn("account_locked_balance",
         &mut *store,
-        FuncType::new(&engine, vec![ValType::I64], vec![]),
+        FuncType::new(engine, vec![ValType::I64], vec![]),
         move |mut caller, args, _| {
             let contract = exec_ctx_or_default().contract;
             let amt = match alb0.try_lock() {
