@@ -10,6 +10,21 @@ use lisp_rlm_wasm::bls_validate;
 use lisp_rlm_wasm::builtin_ed25519::ed25519_verify_impl;
 use lisp_rlm_wasm::builtin_schnorr::schnorr_verify_impl;
 
+/// Debug-escape a raw trie key for trace output: printable ASCII as-is,
+/// everything else as \xNN so borsh prefixes and account separators stay
+/// legible (e.g. "\x04\x0ftoken.chat.near").
+fn dbg_key(k: &[u8]) -> String {
+    let mut s = String::with_capacity(k.len() + 2);
+    for &b in k {
+        if (0x20..0x7f).contains(&b) && b != b'"' && b != b'\\' {
+            s.push(b as char);
+        } else {
+            s.push_str(&format!("\\x{b:02x}"));
+        }
+    }
+    s
+}
+
 /// Wrap a host closure with --trace instrumentation: one timeline entry
 /// (seq, name, exact fuel delta across the host body, err flag) per
 /// invocation when tracing is on; a TLS read + branch otherwise.
@@ -193,6 +208,7 @@ pub(crate) fn build_env_linker(
             if exec_ctx_view(&s6) {
                 return Err(wasmtime::Error::msg("ProhibitedInView: storage_write"));
             }
+            let mut evicted = false;
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 let md = mem.data(&caller);
                 if kp + kl <= md.len() && vp + vl <= md.len() {
@@ -202,7 +218,7 @@ pub(crate) fn build_env_linker(
                     let val = md[vp..vp + vl].to_vec();
                     eprintln!(
                         "  → storage_write(\"{}\") = {}b",
-                        String::from_utf8_lossy(&raw_key),
+                        dbg_key(&raw_key),
                         vl
                     );
                     // Fee schedule (legacy indicative defaults, --gas-schedule to override)
@@ -215,6 +231,7 @@ pub(crate) fn build_env_linker(
                     let trie = trie_charge_write(&mut st, &key);
                     let (klen, vlen) = (key.len(), val.len());
                     let old = st.storage.insert(key, val);
+                    evicted = old.is_some();
                     // Storage staking: lock for net new bytes (refund replaced).
                     // Prefixed key = acct + '\0' + raw key → raw key = klen - acct - 1.
                     let old_raw_len = old
@@ -233,7 +250,10 @@ pub(crate) fn build_env_linker(
                     }
                 }
             }
-            results[0] = Val::I64(0);
+            // NEAR ABI: 1 = an old value was evicted (written to the evicted
+            // register), 0 = key was absent. SDK 4.x collections branch on
+            // this flag (Vector::replace_raw panics INCONSISTENT_STATE on 0).
+            results[0] = Val::I64(if evicted { 1 } else { 0 });
             Ok(())
         },
     );
@@ -271,6 +291,11 @@ pub(crate) fn build_env_linker(
                 let mut st = s7.lock().unwrap();
                 if let Some(val) = st.storage.get(key).cloned() {
                     eprintln!("  → storage_read found {}b", val.len());
+                    if std::env::var("NEAR_MOCK_KEYS").is_ok() {
+                        let acct = exec_ctx_or_default().contract;
+                        let raw = if key.len() > acct.len() { &key[acct.len() + 1..] } else { &key[..] };
+                        eprintln!("    🔑 key [{}]", dbg_key(raw));
+                    }
                     // Fee schedule + production trie-node access
                     let gas = &mock_cfg().gas;
                     let trie = trie_charge(&mut st, key);
