@@ -665,6 +665,7 @@ fn build_promise_hosts(
         wasmtime::Func,
         wasmtime::Func,
         wasmtime::Func,
+        wasmtime::Func,
     ),
     Box<dyn std::error::Error>,
 > {
@@ -716,6 +717,45 @@ fn build_promise_hosts(
             };
             eprintln!(
                 "  → action_fn_call(idx={}, {} args={} dep={})",
+                idx, method, args_json, dep
+            );
+            PROMISE_DAG.with(|d| {
+                if let Some(b) = d.borrow_mut().get_mut(idx) {
+                    b.actions.push(PAction::FnCall { method, args: args_json.into_bytes(), gas, dep });
+                }
+            });
+            Ok(())
+        },
+    );
+    // 85 promise_batch_action_function_call_weight(idx, m_len, m_ptr, a_len,
+    //    a_ptr, dep_ptr, gas, gas_weight) — near-sdk 5 Promise::function_call
+    //    emits THIS variant (not the plain #43). Was a noop: the fn-call was
+    //    silently dropped from the batch → fire-and-forget promises to other
+    //    contracts vanished (found running mainnet intents.near ft_withdraw).
+    //    Weight semantics simplified: record the explicit prepaid gas arg.
+    let pafcw = Func::new(
+        &mut *store,
+        FuncType::new(engine, vec![ValType::I64; 8], vec![]),
+        move |mut caller, args, _| {
+            let idx = args[0].unwrap_i64() as usize;
+            let method = mem_read_str(&mut caller, args[1].unwrap_i64(), args[2].unwrap_i64())
+                .unwrap_or_default();
+            let args_json = mem_read_str(&mut caller, args[3].unwrap_i64(), args[4].unwrap_i64())
+                .unwrap_or_default();
+            let gas = args[6].unwrap_i64() as u64;
+            let dep = {
+                let ptr = args[5].unwrap_i64() as usize;
+                let mut buf = [0u8; 16];
+                if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                    let md = mem.data(&caller);
+                    if ptr + 16 <= md.len() {
+                        buf.copy_from_slice(&md[ptr..ptr + 16]);
+                    }
+                }
+                u128::from_le_bytes(buf)
+            };
+            eprintln!(
+                "  → action_fn_call_w(idx={}, {} args={} dep={})",
                 idx, method, args_json, dep
             );
             PROMISE_DAG.with(|d| {
@@ -1000,7 +1040,7 @@ fn build_promise_hosts(
             Ok(())
         },
     );
-    Ok((pc, pt, pa, prc, pr, pret, pbc, pbt, pafc, pbat, pyc, pyr))
+    Ok((pc, pt, pa, prc, pr, pret, pbc, pbt, pafc, pbat, pafcw, pyc, pyr))
 }
 fn build_env_linker(
     store: &mut wasmtime::Store<()>,
@@ -2146,13 +2186,6 @@ fn build_env_linker(
         "promise_batch_action_deploy_contract",
         noop_3i.clone(),
     )?;
-    linker.define(
-        &*store,
-        "env",
-        "promise_batch_action_function_call_weight",
-        noop_8i,
-    )?;
-
     linker.define(&*store, "env", "promise_batch_action_stake", noop_4i.clone())?;
     linker.define(
         &*store,
@@ -2182,7 +2215,7 @@ fn build_env_linker(
     // Real promise hosts (cross engine) — override the noops. STATE_ARC is
     // set by the drivers; when unset (defensive), noops remain.
     if STATE_ARC.with(|s| s.borrow().is_some()) {
-        let (pc, pt, pa, prc, pr, pret, pbc, pbt, pafc, pbat, pyc, pyr) =
+        let (pc, pt, pa, prc, pr, pret, pbc, pbt, pafc, pbat, pafcw, pyc, pyr) =
             build_promise_hosts(&mut *store, engine)?;
         linker.define(&*store, "env", "promise_create", pc)?;
         linker.define(&*store, "env", "promise_then", pt)?;
@@ -2193,6 +2226,7 @@ fn build_env_linker(
         linker.define(&*store, "env", "promise_batch_create", pbc)?;
         linker.define(&*store, "env", "promise_batch_then", pbt)?;
         linker.define(&*store, "env", "promise_batch_action_function_call", pafc)?;
+        linker.define(&*store, "env", "promise_batch_action_function_call_weight", pafcw)?;
         linker.define(&*store, "env", "promise_batch_action_transfer", pbat)?;
         linker.define(&*store, "env", "promise_yield_create", pyc)?;
         linker.define(&*store, "env", "promise_yield_resume", pyr)?;
@@ -2202,6 +2236,7 @@ fn build_env_linker(
         linker.define(&*store, "env", "promise_and", noop_2i_1o.clone())?;
         linker.define(&*store, "env", "promise_batch_create", noop_2i_1o.clone())?;
         linker.define(&*store, "env", "promise_batch_then", noop_3i_1o.clone())?;
+        linker.define(&*store, "env", "promise_batch_action_function_call_weight", noop_8i.clone())?;
         linker.define(&*store, "env", "promise_results_count", noop0r.clone())?;
         linker.define(&*store, "env", "promise_result", noop_2i_1o.clone())?;
         linker.define(&*store, "env", "promise_return", noop1.clone())?;
