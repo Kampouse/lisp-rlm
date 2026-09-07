@@ -299,6 +299,14 @@ thread_local! {
     static EXEC_CTX: std::cell::RefCell<Option<ExecCtx>> = const { std::cell::RefCell::new(None) };
     static PROMISE_DAG: std::cell::RefCell<Vec<PromiseBatch>> = const { std::cell::RefCell::new(Vec::new()) };
     static PROMISE_RESULTS: std::cell::RefCell<Vec<Option<Vec<u8>>>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Per-node result cache. NEAR receipts execute EXACTLY ONCE; the
+    /// orphan drain could re-traverse a promise_then child whose dep batch
+    /// already executed — re-running the dep's ACTIONS (double transfer →
+    /// trap → downstream callback saw Failed and refunded: value
+    /// duplicated, books diverged). Cached nodes replay results, not
+    /// side effects.
+    static PROMISE_RESULT_CACHE: std::cell::RefCell<HashMap<usize, Vec<Option<Vec<u8>>>>> =
+        std::cell::RefCell::new(HashMap::new());
     static PENDING_RETURN: std::cell::RefCell<Option<usize>> = const { std::cell::RefCell::new(None) };
     static MODULES: std::cell::RefCell<Option<std::sync::Arc<HashMap<String, wasmtime::Module>>>> =
         const { std::cell::RefCell::new(None) };
@@ -485,12 +493,32 @@ fn sub_execute(
         st.registers = old_regs;
         st.return_data = old_ret;
     }
-    Ok(if trap { None } else { ret })
+    // Success with no value_return = SUCCESSFUL receipt with EMPTY data
+    // (Some(vec![])), NOT Failed(None). old-SDK ft_transfer returns nothing;
+    // encoding its success as None made downstream promise_result report
+    // Failed → defuse ft_resolve_withdraw refunded a transfer that had
+    // actually landed (value duplicated). Trap stays None = Failed.
+    Ok(if trap {
+        None
+    } else {
+        Some(ret.unwrap_or_default())
+    })
 }
 
 /// Resolve a promise DAG node: deps first (their results, flattened,
 /// become this batch's promise_results), then this batch's actions.
+/// Receipt-exactly-once wrapper: replay cached results, never side effects.
 fn execute_promise(idx: usize) -> Result<Vec<Option<Vec<u8>>>, Box<dyn std::error::Error>> {
+    if let Some(cached) = PROMISE_RESULT_CACHE.with(|c| c.borrow().get(&idx).cloned()) {
+        eprintln!("  ⛓ receipt {} already executed — replaying cached results", idx);
+        return Ok(cached);
+    }
+    let out = execute_promise_uncached(idx)?;
+    PROMISE_RESULT_CACHE.with(|c| c.borrow_mut().insert(idx, out.clone()));
+    Ok(out)
+}
+
+fn execute_promise_uncached(idx: usize) -> Result<Vec<Option<Vec<u8>>>, Box<dyn std::error::Error>> {
     let batch = PROMISE_DAG.with(|d| d.borrow()[idx].clone());
     EXECUTED_PROMISES.with(|e| e.borrow_mut().insert(idx));
     let mut dep_results: Vec<Option<Vec<u8>>> = Vec::new();
