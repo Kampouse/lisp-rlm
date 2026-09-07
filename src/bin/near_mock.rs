@@ -468,7 +468,11 @@ fn sub_execute(
         None => (true, None), // missing method = failed receipt
         Some(res) => match res {
             Ok(()) => (false, state.lock().unwrap().return_data.clone()),
-            Err(_) => (true, None),
+            Err(ref e) => {
+                eprintln!("  ⚠ cross: {}.{} TRAPPED: {} — reverting partition",
+                          account, method, e.root_cause());
+                (true, None)
+            }
         },
     };
     if trap {
@@ -572,7 +576,15 @@ fn execute_promise_uncached(idx: usize) -> Result<Vec<Option<Vec<u8>>>, Box<dyn 
                     if let Some(ridx) = child_ret {
                         eprintln!("  ⛓ child returned promise {} — resolving before dependents", ridx);
                         let cres = execute_promise(ridx)?;
-                        for r in cres { out.push(r); }
+                        // NEAR semantics (factorial-chain lesson, 2026-09-07):
+                        // a receipt that RETURNS a promise completes WITH the
+                        // returned subtree's results — its own void outcome is
+                        // invisible to dependents. Flattening [None, value]
+                        // made promise_result(0) read null. Replace, not append.
+                        if !cres.is_empty() {
+                            out.truncate(out.len() - 1);
+                            out.extend(cres);
+                        }
                     }
                 }
                 PAction::Transfer(amt) => {
