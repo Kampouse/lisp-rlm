@@ -2458,7 +2458,8 @@ fn ux_read_manifest(state: &str) -> Result<Vec<(String, String)>, String> {
 }
 
 fn ux_exec_cross(state: &str, manifest: &[(String, String)], acct: &str, method: &str,
-                 args: &str, view: bool, signer: Option<&str>, attach: Option<&str>)
+                 args: &str, view: bool, signer: Option<&str>, attach: Option<&str>,
+                 envs: &[(String, String)])
     -> std::process::Output {
     let m: Vec<String> = manifest.iter()
         .map(|(a, w)| format!("{}={}", a, w)).collect();
@@ -2468,7 +2469,24 @@ fn ux_exec_cross(state: &str, manifest: &[(String, String)], acct: &str, method:
     if view { cmd.arg("--view"); }
     if let Some(s) = signer { cmd.env("NEAR_MOCK_SIGNER", s); }
     if let Some(a) = attach { cmd.env("NEAR_MOCK_ATTACH", a); }
+    for (k, v) in envs { cmd.env(k, v); }
     cmd.output().expect("failed to re-exec near-mock")
+}
+
+/// Order-independent state hash: sha256 over sorted (key,value) pairs.
+/// Same storage ⇒ same root, independent of write order — golden fixtures
+/// and nondeterminism detection.
+fn ux_state_root(state: &str) -> Result<String, String> {
+    let raw = std::fs::read(state).map_err(|e| format!("cannot read {}: {}", state, e))?;
+    let map: std::collections::BTreeMap<Vec<u8>, Vec<u8>> =
+        bincode::deserialize(&raw).map_err(|e| format!("bad state: {}", e))?;
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    for (k, v) in &map {
+        h.update((k.len() as u64).to_le_bytes()); h.update(k);
+        h.update((v.len() as u64).to_le_bytes()); h.update(v);
+    }
+    Ok(format!("0x{}", h.finalize().iter().map(|b| format!("{:02x}", b)).collect::<String>()))
 }
 
 fn ux_init(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
@@ -2503,14 +2521,17 @@ fn ux_call(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         if a == "--view" { view = true; }
     }
     let mut i = 5;
+    let mut envs: Vec<(String, String)> = Vec::new();
     while i < args.len() {
         if args[i] == "--signer" { signer = args.get(i + 1).map(|s| s.to_string()); i += 2; }
         else if args[i] == "--attach" { attach = args.get(i + 1).map(|s| s.to_string()); i += 2; }
+        else if args[i] == "--block-ts" { envs.push(("NEAR_MOCK_BLOCK_TS".into(), args.get(i+1).cloned().unwrap_or_default())); i += 2; }
+        else if args[i] == "--block-height" { envs.push(("NEAR_MOCK_BLOCK_HEIGHT".into(), args.get(i+1).cloned().unwrap_or_default())); i += 2; }
         else { i += 1; }
     }
     let manifest = ux_read_manifest(state).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
     let out = ux_exec_cross(state, &manifest, acct, method, &args_json, view,
-                            signer.as_deref(), attach.as_deref());
+                            signer.as_deref(), attach.as_deref(), &envs);
     std::io::Write::write_all(&mut std::io::stdout(), &out.stdout)?;
     std::io::Write::write_all(&mut std::io::stderr(), &out.stderr)?;
     std::process::exit(out.status.code().unwrap_or(1));
@@ -2528,7 +2549,8 @@ fn ux_dump(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let raw = std::fs::read(state).map_err(|e| format!("cannot read state {}: {}", state, e))?;
     let map: std::collections::HashMap<Vec<u8>, Vec<u8>> =
         bincode::deserialize(&raw).map_err(|e| format!("bad state: {}", e))?;
-    println!("state: {} · {} storage keys", state, map.len());
+    println!("state: {} · {} storage keys · root {}", state, map.len(),
+        ux_state_root(state).unwrap_or_else(|_| "?".into()));
     let mut rows: Vec<(Vec<u8>, Vec<u8>)> = map.iter()
         .filter(|(k, _)| match &filter {
             Some(a) => k.starts_with(a.as_bytes()),
@@ -2596,7 +2618,10 @@ fn ux_scenario(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         let view = step.get("view").and_then(|v| v.as_bool()).unwrap_or(false);
         let signer = step.get("signer").and_then(|v| v.as_str());
         let attach = step.get("attach").and_then(|v| v.as_str());
-        let out = ux_exec_cross(state, &manifest, acct, method, &args_json, view, signer, attach);
+        let mut envs: Vec<(String, String)> = Vec::new();
+        if let Some(ts) = step.get("blockTs") { envs.push(("NEAR_MOCK_BLOCK_TS".into(), ts.to_string())); }
+        if let Some(h) = step.get("blockHeight") { envs.push(("NEAR_MOCK_BLOCK_HEIGHT".into(), h.to_string())); }
+        let out = ux_exec_cross(state, &manifest, acct, method, &args_json, view, signer, attach, &envs);
         let text = format!("{}{}",
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr));
@@ -2623,12 +2648,63 @@ fn ux_scenario(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             detail = format!("  want {:?} in logs", needle);
         }
         println!("  [{:>2}] {} {}.{} {} {}", n + 1, verdict, acct, method, label, detail);
+        if let Some(want_root) = step.get("expectRoot").and_then(|v| v.as_str()) {
+            let got = ux_state_root(state).unwrap_or_else(|e| format!("err {}", e));
+            let hit = {
+                let g = got.trim_start_matches("0x").to_ascii_lowercase();
+                let w = want_root.trim_start_matches("0x").to_ascii_lowercase();
+                g.starts_with(&w) || w.starts_with(&g)
+            };
+            if hit { pass += 1; println!("        🔗 root {} ✓", &got[..14.min(got.len())]); }
+            else { fail += 1; println!("        🔗 root MISMATCH: got {} want 0x{}", &got[..14.min(got.len())], &want_root[..12.min(want_root.len())]); }
+            continue;
+        }
         if verdict == "❌" { fail += 1;
             for l in text.lines().filter(|l| l.contains("PANIC") || l.contains("Error")) { println!("        {}", l); }
         } else { pass += 1; }
     }
     println!("scenario: {} passed, {} failed", pass, fail);
     if fail > 0 { std::process::exit(1); }
+    Ok(())
+}
+
+fn ux_doctor(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let wasm = args.get(2).ok_or("usage: near-mock doctor <wasm>")?;
+    // Self-verifying supported-list: parse our own linker definitions out of
+    // the compiled-in source — cannot drift from the actual host surface.
+    let src = include_str!("near_mock.rs");
+    let mut supported: Vec<&str> = Vec::new();
+    let mut rest = src;
+    while let Some(i) = rest.find("linker.define(") {
+        // window covers multiline defines (name may sit several lines down)
+        let window = &rest[i.."linker.define(".len() + i + 200.min(rest.len() - i)];
+        if let Some(e) = window.find("\"env\"") {
+            let after = &window[e + 5..];
+            let a = after.trim_start_matches(|c: char| c == ',' || c.is_whitespace());
+            if a.starts_with('"') {
+                if let Some(end) = a[1..].find('"') { supported.push(&a[1..1 + end]); }
+            }
+        }
+        rest = &rest[i + "linker.define(".len()..];
+    }
+    let wasm_bytes = std::fs::read(wasm).map_err(|e| format!("cannot read {}: {}", wasm, e))?;
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &wasm_bytes)
+        .map_err(|e| format!("invalid wasm: {}", e))?;
+    let mut missing = 0;
+    println!("doctor: {} — {} env imports", wasm, module.imports().count());
+    for imp in module.imports() {
+        if imp.module() != "env" { continue; }
+        let name = imp.name();
+        let ok = supported.contains(&name);
+        if !ok { missing += 1; }
+        println!("  {} {}::{:?}", if ok { "✓" } else { "✗ MISSING" }, imp.module(), name);
+    }
+    if missing > 0 {
+        println!("❌ {} env import(s) not provided by near-mock", missing);
+        std::process::exit(1);
+    }
+    println!("✅ all env imports supported · host surface: {} fns", supported.len());
     Ok(())
 }
 
@@ -2640,6 +2716,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("call") => return ux_call(&args),
         Some("dump-state") => return ux_dump(&args),
         Some("scenario") => return ux_scenario(&args),
+        Some("doctor") => return ux_doctor(&args),
         _ => {},
     }
     if args.len() < 3 {
