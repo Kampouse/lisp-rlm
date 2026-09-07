@@ -1229,8 +1229,8 @@ fn build_env_linker(
                     let key = prefixed_key(&acct, &raw_key);
                     let val = md[vp..vp + vl].to_vec();
                     eprintln!(
-                        "  → storage_write(\"{}\") = {}b",
-                        String::from_utf8_lossy(&raw_key),
+                        "  → storage_write(hex {}) = {}b",
+                        hex_dbg(&raw_key),
                         vl
                     );
                     // Indicative legacy fees: base + key/value bytes
@@ -1243,6 +1243,7 @@ fn build_env_linker(
                     let old = st.storage.insert(key, val);
                     drop(st);
                     caller.set_fuel(caller.get_fuel()?.saturating_sub(trie))?;
+                    let evicted = old.is_some();
                     let mut st = s6.lock().unwrap();
                     if rid != u64::MAX {
                         if let Some(old) = old {
@@ -1250,6 +1251,13 @@ fn build_env_linker(
                                 .map_err(|e| wasmtime::Error::msg(e))?;
                         }
                     }
+                    // near-core semantics (VMLogic::storage_write): return 1
+                    // when a value was evicted into the register, 0 otherwise.
+                    // Legacy collections (Vector::replace_raw/swap_remove_raw,
+                    // used by TreeMap node save) panic ERR_INCONSISTENT_STATE
+                    // if an overwrite reports no eviction.
+                    results[0] = Val::I64(evicted as i64);
+                    return Ok(());
                 }
             }
             results[0] = Val::I64(0);
@@ -1289,7 +1297,7 @@ fn build_env_linker(
             let found = if let Some(key) = &key_from_mem {
                 let mut st = s7.lock().unwrap();
                 if let Some(val) = st.storage.get(key).cloned() {
-                    eprintln!("  → storage_read found {}b", val.len());
+                    eprintln!("  → storage_read found {}b key={}", val.len(), hex_dbg(key));
                     // Indicative flat fees + production trie-node access
                     let trie = trie_charge(&mut st, key);
                     let cost = 56_356_995u64
@@ -1303,8 +1311,8 @@ fn build_env_linker(
                     true
                 } else {
                     eprintln!(
-                        "  → storage_read not found [{}]",
-                        String::from_utf8_lossy(key)
+                        "  → storage_read not found key={}",
+                        hex_dbg(key)
                     );
                     // production charges the read base + trie walk even on miss
                     let trie = trie_charge(&mut st, key);
@@ -1345,7 +1353,13 @@ fn build_env_linker(
                     };
                     let (val, trie) = {
                         let mut st = s8.lock().unwrap();
-                        (st.storage.remove(&rkey), trie_charge_write(&mut st, &rkey))
+                        let v = st.storage.remove(&rkey);
+                        eprintln!(
+                            "  → storage_remove key={} → {}",
+                            hex_dbg(&rkey),
+                            if v.is_some() { "found" } else { "NOT FOUND" }
+                        );
+                        (v, trie_charge_write(&mut st, &rkey))
                     };
                     if let Some(val) = val {
                         // Indicative legacy fees: base + key bytes + trie access
@@ -2826,6 +2840,10 @@ fn trie_charge(st: &mut MockState, key: &[u8]) -> u64 {
 fn trie_charge_write(st: &mut MockState, key: &[u8]) -> u64 {
     st.touched.insert(key.to_vec());
     16 * 2_280_000_000
+}
+
+fn hex_dbg(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{:02x}", x)).collect::<Vec<_>>().join("")
 }
 
 fn write_reg_checked(st: &mut MockState, rid: u64, data: Vec<u8>) -> Result<(), String> {
