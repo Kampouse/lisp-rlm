@@ -2434,10 +2434,213 @@ fn exec_ctx_view(state: &std::sync::Arc<Mutex<MockState>>) -> bool {
 }
 
 
+// ════════════════════════════════════════════════════════════════════
+// UX layer: init / call / dump-state / scenario
+// Thin wrappers over `cross` — one execution path, no semantic drift.
+// Manifest sidecar: `<state>.manifest.json` = {"contracts": {acct: wasm}}
+// ════════════════════════════════════════════════════════════════════
+
+fn ux_manifest_path(state: &str) -> String { format!("{}.manifest.json", state) }
+
+fn ux_read_manifest(state: &str) -> Result<Vec<(String, String)>, String> {
+    let path = ux_manifest_path(state);
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|e| format!("no manifest sidecar {} ({}). Run `near-mock init` first.", path, e))?;
+    let v: serde_json::Value = serde_json::from_str(&raw).map_err(|e| format!("bad manifest JSON: {}", e))?;
+    let obj = v.get("contracts").and_then(|c| c.as_object())
+        .ok_or("manifest missing \"contracts\" object")?;
+    let mut out = Vec::new();
+    for (acct, wasm) in obj {
+        out.push((acct.clone(), wasm.as_str().unwrap_or_default().to_string()));
+    }
+    if out.is_empty() { return Err("manifest has no contracts".into()); }
+    Ok(out)
+}
+
+fn ux_exec_cross(state: &str, manifest: &[(String, String)], acct: &str, method: &str,
+                 args: &str, view: bool, signer: Option<&str>, attach: Option<&str>)
+    -> std::process::Output {
+    let m: Vec<String> = manifest.iter()
+        .map(|(a, w)| format!("{}={}", a, w)).collect();
+    let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+    cmd.arg("cross").arg(state).arg(m.join(","))
+        .arg(acct).arg(method).arg(args);
+    if view { cmd.arg("--view"); }
+    if let Some(s) = signer { cmd.env("NEAR_MOCK_SIGNER", s); }
+    if let Some(a) = attach { cmd.env("NEAR_MOCK_ATTACH", a); }
+    cmd.output().expect("failed to re-exec near-mock")
+}
+
+fn ux_init(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let state = args.get(2).ok_or("usage: near-mock init <state> --contract acct=path ...")?.clone();
+    let mut contracts: std::collections::BTreeMap<String, String> = Default::default();
+    let mut i = 2;
+    while i < args.len() {
+        if args[i] == "--contract" {
+            let pair = args.get(i + 1).ok_or("--contract needs acct=path")?;
+            let (a, w) = pair.split_once('=').ok_or("--contract expects acct=path")?;
+            let wabs = std::fs::canonicalize(w)
+                .map_err(|e| format!("wasm not found: {} ({})", w, e))?;
+            contracts.insert(a.to_string(), wabs.to_string_lossy().into_owned());
+            i += 2;
+        } else { i += 1; }
+    }
+    if contracts.is_empty() { return Err("no --contract given".into()); }
+    let manifest = serde_json::json!({ "contracts": contracts });
+    std::fs::write(ux_manifest_path(&state), serde_json::to_string_pretty(&manifest)?)?;
+    println!("✅ {} contracts registered → {}", contracts.len(), ux_manifest_path(&state));
+    Ok(())
+}
+
+fn ux_call(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let (state, acct, method) = (
+        args.get(2).ok_or("usage: near-mock call <state> <acct> <method> [args] [flags]")?,
+        args.get(3).ok_or("missing account")?, args.get(4).ok_or("missing method")?);
+    let mut args_json = "{}".to_string();
+    let (mut view, mut signer, mut attach) = (false, None, None);
+    for a in &args[5..] {
+        if a.starts_with('{') { args_json = a.clone(); }
+        if a == "--view" { view = true; }
+    }
+    let mut i = 5;
+    while i < args.len() {
+        if args[i] == "--signer" { signer = args.get(i + 1).map(|s| s.to_string()); i += 2; }
+        else if args[i] == "--attach" { attach = args.get(i + 1).map(|s| s.to_string()); i += 2; }
+        else { i += 1; }
+    }
+    let manifest = ux_read_manifest(state).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    let out = ux_exec_cross(state, &manifest, acct, method, &args_json, view,
+                            signer.as_deref(), attach.as_deref());
+    std::io::Write::write_all(&mut std::io::stdout(), &out.stdout)?;
+    std::io::Write::write_all(&mut std::io::stderr(), &out.stderr)?;
+    std::process::exit(out.status.code().unwrap_or(1));
+}
+
+fn ux_dump(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let state = args.get(2).ok_or("usage: near-mock dump-state <state> [--account A] [--limit N]")?;
+    let (mut filter, mut limit) = (None::<String>, 60usize);
+    let mut i = 3;
+    while i < args.len() {
+        if args[i] == "--account" { filter = args.get(i + 1).cloned(); i += 2; }
+        else if args[i] == "--limit" { limit = args.get(i + 1).and_then(|x| x.parse().ok()).unwrap_or(60); i += 2; }
+        else { i += 1; }
+    }
+    let raw = std::fs::read(state).map_err(|e| format!("cannot read state {}: {}", state, e))?;
+    let map: std::collections::HashMap<Vec<u8>, Vec<u8>> =
+        bincode::deserialize(&raw).map_err(|e| format!("bad state: {}", e))?;
+    println!("state: {} · {} storage keys", state, map.len());
+    let mut rows: Vec<(Vec<u8>, Vec<u8>)> = map.iter()
+        .filter(|(k, _)| match &filter {
+            Some(a) => k.starts_with(a.as_bytes()),
+            None => true,
+        })
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    rows.sort();
+    for (k, v) in rows.iter().take(limit) {
+        let (acct, raw_key) = split_prefixed(k);
+        let key_disp = printable(raw_key);
+        let val_disp = match std::str::from_utf8(v) {
+            Ok(s) if s.len() <= 80 => format!("\"{}\"", s.replace('\n', "\\n")),
+            Ok(s) => format!("\"{}…\" ({}b)", &s[..60], v.len()),
+            Err(_) => format!("0x{}", hex_prefix(v, 24)),
+        };
+        println!("  {:24} {:44} = {}", acct, key_disp, val_disp);
+    }
+    if rows.len() > limit { println!("  … (+{} more, use --limit)", rows.len() - limit); }
+    Ok(())
+}
+
+fn split_prefixed(k: &[u8]) -> (String, &[u8]) {
+    match k.iter().position(|&b| b == 0x01) {
+        Some(i) => (String::from_utf8_lossy(&k[..i]).into_owned(), &k[i + 1..]),
+        None => ("?".into(), k),
+    }
+}
+fn printable(b: &[u8]) -> String {
+    if b.is_empty() { return "(root marker)".into(); }
+    let s: String = b.iter().map(|&c| if (0x20..0x7f).contains(&c) { c as char } else { '.' }).collect();
+    if b.len() > 40 { format!("{}…", &s[..36]) } else { s }
+}
+fn hex_prefix(b: &[u8], n: usize) -> String {
+    b.iter().take(n).map(|x| format!("{:02x}", x)).collect()
+}
+
+fn ux_scenario(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let (state, path) = (args.get(2).ok_or("usage: near-mock scenario <state> <scenario.json>")?,
+                         args.get(3).ok_or("missing scenario.json")?);
+    let raw = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {}", path, e))?;
+    let sc: serde_json::Value = serde_json::from_str(&raw).map_err(|e| format!("bad scenario JSON: {}", e))?;
+    let mut manifest: Vec<(String, String)> =
+        sc.get("contracts").and_then(|c| c.as_object()).map(|o| {
+            o.iter().map(|(a, w)| (a.clone(), w.as_str().unwrap_or_default().to_string())).collect()
+        }).unwrap_or_default();
+    if manifest.is_empty() { manifest = ux_read_manifest(state)?; }
+    let steps = sc.get("steps").and_then(|s| s.as_array()).ok_or("scenario needs \"steps\": [...]")?;
+    let (mut pass, mut fail) = (0usize, 0usize);
+    for (n, step) in steps.iter().enumerate() {
+        let label = step.get("note").and_then(|s| s.as_str()).unwrap_or("").to_string();
+        if let Some(snap) = step.get("snapshot").and_then(|s| s.as_str()) {
+            std::fs::copy(state, format!("{}.snap-{}", state, snap))?;
+            let _ = std::fs::copy(ux_manifest_path(state), format!("{}.manifest.json.{}", state, snap));
+            println!("  [{:>2}] 📸 snapshot \"{}\" {}", n + 1, snap, label); pass += 1; continue;
+        }
+        if let Some(snap) = step.get("restore").and_then(|s| s.as_str()) {
+            std::fs::copy(format!("{}.snap-{}", state, snap), state)?;
+            println!("  [{:>2}] ↩️  restore \"{}\" {}", n + 1, snap, label); pass += 1; continue;
+        }
+        let call = step.get("call").and_then(|c| c.as_array())
+            .ok_or(format!("step {}: needs \"call\": [acct, method, args] or snapshot/restore", n + 1))?;
+        let (acct, method) = (call[0].as_str().ok_or("call[0]")?, call[1].as_str().ok_or("call[1]")?);
+        let args_json = call.get(2).map(|v| v.to_string()).unwrap_or_else(|| "{}".into());
+        let view = step.get("view").and_then(|v| v.as_bool()).unwrap_or(false);
+        let signer = step.get("signer").and_then(|v| v.as_str());
+        let attach = step.get("attach").and_then(|v| v.as_str());
+        let out = ux_exec_cross(state, &manifest, acct, method, &args_json, view, signer, attach);
+        let text = format!("{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr));
+        // The cross driver exits 0 after a clean trap+rollback — classify
+        // from output markers, not process status.
+        let trapped = text.contains("PANIC:") || text.contains("TRAPPED") || text.contains("❌");
+        let ok = !trapped;
+        let expect = step.get("expect").and_then(|v| v.as_str()).unwrap_or("ok");
+        let wanted = match expect { "trap" => !ok, _ => ok };
+        let mut verdict = if wanted { "✅" } else { "❌" }.to_string();
+        let mut detail = String::new();
+        if let Some(ev) = step.get("expectValue") {
+            let needle = ev.as_str().unwrap_or("");
+            let found = text.lines().rev().find(|l| l.contains("📄"))
+                .map(|l| l.trim().to_string()).unwrap_or_default();
+            let hit = found.contains(needle);
+            if !hit { verdict = "❌".into(); }
+            detail = format!("  want {:?} in {}", needle, if found.is_empty() { "(no value)".into() } else { found });
+        }
+        if let Some(ev) = step.get("expectLog") {
+            let needle = ev.as_str().unwrap_or("");
+            let all = format!("{}{}", text, String::from_utf8_lossy(&out.stderr));
+            if !all.contains(needle) { verdict = "❌".into(); }
+            detail = format!("  want {:?} in logs", needle);
+        }
+        println!("  [{:>2}] {} {}.{} {} {}", n + 1, verdict, acct, method, label, detail);
+        if verdict == "❌" { fail += 1;
+            for l in text.lines().filter(|l| l.contains("PANIC") || l.contains("Error")) { println!("        {}", l); }
+        } else { pass += 1; }
+    }
+    println!("scenario: {} passed, {} failed", pass, fail);
+    if fail > 0 { std::process::exit(1); }
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
-    if args.get(1).map(|s| s.as_str()) == Some("cross") {
-        return run_cross(&args);
+    match args.get(1).map(|s| s.as_str()) {
+        Some("cross") => return run_cross(&args),
+        Some("init") => return ux_init(&args),
+        Some("call") => return ux_call(&args),
+        Some("dump-state") => return ux_dump(&args),
+        Some("scenario") => return ux_scenario(&args),
+        _ => {},
     }
     if args.len() < 3 {
         eprintln!("Usage: near-mock <wasm> <method> [args-json]");
