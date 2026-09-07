@@ -1330,11 +1330,55 @@ pub(crate) fn build_env_linker(
         "promise_batch_action_deploy_contract",
         noop_3i.clone(),
     )?;
+
+    // 43b promise_batch_action_function_call_weight(idx, m_len, m_ptr,
+    // a_len, a_ptr, dep_ptr, gas, weight_ptr) — same action as the plain
+    // function_call, plus a GasWeight (u64 at weight_ptr). 2026-09-07:
+    // near-sdk's PromiseAnd / attached-gas paths emit the weighted import;
+    // the old noop stub silently dropped EVERY action (empty receipt
+    // batches — burrow's pyth query + ref swap never executed). Record the
+    // action identically: gas is prepaid and the weight only splits unused
+    // gas on-chain, which the mock ignores.
+    let pafcw = host_fn("promise_batch_action_function_call_weight",
+        &mut *store,
+        FuncType::new(engine, vec![ValType::I64; 8], vec![]),
+        move |mut caller, args, _| {
+            let idx = args[0].unwrap_i64() as usize;
+            let method = mem_read_str(&mut caller, args[1].unwrap_i64(), args[2].unwrap_i64())
+                .unwrap_or_default();
+            let args_json = mem_read_str(&mut caller, args[3].unwrap_i64(), args[4].unwrap_i64())
+                .unwrap_or_default();
+            let gas = args[6].unwrap_i64() as u64;
+            let dep = {
+                let ptr = args[5].unwrap_i64() as usize;
+                let mut buf = [0u8; 16];
+                if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                    let md = mem.data(&caller);
+                    if ptr + 16 <= md.len() {
+                        buf.copy_from_slice(&md[ptr..ptr + 16]);
+                    }
+                }
+                u128::from_le_bytes(buf)
+            };
+            eprintln!(
+                "  → action_fn_call_weight(idx={}, {} args={} dep={})",
+                idx, method, args_json, dep
+            );
+            PROMISE_DAG.with(|d| {
+                if let Some(b) = d.borrow_mut().get_mut(idx) {
+                    b.actions.push(PAction::FnCall { method, args: args_json.into_bytes(), gas, dep });
+                }
+            });
+            Ok(())
+        },
+    );
+
+    // Shadow the noop stub with the real weighted action host.
     linker.define(
         &*store,
         "env",
         "promise_batch_action_function_call_weight",
-        noop_8i,
+        pafcw,
     )?;
 
     linker.define(&*store, "env", "promise_batch_action_stake", noop_4i.clone())?;
