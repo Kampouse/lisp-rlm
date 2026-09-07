@@ -2508,12 +2508,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 for (k, v) in st.storage.iter().take(10) {
                     let ks = String::from_utf8_lossy(k);
                     let vs = String::from_utf8_lossy(v);
+                    // char-boundary-safe truncation: from_utf8_lossy can still
+                    // contain multi-byte chars (e.g. U+FFFD) — byte slicing
+                    // panics inside them (hit by binary/borsh storage values).
+                    let ks: String = ks.chars().take(20).collect();
+                    let vs: String = vs.chars().take(60).collect();
                     println!(
                         "  [{}b]={} → [{}b]={}",
                         k.len(),
-                        &ks[..ks.len().min(20)],
+                        ks,
                         v.len(),
-                        &vs[..vs.len().min(60)]
+                        vs
                     );
                 }
             }
