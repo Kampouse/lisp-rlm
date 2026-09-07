@@ -164,16 +164,33 @@ pub(crate) fn sub_execute(
                     .downcast_ref::<wasmtime::Trap>()
                     .map(|t| format!("{:?}", t))
                     .unwrap_or_else(|| "n/a".into());
-                (true, None, format!("{} [trap-code: {}]", e, code))
+                // Walk the whole chain: guest panics (panic_utf8) hide in
+                // source() links, not the top-level backtrace Display.
+                let mut why = format!("{}", e);
+                for c in e.chain().skip(1) {
+                    why.push_str(&format!("\n| caused: {}", c));
+                }
+                (true, None, format!("{} [trap-code: {}]", why, code))
             }
         },
     };
     if trap {
+        // Surface the guest panic (message hides mid-backtrace; lead with it).
+        let pan: Vec<&str> = trap_why
+            .lines()
+            .skip_while(|l| !l.contains("panicked at"))
+            .take(2)
+            .collect();
+        let why = if pan.is_empty() {
+            trap_why.lines().last().unwrap_or("unknown").to_string()
+        } else {
+            pan.join(" | ")
+        };
         eprintln!(
             "  ⚠ cross: {}.{} TRAPPED — reverting partition ({})",
             account,
             method,
-            trap_why.lines().last().unwrap_or("unknown")
+            why
         );
         restore_partition(&mut state.lock().unwrap(), part_snap, account);
         if deposit > 0 {
@@ -195,7 +212,12 @@ pub(crate) fn sub_execute(
         st.registers = old_regs;
         st.return_data = old_ret;
     }
-    Ok(if trap { None } else { ret })
+    // 2026-09-07 (intents ft_resolve_withdraw): None must mean TRAP only.
+    // A void method (no value_return) is Successful with EMPTY data on-chain —
+    // near-sdk's promise_result_checked maps that to Ok(Some(vec![])), which
+    // resolvers treat as success. Void receipts used to get None = Failed,
+    // so every plain ft_withdraw "failed" and refunded.
+    Ok(if trap { None } else { Some(ret.unwrap_or_default()) })
 }
 
 /// Resolve a promise DAG node: deps first (their results, flattened,

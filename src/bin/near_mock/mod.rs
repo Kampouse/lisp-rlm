@@ -885,7 +885,18 @@ fn build_promise_hosts(
                 Some(Some(bytes)) => {
                     if let Some(st) = &state_for_pr {
                         let mut st = st.lock().unwrap();
-                        let _ = write_reg_checked(&mut st, rid, bytes);
+                        // 2026-09-07 (intents ft_resolve_withdraw): a Successful
+                        // result with EMPTY data must leave register_len == 0 —
+                        // near-sdk's promise_result_checked skips the read then.
+                        // The shared register table used to leak the parent's
+                        // stale bytes (e.g. the 32B intent hash), which guests
+                        // deserialized as garbage and treated as failure.
+                        if bytes.is_empty() {
+                            // empty-but-present: register_len == 0, read = empty
+                            st.registers.insert(rid, Vec::new());
+                        } else {
+                            let _ = write_reg_checked(&mut st, rid, bytes);
+                        }
                     }
                     results[0] = Val::I64(1);
                 }
