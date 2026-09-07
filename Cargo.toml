@@ -21,6 +21,8 @@ autobins = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+k256 = { version = "0.13", default-features = false, features = ["ecdsa", "alloc"] }
+hex = "0.4"
 oxc_allocator = "0.147.0"
 oxc_parser = "0.147.0"
 oxc_syntax = "0.147.0"

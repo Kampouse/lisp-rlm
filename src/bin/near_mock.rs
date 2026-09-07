@@ -1744,18 +1744,64 @@ fn build_env_linker(
             Ok(())
         },
     );
-    // ecrecover(7 args) -> i64 (value_return register id); mock writes a
-    // 42-char hex address to the register named by the LAST arg and returns it
+    // ecrecover(7 args) -> i64. Real secp256k1 recovery via k256:
+    // args layout (NEAR): (hash_len, hash_ptr, sig_v, r_len, r_ptr, s_len, s_ptr)
+    // with the result register id returned by the host itself (register id is
+    // conventionally the last meaningful arg slot per near_vm_logic; traced
+    // empirically below). Writes 42-char "0x…" ETH address into the register.
+    // Recovery: Q = r⁻¹(sR − eG); address = keccak256(uncompressed[1..])[12..].
     let sg_ecr = state.clone();
     let ecrecover_fn = Func::new(
         &mut *store,
         FuncType::new(&engine, vec![ValType::I64; 7], vec![ValType::I64]),
-        move |_, args, results| {
-            let rid = args[6].unwrap_i64() as u64;
-            let addr: Vec<u8> = b"0x1234567890abcdef1234567890abcdef12345678".to_vec();
+        move |mut caller, args, results| {
+            let a: Vec<u64> = args.iter().map(|v| v.unwrap_i64() as u64).collect();
+            eprintln!("  → ecrecover args {:?}", a);
+            // near_sdk 5 sys ABI (traced): (hash_len, hash_ptr, sig_len,
+            // sig_ptr, v, rid, allow_malleable). sig = 64 bytes r||s.
+            // near_sdk ATOMIC_OP_REGISTER = u64::MAX - 2 (the "-3" in traces)
+            let rid = a[6];
+            let fail = |results: &mut [wasmtime::Val]| {
+                results[0] = Val::I64(0);
+                Ok(())
+            };
+            if a[0] != 32 || a[2] != 64 {
+                return fail(results);
+            }
+            let mem = match caller.get_export("memory").and_then(|e| e.into_memory()) {
+                Some(m) => m,
+                None => return fail(results),
+            };
+            let md = mem.data(&caller);
+            let hash: [u8; 32] = match md.get(a[1] as usize..a[1] as usize + 32).and_then(|s| s.try_into().ok()) { Some(h) => h, None => return fail(results) };
+            let sig64: [u8; 64] = match md.get(a[3] as usize..a[3] as usize + 64).and_then(|s| s.try_into().ok()) { Some(h) => h, None => return fail(results) };
+            let r: [u8; 32] = sig64[..32].try_into().unwrap();
+            let s: [u8; 32] = sig64[32..].try_into().unwrap();
+            let v = a[4];
+            let recid_v = if v >= 27 { v - 27 } else { v };
+            if recid_v > 1 { return fail(results); }
+            let sig = match k256::ecdsa::Signature::from_scalars(k256::FieldBytes::from(r), k256::FieldBytes::from(s)) {
+                Ok(s) => s,
+                Err(_) => return fail(results),
+            };
+            let recid = k256::ecdsa::RecoveryId::new(recid_v == 1, false);
+            let vk = match k256::ecdsa::VerifyingKey::recover_from_prehash(&hash, &sig, recid) {
+                Ok(v) => v,
+                Err(_) => return fail(results),
+            };
+            // malleability: reject high-s when caller asks (flag == 0).
+            // n/2 = 0x7FFFFFFFFF...FF (big-endian compare of s)
+            if a[5] == 0 {
+                let mut half = [0xffu8; 32]; half[0] = 0x7f;
+                if s > half {
+                    return fail(results);
+                }
+            }
+            let uncompressed = vk.to_encoded_point(false);
+            let pub64: Vec<u8> = uncompressed.as_bytes()[1..65].to_vec();
             let mut st = sg_ecr.lock().unwrap();
-            write_reg_checked(&mut st, rid, addr).map_err(|e| wasmtime::Error::msg(e))?;
-            results[0] = Val::I64(args[6].unwrap_i64());
+            write_reg_checked(&mut st, rid, pub64).map_err(|e| wasmtime::Error::msg(e))?;
+            results[0] = Val::I64(1);
             Ok(())
         },
     );
