@@ -2261,6 +2261,45 @@ fn build_env_linker(
         noop_3i.clone(),
     )?;
     linker.define(&*store, "env", "promise_batch_action_stake", noop_4i.clone())?;
+    // ── 2026 protocol imports (gas-key + global-contract families) that
+    // stock near-sdk contracts link defensively. Sandbox semantics:
+    // noops unless overridden below; transfer_to_gas_key gets a real host.
+    linker.define(
+        &*store,
+        "env",
+        "promise_batch_action_add_gas_key_with_full_access",
+        noop_4i.clone(),
+    )?;
+    linker.define(
+        &*store,
+        "env",
+        "promise_batch_action_add_gas_key_with_function_call",
+        noop_9i.clone(),
+    )?;
+    linker.define(
+        &*store,
+        "env",
+        "promise_batch_action_deploy_global_contract",
+        noop_3i.clone(),
+    )?;
+    linker.define(
+        &*store,
+        "env",
+        "promise_batch_action_deploy_global_contract_by_account_id",
+        noop_3i.clone(),
+    )?;
+    linker.define(
+        &*store,
+        "env",
+        "promise_batch_action_use_global_contract",
+        noop_3i.clone(),
+    )?;
+    linker.define(
+        &*store,
+        "env",
+        "promise_batch_action_use_global_contract_by_account_id",
+        noop_3i.clone(),
+    )?;
     linker.define(
         &*store,
         "env",
@@ -2302,6 +2341,41 @@ fn build_env_linker(
         linker.define(&*store, "env", "promise_batch_action_function_call", pafc)?;
         linker.define(&*store, "env", "promise_batch_action_function_call_weight", pafcw)?;
         linker.define(&*store, "env", "promise_batch_action_transfer", pbat)?;
+        // promise_batch_action_transfer_to_gas_key(idx, pk_len, pk_ptr, amt_ptr)
+        // (per vendored near-vm-runner logic.rs). Sandbox divergence: the u128
+        // amount at amt_ptr is appended as a plain Transfer action; gas-key
+        // funding/accounting is not modeled.
+        let pbatgk = Func::new(
+            &mut *store,
+            FuncType::new(engine, vec![ValType::I64; 4], vec![]),
+            move |mut caller, args, _| {
+                let idx = args[0].unwrap_i64() as usize;
+                let amt = {
+                    let ptr = args[3].unwrap_i64() as usize;
+                    let len = 16usize;
+                    let mut buf = [0u8; 16];
+                    if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                        let md = mem.data(&caller);
+                        if ptr + len <= md.len() {
+                            buf[..len].copy_from_slice(&md[ptr..ptr + len]);
+                        }
+                    }
+                    u128::from_le_bytes(buf)
+                };
+                PROMISE_DAG.with(|d| {
+                    if let Some(b) = d.borrow_mut().get_mut(idx) {
+                        b.actions.push(PAction::Transfer(amt));
+                    }
+                });
+                Ok(())
+            },
+        );
+        linker.define(
+            &*store,
+            "env",
+            "promise_batch_action_transfer_to_gas_key",
+            pbatgk,
+        )?;
         linker.define(&*store, "env", "promise_yield_create", pyc)?;
         linker.define(&*store, "env", "promise_yield_resume", pyr)?;
     } else {
@@ -2318,6 +2392,12 @@ fn build_env_linker(
         linker.define(&*store, "env", "promise_yield_create", noop_7i_1o)?;
         linker.define(&*store, "env", "promise_yield_resume", noop_4i_1o)?;
         linker.define(&*store, "env", "promise_batch_action_transfer", noop_2i.clone())?;
+        linker.define(
+            &*store,
+            "env",
+            "promise_batch_action_transfer_to_gas_key",
+            noop_4i.clone(),
+        )?;
     }
 
     Ok(linker)
