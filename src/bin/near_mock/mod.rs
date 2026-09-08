@@ -306,7 +306,8 @@ fn run_cross(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                     println!("💾 Saved {} keys (rolled back)", keys.len());
                     let encoded = bincode::serialize(&st.storage)?;
                     std::fs::write(state_path, encoded)?;
-                    return Ok(());
+                    // Exit-code contract: a failed receipt chain is a failed tx.
+                    std::process::exit(1);
                 }
                 let results = dag.unwrap();
                 let last = results.iter().rev().find_map(|r| r.as_ref().cloned());
@@ -349,6 +350,10 @@ fn run_cross(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             println!("   ↺ entry trapped — full rollback (single tx = atomic)");
             let mut st = state.lock().unwrap();
             st.storage = tx_snapshot;
+            // Exit-code contract: contract failure => nonzero exit. The file
+            // already holds the pre-call state (= rolled-back state), so
+            // skipping the rewrite below is byte-equivalent.
+            std::process::exit(1);
         }
     }
 
@@ -1072,7 +1077,11 @@ pub(crate) fn init_sandbox(
         let (acct, path) = pair
             .split_once('=')
             .ok_or("manifest entries must be acct=/path")?;
-        let bytes = std::fs::read(path)?;
+        let bytes = std::fs::read(path).map_err(|e| {
+            format!(
+                "cannot read contract `{path}`: {e} (scenario default expects contract.wasm beside the scenario file; override with \"manifest\")"
+            )
+        })?;
         eprintln!("📦 {} → {}", acct, path);
         modules.insert(
             acct.to_string(),
@@ -1964,7 +1973,7 @@ fn run_snapshot(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn run_state_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    let usage = "usage: near-mock state import <state.bin> <dump.json> [--replace-acct]\n       near-mock state dump <state.bin> [account-prefix]";
+    let usage = "usage: near-mock state import <state.bin> <dump.json|- > [--replace-acct]\n       near-mock state dump <state.bin> [account-prefix]  (stdout = JSON, summary on stderr)\n\nformat (both accepted): {\"account\":A,\"values\":[{\"key\":<b64>,\"value\":<b64>},...]}\n                       or flat rows [{\"account\":A,\"key\":<b64>,\"value\":<b64>},...]\n`state dump | state import - ` round-trips.";
     let sub = args.get(2).map(|s| s.as_str()).ok_or(usage)?;
     let replace_acct = args.iter().any(|a| a == "--replace-acct");
 
@@ -1990,29 +1999,56 @@ fn run_state_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 std::fs::read(dump_path)?
             };
             let dump: serde_json::Value = serde_json::from_slice(&raw)?;
-            let account = dump
-                .get("account")
-                .and_then(|a| a.as_str())
-                .ok_or("dump missing \"account\"")?
-                .to_string();
-            let arr = dump
-                .get("values")
-                .and_then(|v| v.as_array())
-                .ok_or("dump missing \"values\" array")?;
-
-            // parse every entry BEFORE touching the state file (atomic-ish:
-            // a malformed dump never half-applies)
-            let mut entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(arr.len());
-            for (i, v) in arr.iter().enumerate() {
-                let k = v
-                    .get("key")
-                    .and_then(|x| x.as_str())
-                    .ok_or_else(|| format!("values[{i}] missing key"))?;
-                let val = v
-                    .get("value")
-                    .and_then(|x| x.as_str())
-                    .ok_or_else(|| format!("values[{i}] missing value"))?;
-                entries.push((b64(k)?, b64(val)?));
+            // Two accepted shapes (round-trips with `state dump`):
+            //   canonical: {"account": A, "values":[{"key":<b64>,"value":<b64>},...]}
+            //   legacy:    [{"account": A, "key": <b64>, "value": <b64>}, ...]
+            //                (value_b64 accepted as an alias)
+            let mut per_account: Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)> = Vec::new();
+            if dump.get("values").is_some() {
+                let account = dump
+                    .get("account")
+                    .and_then(|a| a.as_str())
+                    .ok_or("dump missing \"account\"")?
+                    .to_string();
+                let arr = dump.get("values").and_then(|v| v.as_array()).unwrap();
+                let mut entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(arr.len());
+                for (i, v) in arr.iter().enumerate() {
+                    let k = v
+                        .get("key")
+                        .and_then(|x| x.as_str())
+                        .ok_or_else(|| format!("values[{i}] missing key"))?;
+                    let val = v
+                        .get("value")
+                        .and_then(|x| x.as_str())
+                        .ok_or_else(|| format!("values[{i}] missing value"))?;
+                    entries.push((b64(k)?, b64(val)?));
+                }
+                per_account.push((account, entries));
+            } else if dump.as_array().is_some() {
+                for (i, row) in dump.as_array().unwrap().iter().enumerate() {
+                    let account = row
+                        .get("account")
+                        .and_then(|a| a.as_str())
+                        .ok_or_else(|| format!("rows[{i}] missing \"account\""))?
+                        .to_string();
+                    let kb = row
+                        .get("key")
+                        .and_then(|x| x.as_str())
+                        .ok_or_else(|| format!("rows[{i}] missing \"key\""))?;
+                    let vb = row
+                        .get("value")
+                        .or_else(|| row.get("value_b64"))
+                        .and_then(|x| x.as_str())
+                        .ok_or_else(|| format!("rows[{i}] missing \"value\""))?;
+                    let entry = (b64(kb)?, b64(vb)?);
+                    if let Some(slot) = per_account.iter_mut().find(|(a, _)| a == &account) {
+                        slot.1.push(entry);
+                    } else {
+                        per_account.push((account, vec![entry]));
+                    }
+                }
+            } else {
+                return Err("dump: expected {\"account\",\"values\"} or a row array".into());
             }
 
             // load or start fresh state
@@ -2023,28 +2059,29 @@ fn run_state_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                     Err(_) => Default::default(),
                 };
 
-            let pre = prefixed_key(&account, b"");
-            let before = map.len();
-            if replace_acct {
-                let stale: Vec<Vec<u8>> = map
-                    .keys()
-                    .filter(|k| k.len() > pre.len() && k.starts_with(&pre))
-                    .cloned()
-                    .collect();
-                for k in stale {
-                    map.remove(&k);
+            let total: usize = per_account.iter().map(|(_, e)| e.len()).sum();
+            for (account, entries) in &per_account {
+                let pre = prefixed_key(account, b"");
+                if replace_acct {
+                    let stale: Vec<Vec<u8>> = map
+                        .keys()
+                        .filter(|k| k.len() > pre.len() && k.starts_with(&pre))
+                        .cloned()
+                        .collect();
+                    for k in stale {
+                        map.remove(&k);
+                    }
+                }
+                for (k, v) in entries {
+                    map.insert(prefixed_key(account, k), v.clone());
                 }
             }
-            for (k, v) in entries {
-                map.insert(prefixed_key(&account, &k), v);
-            }
-            let _ = before; // informational only
 
             std::fs::write(state_path, bincode::serialize(&map)?)?;
             println!(
-                "📥 imported {} keys for {} → {}{}",
-                arr.len(),
-                account,
+                "📥 imported {} keys across {} account(s) → {}{}",
+                total,
+                per_account.len(),
                 state_path,
                 if replace_acct {
                     " (partition replaced)"
@@ -2066,6 +2103,9 @@ fn run_state_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             let map: std::collections::HashMap<Vec<u8>, Vec<u8>> = bincode::deserialize(&data)
                 .map_err(|e| format!("{}: not a near-mock state file ({e})", state_path))?;
 
+            // Canonical JSON: [{account, key:b64, value:b64}, ...], sorted,
+            // stdout PURE (summary on stderr). `state dump | state import -`
+            // round-trips losslessly.
             use base64::Engine;
             let mut rows: Vec<(String, String, String)> = map
                 .iter()
@@ -2078,27 +2118,26 @@ fn run_state_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                             return None;
                         }
                     }
-                    let key = String::from_utf8(k[sep + 1..].to_vec())
-                        .unwrap_or_else(|_| "<binary>".to_string());
                     Some((
                         acct,
-                        key,
+                        base64::engine::general_purpose::STANDARD.encode(&k[sep + 1..]),
                         base64::engine::general_purpose::STANDARD.encode(v),
                     ))
                 })
                 .collect();
             rows.sort();
 
-            println!("[");
-            for (i, (acct, key, v)) in rows.iter().enumerate() {
-                let comma = if i + 1 < rows.len() { "," } else { "" };
-                println!(
-                    "  {{\"account\": \"{}\", \"key\": \"{}\", \"value_b64\": \"{}\"}}{}",
-                    acct, key, v, comma
-                );
-            }
-            println!("]");
+            let objs: Vec<serde_json::Value> = rows
+                .iter()
+                .map(|(a, k, v)| {
+                    serde_json::json!({"account": a, "key": k, "value": v})
+                })
+                .collect();
             println!(
+                "{}",
+                serde_json::to_string(&objs).unwrap_or_else(|_| "[]".into())
+            );
+            eprintln!(
                 "— {} keys{}",
                 rows.len(),
                 prefix
@@ -2562,6 +2601,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("❌ receipt chain failed: {}", e);
                         println!("   ↺ full rollback (single tx = atomic)");
                         state.lock().unwrap().storage = tx_snapshot.clone();
+                        run_outcome = "receipt_failed";
                     }
                     Ok(results) => {
                         let last = results.iter().rev().find_map(|r| r.as_ref().cloned());
@@ -2714,6 +2754,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let encoded = bincode::serialize(&st.storage)?;
         std::fs::write(state_file(), encoded)?;
         println!("💾 Saved {} keys", st.storage.len());
+    }
+
+    // Exit-code contract (2026-09-08): contract failure => nonzero exit.
+    // `$?` and --json's "outcome" agree; success (incl. --dry-run/--view)
+    // stays 0. Orphan-receipt failures do NOT flip it (receipt independence).
+    if run_outcome != "ok" {
+        std::process::exit(1);
     }
 
     Ok(())
