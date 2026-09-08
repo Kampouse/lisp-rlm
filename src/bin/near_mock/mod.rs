@@ -1664,38 +1664,108 @@ pub(crate) fn run_scenario(path: &str) -> Result<(), Box<dyn std::error::Error>>
 /// keys are untouched; `--replace-acct` drops this account's existing
 /// partition first. Use `-` as <dump.json> to read stdin.
 // One JSON-RPC `query` via curl (no new deps; curl is guaranteed on macOS).
-fn rpc_query(rpc: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
+// Err = the raw JSON-RPC error object, so callers can branch on error names
+// (e.g. TOO_LARGE_CONTRACT_STATE) and pull structured info (block hints).
+fn rpc_query(rpc: &str, params: serde_json::Value) -> Result<serde_json::Value, serde_json::Value> {
     let body = serde_json::json!({
         "jsonrpc": "2.0", "id": "dontcare", "method": "query", "params": params
     });
-    let out = std::process::Command::new("curl")
-        .args([
-            "-s",
-            "--max-time",
-            "30",
-            "-X",
-            "POST",
-            "-H",
-            "Content-Type: application/json",
-            "-d",
-            &body.to_string(),
-            rpc,
-        ])
-        .output()
-        .map_err(|e| format!("curl spawn failed: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "curl exit {}: {}",
-            out.status,
-            String::from_utf8_lossy(&out.stderr)
-        ));
+    // Transport-level retry with backoff: a paginated crawl makes hundreds of
+    // reads, so one transient hiccup (rate limit, timeout, empty body) must
+    // not kill the run. All queries here are pure reads (idempotent). A real
+    // JSON-RPC error envelope is NOT retried — the server answered.
+    let mut last_transport: Option<serde_json::Value> = None;
+    for attempt in 0..5 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_secs(1 << (attempt - 1)));
+        }
+        let out = match std::process::Command::new("curl")
+            .args([
+                "-s",
+                "--max-time",
+                "60",
+                "-X",
+                "POST",
+                "-H",
+                "Content-Type: application/json",
+                "-d",
+                &body.to_string(),
+                rpc,
+            ])
+            .output()
+        {
+            Ok(o) => o,
+            Err(e) => {
+                last_transport = Some(transport_err(&format!("curl spawn failed: {e}")));
+                continue;
+            }
+        };
+        if !out.status.success() {
+            last_transport = Some(transport_err(&format!(
+                "curl exit {}: {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr)
+            )));
+            continue;
+        }
+        match serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+            Ok(v) => {
+                if let Some(err) = v.get("error") {
+                    return Err(err.clone());
+                }
+                return Ok(v["result"].clone());
+            }
+            Err(e) => {
+                last_transport = Some(transport_err(&format!(
+                    "bad RPC JSON: {e} (body starts {:?})",
+                    String::from_utf8_lossy(&out.stdout[..out.stdout.len().min(80)])
+                )));
+            }
+        }
     }
-    let v: serde_json::Value =
-        serde_json::from_slice(&out.stdout).map_err(|e| format!("bad RPC JSON: {e}"))?;
-    if let Some(err) = v.get("error") {
-        return Err(format!("RPC error: {err}"));
+    return Err(last_transport.unwrap_or_else(|| transport_err("exhausted retries")));
+}
+
+const SNAPSHOT_PAGE_LIMIT: u64 = 10_000;
+const SNAPSHOT_KEY_HARD_CAP: usize = 2_000_000;
+
+/// One view_state page of a contract trie. Empty prefix = whole trie; with
+/// `after` set this is a cursor page (nearcore resumes after that key,
+/// exclusive). Servers cap page sizes individually — termination is always
+/// "empty page", never a partial-count guess.
+fn view_state_page(
+    rpc: &str,
+    account: &str,
+    block: Option<u64>,
+    after: Option<&[u8]>,
+) -> Result<serde_json::Value, serde_json::Value> {
+    use base64::Engine;
+    let mut params = serde_json::json!({
+        "request_type": "view_state",
+        "account_id": account,
+        "prefix_base64": "",
+        "limit": SNAPSHOT_PAGE_LIMIT,
+    });
+    match block {
+        Some(b) => params["block_id"] = serde_json::json!(b),
+        None => params["finality"] = serde_json::json!("final"),
     }
-    Ok(v["result"].clone())
+    if let Some(a) = after {
+        params["after_key_base64"] =
+            serde_json::json!(base64::engine::general_purpose::STANDARD.encode(a));
+    }
+    rpc_query(rpc, params)
+}
+
+fn err_string(e: &serde_json::Value) -> String {
+    e.to_string()
+}
+
+/// Synthesized error object for transport-level failures (no JSON-RPC
+/// envelope arrived). Distinct `name` so callers never confuse it with a
+/// real server error.
+fn transport_err(msg: &str) -> serde_json::Value {
+    serde_json::json!({ "name": "TRANSPORT_ERROR", "message": msg })
 }
 
 /// `snapshot <account> <state.bin>` — one-command live pull (promotes
@@ -1725,52 +1795,82 @@ fn run_snapshot(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|e| format!("bad base64: {e}"))
     };
 
-    // 1) contract trie (view_state returns every entry under the empty prefix)
-    let state_res = rpc_query(
-        &rpc,
-        serde_json::json!({
-            "request_type": "view_state",
-            "finality": "final",
-            "account_id": account,
-            "prefix_base64": "",
-        }),
-    )?;
-    let values = state_res
+    // 1) contract trie, cursor-paginated. Page 1 uses finality to discover
+    // the tip, and every page after runs against the PINNED block so the
+    // snapshot is one consistent moment even mid-crawl.
+    let first = match view_state_page(&rpc, account, None, None) {
+        Ok(page) => page,
+        Err(e) if err_string(&e).contains("TOO_LARGE_CONTRACT_STATE") => {
+            // Older/small-cap nodes check total contract size before the
+            // cursor path. The error carries the block that was too big —
+            // retrying pinned to it sometimes lands on the bounded path.
+            let hint = e["cause"]["info"]["block_height"].as_u64();
+            match view_state_page(&rpc, account, hint, None) {
+                Ok(page) => page,
+                Err(e2) => {
+                    return Err(format!(
+                        "view_state failed on both tip and pinned block: {}\n\
+                         hint: this RPC caps contract-state reads; a full-cap\n\
+                         provider paginates big tries — try --rpc https://rpc.intea.rs",
+                        err_string(&e2)
+                    )
+                    .into());
+                }
+            }
+        }
+        Err(e) => return Err(err_string(&e).into()),
+    };
+    let pinned_block = first.get("block_height").and_then(|b| b.as_u64());
+    let mut values = first
         .get("values")
         .and_then(|v| v.as_array())
         .ok_or("view_state response missing values[]")?
         .clone();
-    let block_hash = state_res
+    let block_hash = first
         .get("block_hash")
         .and_then(|b| b.as_str())
         .unwrap_or("?")
         .to_string();
 
-    // 2) provenance: current final block height (decorative)
-    let height: Option<u64> = (|| {
-        let body = serde_json::json!({
-            "jsonrpc": "2.0", "id": "dontcare",
-            "method": "block", "params": {"finality": "final"}
-        });
-        let out = std::process::Command::new("curl")
-            .args([
-                "-s",
-                "--max-time",
-                "30",
-                "-X",
-                "POST",
-                "-H",
-                "Content-Type: application/json",
-                "-d",
-                &body.to_string(),
-                &rpc,
-            ])
-            .output()
-            .ok()?;
-        let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
-        v["result"]["header"]["height"].as_u64()
-    })();
-    let height_s = height
+    // 2) cursor walk: resume after the last key of the previous page until
+    // the server returns an empty page (the ONLY reliable end marker —
+    // servers cap page sizes, so a partial page means nothing).
+    let mut pages = 1usize;
+    while let Some(last) = values
+        .last()
+        .and_then(|v| v.get("key"))
+        .and_then(|k| k.as_str())
+        .map(|k| {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD
+                .decode(k.trim())
+                .expect("rpc returned non-base64 key")
+        })
+    {
+        if values.len() > SNAPSHOT_KEY_HARD_CAP {
+            return Err(format!(
+                "aborting at >{SNAPSHOT_KEY_HARD_CAP} keys: state larger than sane to mock; \
+                 snapshot a narrower slice with state import instead"
+            )
+            .into());
+        }
+        let page = match view_state_page(&rpc, account, pinned_block, Some(&last)) {
+            Ok(pg) => pg,
+            Err(e) => return Err(err_string(&e).into()),
+        };
+        let batch = page
+            .get("values")
+            .and_then(|v| v.as_array())
+            .ok_or("view_state page missing values[]")?;
+        if batch.is_empty() {
+            break;
+        }
+        pages += 1;
+        values.extend(batch.iter().cloned());
+    }
+
+    // Provenance: the pinned block (server-reported), '?' if the node omitted it.
+    let height_s = pinned_block
         .map(|h| h.to_string())
         .unwrap_or_else(|| "?".to_string());
 
@@ -1784,7 +1884,8 @@ fn run_snapshot(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 "finality": "final",
                 "account_id": account,
             }),
-        )?;
+        )
+        .map_err(|e| err_string(&e))?;
         let code_b64 = code_res
             .get("code_base64")
             .and_then(|c| c.as_str())
@@ -1831,8 +1932,13 @@ fn run_snapshot(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::write(state_path, bincode::serialize(&map)?)?;
 
     println!(
-        "📸 {account}: {} keys @ block {height_s} ({block_hash}) → {state_path}",
-        values.len()
+        "📸 {account}: {} keys @ block {height_s} ({block_hash}) → {state_path}{}",
+        values.len(),
+        if pages > 1 {
+            format!(" [{} pages]", pages)
+        } else {
+            String::new()
+        }
     );
     if want_code {
         println!("next:");
