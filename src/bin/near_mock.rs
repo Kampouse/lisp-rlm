@@ -6,9 +6,56 @@
 //!   cargo run --bin near-mock -- <wasm> exports|imports|reset
 //!   cargo run --bin near-mock -- <wasm> symbolicate <idx-or-name> [map-file]
 //!
-//! Gas model (v2, 2026-08-27): wasmtime fuel, 1 fuel = 1 gas unit.
-//! Host-call costs are indicative legacy NEAR fee-schedule values.
+//! Gas model (v3, 2026-09-07): mainnet fee schedule, 1 fuel = 1 gas.
+//! Host-call + action fees verbatim from near-parameters 0.37.4
+//! (ExtCostsConfig::test == mainnet parameter table, factor=1).
 //! --view enforces ProhibitedInView on storage writes (see VMLogic).
+
+/// Ext-cost table (host functions). Names mirror ExtCosts in near-parameters.
+mod fees {
+    pub const READ_MEMORY_BASE: u64 = 869_954_400;
+    pub const READ_MEMORY_BYTE: u64 = 1_267_111;
+    pub const WRITE_MEMORY_BASE: u64 = 934_598_287;
+    pub const WRITE_MEMORY_BYTE: u64 = 907_924;
+    pub const READ_REGISTER_BASE: u64 = 839_055_062;
+    pub const READ_REGISTER_BYTE: u64 = 32_854;
+    pub const WRITE_REGISTER_BASE: u64 = 955_174_162;
+    pub const WRITE_REGISTER_BYTE: u64 = 1_267_188;
+    pub const UTF8_DECODING_BASE: u64 = 1_037_259_687;
+    pub const UTF8_DECODING_BYTE: u64 = 97_193_493;
+    pub const LOG_BASE: u64 = 1_181_104_350;
+    pub const LOG_BYTE: u64 = 4_399_597;
+    pub const SHA256_BASE: u64 = 1_513_656_750;
+    pub const SHA256_BYTE: u64 = 8_039_117;
+    pub const KECCAK256_BASE: u64 = 1_959_830_425;
+    pub const KECCAK256_BYTE: u64 = 7_157_035;
+    pub const KECCAK512_BASE: u64 = 1_937_129_412;
+    pub const KECCAK512_BYTE: u64 = 12_216_567;
+    pub const ECRECOVER_BASE: u64 = 1_121_789_875_000;
+    pub const ED25519_BASE: u64 = 1_513_656_750;
+    pub const ED25519_BYTE: u64 = 7_157_035;
+    pub const STORAGE_WRITE_BASE: u64 = 21_398_912_000;
+    pub const STORAGE_WRITE_KEY_BYTE: u64 = 23_494_289;
+    pub const STORAGE_WRITE_VALUE_BYTE: u64 = 10_339_513;
+    pub const STORAGE_WRITE_EVICTED_BYTE: u64 = 10_705_769;
+    pub const STORAGE_READ_BASE: u64 = 18_785_615_250;
+    pub const STORAGE_READ_KEY_BYTE: u64 = 10_317_511;
+    pub const STORAGE_READ_VALUE_BYTE: u64 = 1_870_335;
+    pub const STORAGE_REMOVE_BASE: u64 = 17_824_343_500;
+    pub const STORAGE_REMOVE_KEY_BYTE: u64 = 12_740_128;
+    pub const STORAGE_REMOVE_RET_BYTE: u64 = 3_843_852;
+    pub const STORAGE_HAS_KEY_BASE: u64 = 18_013_298_875;
+    pub const STORAGE_HAS_KEY_BYTE: u64 = 10_263_615;
+    pub const TOUCHING_TRIE_NODE: u64 = 5_367_318_642;
+    pub const PROMISE_AND_BASE: u64 = 488_337_800;
+    pub const PROMISE_AND_PER: u64 = 1_817_392;
+    pub const PROMISE_RETURN: u64 = 186_717_462;
+    // Action fees (RuntimeFeesConfig::test == mainnet; send==exec values).
+    pub const ACTION_NEW_RECEIPT: u64 = 108_059_500_000;
+    pub const ACTION_FUNCTION_CALL_BASE: u64 = 2_319_861_500_000;
+    pub const ACTION_FUNCTION_CALL_BYTE: u64 = 2_235_934;
+    pub const ACTION_TRANSFER: u64 = 115_123_062_500;
+}
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -46,6 +93,12 @@ fn run_cross(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let method = &args[5];
     let args_json = args.get(6).cloned().unwrap_or_else(|| "{}".into());
     let run_view = args.iter().any(|a| a == "--view");
+    // Optional prepaid-gas override (Tgas), for budget probing.
+    if let Ok(tg) = std::env::var("NEAR_MOCK_PREPAID") {
+        if let Ok(t) = tg.trim().parse::<f64>() {
+            PREPAID_FUEL.with(|f| *f.borrow_mut() = (t * 1e12) as u64);
+        }
+    }
 
     let mut fuel_cfg = Config::new();
     fuel_cfg.consume_fuel(true);
@@ -119,7 +172,13 @@ fn run_cross(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let mut store = wasmtime::Store::new(&*engine, ());
-    store.set_fuel(PREPAID_FUEL.with(|f| *f.borrow()))?;
+    // Entry receipt = real NEAR charges send+exec action fees for the
+    // FunctionCall before the contract runs: new_action_receipt +
+    // function_call_base + function_call_byte × (method + args).
+    let entry_fee = fees::ACTION_NEW_RECEIPT + fees::ACTION_FUNCTION_CALL_BASE
+        + fees::ACTION_FUNCTION_CALL_BYTE * (method.len() + args_json.len()) as u64;
+    let entry_budget = PREPAID_FUEL.with(|f| *f.borrow());
+    store.set_fuel(entry_budget.saturating_sub(entry_fee))?;
     let linker = build_env_linker(&mut store, &*engine, state.clone(), args_json.clone().into_bytes())?;
     let instance = linker.instantiate(&mut store, &module)?;
 
@@ -159,6 +218,11 @@ fn run_cross(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         }
         s2
     };
+
+    let prepaid_now = PREPAID_FUEL.with(|f| *f.borrow());
+    let burnt = prepaid_now
+        .saturating_sub(store.get_fuel().unwrap_or(0));
+    println!("⛽ burnt gas: {:.3} Tgas (prepaid {:.1})", burnt as f64 / 1e12, prepaid_now as f64 / 1e12);
 
     match result {
         Ok(_) => {
@@ -759,6 +823,12 @@ fn build_promise_hosts(
                 "  → action_fn_call(idx={}, {} args={} dep={})",
                 idx, method, args_json, dep
             );
+            // Action fees (mainnet): new receipt + function_call base + per-byte
+            // over method+args — charged to the creating (parent) context.
+            let act = fees::ACTION_NEW_RECEIPT + fees::ACTION_FUNCTION_CALL_BASE
+                + fees::ACTION_FUNCTION_CALL_BYTE
+                    * (method.len() + args_json.len()) as u64;
+            caller.set_fuel(caller.get_fuel()?.saturating_sub(act))?;
             PROMISE_DAG.with(|d| {
                 if let Some(b) = d.borrow_mut().get_mut(idx) {
                     b.actions.push(PAction::FnCall { method, args: args_json.into_bytes(), gas, dep });
@@ -1097,8 +1167,8 @@ fn build_env_linker(
         FuncType::new(&engine, vec![ValType::I64; 2], vec![]),
         move |mut caller, args, _| {
             let (len, ptr) = (args[0].unwrap_i64() as usize, args[1].unwrap_i64() as usize);
-            // Indicative legacy fees: utf8 log base + per byte
-            let cost = 13_181_732u64 + 19_335_348u64 * len as u64;
+            let cost = fees::UTF8_DECODING_BASE + fees::UTF8_DECODING_BYTE * len as u64
+                + fees::LOG_BASE + fees::LOG_BYTE * len as u64;
             caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 let data = mem.data(&caller);
@@ -1120,8 +1190,7 @@ fn build_env_linker(
         move |mut caller, args, _| {
             let (len, ptr) = (args[0].unwrap_i64() as usize, args[1].unwrap_i64() as usize);
             eprintln!("  → value_return(len={}, ptr={})", len, ptr);
-            // Indicative legacy fees: read_memory base + per byte
-            let cost = 4_141_250u64 + 3_574_166u64 * len as u64;
+            let cost = fees::WRITE_MEMORY_BASE + fees::WRITE_MEMORY_BYTE * len as u64;
             caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 let data = mem.data(&caller);
@@ -1144,8 +1213,7 @@ fn build_env_linker(
             let (rid, ptr) = (args[0].unwrap_i64() as u64, args[1].unwrap_i64() as usize);
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 if let Some(data) = s3.lock().unwrap().registers.get(&rid).cloned() {
-                    // Indicative legacy fees: base + per byte
-                    let cost = 24_108_449u64 + 3_574_166u64 * data.len() as u64;
+                    let cost = fees::READ_MEMORY_BASE + fees::READ_MEMORY_BYTE * data.len() as u64;
                     caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
                     let md = mem.data_mut(&mut caller);
                     if ptr + data.len() <= md.len() {
@@ -1186,8 +1254,7 @@ fn build_env_linker(
                 .get(&rid)
                 .map(|d| d.len() as i64)
                 .unwrap_or(-1);
-            // Indicative legacy fee
-            caller.set_fuel(caller.get_fuel()?.saturating_sub(21_165_243))?;
+            caller.set_fuel(caller.get_fuel()?.saturating_sub(fees::READ_REGISTER_BASE))?;
             eprintln!("  → register_len({}) = {}", rid, len);
             results[0] = Val::I64(len);
             Ok(())
@@ -1205,8 +1272,7 @@ fn build_env_linker(
             let bytes = EXEC_CTX
                 .with(|c| c.borrow().as_ref().map(|x| x.input.clone()))
                 .unwrap_or_else(|| single_input.clone());
-            // Indicative legacy fee: write_register base + per byte
-            let cost = 21_165_243u64 + 3_574_166u64 * bytes.len() as u64;
+            let cost = fees::WRITE_REGISTER_BASE + fees::WRITE_REGISTER_BYTE * bytes.len() as u64;
             caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
             let mut st = s5.lock().unwrap();
             // Real NEAR semantics: input() ALWAYS writes the args into the
@@ -1245,16 +1311,17 @@ fn build_env_linker(
                         hex_dbg(&raw_key),
                         vl
                     );
-                    // Indicative legacy fees: base + key/value bytes
-                    let cost = 64_000_000u64
-                        + 90_563u64 * kl as u64
-                        + 3_548_576u64 * vl as u64;
+                    let cost = fees::STORAGE_WRITE_BASE
+                        + fees::STORAGE_WRITE_KEY_BYTE * kl as u64
+                        + fees::STORAGE_WRITE_VALUE_BYTE * vl as u64;
                     caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
                     let mut st = s6.lock().unwrap();
                     let trie = trie_charge_write(&mut st, &key);
                     let old = st.storage.insert(key, val);
                     drop(st);
-                    caller.set_fuel(caller.get_fuel()?.saturating_sub(trie))?;
+                    let evicted = fees::STORAGE_WRITE_EVICTED_BYTE
+                        * old.as_ref().map(|v| v.len()).unwrap_or(0) as u64;
+                    caller.set_fuel(caller.get_fuel()?.saturating_sub(trie + evicted))?;
                     let evicted = old.is_some();
                     let mut st = s6.lock().unwrap();
                     if rid != u64::MAX {
@@ -1310,11 +1377,11 @@ fn build_env_linker(
                 let mut st = s7.lock().unwrap();
                 if let Some(val) = st.storage.get(key).cloned() {
                     eprintln!("  → storage_read found {}b key={}", val.len(), hex_dbg(key));
-                    // Indicative flat fees + production trie-node access
+                    // production trie-node access
                     let trie = trie_charge(&mut st, key);
-                    let cost = 56_356_995u64
-                        + 81_569u64 * kl as u64
-                        + 3_574_166u64 * val.len() as u64
+                    let cost = fees::STORAGE_READ_BASE
+                        + fees::STORAGE_READ_KEY_BYTE * kl as u64
+                        + fees::STORAGE_READ_VALUE_BYTE * val.len() as u64
                         + trie;
                     drop(st);
                     caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
@@ -1328,7 +1395,8 @@ fn build_env_linker(
                     );
                     // production charges the read base + trie walk even on miss
                     let trie = trie_charge(&mut st, key);
-                    let cost = 56_356_995u64 + 81_569u64 * kl as u64 + trie;
+                    let cost = fees::STORAGE_READ_BASE
+                        + fees::STORAGE_READ_KEY_BYTE * kl as u64 + trie;
                     drop(st);
                     caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
                     false
@@ -1374,8 +1442,8 @@ fn build_env_linker(
                         (v, trie_charge_write(&mut st, &rkey))
                     };
                     if let Some(val) = val {
-                        // Indicative legacy fees: base + key bytes + trie access
-                        let cost = 64_000_000u64 + 90_563u64 * kl as u64 + trie;
+                        let cost = fees::STORAGE_READ_BASE
+                            + fees::STORAGE_READ_KEY_BYTE * kl as u64 + trie;
                         caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
                         if rid != u64::MAX {
                             let mut st = s8.lock().unwrap();
@@ -1410,8 +1478,9 @@ fn build_env_linker(
                         let mut st = s9.lock().unwrap();
                         (st.storage.contains_key(&hkey), trie_charge(&mut st, &hkey))
                     };
-                    // Indicative legacy fees + trie-node access
-                    let cost = 56_356_995u64 + 81_569u64 * kl as u64 + trie;
+                    // production trie-node access
+                    let cost = fees::STORAGE_HAS_KEY_BASE
+                        + fees::STORAGE_HAS_KEY_BYTE * kl as u64 + trie;
                     caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
                     results[0] = Val::I64(if has { 1 } else { 0 });
                     return Ok(());
@@ -1628,8 +1697,7 @@ fn build_env_linker(
                 args[1].unwrap_i64() as usize,
                 args[2].unwrap_i64() as u64,
             );
-            // Indicative legacy fees
-            let cost = 45_760_404u64 + 18_217u64 * len as u64;
+            let cost = fees::SHA256_BASE + fees::SHA256_BYTE * len as u64;
             caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 let md = mem.data(&caller);
@@ -1654,8 +1722,7 @@ fn build_env_linker(
                 args[1].unwrap_i64() as usize,
                 args[2].unwrap_i64() as u64,
             );
-            // Indicative legacy fees
-            let cost = 45_760_404u64 + 18_217u64 * len as u64;
+            let cost = fees::SHA256_BASE + fees::SHA256_BYTE * len as u64;
             caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 let md = mem.data(&caller);
@@ -1680,8 +1747,7 @@ fn build_env_linker(
                 args[1].unwrap_i64() as usize,
                 args[2].unwrap_i64() as u64,
             );
-            // Indicative legacy fees
-            let cost = 21_165_243u64 + 3_574_166u64 * len as u64;
+            let cost = fees::READ_REGISTER_BASE + fees::READ_REGISTER_BYTE * len as u64;
             caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 let md = mem.data(&caller);
@@ -2207,7 +2273,8 @@ fn build_env_linker(
         FuncType::new(&engine, vec![ValType::I64; 2], vec![]),
         move |mut caller, args, _| {
             let (len, ptr) = (args[0].unwrap_i64() as usize, args[1].unwrap_i64() as usize);
-            let cost = 13_181_732u64 + 19_335_348u64 * len as u64;
+            let cost = fees::UTF8_DECODING_BASE + fees::UTF8_DECODING_BYTE * len as u64
+                + fees::LOG_BASE + fees::LOG_BYTE * len as u64;
             caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 let data = mem.data(&caller);
@@ -3079,7 +3146,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Gas report (1 fuel = 1 gas unit; host-call table is indicative-legacy)
+    // Gas report (1 fuel = 1 gas; mainnet fee schedule v3)
     if let Ok(remaining) = store.get_fuel() {
         let burnt = prepaid_g.saturating_sub(remaining);
         println!(
