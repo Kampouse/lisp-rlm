@@ -2214,6 +2214,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9dbbfed4e59ba9750e15ba154fdfd9329cee16ff3df539c2666b70f58cc32105"
 
 [[package]]
+name = "k256"
+version = "0.13.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6e3919bbaa2945715f0bb6d3934a173d1e9a59ac23767fbaaef277265a7411b"
+dependencies = [
+ "cfg-if",
+ "ecdsa",
+ "elliptic-curve",
+ "sha2",
+]
+
+[[package]]
 name = "keccak"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2325,6 +2337,7 @@ dependencies = [
  "finite-wasm 0.6.1",
  "hmac",
  "im",
+ "k256",
  "leb128",
  "libc",
  "near-parameters",
@@ -2335,6 +2348,7 @@ dependencies = [
  "oxc_parser",
  "oxc_span",
  "oxc_syntax",
+ "p256",
  "proptest",
  "rand 0.8.6",
  "rand_chacha 0.3.1",
@@ -2350,6 +2364,7 @@ dependencies = [
  "shellexpand",
  "solang-parser",
  "tempfile",
+ "tiny-keccak",
  "tokio",
  "wasm-encoder 0.248.0",
  "wasmparser 0.228.0",
@@ -2360,6 +2375,7 @@ dependencies = [
  "wat",
  "wit-component 0.248.0",
  "wit-parser 0.248.0",
+ "zeropool-bn",
 ]
 
 [[package]]

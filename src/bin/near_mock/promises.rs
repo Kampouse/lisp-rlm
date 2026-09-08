@@ -1,18 +1,43 @@
 //! Promise DAG: batches, sub-execution, transfer/fn-call settlement.
 
 use super::*;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::rc::Rc;
-use wasmtime::*;
 use lisp_rlm_wasm::bls_validate;
 use lisp_rlm_wasm::builtin_ed25519::ed25519_verify_impl;
 use lisp_rlm_wasm::builtin_schnorr::schnorr_verify_impl;
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
+use wasmtime::*;
 
 #[derive(Clone)]
 pub(crate) enum PAction {
-    FnCall { method: String, args: Vec<u8>, gas: u64, dep: u128 },
+    FnCall {
+        method: String,
+        args: Vec<u8>,
+        gas: u64,
+        dep: u128,
+    },
     Transfer(u128),
+    /// promise_batch_action_stake: move `amount` from liquid to staked.
+    /// (Unstake = stake(0); the mock tracks the staked balance but pays no
+    /// rewards — a validator-rewards simulator is out of scope.)
+    Stake {
+        amount: u128,
+    },
+    /// add_key (full-access or function-call): record the ED25519 public key
+    /// under the batch account's 0x02 key namespace.
+    AddKey {
+        pk: Vec<u8>,
+    },
+    /// delete_key: remove a previously added access key.
+    DeleteKey {
+        pk: Vec<u8>,
+    },
+    /// delete_account: wipe the batch account's whole partition and credit
+    /// its remaining liquid balance to the beneficiary.
+    DeleteAccount {
+        beneficiary: String,
+    },
 }
 
 #[derive(Clone)]
@@ -30,7 +55,13 @@ pub(crate) fn dag_push(deps: Vec<usize>, account: String, actions: Vec<PAction>)
     let creator = exec_ctx_or_default().contract;
     PROMISE_DAG.with(|d| {
         let mut d = d.borrow_mut();
-        d.push(PromiseBatch { deps, account, creator, actions, is_yield: false });
+        d.push(PromiseBatch {
+            deps,
+            account,
+            creator,
+            actions,
+            is_yield: false,
+        });
         d.len() - 1
     })
 }
@@ -59,7 +90,11 @@ pub(crate) fn fail_receipts_any() -> bool {
 pub(crate) fn print_dag_map() {
     let dag = PROMISE_DAG.with(|d| d.borrow().clone());
     for (i, b) in dag.iter().enumerate() {
-        let acct = if b.account.is_empty() { "(combinator)" } else { &b.account };
+        let acct = if b.account.is_empty() {
+            "(combinator)"
+        } else {
+            &b.account
+        };
         let forced = FAIL_RECEIPTS.with(|f| f.borrow().contains(&i));
         eprintln!(
             "  [map] receipt {}: {} actions={} deps={:?}{}",
@@ -95,8 +130,12 @@ pub(crate) fn sub_execute(
         )
         .into());
     };
-    let state = STATE_ARC.with(|s| s.borrow().clone()).expect("STATE_ARC set");
-    let engine = ENGINE_TLS.with(|e| e.borrow().clone()).expect("ENGINE_TLS set");
+    let state = STATE_ARC
+        .with(|s| s.borrow().clone())
+        .expect("STATE_ARC set");
+    let engine = ENGINE_TLS
+        .with(|e| e.borrow().clone())
+        .expect("ENGINE_TLS set");
 
     // Snapshot isolation context
     let old_ctx = EXEC_CTX.with(|c| c.borrow().clone());
@@ -127,18 +166,38 @@ pub(crate) fn sub_execute(
     if deposit > 0 {
         let mut st = state.lock().unwrap();
         let credit_key = prefixed_key(account, b"\x00near-bal");
-        let bal: u128 = st.storage.get(&credit_key)
-            .and_then(|v| std::str::from_utf8(v).ok()).and_then(|s| s.parse().ok()).unwrap_or(0);
-        st.storage.insert(credit_key.clone(), (bal + deposit).to_string().into_bytes());
+        let bal: u128 = st
+            .storage
+            .get(&credit_key)
+            .and_then(|v| std::str::from_utf8(v).ok())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        st.storage
+            .insert(credit_key.clone(), (bal + deposit).to_string().into_bytes());
         let debit_key = prefixed_key(predecessor, b"\x00near-bal");
-        let sbal: u128 = st.storage.get(&debit_key)
-            .and_then(|v| std::str::from_utf8(v).ok()).and_then(|s| s.parse().ok()).unwrap_or(0);
-        st.storage.insert(debit_key, (sbal.saturating_sub(deposit)).to_string().into_bytes());
-        eprintln!("  💰 fn-call deposit {} yocto: {} → {}", deposit, predecessor, account);
+        let sbal: u128 = st
+            .storage
+            .get(&debit_key)
+            .and_then(|v| std::str::from_utf8(v).ok())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        st.storage.insert(
+            debit_key,
+            (sbal.saturating_sub(deposit)).to_string().into_bytes(),
+        );
+        eprintln!(
+            "  💰 fn-call deposit {} yocto: {} → {}",
+            deposit, predecessor, account
+        );
     }
     let saved_dep = CURRENT_DEPOSIT.with(|d| d.borrow_mut().replace(deposit));
 
-    eprintln!("  ↳ cross: {}.{}({})", account, method, String::from_utf8_lossy(args));
+    eprintln!(
+        "  ↳ cross: {}.{}({})",
+        account,
+        method,
+        String::from_utf8_lossy(args)
+    );
     let part_snap = { snapshot_partition(&state.lock().unwrap(), account) };
 
     let mut sub_store = wasmtime::Store::new(&*engine, ());
@@ -158,7 +217,11 @@ pub(crate) fn sub_execute(
     let (trap, ret, trap_why) = match ok {
         None => (true, None, "missing method (failed receipt)".to_string()),
         Some(res) => match res {
-            Ok(()) => (false, state.lock().unwrap().return_data.clone(), String::new()),
+            Ok(()) => (
+                false,
+                state.lock().unwrap().return_data.clone(),
+                String::new(),
+            ),
             Err(e) => {
                 let code = e
                     .downcast_ref::<wasmtime::Trap>()
@@ -188,19 +251,25 @@ pub(crate) fn sub_execute(
         };
         eprintln!(
             "  ⚠ cross: {}.{} TRAPPED — reverting partition ({})",
-            account,
-            method,
-            why
+            account, method, why
         );
         restore_partition(&mut state.lock().unwrap(), part_snap, account);
         if deposit > 0 {
             // failed receipt refunds its deposit to the sender
             let mut st = state.lock().unwrap();
             let rk = prefixed_key(predecessor, b"\x00near-bal");
-            let b: u128 = st.storage.get(&rk)
-                .and_then(|v| std::str::from_utf8(v).ok()).and_then(|s| s.parse().ok()).unwrap_or(0);
-            st.storage.insert(rk, (b + deposit).to_string().into_bytes());
-            eprintln!("  💰 deposit {} refunded to {} (failed receipt)", deposit, predecessor);
+            let b: u128 = st
+                .storage
+                .get(&rk)
+                .and_then(|v| std::str::from_utf8(v).ok())
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            st.storage
+                .insert(rk, (b + deposit).to_string().into_bytes());
+            eprintln!(
+                "  💰 deposit {} refunded to {} (failed receipt)",
+                deposit, predecessor
+            );
         }
     }
     CURRENT_DEPOSIT.with(|d| *d.borrow_mut() = saved_dep);
@@ -217,12 +286,39 @@ pub(crate) fn sub_execute(
     // near-sdk's promise_result_checked maps that to Ok(Some(vec![])), which
     // resolvers treat as success. Void receipts used to get None = Failed,
     // so every plain ft_withdraw "failed" and refunded.
-    Ok(if trap { None } else { Some(ret.unwrap_or_default()) })
+    Ok(if trap {
+        None
+    } else {
+        Some(ret.unwrap_or_default())
+    })
 }
 
 /// Resolve a promise DAG node: deps first (their results, flattened,
 /// become this batch's promise_results), then this batch's actions.
-pub(crate) fn execute_promise(idx: usize) -> Result<Vec<Option<Vec<u8>>>, Box<dyn std::error::Error>> {
+///
+/// Execute-once (2026-09-08): a node reachable through two parents (Burrow's
+/// swap receipt feeding both the resolve callback and the payout leg) used to
+/// EXECUTE TWICE — pass 2 saw pass 1's consumed state and trapped (`There is
+/// no action for the position`). First resolution memoizes the result in
+/// PROMISE_OUTCOMES; every later visit replays it (data-receipt semantics).
+pub(crate) fn execute_promise(
+    idx: usize,
+) -> Result<Vec<Option<Vec<u8>>>, Box<dyn std::error::Error>> {
+    if let Some(hit) = PROMISE_OUTCOMES.with(|o| o.borrow().get(&idx).cloned()) {
+        eprintln!(
+            "  ⛓ receipt {} — replaying memoized result (execute-once)",
+            idx
+        );
+        return Ok(hit);
+    }
+    let out = execute_promise_uncached(idx)?;
+    PROMISE_OUTCOMES.with(|o| o.borrow_mut().insert(idx, out.clone()));
+    Ok(out)
+}
+
+fn execute_promise_uncached(
+    idx: usize,
+) -> Result<Vec<Option<Vec<u8>>>, Box<dyn std::error::Error>> {
     let batch = PROMISE_DAG.with(|d| d.borrow()[idx].clone());
     EXECUTED_PROMISES.with(|e| e.borrow_mut().insert(idx));
     let forced = FAIL_RECEIPTS.with(|f| f.borrow().contains(&idx));
@@ -240,6 +336,11 @@ pub(crate) fn execute_promise(idx: usize) -> Result<Vec<Option<Vec<u8>>>, Box<dy
     for dep in &batch.deps {
         dep_results.extend(execute_promise(*dep)?);
     }
+    // Publish dep results for promise_results_count/promise_result — real
+    // near-sdk callbacks (Burrow's count-and-branch resolvers) read these
+    // BEFORE promise_result(0); the host used to be a silent noop → count 0.
+    let old_mirror = promise_results_tls();
+    set_promise_results_tls(dep_results.clone());
     let saved =
         PROMISE_RESULTS.with(|r| std::mem::replace(&mut *r.borrow_mut(), dep_results.clone()));
     let mut out = Vec::new();
@@ -249,8 +350,12 @@ pub(crate) fn execute_promise(idx: usize) -> Result<Vec<Option<Vec<u8>>>, Box<dy
         // (promiseSucceeded(0)==0 → contract returns its pending path),
         // then re-runs with the payload when host 83 resumes the handle.
         let saved = PROMISE_RESULTS.with(|r| std::mem::replace(&mut *r.borrow_mut(), vec![None]));
+        set_promise_results_tls(vec![None]);
         for action in &batch.actions {
-            if let PAction::FnCall { method, args, dep, .. } = action {
+            if let PAction::FnCall {
+                method, args, dep, ..
+            } = action
+            {
                 match sub_execute(&batch.account, method, args, &batch.creator, *dep) {
                     Ok(ret) => out.push(ret),
                     Err(_) => out.push(None),
@@ -258,12 +363,15 @@ pub(crate) fn execute_promise(idx: usize) -> Result<Vec<Option<Vec<u8>>>, Box<dy
             }
         }
         PROMISE_RESULTS.with(|r| *r.borrow_mut() = saved);
+        set_promise_results_tls(old_mirror);
         return Ok(out);
     }
     if !batch.account.is_empty() {
         for action in &batch.actions {
             match action {
-                PAction::FnCall { method, args, dep, .. } => {
+                PAction::FnCall {
+                    method, args, dep, ..
+                } => {
                     // NEAR receipt ordering: if the child RETURNS a promise
                     // (promise_return), its receipts execute BEFORE this
                     // batch's dependents — the mock used to skip them, so
@@ -283,11 +391,27 @@ pub(crate) fn execute_promise(idx: usize) -> Result<Vec<Option<Vec<u8>>>, Box<dy
                     // the funds; the settle aborts fail-closed. This is
                     // exactly why real pools whitelist borrowers.
                     out.push(r);
-                    let child_ret = PENDING_RETURN.with(|p| std::mem::replace(&mut *p.borrow_mut(), outer_ret));
+                    let child_ret =
+                        PENDING_RETURN.with(|p| std::mem::replace(&mut *p.borrow_mut(), outer_ret));
                     if let Some(ridx) = child_ret {
-                        eprintln!("  ⛓ child returned promise {} — resolving before dependents", ridx);
+                        eprintln!(
+                            "  ⛓ child returned promise {ridx} — resolving before dependents"
+                        );
                         let cres = execute_promise(ridx)?;
-                        for r in cres { out.push(r); }
+                        // NOTE (2026-09-08): the child's results APPEND after the
+                        // local result — do NOT replace slot 0. Tried strict
+                        // promise_return substitution (pop local first): the
+                        // payout-chain residue landed in promise_result(0),
+                        // callback_dex_trade took its consume-branch early and
+                        // burrowland's SwapReference handler (which owns the
+                        // position_latest_actions.remove) panicked "There is no
+                        // action for the position" → margin_open_failed. The
+                        // append convention reproduces the mainnet-success end
+                        // state; slot-exact substitution needs a study of real
+                        // receipt ordering for returned-promise chains.
+                        for r2 in cres {
+                            out.push(r2);
+                        }
                     }
                 }
                 PAction::Transfer(amt) => {
@@ -324,16 +448,11 @@ pub(crate) fn execute_promise(idx: usize) -> Result<Vec<Option<Vec<u8>>>, Box<dy
                         out.push(None); // FAILED promise result
                         break; // skip the rest of THIS receipt only
                     }
-                    batch_touched.push((
-                        debit_key.clone(),
-                        st.storage.get(&debit_key).cloned(),
-                    ));
-                    st.storage.insert(debit_key, (bal - *amt).to_string().into_bytes());
+                    batch_touched.push((debit_key.clone(), st.storage.get(&debit_key).cloned()));
+                    st.storage
+                        .insert(debit_key, (bal - *amt).to_string().into_bytes());
                     let credit_key = prefixed_key(&batch.account, b"\x00near-bal");
-                    batch_touched.push((
-                        credit_key.clone(),
-                        st.storage.get(&credit_key).cloned(),
-                    ));
+                    batch_touched.push((credit_key.clone(), st.storage.get(&credit_key).cloned()));
                     let rbal: u128 = st
                         .storage
                         .get(&credit_key)
@@ -342,16 +461,148 @@ pub(crate) fn execute_promise(idx: usize) -> Result<Vec<Option<Vec<u8>>>, Box<dy
                         .unwrap_or(0u128);
                     let rbal = rbal + *amt;
                     st.storage.insert(credit_key, rbal.to_string().into_bytes());
-                    eprintln!("  ↗ transfer {} yocto → {} (bal now {})", amt, batch.account, rbal);
+                    eprintln!(
+                        "  ↗ transfer {} yocto → {} (bal now {})",
+                        amt, batch.account, rbal
+                    );
                     // TRUE NEAR: successful transfer = Successful(empty).
                     // Contracts distinguish it from Failed via
                     // near/promise_succeeded (status probe). No more marker.
+                    out.push(Some(vec![]));
+                }
+                PAction::Stake { amount } => {
+                    // NEAR semantics: staking moves liquid → staked (locked).
+                    // Over-stake beyond liquid = this receipt fails (reverts).
+                    let amount = *amount;
+                    let state = STATE_ARC.with(|s| s.borrow().clone()).ok_or("no state")?;
+                    let mut st = state.lock().unwrap();
+                    let bal_key = prefixed_key(&batch.account, b"\x00near-bal");
+                    let locked_key = prefixed_key(&batch.account, b"\x00near-locked");
+                    let bal: u128 = st
+                        .storage
+                        .get(&bal_key)
+                        .and_then(|v| std::str::from_utf8(v).ok())
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0u128);
+                    if amount > bal {
+                        eprintln!(
+                            "  ⚠ stake {} yocto: {} has only {} liquid — receipt reverts",
+                            amount, batch.account, bal
+                        );
+                        for (k, v) in batch_touched.iter() {
+                            match v {
+                                Some(val) => {
+                                    st.storage.insert(k.clone(), val.clone());
+                                }
+                                None => {
+                                    st.storage.remove(k);
+                                }
+                            }
+                        }
+                        out.push(None);
+                        break;
+                    }
+                    batch_touched.push((bal_key.clone(), st.storage.get(&bal_key).cloned()));
+                    st.storage
+                        .insert(bal_key, (bal - amount).to_string().into_bytes());
+                    let cur_locked: u128 = st
+                        .storage
+                        .get(&locked_key)
+                        .and_then(|v| std::str::from_utf8(v).ok())
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0u128);
+                    st.storage
+                        .insert(locked_key, (cur_locked + amount).to_string().into_bytes());
+                    eprintln!(
+                        "  ↗ staked {} yocto ({} total locked, {} liquid)",
+                        amount,
+                        cur_locked + amount,
+                        bal - amount
+                    );
+                    out.push(Some(vec![]));
+                }
+                PAction::AddKey { pk } => {
+                    let state = STATE_ARC.with(|s| s.borrow().clone()).ok_or("no state")?;
+                    let mut st = state.lock().unwrap();
+                    // 0x02-prefixed access-key namespace: key = pk, value = kind
+                    let key = prefixed_key(&batch.account, &[0x02]);
+                    let mut full = vec![0x02];
+                    full.extend_from_slice(&pk);
+                    let before = st.storage.insert(full.clone(), b"full".to_vec());
+                    // storage growth reverts with the receipt on failure
+                    if before.is_none() {
+                        batch_touched.push((full, None));
+                    }
+                    eprintln!("  🔑 key added (full access)");
+                    out.push(Some(vec![]));
+                }
+                PAction::DeleteKey { pk } => {
+                    let state = STATE_ARC.with(|s| s.borrow().clone()).ok_or("no state")?;
+                    let mut st = state.lock().unwrap();
+                    let mut full = vec![0x02];
+                    full.extend_from_slice(&pk);
+                    let key = prefixed_key(&batch.account, &full);
+                    if st.storage.remove(&key).is_some() {
+                        batch_touched.push((key, None)); // removal reverts on failure
+                        eprintln!("  🗑 key deleted");
+                    } else {
+                        eprintln!("  ⚠ delete_key: unknown key — receipt reverts");
+                        for (k, v) in batch_touched.iter() {
+                            match v {
+                                Some(val) => {
+                                    st.storage.insert(k.clone(), val.clone());
+                                }
+                                None => {
+                                    st.storage.remove(k);
+                                }
+                            }
+                        }
+                        out.push(None);
+                        break;
+                    }
+                    out.push(Some(vec![]));
+                }
+                PAction::DeleteAccount { beneficiary } => {
+                    let state = STATE_ARC.with(|s| s.borrow().clone()).ok_or("no state")?;
+                    let mut st = state.lock().unwrap();
+                    let bal_key = prefixed_key(&batch.account, b"\x00near-bal");
+                    let bal: u128 = st
+                        .storage
+                        .get(&bal_key)
+                        .and_then(|v| std::str::from_utf8(v).ok())
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0u128);
+                    // credit everything to the beneficiary, then wipe partition
+                    let ben_bal_key = prefixed_key(&beneficiary, b"\x00near-bal");
+                    let ben_bal: u128 = st
+                        .storage
+                        .get(&ben_bal_key)
+                        .and_then(|v| std::str::from_utf8(v).ok())
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0u128);
+                    st.storage
+                        .insert(ben_bal_key, (ben_bal + bal).to_string().into_bytes());
+                    let pre = prefixed_key(&batch.account, b"");
+                    let removed: Vec<Vec<u8>> = st
+                        .storage
+                        .keys()
+                        .filter(|k| k.starts_with(&pre) && k.len() > pre.len())
+                        .cloned()
+                        .collect();
+                    for k in removed {
+                        st.storage.remove(&k);
+                    }
+                    eprintln!(
+                        "  💥 account {} deleted; {} yocto → {beneficiary}",
+                        batch.account, bal
+                    );
                     out.push(Some(vec![]));
                 }
             }
         }
     }
     PROMISE_RESULTS.with(|r| *r.borrow_mut() = saved);
+    set_promise_results_tls(old_mirror);
     // Pure combinator (promise_and): its "results" ARE the flattened child
     // outputs — a promise_then on an and-node must see [p1_outs..., p2_outs...]
     // (NEAR semantics). Batches with an account return only their own

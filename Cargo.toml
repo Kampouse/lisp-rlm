@@ -38,6 +38,19 @@ im = "15"
 sha2 = "0.10"
 sha3 = "0.10"
 ripemd = "0.1"
+# Real Keccak-512 for the near-mock keccak512 host (sha3 has no Keccak-512;
+# SHAKE128 stand-in replaced 2026-09-08 — nearcore uses real Keccak-512).
+tiny-keccak = { version = "2", features = ["keccak"] }
+# Real alt_bn128 (BN254) math for the near-mock precompile hosts — same
+# crate near-vm-runner uses (vendor/near-vm-runner/src/logic/alt_bn128.rs).
+# Real alt_bn128 (BN254) math for the near-mock precompile hosts — the exact
+# crate near-vm-runner uses (vendor pins zeropool-bn 0.5.11 as "bn"), so
+# multiexp/sum/pairing results are byte-identical to production.
+bn = { package = "zeropool-bn", version = "0.5.11", default-features = false }
+# Real secp256k1 ecrecover + NIST P-256 verify for the near-mock crypto hosts
+# (near-faithful: 65B recovered point, prehash verify, malformed input → 0).
+k256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
+p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 wat = "1.0"
 wasm-encoder = "0.248.0"
 wasmparser = { version = "0.228.0", features = ["simd"] }

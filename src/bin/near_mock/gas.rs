@@ -2,13 +2,13 @@
 //! accounting, trie charging, stub warnings.
 
 use super::*;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::rc::Rc;
-use wasmtime::*;
 use lisp_rlm_wasm::bls_validate;
 use lisp_rlm_wasm::builtin_ed25519::ed25519_verify_impl;
 use lisp_rlm_wasm::builtin_schnorr::schnorr_verify_impl;
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
+use wasmtime::*;
 
 // ============ Run configuration (CLI flags + env, 2026-09-05) ============
 /// Per-host gas schedule. Defaults = the legacy indicative constants that
@@ -35,6 +35,18 @@ pub(crate) struct GasSchedule {
     pub(crate) storage_has_key_key_byte: u64,
     pub(crate) trie_node: u64,
     pub(crate) trie_walk_nodes: u64,
+    // Crypto precompiles + validator hosts (PV155 protocol constants,
+    // near-parameters 0.37.3 res/runtime_configs/parameters.yaml).
+    pub(crate) ecrecover_base: u64,
+    pub(crate) p256_verify_base: u64,
+    pub(crate) alt_bn128_g1_multiexp_base: u64,
+    pub(crate) alt_bn128_g1_multiexp_element: u64,
+    pub(crate) alt_bn128_pairing_check_base: u64,
+    pub(crate) alt_bn128_pairing_check_element: u64,
+    pub(crate) alt_bn128_g1_sum_base: u64,
+    pub(crate) alt_bn128_g1_sum_element: u64,
+    pub(crate) validator_stake_base: u64,
+    pub(crate) validator_total_stake_base: u64,
 }
 
 impl Default for GasSchedule {
@@ -58,6 +70,16 @@ impl Default for GasSchedule {
             storage_has_key_key_byte: 81_569,
             trie_node: 2_280_000_000,
             trie_walk_nodes: 16,
+            ecrecover_base: 3_365_369_625_000,
+            p256_verify_base: 1_300_000_000_000,
+            alt_bn128_g1_multiexp_base: 713_000_000_000,
+            alt_bn128_g1_multiexp_element: 320_000_000_000,
+            alt_bn128_pairing_check_base: 9_686_000_000_000,
+            alt_bn128_pairing_check_element: 5_102_000_000_000,
+            alt_bn128_g1_sum_base: 3_000_000_000,
+            alt_bn128_g1_sum_element: 5_000_000_000,
+            validator_stake_base: 911_834_726_400,
+            validator_total_stake_base: 911_834_726_400,
         }
     }
 }
@@ -102,6 +124,31 @@ impl GasSchedule {
             storage_has_key_key_byte: g("storage_has_key_key_byte", d.storage_has_key_key_byte)?,
             trie_node: g("trie_node", d.trie_node)?,
             trie_walk_nodes: g("trie_walk_nodes", d.trie_walk_nodes)?,
+            ecrecover_base: g("ecrecover_base", d.ecrecover_base)?,
+            p256_verify_base: g("p256_verify_base", d.p256_verify_base)?,
+            alt_bn128_g1_multiexp_base: g(
+                "alt_bn128_g1_multiexp_base",
+                d.alt_bn128_g1_multiexp_base,
+            )?,
+            alt_bn128_g1_multiexp_element: g(
+                "alt_bn128_g1_multiexp_element",
+                d.alt_bn128_g1_multiexp_element,
+            )?,
+            alt_bn128_pairing_check_base: g(
+                "alt_bn128_pairing_check_base",
+                d.alt_bn128_pairing_check_base,
+            )?,
+            alt_bn128_pairing_check_element: g(
+                "alt_bn128_pairing_check_element",
+                d.alt_bn128_pairing_check_element,
+            )?,
+            alt_bn128_g1_sum_base: g("alt_bn128_g1_sum_base", d.alt_bn128_g1_sum_base)?,
+            alt_bn128_g1_sum_element: g("alt_bn128_g1_sum_element", d.alt_bn128_g1_sum_element)?,
+            validator_stake_base: g("validator_stake_base", d.validator_stake_base)?,
+            validator_total_stake_base: g(
+                "validator_total_stake_base",
+                d.validator_total_stake_base,
+            )?,
         })
     }
 
@@ -121,6 +168,17 @@ impl GasSchedule {
             "storage_has_key_base": self.storage_has_key_base,
             "storage_has_key_key_byte": self.storage_has_key_key_byte,
             "trie_node": self.trie_node, "trie_walk_nodes": self.trie_walk_nodes,
+            // PV155 crypto/validator pins (2026-09-08 stub-kill batch)
+            "ecrecover_base": self.ecrecover_base,
+            "p256_verify_base": self.p256_verify_base,
+            "alt_bn128_g1_sum_base": self.alt_bn128_g1_sum_base,
+            "alt_bn128_g1_sum_element": self.alt_bn128_g1_sum_element,
+            "alt_bn128_g1_multiexp_base": self.alt_bn128_g1_multiexp_base,
+            "alt_bn128_g1_multiexp_element": self.alt_bn128_g1_multiexp_element,
+            "alt_bn128_pairing_check_base": self.alt_bn128_pairing_check_base,
+            "alt_bn128_pairing_check_element": self.alt_bn128_pairing_check_element,
+            "validator_stake_base": self.validator_stake_base,
+            "validator_total_stake_base": self.validator_total_stake_base,
         });
         serde_json::to_string_pretty(&j).unwrap_or_default()
     }
@@ -148,13 +206,6 @@ pub(crate) struct RunCfg {
     /// --trace | NEAR_MOCK_TRACE=1: record every host call (name, gas, seq)
     /// into HOST_TRACE and print a per-host summary after the run.
     pub(crate) trace: bool,
-}
-
-/// Warn once per host name when a stub backed by zeros/empties is called.
-pub(crate) fn stub_warn(name: &str) {
-    if mock_cfg().warn_stubs {
-        eprintln!("  ⚠ STUB {name}: not implemented — returns 0/empty (NEAR_MOCK_WARN_STUBS)");
-    }
 }
 
 /// SplitMix64 — cheap mixing for the per-call random_seed entropy.
@@ -195,12 +246,19 @@ pub(crate) fn apply_staking_delta(st: &mut MockState, acct: &str, bytes_delta: i
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
     let locked_delta = (bytes_delta.unsigned_abs() as u128).saturating_mul(STAKING_COST_PER_BYTE);
-    let new_bal = if bytes_delta > 0 { bal.saturating_sub(locked_delta) } else { bal + locked_delta };
+    let new_bal = if bytes_delta > 0 {
+        bal.saturating_sub(locked_delta)
+    } else {
+        bal + locked_delta
+    };
     st.storage.insert(bk, new_bal.to_string().into_bytes());
     if bytes_delta > 0 {
         eprintln!("  🔒 staking: locked {locked_delta} yocto (+{bytes_delta} bytes)");
     } else {
-        eprintln!("  🔓 staking: released {locked_delta} yocto (-{} bytes)", -bytes_delta);
+        eprintln!(
+            "  🔓 staking: released {locked_delta} yocto (-{} bytes)",
+            -bytes_delta
+        );
     }
 }
 

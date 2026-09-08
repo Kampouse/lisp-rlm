@@ -10,28 +10,32 @@
 //! Host-call costs are indicative legacy NEAR fee-schedule values.
 //! --view enforces ProhibitedInView on storage writes (see VMLogic).
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::rc::Rc;
-use wasmtime::*;
 use lisp_rlm_wasm::bls_validate;
 use lisp_rlm_wasm::builtin_ed25519::ed25519_verify_impl;
 use lisp_rlm_wasm::builtin_schnorr::schnorr_verify_impl;
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
+use wasmtime::*;
 
 // 2026-09-05 module split (item 11): hosts/gas/state/promises extracted so
 // edits land in smaller files (the old 3.2k-line single file was where the
 // fuzzy-patch tool did its worst damage).
-#[path = "state.rs"]
-mod state;
+#[path = "bn254.rs"]
+mod bn254;
+#[path = "crypto_real.rs"]
+mod crypto_real;
 #[path = "gas.rs"]
 mod gas;
-#[path = "promises.rs"]
-mod promises;
 #[path = "hosts.rs"]
 mod hosts;
+#[path = "promises.rs"]
+mod promises;
+#[path = "state.rs"]
+mod state;
 
 pub(crate) use gas::{
-    apply_staking_delta, locked_balance_for, splitmix64, stub_warn, trie_charge, trie_charge_write,
+    apply_staking_delta, locked_balance_for, splitmix64, trie_charge, trie_charge_write,
     GasSchedule, RunCfg, STAKING_COST_PER_BYTE,
 };
 pub(crate) use hosts::{build_env_linker, host_fn};
@@ -43,9 +47,81 @@ pub(crate) use state::{
     prefixed_key, restore_partition, snapshot_partition, state_file, write_reg_checked, MockState,
 };
 
+/// Per-node memoized promise results (execute-once semantics, 2026-09-08).
+/// Keyed by receipt index; entries die with the run (TLS, cleared with the
+/// DAG). A node reachable through two parents (Burrow's swap receipt feeds
+/// both the resolve callback and the payout leg) used to EXECUTE TWICE —
+/// pass 2 saw pass 1's consumed state and trapped
+/// (`There is no action for the position`). Now the second visit replays the
+/// memoized result, exactly like a data receipt on-chain.
+thread_local! {
+    static PROMISE_OUTCOMES: std::cell::RefCell<std::collections::HashMap<usize, Vec<Option<Vec<u8>>>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
 
+/// Callback inputs visible through promise_results_count/promise_result —
+/// the TLS mirror of the batch's dep_results (was a silent noop: real
+/// near-sdk callbacks like Burrow's count-and-branch saw 0 results).
+pub(crate) fn promise_results_tls() -> Vec<Option<Vec<u8>>> {
+    PROMISE_RESULTS_CELL.with(|r| r.borrow().clone())
+}
 
+pub(crate) fn set_promise_results_tls(v: Vec<Option<Vec<u8>>>) {
+    PROMISE_RESULTS_CELL.with(|r| *r.borrow_mut() = v);
+}
 
+thread_local! {
+    static PROMISE_RESULTS_CELL: std::cell::RefCell<Vec<Option<Vec<u8>>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Effective epoch height: NEAR_MOCK_EPOCH pin wins, else derives from the
+/// clock — NEAR epochs are ~12h (43_200 s), so --now/--advance scenarios
+/// advance epochs consistently with block_timestamp. Mirrors real NEAR where
+/// epoch_height is a chain-level counter.
+pub(crate) fn mock_epoch_height() -> u64 {
+    if let Ok(s) = std::env::var("NEAR_MOCK_EPOCH") {
+        if let Ok(v) = s.parse::<u64>() {
+            return v;
+        }
+    }
+    let c = mock_cfg();
+    let base = c.base_ts.unwrap_or(0);
+    if base == 0 && c.advance_secs == 0 {
+        return 0; // unpinned, pre-genesis default (previous mock behavior)
+    }
+    ((base + c.advance_secs).max(0) as u64) / 43_200
+}
+
+/// Staking map for validator_stake/validator_total_stake hosts.
+/// NEAR_MOCK_VALIDATORS='{"alice.pool.near": 1000000, ...}' (yoctoNEAR,
+/// number or string) pins a custom set; unset → one deterministic validator
+/// (`near-mock.pool.near`, 1M NEAR) so staking math never sees zeros.
+pub(crate) fn validator_map() -> std::collections::BTreeMap<String, u128> {
+    if let Ok(s) = std::env::var("NEAR_MOCK_VALIDATORS") {
+        if let Ok(v) =
+            serde_json::from_str::<std::collections::BTreeMap<String, serde_json::Value>>(&s)
+        {
+            return v
+                .into_iter()
+                .map(|(k, val)| {
+                    let n = match val {
+                        serde_json::Value::Number(x) => x.as_u64().unwrap_or(0) as u128,
+                        serde_json::Value::String(x) => x.parse::<u128>().unwrap_or(0),
+                        _ => 0,
+                    };
+                    (k, n)
+                })
+                .collect();
+        }
+    }
+    let mut m = std::collections::BTreeMap::new();
+    m.insert(
+        "near-mock.pool.near".to_string(),
+        1_000_000u128 * 10u128.pow(24),
+    );
+    m
+}
 
 // near-mock cross <state.bin> <acct=/path.wasm,...> <contract-acct> <method> [args-json]
 //
@@ -66,7 +142,9 @@ fn run_cross(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         let mut it = args[2..].iter();
         while let Some(t) = it.next() {
             if t == "--fail-receipt" {
-                let n = it.next().and_then(|x| x.parse::<usize>().ok())
+                let n = it
+                    .next()
+                    .and_then(|x| x.parse::<usize>().ok())
                     .ok_or("--fail-receipt requires a receipt index N (see the [map] printout)")?;
                 fail_receipts.push(n);
             } else {
@@ -110,13 +188,19 @@ fn run_cross(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
     let module = MODULES
         .with(|m| m.borrow().as_ref().unwrap().get(contract_acct).cloned())
-        .ok_or(format!("contract account {} not in manifest", contract_acct))?;
+        .ok_or(format!(
+            "contract account {} not in manifest",
+            contract_acct
+        ))?;
 
     // Attached deposit (NEAR_MOCK_ATTACH=decimal yocto) — credited to the
     // callee's NEAR balance before the entry runs, like a real receipt.
     if let Ok(attach) = std::env::var("NEAR_MOCK_ATTACH") {
         if !attach.is_empty() {
-            let amt: u128 = attach.trim().parse().map_err(|_| "NEAR_MOCK_ATTACH must be decimal yocto")?;
+            let amt: u128 = attach
+                .trim()
+                .parse()
+                .map_err(|_| "NEAR_MOCK_ATTACH must be decimal yocto")?;
             let state0 = state.lock().unwrap();
             let key = prefixed_key(contract_acct, b"\x00near-bal");
             let bal: u128 = state0
@@ -128,20 +212,41 @@ fn run_cross(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             let key_owned = key.clone();
             drop(state0);
             let mut state0 = state.lock().unwrap();
-            state0.storage.insert(key_owned, (bal + amt).to_string().into_bytes());
-            eprintln!("  💰 attached {} yocto → {} (bal {})", amt, contract_acct, bal + amt);
+            state0
+                .storage
+                .insert(key_owned, (bal + amt).to_string().into_bytes());
+            eprintln!(
+                "  💰 attached {} yocto → {} (bal {})",
+                amt,
+                contract_acct,
+                bal + amt
+            );
         }
     }
 
     let mut store = wasmtime::Store::new(&*engine, ());
     store.set_fuel(PREPAID_FUEL.with(|f| *f.borrow()))?;
-    let linker = build_env_linker(&mut store, &*engine, state.clone(), args_json.clone().into_bytes())?;
+    let linker = build_env_linker(
+        &mut store,
+        &*engine,
+        state.clone(),
+        args_json.clone().into_bytes(),
+    )?;
     let instance = linker.instantiate(&mut store, &module)?;
 
     let func = instance
         .get_func(&mut store, method)
         .ok_or_else(|| format!("Method '{}' not found", method))?;
-    println!("▶ {}.{}({})", contract_acct, method, if args_json == "{}" { "".into() } else { args_json.clone() });
+    println!(
+        "▶ {}.{}({})",
+        contract_acct,
+        method,
+        if args_json == "{}" {
+            "".into()
+        } else {
+            args_json.clone()
+        }
+    );
     // PRE-call copy for NEAR transaction atomicity: the snapshot must capture
     // state BEFORE the entry runs, or the Err-branch restore is a no-op and a
     // trapped call keeps its writes (Ref add_liquidity proved it 2026-09-06).
@@ -287,8 +392,6 @@ struct ExecCtx {
     view: bool,
 }
 
-
-
 thread_local! {
     static PREPAID_FUEL: std::cell::RefCell<u64> = const { std::cell::RefCell::new(200 * 1_000_000_000_000) };
     static EXEC_CTX: std::cell::RefCell<Option<ExecCtx>> = const { std::cell::RefCell::new(None) };
@@ -313,17 +416,11 @@ fn exec_ctx_or_default() -> ExecCtx {
     })
 }
 
-
-
 // batches already resolved this run (returned-DAG traversal + orphan drain)
 thread_local! {
     static EXECUTED_PROMISES: std::cell::RefCell<std::collections::HashSet<usize>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
 }
-
-
-
-
 
 impl Default for RunCfg {
     fn default() -> Self {
@@ -331,11 +428,19 @@ impl Default for RunCfg {
             gas: GasSchedule::default(),
             staking: false,
             dry_run: false,
-            debug: std::env::var("NEAR_MOCK_DEBUG").map(|v| v == "1").unwrap_or(false),
-            warn_stubs: std::env::var("NEAR_MOCK_WARN_STUBS").map(|v| v == "1").unwrap_or(false),
-            base_ts: std::env::var("NEAR_MOCK_NOW").ok().and_then(|s| s.parse().ok()),
+            debug: std::env::var("NEAR_MOCK_DEBUG")
+                .map(|v| v == "1")
+                .unwrap_or(false),
+            warn_stubs: std::env::var("NEAR_MOCK_WARN_STUBS")
+                .map(|v| v == "1")
+                .unwrap_or(false),
+            base_ts: std::env::var("NEAR_MOCK_NOW")
+                .ok()
+                .and_then(|s| s.parse().ok()),
             advance_secs: 0,
-            trace: std::env::var("NEAR_MOCK_TRACE").map(|v| v == "1").unwrap_or(false),
+            trace: std::env::var("NEAR_MOCK_TRACE")
+                .map(|v| v == "1")
+                .unwrap_or(false),
         }
     }
 }
@@ -437,8 +542,7 @@ pub(crate) fn host_trace_summary() -> (u64, Vec<(String, u64, u64)>) {
         slot.0 += 1;
         slot.1 += e.gas;
     }
-    let mut rows: Vec<(String, u64, u64)> =
-        agg.into_iter().map(|(k, (c, g))| (k, c, g)).collect();
+    let mut rows: Vec<(String, u64, u64)> = agg.into_iter().map(|(k, (c, g))| (k, c, g)).collect();
     rows.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
     (total, rows)
 }
@@ -506,10 +610,6 @@ fn safe_report<F: FnOnce()>(label: &str, f: F) {
     }
 }
 
-
-
-
-
 /// Execute one function call on `account`'s contract in a FRESH Store
 /// (never re-enter a live instance — the heap global would be clobbered).
 /// Signer/predecessor = `predecessor` (promise calls aren't user-signed).
@@ -521,8 +621,6 @@ thread_local! {
     /// NEAR_MOCK_ATTACH via the host fn.
     static CURRENT_DEPOSIT: std::cell::RefCell<Option<u128>> = const { std::cell::RefCell::new(None) };
 }
-
-
 
 // ── real promise hosts (cross engine) ──
 fn mem_read_str(caller: &mut wasmtime::Caller<'_, ()>, len: i64, ptr: i64) -> Option<String> {
@@ -573,7 +671,8 @@ fn build_promise_hosts(
     Box<dyn std::error::Error>,
 > {
     // 39 promise_batch_create(acct_len, acct_ptr) -> idx
-    let pbc = host_fn("promise_batch_create",
+    let pbc = host_fn(
+        "promise_batch_create",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 2], vec![ValType::I64]),
         move |mut caller, args, results| {
@@ -585,7 +684,8 @@ fn build_promise_hosts(
         },
     );
     // 40 promise_batch_then(idx, acct_len, acct_ptr) -> new idx
-    let pbt = host_fn("promise_batch_then",
+    let pbt = host_fn(
+        "promise_batch_then",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 3], vec![ValType::I64]),
         move |mut caller, args, results| {
@@ -597,7 +697,8 @@ fn build_promise_hosts(
         },
     );
     // 43 promise_batch_action_function_call(idx, m_len, m_ptr, a_len, a_ptr, dep_ptr, gas)
-    let pafc = host_fn("promise_batch_action_function_call",
+    let pafc = host_fn(
+        "promise_batch_action_function_call",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 7], vec![]),
         move |mut caller, args, _| {
@@ -624,14 +725,20 @@ fn build_promise_hosts(
             );
             PROMISE_DAG.with(|d| {
                 if let Some(b) = d.borrow_mut().get_mut(idx) {
-                    b.actions.push(PAction::FnCall { method, args: args_json.into_bytes(), gas, dep });
+                    b.actions.push(PAction::FnCall {
+                        method,
+                        args: args_json.into_bytes(),
+                        gas,
+                        dep,
+                    });
                 }
             });
             Ok(())
         },
     );
     // 44 promise_batch_action_transfer(idx, amt_ptr) — u128 LE at ptr (16 bytes)
-    let pbat = host_fn("promise_batch_action_transfer",
+    let pbat = host_fn(
+        "promise_batch_action_transfer",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 2], vec![]),
         move |mut caller, args, _| {
@@ -659,7 +766,8 @@ fn build_promise_hosts(
     // 82 promise_yield_create(m_len, m_ptr, a_len, a_ptr, gas, weight, reg) -> idx
     // data_id ("yd:<idx>") lands in the register; the promise index IS the
     // resume handle (documented mock simplification of NEAR's opaque data_id).
-    let pyc = host_fn("promise_yield_create",
+    let pyc = host_fn(
+        "promise_yield_create",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 7], vec![ValType::I64]),
         move |mut caller, args, results| {
@@ -669,7 +777,10 @@ fn build_promise_hosts(
                 .unwrap_or_default();
             let reg = args[6].unwrap_i64() as u64;
             let contract = exec_ctx_or_default().contract;
-            eprintln!("  → promise_yield_create({} args={}) on {}", method, args_json, contract);
+            eprintln!(
+                "  → promise_yield_create({} args={}) on {}",
+                method, args_json, contract
+            );
             let batch_creator = exec_ctx_or_default().contract;
             let args_bytes = args_json.clone().into_bytes();
             let idx = {
@@ -696,7 +807,10 @@ fn build_promise_hosts(
                 let mut st = st.lock().unwrap();
                 st.registers.insert(reg, did.into_bytes());
                 // persist: \x00yield:<idx> = account \x1f method \x1f creator \x1f args_json
-                let spec = format!("{}\x1f{}\x1f{}\x1f{}", contract, method, batch_creator, args_json);
+                let spec = format!(
+                    "{}\x1f{}\x1f{}\x1f{}",
+                    contract, method, batch_creator, args_json
+                );
                 let key = format!("\x00yield:{}", idx);
                 st.storage.insert(key.into_bytes(), spec.into_bytes());
             }
@@ -708,7 +822,8 @@ fn build_promise_hosts(
     // NOTE: the host-table ABI is (i64 x4) — idx, d_len, d_ptr, p_len, p_ptr?
     // The table says 4 i64 params; emitter pushes (idx, d_len, d_ptr, p_len, p_ptr)?
     // Keep 4: (idx, payload_len, payload_ptr, _pad) — see emitter's actual pushes.
-    let pyr = host_fn("promise_yield_resume",
+    let pyr = host_fn(
+        "promise_yield_resume",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 4], vec![ValType::I64]),
         move |mut caller, args, results| {
@@ -765,7 +880,9 @@ fn build_promise_hosts(
             };
             eprintln!("  ⏵ yield_resume({}) payload={}", idx, payload);
             let (method, args_json, _) = match batch.actions.first() {
-                Some(PAction::FnCall { method, args, gas, .. }) => (method.clone(), args.clone(), gas),
+                Some(PAction::FnCall {
+                    method, args, gas, ..
+                }) => (method.clone(), args.clone(), gas),
                 _ => {
                     eprintln!("  ⚠ yield_resume: no callback action on idx {}", idx);
                     results[0] = Val::I64(0);
@@ -773,17 +890,19 @@ fn build_promise_hosts(
                 }
             };
             // Re-run the callback with the payload as the Successful result
-            let saved = PROMISE_RESULTS.with(|r| std::mem::replace(
-                &mut *r.borrow_mut(),
-                vec![Some(payload.into_bytes())],
-            ));
+            let saved = PROMISE_RESULTS.with(|r| {
+                std::mem::replace(&mut *r.borrow_mut(), vec![Some(payload.into_bytes())])
+            });
             let ret = sub_execute(&batch.account, &method, &args_json, &batch.creator, 0);
             PROMISE_RESULTS.with(|r| *r.borrow_mut() = saved);
             // one-shot: consume the persisted yield handle
             {
                 let st = STATE_ARC.with(|s| s.borrow().clone());
                 if let Some(st) = st {
-                    st.lock().unwrap().storage.remove(format!("\x00yield:{}", idx).as_bytes());
+                    st.lock()
+                        .unwrap()
+                        .storage
+                        .remove(format!("\x00yield:{}", idx).as_bytes());
                 }
             }
             match ret {
@@ -801,7 +920,8 @@ fn build_promise_hosts(
         },
     );
     // 30 promise_create
-    let pc = host_fn("promise_create",
+    let pc = host_fn(
+        "promise_create",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 8], vec![ValType::I64]),
         move |mut caller, args, results| {
@@ -814,14 +934,20 @@ fn build_promise_hosts(
             let idx = dag_push(
                 vec![],
                 acct,
-                vec![PAction::FnCall { method, args: args_json.into_bytes(), gas: args[7].unwrap_i64() as u64, dep: 0 }],
+                vec![PAction::FnCall {
+                    method,
+                    args: args_json.into_bytes(),
+                    gas: args[7].unwrap_i64() as u64,
+                    dep: 0,
+                }],
             );
             results[0] = Val::I64(idx as i64);
             Ok(())
         },
     );
     // 31 promise_then
-    let pt = host_fn("promise_then",
+    let pt = host_fn(
+        "promise_then",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 9], vec![ValType::I64]),
         move |mut caller, args, results| {
@@ -835,14 +961,20 @@ fn build_promise_hosts(
             let new_idx = dag_push(
                 vec![idx],
                 acct,
-                vec![PAction::FnCall { method, args: args_json.into_bytes(), gas: args[8].unwrap_i64() as u64, dep: 0 }],
+                vec![PAction::FnCall {
+                    method,
+                    args: args_json.into_bytes(),
+                    gas: args[8].unwrap_i64() as u64,
+                    dep: 0,
+                }],
             );
             results[0] = Val::I64(new_idx as i64);
             Ok(())
         },
     );
     // 32 promise_and(ptr, count) -> idx
-    let pa = host_fn("promise_and",
+    let pa = host_fn(
+        "promise_and",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 2], vec![ValType::I64]),
         move |mut caller, args, results| {
@@ -863,7 +995,8 @@ fn build_promise_hosts(
         },
     );
     // 33 promise_results_count
-    let prc = host_fn("promise_results_count",
+    let prc = host_fn(
+        "promise_results_count",
         &mut *store,
         FuncType::new(engine, vec![], vec![ValType::I64]),
         |_, _, results| {
@@ -873,7 +1006,8 @@ fn build_promise_hosts(
     );
     // 34 promise_result(idx, reg) -> status
     let state_for_pr = STATE_ARC.with(|s| s.borrow().clone());
-    let pr = host_fn("promise_result",
+    let pr = host_fn(
+        "promise_result",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 2], vec![ValType::I64]),
         move |_, args, results| {
@@ -906,7 +1040,8 @@ fn build_promise_hosts(
         },
     );
     // 35 promise_return(idx)
-    let pret = host_fn("promise_return",
+    let pret = host_fn(
+        "promise_return",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64], vec![]),
         |_, args, _| {
@@ -919,9 +1054,10 @@ fn build_promise_hosts(
 }
 
 fn exec_ctx_view(state: &std::sync::Arc<Mutex<MockState>>) -> bool {
-    EXEC_CTX.with(|c| c.borrow().as_ref().map(|x| x.view)).unwrap_or_else(|| state.lock().unwrap().view)
+    EXEC_CTX
+        .with(|c| c.borrow().as_ref().map(|x| x.view))
+        .unwrap_or_else(|| state.lock().unwrap().view)
 }
-
 
 /// Shared bootstrap for `cross` and `scenario`: load a multi-contract
 /// manifest (acct=path.wasm,...), load persistent state, install TLS.
@@ -1074,8 +1210,10 @@ pub(crate) fn run_scenario(path: &str) -> Result<(), Box<dyn std::error::Error>>
     let mut snapshots: HashMap<String, HashMap<Vec<u8>, Vec<u8>>> = HashMap::new();
 
     for (i, step) in steps.iter().enumerate() {
-        let method: Option<String> =
-            step.get("method").and_then(|m| m.as_str()).map(String::from);
+        let method: Option<String> = step
+            .get("method")
+            .and_then(|m| m.as_str())
+            .map(String::from);
         // Bookkeeping-only step (no `method`): fork operations on storage.
         let Some(method) = method else {
             let mut did = false;
@@ -1146,17 +1284,20 @@ pub(crate) fn run_scenario(path: &str) -> Result<(), Box<dyn std::error::Error>>
         // real blocks; a timelock test sets advance once, later steps run
         // at the later time). String OR number accepted (see gas above).
         let step_now = step.get("now").and_then(|v| {
-            v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+            v.as_i64()
+                .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
         });
         let step_advance = step.get("advance").and_then(|v| {
-            v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+            v.as_i64()
+                .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
         });
         // gas budget: TGas cap on this step's entry call (out-of-gas ≠ trap)
         // accept number OR string ("2") — a stringy gas silently un-capping
         // the step would turn a chaos test into a 20s-per-spin hang
-        let gas_cap_tgas = step
-            .get("gas")
-            .and_then(|g| g.as_u64().or_else(|| g.as_str().and_then(|s| s.parse().ok())));
+        let gas_cap_tgas = step.get("gas").and_then(|g| {
+            g.as_u64()
+                .or_else(|| g.as_str().and_then(|s| s.parse().ok()))
+        });
         // attached deposit for this step (decimal yocto string, or number)
         let attach_amt: Option<u128> = match step.get("attach") {
             None => None,
@@ -1170,11 +1311,12 @@ pub(crate) fn run_scenario(path: &str) -> Result<(), Box<dyn std::error::Error>>
                     .ok_or_else(|| format!("step {}: attach too large", i))?
                     as u128,
             ),
-            Some(_) => {
-                return Err(format!("step {}: attach must be a string or number", i).into())
-            }
+            Some(_) => return Err(format!("step {}: attach must be a string or number", i).into()),
         };
-        let snap_name = step.get("snapshot").and_then(|s| s.as_str()).map(String::from);
+        let snap_name = step
+            .get("snapshot")
+            .and_then(|s| s.as_str())
+            .map(String::from);
         let restore_name = step
             .get("restore")
             .and_then(|s| s.as_str())
@@ -1220,19 +1362,26 @@ pub(crate) fn run_scenario(path: &str) -> Result<(), Box<dyn std::error::Error>>
         // are never scheduled.
         let pre_call = state.lock().unwrap().storage.clone();
         if let Some(amt) = attach_amt {
-            credit_attach(&state, &contract, amt)
-                .map_err(|e| format!("step {}: {}", i, e))?;
+            credit_attach(&state, &contract, amt).map_err(|e| format!("step {}: {}", i, e))?;
             CURRENT_DEPOSIT.with(|d| *d.borrow_mut() = Some(amt));
         } else {
             CURRENT_DEPOSIT.with(|d| *d.borrow_mut() = None);
         }
 
-        println!("\n── step {} ▶ {}.{}{}{} ──", i, contract, method, if args_json == "{}" { "".into() } else { format!(" {}", args_json) }, if is_view { " (view)" } else { "" });
+        println!(
+            "\n── step {} ▶ {}.{}{}{} ──",
+            i,
+            contract,
+            method,
+            if args_json == "{}" {
+                "".into()
+            } else {
+                format!(" {}", args_json)
+            },
+            if is_view { " (view)" } else { "" }
+        );
         if step_signer != "owner.test.near" || step_pred != step_signer {
-            println!(
-                "  👤 as {} (predecessor {})",
-                step_signer, step_pred
-            );
+            println!("  👤 as {} (predecessor {})", step_signer, step_pred);
         }
         let module = MODULES
             .with(|m| m.borrow().as_ref().unwrap().get(&contract).cloned())
@@ -1280,7 +1429,10 @@ pub(crate) fn run_scenario(path: &str) -> Result<(), Box<dyn std::error::Error>>
         let instance = linker.instantiate(&mut store, &module)?;
         let result = instance
             .get_func(&mut store, &method)
-            .ok_or(format!("step {}: method '{}' not found on {}", i, method, contract))?
+            .ok_or(format!(
+                "step {}: method '{}' not found on {}",
+                i, method, contract
+            ))?
             .call(&mut store, &[], &mut []);
         let trapped = result.is_err();
         let mut step_failed = false;
@@ -1397,18 +1549,21 @@ pub(crate) fn run_scenario(path: &str) -> Result<(), Box<dyn std::error::Error>>
             if want == "trap" {
                 // consumed by the chaos check above (verdict already printed)
             } else {
-            let hit = if want == "ok" {
-                !step_failed
-            } else {
-                expect_out.iter().any(|s| s.contains(want))
-                    || stored.iter().any(|kv| kv.contains(want))
-            };
-            if hit {
-                println!("✓ expect '{}' ✓", want);
-            } else {
-                println!("✗ expect '{}' — got {:?} storage {:?}", want, expect_out, stored);
-                step_failed = true;
-            }
+                let hit = if want == "ok" {
+                    !step_failed
+                } else {
+                    expect_out.iter().any(|s| s.contains(want))
+                        || stored.iter().any(|kv| kv.contains(want))
+                };
+                if hit {
+                    println!("✓ expect '{}' ✓", want);
+                } else {
+                    println!(
+                        "✗ expect '{}' — got {:?} storage {:?}",
+                        want, expect_out, stored
+                    );
+                    step_failed = true;
+                }
             }
         }
         if let Some(want) = step.get("contains").and_then(|c| c.as_str()) {
@@ -1458,7 +1613,10 @@ pub(crate) fn run_scenario(path: &str) -> Result<(), Box<dyn std::error::Error>>
     let st = state.lock().unwrap();
     let encoded = bincode::serialize(&st.storage)?;
     std::fs::write(&state_path, encoded)?;
-    println!("\n🎬 scenario {}: {} pass / {} fail — state → {}", name, pass, fail, state_path);
+    println!(
+        "\n🎬 scenario {}: {} pass / {} fail — state → {}",
+        name, pass, fail, state_path
+    );
     if fail > 0 {
         std::process::exit(1);
     }
@@ -1478,6 +1636,185 @@ pub(crate) fn run_scenario(path: &str) -> Result<(), Box<dyn std::error::Error>>
 /// (acct + 0x01 + key — same namespacing the host uses). Other accounts'
 /// keys are untouched; `--replace-acct` drops this account's existing
 /// partition first. Use `-` as <dump.json> to read stdin.
+// One JSON-RPC `query` via curl (no new deps; curl is guaranteed on macOS).
+fn rpc_query(rpc: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
+    let body = serde_json::json!({
+        "jsonrpc": "2.0", "id": "dontcare", "method": "query", "params": params
+    });
+    let out = std::process::Command::new("curl")
+        .args([
+            "-s",
+            "--max-time",
+            "30",
+            "-X",
+            "POST",
+            "-H",
+            "Content-Type: application/json",
+            "-d",
+            &body.to_string(),
+            rpc,
+        ])
+        .output()
+        .map_err(|e| format!("curl spawn failed: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "curl exit {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    let v: serde_json::Value =
+        serde_json::from_slice(&out.stdout).map_err(|e| format!("bad RPC JSON: {e}"))?;
+    if let Some(err) = v.get("error") {
+        return Err(format!("RPC error: {err}"));
+    }
+    Ok(v["result"].clone())
+}
+
+/// `snapshot <account> <state.bin>` — one-command live pull (promotes
+/// scripts/fetch_near_state.sh): contract trie + wasm code from an RPC
+/// endpoint into a near-mock state file, ready for `cross` immediately.
+fn run_snapshot(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let usage = "usage: near-mock snapshot <account> <state.bin> [--rpc <url>] [--replace-acct] [--no-code]";
+    let account = args.get(2).ok_or(usage)?;
+    let state_path = args.get(3).ok_or(usage)?;
+    let rpc = args
+        .iter()
+        .position(|a| a == "--rpc")
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+        .or_else(|| std::env::var("NEAR_RPC").ok())
+        .unwrap_or_else(|| "https://rpc.mainnet.near.org".to_string());
+    let replace_acct = args.iter().any(|a| a == "--replace-acct");
+    let want_code = !args.iter().any(|a| a == "--no-code");
+
+    use base64::Engine;
+    let b64d = |s: &str| -> Result<Vec<u8>, String> {
+        base64::engine::general_purpose::STANDARD
+            .decode(s.trim())
+            .map_err(|e| format!("bad base64: {e}"))
+    };
+
+    // 1) contract trie (view_state returns every entry under the empty prefix)
+    let state_res = rpc_query(
+        &rpc,
+        serde_json::json!({
+            "request_type": "view_state",
+            "finality": "final",
+            "account_id": account,
+            "prefix_base64": "",
+        }),
+    )?;
+    let values = state_res
+        .get("values")
+        .and_then(|v| v.as_array())
+        .ok_or("view_state response missing values[]")?
+        .clone();
+    let block_hash = state_res
+        .get("block_hash")
+        .and_then(|b| b.as_str())
+        .unwrap_or("?")
+        .to_string();
+
+    // 2) provenance: current final block height (decorative)
+    let height: Option<u64> = (|| {
+        let body = serde_json::json!({
+            "jsonrpc": "2.0", "id": "dontcare",
+            "method": "block", "params": {"finality": "final"}
+        });
+        let out = std::process::Command::new("curl")
+            .args([
+                "-s",
+                "--max-time",
+                "30",
+                "-X",
+                "POST",
+                "-H",
+                "Content-Type: application/json",
+                "-d",
+                &body.to_string(),
+                &rpc,
+            ])
+            .output()
+            .ok()?;
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+        v["result"]["header"]["height"].as_u64()
+    })();
+    let height_s = height
+        .map(|h| h.to_string())
+        .unwrap_or_else(|| "?".to_string());
+
+    // 3) contract code → <account>.wasm (so `cross` binds without extra steps)
+    let mut code_path = String::new();
+    if want_code {
+        let code_res = rpc_query(
+            &rpc,
+            serde_json::json!({
+                "request_type": "view_code",
+                "finality": "final",
+                "account_id": account,
+            }),
+        )?;
+        let code_b64 = code_res
+            .get("code_base64")
+            .and_then(|c| c.as_str())
+            .ok_or("view_code response missing code_base64")?;
+        let wasm = b64d(code_b64)?;
+        code_path = format!("{account}.wasm");
+        std::fs::write(&code_path, &wasm)?;
+        println!("📄 code: {} bytes → {code_path}", wasm.len());
+    }
+
+    // 4) decode every entry BEFORE touching the state file (atomic-ish)
+    let mut entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(values.len());
+    for (i, v) in values.iter().enumerate() {
+        let k = v
+            .get("key")
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| format!("values[{i}] missing key"))?;
+        let val = v
+            .get("value")
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| format!("values[{i}] missing value"))?;
+        entries.push((b64d(k)?, b64d(val)?));
+    }
+
+    let mut map: std::collections::HashMap<Vec<u8>, Vec<u8>> = match std::fs::read(state_path) {
+        Ok(d) => bincode::deserialize(&d)
+            .map_err(|e| format!("{state_path}: not a near-mock state file ({e})"))?,
+        Err(_) => Default::default(),
+    };
+    let pre = prefixed_key(account, b"");
+    if replace_acct {
+        let stale: Vec<Vec<u8>> = map
+            .keys()
+            .filter(|k| k.len() > pre.len() && k.starts_with(&pre))
+            .cloned()
+            .collect();
+        for k in stale {
+            map.remove(&k);
+        }
+    }
+    for (k, v) in entries {
+        map.insert(prefixed_key(account, &k), v);
+    }
+    std::fs::write(state_path, bincode::serialize(&map)?)?;
+
+    println!(
+        "📸 {account}: {} keys @ block {height_s} ({block_hash}) → {state_path}",
+        values.len()
+    );
+    if want_code {
+        println!("next:");
+        println!(
+            "  near-mock cross {state_path} {account}={code_path} {account} <method> '<json>'"
+        );
+    } else {
+        println!("next: bind code manually — near-mock cross {state_path} <acct>=<wasm> ...");
+    }
+    Ok(())
+}
+
 fn run_state_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let usage = "usage: near-mock state import <state.bin> <dump.json> [--replace-acct]\n       near-mock state dump <state.bin> [account-prefix]";
     let sub = args.get(2).map(|s| s.as_str()).ok_or(usage)?;
@@ -1531,11 +1868,12 @@ fn run_state_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // load or start fresh state
-            let mut map: std::collections::HashMap<Vec<u8>, Vec<u8>> = match std::fs::read(state_path) {
-                Ok(d) => bincode::deserialize(&d)
-                    .map_err(|e| format!("{}: not a near-mock state file ({e})", state_path))?,
-                Err(_) => Default::default(),
-            };
+            let mut map: std::collections::HashMap<Vec<u8>, Vec<u8>> =
+                match std::fs::read(state_path) {
+                    Ok(d) => bincode::deserialize(&d)
+                        .map_err(|e| format!("{}: not a near-mock state file ({e})", state_path))?,
+                    Err(_) => Default::default(),
+                };
 
             let pre = prefixed_key(&account, b"");
             let before = map.len();
@@ -1560,15 +1898,23 @@ fn run_state_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 arr.len(),
                 account,
                 state_path,
-                if replace_acct { " (partition replaced)" } else { "" }
+                if replace_acct {
+                    " (partition replaced)"
+                } else {
+                    ""
+                }
             );
             Ok(())
         }
         "dump" => {
             let state_path = args.get(3).ok_or(usage)?;
             let prefix: Option<String> = args.get(4).cloned();
-            let data = std::fs::read(state_path)
-                .map_err(|e| format!("{}: {} (create one via a scenario or import)", state_path, e))?;
+            let data = std::fs::read(state_path).map_err(|e| {
+                format!(
+                    "{}: {} (create one via a scenario or import)",
+                    state_path, e
+                )
+            })?;
             let map: std::collections::HashMap<Vec<u8>, Vec<u8>> = bincode::deserialize(&data)
                 .map_err(|e| format!("{}: not a near-mock state file ({e})", state_path))?;
 
@@ -1586,7 +1932,11 @@ fn run_state_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                     }
                     let key = String::from_utf8(k[sep + 1..].to_vec())
                         .unwrap_or_else(|_| "<binary>".to_string());
-                    Some((acct, key, base64::engine::general_purpose::STANDARD.encode(v)))
+                    Some((
+                        acct,
+                        key,
+                        base64::engine::general_purpose::STANDARD.encode(v),
+                    ))
                 })
                 .collect();
             rows.sort();
@@ -1600,7 +1950,14 @@ fn run_state_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
             println!("]");
-            println!("— {} keys{}", rows.len(), prefix.as_deref().map(|p| format!(" for '{p}'")).unwrap_or_default());
+            println!(
+                "— {} keys{}",
+                rows.len(),
+                prefix
+                    .as_deref()
+                    .map(|p| format!(" for '{p}'"))
+                    .unwrap_or_default()
+            );
             Ok(())
         }
         _ => Err(usage.into()),
@@ -1620,6 +1977,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.get(1).map(|s| s.as_str()) == Some("state") {
         return run_state_cmd(&args);
     }
+    // `snapshot <account> <state.bin>` — live pull: contract state + wasm via RPC
+    if args.get(1).map(|s| s.as_str()) == Some("snapshot") {
+        return run_snapshot(&args);
+    }
     fn print_main_usage() {
         println!("near-mock — local NEAR contract runner (wasmtime, no node)");
         println!();
@@ -1629,9 +1990,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  near-mock <wasm> symbolicate <idx-or-name> [map-file]");
         println!("  near-mock cross <state.bin> <acct=/path.wasm,...> <contract-acct> <method> [args-json]");
         println!("  near-mock scenario <file.json>  (steps: method/contract/args/view/as/");
-        println!("                                  predecessor/now/advance/gas/attach/expect/...)");
+        println!(
+            "                                  predecessor/now/advance/gas/attach/expect/...)"
+        );
         println!("  near-mock state import <state.bin> <dump.json>");
         println!("  near-mock state dump <state.bin>");
+        println!("  near-mock snapshot <account> <state.bin>  (pull live wasm+state via RPC)");
         println!();
         println!("ARGS:");
         println!("  <args-json>  JSON string, or @file for raw bytes (NUL/invalid UTF-8 ok)");
@@ -1658,7 +2022,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  NEAR_MOCK_CONTRACT    contract account (default escrow.test.near)");
         println!("  NEAR_MOCK_NOW         fixed timestamp base (unix seconds)");
         println!("  --state <path>        state file (default /tmp/near-mock-state.bin; = NEAR_MOCK_STATE)");
-    println!("  NEAR_MOCK_SEED        pin random_seed (string, zero-padded to 64 hex)");
+        println!("  NEAR_MOCK_SEED        pin random_seed (string, zero-padded to 64 hex)");
         println!("  NEAR_MOCK_DEBUG=1     same as --debug");
         println!("  NEAR_MOCK_WARN_STUBS=1  warn on unimplemented host stubs");
     }
@@ -1745,12 +2109,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ride argv safely). Raw bytes: file content is passed through to the
     // input register EXACTLY as-is (no UTF-8 validation, unlike argv).
     let args_bytes: Vec<u8> = match args.get(3) {
-        Some(s) if s.starts_with('@') => {
-            std::fs::read(&s[1..]).unwrap_or_else(|e| {
-                eprintln!("failed to read args file {}: {}", &s[1..], e);
-                std::process::exit(2);
-            })
-        }
+        Some(s) if s.starts_with('@') => std::fs::read(&s[1..]).unwrap_or_else(|e| {
+            eprintln!("failed to read args file {}: {}", &s[1..], e);
+            std::process::exit(2);
+        }),
         other => other
             .cloned()
             .unwrap_or_else(|| "{}".to_string())
@@ -1779,13 +2141,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or_else(|| format!("{}.map", wasm_path));
         let map: serde_json::Map<String, serde_json::Value> =
             serde_json::from_slice(&std::fs::read(&map_path).map_err(|e| {
-                format!("cannot read sidecar {}: {} (compile with ./target/release/compile)", map_path, e)
+                format!(
+                    "cannot read sidecar {}: {} (compile with ./target/release/compile)",
+                    map_path, e
+                )
             })?)
             .map_err(|e| format!("bad sidecar {}: {}", map_path, e))?;
         let wasm_bytes = std::fs::read(wasm_path)?;
-        let names =
-            lisp_rlm_wasm::wasm_emit::name_map::decode_function_names(&wasm_bytes)
-                .unwrap_or_default();
+        let names = lisp_rlm_wasm::wasm_emit::name_map::decode_function_names(&wasm_bytes)
+            .unwrap_or_default();
         // Resolve: numeric index → name via the section; otherwise direct name
         // match ("run:run" or "run"); wrapper names match their inner fn.
         let key: Option<String> = if let Ok(idx) = target.parse::<u32>() {
@@ -1818,7 +2182,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             None => {
                 println!("symbolicate: {} → <no mapping>", target);
-                println!("  known names: {:?}", names.iter().map(|(_, n)| n).collect::<Vec<_>>());
+                println!(
+                    "  known names: {:?}",
+                    names.iter().map(|(_, n)| n).collect::<Vec<_>>()
+                );
             }
         }
         return Ok(());
@@ -1874,7 +2241,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     store.set_fuel(prepaid_g)?;
     PREPAID_FUEL.with(|f| *f.borrow_mut() = prepaid_g);
     // 1024 pages = 64MB initial memory. Enough that wee_alloc never needs memory_grow.
-
 
     // G-14 (2026-09-02): set the promise-host env BEFORE linking. This
     // driver never initialized STATE_ARC, so build_env_linker's is_some
@@ -1996,46 +2362,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // contract call into a process failure (exit 101 after a committed
             // mutation was exactly this bug class). Panic → report, exit 0.
             safe_report("result/storage printer", || {
-            if let Some(ref data) = st.return_data {
-                if data.len() == 8 {
-                    let val = i64::from_le_bytes(data[..8].try_into().unwrap());
-                    // 8 bytes is ambiguous: i64 returns AND 8-char strings
-                    // both land here — show the string interpretation when
-                    // all bytes are printable ASCII (a JSON/str return),
-                    // else the i64 view (2026-08-31: 8-char strings were
-                    // mislabeled as garbage i64s during M2 object debugging)
-                    let printable = data.iter().all(|b| (0x20..0x7f).contains(b));
-                    if printable {
-                        let s = String::from_utf8_lossy(data);
-                        println!("📄 {:?} (8-byte str | i64 view: {})", s, val);
+                if let Some(ref data) = st.return_data {
+                    if data.len() == 8 {
+                        let val = i64::from_le_bytes(data[..8].try_into().unwrap());
+                        // 8 bytes is ambiguous: i64 returns AND 8-char strings
+                        // both land here — show the string interpretation when
+                        // all bytes are printable ASCII (a JSON/str return),
+                        // else the i64 view (2026-08-31: 8-char strings were
+                        // mislabeled as garbage i64s during M2 object debugging)
+                        let printable = data.iter().all(|b| (0x20..0x7f).contains(b));
+                        if printable {
+                            let s = String::from_utf8_lossy(data);
+                            println!("📄 {:?} (8-byte str | i64 view: {})", s, val);
+                        } else {
+                            // Untag: remove low 3 tag bits
+                            println!("📄 {} (raw i64, untagged: {})", val, val >> 3);
+                        }
                     } else {
-                        // Untag: remove low 3 tag bits
-                        println!("📄 {} (raw i64, untagged: {})", val, val >> 3);
-                    }
-                } else {
-                    let s = String::from_utf8_lossy(data);
-                    if !s.is_empty() {
-                        println!("📄 {}", s);
+                        let s = String::from_utf8_lossy(data);
+                        if !s.is_empty() {
+                            println!("📄 {}", s);
+                        }
                     }
                 }
-            }
-            if !st.storage.is_empty() {
-                println!("\n📦 Storage ({} keys):", st.storage.len());
-                for (k, v) in st.storage.iter().take(10) {
-                    let ks = String::from_utf8_lossy(k);
-                    let vs = String::from_utf8_lossy(v);
-                    // char-boundary-safe truncation (byte-slicing panics on multibyte chars)
-                    let kshow: String = ks.chars().take(20).collect();
-                    let vshow: String = vs.chars().take(60).collect();
-                    println!(
-                        "  [{}b]={} → [{}b]={}",
-                        k.len(),
-                        kshow,
-                        v.len(),
-                        vshow
-                    );
+                if !st.storage.is_empty() {
+                    println!("\n📦 Storage ({} keys):", st.storage.len());
+                    for (k, v) in st.storage.iter().take(10) {
+                        let ks = String::from_utf8_lossy(k);
+                        let vs = String::from_utf8_lossy(v);
+                        // char-boundary-safe truncation (byte-slicing panics on multibyte chars)
+                        let kshow: String = ks.chars().take(20).collect();
+                        let vshow: String = vs.chars().take(60).collect();
+                        println!("  [{}b]={} → [{}b]={}", k.len(), kshow, v.len(), vshow);
+                    }
                 }
-            }
             });
             json_return = st
                 .return_data

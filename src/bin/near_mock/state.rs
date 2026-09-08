@@ -2,13 +2,13 @@
 //! snapshot/restore for failed-receipt revert, register limits.
 
 use super::*;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::rc::Rc;
-use wasmtime::*;
 use lisp_rlm_wasm::bls_validate;
 use lisp_rlm_wasm::builtin_ed25519::ed25519_verify_impl;
 use lisp_rlm_wasm::builtin_schnorr::schnorr_verify_impl;
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
+use wasmtime::*;
 
 // State file: /tmp/near-mock-state.bin by default, overridable via
 // NEAR_MOCK_STATE (single source of truth: lisp_rlm_wasm::near_mock_state_file)
@@ -35,7 +35,11 @@ pub(crate) fn snapshot_partition(st: &MockState, acct: &str) -> Vec<(Vec<u8>, Op
         .collect()
 }
 
-pub(crate) fn restore_partition(st: &mut MockState, snap: Vec<(Vec<u8>, Option<Vec<u8>>)>, acct: &str) {
+pub(crate) fn restore_partition(
+    st: &mut MockState,
+    snap: Vec<(Vec<u8>, Option<Vec<u8>>)>,
+    acct: &str,
+) {
     let pre = prefixed_key(acct, b"");
     let keys: Vec<Vec<u8>> = st
         .storage
@@ -68,7 +72,9 @@ pub(crate) fn write_reg_checked(st: &mut MockState, rid: u64, data: Vec<u8>) -> 
     if data.len() > MAX_REG_SIZE {
         return Err(format!(
             "MemoryAccessViolation: register {} value {}b exceeds max {}b",
-            rid, data.len(), MAX_REG_SIZE
+            rid,
+            data.len(),
+            MAX_REG_SIZE
         ));
     }
     if rid != u64::MAX && !st.registers.contains_key(&rid) && st.registers.len() >= MAX_REGS {

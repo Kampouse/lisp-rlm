@@ -165,6 +165,24 @@ jtrace=$(cd "$WORK" && $NM contract.wasm gate --trace --json 2>&1 | grep '^JSON 
 check "json host_trace field" '"host_trace"' "$jtrace"
 check "json host_trace totals carry calls+gas" '"calls"' "$jtrace"
 
+echo "== stub-kill surface (2026-09-08) =="
+# PV155 crypto/validator gas pins in the default schedule
+out=$($NM --gas-schedule-help)
+check "ecrecover_base pin" "ecrecover_base" "$out"
+check "p256_verify_base pin" "p256_verify_base" "$out"
+check "alt_bn128_pairing_check_base pin" "alt_bn128_pairing_check_base" "$out"
+check "validator_stake_base pin" "validator_stake_base" "$out"
+# snapshot subcommand surface (hermetic: usage/exit codes only — live pull
+# needs network; verified separately against pyth-oracle.near)
+out=$($NM snapshot 2>&1); rc=$?
+[ $rc -ne 0 ] && ok "snapshot without args exits nonzero" || bad "snapshot no-arg exit 0"
+check "snapshot usage line" "usage: near-mock snapshot" "$out"
+out=$($NM snapshot a b --rpc 2>&1); [ $? -ne 0 ] && ok "malformed snapshot exits nonzero" || bad "malformed snapshot exit 0"
+out=$($NM --help 2>&1)
+check "help lists snapshot" "near-mock snapshot" "$out"
+out=$($NM state 2>&1)
+check "state import usage" "state import" "$out"
+
 echo
 echo "RESULT: $pass passed, $fail failed"
 [ $fail -eq 0 ]
