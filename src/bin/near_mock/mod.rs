@@ -160,7 +160,11 @@ fn run_cross(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let manifest = &pos[1];
     let contract_acct = &pos[2];
     let method = &pos[3];
-    let args_json = pos.get(4).cloned().unwrap_or_else(|| "{}".into());
+    let args_json = pos
+        .get(4)
+        .filter(|s| !s.starts_with('-'))
+        .cloned()
+        .unwrap_or_else(|| "{}".into());
     let run_view = pos.iter().any(|a| a == "--view");
 
     let mut fuel_cfg = Config::new();
@@ -2301,7 +2305,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(2);
         }),
         other => other
-            .cloned()
+            .map(|s| s.as_str())
+            .filter(|s| !s.starts_with('-'))
+            .map(|s| s.to_string())
             .unwrap_or_else(|| "{}".to_string())
             .into_bytes(),
     };
