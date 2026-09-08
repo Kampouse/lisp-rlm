@@ -494,11 +494,11 @@ impl WasmEmitter {
                 // This matches F* model: if dst.hi > 0 && scalar > 1, then None (trap)
                 v.push(Instruction::LocalGet(dh_i));
                 v.push(Instruction::I64Const(0));
-                v.push(Instruction::I64GtU);  // dst.hi > 0?
+                v.push(Instruction::I64GtU); // dst.hi > 0?
                 v.push(Instruction::LocalGet(val_i));
                 v.push(Instruction::I64Const(1));
-                v.push(Instruction::I64GtU);  // val > 1?
-                v.push(Instruction::I64And);  // both true?
+                v.push(Instruction::I64GtU); // val > 1?
+                v.push(Instruction::I64And); // both true?
                 v.push(Instruction::If(BlockType::Empty));
                 v.push(Instruction::Unreachable);
                 v.push(Instruction::End);
@@ -1517,7 +1517,11 @@ impl WasmEmitter {
                 }
                 self.need_host(17);
                 let key = self.expr(&a[0])?;
-                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let ma = wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                };
                 let mut v = Vec::new();
                 // parse val (tagged str) → 16 bytes at STORAGE_U128_BUF.
                 // call_u128 evaluates its own args — no manual pushes here.
@@ -1526,9 +1530,9 @@ impl WasmEmitter {
                     &[a[1].clone(), LispVal::Num(STORAGE_U128_BUF)],
                 )?);
                 v.push(Instruction::Drop); // from_str returns TAG_NIL
-                // storage_write(key_len, key_ptr, 16, STORAGE_U128_BUF, reg 0)
-                // key untag (>>3) THEN len extract (>>32) — skipping the
-                // untag fed the host a junk 64-byte NUL key
+                                           // storage_write(key_len, key_ptr, 16, STORAGE_U128_BUF, reg 0)
+                                           // key untag (>>3) THEN len extract (>>32) — skipping the
+                                           // untag fed the host a junk 64-byte NUL key
                 v.extend(key.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));

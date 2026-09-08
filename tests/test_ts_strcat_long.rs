@@ -19,8 +19,8 @@
 // are plain Rust string concat.
 
 use lisp_rlm_wasm::compile_near_from_exprs;
-use lisp_rlm_wasm::ts_frontend::ts_to_lisp_source;
 use lisp_rlm_wasm::parse_all;
+use lisp_rlm_wasm::ts_frontend::ts_to_lisp_source;
 use std::sync::MutexGuard;
 
 const CONCAT_TS: &str = r#"
@@ -80,7 +80,8 @@ fn call(wasm: &[u8], method: &str, args: &str, tag: &str, fresh: bool) -> String
     let _l = lock();
     let p = std::env::temp_dir().join(format!("strcat_long_{}_{}.wasm", std::process::id(), tag));
     std::fs::write(&p, wasm).unwrap();
-    let state = std::env::temp_dir().join(format!("strcat_long_{}_{}.bin", std::process::id(), tag));
+    let state =
+        std::env::temp_dir().join(format!("strcat_long_{}_{}.bin", std::process::id(), tag));
     if fresh {
         let _ = std::fs::remove_file(&state);
     }
@@ -125,9 +126,7 @@ fn strcat_single_expression_long_operands() {
     let b = piece(7, 384);
     let c = piece(14, 192);
     let d = piece(21, 384);
-    let setup = format!(
-        r#"{{"a":"{a}","b":"{b}","c":"{c}","d":"{d}"}}"#
-    );
+    let setup = format!(r#"{{"a":"{a}","b":"{b}","c":"{c}","d":"{d}"}}"#);
     let r = call(&wasm, "setup", &setup, "long", true);
     assert!(r.contains("ok"), "setup: {r}");
 
@@ -148,7 +147,13 @@ fn strcat_single_expression_long_operands() {
 
     // (4) mixed str + num coerces the num through to-string (checker's
     // documented contract for polymorphic +).
-    let r = ret_line(&call(&wasm, "numPlusStr", r#"{"x":7,"s":"v"}"#, "long", false));
+    let r = ret_line(&call(
+        &wasm,
+        "numPlusStr",
+        r#"{"x":7,"s":"v"}"#,
+        "long",
+        false,
+    ));
     assert_eq!(r, "v7", "str+num coercion");
 }
 

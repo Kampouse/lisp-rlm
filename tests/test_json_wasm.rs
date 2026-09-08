@@ -83,7 +83,11 @@ fn near_json_probe(body: &str, args_json: &str) -> String {
         .args([&lisp, "-o", &wasm])
         .output()
         .expect("near-compile");
-    assert!(out.status.success(), "compile failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "compile failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let out = Command::new("./target/debug/near-mock")
         .args([&wasm, "_run", args_json])
         .output()
@@ -117,5 +121,9 @@ fn test_json_get_1arg_string() {
 #[test]
 fn test_json_get_1arg_missing_key_returns_nil() {
     let line = near_json_probe(r#"(json-get "amount")"#, r#"{"name":"world"}"#);
-    assert!(line.contains("0 (raw"), "missing key must return NIL/0: {}", line);
+    assert!(
+        line.contains("0 (raw"),
+        "missing key must return NIL/0: {}",
+        line
+    );
 }

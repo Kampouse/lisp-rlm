@@ -39,13 +39,13 @@ fn encode_decode_roundtrip() {
     let n = 42i64;
     let tagged = encode_num(n);
     assert_eq!(tagged & TAG_MASK, TAG_NUM);
-    
+
     // Bool encoding
     let t = encode_bool(true);
     let f = encode_bool(false);
     assert_eq!(t & TAG_MASK, TAG_BOOL);
     assert_eq!(f & TAG_MASK, TAG_BOOL);
-    
+
     // Nil encoding
     let nil = encode_nil();
     assert_eq!(nil, TAG_NIL);

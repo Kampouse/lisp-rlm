@@ -3,7 +3,6 @@
 ///
 /// This runs on `cargo build` of the main lisp-rlm crate (host, not wasm).
 /// The output is a .wasm file in OUT_DIR that the compiler embeds at runtime.
-
 use std::env;
 use std::path::PathBuf;
 use std::process::Command;
@@ -27,7 +26,10 @@ fn main() {
             "--profile=wasm-release",
             "--target=wasm32-unknown-unknown",
         ])
-        .env("CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS", "-C target-cpu=mvp")
+        .env(
+            "CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS",
+            "-C target-cpu=mvp",
+        )
         .current_dir(&schnorr_dir)
         .status()
         .expect("failed to run cargo build for schnorr-wasm");
@@ -36,8 +38,8 @@ fn main() {
         panic!("schnorr-wasm build failed");
     }
 
-    let wasm_path = schnorr_dir
-        .join("target/wasm32-unknown-unknown/wasm-release/lisp_rlm_schnorr_wasm.wasm");
+    let wasm_path =
+        schnorr_dir.join("target/wasm32-unknown-unknown/wasm-release/lisp_rlm_schnorr_wasm.wasm");
 
     std::fs::copy(&wasm_path, &target).unwrap_or_else(|e| {
         panic!("failed to copy schnorr WASM: {}", e);

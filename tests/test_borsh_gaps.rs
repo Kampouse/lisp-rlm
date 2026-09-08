@@ -37,9 +37,17 @@ fn test_vec_string_serialize() {
     let bytes = runner.read_borsh_bytes(20);
 
     assert_eq!(&bytes[0..4], &[2, 0, 0, 0], "Vec count should be 2");
-    assert_eq!(&bytes[4..8], &[5, 0, 0, 0], "First string length should be 5");
+    assert_eq!(
+        &bytes[4..8],
+        &[5, 0, 0, 0],
+        "First string length should be 5"
+    );
     assert_eq!(&bytes[8..13], b"alice", "First string should be 'alice'");
-    assert_eq!(&bytes[13..17], &[3, 0, 0, 0], "Second string length should be 3");
+    assert_eq!(
+        &bytes[13..17],
+        &[3, 0, 0, 0],
+        "Second string length should be 3"
+    );
     assert_eq!(&bytes[17..20], b"bob", "Second string should be 'bob'");
 }
 
@@ -64,7 +72,11 @@ fn test_vec_string_deserialize() {
     // The result is a tagged array pointing into heap memory.
     let tagged = runner.read_raw_result();
     let tag = tagged & 7;
-    assert_eq!(tag, TAG_ARRAY, "Vec<String> deserialize should return TAG_ARRAY (6), got tag {}", tag);
+    assert_eq!(
+        tag, TAG_ARRAY,
+        "Vec<String> deserialize should return TAG_ARRAY (6), got tag {}",
+        tag
+    );
 }
 
 // ── Test 4: I64 negative serialize (arithmetic shift fix) ──
@@ -75,7 +87,11 @@ fn test_i64_negative_serialize_value() {
     runner.run().unwrap();
     let bytes = runner.read_borsh_bytes(8);
     let val = i64::from_le_bytes(bytes.as_slice().try_into().unwrap());
-    assert_eq!(val, -1, "Serialized -1 should be i64 -1, got bytes {:?}", bytes);
+    assert_eq!(
+        val, -1,
+        "Serialized -1 should be i64 -1, got bytes {:?}",
+        bytes
+    );
 }
 
 // ── Test 5: Option Some(i64) serialize ──
@@ -115,9 +131,9 @@ fn test_vec_string_full_roundtrip() {
 
     let mut offset = 4;
     for expected in &["foo", "bar", "baz"] {
-        let len = u32::from_le_bytes(bytes[offset..offset+4].try_into().unwrap()) as usize;
+        let len = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
         offset += 4;
-        let s = String::from_utf8(bytes[offset..offset+len].to_vec()).unwrap();
+        let s = String::from_utf8(bytes[offset..offset + len].to_vec()).unwrap();
         assert_eq!(s, *expected, "String mismatch");
         offset += len;
     }
@@ -134,6 +150,14 @@ fn test_f64_bitcast_roundtrip() {
     let mut runner = WasmRunner::new(&src).unwrap();
     runner.run().unwrap();
     let bytes = runner.read_borsh_bytes(16);
-    assert_eq!(&bytes[0..8], &[1, 0, 0, 0, 0, 0, 0, 0], "x must be min-denormal wire bytes");
-    assert_eq!(&bytes[8..16], &[0, 0, 0, 0, 0, 0, 0, 0], "y must be +0.0 wire bytes");
+    assert_eq!(
+        &bytes[0..8],
+        &[1, 0, 0, 0, 0, 0, 0, 0],
+        "x must be min-denormal wire bytes"
+    );
+    assert_eq!(
+        &bytes[8..16],
+        &[0, 0, 0, 0, 0, 0, 0, 0],
+        "y must be +0.0 wire bytes"
+    );
 }

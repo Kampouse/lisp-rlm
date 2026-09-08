@@ -25,8 +25,8 @@ fn has_near_mock() -> bool {
 /// Compile lisp to NEAR wasm (type-checked) and execute via near-mock.
 /// Asserts the run succeeded (✅) and returns stdout.
 fn run_near_mock(src: &str) -> String {
-    let wasm = lisp_rlm_wasm::compile_near(src)
-        .unwrap_or_else(|e| panic!("compile_near failed: {}", e));
+    let wasm =
+        lisp_rlm_wasm::compile_near(src).unwrap_or_else(|e| panic!("compile_near failed: {}", e));
     // unique per call: parallel tests raced on a fixed path (2026-08-31)
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
@@ -100,8 +100,7 @@ fn wasm_replace_existing_key() {
         eprintln!("SKIP: near-mock not built");
         return;
     }
-    let out =
-        run_near_mock(r#"(define (main) (json-set "{\"a\":1,\"b\":2}" "a" "9"))"#);
+    let out = run_near_mock(r#"(define (main) (json-set "{\"a\":1,\"b\":2}" "a" "9"))"#);
     let ret = ret_line(&out);
     assert!(
         ret.contains(r#"{"a":9,"b":2}"#),
@@ -135,9 +134,8 @@ fn wasm_value_with_internal_quote_escape() {
         eprintln!("SKIP: near-mock not built");
         return;
     }
-    let out = run_near_mock(
-        r#"(define (main) (json-set "{\"z\":0}" "q" "\"he said \\\"hi\\\"\""))"#,
-    );
+    let out =
+        run_near_mock(r#"(define (main) (json-set "{\"z\":0}" "q" "\"he said \\\"hi\\\"\""))"#);
     let ret = ret_line(&out);
     assert!(
         ret.contains(r#"{"z":0,"q":"he said \"hi\""}"#),
@@ -279,9 +277,7 @@ fn json_get_str_missing_key_returns_empty_exec() {
     // (2) fixed to "" — but that silently broke `??` (d.ts promises
     // `string | null`); (3) FINAL contract: miss → nil, bare to-string
     // renders "nil", `(default x fb)` fires. See the two tests below.
-    let out = run_near_mock(
-        r#"(define (main) (near/log (to-string (near/json_get_str "g"))))"#,
-    );
+    let out = run_near_mock(r#"(define (main) (near/log (to-string (near/json_get_str "g"))))"#);
     assert!(
         out.contains("LOG: nil"),
         "missing key must render nil, got: {}",
@@ -292,9 +288,7 @@ fn json_get_str_missing_key_returns_empty_exec() {
 #[test]
 fn json_get_str_missing_key_returns_value_exec() {
     // sanity: present key still returns its value
-    let out = run_near_mock(
-        r#"(define (main) (near/log (to-string (near/json_get_str "g"))))"#,
-    );
+    let out = run_near_mock(r#"(define (main) (near/log (to-string (near/json_get_str "g"))))"#);
     let _ = out; // input is "{}" per harness → covered by the empty test
 }
 
@@ -305,10 +299,12 @@ fn json_get_int_missing_key_zero_exec() {
     // harness input "{}" can't do hit-then-miss, so assert the standalone
     // miss → 0 and rely on manual exec for the sequence (verified
     // 2026-08-31: n=5 → 5, m miss → 0, 777 → 777).
-    let out = run_near_mock(
-        r#"(define (main) (near/log_num (near/json_get_int "m")))"#,
+    let out = run_near_mock(r#"(define (main) (near/log_num (near/json_get_int "m")))"#);
+    assert!(
+        out.contains("LOG: 0"),
+        "missing int key must log 0, got: {}",
+        out
     );
-    assert!(out.contains("LOG: 0"), "missing int key must log 0, got: {}", out);
 }
 
 #[test]
@@ -339,9 +335,7 @@ fn json_get_str_missing_fires_nullish_fallback_exec() {
 
 #[test]
 fn to_string_nil_renders_nil_exec() {
-    let out = run_near_mock(
-        r#"(define (main) (near/log (to-string (near/json_get_str "g"))))"#,
-    );
+    let out = run_near_mock(r#"(define (main) (near/log (to-string (near/json_get_str "g"))))"#);
     assert!(
         out.contains("LOG: nil"),
         "bare miss must be visible as nil, got: {}",

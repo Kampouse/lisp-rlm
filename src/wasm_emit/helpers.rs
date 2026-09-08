@@ -328,23 +328,31 @@ impl WasmEmitter {
         self.emit_tag(TAG_ARRAY)
     }
 
-    pub(crate) fn emit_tagged_const(&self, val: i64, tag: i64) -> Result<Vec<Instruction<'static>>, String> {
+    pub(crate) fn emit_tagged_const(
+        &self,
+        val: i64,
+        tag: i64,
+    ) -> Result<Vec<Instruction<'static>>, String> {
         // Money-safety: `val << TAG_BITS` overflows silently for payloads
         // outside [-2^60, 2^60) (release-mode Rust wraps). i64::MAX literally
         // compiled to -1 at runtime. Refuse instead — a literal the tagged
         // scheme can't represent must never deploy.
-        let tagged = val
-            .checked_mul(1 << TAG_BITS)
-            .ok_or_else(|| format!(
+        let tagged = val.checked_mul(1 << TAG_BITS).ok_or_else(|| {
+            format!(
                 "integer literal {} exceeds tagged range [-2^60, 2^60): silent corruption on-chain",
                 val
-            ))?;
+            )
+        })?;
         Ok(vec![Instruction::I64Const(tagged | tag)])
     }
 
     /// Wrapping twin for wrap-* ops: their contract IS wrap semantics, so the
     /// tag shift wraps too instead of refusing.
-    pub(crate) fn emit_tagged_const_wrapping(&self, val: i64, tag: i64) -> Vec<Instruction<'static>> {
+    pub(crate) fn emit_tagged_const_wrapping(
+        &self,
+        val: i64,
+        tag: i64,
+    ) -> Vec<Instruction<'static>> {
         vec![Instruction::I64Const(val.wrapping_mul(1 << TAG_BITS) | tag)]
     }
 
@@ -843,13 +851,13 @@ impl WasmEmitter {
             // Check val == 4 (Nil)
             Instruction::LocalGet(tmp),
             Instruction::I64Const(TAGGED_NIL),
-            Instruction::I64Eq,             // → i32
-            Instruction::I32Or,             // → i32 (false | nil)
+            Instruction::I64Eq, // → i32
+            Instruction::I32Or, // → i32 (false | nil)
             // Check val == 0 (Num 0 — TAGGED_NUM(0) = 0 << 3 | 0 = 0)
             Instruction::LocalGet(tmp),
             Instruction::I64Const(0),
-            Instruction::I64Eq,             // → i32
-            Instruction::I32Or,             // → i32 (false | nil | zero)
+            Instruction::I64Eq, // → i32
+            Instruction::I32Or, // → i32 (false | nil | zero)
             // invert: 0 → truthy, 1 → falsy
             Instruction::I32Eqz,        // → i32
             Instruction::I64ExtendI32U, // → i64 for callers
@@ -1123,7 +1131,6 @@ impl WasmEmitter {
         Instruction::Call(HOST_BASE | idx as u32)
     }
 
-
     /// Register a stitched WASM import (e.g. schnorr_verify_bip340).
     /// Returns the sentinel index to use with wasm_import_call().
     pub(crate) fn need_wasm_import(
@@ -1133,7 +1140,9 @@ impl WasmEmitter {
         results: Vec<ValType>,
     ) -> usize {
         for (i, (n, _, _)) in self.wasm_imports.iter().enumerate() {
-            if *n == name { return i; }
+            if *n == name {
+                return i;
+            }
         }
         let idx = self.wasm_imports.len();
         self.wasm_imports.push((name, params, results));
@@ -1265,16 +1274,11 @@ impl WasmEmitter {
     /// record = 18 parts = 17 inline ~700B copies ≈ 12KB per site; that is
     /// why the TS twin wasm was +46% over lisp). Same trick as __to_string:
     /// emit the body ONCE as __str_concat(a,b) and Call it from sites.
-/// Generic shared-helper emitter: body = params on stack + generator.
+    /// Generic shared-helper emitter: body = params on stack + generator.
     /// Scans max local index to size the frame (same pattern as
     /// __to_string / __str_concat).
     #[allow(clippy::type_complexity)]
-    fn ensure_shared_fn<F>(
-        &mut self,
-        name: &str,
-        n_params: usize,
-        build: F,
-    ) -> u32
+    fn ensure_shared_fn<F>(&mut self, name: &str, n_params: usize, build: F) -> u32
     where
         F: FnOnce(&mut Self) -> Result<Vec<Instruction<'static>>, String>,
     {
@@ -1330,7 +1334,11 @@ impl WasmEmitter {
             param_count: n_params,
             local_count: total,
             instrs: body,
-            local_entries: if entries.is_empty() { None } else { Some(entries) },
+            local_entries: if entries.is_empty() {
+                None
+            } else {
+                Some(entries)
+            },
             custom_type: None,
         });
         (self.funcs.len() - 1) as u32
@@ -1399,8 +1407,16 @@ impl WasmEmitter {
         if let Some(idx) = self.funcs.iter().position(|f| f.name == "__to_string") {
             return idx as u32;
         }
-        let ma0 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
-        let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+        let ma0 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 0,
+            memory_index: 0,
+        };
+        let ma8 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 0,
+        };
         let mut ins: Vec<Instruction<'static>> = Vec::new();
         // All locals i64: 0=param, 1=tagged, 2=tag, 3=raw, 4=heap,
         //                 5=buf, 6=len, 7=offset, 8=digits, 9=widx, 10=val
@@ -1443,7 +1459,7 @@ impl WasmEmitter {
         ins.push(Instruction::I32WrapI64); // addr (i32)
         ins.push(Instruction::LocalGet(4)); // value (i64)
         ins.push(Instruction::I64Store(ma8)); // mem[56] = heap + 3
-        // Write 'n','i','l'
+                                              // Write 'n','i','l'
         ins.push(Instruction::LocalGet(5));
         ins.push(Instruction::I32WrapI64); // addr
         ins.push(Instruction::I32Const(110));
@@ -1460,7 +1476,7 @@ impl WasmEmitter {
         ins.push(Instruction::I32WrapI64); // addr
         ins.push(Instruction::I32Const(108));
         ins.push(Instruction::I32Store8(ma0)); // 'l'
-        // TAG_STR: ((len<<32)|buf)<<3 | 5, len=3
+                                               // TAG_STR: ((len<<32)|buf)<<3 | 5, len=3
         ins.push(Instruction::I64Const(3));
         ins.push(Instruction::I64Const(32));
         ins.push(Instruction::I64Shl); // 3 << 32
@@ -1517,7 +1533,7 @@ impl WasmEmitter {
         ins.push(Instruction::I32WrapI64);
         ins.push(Instruction::I32Const(101));
         ins.push(Instruction::I32Store8(ma0)); // 'e'
-        // TAG_STR len=4
+                                               // TAG_STR len=4
         ins.push(Instruction::I64Const(4));
         ins.push(Instruction::I64Const(32));
         ins.push(Instruction::I64Shl);
@@ -1570,7 +1586,7 @@ impl WasmEmitter {
         ins.push(Instruction::I32WrapI64);
         ins.push(Instruction::I32Const(101));
         ins.push(Instruction::I32Store8(ma0)); // 'e'
-        // TAG_STR len=5
+                                               // TAG_STR len=5
         ins.push(Instruction::I64Const(5));
         ins.push(Instruction::I64Const(32));
         ins.push(Instruction::I64Shl);
@@ -1639,7 +1655,7 @@ impl WasmEmitter {
         ins.push(Instruction::I64Const(1));
         ins.push(Instruction::I64Add);
         ins.push(Instruction::LocalSet(6)); // len = digits + 1
-        // TAG_STR return
+                                            // TAG_STR return
         ins.push(Instruction::LocalGet(6));
         ins.push(Instruction::I64Const(32));
         ins.push(Instruction::I64Shl); // len << 32
@@ -1691,7 +1707,7 @@ impl WasmEmitter {
         ins.push(Instruction::I64Add);
         ins.push(Instruction::I64LtS); // widx < buf+offset?
         ins.push(Instruction::BrIf(1)); // break if done
-        // Write digit: mem[widx] = '0' + (raw % 10)
+                                        // Write digit: mem[widx] = '0' + (raw % 10)
         ins.push(Instruction::LocalGet(9));
         ins.push(Instruction::I32WrapI64); // addr
         ins.push(Instruction::LocalGet(3));

@@ -24,15 +24,20 @@ fn core_wat(src: &str) -> String {
 fn test_p2_combined_core_has_fd_write_shim() {
     // get-stdout (import 23) must be called by a 4×i32→i32 shim (not just
     // by _start): the fd_write translation loop for println.
-    let wat = core_wat(r#"
+    let wat = core_wat(
+        r#"
 (define (run) (begin (println "hello") 1))
 (define (probe-url) (http-get "https://example.com/x"))
-"#);
+"#,
+    );
     assert!(wat.contains("call 23"), "get-stdout call missing from core");
     // The shim writes *nwritten (i32.store) and returns errno 0 after a loop
     // — cheap structural proxy: more than one "call 23" site (shim + _start)
     let count = wat.matches("call 23").count();
-    assert!(count >= 2, "expected >=2 get-stdout call sites (shim + _start), got {count}");
+    assert!(
+        count >= 2,
+        "expected >=2 get-stdout call sites (shim + _start), got {count}"
+    );
 }
 
 #[test]
@@ -45,35 +50,49 @@ fn test_p2_post_bridge_replaces_outlayer_import() {
     // "call 23" structural count (flake seen in full batteries
     // 2026-09-01; passes in isolation every time).
     let _g = P2_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let wasm = compile_outlayer_p2(r#"
+    let wasm = compile_outlayer_p2(
+        r#"
 (define (run)
   (str-cat "r:" (http-post "https://api.hyperliquid.xyz/info" "{\"type\":\"allMids\"}")))
-"#).expect("compile");
+"#,
+    )
+    .expect("compile");
     let wat = wasmprinter::print_bytes(&wasm).expect("print component");
     assert!(
         !wat.contains("outlayer:api/host"),
         "component must not import outlayer:api/host when POST is native, wat head: {}",
         &wat[..wat.len().min(300)]
     );
-    assert!(wasmparser::Validator::new().validate_all(&wasm).is_ok(), "must validate");
+    assert!(
+        wasmparser::Validator::new().validate_all(&wasm).is_ok(),
+        "must validate"
+    );
     let _ = wasm.len();
 }
 
 #[test]
 fn test_p2_dynamic_post_keeps_outlayer_import() {
     // Non-literal URL → http-post-dynamic → outlayer host import stays.
-    let wat = core_wat(r#"
+    let wat = core_wat(
+        r#"
 (define (run u)
   (str-cat "r:" (http-post u "{\"x\":1}")))
-"#);
+"#,
+    );
     // core imports the outlayer sentinel → check component-level import
     // exists (dynamic path must keep the host import)
     let _g = P2_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let wasm = compile_outlayer_p2(r#"
+    let wasm = compile_outlayer_p2(
+        r#"
 (define (run u)
   (str-cat "r:" (http-post u "{\"x\":1}")))
-"#).expect("compile");
+"#,
+    )
+    .expect("compile");
     let cwat = wasmprinter::print_bytes(&wasm).expect("print");
-    assert!(cwat.contains("outlayer:api/host"), "dynamic POST must keep outlayer host import");
+    assert!(
+        cwat.contains("outlayer:api/host"),
+        "dynamic POST must keep outlayer host import"
+    );
     let _ = wat;
 }

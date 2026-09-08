@@ -863,7 +863,7 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(store_tmp)); // tagged value
                 v.push(Instruction::I64Store(ma)); // [i32 addr, i64 val]
                                                    // Advance elem_src: fixed-size elements advance by elem_sz;
-                // String/Bytes elements are [u32 len][len bytes] → 4 + len
+                                                   // String/Bytes elements are [u32 len][len bytes] → 4 + len
                 if var_len {
                     v.push(Instruction::LocalGet(elem_src));
                     v.push(Instruction::I64Const(4));

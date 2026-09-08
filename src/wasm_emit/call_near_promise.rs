@@ -109,9 +109,7 @@ impl WasmEmitter {
                 let cbname_lit = match &a[4] {
                     LispVal::Str(s) => s.clone(),
                     _ => {
-                        return Err(
-                            "near/call-await: callback name must be a string literal".into(),
-                        )
+                        return Err("near/call-await: callback name must be a string literal".into())
                     }
                 };
                 if !self.exports.iter().any(|(_, e, _)| *e == cbname_lit) {
@@ -447,7 +445,7 @@ impl WasmEmitter {
                 self.need_host(39);
                 self.need_host(44);
                 let recv = self.expr(&a[0])?; // tagged Str
-                let amt = self.expr(&a[1])?;  // tagged Num
+                let amt = self.expr(&a[1])?; // tagged Num
                 let mut v = Vec::new();
                 // promise_batch_create(account_id_len, account_id_ptr)
                 // len = packed >> 32
@@ -461,17 +459,25 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Self::host_call(39)); // → batch idx on stack
-                // u128 amount lo at TEMP_MEM
+                                             // u128 amount lo at TEMP_MEM
                 v.push(Instruction::I64Const(TEMP_MEM as i64));
                 v.push(Instruction::I32WrapI64);
                 v.extend(amt.clone());
                 v.extend(self.emit_untag());
-                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
                 // u128 hi = 0 at TEMP_MEM+8
                 v.push(Instruction::I64Const(TEMP_MEM as i64 + 8));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Const(0));
-                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
                 // promise_batch_action_transfer(batch_idx, amount_ptr)
                 v.push(Instruction::I64Const(TEMP_MEM as i64));
                 v.push(Self::host_call(44));
@@ -485,13 +491,15 @@ impl WasmEmitter {
                 // machinery (39 + 44). Real NEAR amounts (e.g. 1 N =
                 // 10^24 yocto ≈ 2^80) cannot ride the i64 path.
                 if a.len() != 2 {
-                    return Err("near/transfer_u128: need 2 args (receiver_id, amount_yocto_str)".into());
+                    return Err(
+                        "near/transfer_u128: need 2 args (receiver_id, amount_yocto_str)".into(),
+                    );
                 }
                 self.need_host(39);
                 self.need_host(44);
                 let h = self.ensure_u128_str_helpers();
                 let recv = self.expr(&a[0])?; // tagged Str
-                let amt = self.expr(&a[1])?;  // tagged Str (decimal)
+                let amt = self.expr(&a[1])?; // tagged Str (decimal)
                 let ra = self.local_idx("__tr128_recv");
                 let aa = self.local_idx("__tr128_amt");
                 let mut v = Vec::new();
@@ -581,7 +589,8 @@ impl WasmEmitter {
                 }
                 let idx = self.expr(&a[0])?;
                 let mut v = Vec::new();
-                v.extend(self.expr(&a[0])?); v.extend(self.emit_untag()); // idx
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag()); // idx
                 v.push(Self::host_call(41));
                 v.push(Instruction::I64Const(0));
                 Ok(v)
@@ -850,7 +859,9 @@ impl WasmEmitter {
                 // The Lisp-level arg is a tagged string (u128 bytes from near/load-bytes
                 // or near/attached_deposit_u128); we untag it to extract the pointer.
                 if a.len() != 2 {
-                    return Err("near/batch-transfer: expected 2 args (promise_idx, amount_bytes)".into());
+                    return Err(
+                        "near/batch-transfer: expected 2 args (promise_idx, amount_bytes)".into(),
+                    );
                 }
                 self.need_host(44);
                 let idx = self.expr(&a[0])?;

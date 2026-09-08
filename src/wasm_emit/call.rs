@@ -58,21 +58,33 @@ impl WasmEmitter {
         // "PANIC: <msg>" on stderr, nonzero exit). Other modes: unreachable
         // trap. Non-string args trap without message (documented deviation).
         if op == "error" {
-            if a.len() != 1 { return Err("error: need 1 arg".into()); }
+            if a.len() != 1 {
+                return Err("error: need 1 arg".into());
+            }
             let av = self.expr(&a[0])?;
             let va = self.local_idx("__err_v");
             let mut v = Vec::new();
-            v.extend(av); v.push(Instruction::LocalSet(va));
+            v.extend(av);
+            v.push(Instruction::LocalSet(va));
             if !self.wasi_mode {
                 self.need_host(27); // panic_utf8
-                v.push(Instruction::LocalGet(va)); v.push(Instruction::I64Const(7)); v.push(Instruction::I64And);
-                v.push(Instruction::I64Const(TAG_STR)); v.push(Instruction::I64Eq);
+                v.push(Instruction::LocalGet(va));
+                v.push(Instruction::I64Const(7));
+                v.push(Instruction::I64And);
+                v.push(Instruction::I64Const(TAG_STR));
+                v.push(Instruction::I64Eq);
                 v.push(Instruction::If(BlockType::Result(ValType::I64)));
                 // string: panic_utf8(len, ptr)
-                v.push(Instruction::LocalGet(va)); v.push(Instruction::I64Const(TAG_BITS)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalGet(va));
+                v.push(Instruction::I64Const(TAG_BITS));
+                v.push(Instruction::I64ShrU);
                 v.push(Instruction::LocalSet(va));
-                v.push(Instruction::LocalGet(va)); v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
-                v.push(Instruction::LocalGet(va)); v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalGet(va));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalGet(va));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
                 v.push(Self::host_call(27));
                 v.push(Instruction::I64Const(TAG_NIL));
                 v.push(Instruction::Else);
@@ -320,12 +332,22 @@ impl WasmEmitter {
             // catch jump, otherwise a loud compile error.
             if func_param_count != a.len() {
                 let mut v = Vec::new();
-                if self.try_guard(&mut v, &format!("arity: {} expects {} args, got {}", op, func_param_count, a.len())) {
+                if self.try_guard(
+                    &mut v,
+                    &format!(
+                        "arity: {} expects {} args, got {}",
+                        op,
+                        func_param_count,
+                        a.len()
+                    ),
+                ) {
                     return Ok(v);
                 }
                 return Err(format!(
                     "call '{}': expects {} args, got {}",
-                    op, func_param_count, a.len()
+                    op,
+                    func_param_count,
+                    a.len()
                 ));
             }
             let mut v = Vec::new();

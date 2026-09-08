@@ -3,15 +3,18 @@
 //! (surface_tour2_exotic.ts) and are gated by ts compile fixtures already;
 //! here we RUN every mock-supported host call surface_tour2.ts exposes.
 
-use std::sync::{Mutex, OnceLock};
 use lisp_rlm_wasm::ts_frontend::ts_to_lisp_source;
 use lisp_rlm_wasm::{compile_near_from_exprs, parse_all};
+use std::sync::{Mutex, OnceLock};
 
 const TOUR: &str = include_str!("../fixtures/surface_tour2.ts");
 
 fn lock() -> std::sync::MutexGuard<'static, ()> {
     static L: OnceLock<Mutex<()>> = OnceLock::new();
-    match L.get_or_init(|| Mutex::new(())).lock() { Ok(g) => g, Err(p) => p.into_inner() }
+    match L.get_or_init(|| Mutex::new(())).lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    }
 }
 
 fn wasm() -> Vec<u8> {
@@ -21,7 +24,10 @@ fn wasm() -> Vec<u8> {
     compile_near_from_exprs(&exprs).unwrap()
 }
 
-struct Call<'a> { method: &'a str, args: &'a str }
+struct Call<'a> {
+    method: &'a str,
+    args: &'a str,
+}
 
 fn run(c: Call) -> String {
     let _l = lock();
@@ -29,8 +35,17 @@ fn run(c: Call) -> String {
     std::fs::write(&p, wasm()).unwrap();
     let manifest = format!("st2.t.near={}", p.display());
     let out = std::process::Command::new("./target/release/near-mock")
-        .arg("cross").arg(std::env::temp_dir().join(format!("st2_{}.bin", std::process::id())).to_str().unwrap()).arg(&manifest)
-        .arg("st2.t.near").arg(c.method).arg(c.args)
+        .arg("cross")
+        .arg(
+            std::env::temp_dir()
+                .join(format!("st2_{}.bin", std::process::id()))
+                .to_str()
+                .unwrap(),
+        )
+        .arg(&manifest)
+        .arg("st2.t.near")
+        .arg(c.method)
+        .arg(c.args)
         .output()
         .expect("near-mock spawn");
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -45,7 +60,10 @@ fn run(c: Call) -> String {
 
 #[test]
 fn tour2_str_methods() {
-    let out = run(Call { method: "strMethods", args: "{}" });
+    let out = run(Call {
+        method: "strMethods",
+        args: "{}",
+    });
     // startsWith(S) endsWith(E) includes(I) indexOf(6) charAt(e) slice(hello)
     // concat(...) length(14) — source order is S then E then I
     assert!(out.contains("SEI(6)"), "predicates failed: {out}");
@@ -56,7 +74,10 @@ fn tour2_str_methods() {
 
 #[test]
 fn tour2_syntax() {
-    let out = run(Call { method: "syntaxTour", args: "{}" });
+    let out = run(Call {
+        method: "syntaxTour",
+        args: "{}",
+    });
     // abc:31 — for..of + i++/+= + template
     // (arrow removed: lambda-in-let breaks the template fold —
     //  see tour2_regression_lambda_template_fold)
@@ -65,29 +86,44 @@ fn tour2_syntax() {
 
 #[test]
 fn tour2_context_hosts() {
-    let out = run(Call { method: "ctx", args: "{}" });
+    let out = run(Call {
+        method: "ctx",
+        args: "{}",
+    });
     // 7 colon-separated fields. Mock semantics verified 2026-09-01:
     // randomSeed → 64 hex chars (hex-encoded 32B), signerAccountPk 51 chars
     // (base58), gas fields true, depositGte(0,0) → bool true; `${ok == 1}`
     // compares across tags (bool vs num) → false per interpreter parity.
-    assert!(out.contains("64:51:true:true:true:true:false"), "ctx hosts: {out}");
+    assert!(
+        out.contains("64:51:true:true:true:true:false"),
+        "ctx hosts: {out}"
+    );
 }
 
 #[test]
 fn tour2_input() {
-    let out = run(Call { method: "inputEcho", args: "{\"k\":123}" });
+    let out = run(Call {
+        method: "inputEcho",
+        args: "{\"k\":123}",
+    });
     assert!(out.contains("k"), "input() should echo args json: {out}");
 }
 
 #[test]
 fn tour2_iter_noop_safe() {
-    let out = run(Call { method: "iterProbe", args: "{}" });
+    let out = run(Call {
+        method: "iterProbe",
+        args: "{}",
+    });
     assert!(out.contains("iter"), "iter prefix/next trapped: {out}");
 }
 
 #[test]
 fn tour2_num_storage_roundtrip() {
-    let out = run(Call { method: "numStorage", args: "{}" });
+    let out = run(Call {
+        method: "numStorage",
+        args: "{}",
+    });
     assert!(
         out.contains("340282366920938463463374607431768211455"),
         "u128 num-storage roundtrip: {out}"
@@ -96,13 +132,22 @@ fn tour2_num_storage_roundtrip() {
 
 #[test]
 fn tour2_money_noop_safe() {
-    let out = run(Call { method: "money", args: "{}" });
-    assert!(out.contains("money-ok"), "transfer/batch-create trapped: {out}");
+    let out = run(Call {
+        method: "money",
+        args: "{}",
+    });
+    assert!(
+        out.contains("money-ok"),
+        "transfer/batch-create trapped: {out}"
+    );
 }
 
 #[test]
 fn tour2_json_arr() {
-    let out = run(Call { method: "jsonArr", args: "{\"ks\":[\"alpha\",\"beta\"]}" });
+    let out = run(Call {
+        method: "jsonArr",
+        args: "{\"ks\":[\"alpha\",\"beta\"]}",
+    });
     assert!(out.contains("alpha"), "jsonArr[0]: {out}");
 }
 
@@ -138,9 +183,17 @@ fn tour2_regression_lambda_template_fold() {
     let p = std::env::temp_dir().join(format!("st2reg_{}.wasm", std::process::id()));
     std::fs::write(&p, &wasm).unwrap();
     let out = std::process::Command::new("./target/release/near-mock")
-        .arg("cross").arg("{}").arg(format!("reg.t.near={}", p.display()))
-        .arg("reg.t.near").arg("m").arg("{}")
-        .output().unwrap();
+        .arg("cross")
+        .arg("{}")
+        .arg(format!("reg.t.near={}", p.display()))
+        .arg("reg.t.near")
+        .arg("m")
+        .arg("{}")
+        .output()
+        .unwrap();
     let s = String::from_utf8_lossy(&out.stdout);
-    assert!(s.contains("x:31:y:42"), "lambda+template fold still broken: {s}");
+    assert!(
+        s.contains("x:31:y:42"),
+        "lambda+template fold still broken: {s}"
+    );
 }

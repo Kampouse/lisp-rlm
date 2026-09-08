@@ -11,8 +11,7 @@
 use lisp_rlm_wasm::ts_frontend::ts_to_lisp_source;
 use lisp_rlm_wasm::{compile_near_from_exprs, parse_all};
 
-const EXAMPLES_TS: &str =
-    include_str!("../crates/browser-compiler/web-app/src/lib/examples.ts");
+const EXAMPLES_TS: &str = include_str!("../crates/browser-compiler/web-app/src/lib/examples.ts");
 
 /// Parse `name: 'X', ... source: \`...\`` entries out of examples.ts.
 /// Playground entries are flat template-literal blocks; we only keep the
@@ -23,7 +22,9 @@ fn extract() -> Vec<(String, String)> {
     let mut rest = text;
     while let Some(i) = rest.find("name: '") {
         rest = &rest[i + 7..];
-        let Some(name_end) = rest.find('\'') else { break };
+        let Some(name_end) = rest.find('\'') else {
+            break;
+        };
         let name = rest[..name_end].to_string();
         rest = &rest[name_end..];
         // source block for this entry (before the next entry's name)

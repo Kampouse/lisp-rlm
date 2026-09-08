@@ -19,48 +19,52 @@ use wasm_encoder::{
 };
 
 // ─── Sub-modules ──────────────────────────────────────────────────────
-pub mod helpers;
-pub mod intrinsics;
-pub mod lambda;
-pub mod name_map;
-pub mod gas;
-pub mod const_fold;
-pub mod dynamic_call;
-pub mod host_calls;
 pub mod borsh;
-pub mod json;
 pub mod call;
+pub mod call_borsh;
 pub mod call_core;
-pub mod call_near_storage;
-pub mod call_near_io;
 pub mod call_hof;
 pub mod call_json;
-pub mod call_borsh;
 pub mod call_list;
 pub mod call_near_context;
 pub mod call_near_crypto;
-pub mod call_near_promise;
+pub mod call_near_io;
 pub mod call_near_iter;
+pub mod call_near_promise;
+pub mod call_near_storage;
 pub mod call_u128;
 pub mod call_u128_str;
+pub mod const_fold;
+pub mod dynamic_call;
+pub mod gas;
+pub mod helpers;
+pub mod host_calls;
+pub mod intrinsics;
+pub mod json;
+pub mod lambda;
+pub mod name_map;
 use call_u128_str::U128Helpers;
-pub mod call_fp;
-pub mod call_defi;
 pub mod call_bitwise;
+pub mod call_defi;
+pub mod call_fp;
 pub mod call_string;
 mod call_string_list;
 pub mod try_catch;
 use try_catch::TryFrame;
+pub mod call_dict;
 pub mod call_outlayer;
 pub mod call_predicate;
-pub mod call_dict;
-pub mod wasm_link;
 pub mod compile;
 pub mod int_emit;
+pub mod wasm_link;
 
 // Re-exports: public API lives in compile.rs
-pub use compile::{compile_pure, compile_standalone, compile_standalone_opts, compile_fuzz, compile_near, compile_near_with_map, compile_near_untyped, compile_near_from_exprs, compile_near_from_exprs_with_map, compile_near_to_wat_from_exprs, compile_pure_to_wat, compile_near_to_wat, resolve_modules};
-
+pub use compile::{
+    compile_fuzz, compile_near, compile_near_from_exprs, compile_near_from_exprs_with_map,
+    compile_near_to_wat, compile_near_to_wat_from_exprs, compile_near_untyped,
+    compile_near_with_map, compile_pure, compile_pure_to_wat, compile_standalone,
+    compile_standalone_opts, resolve_modules,
+};
 
 // ── NEAR host functions (name, params, results) ──
 
@@ -69,106 +73,423 @@ pub use compile::{compile_pure, compile_standalone, compile_standalone_opts, com
 // [] = void return, [I64] = returns u64
 pub(crate) const HOST_FUNCS: &[(&str, &[ValType], &[ValType])] = &[
     // Registers
-    ("read_register",               &[ValType::I64, ValType::I64], &[]),           // 0
-    ("register_len",                &[ValType::I64], &[ValType::I64]),             // 1
-    ("write_register",              &[ValType::I64, ValType::I64, ValType::I64], &[]), // 2
+    ("read_register", &[ValType::I64, ValType::I64], &[]), // 0
+    ("register_len", &[ValType::I64], &[ValType::I64]),    // 1
+    (
+        "write_register",
+        &[ValType::I64, ValType::I64, ValType::I64],
+        &[],
+    ), // 2
     // Context
-    ("current_account_id",          &[ValType::I64], &[]),                         // 3
-    ("signer_account_id",           &[ValType::I64], &[]),                         // 4
-    ("signer_account_pk",           &[ValType::I64], &[]),                         // 5
-    ("predecessor_account_id",      &[ValType::I64], &[]),                         // 6
-    ("input",                       &[ValType::I64], &[]),                         // 7
-    ("block_index",                 &[], &[ValType::I64]),                         // 8
-    ("block_timestamp",             &[], &[ValType::I64]),                         // 9
-    ("epoch_height",                &[], &[ValType::I64]),                         // 10
-    ("storage_usage",               &[], &[ValType::I64]),                         // 11
+    ("current_account_id", &[ValType::I64], &[]), // 3
+    ("signer_account_id", &[ValType::I64], &[]),  // 4
+    ("signer_account_pk", &[ValType::I64], &[]),  // 5
+    ("predecessor_account_id", &[ValType::I64], &[]), // 6
+    ("input", &[ValType::I64], &[]),              // 7
+    ("block_index", &[], &[ValType::I64]),        // 8
+    ("block_timestamp", &[], &[ValType::I64]),    // 9
+    ("epoch_height", &[], &[ValType::I64]),       // 10
+    ("storage_usage", &[], &[ValType::I64]),      // 11
     // Economics
-    ("account_balance",             &[ValType::I64], &[]),                         // 12
-    ("account_locked_balance",      &[ValType::I64], &[]),                         // 13
-    ("attached_deposit",            &[ValType::I64], &[]),                         // 14
-    ("prepaid_gas",                 &[], &[ValType::I64]),                         // 15
-    ("used_gas",                    &[], &[ValType::I64]),                         // 16
+    ("account_balance", &[ValType::I64], &[]),        // 12
+    ("account_locked_balance", &[ValType::I64], &[]), // 13
+    ("attached_deposit", &[ValType::I64], &[]),       // 14
+    ("prepaid_gas", &[], &[ValType::I64]),            // 15
+    ("used_gas", &[], &[ValType::I64]),               // 16
     // Storage
-    ("storage_write",               &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]), // 17
-    ("storage_read",                &[ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]),     // 18
-    ("storage_remove",              &[ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]),     // 19
-    ("storage_has_key",             &[ValType::I64, ValType::I64], &[ValType::I64]),                   // 20
+    (
+        "storage_write",
+        &[
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+        ],
+        &[ValType::I64],
+    ), // 17
+    (
+        "storage_read",
+        &[ValType::I64, ValType::I64, ValType::I64],
+        &[ValType::I64],
+    ), // 18
+    (
+        "storage_remove",
+        &[ValType::I64, ValType::I64, ValType::I64],
+        &[ValType::I64],
+    ), // 19
+    (
+        "storage_has_key",
+        &[ValType::I64, ValType::I64],
+        &[ValType::I64],
+    ), // 20
     // Math / Crypto
-    ("sha256",                      &[ValType::I64, ValType::I64, ValType::I64], &[]),                // 21
-    ("keccak256",                   &[ValType::I64, ValType::I64, ValType::I64], &[]),                // 22
-    ("random_seed",                 &[ValType::I64], &[]),                                          // 23
-    ("ed25519_verify",              &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]), // 24
+    ("sha256", &[ValType::I64, ValType::I64, ValType::I64], &[]), // 21
+    (
+        "keccak256",
+        &[ValType::I64, ValType::I64, ValType::I64],
+        &[],
+    ), // 22
+    ("random_seed", &[ValType::I64], &[]),                        // 23
+    (
+        "ed25519_verify",
+        &[
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+        ],
+        &[ValType::I64],
+    ), // 24
     // Misc
-    ("value_return",                &[ValType::I64, ValType::I64], &[]),            // 25
-    ("panic",                       &[], &[]),                                      // 26
-    ("panic_utf8",                  &[ValType::I64, ValType::I64], &[]),            // 27
-    ("log_utf8",                    &[ValType::I64, ValType::I64], &[]),            // 28
-    ("log_utf16",                   &[ValType::I64, ValType::I64], &[]),            // 29
+    ("value_return", &[ValType::I64, ValType::I64], &[]), // 25
+    ("panic", &[], &[]),                                  // 26
+    ("panic_utf8", &[ValType::I64, ValType::I64], &[]),   // 27
+    ("log_utf8", &[ValType::I64, ValType::I64], &[]),     // 28
+    ("log_utf16", &[ValType::I64, ValType::I64], &[]),    // 29
     // Promises (core)
-    ("promise_create",              &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]), // 30
-    ("promise_then",                &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]), // 31
-    ("promise_and",                 &[ValType::I64, ValType::I64], &[ValType::I64]), // 32
-    ("promise_results_count",       &[], &[ValType::I64]),                          // 33
-    ("promise_result",              &[ValType::I64, ValType::I64], &[ValType::I64]),   // 34
-    ("promise_return",              &[ValType::I64], &[]),                          // 35
+    (
+        "promise_create",
+        &[
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+        ],
+        &[ValType::I64],
+    ), // 30
+    (
+        "promise_then",
+        &[
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+        ],
+        &[ValType::I64],
+    ), // 31
+    (
+        "promise_and",
+        &[ValType::I64, ValType::I64],
+        &[ValType::I64],
+    ), // 32
+    ("promise_results_count", &[], &[ValType::I64]), // 33
+    (
+        "promise_result",
+        &[ValType::I64, ValType::I64],
+        &[ValType::I64],
+    ), // 34
+    ("promise_return", &[ValType::I64], &[]),        // 35
     // Iterator
-    ("storage_iter_prefix",         &[ValType::I64, ValType::I64], &[ValType::I64]), // 36
-    ("storage_iter_range",          &[ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]), // 37
-    ("storage_iter_next",           &[ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]), // 38
+    (
+        "storage_iter_prefix",
+        &[ValType::I64, ValType::I64],
+        &[ValType::I64],
+    ), // 36
+    (
+        "storage_iter_range",
+        &[ValType::I64, ValType::I64, ValType::I64, ValType::I64],
+        &[ValType::I64],
+    ), // 37
+    (
+        "storage_iter_next",
+        &[ValType::I64, ValType::I64, ValType::I64],
+        &[ValType::I64],
+    ), // 38
     // Promise batch
-    ("promise_batch_create",        &[ValType::I64, ValType::I64], &[ValType::I64]),              // 39
-    ("promise_batch_then",          &[ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]), // 40
-    ("promise_batch_action_create_account", &[ValType::I64], &[]),                                // 41
-    ("promise_batch_action_deploy_contract", &[ValType::I64, ValType::I64, ValType::I64], &[]),    // 42
-    ("promise_batch_action_function_call", &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[]), // 43
-    ("promise_batch_action_transfer", &[ValType::I64, ValType::I64], &[]),            // 44
-    ("promise_batch_action_stake",  &[ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[]), // 45
-    ("promise_batch_action_add_key_with_full_access", &[ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[]), // 46
-    ("promise_batch_action_add_key_with_function_call", &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[]), // 47
-    ("promise_batch_action_delete_key", &[ValType::I64, ValType::I64, ValType::I64], &[]),          // 48
-    ("promise_batch_action_delete_account", &[ValType::I64, ValType::I64, ValType::I64], &[]),      // 49
+    (
+        "promise_batch_create",
+        &[ValType::I64, ValType::I64],
+        &[ValType::I64],
+    ), // 39
+    (
+        "promise_batch_then",
+        &[ValType::I64, ValType::I64, ValType::I64],
+        &[ValType::I64],
+    ), // 40
+    ("promise_batch_action_create_account", &[ValType::I64], &[]), // 41
+    (
+        "promise_batch_action_deploy_contract",
+        &[ValType::I64, ValType::I64, ValType::I64],
+        &[],
+    ), // 42
+    (
+        "promise_batch_action_function_call",
+        &[
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+        ],
+        &[],
+    ), // 43
+    (
+        "promise_batch_action_transfer",
+        &[ValType::I64, ValType::I64],
+        &[],
+    ), // 44
+    (
+        "promise_batch_action_stake",
+        &[ValType::I64, ValType::I64, ValType::I64, ValType::I64],
+        &[],
+    ), // 45
+    (
+        "promise_batch_action_add_key_with_full_access",
+        &[ValType::I64, ValType::I64, ValType::I64, ValType::I64],
+        &[],
+    ), // 46
+    (
+        "promise_batch_action_add_key_with_function_call",
+        &[
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+        ],
+        &[],
+    ), // 47
+    (
+        "promise_batch_action_delete_key",
+        &[ValType::I64, ValType::I64, ValType::I64],
+        &[],
+    ), // 48
+    (
+        "promise_batch_action_delete_account",
+        &[ValType::I64, ValType::I64, ValType::I64],
+        &[],
+    ), // 49
     // Global contracts
-    ("deploy_contract",             &[ValType::I64, ValType::I64], &[]),            // 50
-    ("current_code_hash",           &[ValType::I64], &[]),                          // 51
+    ("deploy_contract", &[ValType::I64, ValType::I64], &[]), // 50
+    ("current_code_hash", &[ValType::I64], &[]),             // 51
     // Extra crypto
-    ("keccak512",                   &[ValType::I64, ValType::I64, ValType::I64], &[]),                // 52
-    ("ripemd160",                   &[ValType::I64, ValType::I64, ValType::I64], &[]),                // 53
-    ("ecrecover",                   &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]), // 54
-    ("p256_verify",                 &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]), // 55 — NEAR host: (sig_len, sig_ptr, msg_len, msg_ptr, pk_len, pk_ptr) → u64
+    (
+        "keccak512",
+        &[ValType::I64, ValType::I64, ValType::I64],
+        &[],
+    ), // 52
+    (
+        "ripemd160",
+        &[ValType::I64, ValType::I64, ValType::I64],
+        &[],
+    ), // 53
+    (
+        "ecrecover",
+        &[
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+        ],
+        &[ValType::I64],
+    ), // 54
+    (
+        "p256_verify",
+        &[
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+        ],
+        &[ValType::I64],
+    ), // 55 — NEAR host: (sig_len, sig_ptr, msg_len, msg_ptr, pk_len, pk_ptr) → u64
     // Alt BN128
-    ("alt_bn128_g1_multiexp",       &[ValType::I64, ValType::I64, ValType::I64], &[]),                // 56
-    ("alt_bn128_g1_sum",            &[ValType::I64, ValType::I64, ValType::I64], &[]),                // 57
-    ("alt_bn128_pairing_check",     &[ValType::I64, ValType::I64], &[ValType::I64]),                   // 58
+    (
+        "alt_bn128_g1_multiexp",
+        &[ValType::I64, ValType::I64, ValType::I64],
+        &[],
+    ), // 56
+    (
+        "alt_bn128_g1_sum",
+        &[ValType::I64, ValType::I64, ValType::I64],
+        &[],
+    ), // 57
+    (
+        "alt_bn128_pairing_check",
+        &[ValType::I64, ValType::I64],
+        &[ValType::I64],
+    ), // 58
     // BLS12-381
-    ("bls12381_p1_sum",             &[ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]),    // 59
-    ("bls12381_p2_sum",             &[ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]),    // 60
-    ("bls12381_g1_multiexp",        &[ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]),    // 61
-    ("bls12381_g2_multiexp",        &[ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]),    // 62
-    ("bls12381_map_fp_to_g1",       &[ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]),    // 63
-    ("bls12381_map_fp2_to_g2",      &[ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]),    // 64
-    ("bls12381_pairing_check",      &[ValType::I64, ValType::I64], &[ValType::I64]),                   // 65
-    ("bls12381_p1_decompress",      &[ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]),    // 66
-    ("bls12381_p2_decompress",      &[ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]),    // 67
+    (
+        "bls12381_p1_sum",
+        &[ValType::I64, ValType::I64, ValType::I64],
+        &[ValType::I64],
+    ), // 59
+    (
+        "bls12381_p2_sum",
+        &[ValType::I64, ValType::I64, ValType::I64],
+        &[ValType::I64],
+    ), // 60
+    (
+        "bls12381_g1_multiexp",
+        &[ValType::I64, ValType::I64, ValType::I64],
+        &[ValType::I64],
+    ), // 61
+    (
+        "bls12381_g2_multiexp",
+        &[ValType::I64, ValType::I64, ValType::I64],
+        &[ValType::I64],
+    ), // 62
+    (
+        "bls12381_map_fp_to_g1",
+        &[ValType::I64, ValType::I64, ValType::I64],
+        &[ValType::I64],
+    ), // 63
+    (
+        "bls12381_map_fp2_to_g2",
+        &[ValType::I64, ValType::I64, ValType::I64],
+        &[ValType::I64],
+    ), // 64
+    (
+        "bls12381_pairing_check",
+        &[ValType::I64, ValType::I64],
+        &[ValType::I64],
+    ), // 65
+    (
+        "bls12381_p1_decompress",
+        &[ValType::I64, ValType::I64, ValType::I64],
+        &[ValType::I64],
+    ), // 66
+    (
+        "bls12381_p2_decompress",
+        &[ValType::I64, ValType::I64, ValType::I64],
+        &[ValType::I64],
+    ), // 67
     // Extra promises
-    ("promise_set_refund_to",                    &[ValType::I64, ValType::I64, ValType::I64], &[]),               // 68
-    ("promise_batch_action_state_init",          &[ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]), // 69
-    ("promise_batch_action_state_init_by_account_id", &[ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]), // 70
-    ("set_state_init_data_entry",                &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[]), // 71
-    ("current_contract_code",                    &[ValType::I64], &[ValType::I64]),                                // 72
-    ("refund_to_account_id",                     &[ValType::I64], &[]),                                          // 73
-    ("promise_batch_action_function_call_weight", &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[]), // 74
-    ("promise_batch_action_deploy_global_contract", &[ValType::I64, ValType::I64, ValType::I64], &[]),         // 75
-    ("promise_batch_action_deploy_global_contract_by_account_id", &[ValType::I64, ValType::I64, ValType::I64], &[]), // 76
-    ("promise_batch_action_use_global_contract", &[ValType::I64, ValType::I64, ValType::I64], &[]),             // 77
-    ("promise_batch_action_use_global_contract_by_account_id", &[ValType::I64, ValType::I64, ValType::I64], &[]), // 78
-    ("promise_batch_action_transfer_to_gas_key", &[ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[]), // 79
-    ("promise_batch_action_add_gas_key_with_full_access", &[ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[]), // 80
-    ("promise_batch_action_add_gas_key_with_function_call", &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[]), // 81
-    ("promise_yield_create",  &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]), // 82
-    ("promise_yield_resume", &[ValType::I64, ValType::I64, ValType::I64, ValType::I64], &[ValType::I64]), // 83
+    (
+        "promise_set_refund_to",
+        &[ValType::I64, ValType::I64, ValType::I64],
+        &[],
+    ), // 68
+    (
+        "promise_batch_action_state_init",
+        &[ValType::I64, ValType::I64, ValType::I64, ValType::I64],
+        &[ValType::I64],
+    ), // 69
+    (
+        "promise_batch_action_state_init_by_account_id",
+        &[ValType::I64, ValType::I64, ValType::I64, ValType::I64],
+        &[ValType::I64],
+    ), // 70
+    (
+        "set_state_init_data_entry",
+        &[
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+        ],
+        &[],
+    ), // 71
+    ("current_contract_code", &[ValType::I64], &[ValType::I64]), // 72
+    ("refund_to_account_id", &[ValType::I64], &[]),              // 73
+    (
+        "promise_batch_action_function_call_weight",
+        &[
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+        ],
+        &[],
+    ), // 74
+    (
+        "promise_batch_action_deploy_global_contract",
+        &[ValType::I64, ValType::I64, ValType::I64],
+        &[],
+    ), // 75
+    (
+        "promise_batch_action_deploy_global_contract_by_account_id",
+        &[ValType::I64, ValType::I64, ValType::I64],
+        &[],
+    ), // 76
+    (
+        "promise_batch_action_use_global_contract",
+        &[ValType::I64, ValType::I64, ValType::I64],
+        &[],
+    ), // 77
+    (
+        "promise_batch_action_use_global_contract_by_account_id",
+        &[ValType::I64, ValType::I64, ValType::I64],
+        &[],
+    ), // 78
+    (
+        "promise_batch_action_transfer_to_gas_key",
+        &[ValType::I64, ValType::I64, ValType::I64, ValType::I64],
+        &[],
+    ), // 79
+    (
+        "promise_batch_action_add_gas_key_with_full_access",
+        &[ValType::I64, ValType::I64, ValType::I64, ValType::I64],
+        &[],
+    ), // 80
+    (
+        "promise_batch_action_add_gas_key_with_function_call",
+        &[
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+        ],
+        &[],
+    ), // 81
+    (
+        "promise_yield_create",
+        &[
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+        ],
+        &[ValType::I64],
+    ), // 82
+    (
+        "promise_yield_resume",
+        &[ValType::I64, ValType::I64, ValType::I64, ValType::I64],
+        &[ValType::I64],
+    ), // 83
     // Validator
-    ("validator_stake",       &[ValType::I64, ValType::I64, ValType::I64], &[]),  // 84
-    ("validator_total_stake", &[ValType::I64], &[]),                              // 85
+    (
+        "validator_stake",
+        &[ValType::I64, ValType::I64, ValType::I64],
+        &[],
+    ), // 84
+    ("validator_total_stake", &[ValType::I64], &[]), // 85
 ];
 
 const HOST_BASE: u32 = 0xFF00_0000;
@@ -178,23 +499,35 @@ pub const WASI_FD_WRITE: u32 = 90; // sentinel for WASI fd_write in outlayer mod
 pub const MEMCPY_SENTINEL: u32 = 91; // sentinel for shared memcpy helper
 const TEMP_MEM: i64 = 64;
 const AMOUNT_MEM: i64 = 256; // u128 deposit buffer (16 bytes at 256..272)
-const INPUT_BUF: i64 = 16384;  // 16KB for input JSON args
+const INPUT_BUF: i64 = 16384; // 16KB for input JSON args
 const RETURN_BUF: i64 = 32768;
-const STORAGE_BUF: i64 = 8192;  // 8 bytes for storage read/write buffer
-const STORAGE_U128_BUF: i64 = 8208;  // 16 bytes for u128 storage ops
+const STORAGE_BUF: i64 = 8192; // 8 bytes for storage read/write buffer
+const STORAGE_U128_BUF: i64 = 8208; // 16 bytes for u128 storage ops
 pub(crate) const KEY_BUF: i64 = 8224; // 256 bytes for composite key building (near/kv, near/kv-get)
-const KEY_BUF_MAX: usize = 256;       // max composite key length
+const KEY_BUF_MAX: usize = 256; // max composite key length
 pub(crate) const HEAP_START: i64 = 200_000; // heap starts above all data segments and buffers (STDOUT=65536, INPUT=16384, etc.)
 const BORSH_BUF: i64 = 36864; // 4KB scratch buffer for Borsh serialize (after RETURN_BUF)
 
 // ── Borsh schema types (compile-time only) ──
 #[derive(Clone, Debug)]
 pub(crate) enum BorshType {
-    U8, U32, U64, I64, U128, F64, Bool, String, Bytes,
+    U8,
+    U32,
+    U64,
+    I64,
+    U128,
+    F64,
+    Bool,
+    String,
+    Bytes,
     Vec(Box<BorshType>),
     Option(Box<BorshType>),
-    Struct { fields: Vec<(String, BorshType)> },
-    Enum { variants: Vec<(String, Vec<(String, BorshType)>)> },
+    Struct {
+        fields: Vec<(String, BorshType)>,
+    },
+    Enum {
+        variants: Vec<(String, Vec<(String, BorshType)>)>,
+    },
 }
 // ── Tagged value scheme (3-bit tag in bottom bits) ──
 // Every value on the WASM stack is a tagged i64:
@@ -204,39 +537,39 @@ pub(crate) enum BorshType {
 // "" (empty str) and '() (empty array) REMAIN truthy by decision.
 // NOTE: Float(0.0) is falsy in the interpreter; wasm has no float runtime tag yet —
 // float literals hard-error at compile. When floats land here, add Float(0.0) to the falsy set.
-const TAG_NUM:     i64 = 0; // payload = integer value (61-bit signed)
-const TAG_BOOL:    i64 = 1; // payload = 0 (false) or 1 (true)
-const TAG_FNREF:   i64 = 2; // payload = function index
+const TAG_NUM: i64 = 0; // payload = integer value (61-bit signed)
+const TAG_BOOL: i64 = 1; // payload = 0 (false) or 1 (true)
+const TAG_FNREF: i64 = 2; // payload = function index
 const TAG_CLOSURE: i64 = 3; // payload = heap pointer
-pub const TAG_NIL:     i64 = 4;
-pub const TAG_STR:     i64 = 5; // payload = (heap_off | (len << 32))
-const TAG_ARRAY:   i64 = 6; // payload = ((heap_ptr << TAG_BITS) | TAG_ARRAY), heap layout: [count, elem0, elem1, ...]
+pub const TAG_NIL: i64 = 4;
+pub const TAG_STR: i64 = 5; // payload = (heap_off | (len << 32))
+const TAG_ARRAY: i64 = 6; // payload = ((heap_ptr << TAG_BITS) | TAG_ARRAY), heap layout: [count, elem0, elem1, ...]
 pub(crate) const TAG_BITS: i64 = 3;
 const RUNTIME_HEAP_PTR: i64 = 56; // 8-byte memory slot holding runtime bump-allocator ptr (initialized from heap_ptr)
-// Sentinel falsy values (used for truthiness check)
-const TAGGED_FALSE: i64 = TAG_BOOL;       // 1
-const TAGGED_NIL:   i64 = TAG_NIL;        // 4
-// ~300 Tgas on NEAR ≈ ~10B simple ops. Cap at 1B to be safe (stops runaway, still uses full NEAR runtime).
+                                  // Sentinel falsy values (used for truthiness check)
+const TAGGED_FALSE: i64 = TAG_BOOL; // 1
+const TAGGED_NIL: i64 = TAG_NIL; // 4
+                                 // ~300 Tgas on NEAR ≈ ~10B simple ops. Cap at 1B to be safe (stops runaway, still uses full NEAR runtime).
 const GAS_LIMIT: i64 = 1_000_000_000;
 const RETURN_FLAG: u32 = 0; // mutable i64 global for return flag
-const FP_GLOBAL: u32 = 1;  // mutable i64 global for frame pointer (NEAR mode)
+const FP_GLOBAL: u32 = 1; // mutable i64 global for frame pointer (NEAR mode)
 
 // ── Memory safety constants ──
-const DEPTH_COUNTER: i64 = 40;  // 8-byte slot: recursion depth counter. MUST live below HEAP_START — the runtime heap grows upward unboundedly and would stomp a high address (e.g. old 999980) once allocation volume grows.
-const MAX_DEPTH: i64 = 16384;   // max call depth before trap (2026-08-29: 512 was exhausted by meta-circular interpreters — every nested my-eval/eval-form call is a lisp call; ~11 wasm frames per interpreted recursion level left user code only ~45 levels)
-// Protected memory regions: [start, end) — store_i64/load_i64/mem-set!/mem-get may NOT write here
-// Covers: TEMP_MEM(64), AMOUNT_MEM(256), STORAGE_BUF(8192), STORAGE_U128_BUF(8208),
-//         HANDLE_COUNT_ADDR(48), RUNTIME_HEAP_PTR(56), DEPTH_COUNTER(999980), BORSH_BUF(36864)
+const DEPTH_COUNTER: i64 = 40; // 8-byte slot: recursion depth counter. MUST live below HEAP_START — the runtime heap grows upward unboundedly and would stomp a high address (e.g. old 999980) once allocation volume grows.
+const MAX_DEPTH: i64 = 16384; // max call depth before trap (2026-08-29: 512 was exhausted by meta-circular interpreters — every nested my-eval/eval-form call is a lisp call; ~11 wasm frames per interpreted recursion level left user code only ~45 levels)
+                              // Protected memory regions: [start, end) — store_i64/load_i64/mem-set!/mem-get may NOT write here
+                              // Covers: TEMP_MEM(64), AMOUNT_MEM(256), STORAGE_BUF(8192), STORAGE_U128_BUF(8208),
+                              //         HANDLE_COUNT_ADDR(48), RUNTIME_HEAP_PTR(56), DEPTH_COUNTER(999980), BORSH_BUF(36864)
 const PROTECTED_REGIONS: &[(i64, i64)] = &[
-    (40, 48),    // DEPTH_COUNTER (below HANDLE_COUNT — 64..96 is the test-call marshalling area, do NOT use)
-    (48, 56),    // HANDLE_COUNT_ADDR
-    (56, 64),    // RUNTIME_HEAP_PTR
-    (64, 72),    // TEMP_MEM
-    (256, 272),  // AMOUNT_MEM
-    (4096, 49152+4096), // HEAP..HANDLE_TABLE end
-    (8192, 8480),// STORAGE_BUF + STORAGE_U128_BUF + KEY_BUF
+    (40, 48), // DEPTH_COUNTER (below HANDLE_COUNT — 64..96 is the test-call marshalling area, do NOT use)
+    (48, 56), // HANDLE_COUNT_ADDR
+    (56, 64), // RUNTIME_HEAP_PTR
+    (64, 72), // TEMP_MEM
+    (256, 272), // AMOUNT_MEM
+    (4096, 49152 + 4096), // HEAP..HANDLE_TABLE end
+    (8192, 8480), // STORAGE_BUF + STORAGE_U128_BUF + KEY_BUF
     (131_072, 136_720), // storage-read memo cache (count + slot table)
-    (16384, 32768+8192), // INPUT_BUF..RETURN_BUF end
+    (16384, 32768 + 8192), // INPUT_BUF..RETURN_BUF end
     (36864, 40960), // BORSH_BUF
 ];
 // Tag validation: valid low 3 bits are 0–6 (TAG_NUM..TAG_ARRAY). 7 is invalid.
@@ -247,19 +580,19 @@ const TAG_INVALID: i64 = 7;
 // storage-write ops, which all flush the cache (count=0). Reads of the
 // same key are served from a fixed slot table in linear memory instead of
 // repeating the storage_read host call.
-const CACHE_COUNT_ADDR: i64 = 131_072;  // u64: number of filled slots (0..=64)
-const CACHE_SLOT_BASE: i64 = 131_080;   // 64 slots × 88 bytes
+const CACHE_COUNT_ADDR: i64 = 131_072; // u64: number of filled slots (0..=64)
+const CACHE_SLOT_BASE: i64 = 131_080; // 64 slots × 88 bytes
 pub(crate) const CACHE_SLOTS: i64 = 64;
 pub(crate) const CACHE_KEY_CAP: i64 = 64; // max cached key length; longer keys read uncached
-pub(crate) const CACHE_STRIDE: i64 = 88;  // key_ptr | key_len | value_tagged | key-bytes copy
-const CACHE_END: u32 = 136_720;           // 131080 + 64*88 = 136712, 8-aligned pad
-// ── Handle table for memory-safe struct access ──
-const HANDLE_COUNT_ADDR: i64 = 48;   // 8-byte slot: number of allocated handles
+pub(crate) const CACHE_STRIDE: i64 = 88; // key_ptr | key_len | value_tagged | key-bytes copy
+const CACHE_END: u32 = 136_720; // 131080 + 64*88 = 136712, 8-aligned pad
+                                // ── Handle table for memory-safe struct access ──
+const HANDLE_COUNT_ADDR: i64 = 48; // 8-byte slot: number of allocated handles
 const HANDLE_TABLE_BASE: i64 = 49152; // base of handle table (1024 entries × 16 bytes = 16KB)
-const MAX_HANDLES: i64 = 1024;        // max concurrent allocations
-// 1024 entries occupy [49152, 65536). STDOUT_BASE is 65536 — table end exactly
-// meets it, no overlap (2026-08-29: was 256 entries; recursive Lisp interpreters
-// heap-allocating per eval node exhausted 256 handles and trapped 'unreachable').
+const MAX_HANDLES: i64 = 1024; // max concurrent allocations
+                               // 1024 entries occupy [49152, 65536). STDOUT_BASE is 65536 — table end exactly
+                               // meets it, no overlap (2026-08-29: was 256 entries; recursive Lisp interpreters
+                               // heap-allocating per eval node exhausted 256 handles and trapped 'unreachable').
 
 pub(crate) struct FuncDef {
     pub name: String,
@@ -315,11 +648,11 @@ pub struct WasmEmitter {
     pub(crate) next_data_offset: u32,
     pub(crate) host_needed: HashSet<usize>,
     pub(crate) gas_local: Option<u32>, // index of the gas counter local (i64)
-    pub(crate) needs_frame: bool, // function body allocates from FP_GLOBAL
+    pub(crate) needs_frame: bool,      // function body allocates from FP_GLOBAL
     pub(crate) heap_ptr: u32, // bump allocator; 0 = not yet initialized (lazy snap to data section end)
     pub(crate) lambda_counter: u32, // unique lambda id
     pub(crate) list_ptr_counter: u32, // unique temp per (list ...) site — nested dynamic lists each need their OWN __lst_ptr local
-    pub(crate) str_cat_depth: u32, // nesting depth for str-cat local isolation
+    pub(crate) str_cat_depth: u32,    // nesting depth for str-cat local isolation
     pub(crate) fuzz_mode: bool, // if true, export wrappers store tagged values (no untag, no value_return)
     pub(crate) u128h: Option<U128Helpers>, // string-based u128 helper func indices (lazily synthesized)
     pub(crate) fn_int_annotations: std::collections::HashMap<String, (usize, bool)>, // name → (n int params, ret int)
@@ -333,17 +666,17 @@ pub struct WasmEmitter {
     pub(crate) need_wasi_http: bool, // true if http-get is used (for P2 wasi:http path)
     pub(crate) http_urls: Vec<(String, String)>, // (authority, path) per http-get call in p2_mode
     pub(crate) http_post_urls: Vec<(String, String)>, // (authority, path) per http-post call in p2_mode
-    pub(crate) wasi_mode: bool, // true when targeting WASI/OutLayer
-    pub(crate) p2_mode: bool,   // true when targeting P2 component (return i32 from _start)
+    pub(crate) wasi_mode: bool,                       // true when targeting WASI/OutLayer
+    pub(crate) p2_mode: bool, // true when targeting P2 component (return i32 from _start)
     pub(crate) no_proc_exit: bool, // true when wrapping with wit-component adapter (return cleanly, don't call proc_exit)
     pub(crate) storage_get_count: u32, // counter for unique ret_area per storage-get call
     pub(crate) u128_call_count: u32, // unique operand locals per u128/* op (nested ops must not share)
     pub(crate) http_post_call_count: u32, // counter for per-call sentinel offset in wasi:http POST path
-    pub(crate) env_get_count: u32, // counter for unique ret_area per env/get call
+    pub(crate) env_get_count: u32,        // counter for unique ret_area per env/get call
 
     // Track which function each lambda maps to, and its captured var count
     // lambda_id -> (func_array_idx, captured_count)
-    pub(crate) lambda_info: Vec<(usize, usize)>, 
+    pub(crate) lambda_info: Vec<(usize, usize)>,
     // When compiling a lambda, maps captured var names to their offset in the closure
     pub(crate) captured_map: HashMap<String, usize>,
     // Borsh schema registry: name → type layout (compile-time only)
@@ -369,10 +702,46 @@ pub struct WasmEmitter {
 impl WasmEmitter {
     pub fn new() -> Self {
         Self {
-            locals: HashMap::new(), next_local: 0, free_locals: Vec::new(), local_type_map: Vec::new(), current_func: None, current_param_count: 0, tc_depth: 0, try_stack: Vec::new(),
-            while_id: Cell::new(0), funcs: Vec::new(), memory_pages: 64, exports: Vec::new(),
-            data_segments: Vec::new(), next_data_offset: 256, host_needed: HashSet::new(),
-            gas_local: None, needs_frame: false, heap_ptr: 0, lambda_counter: 0, str_cat_depth: 0, fuzz_mode: false, lambda_info: Vec::new(), captured_map: HashMap::new(), need_outlayer: false, need_wasi_http: false, http_urls: Vec::new(), http_post_urls: Vec::new(), wasi_mode: false, p2_mode: false, no_proc_exit: false, u128h: None, fn_int_annotations: std::collections::HashMap::new(), raw_twins: std::collections::HashMap::new(), fn_sources: std::collections::HashMap::new(), source_forms: Vec::new(), borsh_schemas: HashMap::new(), storage_get_count: 0, u128_call_count: 0, http_post_call_count: 0, env_get_count: 0,
+            locals: HashMap::new(),
+            next_local: 0,
+            free_locals: Vec::new(),
+            local_type_map: Vec::new(),
+            current_func: None,
+            current_param_count: 0,
+            tc_depth: 0,
+            try_stack: Vec::new(),
+            while_id: Cell::new(0),
+            funcs: Vec::new(),
+            memory_pages: 64,
+            exports: Vec::new(),
+            data_segments: Vec::new(),
+            next_data_offset: 256,
+            host_needed: HashSet::new(),
+            gas_local: None,
+            needs_frame: false,
+            heap_ptr: 0,
+            lambda_counter: 0,
+            str_cat_depth: 0,
+            fuzz_mode: false,
+            lambda_info: Vec::new(),
+            captured_map: HashMap::new(),
+            need_outlayer: false,
+            need_wasi_http: false,
+            http_urls: Vec::new(),
+            http_post_urls: Vec::new(),
+            wasi_mode: false,
+            p2_mode: false,
+            no_proc_exit: false,
+            u128h: None,
+            fn_int_annotations: std::collections::HashMap::new(),
+            raw_twins: std::collections::HashMap::new(),
+            fn_sources: std::collections::HashMap::new(),
+            source_forms: Vec::new(),
+            borsh_schemas: HashMap::new(),
+            storage_get_count: 0,
+            u128_call_count: 0,
+            http_post_call_count: 0,
+            env_get_count: 0,
             func_defs: HashMap::new(),
             wasm_imports: Vec::new(),
             list_ptr_counter: 0,
@@ -516,7 +885,11 @@ impl WasmEmitter {
     /// Returns the allocated address in a local variable.
     /// Used in P2/WASI mode for recursive-safe allocation.
     /// Generates: result = *(56); *(56) = result + bytes (aligned to 8)
-    pub(crate) fn heap_bump_runtime(&mut self, bytes: u32, local_name: &str) -> Vec<Instruction<'static>> {
+    pub(crate) fn heap_bump_runtime(
+        &mut self,
+        bytes: u32,
+        local_name: &str,
+    ) -> Vec<Instruction<'static>> {
         let tmp = self.local_idx(local_name);
         let ma = wasm_encoder::MemArg {
             offset: 0,
@@ -553,7 +926,9 @@ impl WasmEmitter {
     }
 
     fn local_idx(&mut self, name: &str) -> u32 {
-        if let Some(&i) = self.locals.get(name) { return i; }
+        if let Some(&i) = self.locals.get(name) {
+            return i;
+        }
         // Take from the free list, but NEVER reuse an index that is still
         // live in the locals map or outside the allocated range. Guards
         // against free-list bookkeeping bugs (double-push / stale entries),
@@ -577,7 +952,9 @@ impl WasmEmitter {
 
     /// Allocate an i32 local (for pointers, lengths, offsets)
     fn local_idx_i32(&mut self, name: &str) -> u32 {
-        if let Some(&i) = self.locals.get(name) { return i; }
+        if let Some(&i) = self.locals.get(name) {
+            return i;
+        }
         let i = self.free_locals.pop().unwrap_or(self.next_local);
         if i == self.next_local {
             self.next_local += 1;
@@ -664,7 +1041,6 @@ impl WasmEmitter {
     /// Both args must be tagged values. Converts numbers to their string representation.
     /// Uses runtime heap allocation for the result string.
 
-
     /// Process `\xNN` hex escape sequences in a byte slice, returning raw bytes.
     /// Used for binary data in string literals (e.g., ed25519 signatures).
     /// Other escapes (`\n`, `\t`, `\\`, `\"`) are also handled.
@@ -673,17 +1049,13 @@ impl WasmEmitter {
     /// Reads runtime heap ptr from RUNTIME_HEAP_PTR, bumps by `n_bytes`, writes back.
     /// Leaves the *old* ptr (start of allocated block) on the stack as i64.
 
-
     /// Extract (lambda (param) body) → (param_name, body)
 
     /// Extract (lambda (p1 p2) body) → (vec![p1, p2], body)
 
-
     /// Find free variables in an expression (symbols not in the given param set)
 
-
     /// Compile (lambda (params) body) → tagged closure value on stack
-
 
     // ── Public API ──
 
@@ -694,19 +1066,40 @@ impl WasmEmitter {
         self
     }
 
-    pub fn emit_define(&mut self, name: &str, params: &[String], body: &LispVal) -> Result<(), String> {
+    pub fn emit_define(
+        &mut self,
+        name: &str,
+        params: &[String],
+        body: &LispVal,
+    ) -> Result<(), String> {
         // Store AST for compile-time inlining
-        self.func_defs.insert(name.to_string(), (params.to_vec(), body.clone()));
+        self.func_defs
+            .insert(name.to_string(), (params.to_vec(), body.clone()));
         // Capture source for symbolication sidecar (pretty form via Display)
-        self.fn_sources.insert(name.to_string(), format!("{}", LispVal::List(
-            std::iter::once(LispVal::Sym(name.to_string()))
-                .chain(std::iter::once(LispVal::List(params.iter().map(|p| LispVal::Sym(p.clone())).collect())))
-                .chain(std::iter::once(body.clone()))
-                .collect::<Vec<_>>(),
-        )));
-        self.source_forms.push(self.fn_sources.get(name).cloned().unwrap_or_default());
-        self.locals.clear(); self.next_local = 0; self.free_locals.clear(); self.local_type_map.clear(); self.needs_frame = false;
-        for p in params { self.local_idx(p); }
+        self.fn_sources.insert(
+            name.to_string(),
+            format!(
+                "{}",
+                LispVal::List(
+                    std::iter::once(LispVal::Sym(name.to_string()))
+                        .chain(std::iter::once(LispVal::List(
+                            params.iter().map(|p| LispVal::Sym(p.clone())).collect()
+                        )))
+                        .chain(std::iter::once(body.clone()))
+                        .collect::<Vec<_>>(),
+                )
+            ),
+        );
+        self.source_forms
+            .push(self.fn_sources.get(name).cloned().unwrap_or_default());
+        self.locals.clear();
+        self.next_local = 0;
+        self.free_locals.clear();
+        self.local_type_map.clear();
+        self.needs_frame = false;
+        for p in params {
+            self.local_idx(p);
+        }
         self.current_func = Some(name.to_string());
         self.current_param_count = params.len();
         self.while_id.set(0);
@@ -721,9 +1114,14 @@ impl WasmEmitter {
             idx
         } else {
             let idx = self.funcs.len();
-            self.funcs.push(FuncDef { name: name.into(), param_count: params.len(), local_count: 0, instrs: Vec::new(), local_entries: None,
-            custom_type: None,
-        });
+            self.funcs.push(FuncDef {
+                name: name.into(),
+                param_count: params.len(),
+                local_count: 0,
+                instrs: Vec::new(),
+                local_entries: None,
+                custom_type: None,
+            });
             idx
         };
 
@@ -799,7 +1197,11 @@ impl WasmEmitter {
         };
 
         // Build body
-        let mut body_instrs = if tc { self.tc_body(body)? } else { self.expr(body)? };
+        let mut body_instrs = if tc {
+            self.tc_body(body)?
+        } else {
+            self.expr(body)?
+        };
 
         // Epilogue: save return, restore FP if needed, restore return
         let mut epilogue = Vec::new();
@@ -834,8 +1236,14 @@ impl WasmEmitter {
                     let ty = if i < ltm.len() { ltm[i] } else { ValType::I64 };
                     let mut count = 1u32;
                     while (i + count as usize) < total {
-                        let next_ty = if (i + count as usize) < ltm.len() { ltm[i + count as usize] } else { ValType::I64 };
-                        if next_ty != ty { break; }
+                        let next_ty = if (i + count as usize) < ltm.len() {
+                            ltm[i + count as usize]
+                        } else {
+                            ValType::I64
+                        };
+                        if next_ty != ty {
+                            break;
+                        }
                         count += 1;
                     }
                     entries.push((count, ty));
@@ -948,7 +1356,12 @@ impl WasmEmitter {
     }
 
     /// After replace_recur, patch (__loop_N val...) calls to also pass free vars through
-    fn patch_recur_with_free_vars(&self, expr: &mut LispVal, loop_name: &str, free_vars: &[String]) {
+    fn patch_recur_with_free_vars(
+        &self,
+        expr: &mut LispVal,
+        loop_name: &str,
+        free_vars: &[String],
+    ) {
         match expr {
             LispVal::List(items) => {
                 if let Some(LispVal::Sym(head)) = items.first() {
@@ -969,15 +1382,26 @@ impl WasmEmitter {
     }
 
     fn tc(&mut self, e: &LispVal) -> Result<Vec<Instruction<'static>>, String> {
-        let LispVal::List(items) = e else { return self.expr(e) };
-        if items.is_empty() { return self.expr(e) }
-        let LispVal::Sym(op) = &items[0] else { return self.expr(e) };
+        let LispVal::List(items) = e else {
+            return self.expr(e);
+        };
+        if items.is_empty() {
+            return self.expr(e);
+        }
+        let LispVal::Sym(op) = &items[0] else {
+            return self.expr(e);
+        };
         let a = &items[1..];
         match op.as_str() {
             "if" => self.tc_if(a),
             "begin" | "progn" => {
                 let mut v = Vec::new();
-                for (i, x) in a.iter().enumerate() { v.extend(self.expr(x)?); if i < a.len()-1 { v.push(Instruction::Drop); } }
+                for (i, x) in a.iter().enumerate() {
+                    v.extend(self.expr(x)?);
+                    if i < a.len() - 1 {
+                        v.push(Instruction::Drop);
+                    }
+                }
                 // Exit block: directly in TC loop, Br(1) exits block (result i64)
                 v.push(Instruction::Br(1));
                 Ok(v)
@@ -987,13 +1411,17 @@ impl WasmEmitter {
                 // loop desugars to let + define + call — handled by expr path
                 self.expr(e)
             }
-            _ if Some(op.as_str()) == self.current_func.as_deref() && a.len() == self.current_param_count => {
+            _ if Some(op.as_str()) == self.current_func.as_deref()
+                && a.len() == self.current_param_count =>
+            {
                 // Evaluate ALL args into distinct temps FIRST, then copy into param
                 // locals — a later arg may reference a param local that an earlier
                 // arg already overwrote (e.g. (recur (+ i 1) (+ s i)) must see the
                 // OLD i when evaluating (+ s i)).
                 let n = a.len();
-                let tmps: Vec<u32> = (0..n).map(|i| self.local_idx(&format!("__tcarg{}", i))).collect();
+                let tmps: Vec<u32> = (0..n)
+                    .map(|i| self.local_idx(&format!("__tcarg{}", i)))
+                    .collect();
                 let mut v = Vec::new();
                 for (i, x) in a.iter().enumerate() {
                     v.extend(self.expr(x)?);
@@ -1007,22 +1435,37 @@ impl WasmEmitter {
                 Ok(v)
             }
             // Any other expression inside TC loop: evaluate and exit block via Br(1)
-            _ => { let mut v = self.expr(e)?; v.push(Instruction::Br(1)); Ok(v) }
+            _ => {
+                let mut v = self.expr(e)?;
+                v.push(Instruction::Br(1));
+                Ok(v)
+            }
         }
     }
 
     fn tc_let(&mut self, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
         let mut v = Vec::new();
         if let LispVal::List(bs) = &a[0] {
-            for b in bs { if let LispVal::List(p) = b { if p.len()==2 { if let LispVal::Sym(n) = &p[0] {
-                let idx = self.local_idx(n);
-                v.extend(self.expr(&p[1])?); v.push(Instruction::LocalSet(idx));
-            }}}}
+            for b in bs {
+                if let LispVal::List(p) = b {
+                    if p.len() == 2 {
+                        if let LispVal::Sym(n) = &p[0] {
+                            let idx = self.local_idx(n);
+                            v.extend(self.expr(&p[1])?);
+                            v.push(Instruction::LocalSet(idx));
+                        }
+                    }
+                }
+            }
         }
         // Implicit begin in let body
         for (i, x) in a[1..].iter().enumerate() {
-            if i < a.len() - 2 { v.extend(self.expr(x)?); v.push(Instruction::Drop); }
-            else { v.extend(self.tc(x)?); }
+            if i < a.len() - 2 {
+                v.extend(self.expr(x)?);
+                v.push(Instruction::Drop);
+            } else {
+                v.extend(self.tc(x)?);
+            }
         }
         Ok(v)
     }
@@ -1030,43 +1473,54 @@ impl WasmEmitter {
     fn tc_if(&mut self, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
         let mut v = self.expr(&a[0])?;
         v.extend(self.emit_cond_branch());
-        let t = &a[1]; let default = LispVal::Num(0);
-        let e = if a.len()>2 { &a[2] } else { &default };
+        let t = &a[1];
+        let default = LispVal::Num(0);
+        let e = if a.len() > 2 { &a[2] } else { &default };
         match (self.is_self(t), self.is_self(e)) {
             (true, true) => {
                 v.push(Instruction::If(BlockType::Empty));
-                v.extend(self.self_sets(t)?); v.push(Instruction::Br(0));
+                v.extend(self.self_sets(t)?);
+                v.push(Instruction::Br(0));
                 v.push(Instruction::Else);
-                v.extend(self.self_sets(e)?); v.push(Instruction::Br(0));
+                v.extend(self.self_sets(e)?);
+                v.push(Instruction::Br(0));
                 v.push(Instruction::End);
             }
             (true, false) => {
                 v.push(Instruction::I32Eqz);
                 v.push(Instruction::If(BlockType::Empty));
-                v.extend(self.expr(e)?); v.push(Instruction::Br(2)); // exit block
+                v.extend(self.expr(e)?);
+                v.push(Instruction::Br(2)); // exit block
                 v.push(Instruction::End);
-                v.extend(self.self_sets(t)?); v.push(Instruction::Br(0)); // loop
+                v.extend(self.self_sets(t)?);
+                v.push(Instruction::Br(0)); // loop
             }
             (false, true) => {
                 v.push(Instruction::If(BlockType::Empty));
-                v.extend(self.expr(t)?); v.push(Instruction::Br(2)); // exit block
+                v.extend(self.expr(t)?);
+                v.push(Instruction::Br(2)); // exit block
                 v.push(Instruction::End);
-                v.extend(self.self_sets(e)?); v.push(Instruction::Br(0)); // loop
+                v.extend(self.self_sets(e)?);
+                v.push(Instruction::Br(0)); // loop
             }
             (false, false) => {
                 // Inside TC loop: must either Br(0) loop or Br(2) exit — never fall through
                 v.push(Instruction::If(BlockType::Empty));
                 // Check if then-branch is a self-call
                 if self.is_self(t) {
-                    v.extend(self.self_sets(t)?); v.push(Instruction::Br(0));
+                    v.extend(self.self_sets(t)?);
+                    v.push(Instruction::Br(0));
                 } else {
-                    v.extend(self.expr(t)?); v.push(Instruction::Br(2)); // exit block with value
+                    v.extend(self.expr(t)?);
+                    v.push(Instruction::Br(2)); // exit block with value
                 }
                 v.push(Instruction::Else);
                 if self.is_self(e) {
-                    v.extend(self.self_sets(e)?); v.push(Instruction::Br(0));
+                    v.extend(self.self_sets(e)?);
+                    v.push(Instruction::Br(0));
                 } else {
-                    v.extend(self.expr(e)?); v.push(Instruction::Br(2)); // exit block with value
+                    v.extend(self.expr(e)?);
+                    v.push(Instruction::Br(2)); // exit block with value
                 }
                 v.push(Instruction::End);
             }
@@ -1075,10 +1529,14 @@ impl WasmEmitter {
     }
 
     fn self_sets(&mut self, e: &LispVal) -> Result<Vec<Instruction<'static>>, String> {
-        let LispVal::List(items) = e else { return Ok(Vec::new()) };
+        let LispVal::List(items) = e else {
+            return Ok(Vec::new());
+        };
         // Args into temps first (see TC arm note) — avoid param-local aliasing.
         let n = items.len().saturating_sub(1).min(self.current_param_count);
-        let tmps: Vec<u32> = (0..n).map(|i| self.local_idx(&format!("__tcarg{}", i))).collect();
+        let tmps: Vec<u32> = (0..n)
+            .map(|i| self.local_idx(&format!("__tcarg{}", i)))
+            .collect();
         let mut v = Vec::new();
         for (i, a) in items[1..].iter().enumerate().take(n) {
             v.extend(self.expr(a)?);
@@ -1103,7 +1561,11 @@ impl WasmEmitter {
                 // Check if it's a captured variable from enclosing lambda
                 if let Some(&offset) = self.captured_map.get(n) {
                     // Load from closure: closure_ptr is local 0, load at offset*8
-                    let ma = wasm_encoder::MemArg { offset: (offset as u64 * 8), align: 3, memory_index: 0 };
+                    let ma = wasm_encoder::MemArg {
+                        offset: (offset as u64 * 8),
+                        align: 3,
+                        memory_index: 0,
+                    };
                     return Ok(vec![
                         Instruction::LocalGet(0), // closure_ptr
                         Instruction::I32WrapI64,
@@ -1116,7 +1578,10 @@ impl WasmEmitter {
                     // Top-level value define: interpreter semantics is a VALUE
                     // binding — call the synthesized 0-param fn to get the value.
                     // (Was TAG_FNREF → println rendered it as nil, silently.)
-                    let pos = self.funcs.iter().position(|f| &f.name == n)
+                    let pos = self
+                        .funcs
+                        .iter()
+                        .position(|f| &f.name == n)
                         .ok_or_else(|| format!("internal: value define '{}' not registered", n))?;
                     Ok(vec![Instruction::Call(USER_BASE | pos as u32)])
                 } else if let Some(pos) = self.funcs.iter().position(|func| &func.name == n) {
@@ -1184,28 +1649,27 @@ impl WasmEmitter {
                 Ok(v)
             }
             LispVal::List(items) if !items.is_empty() => {
-                if let LispVal::Sym(op) = &items[0] { 
-                    self.call(op, &items[1..]) 
+                if let LispVal::Sym(op) = &items[0] {
+                    self.call(op, &items[1..])
                 } else {
                     // Dynamic call: ((expr) args...) — callee is not a symbol
                     self.emit_dynamic_call(&items[0], &items[1..])
                 }
             }
-            _ => Err(format!("compile error: unsupported expression form: {:?}", e)),
+            _ => Err(format!(
+                "compile error: unsupported expression form: {:?}",
+                e
+            )),
         }
     }
-
-
 }
 
 // ── Compile helpers ──
-
 
 /// Compile a Lisp program for fuzz testing.
 /// Creates a "run" export that calls the last defined function and stores
 /// the **tagged** return value at TEMP_MEM (offset 64) for the harness to read.
 /// Does NOT call value_return (this is a test, not a NEAR contract).
-
 
 // ── Borsh schema parsing helpers ──
 
@@ -1216,14 +1680,12 @@ impl WasmEmitter {
 /// Parse struct fields from ((name type) ...) pairs
 /// Parse implicit enum variant items: (VariantName (field1 type1) ...) or VariantName (unit)
 
-
 /// Process (borsh-schema (Name ((field1 type1) ...)) ...) top-level forms.
 /// Registers each type in the emitter's borsh_schemas map.
 
 /// Compile pre-parsed LispVal expressions to NEAR WASM
 
 /// Compile pre-parsed LispVal expressions to NEAR WAT
-
 
 #[cfg(test)]
 mod tests {
@@ -1286,11 +1748,24 @@ mod tests {
         // match on the `(;N;)` index comment, not the raw `(func (;N;)` form —
         // with a name section present, wasmprinter adds symbolic names
         // (`(func $count (;0;) ...`) between the keyword and the index
-        let func_start = lines.iter().position(|l| l.contains("(func ") && l.contains(";0;)")).unwrap();
-        let func_end = lines.iter().rposition(|l| l.contains("(func ") && l.contains(";1;)")).unwrap();
+        let func_start = lines
+            .iter()
+            .position(|l| l.contains("(func ") && l.contains(";0;)"))
+            .unwrap();
+        let func_end = lines
+            .iter()
+            .rposition(|l| l.contains("(func ") && l.contains(";1;)"))
+            .unwrap();
         let func_body = &lines[func_start..func_end];
-        let call_count = func_body.iter().filter(|l| l.trim().starts_with("call")).count();
-        assert_eq!(call_count, 0, "TC body should not contain any call instructions, found {}", call_count);
+        let call_count = func_body
+            .iter()
+            .filter(|l| l.trim().starts_with("call"))
+            .count();
+        assert_eq!(
+            call_count, 0,
+            "TC body should not contain any call instructions, found {}",
+            call_count
+        );
     }
 
     #[test]
@@ -1406,7 +1881,9 @@ mod lambda_test {
         let src = "(define (test) ((lambda (x) (* x x)) 7))";
         let result = compile_pure(src);
         eprintln!("RESULT: {:?}", result.as_ref().map(|w| w.len()));
-        if let Err(ref e) = result { eprintln!("ERROR: {}", e); }
+        if let Err(ref e) = result {
+            eprintln!("ERROR: {}", e);
+        }
     }
 }
 
@@ -1422,7 +1899,6 @@ mod square_wat {
 }
 
 /// Resolve `(module name "path")` directives — text-level #include
-
 
 #[cfg(test)]
 mod json_auto_test {
@@ -1457,6 +1933,10 @@ mod json_auto_test {
         // Should still compile — key not found returns 0 at runtime
         let src = r#"(define (run) (json/get "nonexistent")) (export "run" run true)"#;
         let result = compile_near(src);
-        assert!(result.is_ok(), "json/get missing key should compile: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "json/get missing key should compile: {:?}",
+            result
+        );
     }
 }

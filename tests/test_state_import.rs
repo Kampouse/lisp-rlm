@@ -22,7 +22,8 @@ fn trap_stub_wasm() -> Option<std::path::PathBuf> {
     OUT.get_or_init(|| {
         let wat =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/trap_stub.wat");
-        let out = std::env::temp_dir().join(format!("trap_stub_import_{}.wasm", std::process::id()));
+        let out =
+            std::env::temp_dir().join(format!("trap_stub_import_{}.wasm", std::process::id()));
         let ok = Command::new("wat2wasm")
             .arg(&wat)
             .arg("-o")
@@ -112,9 +113,7 @@ fn import_dump_contract_read_and_absence() {
     let _ = std::fs::remove_file(&state);
 
     let r = run(
-        &[
-            "state", "import", state.to_str().unwrap(), "-",
-        ],
+        &["state", "import", state.to_str().unwrap(), "-"],
         Some(&rpc_dump(ACCT, &[(b"ka", b"from-chain")])),
     );
     assert!(r.ok, "import failed: {}", r.text);
@@ -152,7 +151,10 @@ fn import_dump_contract_read_and_absence() {
     let tag2 = format!("imp_{}_{}", std::process::id(), next_tag());
     let state2 = std::env::temp_dir().join(format!("nm_{tag2}.bin"));
     let _ = std::fs::remove_file(&state2);
-    let r = run(&["state", "import", state2.to_str().unwrap(), "-"], Some(&rpc_dump(ACCT, &[])));
+    let r = run(
+        &["state", "import", state2.to_str().unwrap(), "-"],
+        Some(&rpc_dump(ACCT, &[])),
+    );
     assert!(r.ok, "empty import failed: {}", r.text);
 
     let r = run(
@@ -185,11 +187,20 @@ fn import_merges_and_replace_acct_wipes_partition() {
     let _ = std::fs::remove_file(&state);
 
     // two accounts, two keys
-    run(&["state", "import", state.to_str().unwrap(), "-"], Some(&rpc_dump(ACCT, &[(b"k1", b"v1")])));
-    run(&["state", "import", state.to_str().unwrap(), "-"], Some(&rpc_dump("other.test.near", &[(b"k2", b"v2")])));
+    run(
+        &["state", "import", state.to_str().unwrap(), "-"],
+        Some(&rpc_dump(ACCT, &[(b"k1", b"v1")])),
+    );
+    run(
+        &["state", "import", state.to_str().unwrap(), "-"],
+        Some(&rpc_dump("other.test.near", &[(b"k2", b"v2")])),
+    );
 
     // merge (default): same account, NEW key — old key must survive
-    let r = run(&["state", "import", state.to_str().unwrap(), "-"], Some(&rpc_dump(ACCT, &[(b"k3", b"v3")])));
+    let r = run(
+        &["state", "import", state.to_str().unwrap(), "-"],
+        Some(&rpc_dump(ACCT, &[(b"k3", b"v3")])),
+    );
     assert!(r.ok, "merge import failed: {}", r.text);
     let r = run(&["state", "dump", state.to_str().unwrap()], None);
     for (needle, what) in [
@@ -202,16 +213,38 @@ fn import_merges_and_replace_acct_wipes_partition() {
 
     // --replace-acct: ACCT's partition drops (k1,k3 gone), other survives
     let r = run(
-        &["state", "import", state.to_str().unwrap(), "-", "--replace-acct"],
+        &[
+            "state",
+            "import",
+            state.to_str().unwrap(),
+            "-",
+            "--replace-acct",
+        ],
         Some(&rpc_dump(ACCT, &[(b"k9", b"v9")])),
     );
     assert!(r.ok, "replace import failed: {}", r.text);
-    assert!(r.text.contains("partition replaced"), "flag notice: {}", r.text);
+    assert!(
+        r.text.contains("partition replaced"),
+        "flag notice: {}",
+        r.text
+    );
     let r = run(&["state", "dump", state.to_str().unwrap()], None);
-    assert!(!r.text.contains(&b64(b"v1")), "k1 must be wiped: {}", r.text);
-    assert!(!r.text.contains(&b64(b"v3")), "k3 must be wiped: {}", r.text);
+    assert!(
+        !r.text.contains(&b64(b"v1")),
+        "k1 must be wiped: {}",
+        r.text
+    );
+    assert!(
+        !r.text.contains(&b64(b"v3")),
+        "k3 must be wiped: {}",
+        r.text
+    );
     assert!(r.text.contains(&b64(b"v9")), "k9 landed: {}", r.text);
-    assert!(r.text.contains(&b64(b"v2")), "other account untouched: {}", r.text);
+    assert!(
+        r.text.contains(&b64(b"v2")),
+        "other account untouched: {}",
+        r.text
+    );
 }
 
 #[test]
@@ -221,7 +254,10 @@ fn import_rejects_malformed_dump_atomically() {
     let _ = std::fs::remove_file(&state);
 
     // good key first
-    run(&["state", "import", state.to_str().unwrap(), "-"], Some(&rpc_dump(ACCT, &[(b"good", b"v")])));
+    run(
+        &["state", "import", state.to_str().unwrap(), "-"],
+        Some(&rpc_dump(ACCT, &[(b"good", b"v")])),
+    );
 
     // malformed: bad base64 in entry 2 — must fail WITHOUT half-applying
     let bad = format!(
@@ -230,14 +266,25 @@ fn import_rejects_malformed_dump_atomically() {
         b64(b"x"),
         b64(b"y")
     );
-    let r = run(&["state", "import", state.to_str().unwrap(), "-"], Some(&bad));
+    let r = run(
+        &["state", "import", state.to_str().unwrap(), "-"],
+        Some(&bad),
+    );
     assert!(!r.ok, "malformed dump must fail: {}", r.text);
     assert!(r.text.contains("bad base64"), "reason surfaced: {}", r.text);
 
     // state unchanged
     let r = run(&["state", "dump", state.to_str().unwrap()], None);
-    assert!(!r.text.contains(&b64(b"x")), "entry 1 must NOT have half-applied: {}", r.text);
-    assert!(r.text.contains(&b64(b"v")), "original key intact: {}", r.text);
+    assert!(
+        !r.text.contains(&b64(b"x")),
+        "entry 1 must NOT have half-applied: {}",
+        r.text
+    );
+    assert!(
+        r.text.contains(&b64(b"v")),
+        "original key intact: {}",
+        r.text
+    );
 }
 
 #[test]
@@ -247,11 +294,19 @@ fn dump_reports_missing_and_corrupt_files() {
 
     let r = run(&["state", "dump", missing.to_str().unwrap()], None);
     assert!(!r.ok, "missing file must fail");
-    assert!(r.text.contains("create one via a scenario or import"), "hint: {}", r.text);
+    assert!(
+        r.text.contains("create one via a scenario or import"),
+        "hint: {}",
+        r.text
+    );
 
     let corrupt = std::env::temp_dir().join(format!("nm_{tag}_bad.bin"));
     std::fs::write(&corrupt, b"this is not bincode").unwrap();
     let r = run(&["state", "dump", corrupt.to_str().unwrap()], None);
     assert!(!r.ok, "corrupt file must fail");
-    assert!(r.text.contains("not a near-mock state file"), "reason: {}", r.text);
+    assert!(
+        r.text.contains("not a near-mock state file"),
+        "reason: {}",
+        r.text
+    );
 }

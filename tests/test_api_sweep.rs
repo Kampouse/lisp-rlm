@@ -16,8 +16,8 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 fn near_mock(src: &str, method: &str, input: &str) -> String {
-    let wasm = lisp_rlm_wasm::compile_near(src)
-        .unwrap_or_else(|e| panic!("compile_near failed: {}", e));
+    let wasm =
+        lisp_rlm_wasm::compile_near(src).unwrap_or_else(|e| panic!("compile_near failed: {}", e));
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let tmp = std::env::temp_dir().join(format!(
         "nm_api_sweep_{}_{}.wasm",
@@ -114,10 +114,16 @@ fn log_of(call: &str, input: &str) -> String {
 
 #[test]
 fn matrix_json_get_str() {
-    assert_eq!(log_of(r#"(near/json_get_str "g")"#, r#"{"g":"hi"}"#), "LOG: hi");
+    assert_eq!(
+        log_of(r#"(near/json_get_str "g")"#, r#"{"g":"hi"}"#),
+        "LOG: hi"
+    );
     // miss → nil (d.ts `string | null`; bare use is visible)
     assert_eq!(log_of(r#"(near/json_get_str "g")"#, "{}"), "LOG: nil");
-    assert_eq!(log_of(r#"(near/json_get_str "g")"#, r#"{"x":1}"#), "LOG: nil");
+    assert_eq!(
+        log_of(r#"(near/json_get_str "g")"#, r#"{"x":1}"#),
+        "LOG: nil"
+    );
     // pretty-printed JSON (whitespace after colon) must still hit
     assert_eq!(
         log_of(r#"(near/json_get_str "g")"#, r#"{ "g" : "hi" }"#),
@@ -130,25 +136,25 @@ fn matrix_json_get_str() {
 #[test]
 fn matrix_json_get_str_nullish() {
     assert_eq!(
-        log_of(
-            r#"(default (near/json_get_str "g") "fb")"#,
-            "{}"
-        ),
+        log_of(r#"(default (near/json_get_str "g") "fb")"#, "{}"),
         "LOG: fb"
     );
     assert_eq!(
-        log_of(
-            r#"(default (near/json_get_str "g") "fb")"#,
-            r#"{"g":"hi"}"#
-        ),
+        log_of(r#"(default (near/json_get_str "g") "fb")"#, r#"{"g":"hi"}"#),
         "LOG: hi"
     );
 }
 
 #[test]
 fn matrix_json_get_int() {
-    assert_eq!(log_of(r#"(near/json_get_int "n")"#, r#"{"n":42}"#), "LOG: 42");
-    assert_eq!(log_of(r#"(near/json_get_int "n")"#, r#"{"n":-42}"#), "LOG: -42");
+    assert_eq!(
+        log_of(r#"(near/json_get_int "n")"#, r#"{"n":42}"#),
+        "LOG: 42"
+    );
+    assert_eq!(
+        log_of(r#"(near/json_get_int "n")"#, r#"{"n":-42}"#),
+        "LOG: -42"
+    );
     assert_eq!(log_of(r#"(near/json_get_int "n")"#, "{}"), "LOG: nil");
     // bare-token value ({"by": 5} — no quotes around 5) must parse
     assert_eq!(log_of(r#"(near/json_get_int "n")"#, r#"{"n":5}"#), "LOG: 5");
@@ -176,8 +182,14 @@ fn matrix_json_get_int_nullish() {
 #[test]
 fn matrix_prefix_and_collision_keys() {
     // "g" must not match inside "gg" or "g2"
-    assert_eq!(log_of(r#"(near/json_get_str "g")"#, r#"{"gg":"v"}"#), "LOG: nil");
-    assert_eq!(log_of(r#"(near/json_get_str "g")"#, r#"{"a":1,"g2":2}"#), "LOG: nil");
+    assert_eq!(
+        log_of(r#"(near/json_get_str "g")"#, r#"{"gg":"v"}"#),
+        "LOG: nil"
+    );
+    assert_eq!(
+        log_of(r#"(near/json_get_str "g")"#, r#"{"a":1,"g2":2}"#),
+        "LOG: nil"
+    );
     // key later in the object
     assert_eq!(
         log_of(r#"(near/json_get_str "g")"#, r#"{"a":1,"g":"late"}"#),
@@ -190,17 +202,14 @@ fn matrix_ts_percent_js_semantics() {
     // wasm executes the compiled TS (compile_near path won't parse TS —
     // use the lisp the TS lowers to, exact form)
     let cases = [
-        (r#"(near/log_num (- 10 (* 3 (/ 10 3))))"#, "LOG: 1"),   // 10%3
-        (r#"(near/log_num (- -7 (* 2 (/ -7 2))))"#, "LOG: -1"),  // -7%2 (JS: -1)
-        (r#"(near/log_num (- 7 (* -2 (/ 7 -2))))"#, "LOG: 1"),   // 7%-2 (JS: 1)
-        (r#"(near/log_num (- -7 (* -2 (/ -7 -2))))"#, "LOG: -1"),// -7%-2 (JS: -1)
+        (r#"(near/log_num (- 10 (* 3 (/ 10 3))))"#, "LOG: 1"), // 10%3
+        (r#"(near/log_num (- -7 (* 2 (/ -7 2))))"#, "LOG: -1"), // -7%2 (JS: -1)
+        (r#"(near/log_num (- 7 (* -2 (/ 7 -2))))"#, "LOG: 1"), // 7%-2 (JS: 1)
+        (r#"(near/log_num (- -7 (* -2 (/ -7 -2))))"#, "LOG: -1"), // -7%-2 (JS: -1)
     ];
     for (call, expect) in cases {
         let src = format!(r#"(define (main) {call})"#);
         let out = near_mock(&src, "main", "{}");
-        assert!(
-            out.contains(expect),
-            "{call} must give {expect}: {out}"
-        );
+        assert!(out.contains(expect), "{call} must give {expect}: {out}");
     }
 }

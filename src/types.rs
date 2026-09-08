@@ -831,7 +831,11 @@ fn hash_lisp_val(v: &LispVal) -> u64 {
         }
         LispVal::List(vals) | LispVal::Vec(vals) => {
             let mut h = FNV_OFFSET;
-            h ^= if matches!(v, LispVal::List(_)) { 0x07 } else { 0x08 };
+            h ^= if matches!(v, LispVal::List(_)) {
+                0x07
+            } else {
+                0x08
+            };
             h = h.wrapping_mul(FNV_PRIME);
             for elem in vals {
                 h ^= hash_lisp_val(elem);

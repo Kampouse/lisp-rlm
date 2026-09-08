@@ -18,8 +18,8 @@ use std::path::PathBuf;
 /// Special forms handled by BOTH compilers before builtin dispatch — not
 /// builtins, parity not applicable.
 const SPECIAL_FORMS: &[&str] = &[
-    "and", "begin", "cond", "default", "for", "if", "lambda", "let", "loop", "not", "or",
-    "quote", "recur", "set!", "try", "while",
+    "and", "begin", "cond", "default", "for", "if", "lambda", "let", "loop", "not", "or", "quote",
+    "recur", "set!", "try", "while",
 ];
 
 /// Names extracted from the emitter that are deliberately NOT ported to the
@@ -42,28 +42,61 @@ const WASM_ONLY_DOCUMENTED: &[(&str, &str)] = &[
     ("limb-cmp", "secp256k1 limb array ops (wasm memory)"),
     ("limb-get", "secp256k1 limb array ops (wasm memory)"),
     ("limb-set!", "secp256k1 limb array ops (wasm memory)"),
-    ("bit_get", "bitfield word op over raw addresses (wasm memory)"),
-    ("bit_set", "bitfield word op over raw addresses (wasm memory)"),
-    ("bit_clr", "bitfield word op over raw addresses (wasm memory)"),
+    (
+        "bit_get",
+        "bitfield word op over raw addresses (wasm memory)",
+    ),
+    (
+        "bit_set",
+        "bitfield word op over raw addresses (wasm memory)",
+    ),
+    (
+        "bit_clr",
+        "bitfield word op over raw addresses (wasm memory)",
+    ),
     ("fp64/set", "fixed-point slot op (wasm memory)"),
     ("fp64/get_frac", "fixed-point slot op (wasm memory)"),
     ("fp64/get_int", "fixed-point slot op (wasm memory)"),
     ("fp64/is_zero", "fixed-point slot op (wasm memory)"),
-    ("str_len", "internal underscore twin of str-length (C-ABI style)"),
-    ("str_cat", "internal underscore twin of str-cat (C-ABI style)"),
+    (
+        "str_len",
+        "internal underscore twin of str-length (C-ABI style)",
+    ),
+    (
+        "str_cat",
+        "internal underscore twin of str-cat (C-ABI style)",
+    ),
     ("str_eq", "internal underscore twin of str= (C-ABI style)"),
     ("str-ptr", "raw string pointer/len unpack (wasm layout)"),
-    ("strlcat", "libc-style bounded concat on raw buffers (wasm memory)"),
-    ("strlcpy", "libc-style bounded copy on raw buffers (wasm memory)"),
-    ("clz", "integer intrinsic emitted inline (no interp slot op)"),
-    ("ctz", "integer intrinsic emitted inline (no interp slot op)"),
-    ("popcnt", "integer intrinsic emitted inline (no interp slot op)"),
+    (
+        "strlcat",
+        "libc-style bounded concat on raw buffers (wasm memory)",
+    ),
+    (
+        "strlcpy",
+        "libc-style bounded copy on raw buffers (wasm memory)",
+    ),
+    (
+        "clz",
+        "integer intrinsic emitted inline (no interp slot op)",
+    ),
+    (
+        "ctz",
+        "integer intrinsic emitted inline (no interp slot op)",
+    ),
+    (
+        "popcnt",
+        "integer intrinsic emitted inline (no interp slot op)",
+    ),
     ("byte-at", "raw buffer byte read (wasm memory)"),
     ("bytes-to-u32", "raw buffer word read (wasm memory)"),
     ("u32-to-bytes", "raw buffer word write (wasm memory)"),
     ("sha256_hash", "C-ABI sha256 into raw buffer (wasm memory)"),
     ("sha256-hash", "C-ABI sha256 into raw buffer (wasm memory)"),
-    ("schnorr_verify_bip340", "C-ABI verify over raw buffers (wasm memory)"),
+    (
+        "schnorr_verify_bip340",
+        "C-ABI verify over raw buffers (wasm memory)",
+    ),
     ("str_to_int", "C-ABI parse from raw buffer (wasm memory)"),
     ("str-slice", "C-ABI slice into raw buffer (wasm memory)"),
     ("arr_new", "array-in-linear-memory family (wasm layout)"),
@@ -88,7 +121,10 @@ const WASM_ONLY_DOCUMENTED: &[(&str, &str)] = &[
     ("u128/is_zero", "raw-limb zero test (wasm memory)"),
     // ── Q64.64 fixed-point family: raw u64 bit patterns, no interp twin ──
     ("fp/div", "Q64.64 raw-bit fixed-point (wasm-only domain)"),
-    ("fp/from_int", "Q64.64 raw-bit fixed-point (wasm-only domain)"),
+    (
+        "fp/from_int",
+        "Q64.64 raw-bit fixed-point (wasm-only domain)",
+    ),
     ("fp/mul", "Q64.64 raw-bit fixed-point (wasm-only domain)"),
     ("fp/one", "Q64.64 raw-bit fixed-point (wasm-only domain)"),
     ("fp/sqrt", "Q64.64 raw-bit fixed-point (wasm-only domain)"),
@@ -97,26 +133,68 @@ const WASM_ONLY_DOCUMENTED: &[(&str, &str)] = &[
     ("fp64/div", "Q64.64 raw-bit fixed-point (wasm-only domain)"),
     ("fp64/lt", "Q64.64 raw-bit fixed-point (wasm-only domain)"),
     ("fp64/mul", "Q64.64 raw-bit fixed-point (wasm-only domain)"),
-    ("fp64/set_int", "Q64.64 raw-bit fixed-point (wasm-only domain)"),
+    (
+        "fp64/set_int",
+        "Q64.64 raw-bit fixed-point (wasm-only domain)",
+    ),
     ("fp64/sqrt", "Q64.64 raw-bit fixed-point (wasm-only domain)"),
     ("fp64/sub", "Q64.64 raw-bit fixed-point (wasm-only domain)"),
     // ── outlayer / agent harness: host services that only exist under wasm runtimes ──
     ("outlayer/call", "outlayer host service (wasm harness only)"),
-    ("outlayer/context", "outlayer host service (wasm harness only)"),
-    ("outlayer/http-post", "outlayer host service (wasm harness only)"),
-    ("outlayer/json-get", "outlayer host service (wasm harness only)"),
+    (
+        "outlayer/context",
+        "outlayer host service (wasm harness only)",
+    ),
+    (
+        "outlayer/http-post",
+        "outlayer host service (wasm harness only)",
+    ),
+    (
+        "outlayer/json-get",
+        "outlayer host service (wasm harness only)",
+    ),
     ("outlayer/raw", "outlayer host service (wasm harness only)"),
-    ("outlayer/rpc-call", "outlayer host service (wasm harness only)"),
-    ("outlayer/send-telegram", "outlayer host service (wasm harness only)"),
-    ("outlayer/sleep-ms", "outlayer host service (wasm harness only)"),
-    ("outlayer/status", "outlayer host service (wasm harness only)"),
-    ("outlayer/storage-get", "outlayer host service (wasm harness only)"),
-    ("outlayer/storage-has", "outlayer host service (wasm harness only)"),
-    ("outlayer/storage-set", "outlayer host service (wasm harness only)"),
-    ("outlayer/str-concat", "outlayer host service (wasm harness only)"),
-    ("outlayer/transfer", "outlayer host service (wasm harness only)"),
+    (
+        "outlayer/rpc-call",
+        "outlayer host service (wasm harness only)",
+    ),
+    (
+        "outlayer/send-telegram",
+        "outlayer host service (wasm harness only)",
+    ),
+    (
+        "outlayer/sleep-ms",
+        "outlayer host service (wasm harness only)",
+    ),
+    (
+        "outlayer/status",
+        "outlayer host service (wasm harness only)",
+    ),
+    (
+        "outlayer/storage-get",
+        "outlayer host service (wasm harness only)",
+    ),
+    (
+        "outlayer/storage-has",
+        "outlayer host service (wasm harness only)",
+    ),
+    (
+        "outlayer/storage-set",
+        "outlayer host service (wasm harness only)",
+    ),
+    (
+        "outlayer/str-concat",
+        "outlayer host service (wasm harness only)",
+    ),
+    (
+        "outlayer/transfer",
+        "outlayer host service (wasm harness only)",
+    ),
     ("outlayer/view", "outlayer host service (wasm harness only)"),
-    ("outlayer/web-search", "outlayer host service (wasm harness only)"),
+    (
+        "outlayer/web-search",
+        "outlayer host service (wasm harness only)",
+    ),
     ("rpc-call", "outlayer host service (wasm harness only)"),
     ("web-search", "outlayer host service (wasm harness only)"),
     ("send-telegram", "outlayer host service (wasm harness only)"),
@@ -126,20 +204,62 @@ const WASM_ONLY_DOCUMENTED: &[(&str, &str)] = &[
     ("env/predecessor", "wasm-run env probe (harness only)"),
     ("env/signer", "wasm-run env probe (harness only)"),
     // ── mock-storage harness builtins: test-harness state, not contract surface ──
-    ("storage-get", "mock-storage harness state (lisp-run keeps its own)"),
-    ("storage-set", "mock-storage harness state (lisp-run keeps its own)"),
-    ("storage-has", "mock-storage harness state (lisp-run keeps its own)"),
-    ("storage-delete", "mock-storage harness state (lisp-run keeps its own)"),
-    ("storage-clear-all", "mock-storage harness state (lisp-run keeps its own)"),
-    ("storage-increment", "mock-storage harness state (lisp-run keeps its own)"),
-    ("storage-decrement", "mock-storage harness state (lisp-run keeps its own)"),
-    ("storage-list-keys", "mock-storage harness state (lisp-run keeps its own)"),
-    ("storage-set-if-absent", "mock-storage harness state (lisp-run keeps its own)"),
-    ("storage-set-if-equals", "mock-storage harness state (lisp-run keeps its own)"),
-    ("storage-get-worker", "mock-storage harness state (lisp-run keeps its own)"),
-    ("storage-get-worker-from-project", "mock-storage harness state (lisp-run keeps its own)"),
-    ("storage-set-worker", "mock-storage harness state (lisp-run keeps its own)"),
-    ("storage-set-worker-public", "mock-storage harness state (lisp-run keeps its own)"),
+    (
+        "storage-get",
+        "mock-storage harness state (lisp-run keeps its own)",
+    ),
+    (
+        "storage-set",
+        "mock-storage harness state (lisp-run keeps its own)",
+    ),
+    (
+        "storage-has",
+        "mock-storage harness state (lisp-run keeps its own)",
+    ),
+    (
+        "storage-delete",
+        "mock-storage harness state (lisp-run keeps its own)",
+    ),
+    (
+        "storage-clear-all",
+        "mock-storage harness state (lisp-run keeps its own)",
+    ),
+    (
+        "storage-increment",
+        "mock-storage harness state (lisp-run keeps its own)",
+    ),
+    (
+        "storage-decrement",
+        "mock-storage harness state (lisp-run keeps its own)",
+    ),
+    (
+        "storage-list-keys",
+        "mock-storage harness state (lisp-run keeps its own)",
+    ),
+    (
+        "storage-set-if-absent",
+        "mock-storage harness state (lisp-run keeps its own)",
+    ),
+    (
+        "storage-set-if-equals",
+        "mock-storage harness state (lisp-run keeps its own)",
+    ),
+    (
+        "storage-get-worker",
+        "mock-storage harness state (lisp-run keeps its own)",
+    ),
+    (
+        "storage-get-worker-from-project",
+        "mock-storage harness state (lisp-run keeps its own)",
+    ),
+    (
+        "storage-set-worker",
+        "mock-storage harness state (lisp-run keeps its own)",
+    ),
+    (
+        "storage-set-worker-public",
+        "mock-storage harness state (lisp-run keeps its own)",
+    ),
     // ── defi/uniswap math over raw u64 slots: wasm-only domain for now ──
     ("liq_amount0", "defi raw-u64 math (wasm-only domain)"),
     ("liq_amount0_64", "defi raw-u64 math (wasm-only domain)"),
@@ -149,19 +269,49 @@ const WASM_ONLY_DOCUMENTED: &[(&str, &str)] = &[
     ("price64_to_tick", "defi raw-u64 math (wasm-only domain)"),
     ("tick_to_price", "defi raw-u64 math (wasm-only domain)"),
     ("tick_to_price64", "defi raw-u64 math (wasm-only domain)"),
-    ("tick_to_sqrtPrice64", "defi raw-u64 math (wasm-only domain)"),
+    (
+        "tick_to_sqrtPrice64",
+        "defi raw-u64 math (wasm-only domain)",
+    ),
     // ── bigint family: address-based limbs, shadowed legacy ──
-    ("bigint-add", "address-based limb family (legacy; string-based u128/* is the spec)"),
-    ("bigint-div", "address-based limb family (legacy; string-based u128/* is the spec)"),
-    ("bigint-mul", "address-based limb family (legacy; string-based u128/* is the spec)"),
-    ("bigint-from-str", "address-based limb family (legacy; string-based u128/* is the spec)"),
-    ("bigint-to-str", "address-based limb family (legacy; string-based u128/* is the spec)"),
+    (
+        "bigint-add",
+        "address-based limb family (legacy; string-based u128/* is the spec)",
+    ),
+    (
+        "bigint-div",
+        "address-based limb family (legacy; string-based u128/* is the spec)",
+    ),
+    (
+        "bigint-mul",
+        "address-based limb family (legacy; string-based u128/* is the spec)",
+    ),
+    (
+        "bigint-from-str",
+        "address-based limb family (legacy; string-based u128/* is the spec)",
+    ),
+    (
+        "bigint-to-str",
+        "address-based limb family (legacy; string-based u128/* is the spec)",
+    ),
     // ── near/* wasm-only extras (host-register/register-index based) ──
-    ("near/kload", "host-register based (interp near_storage keys differ)"),
-    ("near/kstore", "host-register based (interp near_storage keys differ)"),
+    (
+        "near/kload",
+        "host-register based (interp near_storage keys differ)",
+    ),
+    (
+        "near/kstore",
+        "host-register based (interp near_storage keys differ)",
+    ),
     ("near/load-amount", "u128 two-register read (wasm host ABI)"),
-    ("near/store-deposit", "u128 two-register write (wasm host ABI)"),
-    ("near/attached_deposit_u128", "u128 two-register read (wasm host ABI)"),
+    (
+        "near/store-deposit",
+        "u128 two-register write (wasm host ABI)",
+    ),
+    (
+        "near/attached_deposit_u128",
+        "u128 two-register read (wasm host ABI)",
+    ),
     ("near/call-signed", "wasm harness promise helper"),
     ("near/transfer-signed", "wasm harness promise helper"),
     ("near/batch-add-key", "wasm harness promise helper"),
@@ -169,19 +319,49 @@ const WASM_ONLY_DOCUMENTED: &[(&str, &str)] = &[
     ("near/batch-create-account", "wasm harness promise helper"),
     ("near/batch-deploy", "wasm harness promise helper"),
     ("near/batch-transfer", "wasm harness promise helper"),
-    ("near/bls12381_g1_multiexp", "alt_bn128/bls host ABI over raw buffers"),
-    ("near/bls12381_g2_multiexp", "alt_bn128/bls host ABI over raw buffers"),
-    ("near/bls12381_map_fp2_to_g2", "alt_bn128/bls host ABI over raw buffers"),
-    ("near/bls12381_map_fp_to_g1", "alt_bn128/bls host ABI over raw buffers"),
-    ("near/bls12381_p1_decompress", "alt_bn128/bls host ABI over raw buffers"),
-    ("near/bls12381_p2_decompress", "alt_bn128/bls host ABI over raw buffers"),
-    ("near/bls12381_p2_sum", "alt_bn128/bls host ABI over raw buffers"),
-    ("near/bls12381_pairing_check", "alt_bn128/bls host ABI over raw buffers"),
+    (
+        "near/bls12381_g1_multiexp",
+        "alt_bn128/bls host ABI over raw buffers",
+    ),
+    (
+        "near/bls12381_g2_multiexp",
+        "alt_bn128/bls host ABI over raw buffers",
+    ),
+    (
+        "near/bls12381_map_fp2_to_g2",
+        "alt_bn128/bls host ABI over raw buffers",
+    ),
+    (
+        "near/bls12381_map_fp_to_g1",
+        "alt_bn128/bls host ABI over raw buffers",
+    ),
+    (
+        "near/bls12381_p1_decompress",
+        "alt_bn128/bls host ABI over raw buffers",
+    ),
+    (
+        "near/bls12381_p2_decompress",
+        "alt_bn128/bls host ABI over raw buffers",
+    ),
+    (
+        "near/bls12381_p2_sum",
+        "alt_bn128/bls host ABI over raw buffers",
+    ),
+    (
+        "near/bls12381_pairing_check",
+        "alt_bn128/bls host ABI over raw buffers",
+    ),
     ("near/json_get_arr", "wasm JSON register ABI"),
     ("near/json_get_u128", "wasm JSON register ABI"),
     // ── codec / encoding over raw byte buffers ──
-    ("borsh-serialize", "borsh over raw byte buffers (wasm memory)"),
-    ("borsh-deserialize", "borsh over raw byte buffers (wasm memory)"),
+    (
+        "borsh-serialize",
+        "borsh over raw byte buffers (wasm memory)",
+    ),
+    (
+        "borsh-deserialize",
+        "borsh over raw byte buffers (wasm memory)",
+    ),
     ("base58-decode", "codec into raw buffer (wasm memory)"),
     ("base64-encode", "codec into raw buffer (wasm memory)"),
     ("base64url-decode", "codec into raw buffer (wasm memory)"),
@@ -190,13 +370,19 @@ const WASM_ONLY_DOCUMENTED: &[(&str, &str)] = &[
     // ── wasm test-harness assertions (lisp-run has its own harness) ──
     ("assert-equal", "wasm test-harness assertion (harness only)"),
     ("assert-true", "wasm test-harness assertion (harness only)"),
-    ("assert-raises", "wasm test-harness assertion (harness only)"),
+    (
+        "assert-raises",
+        "wasm test-harness assertion (harness only)",
+    ),
     // ── C-ABI intrinsics over raw linear memory ──
     ("itoa", "C-ABI int-to-string into raw buffer (wasm memory)"),
     ("malloc", "linear-memory bump allocator (wasm layout)"),
     ("load_i64", "raw linear-memory tagged load (wasm layout)"),
     ("store_i64", "raw linear-memory tagged store (wasm layout)"),
-    ("abort", "wasm harness abort (near/panic is the interp twin)"),
+    (
+        "abort",
+        "wasm harness abort (near/panic is the interp twin)",
+    ),
     ("assert", "wasm assert helper (interp: near/assert)"),
     ("json-bytes-to-str", "wasm JSON register ABI"),
     ("json-extract", "wasm JSON register ABI"),
@@ -208,7 +394,9 @@ const WASM_ONLY_DOCUMENTED: &[(&str, &str)] = &[
 
 fn extract_wasm_ops() -> BTreeSet<String> {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/wasm_emit");
-    let arm = Regex::new(r#"^\s*(?:\|\s*)?"([A-Za-z0-9!$%&*+\-./:<=>?^_]+)"(\s+if\b|\s*(?:=>|\||,))"#).unwrap();
+    let arm =
+        Regex::new(r#"^\s*(?:\|\s*)?"([A-Za-z0-9!$%&*+\-./:<=>?^_]+)"(\s+if\b|\s*(?:=>|\||,))"#)
+            .unwrap();
     let cmp = Regex::new(r#"op\s*(?:==|!=)\s*"([A-Za-z0-9!$%&*+\-./:<=>?^_]+)""#).unwrap();
     let mut names = BTreeSet::new();
     let entries = fs::read_dir(&dir).expect("read src/wasm_emit");
@@ -259,11 +447,27 @@ fn near_probe_list() -> Vec<String> {
         .collect();
     // legacy bare storage/context names (interp compat surface)
     for p in [
-        "storage-write", "storage_read", "storage-remove", "storage-has-key", "block-height",
-        "block_timestamp", "signer-account-id", "predecessor_account_id", "current-account-id",
-        "attached_deposit", "account-balance", "log-utf8", "log", "near-config", "near-reset",
-        "near-promises", "near-batch-actions", "near-returned-promise", "near-register",
-        "near-register-source", "near-contracts",
+        "storage-write",
+        "storage_read",
+        "storage-remove",
+        "storage-has-key",
+        "block-height",
+        "block_timestamp",
+        "signer-account-id",
+        "predecessor_account_id",
+        "current-account-id",
+        "attached_deposit",
+        "account-balance",
+        "log-utf8",
+        "log",
+        "near-config",
+        "near-reset",
+        "near-promises",
+        "near-batch-actions",
+        "near-returned-promise",
+        "near-register",
+        "near-register-source",
+        "near-contracts",
     ] {
         probes.push(p.to_string());
     }

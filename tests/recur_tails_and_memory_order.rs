@@ -52,32 +52,24 @@ fn interp_non_tail_recur_is_error() {
     // mid-begin
     assert!(eval_str("(loop ((i 0)) (begin (recur 1) 2))").starts_with("ERROR"));
     // arity mismatch
-    assert!(
-        eval_str("(loop ((i 0)) (if (= i 3) i (recur 1 2)))").starts_with("ERROR")
-    );
+    assert!(eval_str("(loop ((i 0)) (if (= i 3) i (recur 1 2)))").starts_with("ERROR"));
 }
 
 // ── wasm path: hard compile errors ──
 
 #[test]
 fn wasm_non_tail_recur_is_compile_error() {
-    let err = wasm_emit::compile_near_untyped(
-        "(define (f) (loop ((i 0)) (+ 1 (recur 2))))",
-    )
-    .unwrap_err();
+    let err =
+        wasm_emit::compile_near_untyped("(define (f) (loop ((i 0)) (+ 1 (recur 2))))").unwrap_err();
     assert!(err.contains("not in tail position"), "got: {err}");
 }
 
 #[test]
 fn wasm_recur_in_lambda_is_compile_error() {
-    let err = wasm_emit::compile_near_untyped(
-        "(define (f) (loop ((i 0)) ((lambda (x) (recur x)) 1)))",
-    )
-    .unwrap_err();
-    assert!(
-        err.contains("recur") && err.contains("loop"),
-        "got: {err}"
-    );
+    let err =
+        wasm_emit::compile_near_untyped("(define (f) (loop ((i 0)) ((lambda (x) (recur x)) 1)))")
+            .unwrap_err();
+    assert!(err.contains("recur") && err.contains("loop"), "got: {err}");
 }
 
 #[test]

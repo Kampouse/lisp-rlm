@@ -12,8 +12,7 @@ fn lower(src: &str) -> String {
 fn compile(src: &str) {
     let ir = lower(src);
     let exprs = lisp_rlm_wasm::parse_all(&ir).expect("must parse");
-    lisp_rlm_wasm::typing::type_check_program(&exprs, true)
-        .expect("must typecheck");
+    lisp_rlm_wasm::typing::type_check_program(&exprs, true).expect("must typecheck");
     let wasm = lisp_rlm_wasm::compile_near_from_exprs(&exprs).expect("must compile");
     assert!(wasm.len() > 100);
 }
@@ -49,17 +48,16 @@ fn object_literal_bool_bare() {
 
 #[test]
 fn object_literal_multi_key_folds_nested() {
-    let out = lower(
-        "function f(): string { return { name: \"bob\", votes: 1, active: false }; }",
+    let out = lower("function f(): string { return { name: \"bob\", votes: 1, active: false }; }");
+    assert!(
+        out.contains("(json-set (json-set (json-set"),
+        "3 keys → 3 nested folds: {out}"
     );
-    assert!(out.contains("(json-set (json-set (json-set"), "3 keys → 3 nested folds: {out}");
 }
 
 #[test]
 fn object_literal_annotated_number_param_bare() {
-    let out = lower(
-        "export function f(votes: number): string {\n  return { votes: votes };\n}",
-    );
+    let out = lower("export function f(votes: number): string {\n  return { votes: votes };\n}");
     assert!(
         out.contains(r#"(json-set "{}" "votes" (to-string votes))"#),
         "': number' param must encode bare, not json-quote: {out}"
@@ -68,9 +66,7 @@ fn object_literal_annotated_number_param_bare() {
 
 #[test]
 fn object_literal_string_param_quoted() {
-    let out = lower(
-        "export function f(name: string): string {\n  return { name: name };\n}",
-    );
+    let out = lower("export function f(name: string): string {\n  return { name: name };\n}");
     assert!(
         out.contains(r#"(json-set "{}" "name" (json-quote name))"#),
         "string params encode via json-quote: {out}"
@@ -81,9 +77,7 @@ fn object_literal_string_param_quoted() {
 
 #[test]
 fn property_read_lowers_to_json_get() {
-    let out = lower(
-        "export function f(u: string): string {\n  return u.name;\n}",
-    );
+    let out = lower("export function f(u: string): string {\n  return u.name;\n}");
     assert!(
         out.contains(r#"(json-get-str "name" u)"#),
         "member read → json-get-str: {out}"
@@ -92,9 +86,8 @@ fn property_read_lowers_to_json_get() {
 
 #[test]
 fn nested_property_read_folds_inline() {
-    let out = lower(
-        "export function f(cfg: string): number {\n  return strToNum(cfg.server.port);\n}",
-    );
+    let out =
+        lower("export function f(cfg: string): number {\n  return strToNum(cfg.server.port);\n}");
     assert!(
         out.contains(r#"(str->num (json-get-str "server.port" cfg))"#),
         "nested reads fold into ONE dot-path call: {out}"
@@ -105,18 +98,18 @@ fn nested_property_read_folds_inline() {
 
 #[test]
 fn json_set_global_maps() {
-    let out = lower(
-        "export function f(u: string): string {\n  return jsonSet(u, \"k\", \"1\");\n}",
-    );
+    let out =
+        lower("export function f(u: string): string {\n  return jsonSet(u, \"k\", \"1\");\n}");
     assert!(out.contains("(json-set u"), "jsonSet → json-set: {out}");
 }
 
 #[test]
 fn json_quote_global_maps() {
-    let out = lower(
-        "export function f(s: string): string {\n  return jsonQuote(s);\n}",
+    let out = lower("export function f(s: string): string {\n  return jsonQuote(s);\n}");
+    assert!(
+        out.contains("(json-quote s"),
+        "jsonQuote → json-quote: {out}"
     );
-    assert!(out.contains("(json-quote s"), "jsonQuote → json-quote: {out}");
 }
 
 // ── end-to-end compile (needs runtime json-set — added same day) ────────
@@ -139,10 +132,8 @@ fn object_read_and_rebuild_compiles() {
 
 #[test]
 fn property_assignment_hard_errors() {
-    let err = ts_to_lisp_source(
-        "export function f(u: string): void {\n  u.k = \"x\";\n}",
-    )
-    .expect_err("member assignment must hard-error");
+    let err = ts_to_lisp_source("export function f(u: string): void {\n  u.k = \"x\";\n}")
+        .expect_err("member assignment must hard-error");
     assert!(
         err.contains("property assignment not supported"),
         "helpful message: {err}"
@@ -151,10 +142,8 @@ fn property_assignment_hard_errors() {
 
 #[test]
 fn object_spread_hard_errors() {
-    let err = ts_to_lisp_source(
-        "export function f(a: string): string {\n  return { ...a };\n}",
-    )
-    .expect_err("spread must hard-error");
+    let err = ts_to_lisp_source("export function f(a: string): string {\n  return { ...a };\n}")
+        .expect_err("spread must hard-error");
     assert!(err.contains("spread"), "{err}");
 }
 
@@ -173,9 +162,7 @@ fn object_param_numeric_prop_auto_decodes() {
 
 #[test]
 fn object_param_string_prop_plain_read() {
-    let out = lower(
-        "export function f(u: { name: string }): string {\n  return u.name;\n}",
-    );
+    let out = lower("export function f(u: { name: string }): string {\n  return u.name;\n}");
     assert!(
         out.contains(r#"(json-get-str "name" u)"#),
         "string prop reads plain: {out}"
@@ -206,10 +193,8 @@ fn object_param_type_alias_resolves() {
 
 #[test]
 fn unknown_named_type_hard_errors() {
-    let err = ts_to_lisp_source(
-        "export function f(u: Missing): string {\n  return u.a;\n}",
-    )
-    .expect_err("unknown type refs must hard-error");
+    let err = ts_to_lisp_source("export function f(u: Missing): string {\n  return u.a;\n}")
+        .expect_err("unknown type refs must hard-error");
     assert!(
         err.contains("inline object literal type"),
         "hint at inline: {err}"

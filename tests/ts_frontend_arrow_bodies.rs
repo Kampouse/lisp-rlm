@@ -12,8 +12,7 @@ fn lower(src: &str) -> String {
 fn compile(src: &str) {
     let ir = lower(src);
     let exprs = lisp_rlm_wasm::parse_all(&ir).expect("must parse");
-    lisp_rlm_wasm::typing::type_check_program(&exprs, true)
-        .expect("must typecheck");
+    lisp_rlm_wasm::typing::type_check_program(&exprs, true).expect("must typecheck");
     let wasm = lisp_rlm_wasm::compile_near_from_exprs(&exprs).expect("must compile");
     assert!(wasm.len() > 100);
 }
@@ -60,7 +59,11 @@ fn single_statement_bodies_stay_unwrapped() {
         "function f(v: number): number {\n  const g = (x: number): number => { return x + 1; };\n  return g(v);\n}\n",
     );
     // the g body itself must be the bare (+ x 1), not (begin (+ x 1))
-    assert!(ret_ir.contains("(+ x 1))"), "return-body drifted: {}", ret_ir);
+    assert!(
+        ret_ir.contains("(+ x 1))"),
+        "return-body drifted: {}",
+        ret_ir
+    );
 }
 
 /// Empty block arrow still hard-errors (no silent undefined).
@@ -106,7 +109,9 @@ fn exported_get_arrow_is_view() {
 #[test]
 fn near_named_import_elided() {
     compile("import { near } from \"near\";\nexport const main = (): number => { console.log(\"hi\"); return 1; };\n");
-    compile("import type { LispArr } from \"near-sdk-js\";\nexport const main = (): number => 1;\n");
+    compile(
+        "import type { LispArr } from \"near-sdk-js\";\nexport const main = (): number => 1;\n",
+    );
 }
 
 /// `import near from "near"` (default import) hard-errors — it shadows the
@@ -121,6 +126,8 @@ fn near_default_import_errors() {
 /// Non-near imports stay a hard error (no module system at runtime).
 #[test]
 fn other_imports_error() {
-    let r = ts_to_lisp_source("import { useState } from \"react\";\nexport const main = (): number => 1;\n");
+    let r = ts_to_lisp_source(
+        "import { useState } from \"react\";\nexport const main = (): number => 1;\n",
+    );
     assert!(r.is_err());
 }

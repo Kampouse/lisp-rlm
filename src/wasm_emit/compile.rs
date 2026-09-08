@@ -59,8 +59,14 @@ impl WasmEmitter {
         // last user fn; the old "__h_"-only filter let them win the
         // "last function" slot and shook main/id out of no-export programs.
         if self.exports.is_empty() && !self.funcs.is_empty() {
-            if let Some(idx) = (0..self.funcs.len()).rev().find(|&i| !self.funcs[i].name.starts_with("__")) {
-                if !reachable[idx] { reachable[idx] = true; queue.push_back(idx); }
+            if let Some(idx) = (0..self.funcs.len())
+                .rev()
+                .find(|&i| !self.funcs[i].name.starts_with("__"))
+            {
+                if !reachable[idx] {
+                    reachable[idx] = true;
+                    queue.push_back(idx);
+                }
             }
         }
         // Always keep "run" — it's the standard entry point
@@ -217,7 +223,9 @@ stitched module region at 1MiB. Split literals or shrink allocations",
         // WASM import types (stitched functions like schnorr)
         let wasm_import_type_base = (max_p + 2 + host_list.len()) as u32;
         for (_name, params, results) in &self.wasm_imports {
-            types.ty().function(params.iter().copied(), results.iter().copied());
+            types
+                .ty()
+                .function(params.iter().copied(), results.iter().copied());
         }
         m.section(&types);
 
@@ -346,7 +354,14 @@ stitched module region at 1MiB. Split literals or shrink allocations",
                     vec![]
                 }
             };
-            let resolved = Self::resolve_static_pub_ex(&f.instrs, &host_idx, &name_map, &self.funcs, &HashMap::new(), &wasm_import_map);
+            let resolved = Self::resolve_static_pub_ex(
+                &f.instrs,
+                &host_idx,
+                &name_map,
+                &self.funcs,
+                &HashMap::new(),
+                &wasm_import_map,
+            );
             let mut fb = Function::new(locals);
             for instr in &resolved {
                 fb.instruction(instr);
@@ -358,8 +373,13 @@ stitched module region at 1MiB. Split literals or shrink allocations",
         if self.exports.is_empty() {
             // Skip internal `__` helpers (u128 string family) — they are never
             // meaningful entry points but can be pushed after __toplevel.
-            if let Some(f) = self.funcs.iter().rev().find(|f| !f.name.starts_with("__h_")) {
-                let idx = internal_base + (self.funcs.len()-1) as u32;
+            if let Some(f) = self
+                .funcs
+                .iter()
+                .rev()
+                .find(|f| !f.name.starts_with("__h_"))
+            {
+                let idx = internal_base + (self.funcs.len() - 1) as u32;
                 let mut fb = Function::new(vec![(2u32, ValType::I64)]); // locals 0,1 for result swapping
                                                                         // Pass default args: for each param, push 100000 (for tight loop benchmarking)
                 for _ in 0..f.param_count {
@@ -556,13 +576,23 @@ stitched module region at 1MiB. Split literals or shrink allocations",
 
         // LAYOUT DEBUG (2026-08-29) — env LISPLM_DEBUG_LAYOUT=1
         if std::env::var("LISPLM_DEBUG_LAYOUT").is_ok() {
-            let mut offs: Vec<(u32, usize)> =
-                self.data_segments.iter().map(|(o, b)| (*o, b.len())).collect();
+            let mut offs: Vec<(u32, usize)> = self
+                .data_segments
+                .iter()
+                .map(|(o, b)| (*o, b.len()))
+                .collect();
             offs.sort();
-            eprintln!("== LAYOUT: heap_ptr={} next_data_offset={}", self.heap_ptr, self.next_data_offset);
+            eprintln!(
+                "== LAYOUT: heap_ptr={} next_data_offset={}",
+                self.heap_ptr, self.next_data_offset
+            );
             eprintln!("== segments: {} (first 8, last 8):", offs.len());
-            for (o, l) in offs.iter().take(8) { eprintln!("   seg @{o} len {l}"); }
-            for (o, l) in offs.iter().rev().take(8).rev() { eprintln!("   seg @{o} len {l}"); }
+            for (o, l) in offs.iter().take(8) {
+                eprintln!("   seg @{o} len {l}");
+            }
+            for (o, l) in offs.iter().rev().take(8).rev() {
+                eprintln!("   seg @{o} len {l}");
+            }
         }
 
         // Name custom section (function names) — trap symbolication.
@@ -585,7 +615,12 @@ stitched module region at 1MiB. Split literals or shrink allocations",
         }
         if self.exports.is_empty() && !self.funcs.is_empty() {
             // default wrapper: mirrors the auto-generated _run wrapper above
-            if let Some(f) = self.funcs.iter().rev().find(|f| !f.name.starts_with("__h_")) {
+            if let Some(f) = self
+                .funcs
+                .iter()
+                .rev()
+                .find(|f| !f.name.starts_with("__h_"))
+            {
                 name_entries.push((wrapper_base, format!("_run:{}", f.name)));
             }
         }
@@ -597,7 +632,9 @@ stitched module region at 1MiB. Split literals or shrink allocations",
         // WASM imports (e.g. schnorr_verify_bip340, sha256_hash) are inlined from WAT.
         // Uses wasm_link::merge_lib_wasm_multi (instruction-level binary patching).
         if !self.wasm_imports.is_empty() {
-            let import_export_pairs: Vec<(&str, &str)> = self.wasm_imports.iter()
+            let import_export_pairs: Vec<(&str, &str)> = self
+                .wasm_imports
+                .iter()
                 .map(|(name, _, _)| (name.as_ref(), name.as_ref()))
                 .collect();
             return super::wasm_link::link_schnorr_wat(&bytes, &import_export_pairs);
@@ -612,7 +649,14 @@ stitched module region at 1MiB. Split literals or shrink allocations",
         name_map: &HashMap<&str, u32>,
         funcs: &[FuncDef],
     ) -> Vec<Instruction<'static>> {
-        Self::resolve_static_pub_ex(instrs, host_map, name_map, funcs, &HashMap::new(), &HashMap::new())
+        Self::resolve_static_pub_ex(
+            instrs,
+            host_map,
+            name_map,
+            funcs,
+            &HashMap::new(),
+            &HashMap::new(),
+        )
     }
 
     pub(crate) fn resolve_static_pub_ex(
@@ -755,8 +799,8 @@ fn parse_and_compile_opts(
                                             local_count: 0,
                                             instrs: Vec::new(),
                                             local_entries: None,
-            custom_type: None,
-        });
+                                            custom_type: None,
+                                        });
                                     }
                                 }
                             }
@@ -770,8 +814,8 @@ fn parse_and_compile_opts(
                                     local_count: 0,
                                     instrs: Vec::new(),
                                     local_entries: None,
-            custom_type: None,
-        });
+                                    custom_type: None,
+                                });
                             }
                             em.value_defines.insert(name.clone());
                         }
@@ -817,26 +861,38 @@ fn parse_and_compile_opts(
                                         } else {
                                             body_items2.first().cloned().unwrap_or(LispVal::Nil)
                                         };
-                                        
-                        // Collect `::` int annotations for the raw-twin path
-                        if let LispVal::List(sig2) = &items[1] {
-                            if let Some(LispVal::Sym(n2)) = sig2.first() {
-                                let (ann, _b) = crate::helpers::split_define_annotation(&items[2..]);
-                                if let Some(parts) = ann {
-                                    if let Ok(arrow) = crate::typing::parse_type_list(&parts) {
-                                        if let crate::typing::TcType::Arrow(args, ret) = arrow {
-                                            let all_int = !args.is_empty()
+
+                                        // Collect `::` int annotations for the raw-twin path
+                                        if let LispVal::List(sig2) = &items[1] {
+                                            if let Some(LispVal::Sym(n2)) = sig2.first() {
+                                                let (ann, _b) =
+                                                    crate::helpers::split_define_annotation(
+                                                        &items[2..],
+                                                    );
+                                                if let Some(parts) = ann {
+                                                    if let Ok(arrow) =
+                                                        crate::typing::parse_type_list(&parts)
+                                                    {
+                                                        if let crate::typing::TcType::Arrow(
+                                                            args,
+                                                            ret,
+                                                        ) = arrow
+                                                        {
+                                                            let all_int = !args.is_empty()
                                                 && args.iter().all(|t| matches!(t, crate::typing::TcType::Con(crate::typing::TcCon::Int)))
                                                 && matches!(ret.as_ref(), crate::typing::TcType::Con(crate::typing::TcCon::Int));
-                                            if all_int {
-                                                em.fn_int_annotations.insert(n2.clone(), (args.len(), true));
+                                                            if all_int {
+                                                                em.fn_int_annotations.insert(
+                                                                    n2.clone(),
+                                                                    (args.len(), true),
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+                                                }
                                             }
                                         }
-                                    }
-                                }
-                            }
-                        }
-                            em.emit_define(name, &params, &body)?;
+                                        em.emit_define(name, &params, &body)?;
                                     }
                                 }
                             }
@@ -1027,8 +1083,14 @@ pub fn compile_standalone_opts(source: &str, typecheck: bool) -> Result<Vec<u8>,
                 vec![]
             }
         };
-        let resolved =
-            WasmEmitter::resolve_static_pub_ex(&f.instrs, &HashMap::new(), &name_map, &em.funcs, &HashMap::new(), &HashMap::new());
+        let resolved = WasmEmitter::resolve_static_pub_ex(
+            &f.instrs,
+            &HashMap::new(),
+            &name_map,
+            &em.funcs,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
         let mut fb = Function::new(locals);
         for instr in &resolved {
             fb.instruction(instr);
@@ -1209,21 +1271,21 @@ pub fn compile_near(source: &str) -> Result<Vec<u8>, String> {
 /// Compile NEAR WASM from source, skipping type checking.
 /// Useful for dynamically-typed generated code (e.g. Solidity translation).
 pub fn compile_near_untyped(source: &str) -> Result<Vec<u8>, String> {
-   let resolved = resolve_modules(source, std::path::Path::new("."))?;
-   let mut em = parse_and_compile_opts(&resolved, true, false)?;
-   if em.exports.is_empty() {
-       // See compile_near: prefer run/main by name over "last func" —
-       // avoids exporting post-hoc helpers and tree-shaking main.
-       if let Some(f) = em.funcs.iter().find(|f| f.name == "run") {
-           em.add_export(&f.name.clone(), "_run", false);
-       } else if let Some(f) = em.funcs.iter().find(|f| f.name == "main") {
-           em.add_export(&f.name.clone(), "_run", false);
-       } else if let Some(f) = em.funcs.iter().rev().find(|f| !f.name.starts_with("__")) {
-           em.add_export(&f.name.clone(), "_run", false);
-       }
-   }
-   let wasm = em.finish("_run");
-   Ok(wasm)
+    let resolved = resolve_modules(source, std::path::Path::new("."))?;
+    let mut em = parse_and_compile_opts(&resolved, true, false)?;
+    if em.exports.is_empty() {
+        // See compile_near: prefer run/main by name over "last func" —
+        // avoids exporting post-hoc helpers and tree-shaking main.
+        if let Some(f) = em.funcs.iter().find(|f| f.name == "run") {
+            em.add_export(&f.name.clone(), "_run", false);
+        } else if let Some(f) = em.funcs.iter().find(|f| f.name == "main") {
+            em.add_export(&f.name.clone(), "_run", false);
+        } else if let Some(f) = em.funcs.iter().rev().find(|f| !f.name.starts_with("__")) {
+            em.add_export(&f.name.clone(), "_run", false);
+        }
+    }
+    let wasm = em.finish("_run");
+    Ok(wasm)
 }
 
 /// Compile NEAR WASM from pre-parsed exprs, also returning the symbolication
@@ -1290,25 +1352,39 @@ pub fn compile_near_from_exprs_with_map(
                             } else {
                                 body_items.first().cloned().unwrap_or(LispVal::Nil)
                             };
-                            
-                        // Collect `::` int annotations for the raw-twin path
-                        if let LispVal::List(sig2) = &items[1] {
-                            if let Some(LispVal::Sym(n2)) = sig2.first() {
-                                let (ann, _b) = crate::helpers::split_define_annotation(&items[2..]);
-                                if let Some(parts) = ann {
-                                    if let Ok(arrow) = crate::typing::parse_type_list(&parts) {
-                                        if let crate::typing::TcType::Arrow(args, ret) = arrow {
-                                            let all_int = !args.is_empty()
-                                                && args.iter().all(|t| matches!(t, crate::typing::TcType::Con(crate::typing::TcCon::Int)))
-                                                && matches!(ret.as_ref(), crate::typing::TcType::Con(crate::typing::TcCon::Int));
-                                            if all_int {
-                                                em.fn_int_annotations.insert(n2.clone(), (args.len(), true));
+
+                            // Collect `::` int annotations for the raw-twin path
+                            if let LispVal::List(sig2) = &items[1] {
+                                if let Some(LispVal::Sym(n2)) = sig2.first() {
+                                    let (ann, _b) =
+                                        crate::helpers::split_define_annotation(&items[2..]);
+                                    if let Some(parts) = ann {
+                                        if let Ok(arrow) = crate::typing::parse_type_list(&parts) {
+                                            if let crate::typing::TcType::Arrow(args, ret) = arrow {
+                                                let all_int = !args.is_empty()
+                                                    && args.iter().all(|t| {
+                                                        matches!(
+                                                            t,
+                                                            crate::typing::TcType::Con(
+                                                                crate::typing::TcCon::Int
+                                                            )
+                                                        )
+                                                    })
+                                                    && matches!(
+                                                        ret.as_ref(),
+                                                        crate::typing::TcType::Con(
+                                                            crate::typing::TcCon::Int
+                                                        )
+                                                    );
+                                                if all_int {
+                                                    em.fn_int_annotations
+                                                        .insert(n2.clone(), (args.len(), true));
+                                                }
                                             }
                                         }
                                     }
                                 }
                             }
-                        }
                             em.emit_define(name, &params, &body)?;
                         }
                     }

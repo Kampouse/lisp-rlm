@@ -259,13 +259,7 @@ fn do_build(project_dir: &str) -> Result<(ProjectConfig, Vec<u8>), String> {
     };
     let wasm_bytes = match lisp_rlm_wasm::wasm_emit::compile_near(&effective_source) {
         Ok(b) => b,
-        Err(e) => {
-            return Err(augment_with_ts_line(
-                e,
-                &ident_map,
-                &source,
-            ))
-        }
+        Err(e) => return Err(augment_with_ts_line(e, &ident_map, &source)),
     };
     let func_names: Vec<String> = extract_func_names(&effective_source).unwrap_or_default();
 
@@ -287,7 +281,7 @@ fn do_build(project_dir: &str) -> Result<(ProjectConfig, Vec<u8>), String> {
 fn run_build(dir: Option<&str>) {
     let args: Vec<String> = std::env::args().collect();
     let project_dir = dir.unwrap_or(".");
-    
+
     // Load config first to get default target
     let config = match load_project_config(project_dir) {
         Ok(c) => c,
@@ -296,14 +290,14 @@ fn run_build(dir: Option<&str>) {
             std::process::exit(1);
         }
     };
-    
+
     // CLI --target overrides config target
     let target = args
         .iter()
         .find_map(|a| a.strip_prefix("--target="))
         .map(|s| s.to_string())
         .unwrap_or_else(|| config.target.clone());
-    
+
     match do_build_target_with_config(project_dir, &target, config) {
         Ok((output, wasm)) => {
             println!(
@@ -320,7 +314,11 @@ fn run_build(dir: Option<&str>) {
     }
 }
 
-fn do_build_target_with_config(project_dir: &str, target: &str, config: ProjectConfig) -> Result<(String, Vec<u8>), String> {
+fn do_build_target_with_config(
+    project_dir: &str,
+    target: &str,
+    config: ProjectConfig,
+) -> Result<(String, Vec<u8>), String> {
     let src_path = Path::new(project_dir).join(&config.src);
     let source =
         fs::read_to_string(&src_path).map_err(|e| format!("read {}: {}", config.src, e))?;
@@ -376,11 +374,22 @@ fn do_build_target_with_config(project_dir: &str, target: &str, config: ProjectC
                     Err(e) => {
                         let msg = e.to_string();
                         for line in msg.lines() {
-                            if line.contains("failed to compile") || line.contains("type mismatch") || line.contains("values remaining") {
-                                return Err(format!("WASM validation: {} (full: {})", line.trim(), &msg[..msg.len().min(500)]));
+                            if line.contains("failed to compile")
+                                || line.contains("type mismatch")
+                                || line.contains("values remaining")
+                            {
+                                return Err(format!(
+                                    "WASM validation: {} (full: {})",
+                                    line.trim(),
+                                    &msg[..msg.len().min(500)]
+                                ));
                             }
                         }
-                        return Err(format!("WASM validation: {} (full: {})", msg.lines().next().unwrap_or(&msg), &msg[..msg.len().min(500)]));
+                        return Err(format!(
+                            "WASM validation: {} (full: {})",
+                            msg.lines().next().unwrap_or(&msg),
+                            &msg[..msg.len().min(500)]
+                        ));
                     }
                 }
             }
@@ -409,31 +418,41 @@ fn do_build_target_with_config(project_dir: &str, target: &str, config: ProjectC
     Ok((config.output.clone(), wasm_bytes))
 }
 
-
 /// Post-build WASM stitch step. If the compiled WASM imports any stitched WASM functions
 /// (e.g. schnorr_verify_bip340), runs wasm_stitch.py to merge the crypto module.
 fn run_wasm_stitch(wasm_path: &Path) -> Result<(), String> {
     // Check if the WASM has any env.* imports that look like stitched imports
     // (schnorr_verify_bip340, etc.)
-    let wasm_bytes = fs::read(wasm_path).map_err(|e| format!("read {}: {}", wasm_path.display(), e))?;
-    let module = match wasmparser::Parser::new(0).parse_all(&wasm_bytes).find(|payload| matches!(payload, Ok(wasmparser::Payload::ImportSection(_)))) {
+    let wasm_bytes =
+        fs::read(wasm_path).map_err(|e| format!("read {}: {}", wasm_path.display(), e))?;
+    let module = match wasmparser::Parser::new(0)
+        .parse_all(&wasm_bytes)
+        .find(|payload| matches!(payload, Ok(wasmparser::Payload::ImportSection(_))))
+    {
         Some(Ok(wasmparser::Payload::ImportSection(s))) => s,
         _ => return Ok(()), // no import section = nothing to stitch
     };
-    let imports: Vec<_> = module.into_iter().collect::<Result<Vec<_>, _>>().map_err(|e| format!("parse imports: {}", e))?;
-    
+    let imports: Vec<_> = module
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("parse imports: {}", e))?;
+
     let stitched_names = ["schnorr_verify_bip340", "schnorr_verify_clearmsig"];
-    let needs_stitch = imports.iter().any(|imp| {
-        imp.module == "env" && stitched_names.contains(&imp.name)
-    });
-    
+    let needs_stitch = imports
+        .iter()
+        .any(|imp| imp.module == "env" && stitched_names.contains(&imp.name));
+
     if !needs_stitch {
         return Ok(());
     }
-    
+
     // Find the schnorr WASM module
-    let stitcher_dir = std::env::var("SCHNORR_WASM_DIR")
-        .unwrap_or_else(|_| format!("{}/.openclaw/workspace/k256-schnorr-wasm", std::env::var("HOME").unwrap_or_default()));
+    let stitcher_dir = std::env::var("SCHNORR_WASM_DIR").unwrap_or_else(|_| {
+        format!(
+            "{}/.openclaw/workspace/k256-schnorr-wasm",
+            std::env::var("HOME").unwrap_or_default()
+        )
+    });
     let crypto_wasm = Path::new(&stitcher_dir).join("schnorr_verify.wasm");
     if !crypto_wasm.exists() {
         return Err(format!(
@@ -442,13 +461,16 @@ Set SCHNORR_WASM_DIR to override",
             crypto_wasm.display()
         ));
     }
-    
+
     // Find the stitcher script
     let stitcher = Path::new(&stitcher_dir).join("wasm_stitch.py");
     if !stitcher.exists() {
-        return Err(format!("wasm_stitch.py not found at {}", stitcher.display()));
+        return Err(format!(
+            "wasm_stitch.py not found at {}",
+            stitcher.display()
+        ));
     }
-    
+
     // Write stitched output to a temp file, then replace original
     let stitched_path = wasm_path.with_extension("stitched.wasm");
     let result = std::process::Command::new("python3")
@@ -459,18 +481,22 @@ Set SCHNORR_WASM_DIR to override",
         .arg(&stitched_path)
         .output()
         .map_err(|e| format!("run wasm_stitch.py: {}", e))?;
-    
+
     if !result.status.success() {
         let stderr = String::from_utf8_lossy(&result.stderr);
         return Err(format!("wasm_stitch.py failed: {}", stderr.trim()));
     }
-    
+
     // Replace original with stitched
     let stitched_bytes = fs::read(&stitched_path).map_err(|e| format!("read stitched: {}", e))?;
     fs::write(wasm_path, &stitched_bytes).map_err(|e| format!("write stitched: {}", e))?;
     let _ = fs::remove_file(&stitched_path);
-    
-    println!("  🔗 Stitched schnorr_verify WASM ({} → {} bytes)", wasm_bytes.len(), stitched_bytes.len());
+
+    println!(
+        "  🔗 Stitched schnorr_verify WASM ({} → {} bytes)",
+        wasm_bytes.len(),
+        stitched_bytes.len()
+    );
     Ok(())
 }
 
@@ -599,7 +625,10 @@ fn parse_overrides(args: &[String]) -> (NearCliOverrides, Vec<String>) {
             "--borsh" => {
                 // --borsh <account_id> <amount>
                 let acct = args.get(i + 1).cloned().unwrap_or_default();
-                let amt = args.get(i + 2).and_then(|a| a.parse::<u64>().ok()).unwrap_or(0);
+                let amt = args
+                    .get(i + 2)
+                    .and_then(|a| a.parse::<u64>().ok())
+                    .unwrap_or(0);
                 overrides.borsh_args = Some((acct, amt));
                 i += 3;
             }
@@ -636,11 +665,10 @@ fn resolve_near_ctx(
         return Err("No account specified. Use --account or set account in near.json".into());
     }
 
-    let rpc_url = std::env::var("NEAR_RPC_URL")
-        .unwrap_or_else(|_| match network.as_str() {
-            "mainnet" => "https://rpc.mainnet.near.org".into(),
-            _ => "https://rpc.testnet.fastnear.com".into(),
-        });
+    let rpc_url = std::env::var("NEAR_RPC_URL").unwrap_or_else(|_| match network.as_str() {
+        "mainnet" => "https://rpc.mainnet.near.org".into(),
+        _ => "https://rpc.testnet.fastnear.com".into(),
+    });
 
     // Load signing key
     let signing_key = if overrides.seed_phrase {
@@ -928,7 +956,8 @@ async fn prepare_tx(
 /// Sign a borsh-encoded transaction body and broadcast it.
 /// gas_burnt arrives as JSON number (or string for big values) — take either
 fn json_u128(v: &serde_json::Value) -> u128 {
-    v.as_u64().map(|n| n as u128)
+    v.as_u64()
+        .map(|n| n as u128)
         .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
         .unwrap_or(0)
 }
@@ -972,7 +1001,8 @@ async fn sign_and_broadcast(
     }
 
     // Human receipt: total gas burnt + logs emitted (all broadcast paths)
-    let mut burnt: u128 = json_u128(&result["result"]["transaction_outcome"]["outcome"]["gas_burnt"]);
+    let mut burnt: u128 =
+        json_u128(&result["result"]["transaction_outcome"]["outcome"]["gas_burnt"]);
     let mut logs: Vec<String> = Vec::new();
     if let Some(receipts) = result["result"]["receipts_outcome"].as_array() {
         for r in receipts {
@@ -1106,9 +1136,15 @@ async fn run_view_async(args: &[String]) {
                 eprintln!("❌ Read {}: {}", candidate, e);
                 std::process::exit(1);
             });
-            serde_json::from_str::<serde_json::Value>(&content).unwrap().to_string().into_bytes()
+            serde_json::from_str::<serde_json::Value>(&content)
+                .unwrap()
+                .to_string()
+                .into_bytes()
         } else if candidate.starts_with('{') || candidate.starts_with('[') {
-            serde_json::from_str::<serde_json::Value>(candidate).unwrap().to_string().into_bytes()
+            serde_json::from_str::<serde_json::Value>(candidate)
+                .unwrap()
+                .to_string()
+                .into_bytes()
         } else {
             Vec::new()
         }
@@ -1739,7 +1775,10 @@ fn run_tests_target(base_src: &str, tests: &[TestCase], target: &str) -> (usize,
                     }
                 }
                 let _ = annotated;
-                println!("  ❌ {}: runtime error: {} [wasm dumped to {:?}]", tc.name, e, dbg_path);
+                println!(
+                    "  ❌ {}: runtime error: {} [wasm dumped to {:?}]",
+                    tc.name, e, dbg_path
+                );
                 failed += 1;
                 continue;
             }
@@ -1957,7 +1996,7 @@ fn run_compile(args: &[String]) {
 
     // CLI --target overrides config (already parsed into cli_target_flag above)
     let cli_target = cli_target_flag.as_deref();
-    
+
     // Try to load project config if no explicit target
     let target = if let Some(t) = cli_target {
         t.to_string()
@@ -2029,7 +2068,8 @@ fn run_compile(args: &[String]) {
                 Some(name) => eprintln!("❌ WASM error in `{}`: {}", name, err_str),
                 None => eprintln!("❌ WASM validation: {}", err_str),
             }
-            let out = resolve_output_path(&cli_output, positional.get(1).map(String::as_str), src_path);
+            let out =
+                resolve_output_path(&cli_output, positional.get(1).map(String::as_str), src_path);
             let _ = fs::write(&out, &wasm_bytes);
             std::process::exit(1);
         }
@@ -2085,8 +2125,8 @@ fn run_test_fn(wasm: &[u8], fn_name: &str) -> Result<i64, String> {
     let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let mut store = Store::new(&engine, ());
 
-    let memory =
-        Memory::new(&mut store, MemoryType::new(512, None)).map_err(|e| format!("memory: {}", e))?;
+    let memory = Memory::new(&mut store, MemoryType::new(512, None))
+        .map_err(|e| format!("memory: {}", e))?;
 
     let logs_c = logs.clone();
     let log_fn = Func::new(
@@ -2588,11 +2628,7 @@ fn find_function_at_offset(
 }
 
 // Map a wasm function index (including imports) to a source function name.
-fn find_function_at_index(
-    wasm: &[u8],
-    func_index: usize,
-    func_names: &[String],
-) -> Option<String> {
+fn find_function_at_index(wasm: &[u8], func_index: usize, func_names: &[String]) -> Option<String> {
     // Count imported functions (import section id = 2)
     let mut pos = 8;
     let mut import_count = 0usize;
@@ -3624,8 +3660,8 @@ fn run_wasmtime(
 
     let mut store = Store::new(&engine, ());
 
-    let memory =
-        Memory::new(&mut store, MemoryType::new(512, None)).map_err(|e| format!("memory: {}", e))?;
+    let memory = Memory::new(&mut store, MemoryType::new(512, None))
+        .map_err(|e| format!("memory: {}", e))?;
 
     let logs_c = logs.clone();
     let log_fn = Func::new(

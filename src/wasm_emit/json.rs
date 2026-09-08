@@ -52,7 +52,9 @@ impl WasmEmitter {
             v.push(Instruction::I64And);
             v.push(Instruction::I64Const(crate::wasm_emit::TAG_STR as i64));
             v.push(Instruction::I64Eq);
-            v.push(Instruction::If(wasm_encoder::BlockType::Result(ValType::I64)));
+            v.push(Instruction::If(wasm_encoder::BlockType::Result(
+                ValType::I64,
+            )));
             {
                 let jga_len = self.local_idx_i32("__jga_len");
                 let jga_ptr = self.local_idx_i32("__jga_ptr");
@@ -62,7 +64,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(3));
                 v.push(Instruction::I64ShrU);
                 v.push(Instruction::LocalSet(jga_tmp)); // reuse as payload
-                // len = payload >> 32
+                                                        // len = payload >> 32
                 v.push(Instruction::LocalGet(jga_tmp));
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
@@ -78,7 +80,10 @@ impl WasmEmitter {
                 v.push(Instruction::I32Const(heap_dst as i32));
                 v.push(Instruction::LocalGet(jga_ptr));
                 v.push(Instruction::LocalGet(jga_len));
-                v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+                v.push(Instruction::MemoryCopy {
+                    src_mem: 0,
+                    dst_mem: 0,
+                });
                 v.push(Instruction::LocalGet(jga_len));
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(32));
@@ -2511,7 +2516,7 @@ impl WasmEmitter {
         Ok(v)
     }
 
-/// (near/json_get_arr "key") → TAG_ARRAY of strings from the input JSON:
+    /// (near/json_get_arr "key") → TAG_ARRAY of strings from the input JSON:
     /// {"key": ["a", "b", ...]}. Elements: quoted strings (escape-aware,
     /// raw bytes kept — json_get_str semantics) or bare tokens. Cap 64
     /// elements (M1). Missing key / malformed → nil.
@@ -2551,8 +2556,16 @@ impl WasmEmitter {
         let alen = self.local_idx("__jga_alen");
         let result = self.local_idx("__jga_res");
 
-        let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
-        let ma64 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+        let ma8 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 0,
+            memory_index: 0,
+        };
+        let ma64 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 0,
+        };
         let ib = INPUT_BUF as i32;
         let scratch = self.heap_bump((8 * MAXELEM) as u32) as i32;
 
@@ -3592,7 +3605,7 @@ impl WasmEmitter {
         v.push(Instruction::I64Sub);
         v.push(Instruction::LocalSet(res));
         v.push(Instruction::End); // end if neg
-        // then-branch result: tagged NUM (caller no longer re-tags)
+                                  // then-branch result: tagged NUM (caller no longer re-tags)
         v.push(Instruction::LocalGet(res));
         v.extend(self.emit_tag_num());
         v.push(Instruction::Else);
@@ -5008,7 +5021,13 @@ impl WasmEmitter {
         v.push(Instruction::LocalSet(ci));
         // dispatch on b: if/else-if chain — each arm writes escaped bytes at ib+oi
         // write2(c1, c2): store8(ib+oi, c1); store8(ib+oi+1, c2); oi += 2
-        fn push_store8_at_oi(ib: i64, oi: u32, off: i64, val: i64, ma8: &wasm_encoder::MemArg) -> Vec<Instruction<'static>> {
+        fn push_store8_at_oi(
+            ib: i64,
+            oi: u32,
+            off: i64,
+            val: i64,
+            ma8: &wasm_encoder::MemArg,
+        ) -> Vec<Instruction<'static>> {
             vec![
                 Instruction::I64Const(ib),
                 Instruction::LocalGet(oi),
@@ -5048,8 +5067,8 @@ impl WasmEmitter {
         v.push(Instruction::I64Const(0x22));
         v.push(Instruction::I64Eq);
         v.push(Instruction::If(BlockType::Empty));
-        v.extend(push_store8_at_oi(ib, oi, 0, 92, &ma8));   // backslash
-        v.extend(push_store8_at_oi(ib, oi, 1, 34, &ma8));   // '"'
+        v.extend(push_store8_at_oi(ib, oi, 0, 92, &ma8)); // backslash
+        v.extend(push_store8_at_oi(ib, oi, 1, 34, &ma8)); // '"'
         v.extend(push_oi_add(oi, 2));
         v.push(Instruction::Else);
         v.push(Instruction::LocalGet(bb));
@@ -5057,7 +5076,7 @@ impl WasmEmitter {
         v.push(Instruction::I64Eq);
         v.push(Instruction::If(BlockType::Empty));
         v.extend(push_store8_at_oi(ib, oi, 0, 92, &ma8));
-        v.extend(push_store8_at_oi(ib, oi, 1, 92, &ma8));   // '\\'
+        v.extend(push_store8_at_oi(ib, oi, 1, 92, &ma8)); // '\\'
         v.extend(push_oi_add(oi, 2));
         v.push(Instruction::Else);
         v.push(Instruction::LocalGet(bb));
@@ -5065,7 +5084,7 @@ impl WasmEmitter {
         v.push(Instruction::I64Eq);
         v.push(Instruction::If(BlockType::Empty));
         v.extend(push_store8_at_oi(ib, oi, 0, 92, &ma8));
-        v.extend(push_store8_at_oi(ib, oi, 1, 110, &ma8));  // 'n'
+        v.extend(push_store8_at_oi(ib, oi, 1, 110, &ma8)); // 'n'
         v.extend(push_oi_add(oi, 2));
         v.push(Instruction::Else);
         v.push(Instruction::LocalGet(bb));
@@ -5073,7 +5092,7 @@ impl WasmEmitter {
         v.push(Instruction::I64Eq);
         v.push(Instruction::If(BlockType::Empty));
         v.extend(push_store8_at_oi(ib, oi, 0, 92, &ma8));
-        v.extend(push_store8_at_oi(ib, oi, 1, 114, &ma8));  // 'r'
+        v.extend(push_store8_at_oi(ib, oi, 1, 114, &ma8)); // 'r'
         v.extend(push_oi_add(oi, 2));
         v.push(Instruction::Else);
         v.push(Instruction::LocalGet(bb));
@@ -5081,7 +5100,7 @@ impl WasmEmitter {
         v.push(Instruction::I64Eq);
         v.push(Instruction::If(BlockType::Empty));
         v.extend(push_store8_at_oi(ib, oi, 0, 92, &ma8));
-        v.extend(push_store8_at_oi(ib, oi, 1, 116, &ma8));  // 't'
+        v.extend(push_store8_at_oi(ib, oi, 1, 116, &ma8)); // 't'
         v.extend(push_oi_add(oi, 2));
         v.push(Instruction::Else);
         v.push(Instruction::LocalGet(bb));
@@ -5090,10 +5109,10 @@ impl WasmEmitter {
         v.push(Instruction::If(BlockType::Empty));
         // \u00XX: 92,117,48,48,hi,lo
         v.extend(push_store8_at_oi(ib, oi, 0, 92, &ma8));
-        v.extend(push_store8_at_oi(ib, oi, 1, 117, &ma8));  // 'u'
-        v.extend(push_store8_at_oi(ib, oi, 2, 48, &ma8));   // '0'
-        v.extend(push_store8_at_oi(ib, oi, 3, 48, &ma8));   // '0'
-        // hi digit: dg = b>>4; dg += (dg<10 ? 48 : 87); store8(ib+oi+4, dg)
+        v.extend(push_store8_at_oi(ib, oi, 1, 117, &ma8)); // 'u'
+        v.extend(push_store8_at_oi(ib, oi, 2, 48, &ma8)); // '0'
+        v.extend(push_store8_at_oi(ib, oi, 3, 48, &ma8)); // '0'
+                                                          // hi digit: dg = b>>4; dg += (dg<10 ? 48 : 87); store8(ib+oi+4, dg)
         v.push(Instruction::LocalGet(bb));
         v.push(Instruction::I64Const(4));
         v.push(Instruction::I64ShrU);
@@ -5138,13 +5157,13 @@ impl WasmEmitter {
         v.push(Instruction::I32WrapI64);
         v.push(Instruction::I32Store8(ma8.clone()));
         v.extend(push_oi_add(oi, 1));
-        v.push(Instruction::End);   // close if(<32)
-        v.push(Instruction::End);   // close if(9)
-        v.push(Instruction::End);   // close if(13)
-        v.push(Instruction::End);   // close if(10)
-        v.push(Instruction::End);   // close if(92)
-        v.push(Instruction::End);   // close if(34)
-        // loop continue
+        v.push(Instruction::End); // close if(<32)
+        v.push(Instruction::End); // close if(9)
+        v.push(Instruction::End); // close if(13)
+        v.push(Instruction::End); // close if(10)
+        v.push(Instruction::End); // close if(92)
+        v.push(Instruction::End); // close if(34)
+                                  // loop continue
         v.push(Instruction::Br(0));
         v.push(Instruction::End);
         v.push(Instruction::End);
@@ -6183,12 +6202,12 @@ impl WasmEmitter {
             memory_index: 0,
         };
         let stdout_buf: i32 = 2097152; // 2MB — must be above heap (200000-999980) and wit adapter (900000+)
-        // Params: 0=json packed, 1=key packed, 2=value packed (all i64)
-        // 21 i32 locals (indices 3..23):
-        //   3=scan_i 4=ch 5=depth 6=in_str 7=esc 8=key_len 9=key_ptr 10=val_len
-        //   11=val_ptr 12=match 13=key_start 14=kj 15=value_start 16=value_end
-        //   17=close_pos 18=brace_pos 19=member_count 20=out_len 21=json_len
-        //   22=json_ptr 23=seg_len
+                                       // Params: 0=json packed, 1=key packed, 2=value packed (all i64)
+                                       // 21 i32 locals (indices 3..23):
+                                       //   3=scan_i 4=ch 5=depth 6=in_str 7=esc 8=key_len 9=key_ptr 10=val_len
+                                       //   11=val_ptr 12=match 13=key_start 14=kj 15=value_start 16=value_end
+                                       //   17=close_pos 18=brace_pos 19=member_count 20=out_len 21=json_len
+                                       //   22=json_ptr 23=seg_len
         let mut ins: Vec<Instruction<'static>> = Vec::new();
 
         // ── micro-helpers (plain fns over fixed local indices) ──

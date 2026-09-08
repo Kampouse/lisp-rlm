@@ -654,7 +654,8 @@ pub fn build_combined_wit_metadata() -> Result<(wit_parser::Resolve, wit_parser:
 /// Build WIT metadata for the outlayer-nohttp world — outlayer host functions
 /// WITHOUT wasi:http. Used when the program needs storage/view/call/etc. but
 /// does NOT make HTTP requests, avoiding HTTP adapter traps in inlayer runtime.
-pub fn build_outlayer_nohttp_wit_metadata() -> Result<(wit_parser::Resolve, wit_parser::WorldId), String> {
+pub fn build_outlayer_nohttp_wit_metadata(
+) -> Result<(wit_parser::Resolve, wit_parser::WorldId), String> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let mut resolve = wit_parser::Resolve::new();

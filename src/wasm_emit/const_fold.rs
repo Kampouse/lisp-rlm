@@ -127,7 +127,10 @@ impl WasmEmitter {
                 LispVal::Str(_) | LispVal::Bool(_) | LispVal::Nil | LispVal::Vec(_) => true,
                 // List: literal data only when head is not a symbol (i.e. not
                 // an application form like (fib (- n 1)))
-                LispVal::List(l) => !l.first().map(|h| matches!(h, LispVal::Sym(_))).unwrap_or(true),
+                LispVal::List(l) => !l
+                    .first()
+                    .map(|h| matches!(h, LispVal::Sym(_)))
+                    .unwrap_or(true),
                 _ => false,
             };
             if folded_args.iter().any(|x| literal_nonnum(x)) {
@@ -335,79 +338,184 @@ impl WasmEmitter {
         }
         use Instruction as I;
         let idx = self.funcs.len();
-        let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
-        let ma1 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+        let ma8 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 0,
+        };
+        let ma1 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 0,
+            memory_index: 0,
+        };
         let mut v: Vec<Instruction<'static>> = Vec::new();
         // locals: 2=tag_a 3=tag_b 4=la/lb/pa 5=lb/pb 6=i 7=res 8=na 9=nb 10=k
         // tag mismatch → 0
-        v.push(I::LocalGet(0)); v.push(I::I64Const(7)); v.push(I::I64And); v.push(I::LocalSet(2));
-        v.push(I::LocalGet(1)); v.push(I::I64Const(7)); v.push(I::I64And); v.push(I::LocalSet(3));
-        v.push(I::LocalGet(2)); v.push(I::LocalGet(3)); v.push(I::I64Ne);
+        v.push(I::LocalGet(0));
+        v.push(I::I64Const(7));
+        v.push(I::I64And);
+        v.push(I::LocalSet(2));
+        v.push(I::LocalGet(1));
+        v.push(I::I64Const(7));
+        v.push(I::I64And);
+        v.push(I::LocalSet(3));
+        v.push(I::LocalGet(2));
+        v.push(I::LocalGet(3));
+        v.push(I::I64Ne);
         v.push(I::If(wasm_encoder::BlockType::Empty));
-        v.push(I::I64Const(0)); v.push(I::Return);
+        v.push(I::I64Const(0));
+        v.push(I::Return);
         v.push(I::End);
         // str? len + byte loop
-        v.push(I::LocalGet(2)); v.push(I::I64Const(TAG_STR)); v.push(I::I64Eq);
+        v.push(I::LocalGet(2));
+        v.push(I::I64Const(TAG_STR));
+        v.push(I::I64Eq);
         v.push(I::If(wasm_encoder::BlockType::Empty));
-        v.push(I::LocalGet(0)); v.push(I::I64Const(TAG_BITS)); v.push(I::I64ShrU); v.push(I::I64Const(32)); v.push(I::I64ShrU); v.push(I::LocalSet(4)); // la
-        v.push(I::LocalGet(1)); v.push(I::I64Const(TAG_BITS)); v.push(I::I64ShrU); v.push(I::I64Const(32)); v.push(I::I64ShrU); v.push(I::LocalSet(5)); // lb
-        v.push(I::LocalGet(4)); v.push(I::LocalGet(5)); v.push(I::I64Ne);
+        v.push(I::LocalGet(0));
+        v.push(I::I64Const(TAG_BITS));
+        v.push(I::I64ShrU);
+        v.push(I::I64Const(32));
+        v.push(I::I64ShrU);
+        v.push(I::LocalSet(4)); // la
+        v.push(I::LocalGet(1));
+        v.push(I::I64Const(TAG_BITS));
+        v.push(I::I64ShrU);
+        v.push(I::I64Const(32));
+        v.push(I::I64ShrU);
+        v.push(I::LocalSet(5)); // lb
+        v.push(I::LocalGet(4));
+        v.push(I::LocalGet(5));
+        v.push(I::I64Ne);
         v.push(I::If(wasm_encoder::BlockType::Empty));
-        v.push(I::I64Const(0)); v.push(I::Return);
+        v.push(I::I64Const(0));
+        v.push(I::Return);
         v.push(I::End);
-        v.push(I::I64Const(0)); v.push(I::LocalSet(6));
+        v.push(I::I64Const(0));
+        v.push(I::LocalSet(6));
         v.push(I::Block(wasm_encoder::BlockType::Empty));
         v.push(I::Loop(wasm_encoder::BlockType::Empty));
-        v.push(I::LocalGet(6)); v.push(I::LocalGet(4)); v.push(I::I64GeU); v.push(I::BrIf(1));
+        v.push(I::LocalGet(6));
+        v.push(I::LocalGet(4));
+        v.push(I::I64GeU);
+        v.push(I::BrIf(1));
         // pa+i vs pb+i byte
-        v.push(I::LocalGet(0)); v.push(I::I64Const(TAG_BITS)); v.push(I::I64ShrU); v.push(I::I64Const(0xFFFF_FFFF)); v.push(I::I64And); v.push(I::LocalGet(6)); v.push(I::I64Add); v.push(I::I32WrapI64);
+        v.push(I::LocalGet(0));
+        v.push(I::I64Const(TAG_BITS));
+        v.push(I::I64ShrU);
+        v.push(I::I64Const(0xFFFF_FFFF));
+        v.push(I::I64And);
+        v.push(I::LocalGet(6));
+        v.push(I::I64Add);
+        v.push(I::I32WrapI64);
         v.push(I::I32Load8U(ma1.clone()));
-        v.push(I::LocalGet(1)); v.push(I::I64Const(TAG_BITS)); v.push(I::I64ShrU); v.push(I::I64Const(0xFFFF_FFFF)); v.push(I::I64And); v.push(I::LocalGet(6)); v.push(I::I64Add); v.push(I::I32WrapI64);
+        v.push(I::LocalGet(1));
+        v.push(I::I64Const(TAG_BITS));
+        v.push(I::I64ShrU);
+        v.push(I::I64Const(0xFFFF_FFFF));
+        v.push(I::I64And);
+        v.push(I::LocalGet(6));
+        v.push(I::I64Add);
+        v.push(I::I32WrapI64);
         v.push(I::I32Load8U(ma1.clone()));
         v.push(I::I32Ne);
         v.push(I::If(wasm_encoder::BlockType::Empty));
-        v.push(I::I64Const(0)); v.push(I::Return);
+        v.push(I::I64Const(0));
+        v.push(I::Return);
         v.push(I::End);
-        v.push(I::LocalGet(6)); v.push(I::I64Const(1)); v.push(I::I64Add); v.push(I::LocalSet(6));
+        v.push(I::LocalGet(6));
+        v.push(I::I64Const(1));
+        v.push(I::I64Add);
+        v.push(I::LocalSet(6));
         v.push(I::Br(0));
-        v.push(I::End); v.push(I::End);
-        v.push(I::I64Const(1)); v.push(I::Return);
+        v.push(I::End);
+        v.push(I::End);
+        v.push(I::I64Const(1));
+        v.push(I::Return);
         v.push(I::End);
         // array? count + elementwise recurse
-        v.push(I::LocalGet(2)); v.push(I::I64Const(TAG_ARRAY)); v.push(I::I64Eq);
+        v.push(I::LocalGet(2));
+        v.push(I::I64Const(TAG_ARRAY));
+        v.push(I::I64Eq);
         v.push(I::If(wasm_encoder::BlockType::Empty));
-        v.push(I::LocalGet(0)); v.push(I::I64Const(TAG_BITS)); v.push(I::I64ShrU); v.push(I::I32WrapI64); v.push(I::I64Load(ma8.clone())); v.push(I::LocalSet(8)); // na
-        v.push(I::LocalGet(1)); v.push(I::I64Const(TAG_BITS)); v.push(I::I64ShrU); v.push(I::I32WrapI64); v.push(I::I64Load(ma8.clone())); v.push(I::LocalSet(9)); // nb
-        v.push(I::LocalGet(8)); v.push(I::LocalGet(9)); v.push(I::I64Ne);
+        v.push(I::LocalGet(0));
+        v.push(I::I64Const(TAG_BITS));
+        v.push(I::I64ShrU);
+        v.push(I::I32WrapI64);
+        v.push(I::I64Load(ma8.clone()));
+        v.push(I::LocalSet(8)); // na
+        v.push(I::LocalGet(1));
+        v.push(I::I64Const(TAG_BITS));
+        v.push(I::I64ShrU);
+        v.push(I::I32WrapI64);
+        v.push(I::I64Load(ma8.clone()));
+        v.push(I::LocalSet(9)); // nb
+        v.push(I::LocalGet(8));
+        v.push(I::LocalGet(9));
+        v.push(I::I64Ne);
         v.push(I::If(wasm_encoder::BlockType::Empty));
-        v.push(I::I64Const(0)); v.push(I::Return);
+        v.push(I::I64Const(0));
+        v.push(I::Return);
         v.push(I::End);
-        v.push(I::I64Const(0)); v.push(I::LocalSet(6));
+        v.push(I::I64Const(0));
+        v.push(I::LocalSet(6));
         v.push(I::Block(wasm_encoder::BlockType::Empty));
         v.push(I::Loop(wasm_encoder::BlockType::Empty));
-        v.push(I::LocalGet(6)); v.push(I::LocalGet(8)); v.push(I::I64GeU); v.push(I::BrIf(1));
-        v.push(I::LocalGet(0)); v.push(I::I64Const(TAG_BITS)); v.push(I::I64ShrU); v.push(I::LocalGet(6)); v.push(I::I64Const(1)); v.push(I::I64Add); v.push(I::I64Const(8)); v.push(I::I64Mul); v.push(I::I64Add); v.push(I::I32WrapI64); v.push(I::I64Load(ma8.clone()));
-        v.push(I::LocalGet(1)); v.push(I::I64Const(TAG_BITS)); v.push(I::I64ShrU); v.push(I::LocalGet(6)); v.push(I::I64Const(1)); v.push(I::I64Add); v.push(I::I64Const(8)); v.push(I::I64Mul); v.push(I::I64Add); v.push(I::I32WrapI64); v.push(I::I64Load(ma8.clone()));
+        v.push(I::LocalGet(6));
+        v.push(I::LocalGet(8));
+        v.push(I::I64GeU);
+        v.push(I::BrIf(1));
+        v.push(I::LocalGet(0));
+        v.push(I::I64Const(TAG_BITS));
+        v.push(I::I64ShrU);
+        v.push(I::LocalGet(6));
+        v.push(I::I64Const(1));
+        v.push(I::I64Add);
+        v.push(I::I64Const(8));
+        v.push(I::I64Mul);
+        v.push(I::I64Add);
+        v.push(I::I32WrapI64);
+        v.push(I::I64Load(ma8.clone()));
+        v.push(I::LocalGet(1));
+        v.push(I::I64Const(TAG_BITS));
+        v.push(I::I64ShrU);
+        v.push(I::LocalGet(6));
+        v.push(I::I64Const(1));
+        v.push(I::I64Add);
+        v.push(I::I64Const(8));
+        v.push(I::I64Mul);
+        v.push(I::I64Add);
+        v.push(I::I32WrapI64);
+        v.push(I::I64Load(ma8.clone()));
         v.push(I::Call(USER_BASE | idx as u32));
         v.push(I::I64Eqz);
         v.push(I::If(wasm_encoder::BlockType::Empty));
-        v.push(I::I64Const(0)); v.push(I::Return);
+        v.push(I::I64Const(0));
+        v.push(I::Return);
         v.push(I::End);
-        v.push(I::LocalGet(6)); v.push(I::I64Const(1)); v.push(I::I64Add); v.push(I::LocalSet(6));
+        v.push(I::LocalGet(6));
+        v.push(I::I64Const(1));
+        v.push(I::I64Add);
+        v.push(I::LocalSet(6));
         v.push(I::Br(0));
-        v.push(I::End); v.push(I::End);
-        v.push(I::I64Const(1)); v.push(I::Return);
+        v.push(I::End);
+        v.push(I::End);
+        v.push(I::I64Const(1));
+        v.push(I::Return);
         v.push(I::End);
         // else: raw compare (num/num, bool, nil, fnref). Bools stay tagged
         // words here — the INTERPRETER is the parity source: (= #t 1) is
         // false (different tags), (= #t #t) is true (same word).
-        v.push(I::LocalGet(0)); v.push(I::LocalGet(1)); v.push(I::I64Eq); v.push(I::I64ExtendI32U);
+        v.push(I::LocalGet(0));
+        v.push(I::LocalGet(1));
+        v.push(I::I64Eq);
+        v.push(I::I64ExtendI32U);
         self.funcs.push(FuncDef {
             name: "__h_val_eq".into(),
             param_count: 2,
             local_count: 11, // locals 2..10 (local_count = highest index + 1)
             instrs: v,
-            local_entries: None, custom_type: None,
+            local_entries: None,
+            custom_type: None,
         });
         self.val_eq_helper = Some(idx as u32);
         idx as u32

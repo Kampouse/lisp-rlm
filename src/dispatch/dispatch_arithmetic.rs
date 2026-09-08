@@ -1,7 +1,7 @@
 //! Arithmetic and comparison builtins.
 
-use crate::helpers::*;
 use crate::helpers::do_arith_checked;
+use crate::helpers::*;
 
 pub fn handle(
     name: &str,
@@ -9,9 +9,24 @@ pub fn handle(
 ) -> Result<Option<crate::types::LispVal>, String> {
     use crate::types::LispVal;
     match name {
-        "+" => Ok(Some(do_arith_checked(args, "add", i64::checked_add, |a, b| a + b)?)),
-        "-" => Ok(Some(do_arith_checked(args, "sub", i64::checked_sub, |a, b| a - b)?)),
-        "*" => Ok(Some(do_arith_checked(args, "mul", i64::checked_mul, |a, b| a * b)?)),
+        "+" => Ok(Some(do_arith_checked(
+            args,
+            "add",
+            i64::checked_add,
+            |a, b| a + b,
+        )?)),
+        "-" => Ok(Some(do_arith_checked(
+            args,
+            "sub",
+            i64::checked_sub,
+            |a, b| a - b,
+        )?)),
+        "*" => Ok(Some(do_arith_checked(
+            args,
+            "mul",
+            i64::checked_mul,
+            |a, b| a * b,
+        )?)),
         "/" => {
             if any_float(args) {
                 let b = as_float(args.get(1).ok_or("/ needs 2 args")?)?;

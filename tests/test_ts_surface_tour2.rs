@@ -199,10 +199,7 @@ fn money_noops_run_clean() {
 fn json_array_args() {
     // {"ks":["x","y"]} → first element "x" (fixture returns `jsonArr:${first}`)
     let out = run(TOUR_SRC, "tour", "jsonArr", r#"{"ks":["x","y"]}"#);
-    assert!(
-        out.contains("jsonArr:x"),
-        "jsonArr first element: {out}"
-    );
+    assert!(out.contains("jsonArr:x"), "jsonArr first element: {out}");
 }
 
 #[test]

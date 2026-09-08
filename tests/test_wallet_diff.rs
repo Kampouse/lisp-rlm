@@ -307,11 +307,7 @@ mod tests {
             .current_dir(env!("CARGO_MANIFEST_DIR"))
             .status()
             .expect("failed to run near-compile (cargo build --release --bin near-compile first)");
-        assert!(
-            status.success(),
-            "near-compile failed on fixtures/{}",
-            name
-        );
+        assert!(status.success(), "near-compile failed on fixtures/{}", name);
         std::fs::read(&out).expect("read wasm")
     }
 

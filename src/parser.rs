@@ -392,7 +392,8 @@ fn desugar_expr(expr: &mut LispVal, counter: &mut usize) {
                     if matches!((sp.first(), sp.get(1)), (Some(LispVal::Sym(_)), Some(_))));
                 if spec_ok {
                     if let LispVal::List(sp) = &items[1] {
-                        let (var, count) = (sp.first().cloned().unwrap(), sp.get(1).cloned().unwrap());
+                        let (var, count) =
+                            (sp.first().cloned().unwrap(), sp.get(1).cloned().unwrap());
                         if let LispVal::Sym(var) = var {
                             *counter += 1;
                             let limit = LispVal::Sym(format!("%dotimes-limit-{}", counter));
@@ -407,14 +408,19 @@ fn desugar_expr(expr: &mut LispVal, counter: &mut usize) {
                                     LispVal::Num(1),
                                 ]),
                             ]));
-                            let while_form = LispVal::List(vec![
-                                LispVal::Sym("while".into()),
-                                LispVal::List(vec![
-                                    LispVal::Sym("<".into()),
-                                    LispVal::Sym(var.clone()),
-                                    limit.clone(),
-                                ]),
-                            ].into_iter().chain(body).collect());
+                            let while_form = LispVal::List(
+                                vec![
+                                    LispVal::Sym("while".into()),
+                                    LispVal::List(vec![
+                                        LispVal::Sym("<".into()),
+                                        LispVal::Sym(var.clone()),
+                                        limit.clone(),
+                                    ]),
+                                ]
+                                .into_iter()
+                                .chain(body)
+                                .collect(),
+                            );
                             let let_form = LispVal::List(vec![
                                 LispVal::Sym("let".into()),
                                 LispVal::List(vec![

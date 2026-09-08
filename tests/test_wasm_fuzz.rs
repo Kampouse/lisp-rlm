@@ -1040,9 +1040,9 @@ mod prop {
     mod torture {
         use super::super::*;
         use super::{
-            arith_op, begin_expr, binary_expr, closure_expr, fn_call_expr, if_expr,
-            leaf_expr, let_expr, loop_expr, multi_let_expr, nested_let_expr, num_leaf,
-            program, recursive_fn_expr, safe_int, set_expr,
+            arith_op, begin_expr, binary_expr, closure_expr, fn_call_expr, if_expr, leaf_expr,
+            let_expr, loop_expr, multi_let_expr, nested_let_expr, num_leaf, program,
+            recursive_fn_expr, safe_int, set_expr,
         };
         use proptest::prelude::*;
         use proptest::test_runner::{Config as RunnerConfig, TestRunner};
@@ -1067,17 +1067,14 @@ mod prop {
                 ("if", || program(if_expr()).boxed()),
                 ("let", || program(let_expr()).boxed()),
                 ("begin", || program(begin_expr()).boxed()),
-                (
-                    "chained",
-                    || {
-                        (arith_op(), num_leaf())
-                            .prop_map(|(op, val)| {
-                                let args: Vec<String> = (0..4).map(|_| val.to_string()).collect();
-                                format!("(define (run) ({} {}))", op, args.join(" "))
-                            })
-                            .boxed()
-                    },
-                ),
+                ("chained", || {
+                    (arith_op(), num_leaf())
+                        .prop_map(|(op, val)| {
+                            let args: Vec<String> = (0..4).map(|_| val.to_string()).collect();
+                            format!("(define (run) ({} {}))", op, args.join(" "))
+                        })
+                        .boxed()
+                }),
                 ("recursive_fn", || recursive_fn_expr().boxed()),
                 ("closure", || program(closure_expr()).boxed()),
                 ("set_bang", || program(set_expr()).boxed()),
@@ -1085,16 +1082,13 @@ mod prop {
                 ("nested_let", || program(nested_let_expr()).boxed()),
                 ("loop", || program(loop_expr()).boxed()),
                 ("fn_call", || fn_call_expr().boxed()),
-                (
-                    "cond",
-                    || {
-                        (safe_int(), safe_int(), safe_int(), safe_int())
-                            .prop_map(|(a, b, c, d)| {
-                                format!("(define (run) (if (> {a} {b}) (+ {c} {d}) (- {c} {d})))")
-                            })
-                            .boxed()
-                    },
-                ),
+                ("cond", || {
+                    (safe_int(), safe_int(), safe_int(), safe_int())
+                        .prop_map(|(a, b, c, d)| {
+                            format!("(define (run) (if (> {a} {b}) (+ {c} {d}) (- {c} {d})))")
+                        })
+                        .boxed()
+                }),
             ];
 
             let per_prop = (total / props.len()).max(1);
@@ -1116,7 +1110,10 @@ mod prop {
                             let tree = match strat.new_tree(&mut runner) {
                                 Ok(t) => t,
                                 Err(e) => {
-                                    return Some((name.to_string(), format!("generator reject: {e}")))
+                                    return Some((
+                                        name.to_string(),
+                                        format!("generator reject: {e}"),
+                                    ))
                                 }
                             };
                             let source = tree.current().clone();

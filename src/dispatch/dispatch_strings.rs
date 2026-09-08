@@ -90,7 +90,10 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             let needle = as_str(args.get(1).ok_or("str-index-of: need needle")?)?;
             // BYTE offset (UTF-8 decision, 2026-08-27) — consistent with
             // byte-indexed str-substring and the wasm scan.
-            let idx = haystack.find(&needle).map(|byte_pos| byte_pos as i64).unwrap_or(-1);
+            let idx = haystack
+                .find(&needle)
+                .map(|byte_pos| byte_pos as i64)
+                .unwrap_or(-1);
             Ok(Some(LispVal::Num(idx)))
         }
         // ASCII-only case mapping (UTF-8 decision, 2026-08-27): the wasm
@@ -99,13 +102,25 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
         "str-upcase" => Ok(Some(LispVal::Str(
             as_str(&args[0])?
                 .chars()
-                .map(|c| if c.is_ascii_lowercase() { c.to_ascii_uppercase() } else { c })
+                .map(|c| {
+                    if c.is_ascii_lowercase() {
+                        c.to_ascii_uppercase()
+                    } else {
+                        c
+                    }
+                })
                 .collect(),
         ))),
         "str-downcase" => Ok(Some(LispVal::Str(
             as_str(&args[0])?
                 .chars()
-                .map(|c| if c.is_ascii_uppercase() { c.to_ascii_lowercase() } else { c })
+                .map(|c| {
+                    if c.is_ascii_uppercase() {
+                        c.to_ascii_lowercase()
+                    } else {
+                        c
+                    }
+                })
                 .collect(),
         ))),
         "str-starts-with" => {

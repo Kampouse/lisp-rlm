@@ -52,8 +52,7 @@ fn annotation_compiles_to_wasm() {
 fn sexp_nilary_annotation() {
     let src = "(define (answer) :: -> int 42)\n(export \"answer\" answer #t)\n";
     let exprs = lisp_rlm_wasm::parse_all(src).unwrap();
-    lisp_rlm_wasm::typing::type_check_program(&exprs, true)
-        .expect("nilary arrow must parse");
+    lisp_rlm_wasm::typing::type_check_program(&exprs, true).expect("nilary arrow must parse");
     lisp_rlm_wasm::compile_near_from_exprs(&exprs).expect("must compile");
 }
 

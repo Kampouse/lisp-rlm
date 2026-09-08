@@ -158,14 +158,23 @@ fn line_col(src: &str, offset: u32) -> (u32, u32) {
 fn src_excerpt(src: &str, line: u32) -> String {
     src.lines()
         .nth((line as usize).saturating_sub(1))
-        .map(|l| format!("\n  {:>4} | {}\n       | {}^", line, l.trim_end(), " ".repeat(0)))
+        .map(|l| {
+            format!(
+                "\n  {:>4} | {}\n       | {}^",
+                line,
+                l.trim_end(),
+                " ".repeat(0)
+            )
+        })
         .unwrap_or_default()
 }
 
 /// Parse TypeScript source and lower it to top-level lisp forms.
 pub fn parse_ts(src: &str) -> Result<Vec<LispVal>, String> {
     let allocator = Allocator::default();
-    let source_type = SourceType::default().with_typescript(true).with_module(true);
+    let source_type = SourceType::default()
+        .with_typescript(true)
+        .with_module(true);
     let ret = Parser::new(&allocator, src, source_type).parse();
     if ret.panicked || !ret.diagnostics.is_empty() {
         let d = ret.diagnostics.first();
@@ -206,12 +215,10 @@ pub fn take_ident_offsets() -> Vec<(String, u32)> {
 
 /// Best-effort: name → "line N" hint for error augmentation.
 pub fn ts_line_hint(map: &[(String, u32)], src: &str, name: &str) -> Option<String> {
-    map.iter()
-        .find(|(n, _)| n == name)
-        .map(|(_, off)| {
-            let (line, _col) = line_col(src, *off);
-            format!("{}", line)
-        })
+    map.iter().find(|(n, _)| n == name).map(|(_, off)| {
+        let (line, _col) = line_col(src, *off);
+        format!("{}", line)
+    })
 }
 
 // ── Program / statements ──────────────────────────────────────────────────
@@ -302,22 +309,17 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                     let mut is_bigint = false;
                     let literal = match init {
                         Expression::NumericLiteral(n) => Some(Num(n.value as i64)),
-                        Expression::StringLiteral(s) => {
-                            Some(Str(s.value.as_str().to_string()))
-                        }
-                        Expression::BooleanLiteral(b) => {
-                            Some(Num(if b.value { 1 } else { 0 }))
-                        }
+                        Expression::StringLiteral(s) => Some(Str(s.value.as_str().to_string())),
+                        Expression::BooleanLiteral(b) => Some(Num(if b.value { 1 } else { 0 })),
                         // `const FEE_BP = 500n;` — u128 const: folds as a
                         // decimal string AND marks the name bigint-shaped
                         Expression::BigIntLiteral(b) => {
                             is_bigint = true;
-                            Some(Str(
-                                b.raw
-                                    .as_ref()
-                                    .map(|s| s.as_str().trim_end_matches('n').to_string())
-                                    .unwrap_or_default(),
-                            ))
+                            Some(Str(b
+                                .raw
+                                .as_ref()
+                                .map(|s| s.as_str().trim_end_matches('n').to_string())
+                                .unwrap_or_default()))
                         }
                         _ => None,
                     };
@@ -349,8 +351,7 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                 };
                 let props = alias_props(a);
                 TYPE_ALIASES.with(|m| {
-                    m.borrow_mut()
-                        .push((a.id.name.as_str().to_string(), props));
+                    m.borrow_mut().push((a.id.name.as_str().to_string(), props));
                 });
             }
             // Types-only imports from the near module family are ELIDED.
@@ -363,11 +364,12 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                 if src == "near" || src.starts_with("near-") || src.starts_with("./near") {
                     // `import near from "near"` would SHADOW the ambient
                     // global — hint the importless spelling.
-                    let has_default = imp
-                        .specifiers
-                        .iter()
-                        .flatten()
-                        .any(|s| matches!(s, oxc_ast::ast::ImportDeclarationSpecifier::ImportDefaultSpecifier(_)));
+                    let has_default = imp.specifiers.iter().flatten().any(|s| {
+                        matches!(
+                            s,
+                            oxc_ast::ast::ImportDeclarationSpecifier::ImportDefaultSpecifier(_)
+                        )
+                    });
                     if has_default {
                         return Err(
                             "ts_frontend: `import near from \"near\"` shadows the built-in `near` global — delete the import line; `near.*` works without it".into(),
@@ -401,11 +403,10 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
 /// pre-await statements — we hard-error instead).
 /// Returns forms: entry define, entry export, continuation define, cont. export.
 fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
-    let name = f
-        .id
-        .as_ref()
-        .map(|i| i.name.as_str().to_string())
-        .ok_or("ts_frontend: anonymous async functions unsupported")?;
+    let name =
+        f.id.as_ref()
+            .map(|i| i.name.as_str().to_string())
+            .ok_or("ts_frontend: anonymous async functions unsupported")?;
 
     // (name, kind): 0 = string, 1 = number, 2 = string[], 3 = object
     // (object = JSON-text binding; numeric props auto-decode on read)
@@ -524,11 +525,7 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
         LispVal::List(items) if !items.is_empty() && items[0] == Sym("near/call") => {
             return Err("ts_frontend: await must wrap near.call() with 5 args (target, method, args, gas, 0)".into());
         }
-        _ => {
-            return Err(
-                "ts_frontend: V1 async — await expression must be near.call(...)".into(),
-            )
-        }
+        _ => return Err("ts_frontend: V1 async — await expression must be near.call(...)".into()),
     };
     entry_inner.push(call_await);
 
@@ -549,17 +546,17 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
                 list(vec![Sym(n.clone()), v])
             })
             .collect();
-        list(vec![
-            Sym("let"),
-            list(bindings),
-            {
-                let mut b = vec![Sym("begin")];
-                b.extend(entry_inner);
-                list(b)
-            },
-        ])
+        list(vec![Sym("let"), list(bindings), {
+            let mut b = vec![Sym("begin")];
+            b.extend(entry_inner);
+            list(b)
+        }])
     };
-    let entry_define = list(vec![Sym("define"), list(vec![Sym(name.clone())]), entry_body]);
+    let entry_define = list(vec![
+        Sym("define"),
+        list(vec![Sym(name.clone())]),
+        entry_body,
+    ]);
     let view = name.starts_with("get_");
     let entry_export = list(vec![
         Sym("export"),
@@ -574,7 +571,10 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
         // storage_get returns (opt str) — unwrap with default before use
         let getter = list(vec![
             Sym("default"),
-            list(vec![Sym("near/storage_get"), Str(format!("{}:{}", state_key, n))]),
+            list(vec![
+                Sym("near/storage_get"),
+                Str(format!("{}:{}", state_key, n)),
+            ]),
             Str(String::new()),
         ]);
         let val = if *kind == 1 {
@@ -651,14 +651,13 @@ fn scan_one_bigint_let(s: &Statement<'_>) {
 
 /// Lower a function declaration → (define (name params...) body)
 fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, LispVal), String> {
-    let name = f
-        .id
-        .as_ref()
-        .map(|i| i.name.as_str().to_string())
-        .ok_or("ts_frontend: anonymous functions unsupported (M1)")?;
+    let name =
+        f.id.as_ref()
+            .map(|i| i.name.as_str().to_string())
+            .ok_or("ts_frontend: anonymous functions unsupported (M1)")?;
 
     let mut params = Vec::new();
-        // (name, kind): 0 = string, 1 = number, 2 = string[], 3 = object
+    // (name, kind): 0 = string, 1 = number, 2 = string[], 3 = object
     // (object = JSON-text binding; numeric props auto-decode on read)
     NUM_PARAM_NAMES.with(|s| s.borrow_mut().clear());
     OBJ_PARAM_PROPS.with(|s| s.borrow_mut().clear());
@@ -811,7 +810,10 @@ fn lower_block_tail(stmts: &[Statement<'_>], view: bool) -> Result<LispVal, Stri
             Sym("let"),
             list(vec![
                 list(vec![Sym("__fn_done"), Num(0)]),
-                list(vec![Sym("__fn_res"), list(vec![Sym("quote"), LispVal::Nil])]),
+                list(vec![
+                    Sym("__fn_res"),
+                    list(vec![Sym("quote"), LispVal::Nil]),
+                ]),
             ]),
             body,
         ]));
@@ -973,7 +975,11 @@ fn lower_prefix_around_with_return(
 }
 
 /// Prefix statements wrap the tail expression like let-nesting.
-fn lower_prefix_around(stmts: &[Statement<'_>], tail: LispVal, view: bool) -> Result<LispVal, String> {
+fn lower_prefix_around(
+    stmts: &[Statement<'_>],
+    tail: LispVal,
+    view: bool,
+) -> Result<LispVal, String> {
     if stmts.is_empty() {
         return Ok(tail);
     }
@@ -1060,7 +1066,10 @@ fn lower_prefix_around(stmts: &[Statement<'_>], tail: LispVal, view: bool) -> Re
                     Sym("let"),
                     list(vec![
                         list(vec![Sym("__wl_done"), Num(0)]),
-                        list(vec![Sym("__wl_res"), list(vec![Sym("quote"), LispVal::Nil])]),
+                        list(vec![
+                            Sym("__wl_res"),
+                            list(vec![Sym("quote"), LispVal::Nil]),
+                        ]),
                     ]),
                     list(vec![
                         Sym("begin"),
@@ -1086,7 +1095,10 @@ fn lower_prefix_around(stmts: &[Statement<'_>], tail: LispVal, view: bool) -> Re
                     Sym("let"),
                     list(vec![
                         list(vec![Sym("__wl_done"), Num(0)]),
-                        list(vec![Sym("__wl_res"), list(vec![Sym("quote"), LispVal::Nil])]),
+                        list(vec![
+                            Sym("__wl_res"),
+                            list(vec![Sym("quote"), LispVal::Nil]),
+                        ]),
                     ]),
                     list(vec![
                         Sym("begin"),
@@ -1111,7 +1123,10 @@ fn lower_prefix_around(stmts: &[Statement<'_>], tail: LispVal, view: bool) -> Re
                     Sym("let"),
                     list(vec![
                         list(vec![Sym("__wl_done"), Num(0)]),
-                        list(vec![Sym("__wl_res"), list(vec![Sym("quote"), LispVal::Nil])]),
+                        list(vec![
+                            Sym("__wl_res"),
+                            list(vec![Sym("quote"), LispVal::Nil]),
+                        ]),
                     ]),
                     list(vec![
                         Sym("begin"),
@@ -1146,12 +1161,15 @@ fn stmts_of<'a>(s: &'a Statement<'a>) -> &'a [Statement<'a>] {
     }
 }
 
-
 /// Nil-returning builtins — their call forms can't sit in value position
 /// (if-branch / function tail) without an int tail.
 fn is_nil_call(v: &LispVal) -> bool {
-    let LispVal::List(items) = v else { return false };
-    let Some(LispVal::Sym(head)) = items.first() else { return false };
+    let LispVal::List(items) = v else {
+        return false;
+    };
+    let Some(LispVal::Sym(head)) = items.first() else {
+        return false;
+    };
     matches!(
         head.as_str(),
         "near/storage_set" | "near/storage_remove" | "near/abort" | "near/value_return"
@@ -1229,7 +1247,10 @@ fn lower_tail_stmt(s: &Statement<'_>, view: bool) -> Result<LispVal, String> {
                 Sym("let"),
                 list(vec![
                     list(vec![Sym("__wl_done"), Num(0)]),
-                    list(vec![Sym("__wl_res"), list(vec![Sym("quote"), LispVal::Nil])]),
+                    list(vec![
+                        Sym("__wl_res"),
+                        list(vec![Sym("quote"), LispVal::Nil]),
+                    ]),
                 ]),
                 list(vec![Sym("begin"), core, exit_result_form(view)]),
             ]))
@@ -1240,7 +1261,6 @@ fn lower_tail_stmt(s: &Statement<'_>, view: bool) -> Result<LispVal, String> {
         )),
     }
 }
-
 
 /// Does this statement contain a `return` (anywhere, incl. nested ifs)?
 /// Does not descend into loops — a return inside a loop body belongs to the
@@ -1268,8 +1288,7 @@ fn stmt_has_exit(s: &Statement<'_>) -> bool {
         Statement::BreakStatement(_) | Statement::ReturnStatement(_) => true,
         Statement::BlockStatement(b) => stmts_have_exit(&b.body),
         Statement::IfStatement(i) => {
-            stmt_has_exit(&i.consequent)
-                || i.alternate.as_ref().is_some_and(|a| stmt_has_exit(a))
+            stmt_has_exit(&i.consequent) || i.alternate.as_ref().is_some_and(|a| stmt_has_exit(a))
         }
         _ => false,
     }
@@ -1345,7 +1364,10 @@ fn lower_for_of_parts(fo: &oxc_ast::ast::ForOfStatement<'_>) -> Result<(bool, Li
         } else {
             tail_stmt_as_expr(st)?
         };
-        if matches!(st, Statement::BreakStatement(_) | Statement::ReturnStatement(_)) {
+        if matches!(
+            st,
+            Statement::BreakStatement(_) | Statement::ReturnStatement(_)
+        ) {
             seen_exit = true;
         }
         body_items.push(piece);
@@ -1355,7 +1377,11 @@ fn lower_for_of_parts(fo: &oxc_ast::ast::ForOfStatement<'_>) -> Result<(bool, Li
         Sym("__of_i"),
         list(vec![Sym("+"), Sym("__of_i"), Num(1)]),
     ]));
-    let body_e = if body_items.len() == 1 { Num(0) } else { list(body_items) };
+    let body_e = if body_items.len() == 1 {
+        Num(0)
+    } else {
+        list(body_items)
+    };
 
     // per-iteration element binding wraps the body
     let body_bound = list(vec![
@@ -1385,7 +1411,10 @@ fn lower_for_of_parts(fo: &oxc_ast::ast::ForOfStatement<'_>) -> Result<(bool, Li
             list(vec![
                 list(vec![Sym("__of_a"), arr_e]),
                 list(vec![Sym("__of_i"), Num(0)]),
-                list(vec![Sym("__of_n"), list(vec![Sym("vec-length"), Sym("__of_a")])]),
+                list(vec![
+                    Sym("__of_n"),
+                    list(vec![Sym("vec-length"), Sym("__of_a")]),
+                ]),
             ]),
             list(vec![Sym("while"), cond_e, body_bound]),
         ]),
@@ -1432,7 +1461,11 @@ fn lower_while_parts_core(w: &oxc_ast::ast::WhileStatement<'_>) -> Result<(bool,
         for (name, init) in &hoisted {
             body_items.insert(1, list(vec![Sym("set!"), Sym(name.clone()), init.clone()]));
         }
-        let body_e = if body_items.len() == 1 { Num(0) } else { list(body_items) };
+        let body_e = if body_items.len() == 1 {
+            Num(0)
+        } else {
+            list(body_items)
+        };
         let while_e = list(vec![Sym("while"), truthy(&w.test)?, body_e]);
         if hoisted.is_empty() {
             return Ok((false, while_e));
@@ -1486,12 +1519,19 @@ fn lower_while_parts_core(w: &oxc_ast::ast::WhileStatement<'_>) -> Result<(bool,
                 }
             }
         };
-        if matches!(s, Statement::BreakStatement(_) | Statement::ReturnStatement(_)) {
+        if matches!(
+            s,
+            Statement::BreakStatement(_) | Statement::ReturnStatement(_)
+        ) {
             seen_exit = true;
         }
         body_items.push(piece);
     }
-    let body_e = if body_items.len() == 1 { Num(0) } else { list(body_items) };
+    let body_e = if body_items.len() == 1 {
+        Num(0)
+    } else {
+        list(body_items)
+    };
     let cond_e = list(vec![
         Sym("if"),
         list(vec![Sym("="), Sym("__wl_done"), Num(0)]),
@@ -1504,7 +1544,10 @@ fn lower_while_parts_core(w: &oxc_ast::ast::WhileStatement<'_>) -> Result<(bool,
     // AFTER the loop, so the flags must outlive this let.
     let mut binds = Vec::new();
     for (n, _) in &hoisted {
-        binds.push(list(vec![Sym(n.clone()), list(vec![Sym("quote"), LispVal::Nil])]));
+        binds.push(list(vec![
+            Sym(n.clone()),
+            list(vec![Sym("quote"), LispVal::Nil]),
+        ]));
     }
     let while_e = list(vec![Sym("while"), cond_e, body_e]);
     if binds.is_empty() {
@@ -1528,7 +1571,10 @@ fn lower_while_value(w: &Statement<'_>) -> Result<LispVal, String> {
         Sym("let"),
         list(vec![
             list(vec![Sym("__wl_done"), Num(0)]),
-            list(vec![Sym("__wl_res"), list(vec![Sym("quote"), LispVal::Nil])]),
+            list(vec![
+                Sym("__wl_res"),
+                list(vec![Sym("quote"), LispVal::Nil]),
+            ]),
         ]),
         list(vec![Sym("begin"), core, Sym("__wl_res")]),
     ]))
@@ -1618,7 +1664,10 @@ fn tail_stmt_as_expr(s: &Statement<'_>) -> Result<LispVal, String> {
                 Sym("let"),
                 list(vec![
                     list(vec![Sym("__wl_done"), Num(0)]),
-                    list(vec![Sym("__wl_res"), list(vec![Sym("quote"), LispVal::Nil])]),
+                    list(vec![
+                        Sym("__wl_res"),
+                        list(vec![Sym("quote"), LispVal::Nil]),
+                    ]),
                 ]),
                 list(vec![Sym("begin"), core, Sym("__wl_res")]),
             ]))
@@ -1649,7 +1698,10 @@ fn lower_for(fr: &oxc_ast::ast::ForStatement<'_>) -> Result<LispVal, String> {
         Sym("let"),
         list(vec![
             list(vec![Sym("__wl_done"), Num(0)]),
-            list(vec![Sym("__wl_res"), list(vec![Sym("quote"), LispVal::Nil])]),
+            list(vec![
+                Sym("__wl_res"),
+                list(vec![Sym("quote"), LispVal::Nil]),
+            ]),
         ]),
         list(vec![Sym("begin"), core, Sym("__wl_res")]),
     ]))
@@ -1658,12 +1710,15 @@ fn lower_for(fr: &oxc_ast::ast::ForStatement<'_>) -> Result<LispVal, String> {
 /// For → (has_exits, core). Core = (let ((v init)...) (while cond body))
 /// with flag-guarded cond when the body can exit; flags bound by caller.
 fn lower_for_parts(fr: &oxc_ast::ast::ForStatement<'_>) -> Result<(bool, LispVal), String> {
-    use oxc_ast::ast::{ForStatementInit, AssignmentOperator};
+    use oxc_ast::ast::{AssignmentOperator, ForStatementInit};
 
     // init: must be a let/const declaration
     let decl = match &fr.init {
         Some(ForStatementInit::VariableDeclaration(v)) => v,
-        _ => return Err("ts_frontend: for-loop init must be `let` declarations (e.g. `for (let i = 0; ...)`)".to_string()),
+        _ => return Err(
+            "ts_frontend: for-loop init must be `let` declarations (e.g. `for (let i = 0; ...)`)"
+                .to_string(),
+        ),
     };
     let mut loop_vars: Vec<String> = Vec::new();
     let mut bindings = Vec::new();
@@ -1688,14 +1743,29 @@ fn lower_for_parts(fr: &oxc_ast::ast::ForStatement<'_>) -> Result<(bool, LispVal
         let e = match u {
             Expression::UpdateExpression(upd) => {
                 let v = update_target_simple(&upd.argument)?;
-                let one = if matches!(upd.operator, oxc_syntax::operator::UpdateOperator::Increment) { 1 } else { -1 };
-                list(vec![Sym("set!"), Sym(v.clone()), list(vec![Sym("+"), Sym(v), Num(one)])])
+                let one = if matches!(
+                    upd.operator,
+                    oxc_syntax::operator::UpdateOperator::Increment
+                ) {
+                    1
+                } else {
+                    -1
+                };
+                list(vec![
+                    Sym("set!"),
+                    Sym(v.clone()),
+                    list(vec![Sym("+"), Sym(v), Num(one)]),
+                ])
             }
             Expression::AssignmentExpression(asg) => {
                 let (v, expr) = lower_assignment(asg)?;
                 list(vec![Sym("set!"), Sym(v), expr])
             }
-            _ => return Err("ts_frontend: for-loop update must be `i++`/`i--`/`i = e`/`i += e`".into()),
+            _ => {
+                return Err(
+                    "ts_frontend: for-loop update must be `i++`/`i--`/`i = e`/`i += e`".into(),
+                )
+            }
         };
         update_form = Some(e);
     }
@@ -1754,7 +1824,10 @@ fn lower_for_parts(fr: &oxc_ast::ast::ForStatement<'_>) -> Result<(bool, LispVal
         } else {
             tail_stmt_as_expr(s)?
         };
-        if matches!(s, Statement::BreakStatement(_) | Statement::ReturnStatement(_)) {
+        if matches!(
+            s,
+            Statement::BreakStatement(_) | Statement::ReturnStatement(_)
+        ) {
             seen_exit = true;
         }
         body_items.push(piece);
@@ -1830,7 +1903,14 @@ fn effect_expr(e: &Expression<'_>) -> Result<LispVal, String> {
         Expression::AssignmentExpression(asg) => lower_assign_form(asg),
         Expression::UpdateExpression(upd) => {
             let v = update_target_simple(&upd.argument)?;
-            let one = if matches!(upd.operator, oxc_syntax::operator::UpdateOperator::Increment) { 1 } else { -1 };
+            let one = if matches!(
+                upd.operator,
+                oxc_syntax::operator::UpdateOperator::Increment
+            ) {
+                1
+            } else {
+                -1
+            };
             Ok(list(vec![
                 Sym("set!"),
                 Sym(v.clone()),
@@ -1843,9 +1923,7 @@ fn effect_expr(e: &Expression<'_>) -> Result<LispVal, String> {
 
 /// Assignment as an effect form. Plain vars → (set! v e); element writes
 /// `xs[i] = e` → (vec-set! xs i e); compounds read via vec-nth.
-fn lower_assign_form(
-    asg: &oxc_ast::ast::AssignmentExpression<'_>,
-) -> Result<LispVal, String> {
+fn lower_assign_form(asg: &oxc_ast::ast::AssignmentExpression<'_>) -> Result<LispVal, String> {
     use oxc_syntax::operator::AssignmentOperator;
     match &asg.left {
         oxc_ast::ast::AssignmentTarget::AssignmentTargetIdentifier(id) => {
@@ -1877,24 +1955,24 @@ fn lower_assign_form(
             };
             Ok(list(vec![Sym("vec-set!"), obj, idx, val]))
         }
-        _ => return Err("ts_frontend: assignment target must be a variable or element access".into()),
+        _ => {
+            return Err(
+                "ts_frontend: assignment target must be a variable or element access".into(),
+            )
+        }
     }
 }
 
 /// M2 objects: `{ k: v, ... }` → nested `(json-set "{}" "k" <encoded v>)`
 /// folds. Objects are JSON-string values: storage/return/interop need no
 /// conversion, reads go through near/json_get_str.
-fn lower_object_literal(
-    obj: &oxc_ast::ast::ObjectExpression<'_>,
-) -> Result<LispVal, String> {
+fn lower_object_literal(obj: &oxc_ast::ast::ObjectExpression<'_>) -> Result<LispVal, String> {
     let mut acc = Str("{}".to_string());
     for prop in &obj.properties {
         match prop {
             oxc_ast::ast::ObjectPropertyKind::ObjectProperty(p) => {
                 let key = match &p.key {
-                    oxc_ast::ast::PropertyKey::StaticIdentifier(id) => {
-                        id.name.as_str().to_string()
-                    }
+                    oxc_ast::ast::PropertyKey::StaticIdentifier(id) => id.name.as_str().to_string(),
                     oxc_ast::ast::PropertyKey::StringLiteral(s) => s.value.as_str().to_string(),
                     _ => {
                         return Err(
@@ -1938,9 +2016,7 @@ fn encode_json_value(e: &Expression<'_>) -> Result<LispVal, String> {
             // Object-typed param embedded as a value: its binding already
             // IS JSON text — embed raw (no quote, no to-string)
             if let Expression::Identifier(id) = e {
-                if OBJ_PARAM_PROPS.with(|s| {
-                    s.borrow().iter().any(|(n, _)| n == id.name.as_str())
-                }) {
+                if OBJ_PARAM_PROPS.with(|s| s.borrow().iter().any(|(n, _)| n == id.name.as_str())) {
                     return lower_expr(e);
                 }
             }
@@ -1965,8 +2041,9 @@ fn expr_is_numberish(e: &Expression<'_>) -> bool {
         Expression::NumericLiteral(_) | Expression::BooleanLiteral(_) => true,
         // `: number`-annotated params (threaded through NUM_PARAM_NAMES
         // during body lowering) encode as bare numbers in object literals
-        Expression::Identifier(id) => NUM_PARAM_NAMES
-            .with(|s| s.borrow().iter().any(|n| n == id.name.as_str())),
+        Expression::Identifier(id) => {
+            NUM_PARAM_NAMES.with(|s| s.borrow().iter().any(|n| n == id.name.as_str()))
+        }
         // A binary op is numberish only if BOTH sides are — `a + b` with
         // number params is arithmetic (bare), but `roster + "," + who` on
         // strings is concat and MUST json-quote (the multisig record
@@ -2014,9 +2091,7 @@ fn lower_assignment(
             let rhs_stringy = expr_is_stringy(&asg.right) || expr_is_str_method_call(&asg.right);
             if rhs_stringy {
                 mark_string_local(&v);
-            } else if matches!(&asg.right, Expression::NumericLiteral(_))
-                && is_string_local(&v)
-            {
+            } else if matches!(&asg.right, Expression::NumericLiteral(_)) && is_string_local(&v) {
                 STRING_LOCALS.with(|s| s.borrow_mut().retain(|n| n != &v));
             }
             rhs
@@ -2073,7 +2148,10 @@ fn expr_is_stringy(e: &Expression) -> bool {
         }
         Expression::CallExpression(c) => match &c.callee {
             Expression::Identifier(id) => {
-                matches!(id.name.as_str(), "toStr" | "toString" | "strCat" | "to_string")
+                matches!(
+                    id.name.as_str(),
+                    "toStr" | "toString" | "strCat" | "to_string"
+                )
             }
             _ => false,
         },
@@ -2102,7 +2180,9 @@ fn expr_is_str_method_call(e: &Expression) -> bool {
 /// and by `export const f = (x) => ...` (which needs the body spliced into
 /// a function-shaped define — `(define f (lambda ...))` exports compile to
 /// a stub, only `(define (f x) body)` produces a real entry).
-fn arrow_parts(a: &oxc_ast::ast::ArrowFunctionExpression<'_>) -> Result<(Vec<LispVal>, LispVal), String> {
+fn arrow_parts(
+    a: &oxc_ast::ast::ArrowFunctionExpression<'_>,
+) -> Result<(Vec<LispVal>, LispVal), String> {
     let mut params: Vec<LispVal> = Vec::new();
     for p in &a.params.items {
         params.push(Sym(binding_name(&p.pattern)?));
@@ -2142,7 +2222,11 @@ fn lower_exported_arrow(
     ]);
     // mirror lower_function's view convention (get_* → view)
     let view = name.starts_with("get_");
-    let export_name = if name == "new_" { "new".to_string() } else { name.to_string() };
+    let export_name = if name == "new_" {
+        "new".to_string()
+    } else {
+        name.to_string()
+    };
     let export = list(vec![
         Sym("export"),
         Str(export_name),
@@ -2163,16 +2247,18 @@ fn register_shape_fields(d: &VariableDeclarator<'_>, init: &Expression<'_>) {
     loop {
         match e {
             Expression::ParenthesizedExpression(pe) => e = &pe.expression,
-            Expression::LogicalExpression(l)
-                if l.operator == LogicalOperator::Coalesce =>
-            {
+            Expression::LogicalExpression(l) if l.operator == LogicalOperator::Coalesce => {
                 e = &l.right
             }
             _ => break,
         }
     }
-    let Expression::StringLiteral(sl) = e else { return };
-    let Ok(name) = binding_name(&d.id) else { return };
+    let Expression::StringLiteral(sl) = e else {
+        return;
+    };
+    let Ok(name) = binding_name(&d.id) else {
+        return;
+    };
     for field in shape_bigint_fields(&sl.value) {
         SHAPE_BIGINT_FIELDS.with(|m| m.borrow_mut().push((name.clone(), field)));
     }
@@ -2308,10 +2394,21 @@ fn expr_returns_str_method(e: &Expression<'_>) -> bool {
                 let prop = m.property.name.as_str();
                 return matches!(
                     prop,
-                    "slice" | "substring" | "substr" | "charAt" | "concat"
-                        | "toUpperCase" | "toLowerCase" | "trim"
-                        | "trimStart" | "trimEnd" | "repeat"
-                        | "padStart" | "padEnd" | "at" | "toString"
+                    "slice"
+                        | "substring"
+                        | "substr"
+                        | "charAt"
+                        | "concat"
+                        | "toUpperCase"
+                        | "toLowerCase"
+                        | "trim"
+                        | "trimStart"
+                        | "trimEnd"
+                        | "repeat"
+                        | "padStart"
+                        | "padEnd"
+                        | "at"
+                        | "toString"
                 );
             }
             false
@@ -2336,17 +2433,20 @@ fn expr_is_bigint(e: &Expression<'_>) -> bool {
         // results are decimal strings in this ABI, so a bigint default
         // makes the whole local bigint-shaped. (HTLC 2026-09-01:
         // `bal + rec.amt` needed this; bal was `storageGet(...) ?? 0n`.)
-        Expression::LogicalExpression(l)
-            if l.operator == LogicalOperator::Coalesce =>
-        {
+        Expression::LogicalExpression(l) if l.operator == LogicalOperator::Coalesce => {
             expr_is_bigint(&l.right)
         }
         // `rec.amt` where rec's shape literal has a quoted-numeric default
         Expression::StaticMemberExpression(sm) => {
-            let Expression::Identifier(base) = &sm.object else { return false };
+            let Expression::Identifier(base) = &sm.object else {
+                return false;
+            };
             let field = sm.property.name.as_str();
-            SHAPE_BIGINT_FIELDS
-                .with(|s| s.borrow().iter().any(|(b, f)| b == base.name.as_str() && f == field))
+            SHAPE_BIGINT_FIELDS.with(|s| {
+                s.borrow()
+                    .iter()
+                    .any(|(b, f)| b == base.name.as_str() && f == field)
+            })
         }
         Expression::Identifier(id) => {
             let n = id.name.as_str();
@@ -2360,12 +2460,7 @@ fn expr_is_bigint(e: &Expression<'_>) -> bool {
             if let Expression::Identifier(id) = &c.callee {
                 matches!(
                     id.name.as_str(),
-                    "u128Add"
-                        | "u128Sub"
-                        | "u128Mul"
-                        | "u128Div"
-                        | "u128Mod"
-                        | "u128FromNum"
+                    "u128Add" | "u128Sub" | "u128Mul" | "u128Div" | "u128Mod" | "u128FromNum"
                 )
             } else {
                 false
@@ -2391,14 +2486,13 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
         Expression::StringLiteral(s) => Ok(Str(s.value.as_str().to_string())),
         Expression::BooleanLiteral(b) => Ok(Num(if b.value { 1 } else { 0 })),
         Expression::NullLiteral(_) => Ok(LispVal::Nil),
-                // u128-style digits-as-string. oxc raw for `1000n` is "1000n" —
+        // u128-style digits-as-string. oxc raw for `1000n` is "1000n" —
         // strip the suffix: a stray 'n' would trap the u128/* parsers.
-        Expression::BigIntLiteral(b) => Ok(Str(
-            b.raw
-                .as_ref()
-                .map(|s| s.as_str().trim_end_matches('n').to_string())
-                .unwrap_or_default(),
-        )),
+        Expression::BigIntLiteral(b) => Ok(Str(b
+            .raw
+            .as_ref()
+            .map(|s| s.as_str().trim_end_matches('n').to_string())
+            .unwrap_or_default())),
         Expression::TemplateLiteral(t) => {
             let mut parts = Vec::new();
             for i in 0..t.quasis.len() {
@@ -2456,9 +2550,11 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                     oxc_ast::ast::ArrayExpressionElement::Elision(_) => {
                         return Err("ts_frontend: holes in array literal not in M1".into())
                     }
-                    other => items.push(lower_expr(other.as_expression().ok_or(
-                        "ts_frontend: unsupported array element (M1)",
-                    )?)?),
+                    other => items.push(lower_expr(
+                        other
+                            .as_expression()
+                            .ok_or("ts_frontend: unsupported array element (M1)")?,
+                    )?),
                 }
             }
             Ok(list(items))
@@ -2525,11 +2621,7 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                             if is_num {
                                 return Ok(list(vec![
                                     Sym("str->num"),
-                                    list(vec![
-                                        Sym("json-get-str"),
-                                        Str(path[0].clone()),
-                                        recv,
-                                    ]),
+                                    list(vec![Sym("json-get-str"), Str(path[0].clone()), recv]),
                                 ]));
                             }
                         }
@@ -2568,8 +2660,7 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                                 // `(x ?? 0n) + ""` — empty string passed the
                                 // all-digits test → u128/add(x, "") → parse
                                 // trap. An empty string is never arithmetic.)
-                                sl.value.is_empty()
-                                    || sl.value.bytes().any(|b| !b.is_ascii_digit())
+                                sl.value.is_empty() || sl.value.bytes().any(|b| !b.is_ascii_digit())
                             }
                             Expression::TemplateLiteral(_) => true,
                             Expression::BinaryExpression(be) => {
@@ -2639,10 +2730,7 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                         return Ok(list(vec![Sym("u128/eq"), l, r]))
                     }
                     BinaryOperator::Inequality | BinaryOperator::StrictInequality => {
-                        return Ok(list(vec![
-                            Sym("not"),
-                            list(vec![Sym("u128/eq"), l, r]),
-                        ]))
+                        return Ok(list(vec![Sym("not"), list(vec![Sym("u128/eq"), l, r])]))
                     }
                     _ => {
                         return Err(format!(
@@ -2680,9 +2768,7 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
             // silently corrupts them, so this MUST lower to str-cat (surface
             // tour 2 for-of accumulator, 2026-09-01).
             if b.operator == BinaryOperator::Addition {
-                let side_is_string_local = |e: &Expression| {
-                    matches!(e, Expression::Identifier(id) if is_string_local(id.name.as_str()))
-                };
+                let side_is_string_local = |e: &Expression| matches!(e, Expression::Identifier(id) if is_string_local(id.name.as_str()));
                 if side_is_string_local(&b.left) || side_is_string_local(&b.right) {
                     let l = lower_strcat_operand(&b.left)?;
                     let r = lower_strcat_operand(&b.right)?;
@@ -2699,11 +2785,7 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                 return Ok(list(vec![
                     Sym("-"),
                     a.clone(),
-                    list(vec![
-                        Sym("*"),
-                        bsym.clone(),
-                        list(vec![Sym("/"), a, bsym]),
-                    ]),
+                    list(vec![Sym("*"), bsym.clone(), list(vec![Sym("/"), a, bsym])]),
                 ]));
             }
             let op: &str = match b.operator {
@@ -2727,7 +2809,11 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                 BinaryOperator::ShiftLeft => "shl",
                 BinaryOperator::ShiftRight => "shr",
                 BinaryOperator::ShiftRightZeroFill => "shr",
-                _ => return Err("ts_frontend: exponent/assign-ops in expressions not supported".into()),
+                _ => {
+                    return Err(
+                        "ts_frontend: exponent/assign-ops in expressions not supported".into(),
+                    )
+                }
             };
             Ok(list(vec![
                 Sym(op),
@@ -2741,12 +2827,18 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
             let a = to_bool(&l.left)?;
             let b = to_bool(&l.right)?;
             Ok(match l.operator {
-                LogicalOperator::And => list(vec![Sym("if"), a, b, list(vec![Sym("="), Num(1), Num(0)])]),
-                LogicalOperator::Or => list(vec![Sym("if"), a, list(vec![Sym("="), Num(1), Num(1)]), b]),
-                // `a ?? b` — value-level nil-handling: (default a b)
-                LogicalOperator::Coalesce => {
-                    list(vec![Sym("default"), lower_expr(&l.left)?, lower_expr(&l.right)?])
+                LogicalOperator::And => {
+                    list(vec![Sym("if"), a, b, list(vec![Sym("="), Num(1), Num(0)])])
                 }
+                LogicalOperator::Or => {
+                    list(vec![Sym("if"), a, list(vec![Sym("="), Num(1), Num(1)]), b])
+                }
+                // `a ?? b` — value-level nil-handling: (default a b)
+                LogicalOperator::Coalesce => list(vec![
+                    Sym("default"),
+                    lower_expr(&l.left)?,
+                    lower_expr(&l.right)?,
+                ]),
             })
         }
         Expression::UnaryExpression(u) => match u.operator {
@@ -2763,11 +2855,9 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                     Ok(list(vec![Sym("="), lower_expr(&u.argument)?, Num(0)]))
                 }
             }
-            UnaryOperator::UnaryNegation => Ok(list(vec![
-                Sym("-"),
-                Num(0),
-                lower_expr(&u.argument)?,
-            ])),
+            UnaryOperator::UnaryNegation => {
+                Ok(list(vec![Sym("-"), Num(0), lower_expr(&u.argument)?]))
+            }
             UnaryOperator::UnaryPlus => lower_expr(&u.argument),
             _ => Err("ts_frontend: unary operator not in M1".into()),
         },
@@ -2790,7 +2880,8 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                                 if let Argument::SpreadElement(_) = a {
                                     return Err("ts_frontend: spread not in M1".into());
                                 }
-                                let e2 = a.as_expression()
+                                let e2 = a
+                                    .as_expression()
                                     .ok_or("ts_frontend: unsupported console.log argument (M1)")?;
                                 let piece = list(vec![Sym("to-string"), lower_expr(e2)?]);
                                 acc = Some(match acc {
@@ -2816,7 +2907,8 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                             }
                             let mut items = vec![Sym(op)];
                             for a in &c.arguments {
-                                let e2 = a.as_expression()
+                                let e2 = a
+                                    .as_expression()
                                     .ok_or("ts_frontend: unsupported Math argument (M1)")?;
                                 items.push(lower_expr(e2)?);
                             }
@@ -2824,18 +2916,26 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                         }
                         ("JSON", "stringify") => {
                             if c.arguments.len() != 1 {
-                                return Err("ts_frontend: JSON.stringify takes exactly one value (M1)".into());
+                                return Err(
+                                    "ts_frontend: JSON.stringify takes exactly one value (M1)"
+                                        .into(),
+                                );
                             }
-                            let e2 = c.arguments[0].as_expression()
+                            let e2 = c.arguments[0]
+                                .as_expression()
                                 .ok_or("ts_frontend: unsupported JSON.stringify argument (M1)")?;
                             return Ok(list(vec![Sym("json-quote"), lower_expr(e2)?]));
                         }
                         ("JSON", "stringifyArr") => {
                             if c.arguments.len() != 1 {
-                                return Err("ts_frontend: JSON.stringifyArr takes exactly one array (M1)".into());
+                                return Err(
+                                    "ts_frontend: JSON.stringifyArr takes exactly one array (M1)"
+                                        .into(),
+                                );
                             }
-                            let e2 = c.arguments[0].as_expression()
-                                .ok_or("ts_frontend: unsupported JSON.stringifyArr argument (M1)")?;
+                            let e2 = c.arguments[0].as_expression().ok_or(
+                                "ts_frontend: unsupported JSON.stringifyArr argument (M1)",
+                            )?;
                             // "[" + join(",", map(json-quote, arr)) + "]" —
                             // nested binary str-cat (checker constraint)
                             return Ok(list(vec![
@@ -2964,10 +3064,7 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                     "map" | "filter" => {
                         let op = sm.property.name.as_str();
                         if c.arguments.len() != 1 {
-                            return Err(format!(
-                                "ts_frontend: {} takes exactly one callback",
-                                op
-                            ));
+                            return Err(format!("ts_frontend: {} takes exactly one callback", op));
                         }
                         let cb = c.arguments[0]
                             .as_expression()
@@ -2987,8 +3084,7 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                     "reduce" => {
                         if c.arguments.len() != 2 {
                             return Err(
-                                "ts_frontend: reduce takes a callback and an initial value"
-                                    .into(),
+                                "ts_frontend: reduce takes a callback and an initial value".into(),
                             );
                         }
                         let cb = c.arguments[0]
@@ -3030,16 +3126,10 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                                 return Ok(list(vec![
                                     Sym("set!"),
                                     Sym(name),
-                                    list(vec![
-                                        Sym("vec-push"),
-                                        Sym(name),
-                                        lower_expr(e2)?,
-                                    ]),
+                                    list(vec![Sym("vec-push"), Sym(name), lower_expr(e2)?]),
                                 ]));
                             }
-                            return Err(
-                                "ts_frontend: push target must be a plain variable".into(),
-                            );
+                            return Err("ts_frontend: push target must be a plain variable".into());
                         }
                         _ => {} // push handled; pipeline members were matched above
                         _ => {} // fall through to the generic path
@@ -3074,14 +3164,18 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
             // through unchanged.
             if head == "json-set" && items.len() == 4 {
                 let key = items[2].clone();
-                let raw = c.arguments.get(2)
+                let raw = c
+                    .arguments
+                    .get(2)
                     .and_then(|a| a.as_expression())
                     .ok_or("ts_frontend: bad jsonSet 3rd arg")?;
                 // jsonQuote(x) / {object-literal} / jsonSet(...) already
                 // produce encoded text — splice raw.
                 let already = match raw {
                     Expression::CallExpression(ic) => match &ic.callee {
-                        Expression::Identifier(id) => matches!(id.name.as_str(), "jsonQuote" | "jsonSet"),
+                        Expression::Identifier(id) => {
+                            matches!(id.name.as_str(), "jsonQuote" | "jsonSet")
+                        }
                         _ => false,
                     },
                     Expression::ObjectExpression(_) => true,
@@ -3121,11 +3215,7 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
             // body: expression form (x => e) or block body — see arrow_parts
             // (shared with `export const f = arrow`).
             let (params, body_val) = arrow_parts(a)?;
-            Ok(list(vec![
-                Sym("lambda"),
-                list(params),
-                body_val,
-            ]))
+            Ok(list(vec![Sym("lambda"), list(params), body_val]))
         }
         _ => Err(format!(
             "ts_frontend: expression `{}` not in M1 subset",
@@ -3155,7 +3245,11 @@ fn statically_bool(e: &Expression<'_>) -> bool {
                             let mapped = map_builtin_call(&h);
                             matches!(
                                 mapped.as_str(),
-                                "u128/gt" | "u128/lt" | "u128/gte" | "u128/lte" | "u128/eq"
+                                "u128/gt"
+                                    | "u128/lt"
+                                    | "u128/gte"
+                                    | "u128/lte"
+                                    | "u128/eq"
                                     | "near/deposit-gte"
                             )
                         })
@@ -3168,7 +3262,11 @@ fn statically_bool(e: &Expression<'_>) -> bool {
                         let mapped = map_builtin_call(&h);
                         matches!(
                             mapped.as_str(),
-                            "u128/gt" | "u128/lt" | "u128/gte" | "u128/lte" | "u128/eq"
+                            "u128/gt"
+                                | "u128/lt"
+                                | "u128/gte"
+                                | "u128/lte"
+                                | "u128/eq"
                                 | "near/deposit-gte"
                         )
                     })
@@ -3404,9 +3502,7 @@ fn param_object_props(p: &FormalParameter<'_>) -> Option<Vec<(String, bool)>> {
                     _ => return None, // call signatures etc. — not a data shape
                 };
                 let key = match &sig.key {
-                    oxc_ast::ast::PropertyKey::StaticIdentifier(id) => {
-                        id.name.as_str().to_string()
-                    }
+                    oxc_ast::ast::PropertyKey::StaticIdentifier(id) => id.name.as_str().to_string(),
                     _ => return None, // computed/string keys — not a data shape
                 };
                 let is_num = matches!(
@@ -3424,9 +3520,7 @@ fn param_object_props(p: &FormalParameter<'_>) -> Option<Vec<(String, bool)>> {
         // `type X = {...}` alias — resolved from the compile-time alias table
         TSType::TSTypeReference(r) => {
             let name = match &r.type_name {
-                oxc_ast::ast::TSTypeName::IdentifierReference(id) => {
-                    id.name.as_str().to_string()
-                }
+                oxc_ast::ast::TSTypeName::IdentifierReference(id) => id.name.as_str().to_string(),
                 _ => return None, // qualified names — not a local alias
             };
             TYPE_ALIASES.with(|m| {
@@ -3446,14 +3540,10 @@ fn param_is_type_ref(p: &FormalParameter<'_>) -> bool {
     if let Some(a) = p.type_annotation.as_ref() {
         if let TSType::TSTypeReference(r) = &a.type_annotation {
             let name = match &r.type_name {
-                oxc_ast::ast::TSTypeName::IdentifierReference(id) => {
-                    Some(id.name.as_str())
-                }
+                oxc_ast::ast::TSTypeName::IdentifierReference(id) => Some(id.name.as_str()),
                 _ => None,
             };
-            let known = name.map(|n| {
-                TYPE_ALIASES.with(|m| m.borrow().iter().any(|(k, _)| k == n))
-            });
+            let known = name.map(|n| TYPE_ALIASES.with(|m| m.borrow().iter().any(|(k, _)| k == n)));
             return !known.unwrap_or(false);
         }
     }
@@ -3625,7 +3715,8 @@ fn expr_kind(e: &Expression<'_>) -> &'static str {
 mod ts_pos_tests {
     #[test]
     fn ts_ident_offsets_recorded_and_hints_resolve() {
-        let src = "export function new_() {\n  let x = 1\n  let y = undefined_helper(x)\n  return y\n}\n";
+        let src =
+            "export function new_() {\n  let x = 1\n  let y = undefined_helper(x)\n  return y\n}\n";
         let r = super::parse_ts(src).expect("parses");
         assert!(!r.is_empty());
         let map = super::take_ident_offsets();

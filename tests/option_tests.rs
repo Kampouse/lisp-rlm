@@ -9,7 +9,11 @@ fn coalesce_lowers_to_default() {
         "function g(k: string): number {\n  return strToNum(near.storageGet(k) ?? \"0\");\n}\n",
     )
     .unwrap();
-    assert!(ir.contains("(default (near/storage_get k) \"0\")"), "IR: {}", ir);
+    assert!(
+        ir.contains("(default (near/storage_get k) \"0\")"),
+        "IR: {}",
+        ir
+    );
 }
 
 #[test]

@@ -85,7 +85,11 @@ fn main() {
             if let Some(m) = sidecar.borrow_mut().take() {
                 let map_path = out.replacen(".wasm", ".wasm.map", 1);
                 std::fs::write(&map_path, serde_json::to_vec_pretty(&m).unwrap()).unwrap();
-                eprintln!("🗺️  {} ({} entries)", map_path, m.as_object().map(|o| o.len()).unwrap_or(0));
+                eprintln!(
+                    "🗺️  {} ({} entries)",
+                    map_path,
+                    m.as_object().map(|o| o.len()).unwrap_or(0)
+                );
             }
         }
         Ok(Err(e)) => {

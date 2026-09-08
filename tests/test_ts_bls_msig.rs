@@ -18,9 +18,9 @@
 //! corrupted point bytes sailing through the old shape-only stubs — is a
 //! regression case at the bottom).
 
-use std::sync::{Mutex, OnceLock};
 use lisp_rlm_wasm::ts_frontend::ts_to_lisp_source;
 use lisp_rlm_wasm::{compile_near_from_exprs, parse_all};
+use std::sync::{Mutex, OnceLock};
 
 const BLS: &str = include_str!("../fixtures/bls_msig.ts");
 
@@ -37,7 +37,10 @@ const APK3_HEX: &str = "16159b696ba14508f75e67d8542b05c8966f809a8739e0aa894cb8c8
 
 fn lock() -> std::sync::MutexGuard<'static, ()> {
     static L: OnceLock<Mutex<()>> = OnceLock::new();
-    match L.get_or_init(|| Mutex::new(())).lock() { Ok(g) => g, Err(p) => p.into_inner() }
+    match L.get_or_init(|| Mutex::new(())).lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    }
 }
 
 fn call(state: &str, method: &str, args: &str) -> String {
@@ -50,17 +53,31 @@ fn call(state: &str, method: &str, args: &str) -> String {
     std::fs::write(&p, &wasm).unwrap();
     let manifest = format!("bls.t.near={}", p.display());
     std::process::Command::new("./target/release/near-mock")
-        .arg("cross").arg(state).arg(&manifest)
-        .arg("bls.t.near").arg(method).arg(args)
+        .arg("cross")
+        .arg(state)
+        .arg(&manifest)
+        .arg("bls.t.near")
+        .arg(method)
+        .arg(args)
         .output()
-        .map(|o| format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)))
+        .map(|o| {
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)
+            )
+        })
         .unwrap_or_default()
 }
 
 // sk=1 idiom: every validator has the same view, so pk(0)==pk(1)==… and
 // σi are identical; the aggregate (all-1 coefficients) is 3·Q / 3·H(m).
-fn pk(_i: usize) -> String { PK_0.to_string() }
-fn sig(_i: usize) -> String { SIG_0.to_string() }
+fn pk(_i: usize) -> String {
+    PK_0.to_string()
+}
+fn sig(_i: usize) -> String {
+    SIG_0.to_string()
+}
 
 /// Coefficient blob for validators 0..n: 66-char entries (2-hex 1-based
 /// idx + 64-hex LE scalar 1).
@@ -90,7 +107,9 @@ fn bls_validator_semantics() {
         v
     };
     assert_eq!(
-        bls_validate::eval(kind::P1_SUM, &sigma_in).unwrap().unwrap(),
+        bls_validate::eval(kind::P1_SUM, &sigma_in)
+            .unwrap()
+            .unwrap(),
         unhex(&SIGMA_HEX),
         "sum of a single positive point must be the point itself"
     );
@@ -103,7 +122,9 @@ fn bls_validator_semantics() {
         v
     };
     assert_eq!(
-        bls_validate::eval(kind::G2_MULTIEXP, &apk_in).unwrap().unwrap(),
+        bls_validate::eval(kind::G2_MULTIEXP, &apk_in)
+            .unwrap()
+            .unwrap(),
         unhex(&G2GEN)
     );
 
@@ -124,7 +145,10 @@ fn bls_validator_semantics() {
     bad_sign[0] = 2;
     assert_eq!(bls_validate::eval(kind::P1_SUM, &bad_sign).unwrap(), None);
     //   non-canonical Fp (≥ modulus) → map_fp_to_g1 ret 1
-    assert_eq!(bls_validate::eval(kind::MAP_FP_TO_G1, &[0xFF; 48]).unwrap(), None);
+    assert_eq!(
+        bls_validate::eval(kind::MAP_FP_TO_G1, &[0xFF; 48]).unwrap(),
+        None
+    );
     //   bad TOTAL length → HOST ERROR (the mock traps, like BLS12381InvalidInput)
     assert!(bls_validate::eval(kind::P1_SUM, &[0u8; 96]).is_err());
     assert!(bls_validate::pairing_check(&[0u8; 320]).is_err());
@@ -186,7 +210,11 @@ fn bls_msig_threshold_lifecycle() {
     assert!(r.contains("partial already submitted"), "dedupe: {r}");
 
     // message binding: validator 3 signs a different message for m1
-    let bad_msg = format!(r#"{{"id":"m1","msg":"{}","i":3,"sig":"{}"}}"#, SIG_0, sig(3));
+    let bad_msg = format!(
+        r#"{{"id":"m1","msg":"{}","i":3,"sig":"{}"}}"#,
+        SIG_0,
+        sig(3)
+    );
     let r = call(st, "submit", &bad_msg);
     assert!(r.contains("message mismatch"), "msg bind: {r}");
 
@@ -196,7 +224,11 @@ fn bls_msig_threshold_lifecycle() {
     assert!(r.contains("97-byte"), "sig len: {r}");
 
     // out-of-range validator
-    let oor = format!(r#"{{"id":"m1","msg":"{}","i":9,"sig":"{}"}}"#, MSG_POINT, sig(9));
+    let oor = format!(
+        r#"{{"id":"m1","msg":"{}","i":9,"sig":"{}"}}"#,
+        MSG_POINT,
+        sig(9)
+    );
     let r = call(st, "submit", &oor);
     assert!(r.contains("out of range"), "range: {r}");
 
@@ -206,16 +238,16 @@ fn bls_msig_threshold_lifecycle() {
     assert!(r.contains("not enough partials"), "early: {r}");
 
     // happy execute: real points through the json path (setPoints) + gate
-    let pts = format!(r#"{{"id":"m1","msgPoint":"{}","g2gen":"{}"}}"#, MSG_POINT, G2GEN);
+    let pts = format!(
+        r#"{{"id":"m1","msgPoint":"{}","g2gen":"{}"}}"#,
+        MSG_POINT, G2GEN
+    );
     let r = call(st, "setPoints", &pts);
     assert!(r.contains("points-ok"), "points: {r}");
     let exec = format!(r#"{{"id":"m1","coeffs":"{}"}}"#, coeffs_ones(3));
     let r = call(st, "execute", &exec);
     // cryptographic truth: σ = 3·H(m) with all-1 coefficients
-    assert!(
-        r.contains(&format!("executed:{}", SIGMA3_HEX)),
-        "exec: {r}"
-    );
+    assert!(r.contains(&format!("executed:{}", SIGMA3_HEX)), "exec: {r}");
 
     // verified view holds the aggregate signature
     let r = call(st, "verified", r#"{"id":"m1"}"#);
@@ -227,7 +259,11 @@ fn bls_msig_threshold_lifecycle() {
 
     // missing coefficient: fresh id, 3 partials, coeffs only cover 0,1
     for i in 0..3 {
-        let m3 = format!(r#"{{"id":"m3","msg":"{}","i":{i},"sig":"{}"}}"#, MSG_POINT, sig(i));
+        let m3 = format!(
+            r#"{{"id":"m3","msg":"{}","i":{i},"sig":"{}"}}"#,
+            MSG_POINT,
+            sig(i)
+        );
         let r = call(st, "submit", &m3);
         assert!(r.contains("submitted:"), "m3 sub{i}: {r}");
     }
@@ -242,7 +278,10 @@ fn bls_msig_threshold_lifecycle() {
         "execute",
         &format!(r#"{{"id":"m3","coeffs":"{}"}}"#, coeffs_ones(3)),
     );
-    assert!(r.contains(&format!("executed:{}", SIGMA3_HEX)), "m3 exec: {r}");
+    assert!(
+        r.contains(&format!("executed:{}", SIGMA3_HEX)),
+        "m3 exec: {r}"
+    );
 }
 
 #[test]
@@ -253,7 +292,10 @@ fn bls_pairing_gate_shape() {
     let st = "/tmp/bls-msig-gate.bin";
     let _ = std::fs::remove_file(st);
     let pks: Vec<String> = (0..4).map(pk).collect();
-    let init = format!(r#"{{"pks":["{}","{}","{}","{}"],"t":1}}"#, pks[0], pks[1], pks[2], pks[3]);
+    let init = format!(
+        r#"{{"pks":["{}","{}","{}","{}"],"t":1}}"#,
+        pks[0], pks[1], pks[2], pks[3]
+    );
     let r = call(st, "init", &init);
     assert!(r.contains("ok:4:1"), "init t=1: {r}");
 
@@ -270,7 +312,10 @@ fn bls_pairing_gate_shape() {
         coeffs_ones(1)
     );
     let r = call(st, "execute", &exec);
-    assert!(r.contains(&format!("executed:{}", SIGMA_HEX)), "gate pass: {r}");
+    assert!(
+        r.contains(&format!("executed:{}", SIGMA_HEX)),
+        "gate pass: {r}"
+    );
 
     // wrong H(m) (valid point, wrong sign — breaks the pairing identity)
     // → well-formed gate, pairing ≠ 1 → ret 2 → abort (NOT a trap)
@@ -306,7 +351,10 @@ fn bls_pairing_gate_shape() {
     let r = call(st2, "init", &init);
     assert!(r.contains("ok:4:1"));
     let short_msg = format!("{}{}", &MSG_POINT[..96], "00".repeat(32));
-    let sub2 = format!(r#"{{"id":"g1","msg":"{short_msg}","i":0,"sig":"{}"}}"#, sig(0));
+    let sub2 = format!(
+        r#"{{"id":"g1","msg":"{short_msg}","i":0,"sig":"{}"}}"#,
+        sig(0)
+    );
     let r = call(st2, "submit", &sub2);
     assert!(r.contains("submitted:1"), "sub2: {r}");
     let r = call(st2, "execute", &exec);
@@ -330,9 +378,16 @@ fn bls_wire_corruption_rejected_end_to_end() {
     // → abort. Deterministic, not an accidental pass.
     let mut bad_sig = sig(0);
     let flip = 40; // inside the G1 x-coordinate
-    let byte = if bad_sig.as_bytes()[flip] == b'0' { b'1' } else { b'0' };
+    let byte = if bad_sig.as_bytes()[flip] == b'0' {
+        b'1'
+    } else {
+        b'0'
+    };
     bad_sig.replace_range(flip..flip + 1, &(byte as char).to_string());
-    let sub = format!(r#"{{"id":"c1","msg":"{}","i":0,"sig":"{bad_sig}"}}"#, MSG_POINT);
+    let sub = format!(
+        r#"{{"id":"c1","msg":"{}","i":0,"sig":"{bad_sig}"}}"#,
+        MSG_POINT
+    );
     let r = call(st, "submit", &sub);
     assert!(r.contains("submitted:1"), "sub: {r}");
     let exec = format!(
@@ -357,12 +412,20 @@ fn bls_wire_corruption_rejected_end_to_end() {
     let _ = std::fs::remove_file(st2);
     let r = call(st2, "init", &init);
     assert!(r.contains("ok:2:1"));
-    let sub = format!(r#"{{"id":"c2","msg":"{}","i":0,"sig":"{}"}}"#, MSG_POINT, sig(0));
+    let sub = format!(
+        r#"{{"id":"c2","msg":"{}","i":0,"sig":"{}"}}"#,
+        MSG_POINT,
+        sig(0)
+    );
     let r = call(st2, "submit", &sub);
     assert!(r.contains("submitted:1"), "sub2: {r}");
     let mut bad_gen = G2GEN.to_string();
     let flip = 200;
-    let byte = if bad_gen.as_bytes()[flip] == b'0' { b'1' } else { b'0' };
+    let byte = if bad_gen.as_bytes()[flip] == b'0' {
+        b'1'
+    } else {
+        b'0'
+    };
     bad_gen.replace_range(flip..flip + 1, &(byte as char).to_string());
     let exec_badgen = format!(
         r#"{{"id":"c2","msgPoint":"{}","g2gen":"{bad_gen}","coeffs":"{}"}}"#,

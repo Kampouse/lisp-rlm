@@ -43,22 +43,37 @@ fn eval_wasm(expr_src: &str) -> Result<i64, String> {
     let mut store = Store::new(&engine, Vec::new()); // data = captured stdout
 
     // --- WASI stubs ---
-    let fd_read = Func::new(&mut store,
+    let fd_read = Func::new(
+        &mut store,
         FuncType::new(&engine, vec![ValType::I32; 4], vec![ValType::I32]),
-        |_c, _a, r| { r[0] = Val::I32(0); Ok(()) });
-    let fd_write = Func::new(&mut store,
+        |_c, _a, r| {
+            r[0] = Val::I32(0);
+            Ok(())
+        },
+    );
+    let fd_write = Func::new(
+        &mut store,
         FuncType::new(&engine, vec![ValType::I32; 4], vec![ValType::I32]),
         |mut c, a, r| {
             let iov_ptr = a[1].unwrap_i32() as u32;
             let iov_len = a[2].unwrap_i32() as u32;
             let mut chunks: Vec<Vec<u8>> = Vec::new();
             {
-                let mem = c.get_export("memory").and_then(|e| e.into_memory()).unwrap();
+                let mem = c
+                    .get_export("memory")
+                    .and_then(|e| e.into_memory())
+                    .unwrap();
                 let data = mem.data(&c);
                 for i in 0..iov_len as usize {
-                    let p = u32::from_le_bytes(data[(iov_ptr as usize + i*8)..][..4].try_into().unwrap()) as usize;
-                    let l = u32::from_le_bytes(data[(iov_ptr as usize + i*8 + 4)..][..4].try_into().unwrap()) as usize;
-                    chunks.push(data[p..p+l].to_vec());
+                    let p = u32::from_le_bytes(
+                        data[(iov_ptr as usize + i * 8)..][..4].try_into().unwrap(),
+                    ) as usize;
+                    let l = u32::from_le_bytes(
+                        data[(iov_ptr as usize + i * 8 + 4)..][..4]
+                            .try_into()
+                            .unwrap(),
+                    ) as usize;
+                    chunks.push(data[p..p + l].to_vec());
                 }
             }
             for chunk in chunks {
@@ -66,15 +81,20 @@ fn eval_wasm(expr_src: &str) -> Result<i64, String> {
             }
             r[0] = Val::I32(a[2].unwrap_i32());
             Ok(())
-        });
-    let proc_exit = Func::new(&mut store,
+        },
+    );
+    let proc_exit = Func::new(
+        &mut store,
         FuncType::new(&engine, vec![ValType::I32], vec![]),
-        |_, a, _| Err(Error::msg(format!("proc_exit({})", a[0].unwrap_i32()))));
+        |_, a, _| Err(Error::msg(format!("proc_exit({})", a[0].unwrap_i32()))),
+    );
 
     // --- NEAR env stubs ---
-    let log_fn = Func::new(&mut store,
+    let log_fn = Func::new(
+        &mut store,
         FuncType::new(&engine, vec![ValType::I64; 2], vec![]),
-        |_, _, _| Ok(()));
+        |_, _, _| Ok(()),
+    );
     let noop_i64 = Func::wrap(&mut store, |_: i64| {});
     let noop_i64_i64 = Func::wrap(&mut store, |_: i64, _: i64| {});
     let noop_i32_i64 = Func::wrap(&mut store, |_: i32, _: i64| {});
@@ -82,31 +102,74 @@ fn eval_wasm(expr_src: &str) -> Result<i64, String> {
     let noop_i64_to_i64 = Func::wrap(&mut store, |_: i64| -> i64 { 0 });
 
     // --- outlayer host stubs ---
-    let ol_view = Func::wrap(&mut store,
-        |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| {});
-    let ol_call = Func::wrap(&mut store,
-        |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32,
-         _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| {});
-    let ol_transfer = Func::wrap(&mut store,
-        |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32,
-         _: i32, _: i32, _: i32| {});
-    let ol_http_get = Func::wrap(&mut store, |_: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
-    let ol_http_post = Func::wrap(&mut store,
-        |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 });
+    let ol_view = Func::wrap(
+        &mut store,
+        |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| {},
+    );
+    let ol_call = Func::wrap(
+        &mut store,
+        |_: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32| {},
+    );
+    let ol_transfer = Func::wrap(
+        &mut store,
+        |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| {},
+    );
+    let ol_http_get = Func::wrap(
+        &mut store,
+        |_: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 },
+    );
+    let ol_http_post = Func::wrap(
+        &mut store,
+        |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 },
+    );
     let ol_store = Func::wrap(&mut store, |_: i32, _: i64, _: i64, _: i32| {});
     let ol_load = Func::wrap(&mut store, |_: i32, _: i64, _: i64, _: i32| {});
     let ol_remove = Func::wrap(&mut store, |_: i32, _: i64, _: i32| {});
     let ol_has = Func::wrap(&mut store, |_: i32, _: i64, _: i32| -> i32 { 0 });
 
     // --- near:rpc/api stubs ---
-    let rpc_view = Func::wrap(&mut store,
-        |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| {});
-    let rpc_call = Func::wrap(&mut store,
-        |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32,
-         _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| {});
-    let rpc_transfer = Func::wrap(&mut store,
-        |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32,
-         _: i32, _: i32, _: i32| {});
+    let rpc_view = Func::wrap(
+        &mut store,
+        |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| {},
+    );
+    let rpc_call = Func::wrap(
+        &mut store,
+        |_: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32,
+         _: i32| {},
+    );
+    let rpc_transfer = Func::wrap(
+        &mut store,
+        |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32, _: i32| {},
+    );
 
     // --- near:storage/api stubs ---
     let st_set = Func::wrap(&mut store, |_: i32, _: i32, _: i64, _: i32| {});
@@ -116,7 +179,10 @@ fn eval_wasm(expr_src: &str) -> Result<i64, String> {
     let st_incr = Func::wrap(&mut store, |_: i32, _: i32, _: i64, _: i32| {});
     let st_decr = Func::wrap(&mut store, |_: i32, _: i32, _: i64, _: i32| {});
 
-    let storage_write = Func::wrap(&mut store, |_: u32, _: u32, _: u32, _: u32, _: u32| -> u32 { 0 });
+    let storage_write = Func::wrap(
+        &mut store,
+        |_: u32, _: u32, _: u32, _: u32, _: u32| -> u32 { 0 },
+    );
     let promise_create = Func::wrap(&mut store, |_: i32, _: i64, _: i64, _: i32, _: i32| {});
     let promise_and = Func::wrap(&mut store, |_: i32, _: i32| -> i32 { 0 });
     let promise_then = Func::wrap(&mut store, |_: i32, _: i64, _: i64, _: i32, _: i32| {});
@@ -125,63 +191,159 @@ fn eval_wasm(expr_src: &str) -> Result<i64, String> {
     // --- Link everything ---
     let mut linker = Linker::new(&engine);
 
-    linker.define(&store, "wasi_snapshot_preview1", "fd_read", fd_read).unwrap();
-    linker.define(&store, "wasi_snapshot_preview1", "fd_write", fd_write).unwrap();
-    linker.define(&store, "wasi_snapshot_preview1", "proc_exit", proc_exit).unwrap();
-    linker.define(&store, "wasi_snapshot_preview1", "random_get", noop_i32_i32_to_i32).unwrap();
-    linker.define(&store, "wasi_snapshot_preview1", "environ_sizes_get", noop_i32_i32_to_i32).unwrap();
-    linker.define(&store, "wasi_snapshot_preview1", "environ_get", noop_i32_i32_to_i32).unwrap();
+    linker
+        .define(&store, "wasi_snapshot_preview1", "fd_read", fd_read)
+        .unwrap();
+    linker
+        .define(&store, "wasi_snapshot_preview1", "fd_write", fd_write)
+        .unwrap();
+    linker
+        .define(&store, "wasi_snapshot_preview1", "proc_exit", proc_exit)
+        .unwrap();
+    linker
+        .define(
+            &store,
+            "wasi_snapshot_preview1",
+            "random_get",
+            noop_i32_i32_to_i32,
+        )
+        .unwrap();
+    linker
+        .define(
+            &store,
+            "wasi_snapshot_preview1",
+            "environ_sizes_get",
+            noop_i32_i32_to_i32,
+        )
+        .unwrap();
+    linker
+        .define(
+            &store,
+            "wasi_snapshot_preview1",
+            "environ_get",
+            noop_i32_i32_to_i32,
+        )
+        .unwrap();
     let fd_seek = Func::wrap(&mut store, |_: i32, _: i64, _: i32, _: i32| -> i32 { 0 });
-    linker.define(&store, "wasi_snapshot_preview1", "fd_seek", fd_seek).unwrap();
+    linker
+        .define(&store, "wasi_snapshot_preview1", "fd_seek", fd_seek)
+        .unwrap();
 
     linker.define(&store, "env", "log_utf8", log_fn).unwrap();
     linker.define(&store, "env", "log", noop_i64).unwrap();
     linker.define(&store, "env", "log_s", noop_i64).unwrap();
-    linker.define(&store, "env", "read_register", noop_i64_i64).unwrap();
-    linker.define(&store, "env", "register_len", noop_i64_to_i64).unwrap();
-    linker.define(&store, "env", "account_balance", noop_i64).unwrap();
-    linker.define(&store, "env", "attached_deposit", noop_i64).unwrap();
-    linker.define(&store, "env", "predecessor_account_id", noop_i32_i64).unwrap();
-    linker.define(&store, "env", "current_account_id", noop_i32_i64).unwrap();
-    linker.define(&store, "env", "signer_account_id", noop_i32_i64).unwrap();
+    linker
+        .define(&store, "env", "read_register", noop_i64_i64)
+        .unwrap();
+    linker
+        .define(&store, "env", "register_len", noop_i64_to_i64)
+        .unwrap();
+    linker
+        .define(&store, "env", "account_balance", noop_i64)
+        .unwrap();
+    linker
+        .define(&store, "env", "attached_deposit", noop_i64)
+        .unwrap();
+    linker
+        .define(&store, "env", "predecessor_account_id", noop_i32_i64)
+        .unwrap();
+    linker
+        .define(&store, "env", "current_account_id", noop_i32_i64)
+        .unwrap();
+    linker
+        .define(&store, "env", "signer_account_id", noop_i32_i64)
+        .unwrap();
     // () -> i64 like the real NEAR host; ns scale (Option A: contract
     // stringifies — a value ~2^60.55 that CAN'T be a tagged Num).
     let block_ts = Func::wrap(&mut store, || -> i64 { 1_787_788_000_000_000_000 });
-    linker.define(&store, "env", "block_timestamp", block_ts).unwrap();
-    linker.define(&store, "env", "block_height", noop_i64).unwrap();
-    linker.define(&store, "env", "storage_read", noop_i32_i32_to_i32).unwrap();
-    linker.define(&store, "env", "storage_write", storage_write).unwrap();
-    linker.define(&store, "env", "storage_has_key", noop_i32_i32_to_i32).unwrap();
-    linker.define(&store, "env", "promise_create", promise_create).unwrap();
-    linker.define(&store, "env", "promise_and", promise_and).unwrap();
-    linker.define(&store, "env", "promise_then", promise_then).unwrap();
-    linker.define(&store, "env", "promise_result", promise_result).unwrap();
-    linker.define(&store, "env", "promise_return", noop_i64).unwrap();
-    linker.define(&store, "env", "input_read", noop_i32_i32_to_i32).unwrap();
+    linker
+        .define(&store, "env", "block_timestamp", block_ts)
+        .unwrap();
+    linker
+        .define(&store, "env", "block_height", noop_i64)
+        .unwrap();
+    linker
+        .define(&store, "env", "storage_read", noop_i32_i32_to_i32)
+        .unwrap();
+    linker
+        .define(&store, "env", "storage_write", storage_write)
+        .unwrap();
+    linker
+        .define(&store, "env", "storage_has_key", noop_i32_i32_to_i32)
+        .unwrap();
+    linker
+        .define(&store, "env", "promise_create", promise_create)
+        .unwrap();
+    linker
+        .define(&store, "env", "promise_and", promise_and)
+        .unwrap();
+    linker
+        .define(&store, "env", "promise_then", promise_then)
+        .unwrap();
+    linker
+        .define(&store, "env", "promise_result", promise_result)
+        .unwrap();
+    linker
+        .define(&store, "env", "promise_return", noop_i64)
+        .unwrap();
+    linker
+        .define(&store, "env", "input_read", noop_i32_i32_to_i32)
+        .unwrap();
 
     linker.define(&store, "outlayer", "view", ol_view).unwrap();
     linker.define(&store, "outlayer", "call", ol_call).unwrap();
-    linker.define(&store, "outlayer", "transfer", ol_transfer).unwrap();
-    linker.define(&store, "outlayer", "http_get", ol_http_get).unwrap();
-    linker.define(&store, "outlayer", "http_post", ol_http_post).unwrap();
-    linker.define(&store, "outlayer", "store", ol_store).unwrap();
+    linker
+        .define(&store, "outlayer", "transfer", ol_transfer)
+        .unwrap();
+    linker
+        .define(&store, "outlayer", "http_get", ol_http_get)
+        .unwrap();
+    linker
+        .define(&store, "outlayer", "http_post", ol_http_post)
+        .unwrap();
+    linker
+        .define(&store, "outlayer", "store", ol_store)
+        .unwrap();
     linker.define(&store, "outlayer", "load", ol_load).unwrap();
-    linker.define(&store, "outlayer", "remove", ol_remove).unwrap();
+    linker
+        .define(&store, "outlayer", "remove", ol_remove)
+        .unwrap();
     linker.define(&store, "outlayer", "has", ol_has).unwrap();
 
-    linker.define(&store, "near:rpc/api@0.1.0", "view", rpc_view).unwrap();
-    linker.define(&store, "near:rpc/api@0.1.0", "call", rpc_call).unwrap();
-    linker.define(&store, "near:rpc/api@0.1.0", "transfer", rpc_transfer).unwrap();
+    linker
+        .define(&store, "near:rpc/api@0.1.0", "view", rpc_view)
+        .unwrap();
+    linker
+        .define(&store, "near:rpc/api@0.1.0", "call", rpc_call)
+        .unwrap();
+    linker
+        .define(&store, "near:rpc/api@0.1.0", "transfer", rpc_transfer)
+        .unwrap();
 
-    linker.define(&store, "near:storage/api@0.1.0", "set", st_set).unwrap();
-    linker.define(&store, "near:storage/api@0.1.0", "get", st_get).unwrap();
-    linker.define(&store, "near:storage/api@0.1.0", "has", st_has).unwrap();
-    linker.define(&store, "near:storage/api@0.1.0", "delete", st_del).unwrap();
-    linker.define(&store, "near:storage/api@0.1.0", "increment", st_incr).unwrap();
-    linker.define(&store, "near:storage/api@0.1.0", "decrement", st_decr).unwrap();
+    linker
+        .define(&store, "near:storage/api@0.1.0", "set", st_set)
+        .unwrap();
+    linker
+        .define(&store, "near:storage/api@0.1.0", "get", st_get)
+        .unwrap();
+    linker
+        .define(&store, "near:storage/api@0.1.0", "has", st_has)
+        .unwrap();
+    linker
+        .define(&store, "near:storage/api@0.1.0", "delete", st_del)
+        .unwrap();
+    linker
+        .define(&store, "near:storage/api@0.1.0", "increment", st_incr)
+        .unwrap();
+    linker
+        .define(&store, "near:storage/api@0.1.0", "decrement", st_decr)
+        .unwrap();
 
-    let instance = linker.instantiate(&mut store, &module).expect("instantiate");
-    let start = instance.get_typed_func::<(), ()>(&mut store, "_start")
+    let instance = linker
+        .instantiate(&mut store, &module)
+        .expect("instantiate");
+    let start = instance
+        .get_typed_func::<(), ()>(&mut store, "_start")
         .expect("_start export");
 
     let ret = start.call(&mut store, ());
@@ -205,7 +367,8 @@ fn eval_wasm(expr_src: &str) -> Result<i64, String> {
     if s.is_empty() {
         return Err(format!("empty stdout: {:?}", out));
     }
-    s.parse::<i64>().map_err(|e| format!("stdout not a number ({:?}): {}", s, e))
+    s.parse::<i64>()
+        .map_err(|e| format!("stdout not a number ({:?}): {}", s, e))
 }
 
 /// Money-safety invariant: interp and wasm must agree on trap-vs-value.
@@ -219,7 +382,7 @@ fn assert_money_safe(src: &str, ctx: &str) {
              balances silently wrap on-chain. Emitter needs checked ops.",
             ctx, v
         ),
-        (Err(_), Err(_)) => {}   // aligned: both trap
+        (Err(_), Err(_)) => {} // aligned: both trap
         (Ok(a), Ok(b)) => {
             let a_num = match a {
                 LispVal::Num(n) => n,
@@ -308,9 +471,8 @@ fn runtime_no_overflow_agrees() {
 #[test]
 fn shl_in_range_returns_value() {
     // 2^57 << 2 = 2^59 — inside payload range
-    let v = eval_wasm(
-        "(define (id x) x) (define (main) (shl (id 144115188075855872) (id 2)))",
-    ).expect("in-range shl must succeed");
+    let v = eval_wasm("(define (id x) x) (define (main) (shl (id 144115188075855872) (id 2)))")
+        .expect("in-range shl must succeed");
     assert_eq!(v, 576460752303423488, "2^57<<2 == 2^59");
 }
 
@@ -318,15 +480,11 @@ fn shl_in_range_returns_value() {
 #[test]
 fn shl_out_of_range_traps() {
     // 2^59 << 1 = 2^60: fits i64 but leaves [-2^60, 2^60) → trap
-    let r = eval_wasm(
-        "(define (id x) x) (define (main) (shl (id 576460752303423488) (id 1)))",
-    );
+    let r = eval_wasm("(define (id x) x) (define (main) (shl (id 576460752303423488) (id 1)))");
     assert!(r.is_err(), "shl to 2^60 must trap, got {:?}", r);
 
     // 2^55 << 10 = 2^65: overflows i64 entirely → trap
-    let r = eval_wasm(
-        "(define (id x) x) (define (main) (shl (id 36028797018963968) (id 10)))",
-    );
+    let r = eval_wasm("(define (id x) x) (define (main) (shl (id 36028797018963968) (id 10)))");
     assert!(r.is_err(), "shl to 2^65 must trap, got {:?}", r);
 }
 
@@ -334,9 +492,8 @@ fn shl_out_of_range_traps() {
 #[test]
 fn shl_shift_masking_survives() {
     // shift 64 ≡ 0 (wasm masks k&63) → identity, must NOT trap
-    let v = eval_wasm(
-        "(define (id x) x) (define (main) (shl (id 123) (id 64)))",
-    ).expect("shl by 64 masks to 0");
+    let v = eval_wasm("(define (id x) x) (define (main) (shl (id 123) (id 64)))")
+        .expect("shl by 64 masks to 0");
     assert_eq!(v, 123);
 }
 
@@ -348,24 +505,25 @@ fn shl_shift_masking_survives() {
 #[test]
 fn timestamp_ns_string_exact() {
     let v = eval_wasm("(near/block_timestamp)").expect("timestamp must print");
-    assert_eq!(v, 1_787_788_000_000_000_000, "ns value must round-trip exactly");
+    assert_eq!(
+        v, 1_787_788_000_000_000_000,
+        "ns value must round-trip exactly"
+    );
 }
 
 /// It IS a string (19 digits), not a num.
 #[test]
 fn timestamp_is_string_not_num() {
-    let v = eval_wasm(
-        "(define (main) (str-len (near/block_timestamp)))",
-    ).expect("str-len on timestamp");
+    let v = eval_wasm("(define (main) (str-len (near/block_timestamp)))")
+        .expect("str-len on timestamp");
     assert_eq!(v, 19, "1.78e18 ns = 19 decimal digits");
 }
 
 /// Blessed comparison idiom: u128/gt on the string form.
 #[test]
 fn timestamp_u128_comparison_works() {
-    let v = eval_wasm(
-        "(define (main) (u128/gt (near/block_timestamp) \"1700000000000000000\"))",
-    ).expect("u128/gt on timestamp");
+    let v = eval_wasm("(define (main) (u128/gt (near/block_timestamp) \"1700000000000000000\"))")
+        .expect("u128/gt on timestamp");
     assert_eq!(v, 1, "2026 ns > 2024 ns");
 }
 
@@ -373,9 +531,8 @@ fn timestamp_u128_comparison_works() {
 /// itoa'd to garbage. Now ShrS.
 #[test]
 fn itoa_negative_survives() {
-    let v = eval_wasm(
-        "(define (id x) x) (define (main) (to-string (id -5)))",
-    ).expect("to-string of negative");
+    let v = eval_wasm("(define (id x) x) (define (main) (to-string (id -5)))")
+        .expect("to-string of negative");
     // stdout "-5" parses back to -5
     assert_eq!(v, -5, "negative num must stringify exactly");
 }

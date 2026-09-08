@@ -2,7 +2,6 @@
 ///
 /// Uses wasmparser for instruction-level parsing (handles all opcodes including SIMD)
 /// and wasm-encoder for output encoding.
-
 use wasm_encoder;
 
 // ─── Minimal WASM binary reader ──────────────────────────────────────
@@ -174,7 +173,7 @@ struct ParsedModule {
     types: Vec<FuncType>,
     imports: Vec<ImportEntry>,
     func_type_indices: Vec<u32>,
-    func_bodies: Vec<Vec<u8>>,    // raw code entries
+    func_bodies: Vec<Vec<u8>>,                  // raw code entries
     table_type: Option<(u8, u32, Option<u32>)>, // (elem_type, min, max)
     memory_min: u64,
     memory_max: Option<u64>,
@@ -215,7 +214,8 @@ fn parse_wasm(data: &[u8]) -> ParsedModule {
                     let param_count = r.read_u32_leb() as usize;
                     let params: Vec<u8> = (0..param_count).map(|_| read_valtype(&mut r)).collect();
                     let result_count = r.read_u32_leb() as usize;
-                    let results: Vec<u8> = (0..result_count).map(|_| read_valtype(&mut r)).collect();
+                    let results: Vec<u8> =
+                        (0..result_count).map(|_| read_valtype(&mut r)).collect();
                     m.types.push(FuncType { params, results });
                 }
             }
@@ -254,7 +254,11 @@ fn parse_wasm(data: &[u8]) -> ParsedModule {
                     let elem_type = read_valtype(&mut r);
                     let has_max = r.read_byte();
                     let min = r.read_u32_leb();
-                    let max = if has_max != 0 { Some(r.read_u32_leb()) } else { None };
+                    let max = if has_max != 0 {
+                        Some(r.read_u32_leb())
+                    } else {
+                        None
+                    };
                     m.table_type = Some((elem_type, min, max));
                 }
             }
@@ -278,11 +282,17 @@ fn parse_wasm(data: &[u8]) -> ParsedModule {
                     let start = r.pos;
                     loop {
                         let b = r.read_byte();
-                        if b == 0x0B { break; }
+                        if b == 0x0B {
+                            break;
+                        }
                     }
                     let mut init_expr = payload[start..r.pos].to_vec();
                     init_expr.pop();
-                    m.globals.push(GlobalEntry { val_type, mutable, init_expr });
+                    m.globals.push(GlobalEntry {
+                        val_type,
+                        mutable,
+                        init_expr,
+                    });
                 }
             }
             SEC_EXPORT => {
@@ -301,11 +311,17 @@ fn parse_wasm(data: &[u8]) -> ParsedModule {
                 let count = r.read_u32_leb();
                 for _ in 0..count {
                     let flags = r.read_u32_leb();
-                    let table_idx = if (flags & 0x02) != 0 { r.read_u32_leb() } else { 0 };
+                    let table_idx = if (flags & 0x02) != 0 {
+                        r.read_u32_leb()
+                    } else {
+                        0
+                    };
                     let _kind = r.read_byte();
                     loop {
                         let b = r.read_byte();
-                        if b == 0x0B { break; }
+                        if b == 0x0B {
+                            break;
+                        }
                     }
                     let func_count = r.read_u32_leb();
                     let mut funcs = Vec::new();
@@ -327,13 +343,21 @@ fn parse_wasm(data: &[u8]) -> ParsedModule {
                 let count = r.read_u32_leb();
                 for _ in 0..count {
                     let flags = r.read_u32_leb();
-                    let mem_idx = if (flags & 0x02) != 0 { r.read_u32_leb() } else { 0 };
+                    let mem_idx = if (flags & 0x02) != 0 {
+                        r.read_u32_leb()
+                    } else {
+                        0
+                    };
                     assert_eq!(mem_idx, 0, "only memory[0] data supported");
                     let mut offset = 0i32;
                     loop {
                         let b = r.read_byte();
-                        if b == 0x0B { break; }
-                        if b == 0x41 { offset = r.read_i32_leb(); }
+                        if b == 0x0B {
+                            break;
+                        }
+                        if b == 0x41 {
+                            offset = r.read_i32_leb();
+                        }
                     }
                     let data_len = r.read_u32_leb() as usize;
                     let data_bytes = r.read_bytes(data_len).to_vec();
@@ -438,8 +462,8 @@ fn remap_calls(
 
 /// Embed schnorr from schnorr.wat (self-contained, no env var or build.rs).
 pub fn link_schnorr_wat(contract_wasm: &[u8], import_export_pairs: &[(&str, &str)]) -> Vec<u8> {
-    let lib_wasm = wat::parse_str(include_str!("schnorr.wat"))
-        .expect("failed to parse schnorr.wat");
+    let lib_wasm =
+        wat::parse_str(include_str!("schnorr.wat")).expect("failed to parse schnorr.wat");
     match merge_lib_wasm_multi(contract_wasm, &lib_wasm, import_export_pairs) {
         Ok(bytes) => bytes,
         Err(e) => panic!("schnorr WASM linking failed: {}", e),
@@ -512,7 +536,11 @@ fn merge_lib_wasm(
                     if target == schnorr_lib_idx {
                         schnorr_idx
                     } else {
-                        let adj = if target > schnorr_lib_idx { target - 1 } else { target };
+                        let adj = if target > schnorr_lib_idx {
+                            target - 1
+                        } else {
+                            target
+                        };
                         schnorr_idx + 1 + contract.func_type_indices.len() as u32 + adj
                     }
                 },
@@ -620,7 +648,11 @@ fn merge_lib_wasm(
             if g.init_expr.len() >= 2 && g.init_expr[0] == 0x41 {
                 let mut r = WasmReader::new(&g.init_expr[1..]);
                 let val = r.read_i32_leb();
-                if val > 0 { Some(val as u64) } else { None }
+                if val > 0 {
+                    Some(val as u64)
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -634,8 +666,15 @@ fn merge_lib_wasm(
         .max()
         .unwrap_or(0);
     let highest = highest_global_addr.max(highest_data_addr);
-    let pages_needed = if highest > 0 { (highest / 65536) + 32 } else { 0 };
-    let mem_min = std::cmp::max(contract.memory_min, std::cmp::max(lib.memory_min, pages_needed));
+    let pages_needed = if highest > 0 {
+        (highest / 65536) + 32
+    } else {
+        0
+    };
+    let mem_min = std::cmp::max(
+        contract.memory_min,
+        std::cmp::max(lib.memory_min, pages_needed),
+    );
     let mut mem_sec = wasm_encoder::MemorySection::new();
     mem_sec.memory(wasm_encoder::MemoryType {
         minimum: mem_min,
@@ -723,32 +762,49 @@ fn merge_lib_wasm(
             let remapped: Vec<u32> = funcs
                 .iter()
                 .map(|&f| {
-                    if f == import_idx { schnorr_idx }
-                    else if f > import_idx && f < import_func_count { f - 1 }
-                    else { f }
+                    if f == import_idx {
+                        schnorr_idx
+                    } else if f > import_idx && f < import_func_count {
+                        f - 1
+                    } else {
+                        f
+                    }
                 })
                 .collect();
             elem_sec.active(
-                if table_idx == 0 { None } else { Some(table_idx) },
+                if table_idx == 0 {
+                    None
+                } else {
+                    Some(table_idx)
+                },
                 &wasm_encoder::ConstExpr::i32_const(0),
                 wasm_encoder::Elements::Functions(remapped.into()),
             );
         }
         // Library element segments: remap func indices to merged module space
-        let contract_table_count = if contract.table_type.is_some() { 1u32 } else { 0 };
+        let contract_table_count = if contract.table_type.is_some() {
+            1u32
+        } else {
+            0
+        };
         for &(table_idx, ref funcs) in &lib.element_segments {
             let remapped: Vec<u32> = funcs
                 .iter()
                 .map(|&f| {
-                    if f == schnorr_lib_idx { schnorr_idx }
-                    else {
+                    if f == schnorr_lib_idx {
+                        schnorr_idx
+                    } else {
                         let adj = if f > schnorr_lib_idx { f - 1 } else { f };
                         schnorr_idx + 1 + contract.func_type_indices.len() as u32 + adj
                     }
                 })
                 .collect();
             elem_sec.active(
-                if table_idx == 0 { None } else { Some(table_idx + contract_table_count) },
+                if table_idx == 0 {
+                    None
+                } else {
+                    Some(table_idx + contract_table_count)
+                },
                 &wasm_encoder::ConstExpr::i32_const(0),
                 wasm_encoder::Elements::Functions(remapped.into()),
             );
@@ -865,7 +921,8 @@ fn merge_lib_wasm_multi(
 
     // Map from lib export index to its position in sorted list (for lib remapping)
     // sorted_original_pos[k] = original position k, so for a given lib index we find its sorted position
-    let mut lib_idx_to_sorted_pos: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+    let mut lib_idx_to_sorted_pos: std::collections::HashMap<u32, usize> =
+        std::collections::HashMap::new();
     for (k, &li) in sorted_lib_indices.iter().enumerate() {
         lib_idx_to_sorted_pos.insert(li, k);
     }
@@ -889,7 +946,10 @@ fn merge_lib_wasm_multi(
             new_import_count + pos as u32
         } else if target < import_func_count {
             // Remaining import: shift down by removed imports before it
-            let removed_before = sorted_contract_indices.iter().filter(|&&ci| ci < target).count() as u32;
+            let removed_before = sorted_contract_indices
+                .iter()
+                .filter(|&&ci| ci < target)
+                .count() as u32;
             target - removed_before
         } else {
             // Contract defined function: identity
@@ -918,7 +978,8 @@ fn merge_lib_wasm_multi(
                     if let Some(&k) = lib_idx_to_sorted_pos.get(&target) {
                         new_import_count + k as u32
                     } else {
-                        let resolved_before = sorted_lib_indices.iter().filter(|&&li| li < target).count() as u32;
+                        let resolved_before =
+                            sorted_lib_indices.iter().filter(|&&li| li < target).count() as u32;
                         let adj = target - resolved_before;
                         new_import_count + n + contract.func_type_indices.len() as u32 + adj
                     }

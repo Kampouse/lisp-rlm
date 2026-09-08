@@ -318,7 +318,11 @@ impl WasmEmitter {
                     for x in a[1..a.len() - 1].iter().rev() {
                         acc = LispVal::List(vec![LispVal::Sym("and".into()), x.clone(), acc]);
                     }
-                    return self.expr(&LispVal::List(vec![LispVal::Sym("and".into()), a[0].clone(), acc]));
+                    return self.expr(&LispVal::List(vec![
+                        LispVal::Sym("and".into()),
+                        a[0].clone(),
+                        acc,
+                    ]));
                 }
                 let tmp = self.local_idx("__and_val");
                 let mut v = self.expr(&a[0])?;
@@ -341,7 +345,11 @@ impl WasmEmitter {
                     for x in a[1..a.len() - 1].iter().rev() {
                         acc = LispVal::List(vec![LispVal::Sym("or".into()), x.clone(), acc]);
                     }
-                    return self.expr(&LispVal::List(vec![LispVal::Sym("or".into()), a[0].clone(), acc]));
+                    return self.expr(&LispVal::List(vec![
+                        LispVal::Sym("or".into()),
+                        a[0].clone(),
+                        acc,
+                    ]));
                 }
                 let tmp = self.local_idx("__or_val");
                 let mut v = self.expr(&a[0])?;
@@ -713,7 +721,10 @@ impl WasmEmitter {
                 // recur should have been replaced by replace_recur in loop desugar
                 // (or rejected by validate_recur_tails). If we get here, recur
                 // is used outside a loop / outside direct tail position.
-                Err("compile error: recur used outside of a loop (or not in direct tail position)".into())
+                Err(
+                    "compile error: recur used outside of a loop (or not in direct tail position)"
+                        .into(),
+                )
             }
             "while" => {
                 let id = self.while_id.get();

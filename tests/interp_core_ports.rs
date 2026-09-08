@@ -15,9 +15,18 @@ fn eval_str(code: &str) -> String {
 #[test]
 fn wrap_arith_matches_wasm() {
     // i64 wrapping (wasm fold_binop_wrapping: I64Add/Sub/Mul)
-    assert_eq!(eval_str("(wrap-add 9223372036854775807 1)"), "-9223372036854775808");
-    assert_eq!(eval_str("(wrap-sub -9223372036854775808 1)"), "9223372036854775807");
-    assert_eq!(eval_str("(wrap-mul 4611686018427387904 2)"), "-9223372036854775808");
+    assert_eq!(
+        eval_str("(wrap-add 9223372036854775807 1)"),
+        "-9223372036854775808"
+    );
+    assert_eq!(
+        eval_str("(wrap-sub -9223372036854775808 1)"),
+        "9223372036854775807"
+    );
+    assert_eq!(
+        eval_str("(wrap-mul 4611686018427387904 2)"),
+        "-9223372036854775808"
+    );
     // variadic left fold + 0-arg identity
     assert_eq!(eval_str("(wrap-add 1 2 3 4)"), "10");
     assert_eq!(eval_str("(wrap-add)"), "0");
@@ -30,7 +39,10 @@ fn wrap_arith_matches_wasm() {
 fn muldiv_matches_wasm() {
     // unsigned 128-bit intermediate, truncating division (emit_muldiv)
     assert_eq!(eval_str("(muldiv 100 3 7)"), "42");
-    assert_eq!(eval_str("(muldiv 3037000499 3037000499 3037000499)"), "3037000499");
+    assert_eq!(
+        eval_str("(muldiv 3037000499 3037000499 3037000499)"),
+        "3037000499"
+    );
     // c == 0 → canonical division-by-zero
     assert!(eval_str("(muldiv 1 2 0)").contains("division by zero"));
     // (-1 -1 1): u64::MAX² >> 64 = u64::MAX-1 >= 1 → overflow trap in wasm

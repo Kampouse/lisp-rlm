@@ -48,7 +48,8 @@ impl Interp {
         program::run_program(&parse_all(src).unwrap(), &mut self.env, &mut self.state)
     }
     fn ok(&mut self, src: &str) -> LispVal {
-        self.eval(src).unwrap_or_else(|e| panic!("interp failed: {}\n{}", e, src))
+        self.eval(src)
+            .unwrap_or_else(|e| panic!("interp failed: {}\n{}", e, src))
     }
     fn s(&mut self, src: &str) -> String {
         match self.ok(src) {
@@ -81,21 +82,32 @@ fn interp_lifecycle_and_refusals() {
 
     // non-owner cannot propose or approve
     it.signer("dave.near");
-    assert_eq!(it.s("(propose \"t1\" \"zoe.near\" \"1500000000000000000000000\")"), "");
+    assert_eq!(
+        it.s("(propose \"t1\" \"zoe.near\" \"1500000000000000000000000\")"),
+        ""
+    );
     assert_eq!(it.s("(approve \"t1\" \"zoe.near\")"), "");
     assert_eq!(it.n("(approvals \"t1\")"), 0);
 
     // alice proposes — echoes amount; her slot is implicit
     it.signer("alice.near");
-    assert_eq!(it.s("(propose \"t1\" \"zoe.near\" \"1500000000000000000000000\")"), AMT);
+    assert_eq!(
+        it.s("(propose \"t1\" \"zoe.near\" \"1500000000000000000000000\")"),
+        AMT
+    );
     assert_eq!(it.n("(approvals \"t1\")"), 1);
     // exact split/recombine round-trip (61-bit words, u128 string math)
     assert_eq!(it.s("(tx-amount \"t1\")"), AMT);
 
     // zero / over-cap / non-numeric amounts refused
     assert_eq!(it.s("(propose \"t0\" \"zoe.near\" \"0\")"), "");
-    assert_eq!(it.s("(propose \"tbig\" \"zoe.near\" \"1000000000000000000000000000000000000\")"), "");
-    assert!(it.eval("(propose \"tbad\" \"zoe.near\" \"12abc\")").is_err());
+    assert_eq!(
+        it.s("(propose \"tbig\" \"zoe.near\" \"1000000000000000000000000000000000000\")"),
+        ""
+    );
+    assert!(it
+        .eval("(propose \"tbad\" \"zoe.near\" \"12abc\")")
+        .is_err());
 
     // idempotent re-approval by same owner
     assert_eq!(it.s("(approve \"t1\" \"zoe.near\")"), "1");
@@ -127,8 +139,10 @@ fn interp_lifecycle_and_refusals() {
 
     // cancel: 3/3 required
     it.signer("bob.near");
-    assert_eq!(it.s("(propose \"t2\" \"zoe.near\" \"2000000000000000000000000\")"),
-               "2000000000000000000000000");
+    assert_eq!(
+        it.s("(propose \"t2\" \"zoe.near\" \"2000000000000000000000000\")"),
+        "2000000000000000000000000"
+    );
     it.signer("carol.near");
     assert_eq!(it.s("(approve \"t2\" \"zoe.near\")"), "1");
     assert_eq!(it.n("(approvals \"t2\")"), 2);
@@ -141,8 +155,10 @@ fn interp_lifecycle_and_refusals() {
 
     // non-owner execute refused
     it.signer("bob.near");
-    assert_eq!(it.s("(propose \"t3\" \"zoe.near\" \"3000000000000000000000000\")"),
-               "3000000000000000000000000");
+    assert_eq!(
+        it.s("(propose \"t3\" \"zoe.near\" \"3000000000000000000000000\")"),
+        "3000000000000000000000000"
+    );
     it.signer("carol.near");
     assert_eq!(it.s("(approve \"t3\" \"zoe.near\")"), "1");
     it.signer("dave.near");
@@ -208,27 +224,43 @@ fn run_near(w: &World, driver: &str) -> Result<(i64, Option<String>), String> {
     {
         let regs = regs.clone();
         linker
-            .func_wrap("env", "read_register", move |mut caller: Caller<'_, ()>, reg: i64, ptr: i64| {
-                let bytes = regs.lock().unwrap().get(&reg).cloned().unwrap_or_default();
-                mem_write(&mut caller, ptr as usize, &bytes);
-            })
+            .func_wrap(
+                "env",
+                "read_register",
+                move |mut caller: Caller<'_, ()>, reg: i64, ptr: i64| {
+                    let bytes = regs.lock().unwrap().get(&reg).cloned().unwrap_or_default();
+                    mem_write(&mut caller, ptr as usize, &bytes);
+                },
+            )
             .unwrap();
     }
     {
         let regs = regs.clone();
         linker
-            .func_wrap("env", "register_len", move |_caller: Caller<'_, ()>, reg: i64| -> i64 {
-                regs.lock().unwrap().get(&reg).map(|b| b.len() as i64).unwrap_or(0)
-            })
+            .func_wrap(
+                "env",
+                "register_len",
+                move |_caller: Caller<'_, ()>, reg: i64| -> i64 {
+                    regs.lock()
+                        .unwrap()
+                        .get(&reg)
+                        .map(|b| b.len() as i64)
+                        .unwrap_or(0)
+                },
+            )
             .unwrap();
     }
     {
         let regs = regs.clone();
         linker
-            .func_wrap("env", "input", move |mut caller: Caller<'_, ()>, reg: i64| {
-                regs.lock().unwrap().insert(reg, Vec::new());
-                let _ = caller;
-            })
+            .func_wrap(
+                "env",
+                "input",
+                move |mut caller: Caller<'_, ()>, reg: i64| {
+                    regs.lock().unwrap().insert(reg, Vec::new());
+                    let _ = caller;
+                },
+            )
             .unwrap();
     }
     // context
@@ -236,105 +268,161 @@ fn run_near(w: &World, driver: &str) -> Result<(i64, Option<String>), String> {
         let regs = regs.clone();
         let signer = w.signer.clone();
         linker
-            .func_wrap("env", "signer_account_id", move |_caller: Caller<'_, ()>, reg: i64| {
-                regs.lock().unwrap().insert(reg, signer.lock().unwrap().as_bytes().to_vec());
-            })
+            .func_wrap(
+                "env",
+                "signer_account_id",
+                move |_caller: Caller<'_, ()>, reg: i64| {
+                    regs.lock()
+                        .unwrap()
+                        .insert(reg, signer.lock().unwrap().as_bytes().to_vec());
+                },
+            )
             .unwrap();
     }
     // storage
     {
         let st = w.storage.clone();
         linker
-            .func_wrap("env", "storage_write", move |mut caller: Caller<'_, ()>, klen: i64, kptr: i64, vlen: i64, vptr: i64, _reg: i64| -> i64 {
-                let key = mem_read(&mut caller, kptr as usize, klen as usize);
-                let val = mem_read(&mut caller, vptr as usize, vlen as usize);
-                st.lock().unwrap().insert(key, val);
-                0
-            })
+            .func_wrap(
+                "env",
+                "storage_write",
+                move |mut caller: Caller<'_, ()>,
+                      klen: i64,
+                      kptr: i64,
+                      vlen: i64,
+                      vptr: i64,
+                      _reg: i64|
+                      -> i64 {
+                    let key = mem_read(&mut caller, kptr as usize, klen as usize);
+                    let val = mem_read(&mut caller, vptr as usize, vlen as usize);
+                    st.lock().unwrap().insert(key, val);
+                    0
+                },
+            )
             .unwrap();
     }
     {
         let st = w.storage.clone();
         let regs = regs.clone();
         linker
-            .func_wrap("env", "storage_read", move |mut caller: Caller<'_, ()>, klen: i64, kptr: i64, reg: i64| -> i64 {
-                let key = mem_read(&mut caller, kptr as usize, klen as usize);
-                match st.lock().unwrap().get(&key) {
-                    Some(v) => {
-                        regs.lock().unwrap().insert(reg, v.clone());
-                        1
+            .func_wrap(
+                "env",
+                "storage_read",
+                move |mut caller: Caller<'_, ()>, klen: i64, kptr: i64, reg: i64| -> i64 {
+                    let key = mem_read(&mut caller, kptr as usize, klen as usize);
+                    match st.lock().unwrap().get(&key) {
+                        Some(v) => {
+                            regs.lock().unwrap().insert(reg, v.clone());
+                            1
+                        }
+                        None => 0,
                     }
-                    None => 0,
-                }
-            })
+                },
+            )
             .unwrap();
     }
     {
         let st = w.storage.clone();
         linker
-            .func_wrap("env", "storage_remove", move |mut caller: Caller<'_, ()>, klen: i64, kptr: i64, _reg: i64| -> i64 {
-                let key = mem_read(&mut caller, kptr as usize, klen as usize);
-                st.lock().unwrap().remove(&key).map(|_| 1).unwrap_or(0)
-            })
+            .func_wrap(
+                "env",
+                "storage_remove",
+                move |mut caller: Caller<'_, ()>, klen: i64, kptr: i64, _reg: i64| -> i64 {
+                    let key = mem_read(&mut caller, kptr as usize, klen as usize);
+                    st.lock().unwrap().remove(&key).map(|_| 1).unwrap_or(0)
+                },
+            )
             .unwrap();
     }
     {
         let st = w.storage.clone();
         linker
-            .func_wrap("env", "storage_has_key", move |mut caller: Caller<'_, ()>, klen: i64, kptr: i64| -> i64 {
-                let key = mem_read(&mut caller, kptr as usize, klen as usize);
-                if st.lock().unwrap().contains_key(&key) { 1 } else { 0 }
-            })
+            .func_wrap(
+                "env",
+                "storage_has_key",
+                move |mut caller: Caller<'_, ()>, klen: i64, kptr: i64| -> i64 {
+                    let key = mem_read(&mut caller, kptr as usize, klen as usize);
+                    if st.lock().unwrap().contains_key(&key) {
+                        1
+                    } else {
+                        0
+                    }
+                },
+            )
             .unwrap();
     }
     // value_return
     {
         let returned = returned.clone();
         linker
-            .func_wrap("env", "value_return", move |mut caller: Caller<'_, ()>, len: i64, ptr: i64| {
-                let bytes = mem_read(&mut caller, ptr as usize, len as usize);
-                *returned.lock().unwrap() = Some(bytes);
-            })
+            .func_wrap(
+                "env",
+                "value_return",
+                move |mut caller: Caller<'_, ()>, len: i64, ptr: i64| {
+                    let bytes = mem_read(&mut caller, ptr as usize, len as usize);
+                    *returned.lock().unwrap() = Some(bytes);
+                },
+            )
             .unwrap();
     }
     // promises
     {
         let promises = w.promises.clone();
         linker
-            .func_wrap("env", "promise_batch_create", move |mut caller: Caller<'_, ()>, alen: i64, aptr: i64| -> i64 {
-                let target = String::from_utf8_lossy(&mem_read(&mut caller, aptr as usize, alen as usize)).to_string();
-                promises.lock().unwrap().push((target, String::new())); // amount filled by action
-                0
-            })
+            .func_wrap(
+                "env",
+                "promise_batch_create",
+                move |mut caller: Caller<'_, ()>, alen: i64, aptr: i64| -> i64 {
+                    let target = String::from_utf8_lossy(&mem_read(
+                        &mut caller,
+                        aptr as usize,
+                        alen as usize,
+                    ))
+                    .to_string();
+                    promises.lock().unwrap().push((target, String::new())); // amount filled by action
+                    0
+                },
+            )
             .unwrap();
     }
     {
         let promises = w.promises.clone();
         linker
-            .func_wrap("env", "promise_batch_action_transfer", move |mut caller: Caller<'_, ()>, _idx: i64, amt_ptr: i64| {
-                let bytes = mem_read(&mut caller, amt_ptr as usize, 16);
-                let amount = u128::from_le_bytes(bytes.try_into().unwrap());
-                let mut p = promises.lock().unwrap();
-                if let Some(last) = p.last_mut() {
-                    last.1 = amount.to_string();
-                }
-            })
+            .func_wrap(
+                "env",
+                "promise_batch_action_transfer",
+                move |mut caller: Caller<'_, ()>, _idx: i64, amt_ptr: i64| {
+                    let bytes = mem_read(&mut caller, amt_ptr as usize, 16);
+                    let amount = u128::from_le_bytes(bytes.try_into().unwrap());
+                    let mut p = promises.lock().unwrap();
+                    if let Some(last) = p.last_mut() {
+                        last.1 = amount.to_string();
+                    }
+                },
+            )
             .unwrap();
     }
     linker
-        .func_wrap("env", "log_utf8", |_caller: Caller<'_, ()>, _l: i64, _p: i64| {})
+        .func_wrap(
+            "env",
+            "log_utf8",
+            |_caller: Caller<'_, ()>, _l: i64, _p: i64| {},
+        )
         .unwrap();
     linker
-        .func_wrap("env", "panic_utf8", |_caller: Caller<'_, ()>, _l: i64, _p: i64| -> Result<()> {
-            Err(wasmtime::Error::msg("panic_utf8"))
-        })
+        .func_wrap(
+            "env",
+            "panic_utf8",
+            |_caller: Caller<'_, ()>, _l: i64, _p: i64| -> Result<()> {
+                Err(wasmtime::Error::msg("panic_utf8"))
+            },
+        )
         .unwrap();
 
     let module = Module::new(&engine, &wasm).map_err(|e| format!("module: {}", e))?;
     let inst = linker
         .instantiate(&mut store, &module)
-        .map_err(|e| format!("instantiate: {}", e))?
-        ;
+        .map_err(|e| format!("instantiate: {}", e))?;
     let main = inst
         .get_typed_func::<(), ()>(&mut store, "main")
         .map_err(|e| format!("get main: {}", e))?;
@@ -379,7 +467,11 @@ fn wasm_shared_storage_lifecycle() {
     // payload surfaced as tag-bit garbage). Exact content now decodable:
     // the u128 yocto string round-trips intact.
     let (_raw, s) = run_near(&w, "(define (main) (tx-amount \"t1\"))").expect("run2");
-    assert_eq!(s.as_deref(), Some(AMT), "tx-amount → exact 25-digit yocto string");
+    assert_eq!(
+        s.as_deref(),
+        Some(AMT),
+        "tx-amount → exact 25-digit yocto string"
+    );
 
     // run 3 (alice): re-approve idempotent
     let (v, _) = run_near(

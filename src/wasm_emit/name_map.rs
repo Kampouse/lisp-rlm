@@ -41,7 +41,9 @@ fn sections(data: &[u8]) -> Vec<(u8, &[u8])> {
     while p < data.len() {
         let id = data[p];
         p += 1;
-        let Some((size, np)) = read_leb_u32(data, p) else { break };
+        let Some((size, np)) = read_leb_u32(data, p) else {
+            break;
+        };
         p = np;
         let end = (p + size as usize).min(data.len());
         out.push((id, &data[p..end]));
@@ -146,7 +148,11 @@ mod tests {
 
     #[test]
     fn remap_drops_unmapped_and_translates() {
-        let names = vec![(0u32, "a".into()), (1u32, "gone".into()), (2u32, "c".into())];
+        let names = vec![
+            (0u32, "a".into()),
+            (1u32, "gone".into()),
+            (2u32, "c".into()),
+        ];
         let out = remap_function_names(&names, |i| if i == 1 { None } else { Some(i + 10) });
         assert_eq!(out, vec![(10, "a".into()), (12, "c".into())]);
     }

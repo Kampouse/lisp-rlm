@@ -204,7 +204,9 @@ fn u128_add_same_address() {
     let (_c, stdout, stderr) = run_near_mock(lisp_ok);
     assert!(
         stdout.contains("Success"),
-        "string add should succeed: stdout={}, stderr={}", stdout, stderr
+        "string add should succeed: stdout={}, stderr={}",
+        stdout,
+        stderr
     );
     let lisp_addr = r#"
 (define (check)
@@ -215,10 +217,10 @@ fn u128_add_same_address() {
     assert!(
         !stdout.contains("Success"),
         "u128/add on addresses must hard-error under string ABI: stdout={}, stderr={}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 }
-
 
 #[test]
 fn u128_add_overlapping() {
@@ -241,7 +243,6 @@ fn u128_add_overlapping() {
         stderr
     );
 }
-
 
 // ═══════════════════════════════════════════════════════════════════════
 // MAX VALUE TESTS
@@ -336,10 +337,10 @@ fn u128_div_by_small() {
     assert!(
         stdout.contains("Success"),
         "div by small should succeed: stdout={}, stderr={}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 }
-
 
 #[test]
 fn u128_div_by_large() {
@@ -352,10 +353,10 @@ fn u128_div_by_large() {
     assert!(
         stdout.contains("Success"),
         "div by large should succeed: stdout={}, stderr={}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 }
-
 
 #[test]
 fn u128_div_result_zero() {
@@ -368,10 +369,10 @@ fn u128_div_result_zero() {
     assert!(
         stdout.contains("Success"),
         "div result zero should succeed: stdout={}, stderr={}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 }
-
 
 // ═══════════════════════════════════════════════════════════════════════
 // FROM_STR SKIP - requires string building API
@@ -412,10 +413,11 @@ fn u128_chain_underflow_traps() {
     let (_code, stdout, stderr) = run_near_mock(lisp);
     assert!(
         !stdout.contains("Success"),
-        "underflow should trap: stdout={}, stderr={}", stdout, stderr
+        "underflow should trap: stdout={}, stderr={}",
+        stdout,
+        stderr
     );
 }
-
 
 #[test]
 fn u128_chain_success() {
@@ -430,7 +432,8 @@ fn u128_chain_success() {
     let (_code, stdout, stderr) = run_near_mock(lisp);
     assert!(
         stdout.contains("Success"),
-        "chain should succeed: stdout={}, stderr={}", stdout, stderr
+        "chain should succeed: stdout={}, stderr={}",
+        stdout,
+        stderr
     );
 }
-

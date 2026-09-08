@@ -510,7 +510,7 @@ fn translate_expr(expr: &pt::Expression, ctx: &Ctx) -> Result<LispVal, String> {
                                     lisp_list(vec![LispVal::Sym("near/block_timestamp".into())]),
                                     LispVal::Str("1000000000".into()),
                                 ]),
-                            ]))
+                            ]));
                         }
                         "number" => {
                             return Ok(lisp_list(vec![LispVal::Sym("near/block_height".into())]))

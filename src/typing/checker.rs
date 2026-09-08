@@ -298,10 +298,7 @@ pub fn parse_type_list(elems: &[LispVal]) -> Result<TcType, String> {
             }
             "opt" | ":opt" | "option" | ":option" => {
                 if elems.len() != 2 {
-                    return Err(format!(
-                        "(opt T) expects 1 arg, got {}",
-                        elems.len() - 1
-                    ));
+                    return Err(format!("(opt T) expects 1 arg, got {}", elems.len() - 1));
                 }
                 let inner = parse_type_annotation(&elems[1])?;
                 return Ok(TcType::Con(TcCon::Opt(Box::new(inner))));
@@ -870,9 +867,7 @@ fn infer(
                     let inner = supply.fresh();
                     let t1 = infer(e1, env, supply, subst)?;
                     let s1 = unify(&t1, &TcType::Con(TcCon::Opt(Box::new(inner.clone()))))
-                        .map_err(|e| {
-                            format!("default: value is not maybe-nil — {}", e)
-                        })?;
+                        .map_err(|e| format!("default: value is not maybe-nil — {}", e))?;
                     *subst = s1.compose(subst.clone());
                     let t2 = infer(e2, env, supply, subst)?;
                     let inner_sub = subst.apply(&inner);
@@ -1051,14 +1046,12 @@ fn infer(
                     }
                     infer(&folded, env, supply, subst)
                 }
-                LispVal::Sym(op) if op == "mod" && list.len() > 3 => {
-                    infer(
-                        &LispVal::List(vec![list[0].clone(), list[1].clone(), list[2].clone()]),
-                        env,
-                        supply,
-                        subst,
-                    )
-                }
+                LispVal::Sym(op) if op == "mod" && list.len() > 3 => infer(
+                    &LispVal::List(vec![list[0].clone(), list[1].clone(), list[2].clone()]),
+                    env,
+                    supply,
+                    subst,
+                ),
                 LispVal::Sym(s) if s == "dict" => {
                     // Variadic key-val pairs: infer each arg but don't enforce arity
                     for arg in &list[1..] {
@@ -1498,7 +1491,10 @@ fn infer_application(
             let is_list = unify(&t, &list_t).is_ok();
             let is_str = unify(&t, &TcType::Con(TcCon::Str)).is_ok();
             if !is_list && !is_str {
-                return Err(format!("in call (len ...): type mismatch: {} ≠ str/list", t));
+                return Err(format!(
+                    "in call (len ...): type mismatch: {} ≠ str/list",
+                    t
+                ));
             }
             return Ok(TcType::Con(TcCon::Int));
         }
@@ -1563,9 +1559,7 @@ fn infer_application(
             // CONCRETE str only: an unbound type var unifies with Str, which
             // made `(+ (f) 1)` on a not-yet-bound fn return Str and broke
             // near/store's num param (test_near_counter regression 2026-09-01).
-            let is_concrete_str = |t: &TcType| {
-                matches!(subst.apply(t), TcType::Con(TcCon::Str))
-            };
+            let is_concrete_str = |t: &TcType| matches!(subst.apply(t), TcType::Con(TcCon::Str));
             let l_str = is_concrete_str(&tl);
             let r_str = is_concrete_str(&tr);
             if l_str || r_str {
@@ -1592,7 +1586,11 @@ fn infer_application(
             let tr = infer(&args[1], env, supply, subst)?;
             let tl = subst.apply(&tl);
             let tr = subst.apply(&tr);
-            for t in [&TcType::Con(TcCon::Num), &TcType::Con(TcCon::Str), &TcType::Con(TcCon::Bool)] {
+            for t in [
+                &TcType::Con(TcCon::Num),
+                &TcType::Con(TcCon::Str),
+                &TcType::Con(TcCon::Bool),
+            ] {
                 if unify(&tl, t).is_ok() && unify(&tr, t).is_ok() {
                     return Ok(TcType::Con(TcCon::Bool));
                 }
@@ -1747,9 +1745,9 @@ pub fn type_check_program(exprs: &[LispVal], near: bool) -> Result<(), String> {
                             let (ann_parts, body_items) =
                                 crate::helpers::split_define_annotation(&list[2..]);
                             let annotated_type = match &ann_parts {
-                                Some(parts) => Some(parse_type_annotation(&LispVal::List(
-                                    parts.clone(),
-                                ))?),
+                                Some(parts) => {
+                                    Some(parse_type_annotation(&LispVal::List(parts.clone()))?)
+                                }
                                 None => None,
                             };
                             let body = if body_items.len() > 1 {
@@ -1835,9 +1833,8 @@ pub fn type_check_program(exprs: &[LispVal], near: bool) -> Result<(), String> {
                             if let Some(TcType::Arrow(_, ann_ret)) = &annotated_type {
                                 let inferred_ret = subst.apply(&_body_type);
                                 let declared_ret = subst.apply(ann_ret);
-                                unify(&inferred_ret, &declared_ret).map_err(|e| {
-                                    format!("define {}: type error — {}", name, e)
-                                })?;
+                                unify(&inferred_ret, &declared_ret)
+                                    .map_err(|e| format!("define {}: type error — {}", name, e))?;
                             }
 
                             // Register inferred type for later defines
@@ -1960,7 +1957,9 @@ pub fn check_storage_schema(exprs: &[LispVal]) {
                                 .or_insert_with(|| "written".into());
                             string_keys.insert(key, ());
                         }
-                    } else if (op == "near/storage_read" || op == "near/storage_get") && list.len() >= 2 {
+                    } else if (op == "near/storage_read" || op == "near/storage_get")
+                        && list.len() >= 2
+                    {
                         if let Some(key) = extract_str_key(&list[1]) {
                             if !schema.contains_key(&key) {
                                 eprintln!(
