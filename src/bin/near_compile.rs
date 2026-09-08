@@ -438,6 +438,12 @@ fn run_wasm_stitch(wasm_path: &Path) -> Result<(), String> {
         .map_err(|e| format!("parse imports: {}", e))?;
 
     let stitched_names = ["schnorr_verify_bip340", "schnorr_verify_clearmsig"];
+    // 2026-09-08: schnorr_verify_bip340 (and sha256_hash) are stitched by
+    // the EMITTER from the embedded schnorr.wasm (built from schnorr/ — see
+    // `make schnorr-wasm`), so this post-build fallback is only reachable
+    // for imports the embedded lib does not provide (e.g. clearmsig). It
+    // requires the external k256-schnorr-wasm project; error loudly with
+    // that context instead of implying a missing local file.
     let needs_stitch = imports
         .iter()
         .any(|imp| imp.module == "env" && stitched_names.contains(&imp.name));

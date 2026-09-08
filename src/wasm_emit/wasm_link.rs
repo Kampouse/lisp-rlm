@@ -460,11 +460,15 @@ fn remap_calls(
 
 // ─── Main merge function ─────────────────────────────────────────────
 
-/// Embed schnorr from schnorr.wat (self-contained, no env var or build.rs).
+/// Embed the schnorr/secp256k1 crypto lib, built from the canonical Rust
+/// source at `schnorr/` (Jacobian BIP-340: exports schnorr_verify_bip340 +
+/// sha256_hash + memory). The committed binary artifact is regenerated with
+/// `make schnorr-wasm` (cargo build --release --target wasm32-unknown-unknown
+/// in schnorr/) — a 67KB include_bytes!, replacing the former 768KB WAT that
+/// was parsed on every compile. Self-contained: no env var or build.rs.
 pub fn link_schnorr_wat(contract_wasm: &[u8], import_export_pairs: &[(&str, &str)]) -> Vec<u8> {
-    let lib_wasm =
-        wat::parse_str(include_str!("schnorr.wat")).expect("failed to parse schnorr.wat");
-    match merge_lib_wasm_multi(contract_wasm, &lib_wasm, import_export_pairs) {
+    let lib_wasm: &[u8] = include_bytes!("schnorr.wasm");
+    match merge_lib_wasm_multi(contract_wasm, lib_wasm, import_export_pairs) {
         Ok(bytes) => bytes,
         Err(e) => panic!("schnorr WASM linking failed: {}", e),
     }

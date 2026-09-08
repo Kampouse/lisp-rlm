@@ -1,5 +1,8 @@
 target/
 *.wasm
+# exception: the schnorr crypto lib committed as a binary artifact —
+# the canonical SOURCE lives in schnorr/ (regenerate with `make schnorr-wasm`)
+!src/wasm_emit/schnorr.wasm
 # exception: the vendored near-sdk fixture the verify battery needs
 !fixtures/guestbook.wasm
 *.mjs
