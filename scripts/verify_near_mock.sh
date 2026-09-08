@@ -1,11 +1,37 @@
 #!/usr/bin/env bash
-# Functional verification of the 2026-09-05 near-mock improvement batch.
-# Expectations match ACTUAL product output (verified 2026-09-05).
+# Functional verification of the near-mock improvement batches.
+# Expectations match ACTUAL product output.
+#
+# Portable (2026-09-08): paths derive from the script's own location — no
+# machine-specific absolutes; binaries fall back release → debug so a plain
+# `cargo build --bin near-mock --bin near-compile` is enough; the guestbook
+# fixture is vendored in ../fixtures (override with GUESTBOOK_WASM=...);
+# the workdir respects $TMPDIR (sandboxed macOS / some CI deny /tmp).
 set -u
-WASM=/Users/asil/.openclaw/workspace/guestbook-contract/target/wasm32-unknown-unknown/release/guestbook.wasm
-NM=/Users/asil/dev/lisp-rlm/target/release/near-mock
-NC=/Users/asil/dev/lisp-rlm/target/release/near-compile
-WORK=$(mktemp -d /tmp/nmverify.XXXXXX)
+DIR="$(cd "$(dirname "$0")" && pwd)"   # .../scripts
+ROOT="$(cd "$DIR/.." && pwd)"          # repo root
+
+bin_pick() { # prefer release, fall back to debug
+  if [ -x "$ROOT/target/release/$1" ]; then echo "$ROOT/target/release/$1"
+  elif [ -x "$ROOT/target/debug/$1" ]; then echo "$ROOT/target/debug/$1"
+  else echo ""; fi
+}
+NM=$(bin_pick near-mock)
+NC=$(bin_pick near-compile)
+[ -n "$NM" ] || { echo "FAIL: near-mock binary not built — cargo build --bin near-mock"; exit 1; }
+[ -n "$NC" ] || { echo "FAIL: near-compile binary not built — cargo build --bin near-compile"; exit 1; }
+
+# near-sdk guestbook contract — the same fixture the standalone near-mock
+# crate ships; the expectations below (non-payable sign, JSON-arg panics,
+# unicode state) need a real near-sdk binary, which the lisp probes can't
+# replicate. Override with GUESTBOOK_WASM=/path/to/guestbook.wasm.
+WASM="${GUESTBOOK_WASM:-$ROOT/fixtures/guestbook.wasm}"
+[ -s "$WASM" ] || { echo "FAIL: guestbook fixture missing: $WASM"; exit 1; }
+
+WORK="${TMPDIR:-/tmp}/nmverify.$$"
+mkdir -p "$WORK"
+trap 'rm -rf "$WORK"' EXIT
+
 pass=0; fail=0
 ok()   { pass=$((pass+1)); echo "PASS: $1"; }
 bad()  { fail=$((fail+1)); echo "FAIL: $1"; }
@@ -182,6 +208,24 @@ out=$($NM --help 2>&1)
 check "help lists snapshot" "near-mock snapshot" "$out"
 out=$($NM state 2>&1)
 check "state import usage" "state import" "$out"
+
+echo "== 2026-09-08 sync: --version / storage namespace / trace error counts =="
+out=$($NM --version 2>&1); rc=$?
+check "--version prints version" "near-mock 0\." "$out"
+[ $rc -eq 0 ] && ok "--version exit 0" || bad "--version exit $rc"
+# single-call state must land under the DOCUMENTED default account, not the
+# '' partition (crate e130226): dump attribution + prefix filter + interop
+$NM "$WASM" sign '{"message":"ns probe"}' --state "$WORK/ns.bin" >/dev/null 2>&1
+out=$($NM state dump "$WORK/ns.bin" 2>/dev/null)
+check "single-call state under escrow.test.near" 'account": *"escrow.test.near"' "$out"
+out=$($NM state dump "$WORK/ns.bin" escrow.test.near 2>/dev/null | jq -e 'length == 1' >/dev/null 2>&1 && echo FILTEROK)
+check "dump prefix filter finds default account" "FILTEROK" "$out"
+# trace error counts (crate 61aa006): a JSON-arg panic must show up as an
+# erroring panic_utf8 in the summary AND in --json host_trace
+out=$($NM "$WASM" sign '{}' --trace --state "$WORK/trap.bin" 2>&1)
+check "trace summary counts host errors" "❌1err" "$out"
+out=$($NM "$WASM" sign '{}' --trace --json --state "$WORK/trap2.bin" 2>/dev/null)
+check "json host_trace carries errors" '"errors":1' "$out"
 
 echo
 echo "RESULT: $pass passed, $fail failed"

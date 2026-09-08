@@ -1,5 +1,7 @@
 target/
 *.wasm
+# exception: the vendored near-sdk fixture the verify battery needs
+!fixtures/guestbook.wasm
 *.mjs
 *.dot
 *.png
