@@ -2775,6 +2775,197 @@ fn ux_doctor(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+// ════════════════════════════════════════════════════════════════════
+// Fuzz harness: seeded random call sequences + invariant checks.
+// A finding shrinks to a minimal scenario.json repro automatically.
+// ════════════════════════════════════════════════════════════════════
+
+/// SplitMix64 — tiny deterministic PRNG, no external deps.
+struct Rng(u64);
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+        z ^ (z >> 31)
+    }
+    fn pick<'a, T>(&mut self, v: &'a [T]) -> &'a T { &v[(self.next() % v.len() as u64) as usize] }
+    fn range(&mut self, lo: u64, hi: u64) -> u64 { lo + self.next() % (hi - lo + 1) }
+}
+
+/// Generate one random value for a schema keyword (or raw JSON template).
+fn fuzz_value(rng: &mut Rng, schema: &serde_json::Value, accounts: &[String]) -> serde_json::Value {
+    use serde_json::Value as V;
+    match schema {
+        V::String(s) => match s.as_str() {
+            "account" => V::String(accounts[rng.next() as usize % accounts.len()].clone()),
+            "u128_str" => V::String(rng.range(0, 10u64.pow(19)).to_string()),
+            "amount" => V::String(rng.range(0, 3000).to_string()),
+            "token_id" => V::String(rng.range(0, 5).to_string()),
+            "small_int" => V::from(rng.range(0, 100) as i64),
+            "short_str" => V::String("fz".repeat(rng.range(1, 4) as usize)),
+            "bool" => V::Bool(rng.next() % 2 == 0),
+            "null" => V::Null,
+            _ => V::String(s.clone()),
+        },
+        V::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for (k, v) in map { out.insert(k.clone(), fuzz_value(rng, v, accounts)); }
+            V::Object(out)
+        }
+        other => other.clone(),
+    }
+}
+
+fn ux_fuzz(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let state = args.get(2).ok_or("usage: near-mock fuzz <state> --rules rules.json [--runs N] [--seed S]")?;
+    let (mut rules_path, mut runs, mut seed) = (String::new(), 200u64, 0x5EED_0000_0000_0001u64);
+    let mut i = 3;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--rules" => rules_path = args.get(i + 1).cloned().unwrap_or_default(),
+            "--runs" => runs = args.get(i + 1).and_then(|v| v.parse().ok()).unwrap_or(200),
+            "--seed" => seed = args.get(i + 1).and_then(|v| v.parse().ok()).unwrap_or(0x5EED1),
+            _ => {},
+        }
+        i += 2;
+    }
+    if rules_path.is_empty() { return Err("--rules <file> required".into()); }
+    let raw = std::fs::read_to_string(&rules_path).map_err(|e| format!("cannot read {}: {}", rules_path, e))?;
+    let rules: serde_json::Value = serde_json::from_str(&raw).map_err(|e| format!("bad rules JSON: {}", e))?;
+    let manifest: Vec<(String, String)> = rules.get("contracts").and_then(|c| c.as_object()).map(|o| {
+        o.iter().map(|(a, w)| (a.clone(), w.as_str().unwrap_or_default().to_string())).collect()
+    }).ok_or("rules need \"contracts\"")?;
+    let accounts: Vec<String> = rules.get("signers").and_then(|s| s.as_array()).map(|a| {
+        a.iter().filter_map(|v| v.as_str().map(String::from)).collect()
+    }).unwrap_or_default();
+    let methods: Vec<String> = rules.get("methods").and_then(|m| m.as_array()).map(|a| {
+        a.iter().filter_map(|v| v.as_str().map(String::from)).collect()
+    }).ok_or("rules need \"methods\"")?;
+    let gens = rules.get("argGenerators").cloned().unwrap_or_default();
+    let trap_ok: Vec<String> = rules.get("allowTrap").and_then(|t| t.as_array()).map(|a| {
+        a.iter().filter_map(|v| v.as_str().map(String::from)).collect()
+    }).unwrap_or_default();
+    let invariants = rules.get("invariants").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+
+    // setup steps run once on a fresh state
+    let base_state = format!("{}.fuzzbase", state);
+    let _ = std::fs::remove_file(&base_state);
+    if let Some(setup) = rules.get("setup").and_then(|s| s.as_array()) {
+        for st in setup {
+            let call = st.get("call").and_then(|c| c.as_array()).ok_or("setup step needs call")?;
+            let (acct, method) = (call[0].as_str().unwrap_or(""), call[1].as_str().unwrap_or(""));
+            let a = call.get(2).map(|v| v.to_string()).unwrap_or_else(|| "{}".into());
+            let envs: Vec<(String,String)> = [st.get("blockTs").map(|v| ("NEAR_MOCK_BLOCK_TS".to_string(), v.to_string())),
+                                              st.get("blockHeight").map(|v| ("NEAR_MOCK_BLOCK_HEIGHT".to_string(), v.to_string()))]
+                .into_iter().flatten().collect();
+            ux_exec_cross(&base_state, &manifest, acct, method, &a, false,
+                st.get("signer").and_then(|v| v.as_str()), st.get("attach").and_then(|v| v.as_str()), &envs);
+        }
+    }
+    let _ = std::fs::remove_file(state);
+
+    let check_invariants = |state: &str, calls: &Vec<serde_json::Value>| -> Option<String> {
+        for inv in &invariants {
+            let it = inv.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            if it == "view" {
+                let m = inv.get("method").and_then(|v| v.as_str()).unwrap_or("");
+                let want = inv.get("expectValue").and_then(|v| v.as_str()).unwrap_or("");
+                let out = ux_exec_cross(state, &manifest, &manifest[0].0, m, "{}", true, None, None, &[]);
+                let text = String::from_utf8_lossy(&out.stdout);
+                let val_line = text.lines().rev().find(|l| l.contains("📄")).map(|l| l.trim().to_string()).unwrap_or_default();
+                if !val_line.contains(want) {
+                    return Some(format!("invariant {}({}) failed: want {:?} got {}", m, m, want, val_line));
+                }
+            }
+            let _ = calls;
+        }
+        None
+    };
+
+    let mut rng = Rng(seed);
+    let (mut total_calls, mut traps, mut findings) = (0u64, 0u64, 0u64);
+    let mut run_idx = 0u64;
+    while run_idx < runs {
+        // fresh copy of base state for this run
+        let _ = std::fs::remove_file(state);
+        if std::fs::metadata(&base_state).is_ok() { std::fs::copy(&base_state, state)?; }
+        let mut calls: Vec<serde_json::Value> = Vec::new();
+        let len = rng.range(3, 12);
+        let mut finding: Option<(String, Vec<serde_json::Value>)> = None;
+        for _ in 0..len {
+            let method = rng.pick(&methods).clone();
+            let acct = &manifest[0].0;
+            let args = if let Some(g) = gens.get(&method) {
+                fuzz_value(&mut rng, g, &accounts).to_string()
+            } else {
+                // schema-less: canned variants exercise trap tolerance
+                let variants = ["null", "0", "\"0\"", "{}", "[]", "18446744073709551616"];
+                variants[rng.next() as usize % variants.len()].to_string()
+            };
+            let signer = accounts.get(rng.next() as usize % accounts.len().max(1)).cloned();
+            calls.push(serde_json::json!({"call": [acct, method, serde_json::from_str::<serde_json::Value>(&args).unwrap_or_default()], "signer": signer, "attach": if rng.next() % 4 == 0 { serde_json::Value::from("1") } else { serde_json::Value::Null }}));
+            let last = calls.last().unwrap();
+            let out = ux_exec_cross(state, &manifest, acct, &method, &args, false,
+                last.get("signer").and_then(|v| v.as_str()),
+                last.get("attach").and_then(|v| v.as_str()), &[]);
+            total_calls += 1;
+            let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+            let trapped = text.contains("PANIC:") || text.contains("❌");
+            if trapped { traps += 1; }
+            if trapped && !trap_ok.contains(&method) {
+                let reason = text.lines().find(|l| l.contains("PANIC")).map(|l| l.trim().to_string())
+                    .or_else(|| text.lines().find(|l| l.contains("❌")).map(|l| l.trim().to_string())).unwrap_or_default();
+                finding = Some((format!("unexpected trap in {}(): {}", method, reason), calls.clone()));
+                break;
+            }
+            if let Some(err) = check_invariants(state, &calls) {
+                finding = Some((err, calls.clone()));
+                break;
+            }
+        }
+        if let Some((reason, mut calls)) = finding {
+            findings += 1;
+            // ── shrink: greedily drop calls while the failure persists
+            let still_fails = |state: &str, calls: &Vec<serde_json::Value>| -> bool {
+                let _ = std::fs::remove_file(state);
+                if std::fs::metadata(&base_state).is_ok() { let _ = std::fs::copy(&base_state, state); }
+                for c in calls {
+                    let call = c.get("call").unwrap().as_array().unwrap();
+                    let out = ux_exec_cross(state, &manifest, call[0].as_str().unwrap_or(""), call[1].as_str().unwrap_or(""),
+                        &call.get(2).map(|v| v.to_string()).unwrap_or_else(|| "{}".into()), false,
+                        c.get("signer").and_then(|v| v.as_str()), c.get("attach").and_then(|v| v.as_str()), &[]);
+                    let t = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+                    if (t.contains("PANIC:") || t.contains("❌")) && !trap_ok.contains(&call[1].as_str().unwrap_or("").to_string()) { return true; }
+                }
+                check_invariants(state, calls).is_some()
+            };
+            let mut i = 0;
+            while i < calls.len() {
+                let mut candidate = calls.clone();
+                candidate.remove(i);
+                if candidate.len() < i { break; }
+                if still_fails(state, &candidate) { calls = candidate; } else { i += 1; }
+            }
+            let repro = serde_json::json!({
+                "contracts": rules.get("contracts").cloned().unwrap_or_default(),
+                "steps": calls,
+                "note": reason,
+            });
+            let path = format!("/tmp/fuzz-finding-{}.json", findings);
+            std::fs::write(&path, serde_json::to_string_pretty(&repro)?)?;
+            println!("🐞 FINDING #{}: {} (seed {}, run {})", findings, reason, seed, run_idx);
+            println!("   repro → {} ({} calls after shrink)", path, calls.len());
+        }
+        run_idx += 1;
+    }
+    println!("fuzz: {} runs · {} calls · {} traps ({:.0}%) · {} findings · seed {}",
+        runs, total_calls, traps, if total_calls > 0 { traps as f64 * 100.0 / total_calls as f64 } else { 0.0 }, findings, seed);
+    if findings > 0 { std::process::exit(1); }
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(|s| s.as_str()) {
@@ -2784,6 +2975,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("dump-state") => return ux_dump(&args),
         Some("scenario") => return ux_scenario(&args),
         Some("doctor") => return ux_doctor(&args),
+        Some("fuzz") => return ux_fuzz(&args),
         _ => {},
     }
     if args.len() < 3 {
