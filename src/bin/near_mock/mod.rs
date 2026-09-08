@@ -1684,7 +1684,10 @@ fn run_snapshot(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|i| args.get(i + 1))
         .cloned()
         .or_else(|| std::env::var("NEAR_RPC").ok())
-        .unwrap_or_else(|| "https://rpc.mainnet.near.org".to_string());
+        // rpc.mainnet.near.org is deprecated (HTTP 429); archival serves
+        // view_state + view_code for real contracts (pyth proven, wrap.near
+        // still hits the RPC single-query TOO_LARGE_CONTRACT_STATE limit).
+        .unwrap_or_else(|| "https://archival-rpc.mainnet.near.org".to_string());
     let replace_acct = args.iter().any(|a| a == "--replace-acct");
     let want_code = !args.iter().any(|a| a == "--no-code");
 
