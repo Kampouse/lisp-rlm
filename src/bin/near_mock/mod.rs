@@ -1670,20 +1670,29 @@ fn rpc_query(rpc: &str, params: serde_json::Value) -> Result<serde_json::Value, 
     let body = serde_json::json!({
         "jsonrpc": "2.0", "id": "dontcare", "method": "query", "params": params
     });
-    // Transport-level retry with backoff: a paginated crawl makes hundreds of
-    // reads, so one transient hiccup (rate limit, timeout, empty body) must
-    // not kill the run. All queries here are pure reads (idempotent). A real
-    // JSON-RPC error envelope is NOT retried — the server answered.
+    // Transport-level retry: a paginated crawl makes hundreds of reads, so
+    // transient hiccups (rate limits, timeouts) must not kill the run. curl
+    // retries HTTP-level failures natively and HONORS Retry-After headers
+    // (intear sends "retry after N seconds"); the slim in-code loop only
+    // covers 200-with-garbage-body cases curl won't retry. All queries here
+    // are pure reads (idempotent). A real JSON-RPC error envelope is never
+    // retried — the server answered.
     let mut last_transport: Option<serde_json::Value> = None;
-    for attempt in 0..5 {
+    for attempt in 0..3 {
         if attempt > 0 {
-            std::thread::sleep(std::time::Duration::from_secs(1 << (attempt - 1)));
+            std::thread::sleep(std::time::Duration::from_secs(2_u64 << (attempt - 1)));
         }
         let out = match std::process::Command::new("curl")
             .args([
                 "-s",
                 "--max-time",
                 "60",
+                "--retry",
+                "10",
+                "--retry-all-errors",
+                "--retry-connrefused",
+                "--retry-max-time",
+                "600",
                 "-X",
                 "POST",
                 "-H",
@@ -1867,6 +1876,9 @@ fn run_snapshot(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         }
         pages += 1;
         values.extend(batch.iter().cloned());
+        // Polite pacing: a full walk is hundreds of requests; hammering the
+        // endpoint mid-crawl earns rate-limit responses for the rest of it.
+        std::thread::sleep(std::time::Duration::from_millis(300));
     }
 
     // Provenance: the pinned block (server-reported), '?' if the node omitted it.
