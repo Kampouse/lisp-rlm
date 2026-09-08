@@ -66,10 +66,11 @@ pub(crate) fn dag_push(deps: Vec<usize>, account: String, actions: Vec<PAction>)
     })
 }
 
-/// Chaos testing: receipt indices forced to FAIL by --fail-receipt /
-/// scenario step fail_receipt. Forced receipts execute NO actions and
-/// return zero results, so dependents see promiseSucceeded=0 / empty
-/// promise_result, exactly like a trapped receipt on-chain.
+// Chaos testing: receipt indices forced to FAIL by --fail-receipt /
+// scenario step fail_receipt. Forced receipts execute NO actions and
+// return zero results, so dependents see promiseSucceeded=0 / empty
+// promise_result, exactly like a trapped receipt on-chain.
+// (plain comment: rustdoc cannot attach docs to a macro invocation)
 thread_local! {
     static FAIL_RECEIPTS: std::cell::RefCell<std::collections::HashSet<usize>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
@@ -107,6 +108,10 @@ pub(crate) fn print_dag_map() {
     }
 }
 
+/// Execute one function call on `account`'s contract in a FRESH Store
+/// (never re-enter a live instance — the heap global would be clobbered).
+/// Signer/predecessor = `predecessor` (promise calls aren't user-signed).
+/// Returns Some(return-bytes) on success, None on trap (state reverted).
 pub(crate) fn sub_execute(
     account: &str,
     method: &str,

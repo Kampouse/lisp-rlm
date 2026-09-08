@@ -197,8 +197,6 @@ pub(crate) struct RunCfg {
     pub(crate) dry_run: bool,
     /// NEAR_MOCK_DEBUG=1 or --debug: verbose host traces ([schnorr-dbg] etc).
     pub(crate) debug: bool,
-    /// NEAR_MOCK_WARN_STUBS=1: eprintln on every unimplemented host stub call.
-    pub(crate) warn_stubs: bool,
     /// --now <unix-seconds> | NEAR_MOCK_NOW: fixed base timestamp.
     pub(crate) base_ts: Option<i64>,
     /// --advance <seconds>: added to the base timestamp (time travel).

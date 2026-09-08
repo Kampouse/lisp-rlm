@@ -71,10 +71,9 @@ pub(crate) fn ecrecover(
         ));
     }
 
-    let mut sig65 = [0u8; 65];
-    sig65[..64].copy_from_slice(sig);
-    sig65[64] = v as u8;
-
+    // (k256 0.13 API: the old 65-byte r||s||recid blob construction was
+    // removed with the recoverable-signature migration below — recovery now
+    // takes the raw 64B sig + RecoveryId directly.)
     let s: [u8; 32] = sig[32..].try_into().unwrap();
     if !check_signature_values(v as u8, &s, malleability_flag != 0) {
         return Ok(None);
@@ -127,7 +126,7 @@ pub(crate) fn p256_verify(sig: &[u8], message: &[u8], public_key: &[u8]) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use k256::ecdsa::{RecoveryId, SigningKey};
+    use k256::ecdsa::SigningKey;
     use sha2::{Digest, Sha256};
 
     /// Recover from a real signed message; recovered key must re-verify.
@@ -217,7 +216,7 @@ mod tests {
     #[test]
     fn bn254_sum_multiexp_agree() {
         use crate::bn254::{g1_multiexp, g1_sum};
-        use bn::{AffineG1, Fq, Group, G1};
+        use bn::{AffineG1, Fq, G1};
 
         // generator of bn254 G1 (well-known point (1, 2)); u128 limbs are LE
         let g = AffineG1::new(

@@ -196,7 +196,7 @@ macro_rules! bls12381_fn {
             Ok(Some($serialize_p(&res_pk)))
         }
 
-        pub fn $p_decompress(data: &[u8], version: u32) -> Result<Option<Vec<u8>>, HostError> {
+        pub fn $p_decompress(data: &[u8], _version: u32) -> Result<Option<Vec<u8>>, HostError> {
             const ITEM_SIZE: usize = $BLS_P_COMPRESS_SIZE;
             check_input_size(data, ITEM_SIZE, stringify!($p_decompress))?;
             let elements_count = data.len() / ITEM_SIZE;
