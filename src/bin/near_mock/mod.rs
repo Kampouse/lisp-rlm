@@ -1100,7 +1100,34 @@ pub(crate) fn init_sandbox(
     MODULES.with(|m| *m.borrow_mut() = Some(Arc::new(modules)));
     STATE_ARC.with(|s| *s.borrow_mut() = Some(state.clone()));
     ENGINE_TLS.with(|e| *e.borrow_mut() = Some(engine.clone()));
+    seed_genesis_validators(&state);
     Ok(state)
+}
+
+/// Genesis protocol state: the validator table exists before any transaction
+/// (G-15, 2026-09-08). Previously seeded inside build_env_linker — i.e.
+/// mid-transaction — so the key sat inside the tx snapshot window and
+/// survived trap rollbacks as a phantom. Only seeds when absent: imported
+/// snapshot state stays authoritative. NEAR_MOCK_VALIDATORS overrides the
+/// default mock pool.
+fn seed_genesis_validators(state: &std::sync::Arc<std::sync::Mutex<MockState>>) {
+    let already = {
+        let st = state.lock().unwrap();
+        st.storage.contains_key(b"\x00validators".as_slice())
+    };
+    if already {
+        return;
+    }
+    let vals: std::collections::BTreeMap<String, String> = validator_map()
+        .into_iter()
+        .map(|(k, v)| (k, v.to_string()))
+        .collect();
+    let json = serde_json::to_string(&vals).unwrap_or_else(|_| "{}".into());
+    state
+        .lock()
+        .unwrap()
+        .storage
+        .insert(b"\x00validators".to_vec(), json.into_bytes());
 }
 
 /// Credit an attached deposit to the callee's NEAR balance (real receipt
@@ -2239,6 +2266,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return_data: None,
         view: run_view,
     }));
+    seed_genesis_validators(&state);
 
     let mut store = Store::new(&engine, ());
     store.set_fuel(prepaid_g)?;

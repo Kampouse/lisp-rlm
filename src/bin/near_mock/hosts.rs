@@ -1383,21 +1383,12 @@ pub(crate) fn build_env_linker(
     );
     linker.define(&*store, "env", "validator_account_id", deprecated_vaid)?;
     // === Real validator hosts (nearcore semantics): stake lookups come from
-    // a seeded validator map in state storage under "\x00validators" —
-    // JSON map {account_id: yocto_stake_string}, plus "\x00validators:total"
-    // for the epoch total. Unseeded → account not a validator (u128 0) /
-    // total 0, exactly like calling these in a contract that never touches
-    // staking. NEAR_MOCK_VALIDATORS=/path/to.json seeds at linker build.
-    let vals: std::collections::BTreeMap<String, String> = crate::validator_map()
-        .into_iter()
-        .map(|(k, v)| (k, v.to_string()))
-        .collect();
-    {
-        let mut st = state.lock().unwrap();
-        let json = serde_json::to_string(&vals).unwrap_or_else(|_| "{}".into());
-        st.storage
-            .insert(b"\x00validators".to_vec(), json.into_bytes());
-    }
+    // the validator map in state storage under "\x00validators" — JSON map
+    // {account_id: yocto_stake_string}, plus "\x00validators:total" for the
+    // epoch total. Genesis state, seeded at chain install (G-15) — NOT here:
+    // a linker-build insert used to leak the key inside the tx snapshot
+    // window, letting it survive trap rollbacks as a phantom. Unseeded →
+    // account not a validator (u128 0) / total 0.
     let vs0 = state.clone();
     let vs_engine = engine.clone();
     let validator_stake_fn = host_fn(
