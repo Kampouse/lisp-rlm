@@ -931,7 +931,7 @@ fn lower_prefix_around_with_return(
                 // loop exit feeds the function-level flag too
                 v.push(list(vec![
                     Sym("if"),
-                    Sym("__wl_done"),
+                    Sym("__wl_ret"),
                     list(vec![
                         Sym("begin"),
                         list(vec![Sym("set!"), Sym("__fn_res"), Sym("__wl_res")]),
@@ -948,7 +948,7 @@ fn lower_prefix_around_with_return(
             if has_exits {
                 v.push(list(vec![
                     Sym("if"),
-                    Sym("__wl_done"),
+                    Sym("__wl_ret"),
                     list(vec![
                         Sym("begin"),
                         list(vec![Sym("set!"), Sym("__fn_res"), Sym("__wl_res")]),
@@ -1066,6 +1066,7 @@ fn lower_prefix_around(
                     Sym("let"),
                     list(vec![
                         list(vec![Sym("__wl_done"), Num(0)]),
+                        list(vec![Sym("__wl_ret"), Num(0)]),
                         list(vec![
                             Sym("__wl_res"),
                             list(vec![Sym("quote"), LispVal::Nil]),
@@ -1076,7 +1077,7 @@ fn lower_prefix_around(
                         core,
                         list(vec![
                             Sym("if"),
-                            list(vec![Sym("="), Sym("__wl_done"), Num(0)]),
+                            list(vec![Sym("="), Sym("__wl_ret"), Num(0)]),
                             tail,
                             res_e,
                         ]),
@@ -1095,6 +1096,7 @@ fn lower_prefix_around(
                     Sym("let"),
                     list(vec![
                         list(vec![Sym("__wl_done"), Num(0)]),
+                        list(vec![Sym("__wl_ret"), Num(0)]),
                         list(vec![
                             Sym("__wl_res"),
                             list(vec![Sym("quote"), LispVal::Nil]),
@@ -1105,7 +1107,7 @@ fn lower_prefix_around(
                         core,
                         list(vec![
                             Sym("if"),
-                            list(vec![Sym("="), Sym("__wl_done"), Num(0)]),
+                            list(vec![Sym("="), Sym("__wl_ret"), Num(0)]),
                             tail,
                             res_e,
                         ]),
@@ -1123,6 +1125,7 @@ fn lower_prefix_around(
                     Sym("let"),
                     list(vec![
                         list(vec![Sym("__wl_done"), Num(0)]),
+                        list(vec![Sym("__wl_ret"), Num(0)]),
                         list(vec![
                             Sym("__wl_res"),
                             list(vec![Sym("quote"), LispVal::Nil]),
@@ -1133,7 +1136,7 @@ fn lower_prefix_around(
                         core,
                         list(vec![
                             Sym("if"),
-                            list(vec![Sym("="), Sym("__wl_done"), Num(0)]),
+                            list(vec![Sym("="), Sym("__wl_ret"), Num(0)]),
                             tail,
                             res_e,
                         ]),
@@ -1247,12 +1250,17 @@ fn lower_tail_stmt(s: &Statement<'_>, view: bool) -> Result<LispVal, String> {
                 Sym("let"),
                 list(vec![
                     list(vec![Sym("__wl_done"), Num(0)]),
+                    list(vec![Sym("__wl_ret"), Num(0)]),
                     list(vec![
                         Sym("__wl_res"),
                         list(vec![Sym("quote"), LispVal::Nil]),
                     ]),
                 ]),
-                list(vec![Sym("begin"), core, exit_result_form(view)]),
+                list(vec![
+                    Sym("begin"),
+                    core,
+                    list(vec![Sym("if"), Sym("__wl_ret"), exit_result_form(view), Num(0)]),
+                ]),
             ]))
         }
         s2 => Err(format!(
@@ -1340,6 +1348,7 @@ fn lower_for_of_parts(fo: &oxc_ast::ast::ForOfStatement<'_>) -> Result<(bool, Li
                     list(vec![
                         Sym("begin"),
                         list(vec![Sym("set!"), Sym("__wl_res"), val]),
+                        list(vec![Sym("set!"), Sym("__wl_ret"), Num(1)]),
                         list(vec![Sym("set!"), Sym("__wl_done"), Num(1)]),
                         Num(0),
                     ])
@@ -1364,10 +1373,10 @@ fn lower_for_of_parts(fo: &oxc_ast::ast::ForOfStatement<'_>) -> Result<(bool, Li
         } else {
             tail_stmt_as_expr(st)?
         };
-        if matches!(
-            st,
-            Statement::BreakStatement(_) | Statement::ReturnStatement(_)
-        ) {
+        // recursive: a break/return nested in an if ALSO kills the rest of
+        // the iteration — top-level-only detection let sibling statements
+        // run after a mid-branch break (for-of acc bug, 2026-09-08)
+        if stmt_has_exit(st) {
             seen_exit = true;
         }
         body_items.push(piece);
@@ -1500,6 +1509,7 @@ fn lower_while_parts_core(w: &oxc_ast::ast::WhileStatement<'_>) -> Result<(bool,
                 list(vec![
                     Sym("begin"),
                     list(vec![Sym("set!"), Sym("__wl_res"), val]),
+                    list(vec![Sym("set!"), Sym("__wl_ret"), Num(1)]),
                     list(vec![Sym("set!"), Sym("__wl_done"), Num(1)]),
                     Num(0), // set! types nil — keep the begin int-typed
                 ])
@@ -1519,10 +1529,10 @@ fn lower_while_parts_core(w: &oxc_ast::ast::WhileStatement<'_>) -> Result<(bool,
                 }
             }
         };
-        if matches!(
-            s,
-            Statement::BreakStatement(_) | Statement::ReturnStatement(_)
-        ) {
+        // recursive: a break/return nested in an if ALSO kills the rest of
+        // the iteration — top-level-only detection let sibling statements
+        // run after a mid-branch break (for-of acc bug, 2026-09-08)
+        if stmt_has_exit(s) {
             seen_exit = true;
         }
         body_items.push(piece);
@@ -1571,12 +1581,17 @@ fn lower_while_value(w: &Statement<'_>) -> Result<LispVal, String> {
         Sym("let"),
         list(vec![
             list(vec![Sym("__wl_done"), Num(0)]),
+            list(vec![Sym("__wl_ret"), Num(0)]),
             list(vec![
                 Sym("__wl_res"),
                 list(vec![Sym("quote"), LispVal::Nil]),
             ]),
         ]),
-        list(vec![Sym("begin"), core, Sym("__wl_res")]),
+        list(vec![
+            Sym("begin"),
+            core,
+            list(vec![Sym("if"), Sym("__wl_ret"), Sym("__wl_res"), Num(0)]),
+        ]),
     ]))
 }
 
@@ -1621,6 +1636,7 @@ fn tail_stmt_as_expr(s: &Statement<'_>) -> Result<LispVal, String> {
             Ok(list(vec![
                 Sym("begin"),
                 list(vec![Sym("set!"), Sym("__wl_res"), val]),
+                list(vec![Sym("set!"), Sym("__wl_ret"), Num(1)]),
                 list(vec![Sym("set!"), Sym("__wl_done"), Num(1)]),
                 Num(0),
             ]))
@@ -1664,12 +1680,17 @@ fn tail_stmt_as_expr(s: &Statement<'_>) -> Result<LispVal, String> {
                 Sym("let"),
                 list(vec![
                     list(vec![Sym("__wl_done"), Num(0)]),
+                    list(vec![Sym("__wl_ret"), Num(0)]),
                     list(vec![
                         Sym("__wl_res"),
                         list(vec![Sym("quote"), LispVal::Nil]),
                     ]),
                 ]),
-                list(vec![Sym("begin"), core, Sym("__wl_res")]),
+                list(vec![
+            Sym("begin"),
+            core,
+            list(vec![Sym("if"), Sym("__wl_ret"), Sym("__wl_res"), Num(0)]),
+        ]),
             ]))
         }
         Statement::BlockStatement(b) => loop_body_expr(&b.body),
@@ -1698,12 +1719,17 @@ fn lower_for(fr: &oxc_ast::ast::ForStatement<'_>) -> Result<LispVal, String> {
         Sym("let"),
         list(vec![
             list(vec![Sym("__wl_done"), Num(0)]),
+            list(vec![Sym("__wl_ret"), Num(0)]),
             list(vec![
                 Sym("__wl_res"),
                 list(vec![Sym("quote"), LispVal::Nil]),
             ]),
         ]),
-        list(vec![Sym("begin"), core, Sym("__wl_res")]),
+        list(vec![
+            Sym("begin"),
+            core,
+            list(vec![Sym("if"), Sym("__wl_ret"), Sym("__wl_res"), Num(0)]),
+        ]),
     ]))
 }
 
@@ -1802,6 +1828,7 @@ fn lower_for_parts(fr: &oxc_ast::ast::ForStatement<'_>) -> Result<(bool, LispVal
                     list(vec![
                         Sym("begin"),
                         list(vec![Sym("set!"), Sym("__wl_res"), val]),
+                        list(vec![Sym("set!"), Sym("__wl_ret"), Num(1)]),
                         list(vec![Sym("set!"), Sym("__wl_done"), Num(1)]),
                         Num(0),
                     ])
@@ -1824,10 +1851,10 @@ fn lower_for_parts(fr: &oxc_ast::ast::ForStatement<'_>) -> Result<(bool, LispVal
         } else {
             tail_stmt_as_expr(s)?
         };
-        if matches!(
-            s,
-            Statement::BreakStatement(_) | Statement::ReturnStatement(_)
-        ) {
+        // recursive: a break/return nested in an if ALSO kills the rest of
+        // the iteration — top-level-only detection let sibling statements
+        // run after a mid-branch break (for-of acc bug, 2026-09-08)
+        if stmt_has_exit(s) {
             seen_exit = true;
         }
         body_items.push(piece);
