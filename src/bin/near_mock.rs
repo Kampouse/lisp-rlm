@@ -2017,6 +2017,26 @@ fn build_env_linker(
         FuncType::new(&engine, vec![ValType::I64], vec![]),
         |_, _, _| Ok(()),
     );
+    // storage_usage: real per-account trie usage = Σ(raw_key.len + value.len)
+    // over this contract's keys. Was flat-0 → FT's measure_min_storage_cost
+    // computed min balance 0 → storage_deposit returned total=0 (caught by
+    // near-diff vs real sandbox 2026-09-07).
+    let s_usage = state.clone();
+    let storage_usage_fn = Func::new(
+        &mut *store,
+        FuncType::new(&engine, vec![], vec![ValType::I64]),
+        move |_, _, r| {
+            let acct = exec_ctx_or_default().contract;
+            let pre = prefixed_key(&acct, b"");
+            let st = s_usage.lock().unwrap();
+            let bytes: u64 = st.storage.iter()
+                .filter(|(k, _)| k.len() > pre.len() && k.starts_with(&pre))
+                .map(|(k, v)| (k.len() - pre.len() + v.len()) as u64)
+                .sum();
+            r[0] = Val::I64(bytes as i64);
+            Ok(())
+        },
+    );
     let noop0r = Func::new(
         &mut *store,
         FuncType::new(&engine, vec![], vec![ValType::I64]),
@@ -2331,7 +2351,7 @@ fn build_env_linker(
     linker.define(&*store, "env", "bls12381_pairing_check", bls_pairing_fn)?;
 
     linker.define(&*store, "env", "epoch_height", noop0r.clone())?;
-    linker.define(&*store, "env", "storage_usage", noop0r.clone())?;
+    linker.define(&*store, "env", "storage_usage", storage_usage_fn)?;
     linker.define(&*store, "env", "log_s", noop1.clone())?;
     linker.define(&*store, "env", "validator_account_id", noop1.clone())?;
     linker.define(&*store, "env", "promise_results", noop1.clone())?;
