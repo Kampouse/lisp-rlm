@@ -1,6 +1,6 @@
 [package]
 name = "near-compile"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "Lisp/TS/Solidity → NEAR contract compiler CLI — init, compile, bench, view/call against any network"
 license = "MIT"

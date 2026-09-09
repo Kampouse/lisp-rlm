@@ -4,37 +4,79 @@
 
 `near-compile` is the CLI face of the [lisp-rlm](https://github.com/Kampouse/lisp-rlm)
 compiler: scaffold a project, compile `.lisp` (or `.ts`/`.sol`) sources to
-NEAR-ready wasm, benchmark against [near-mock](https://crates.io/crates/near-mock),
-and view/call deployed contracts on any network.
+NEAR-ready wasm, benchmark, deploy to testnet, and view/call contracts —
+with [near-mock](https://crates.io/crates/near-mock) for instant local
+testing without a node.
 
 ```bash
-cargo install near-compile        # or: cargo install --git https://github.com/Kampouse/lisp-rlm --bin near-compile
+cargo install near-compile        # compiler + project tooling
+cargo install near-mock           # local contract runner (no node)
 ```
 
-## Usage
+## Quickstart
 
 ```bash
-near-compile init my-contract          # scaffold near.json + main.lisp
-near-compile build                     # main.lisp → target/near/my_contract.wasm
-near-compile <in.lisp> <out.wasm>      # one-shot compile
+near-compile init my-contract          # scaffold: near.json, src/main.lisp,
+                                       #   tests/, AND .agents/skills/near-compile/
+cd my-contract
+near-compile build                     # → target/my-contract.wasm (validated + shrunk)
 
-near-compile bench <file.lisp>         # gas/cost benchmark via near-mock
-near-compile view <contract> <method> [args]   # read-only RPC
-near-compile call <contract> <method> [args]   # signed RPC (needs key in near.json)
+# test locally — milliseconds, no network, deterministic
+near-mock target/my-contract.wasm hello --view
+NEAR_MOCK_SIGNER=alice.test.near NEAR_MOCK_ATTACH=1 \
+  near-mock target/my-contract.wasm some_method '{}'
+
+# deploy + drive on testnet
+near-compile deploy --account <your-account>.testnet
+near-compile view  <contract> <method> '{}'
+near-compile call  <contract> <method> '{"arg": 1}' --account <acct> --deposit 0.1
 ```
 
-The language speaks NEAR natively: `near/store-bytes`, `near/signer_account_id`,
-`near/block_timestamp`, `near/panic`, NEP-297 `EVENT_JSON:` logs via
-`near/log`, promises, borsh/collections — compiled to compact wasm
-(a `whoami/clock/gate` demo contract is 2.1KB).
+## All commands
 
-Compile determinism: same source → byte-identical wasm (verified against the
-near-mock fixture battery).
+```bash
+near-compile init <name>               Scaffold a project (skill included)
+near-compile build [dir]               Compile from near.json; --target=outlayer[-p2]
+near-compile <in.lisp|in.ts|in.sol> <out.wasm>   One-shot compile (frontend auto-selected)
+near-compile test [dir]                Build and run the project's tests
+near-compile bench <file|wasm>         Fuel-metered benchmark (works for TS too)
+near-compile deploy [dir]              Build + deploy (--account/--network/--key-path/--seed-phrase)
+near-compile create <acct> [funder]    Create a (sub-)account; --fund = testnet faucet
+near-compile call <contract> <method> [args]     Signed call (--deposit is NEAR, e.g. 0.02)
+near-compile view <contract> <method> [args]     Read-only RPC
+near-compile skill [--stdout|--force]  Install the AI-agent skill into this project
+near-compile --repl                    Interactive REPL
+```
+
+## The AI-agent skill
+
+Every `near-compile init` project ships with
+`.agents/skills/near-compile/SKILL.md` — coding agents (Zed, etc.) working
+in the project automatically learn the toolchain: the TS-dialect subset
+rules, return conventions, `depositGte` semantics, near-mock testing
+patterns, and the deployment paths. Retrofit an existing project:
+
+```bash
+near-compile skill              # installs .agents/skills/near-compile/ here
+near-compile skill --stdout     # just print it (docs, piping)
+```
+
+## Language
+
+Three frontends: **Lisp** (`(define (hello) (near/return_str "hi"))`),
+the **TypeScript dialect** (a strict subset — see the skill for the safe
+idioms and the forbidden list), and **Solidity** translation. NEAR is
+native: storage, context, promises, NEP-297 events, borsh, and
+in-contract BIP-340 schnorr verification (stitched at compile time — a
+764-line TS multisig compiles to ~150KB with working signature checks).
+
+Compile determinism: same source → byte-identical wasm.
 
 ## Verification
 
 ```bash
-scripts/verify.sh    # compiles probe contracts and executes them under near-mock
+scripts/verify.sh    # 10 checks: compile probes, execute under near-mock,
+                     # TS + stitched-schnorr vector
 ```
 
 ## Relation to lisp-rlm

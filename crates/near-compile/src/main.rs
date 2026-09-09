@@ -69,6 +69,33 @@ fn main() {
             });
             run_init(name);
         }
+        "skill" => {
+            // near-compile skill [--stdout|--force]
+            //   installs the AI-agent skill (SKILL.md + example) into
+            //   ./.agents/skills/near-compile/ — retrofit any project;
+            //   --stdout just prints SKILL.md (piping/docs).
+            if args.iter().skip(2).any(|a| a == "--stdout") {
+                print!("{}", SKILL_MD);
+                return;
+            }
+            let force = args.iter().skip(2).any(|a| a == "--force");
+            match install_skill(".", force) {
+                Ok(written) => {
+                    if written.is_empty() {
+                        println!("skill already present (use --force to overwrite)");
+                    } else {
+                        for w in written {
+                            println!("✅ {}", w);
+                        }
+                        println!("agents working in this project will now discover it");
+                    }
+                }
+                Err(e) => {
+                    eprintln!("❌ {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
         "build" => run_build(args.get(2).map(|s| s.as_str())),
         "deploy" => run_deploy(&args[2..]),
         "call" => run_call(&args[2..]),
@@ -118,6 +145,9 @@ fn print_usage() {
     eprintln!("    --network, --key-path, --seed-phrase");
     eprintln!("    --fund              Auto-fund from testnet faucet");
     eprintln!("  near-compile test [dir]               Build and run tests");
+    eprintln!("  near-compile skill [--stdout|--force]  Install the AI-agent skill");
+    eprintln!("    --stdout           Print SKILL.md instead of installing");
+    eprintln!("    --force            Overwrite an existing skill");
     eprintln!("  near-compile --repl                   Interactive REPL");
     eprintln!("  near-compile bench <file.lisp|file.wasm>  Benchmark with fuel metering");
     eprintln!("  near-compile <file.lisp> [out.wasm]   Compile single file (legacy)");
@@ -125,6 +155,35 @@ fn print_usage() {
 }
 
 // ── INIT ──
+
+// AI-agent skill shipped WITH the binary (include_str! — no post-install
+// file dependencies, same self-containment lesson as the schnorr artifact).
+// Canonical source: crates/near-compile/skills/ — `near-compile skill`
+// installs it into any project so coding agents learn the dialect rules
+// (return conventions, depositGte gotchas, the M1/M2 subset) where the
+// user actually works.
+const SKILL_MD: &str = include_str!("../skills/SKILL.md");
+const SKILL_EXAMPLE: &str = include_str!("../skills/example-contract.ts");
+
+/// Write the skill files into <dir>/.agents/skills/near-compile/.
+/// Returns the paths written. Skips existing files unless `force`.
+fn install_skill(dir: &str, force: bool) -> Result<Vec<String>, String> {
+    let skill_dir = Path::new(dir).join(".agents/skills/near-compile");
+    fs::create_dir_all(&skill_dir).map_err(|e| format!("mkdir {}: {}", skill_dir.display(), e))?;
+    let mut written = Vec::new();
+    for (name, content) in [
+        ("SKILL.md", SKILL_MD),
+        ("example-contract.ts", SKILL_EXAMPLE),
+    ] {
+        let path = skill_dir.join(name);
+        if path.exists() && !force {
+            continue;
+        }
+        fs::write(&path, content).map_err(|e| format!("write {}: {}", path.display(), e))?;
+        written.push(path.display().to_string());
+    }
+    Ok(written)
+}
 
 fn run_init(name: &str) {
     let base = Path::new(name);
@@ -175,6 +234,11 @@ fn run_init(name: &str) {
     println!("   {}/near.json", name);
     println!("   {}/src/main.lisp", name);
     println!("   {}/tests/main_test.lisp", name);
+    // agent skill — every scaffolded project is agent-aware from birth
+    match install_skill(name, true) {
+        Ok(_) => println!("   {}/.agents/skills/near-compile/SKILL.md", name),
+        Err(e) => eprintln!("   ⚠ skill: {}", e),
+    }
     println!();
     println!("   cd {} && near-compile build", name);
 }
