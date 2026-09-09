@@ -272,7 +272,7 @@ fn run_init_ts(name: &str) {
     fs::create_dir_all(base.join("src")).expect("create src/");
     fs::create_dir_all(base.join("tests")).expect("create tests/");
     fs::create_dir_all(base.join("target")).expect("create target/");
-    fs::create_dir_all(base.join("ts")).expect("create ts/");
+    fs::create_dir_all(base.join("types")).expect("create types/");
 
     // near.json
     let config = format!(
@@ -293,8 +293,8 @@ fn run_init_ts(name: &str) {
     let main_ts = TS_MAIN.replace("<name>", name);
     fs::write(base.join("src/main.ts"), main_ts).expect("write src/main.ts");
 
-    // ts/lisp-rlm.d.ts — type declarations for editor/LSP support
-    fs::write(base.join("ts/lisp-rlm.d.ts"), TS_DTS).expect("write ts/lisp-rlm.d.ts");
+    // types/lisp-rlm.d.ts — type declarations for editor/LSP support
+    fs::write(base.join("types/lisp-rlm.d.ts"), TS_DTS).expect("write types/lisp-rlm.d.ts");
 
     // build.sh — portable, no hardcoded paths
     let build_sh = TS_BUILD_SH.replace("<name>", name);
@@ -316,7 +316,7 @@ fn run_init_ts(name: &str) {
     println!("✅ Created TypeScript project '{}' with:", name);
     println!("   {}/near.json", name);
     println!("   {}/src/main.ts", name);
-    println!("   {}/ts/lisp-rlm.d.ts", name);
+    println!("   {}/types/lisp-rlm.d.ts", name);
     println!("   {}/build.sh", name);
     println!("   {}/tests/e2e-mock.py", name);
     println!("   {}/tests/bip340.py", name);

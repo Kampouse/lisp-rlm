@@ -1,6 +1,6 @@
 // <name> — NEAR smart contract in lisp-rlm TypeScript dialect.
 // Docs: near-compile skill (run `near-compile skill --stdout` for full reference).
-/// <reference path="../../ts/lisp-rlm.d.ts" />
+/// <reference path="../types/lisp-rlm.d.ts" />
 
 const VERSION = "1";
 
