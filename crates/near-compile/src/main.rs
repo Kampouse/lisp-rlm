@@ -63,11 +63,25 @@ fn main() {
 
     match cmd.as_str() {
         "init" => {
-            let name = args.get(2).map(|s| s.as_str()).unwrap_or_else(|| {
-                eprintln!("Usage: near-compile init <name>");
+            // near-compile init [--ts] <name>
+            let mut ts_mode = false;
+            let mut name: Option<&str> = None;
+            for a in args.iter().skip(2) {
+                if a == "--ts" {
+                    ts_mode = true;
+                } else {
+                    name = Some(a.as_str());
+                }
+            }
+            let name = name.unwrap_or_else(|| {
+                eprintln!("Usage: near-compile init [--ts] <name>");
                 std::process::exit(1);
             });
-            run_init(name);
+            if ts_mode {
+                run_init_ts(name);
+            } else {
+                run_init(name);
+            }
         }
         "skill" => {
             // near-compile skill [--stdout|--force]
@@ -128,7 +142,7 @@ fn print_usage() {
     eprintln!("NEAR Lisp Compiler");
     eprintln!();
     eprintln!("Usage:");
-    eprintln!("  near-compile init <name>              Scaffold a new project");
+    eprintln!("  near-compile init [--ts] <name>          Scaffold a new project (Lisp default, --ts for TypeScript)");
     eprintln!("  near-compile build [dir]              Build project from near.json");
     eprintln!("  near-compile build --target=outlayer   Build for OutLayer WASI");
     eprintln!("  near-compile build --target=outlayer-p2 Build for WASI P2 Component");
@@ -164,6 +178,13 @@ fn print_usage() {
 // user actually works.
 const SKILL_MD: &str = include_str!("../skills/SKILL.md");
 const SKILL_EXAMPLE: &str = include_str!("../skills/example-contract.ts");
+
+// TS project templates (shipped in the binary)
+const TS_MAIN: &str = include_str!("../skills/ts-template-main.ts");
+const TS_BUILD_SH: &str = include_str!("../skills/ts-template-build.sh");
+const TS_E2E: &str = include_str!("../skills/ts-template-e2e-mock.py");
+const TS_DTS: &str = include_str!("../../../ts/lisp-rlm.d.ts");
+const TS_BIP340: &str = include_str!("../skills/ts-template-bip340.py");
 
 /// Write the skill files into <dir>/.agents/skills/near-compile/.
 /// Returns the paths written. Skips existing files unless `force`.
@@ -243,7 +264,70 @@ fn run_init(name: &str) {
     println!("   cd {} && near-compile build", name);
 }
 
-// ── BUILD ──
+/// Scaffold a new TypeScript-dialect project.
+fn run_init_ts(name: &str) {
+    let base = Path::new(name);
+
+    // Create dirs
+    fs::create_dir_all(base.join("src")).expect("create src/");
+    fs::create_dir_all(base.join("tests")).expect("create tests/");
+    fs::create_dir_all(base.join("target")).expect("create target/");
+    fs::create_dir_all(base.join("ts")).expect("create ts/");
+
+    // near.json
+    let config = format!(
+        r#"{{
+  "name": "{}",
+  "src": "src/main.ts",
+  "account": "",
+  "network": "testnet",
+  "output": "target/{}.wasm",
+  "tests": "tests/"
+}}
+"#,
+        name, name
+    );
+    fs::write(base.join("near.json"), config).expect("write near.json");
+
+    // src/main.ts — minimal counter contract
+    let main_ts = TS_MAIN.replace("<name>", name);
+    fs::write(base.join("src/main.ts"), main_ts).expect("write src/main.ts");
+
+    // ts/lisp-rlm.d.ts — type declarations for editor/LSP support
+    fs::write(base.join("ts/lisp-rlm.d.ts"), TS_DTS).expect("write ts/lisp-rlm.d.ts");
+
+    // build.sh — portable, no hardcoded paths
+    let build_sh = TS_BUILD_SH.replace("<name>", name);
+    fs::write(base.join("build.sh"), build_sh).expect("write build.sh");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o755);
+        fs::set_permissions(base.join("build.sh"), perms).expect("chmod build.sh");
+    }
+
+    // tests/e2e-mock.py
+    let e2e = TS_E2E.replace("<name>", name);
+    fs::write(base.join("tests/e2e-mock.py"), e2e).expect("write tests/e2e-mock.py");
+
+    // tests/bip340.py — BIP-340 signing helper for e2e tests
+    fs::write(base.join("tests/bip340.py"), TS_BIP340).expect("write tests/bip340.py");
+
+    println!("✅ Created TypeScript project '{}' with:", name);
+    println!("   {}/near.json", name);
+    println!("   {}/src/main.ts", name);
+    println!("   {}/ts/lisp-rlm.d.ts", name);
+    println!("   {}/build.sh", name);
+    println!("   {}/tests/e2e-mock.py", name);
+    println!("   {}/tests/bip340.py", name);
+    // agent skill — every scaffolded project is agent-aware from birth
+    match install_skill(name, true) {
+        Ok(_) => println!("   {}/.agents/skills/near-compile/SKILL.md", name),
+        Err(e) => eprintln!("   ⚠ skill: {}", e),
+    }
+    println!();
+    println!("   cd {} && near-compile build", name);
+}
 
 /// Append `[ts line N]` to a checker error for names it mentions.
 /// Catches `'quoted'` names and bare identifiers adjacent to keywords.
