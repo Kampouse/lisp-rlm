@@ -139,6 +139,20 @@ for c in "eq_yes:EQ" "eq_no:NE" "ne_yes:DIFF" "ne_no:SAME"; do
   check "wasm $m → $want" "📄 $want" "$out"
 done
 
+echo "== schnorr BIP-340 stitch (regression: call site vanished silently pre-e2aa618; lib re-sourced from schnorr/ 2026-09-08) =="
+# compile the official vector-0 probe + a tampered variant (last sig nibble)
+cp "$ROOT/schnorr/test_bip340.lisp" "$WORK/bip340.lisp"
+sed 's/536C0/536C1/' "$ROOT/schnorr/test_bip340.lisp" > "$WORK/bip340_bad.lisp"
+"$NC" "$WORK/bip340.lisp" "$WORK/bip340.wasm" >/dev/null 2>&1
+"$NC" "$WORK/bip340_bad.lisp" "$WORK/bip340_bad.wasm" >/dev/null 2>&1
+out=$($NM "$WORK/bip340.wasm" run --view --state "$WORK/bip.bin" 2>/dev/null)
+check "BIP-340 vector 0 verifies" "📄 1" "$out"
+out=$($NM "$WORK/bip340_bad.wasm" run --view --state "$WORK/bip2.bin" 2>/dev/null)
+check "tampered signature rejected" "📄 0" "$out"
+# the stitched contract must be self-contained: no residual env imports
+imp=$($NM "$WORK/bip340.wasm" imports 2>/dev/null | strings 2>/dev/null | grep -c "schnorr_verify_bip340\|sha256_hash")
+[ "${imp:-0}" = "0" ] && ok "no residual crypto imports (stitched in-emitter)" || bad "crypto imports left unresolved: $imp"
+
 echo "== scenario: per-step as/predecessor + now/advance =="
 cat > "$WORK/scen.lisp" <<'EOF'
 (define (whoami) (near/return_str (near/predecessor_account_id)))
