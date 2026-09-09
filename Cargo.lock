@@ -2492,6 +2492,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "near-compile"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "bs58 0.5.1",
+ "ed25519-dalek",
+ "hmac",
+ "lisp-rlm-wasm",
+ "rand 0.8.6",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "shellexpand",
+ "tokio",
+ "wasmparser 0.228.0",
+ "wasmprinter 0.248.0",
+ "wasmtime",
+]
+
+[[package]]
 name = "near-config-utils"
 version = "0.37.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
