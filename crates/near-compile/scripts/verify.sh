@@ -56,6 +56,26 @@ check "gate traps for default signer (forbidden)" 'forbidden' "$out"
 out=$("$NM" "$WORK/scen.wasm" gate --state "$WORK/s2.bin" --view 2>&1)
 check "gate via --view refuses storage write" 'ProhibitedInView' "$out"
 
+echo "== TS frontend + stitched schnorr (hermetic, deterministic vector) =="
+# TS-compiled contract verifying a BIP-340 signature through the stitched
+# crypto lib — locks both the TS lowering and the schnorr stitcher. Vector:
+# fixed key 0xAA*32, zeros aux (deterministic per RFC 6979-style derivation
+# in the reference bip340 test lib).
+cat > "$WORK/sigverify.ts" <<'EOF'
+export function verify(pk: string, sig: string, msg: string): number {
+  return schnorrVerify(hexDecode(pk), hexDecode(sig), hexDecode(sha256Hash(msg)));
+}
+EOF
+"$NC" "$WORK/sigverify.ts" "$WORK/sigverify.wasm" >/dev/null 2>&1
+[ -s "$WORK/sigverify.wasm" ] && ok "TS schnorr contract compiles" || bad "TS schnorr compile"
+GOODSIG=52956857d31db0869d3ede6623ec62c5dbebf1bc6b6fc36d8ebacec566c4fbf9f00c1a9c48f6185676ee1181cd9a087ae37035d07fd835aac7b463ba2a93c574
+BADSIG=52956857d31db0869d3ede6623ec62c5dbebf1bc6b6fc36d8ebacec566c4fbf9f00c1a9c48f6185676ee1181cd9a087ae37035d07fd835aac7b463ba2a93c570
+PK=6a04ab98d9e4774ad806e302dddeb63bea16b5cb5f223ee77478e861bb583eb3
+out=$("$NM" "$WORK/sigverify.wasm" verify "{\"pk\":\"$PK\",\"sig\":\"$GOODSIG\",\"msg\":\"near-mock hermetic schnorr vector\"}" --view --state "$WORK/sv.bin" 2>/dev/null)
+check "valid BIP-340 sig verifies in TS contract" '📄 1' "$out"
+out=$("$NM" "$WORK/sigverify.wasm" verify "{\"pk\":\"$PK\",\"sig\":\"$BADSIG\",\"msg\":\"near-mock hermetic schnorr vector\"}" --view --state "$WORK/sv2.bin" 2>&1)
+check "tampered BIP-340 sig rejected" '📄 0' "$out"
+
 echo
 echo "RESULT: $pass passed, $fail failed"
 [ $fail -eq 0 ]
