@@ -3,7 +3,11 @@ members = [".", "clojure-rlm", "crates/browser-compiler"]
 # schnorr-wasm is a #![no_std] wasm-only crate (panic=abort only via own-root
 # profile); host workspace builds fail without -Zbuild-std. The stitcher uses
 # the standalone k256-schnorr-wasm/ project instead. Excluded like http-adapter.
-exclude = ["http-adapter", "wasm-test", "schnorr-wasm"]
+# schnorr-wasm was removed 2026-09-08: the crypto stitched into contracts
+# comes from schnorr/ via the committed src/wasm_emit/schnorr.wasm artifact
+# (regenerate with `make schnorr-wasm`). The old crate was consumed only by
+# the deleted build.rs (its SCHNORR_WASM_PATH output was read by nothing).
+exclude = ["http-adapter", "wasm-test", "schnorr"]
 
 [profile.wasm-release]
 inherits = "release"
