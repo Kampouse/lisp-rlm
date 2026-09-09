@@ -148,13 +148,16 @@ fn run_init(name: &str) {
     );
     fs::write(base.join("near.json"), config).expect("write near.json");
 
-    // src/main.lisp
+    // src/main.lisp — return_str matches the log's type (the original
+    // template ended with (near/return 0) after a string log: typechecker
+    // rejects str ≠ int, so 'init + build' failed out of the box — dogfooded
+    // from the published 0.1.0, 2026-09-08)
     let main_lisp = format!(
         r#"(memory 4)
 
 (define (hello)
   (near/log "Hello from {name}!")
-  (near/return 0))
+  (near/return_str "Hello from {name}!"))
 
 (export "hello" hello true)
 "#
@@ -2104,9 +2107,12 @@ fn run_test_fn(wasm: &[u8], fn_name: &str) -> Result<i64, String> {
             Ok(())
         },
     );
-    let panic_fn = Func::new(&mut store, FuncType::new(&engine, [], []), |_, _, _| {
-        Err(wasmtime::Error::msg("NEAR panic"))
-    });
+    // real ABI: panic_utf8(len: i64, ptr: i64) -> ()
+    let panic_fn = Func::new(
+        &mut store,
+        FuncType::new(&engine, [ValType::I64, ValType::I64], []),
+        |_, _, _| Err(wasmtime::Error::msg("NEAR panic")),
+    );
 
     // All NEAR host function stubs needed for linking
     let noop_5i64 = Func::new(
@@ -2661,7 +2667,30 @@ fn run_bench(file: &str) {
         };
 
         println!("Compiling {}...", file);
-        match lisp_rlm_wasm::wasm_emit::compile_near(&src) {
+        // same frontend dispatch as build_project — bench used to feed raw
+        // TS/Solidity into the lisp parser ('undefined variable //' etc.)
+        let effective = if file.ends_with(".ts") || file.ends_with(".mts") {
+            lisp_rlm_wasm::ts_frontend::ts_to_lisp_source(&src)
+                .map_err(|e| {
+                    eprintln!("TS lowering: {}", e);
+                    std::process::exit(1);
+                })
+                .unwrap()
+        } else if file.ends_with(".sol") {
+            lisp_rlm_wasm::solidity::translate_solidity(&src)
+                .map_err(|e| {
+                    eprintln!("Solidity translation: {}", e);
+                    std::process::exit(1);
+                })
+                .unwrap()
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            src
+        };
+        match lisp_rlm_wasm::wasm_emit::compile_near(&effective) {
             Ok(w) => w,
             Err(e) => {
                 eprintln!("Compile error: {}", e);
@@ -2759,9 +2788,12 @@ fn run_bench(file: &str) {
             Ok(())
         },
     );
-    let panic_fn = Func::new(&mut store, FuncType::new(&engine, [], []), |_, _, _| {
-        Err(wasmtime::Error::msg("NEAR panic"))
-    });
+    // real ABI: panic_utf8(len: i64, ptr: i64) -> ()
+    let panic_fn = Func::new(
+        &mut store,
+        FuncType::new(&engine, [ValType::I64, ValType::I64], []),
+        |_, _, _| Err(wasmtime::Error::msg("NEAR panic")),
+    );
 
     // Storage stubs
     let sc1 = storage.clone();
@@ -3036,17 +3068,21 @@ fn run_bench(file: &str) {
     linker
         .define(&store, "env", "write_register", noop_3i64_0.clone())
         .unwrap();
+    // Register-ABI context hosts write into a register — (i64) -> () —
+    // NOT (i64)->(i64): binding the latter is an instantiation-time type
+    // mismatch (dogfooded 2026-09-08: 'incompatible import type for
+    // env::signer_account_id'). Same for the ptr-write finance hosts.
     linker
-        .define(&store, "env", "current_account_id", noop1r.clone())
+        .define(&store, "env", "current_account_id", noop1.clone())
         .unwrap();
     linker
-        .define(&store, "env", "signer_account_id", noop1r.clone())
+        .define(&store, "env", "signer_account_id", noop1.clone())
         .unwrap();
     linker
-        .define(&store, "env", "signer_account_pk", noop1r.clone())
+        .define(&store, "env", "signer_account_pk", noop1.clone())
         .unwrap();
     linker
-        .define(&store, "env", "predecessor_account_id", noop1r)
+        .define(&store, "env", "predecessor_account_id", noop1.clone())
         .unwrap();
     linker
         .define(&store, "env", "block_index", noop0r.clone())
@@ -3060,14 +3096,15 @@ fn run_bench(file: &str) {
     linker
         .define(&store, "env", "storage_usage", noop0r.clone())
         .unwrap();
+    // (ptr: i64) -> () — 16-byte u128 writes to memory, no return
     linker
-        .define(&store, "env", "account_balance", noop0.clone())
+        .define(&store, "env", "account_balance", noop1.clone())
         .unwrap();
     linker
-        .define(&store, "env", "account_locked_balance", noop0.clone())
+        .define(&store, "env", "account_locked_balance", noop1.clone())
         .unwrap();
     linker
-        .define(&store, "env", "attached_deposit", noop0)
+        .define(&store, "env", "attached_deposit", noop1)
         .unwrap();
     linker
         .define(&store, "env", "prepaid_gas", noop0r.clone())
@@ -3791,11 +3828,17 @@ fn run_wasmtime(
         },
     );
 
-    let panic_fn = Func::new(&mut store, FuncType::new(&engine, [], []), |_, _, _| {
-        Err(wasmtime::Error::msg("NEAR panic"))
-    });
+    // real ABI: panic_utf8(len: i64, ptr: i64) -> ()
+    let panic_fn = Func::new(
+        &mut store,
+        FuncType::new(&engine, [ValType::I64, ValType::I64], []),
+        |_, _, _| Err(wasmtime::Error::msg("NEAR panic")),
+    );
     let noop0 = Func::new(&mut store, FuncType::new(&engine, [], []), |_, _, _| Ok(()));
-    let _noop1 = Func::new(
+    // register-ABI shim: (register_id: i64) -> () — the context hosts write
+    // into a register and return nothing (binding (i64)->(i64) is an
+    // instantiation-time type mismatch; dogfooded 2026-09-08)
+    let noop1 = Func::new(
         &mut store,
         FuncType::new(&engine, [ValType::I64], []),
         |_, _, _| Ok(()),
@@ -3855,16 +3898,16 @@ fn run_wasmtime(
         .define(&store, "env", "memory", memory)
         .map_err(|e| format!("link: {}", e))?;
     linker
-        .define(&store, "env", "current_account_id", noop1r.clone())
+        .define(&store, "env", "current_account_id", noop1.clone())
         .map_err(|e| format!("link: {}", e))?;
     linker
-        .define(&store, "env", "signer_account_id", noop1r.clone())
+        .define(&store, "env", "signer_account_id", noop1.clone())
         .map_err(|e| format!("link: {}", e))?;
     linker
-        .define(&store, "env", "signer_account_pk", noop1r.clone())
+        .define(&store, "env", "signer_account_pk", noop1.clone())
         .map_err(|e| format!("link: {}", e))?;
     linker
-        .define(&store, "env", "predecessor_account_id", noop1r)
+        .define(&store, "env", "predecessor_account_id", noop1.clone())
         .map_err(|e| format!("link: {}", e))?;
     linker
         .define(&store, "env", "block_index", noop0r.clone())
@@ -3872,11 +3915,12 @@ fn run_wasmtime(
     linker
         .define(&store, "env", "block_timestamp", noop0r)
         .map_err(|e| format!("link: {}", e))?;
+    // (ptr: i64) -> () — 16-byte u128 writes to memory, no return
     linker
-        .define(&store, "env", "account_balance", noop0.clone())
+        .define(&store, "env", "account_balance", noop1.clone())
         .map_err(|e| format!("link: {}", e))?;
     linker
-        .define(&store, "env", "attached_deposit", noop0)
+        .define(&store, "env", "attached_deposit", noop1)
         .map_err(|e| format!("link: {}", e))?;
 
     let instance = linker
