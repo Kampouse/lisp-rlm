@@ -114,9 +114,13 @@ pub(crate) fn build_env_linker(
                 let data = mem.data(&caller);
                 if ptr + len <= data.len() {
                     let mut st = s2.lock().unwrap();
-                    if st.return_data.is_none() {
-                        st.return_data = Some(data[ptr..ptr + len].to_vec());
-                    }
+                    // LAST-write-wins — nearcore semantics (synced from the
+                    // crate 2026-09-09; the first-write guard diverged from
+                    // the chain and masked a real contract bug — see the
+                    // registry-nostrgov.testnet deployment notes). Receipt
+                    // isolation is structural: sub_execute saves/clears/
+                    // restores return_data around sub-calls.
+                    st.return_data = Some(data[ptr..ptr + len].to_vec());
                 }
             }
             Ok(())
