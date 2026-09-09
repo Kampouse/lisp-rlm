@@ -69,14 +69,17 @@ fn main() {
             for a in args.iter().skip(2) {
                 if a == "--ts" {
                     ts_mode = true;
-                } else {
+                } else if !a.starts_with("-") {
                     name = Some(a.as_str());
                 }
             }
-            let name = name.unwrap_or_else(|| {
-                eprintln!("Usage: near-compile init [--ts] <name>");
-                std::process::exit(1);
-            });
+            let name = match name {
+                Some(n) => n,
+                None => {
+                    eprintln!("Usage: near-compile init [--ts] <name>");
+                    std::process::exit(1);
+                }
+            };
             if ts_mode {
                 run_init_ts(name);
             } else {
