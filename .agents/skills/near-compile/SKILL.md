@@ -72,17 +72,11 @@ NEAR_MOCK_SIGNER=alice.test.near NEAR_MOCK_NOW=1787000000 \
 NEAR_MOCK_ATTACH=20000000000000000000000 \
   near-mock out.wasm method '{...}'                    # signed call + deposit
 near-mock cross state.bin acct=path.wasm acct method '{}'   # multi-contract
-near-mock snapshot live.acct.testnet state.bin --rpc https://rpc.testnet.near.org
-near-mock state dump|import|reset ...                       # inspect/mutate state
 ```
 
-- Determinism: `NEAR_MOCK_NOW` (unix secs) pins the clock,
-  `NEAR_MOCK_SEED` pins randomness, `--advance <secs>` time-travels.
-- `--view` enforces read-only; traps roll back atomically (single tx).
-- near-sdk 4/5 AND near-contract-standard binaries instantiate (protocol
-  69/72 hosts bound as of near-mock 0.1.4+).
-- Signatures: `schnorrVerify`/`sha256Hash` work in-contract via the
-  stitched crypto (verify with BIP-340 vectors from a reference impl).
+Deep coverage (scenario runner, snapshot forensics, state surgery,
+traces, chain-parity proofs) lives in the near-mock skill:
+`near-mock skill` installs it into any project.
 
 ## Deployment (testnet)
 
