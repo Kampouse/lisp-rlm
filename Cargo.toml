@@ -18,7 +18,12 @@ lto = true
 name = "lisp-rlm-wasm"
 version = "0.1.0"
 edition = "2021"
-description = "Lisp runtime compiled to WASM"
+description = "Lisp/TS/Solidity → NEAR smart-contract compiler core (parser, typechecker, wasm emitter, crypto stitcher, wit bindings)"
+license = "MIT"
+repository = "https://github.com/Kampouse/lisp-rlm"
+readme = "README.md"
+keywords = ["lisp", "near", "blockchain", "wasm", "compiler"]
+categories = ["compilers"]
 autobins = false
 
 [lib]
