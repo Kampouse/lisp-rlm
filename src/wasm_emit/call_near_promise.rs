@@ -19,9 +19,30 @@ impl WasmEmitter {
                 let gas = self.expr(&a[3])?;
                 let dep = self.expr(&a[4])?;
                 let mut v = Vec::new();
-                // Write deposit u128 to TEMP_MEM (zero high 64, write low 64)
-                // Stack: [addr_i32, val_i64] for i64.store
-                // First zero out high 64 bits
+                let h = self.ensure_u128_str_helpers();
+                let dep_local = self.local_idx("__nc_dep");
+                // Deposit: Num OR u128 decimal string. BUG FIX 2026-09-10:
+                // the old code untagged the value and stored it as the low-64
+                // — for a Str deposit that wrote the TAGGED STRING BITS as
+                // the amount (silently wrong yocto on-chain; found by the
+                // promise differential harness). Now branch on the tag:
+                // TAG_STR → decimal-parse helper (same machinery as the batch
+                // forms), else → zero-extend the Num low-64 as before.
+                v.extend(dep);
+                v.push(Instruction::LocalSet(dep_local));
+                v.push(Instruction::LocalGet(dep_local));
+                v.push(Instruction::I64Const(7));
+                v.push(Instruction::I64And);
+                v.push(Instruction::I64Const(TAG_STR));
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Empty));
+                // — str path: decimal → u128 LE at TEMP_MEM —
+                v.push(Instruction::LocalGet(dep_local));
+                v.push(Instruction::I64Const(TEMP_MEM as i64));
+                v.push(Self::call_user(h.parse));
+                v.push(Instruction::Drop);
+                v.push(Instruction::Else);
+                // — num path (old behavior): zero high 64, store low 64 —
                 v.push(Instruction::I64Const(TEMP_MEM));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Const(0));
@@ -30,7 +51,6 @@ impl WasmEmitter {
                     align: 3,
                     memory_index: 0,
                 }));
-                // Zero out low 64 bits
                 v.push(Instruction::I64Const(TEMP_MEM));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Const(0));
@@ -39,16 +59,16 @@ impl WasmEmitter {
                     align: 3,
                     memory_index: 0,
                 }));
-                // Write deposit (low 64 bits) to TEMP_MEM (addr first, then val)
                 v.push(Instruction::I64Const(TEMP_MEM));
                 v.push(Instruction::I32WrapI64);
-                v.extend(dep);
-                v.extend(self.emit_untag());
+                v.push(Instruction::LocalGet(dep_local));
+                v.extend(self.emit_untag()); // local holds the TAGGED value
                 v.push(Instruction::I64Store(wasm_encoder::MemArg {
                     offset: 0,
                     align: 3,
                     memory_index: 0,
                 }));
+                v.push(Instruction::End);
                 // account_id (len, ptr)
                 v.extend(acct.clone());
                 v.extend(self.emit_untag());
@@ -132,12 +152,15 @@ impl WasmEmitter {
                 let zero_str = LispVal::Str("0".into());
 
                 // — idx = promise_batch_create(target) —
-                v.extend(target.clone());
-                v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64ShrU);
+                // target: eval once → local (2026-09-11 fix — was double-eval)
+                let t_l = self.local_idx("__ca_t");
                 v.extend(target);
                 v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(t_l));
+                v.push(Instruction::LocalGet(t_l));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalGet(t_l));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Self::host_call(39));
@@ -145,6 +168,16 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(idx_l));
 
                 // — action 1: (idx, method, args, 0, gas) —
+                // FIX 2026-09-11: evaluate method/args ONCE into locals, then
+                // extract len/ptr from the local. The old code evaluated each
+                // expression TWICE (once for len via >>32, once for ptr via
+                // wrap-i32): literals are I64Const (harmless), but runtime
+                // strings (str-cat, storage reads, template literals) bump-
+                // allocated TWICE and side-effecting subexpressions ran twice.
+                // On nearcore the second eval's heap pointer diverged →
+                // silent receipt drop (bug report 2026-09-11).
+                let m_l = self.local_idx("__ca_m");
+                let a_l = self.local_idx("__ca_a");
                 v.extend(self.expr(&zero_str)?);
                 v.push(Instruction::LocalSet(amt_l));
                 v.push(Instruction::LocalGet(amt_l));
@@ -153,20 +186,24 @@ impl WasmEmitter {
                 v.push(Instruction::Drop);
                 v.push(Instruction::LocalGet(idx_l));
                 v.extend(self.emit_untag());
-                v.extend(method.clone());
-                v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64ShrU);
+                // method: eval once → local, extract len + ptr from local
                 v.extend(method);
                 v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64ExtendI32U);
-                v.extend(args.clone());
-                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(m_l));
+                v.push(Instruction::LocalGet(m_l));
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalGet(m_l));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
+                // args: eval once → local, extract len + ptr from local
                 v.extend(args);
                 v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(a_l));
+                v.push(Instruction::LocalGet(a_l));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalGet(a_l));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(TEMP_MEM as i64));
@@ -191,6 +228,9 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(cb_l));
 
                 // — action 2: (cb, callback, "", 0, cb_gas) —
+                // Same single-eval fix as action 1 (2026-09-11).
+                let cn_l = self.local_idx("__ca_cn");
+                let cba_l = self.local_idx("__ca_cba");
                 v.extend(self.expr(&zero_str)?);
                 v.push(Instruction::LocalSet(amt_l));
                 v.push(Instruction::LocalGet(amt_l));
@@ -199,20 +239,24 @@ impl WasmEmitter {
                 v.push(Instruction::Drop);
                 v.push(Instruction::LocalGet(cb_l));
                 v.extend(self.emit_untag());
-                v.extend(cbname.clone());
-                v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64ShrU);
+                // cbname: eval once → local
                 v.extend(cbname);
                 v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64ExtendI32U);
-                v.extend(cbargs.clone());
-                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(cn_l));
+                v.push(Instruction::LocalGet(cn_l));
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalGet(cn_l));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
+                // cbargs: eval once → local
                 v.extend(cbargs);
                 v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(cba_l));
+                v.push(Instruction::LocalGet(cba_l));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalGet(cba_l));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(TEMP_MEM as i64));
@@ -323,6 +367,10 @@ impl WasmEmitter {
                 }));
                 v.push(Instruction::I64Const(0));
                 v.extend(gas);
+                v.extend(self.emit_untag()); // BUG FIX 2026-09-10: gas reached the
+                                             // host still 3-bit-TAGGED (8× the intended value — found by the
+                                             // promise differential harness, tests/test_promise_differential.rs).
+                                             // promise_create/batch untag their gas; this arm missed it.
                 v.push(Self::host_call(31));
                 // TAG the returned promise idx — the raw host i64 flowed into
                 // user bindings; a later untag shifted it to 0 (promise_return
