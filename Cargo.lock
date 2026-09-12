@@ -2326,7 +2326,7 @@ dependencies = [
 
 [[package]]
 name = "lisp-rlm-wasm"
-version = "0.1.1"
+version = "0.1.3"
 dependencies = [
  "base64 0.22.1",
  "bincode",
@@ -2367,7 +2367,7 @@ dependencies = [
  "tiny-keccak",
  "tokio",
  "wasm-encoder 0.248.0",
- "wasmparser 0.228.0",
+ "wasmparser 0.248.0",
  "wasmprinter 0.248.0",
  "wasmtime",
  "wasmtime-wasi",
@@ -2493,7 +2493,7 @@ dependencies = [
 
 [[package]]
 name = "near-compile"
-version = "0.1.3"
+version = "0.1.5"
 dependencies = [
  "base64 0.22.1",
  "bs58 0.5.1",

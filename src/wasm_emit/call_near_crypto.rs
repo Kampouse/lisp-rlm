@@ -695,36 +695,40 @@ impl WasmEmitter {
                 }
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
+                // (len, ptr) of the hex string
+                let h_len = self.local_idx("__bls_hlen");
                 v.extend(data.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(h_len));
+                let h_ptr = self.local_idx("__bls_hptr");
                 v.extend(data);
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::I64Const(0)); // register_id
+                v.push(Instruction::LocalSet(h_ptr));
+                // hex → binary on runtime heap (NEAR hosts speak binary)
+                let b_len = self.local_idx("__bls_blen");
+                let b_ptr = self.local_idx("__bls_bptr");
+                v.extend(self.emit_hex_decode_to_heap(h_len, h_ptr, b_len, b_ptr));
+                // host(value_len, value_ptr, rid=0); invalid input is a
+                // HOST ERROR (AltBn128InvalidInput) → trap, like the chain
+                v.push(Instruction::LocalGet(b_len));
+                v.push(Instruction::LocalGet(b_ptr));
+                v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(56));
-                // ALIASING FIX (2026-09-02, found by bls_msig): reading the
-                // register straight into TEMP_MEM returns a POINTER that the
-                // next register-writing host call overwrites — two live
-                // results alias (sigma showed apk's bytes). Copy to a fresh
-                // runtime-heap buffer instead (call_near_iter.rs pattern).
-                let bls_len = self.local_idx("__bls_rlen");
+                // register 0 → (r_len, r_ptr) → hex-encoded tagged string
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(1)); // register_len(0)
-                v.push(Instruction::LocalSet(bls_len));
-                let bls_buf = self.local_idx("__bls_rbuf");
-                v.extend(self.emit_rtheap_alloc(bls_buf, bls_len));
+                let r_len = self.local_idx("__bls_rlen");
+                v.push(Instruction::LocalSet(r_len));
+                let r_ptr = self.local_idx("__bls_rptr");
+                v.extend(self.emit_rtheap_alloc(r_ptr, r_len));
                 v.push(Instruction::I64Const(0));
-                v.push(Instruction::LocalGet(bls_buf));
-                v.push(Self::host_call(0)); // read_register(0, buf)
-                v.push(Instruction::LocalGet(bls_len));
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64Shl);
-                v.push(Instruction::LocalGet(bls_buf));
-                v.push(Instruction::I64Or);
-                v.extend(self.emit_tag_str());
+                v.push(Instruction::LocalGet(r_ptr));
+                v.push(Self::host_call(0)); // read_register(0, r_ptr)
+                v.extend(self.emit_hex_encode_to_str(r_len, r_ptr));
                 Ok(v)
             }
             "near/alt_bn128_g1_sum" => {
@@ -733,36 +737,40 @@ impl WasmEmitter {
                 }
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
+                // (len, ptr) of the hex string
+                let h_len = self.local_idx("__bls_hlen");
                 v.extend(data.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(h_len));
+                let h_ptr = self.local_idx("__bls_hptr");
                 v.extend(data);
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(h_ptr));
+                // hex → binary on runtime heap (NEAR hosts speak binary)
+                let b_len = self.local_idx("__bls_blen");
+                let b_ptr = self.local_idx("__bls_bptr");
+                v.extend(self.emit_hex_decode_to_heap(h_len, h_ptr, b_len, b_ptr));
+                // host(value_len, value_ptr, rid=0); invalid input is a
+                // HOST ERROR (AltBn128InvalidInput) → trap, like the chain
+                v.push(Instruction::LocalGet(b_len));
+                v.push(Instruction::LocalGet(b_ptr));
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(57));
-                // ALIASING FIX (2026-09-02, found by bls_msig): reading the
-                // register straight into TEMP_MEM returns a POINTER that the
-                // next register-writing host call overwrites — two live
-                // results alias (sigma showed apk's bytes). Copy to a fresh
-                // runtime-heap buffer instead (call_near_iter.rs pattern).
-                let bls_len = self.local_idx("__bls_rlen");
+                // register 0 → (r_len, r_ptr) → hex-encoded tagged string
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(1)); // register_len(0)
-                v.push(Instruction::LocalSet(bls_len));
-                let bls_buf = self.local_idx("__bls_rbuf");
-                v.extend(self.emit_rtheap_alloc(bls_buf, bls_len));
+                let r_len = self.local_idx("__bls_rlen");
+                v.push(Instruction::LocalSet(r_len));
+                let r_ptr = self.local_idx("__bls_rptr");
+                v.extend(self.emit_rtheap_alloc(r_ptr, r_len));
                 v.push(Instruction::I64Const(0));
-                v.push(Instruction::LocalGet(bls_buf));
-                v.push(Self::host_call(0)); // read_register(0, buf)
-                v.push(Instruction::LocalGet(bls_len));
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64Shl);
-                v.push(Instruction::LocalGet(bls_buf));
-                v.push(Instruction::I64Or);
-                v.extend(self.emit_tag_str());
+                v.push(Instruction::LocalGet(r_ptr));
+                v.push(Self::host_call(0)); // read_register(0, r_ptr)
+                v.extend(self.emit_hex_encode_to_str(r_len, r_ptr));
                 Ok(v)
             }
             "near/alt_bn128_pairing_check" => {
@@ -771,14 +779,28 @@ impl WasmEmitter {
                 }
                 let data = self.expr(&a[0])?;
                 let mut v = Vec::new();
+                // (len, ptr) of the hex string
+                let h_len = self.local_idx("__bls_hlen");
                 v.extend(data.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(h_len));
+                let h_ptr = self.local_idx("__bls_hptr");
                 v.extend(data);
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(h_ptr));
+                // hex → binary on runtime heap (NEAR hosts speak binary)
+                let b_len = self.local_idx("__bls_blen");
+                let b_ptr = self.local_idx("__bls_bptr");
+                v.extend(self.emit_hex_decode_to_heap(h_len, h_ptr, b_len, b_ptr));
+                // host(value_len, value_ptr) → i64; 1 = product of pairings
+                // is the GT identity (pairing holds), 0 otherwise. Invalid
+                // input is a HOST ERROR → trap, like the chain.
+                v.push(Instruction::LocalGet(b_len));
+                v.push(Instruction::LocalGet(b_ptr));
                 v.push(Self::host_call(58));
                 v.extend(self.emit_tag_num());
                 Ok(v)

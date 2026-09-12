@@ -95,7 +95,7 @@ pub(crate) fn g1_sum(
     Ok(encode_g1(res))
 }
 
-pub(crate) const PAIRING_CHECK_ELEMENT_SIZE: usize = POINT_SIZE + POINT_SIZE;
+pub(crate) const PAIRING_CHECK_ELEMENT_SIZE: usize = POINT_SIZE + POINT_SIZE * 2;
 
 pub(crate) fn pairing_check(
     elements: &[[u8; PAIRING_CHECK_ELEMENT_SIZE]],

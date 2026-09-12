@@ -281,6 +281,11 @@ pub struct EvalState {
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg(not(target_arch = "wasm32"))]
     pub llm_provider: Option<Box<dyn crate::dispatch::llm_provider::LlmProvider>>,
+    /// Print/log output — every `print`/`println` call appends its rendered
+    /// text here (plus a trailing newline for `println`). Mirrors NEAR log
+    /// semantics and gives test harnesses a capture point without stdout
+    /// redirection. The REPL/stdout behavior is unchanged.
+    pub logs: Vec<String>,
     /// Call trace ring buffer — last N function calls for error reporting.
     pub call_trace: Vec<String>,
     /// Maximum call trace depth to keep (ring buffer).
@@ -345,6 +350,7 @@ impl EvalState {
             llm_provider: None,
             call_trace: Vec::new(),
             call_trace_max: 64,
+            logs: Vec::new(),
             pending_pure_type: None,
             pure_types: std::collections::HashMap::new(),
             near_storage: im::HashMap::new(),
@@ -398,6 +404,7 @@ impl EvalState {
             llm_provider: provider,
             call_trace: Vec::new(),
             call_trace_max: self.call_trace_max,
+            logs: Vec::new(),
             pending_pure_type: None,
             pure_types: std::collections::HashMap::new(),
             near_storage: im::HashMap::new(),
@@ -484,6 +491,7 @@ impl Clone for EvalState {
             #[cfg(not(target_arch = "wasm32"))]
             llm_provider: None, // providers are not cloned
             call_trace: self.call_trace.clone(),
+            logs: self.logs.clone(),
             pending_pure_type: None, // Don't propagate pure type to forks
             pure_types: self.pure_types.clone(),
             call_trace_max: self.call_trace_max,

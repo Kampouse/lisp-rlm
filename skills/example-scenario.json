@@ -1,0 +1,18 @@
+{
+  "name": "example: identity + time travel + access gate",
+  "manifest": "gov.test.near=contract.wasm",
+  "steps": [
+    { "method": "whoami", "expect": "owner.test.near" },
+    { "method": "whoami", "as": "alice.test.near", "expect": "alice.test.near" },
+    { "method": "whoami", "as": "bob.test.near", "predecessor": "vault.test.near", "expect": "vault.test.near" },
+    { "method": "clock", "now": 1700000000, "expect": "1700000000000000000" },
+    { "method": "clock", "advance": 60, "expect": "1700000060000000000" },
+    { "method": "spend", "as": "alice.test.near", "attach": "1000000000000000000000000", "expect": "ok" },
+    { "method": "spend", "as": "eve.test.near", "expect": "trap" },
+    { "snapshot": "before-gate" },
+    { "method": "gate", "as": "alice.test.near", "expect": "allowed" },
+    { "restore": "before-gate" },
+    { "method": "gate", "as": "eve.test.near", "expect": "trap" },
+    { "method": "burn_gas", "gas": 1, "expect": "all fuel consumed" }
+  ]
+}

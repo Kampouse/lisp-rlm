@@ -12,58 +12,123 @@ use lisp_rlm_wasm::parser::parse_all;
 use lisp_rlm_wasm::types::{Env, EvalState, LispVal};
 use lisp_rlm_wasm::wasm_emit::compile_fuzz;
 
-// Tag constants (must match wasm_emit.rs)
-const TAG_BITS: i64 = 3;
-const TAG_NUM: i64 = 0;
-const TAG_BOOL: i64 = 1;
-const TAG_NIL: i64 = 4;
-const TAG_STR: i64 = 5;
+// Tagged-value decoding: single source of truth is the runtime contract
+// module (src/tagged_value.rs). The old local constants missed TAG_ARRAY=6,
+// so valid array returns were misclassified as "INVALID TAG".
+use lisp_rlm_wasm::tagged_value::{self, TaggedValue};
+use std::sync::{Arc, Mutex};
 
-const TEMP_MEM: usize = 64;
+const TEMP_MEM_OFF: usize = tagged_value::TEMP_MEM as usize;
+const MAX_ARRAY_ELEMS: i64 = 4096;
+const MAX_DECODE_DEPTH: u32 = 16;
 
-/// Decode a tagged i64 from WASM memory into a LispVal for comparison.
-fn decode_tagged(raw: i64) -> Option<LispVal> {
-    let tag = raw & 0x7;
-    let payload = raw >> TAG_BITS; // arithmetic shift preserves sign
-    match tag {
-        TAG_NUM => Some(LispVal::Num(payload)),
-        TAG_BOOL => Some(LispVal::Bool(payload != 0)),
-        TAG_NIL => Some(LispVal::Nil),
-        TAG_STR => Some(LispVal::Str(format!("STR_TAGGED_{}", payload))),
-        2 => Some(LispVal::Sym(format!("fnref_{}", payload))),
-        3 => Some(LispVal::Sym(format!("closure_{}", payload))),
+enum DecodeErr {
+    /// Value kind carries no comparable content (fnref/closure) — skip, as before.
+    NotComparable,
+    /// Pointer/length/count is bogus — heap-corruption-class bug signal.
+    Corrupt(String),
+}
+
+/// Deep-decode a tagged i64 against WASM memory into a comparable LispVal.
+/// Reads actual string bytes and array elements, so content is compared,
+/// not just tags. Out-of-bounds pointers/lengths are corruption reports.
+fn decode_deep(mem: &[u8], tagged: i64, depth: u32) -> Result<LispVal, DecodeErr> {
+    if depth > MAX_DECODE_DEPTH {
+        return Err(DecodeErr::NotComparable);
+    }
+    match tagged_value::decode(mem, tagged) {
+        TaggedValue::Num(n) => Ok(LispVal::Num(n)),
+        TaggedValue::Bool(b) => Ok(LispVal::Bool(b)),
+        TaggedValue::Nil => Ok(LispVal::Nil),
+        TaggedValue::Str { ptr, len } => {
+            let ok = ptr >= 0 && len >= 0 && (ptr as usize) + (len as usize) <= mem.len();
+            if !ok {
+                return Err(DecodeErr::Corrupt(format!(
+                    "Str ptr/len out of bounds: ptr={} len={} mem_len={}",
+                    ptr,
+                    len,
+                    mem.len()
+                )));
+            }
+            let bytes = &mem[ptr as usize..(ptr + len) as usize];
+            match String::from_utf8(bytes.to_vec()) {
+                Ok(s) => Ok(LispVal::Str(s)),
+                Err(_) => Err(DecodeErr::Corrupt(format!(
+                    "Str bytes not UTF-8: ptr={} len={}",
+                    ptr, len
+                ))),
+            }
+        }
+        TaggedValue::Array { ptr, count } => {
+            if count < 0 || count > MAX_ARRAY_ELEMS {
+                return Err(DecodeErr::Corrupt(format!(
+                    "Array implausible count: {} at ptr={}",
+                    count, ptr
+                )));
+            }
+            let base = ptr as usize;
+            let end = base.saturating_add(8).saturating_add(count as usize * 8);
+            if ptr < 0 || end > mem.len() {
+                return Err(DecodeErr::Corrupt(format!(
+                    "Array out of bounds: ptr={} count={} mem_len={}",
+                    ptr,
+                    count,
+                    mem.len()
+                )));
+            }
+            let mut elems = Vec::with_capacity(count as usize);
+            for i in 0..count as usize {
+                let off = base + 8 + i * 8;
+                let t = i64::from_le_bytes(mem[off..off + 8].try_into().unwrap());
+                elems.push(decode_deep(mem, t, depth + 1)?);
+            }
+            Ok(LispVal::List(elems))
+        }
+        // Function references carry no comparable content
+        TaggedValue::FnRef(_) | TaggedValue::Closure(_) => Err(DecodeErr::NotComparable),
+    }
+}
+
+/// Structural equality over the comparable shapes (Num/Bool/Nil/Str/List
+/// thereof). LispVal doesn't derive PartialEq (Memoized etc. make that
+/// ill-defined), so the harness defines exactly what it compares.
+fn comparable_eq(a: &LispVal, b: &LispVal) -> bool {
+    match (a, b) {
+        (LispVal::Num(x), LispVal::Num(y)) => x == y,
+        (LispVal::Bool(x), LispVal::Bool(y)) => x == y,
+        (LispVal::Nil, LispVal::Nil) => true,
+        (LispVal::Str(x), LispVal::Str(y)) => x == y,
+        (LispVal::List(xs), LispVal::List(ys)) => {
+            xs.len() == ys.len() && xs.iter().zip(ys.iter()).all(|(x, y)| comparable_eq(x, y))
+        }
+        _ => false,
+    }
+}
+
+/// Normalize a ClosureVM result for deep comparison. Returns Some for value
+/// shapes the wasm side can represent (Num/Bool/Nil/Str, Lists thereof),
+/// None when the wasm emitter genuinely can't express the value.
+fn comparable_lispval(v: &LispVal) -> Option<LispVal> {
+    match v {
+        LispVal::Num(_) | LispVal::Bool(_) | LispVal::Str(_) => Some(v.clone()),
+        LispVal::Nil => Some(LispVal::Nil),
+        LispVal::List(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for it in items {
+                out.push(comparable_lispval(it)?);
+            }
+            Some(LispVal::List(out))
+        }
         _ => None,
     }
 }
 
-/// Convert a ClosureVM LispVal to a comparable tagged i64.
-/// Returns None for values that can't round-trip through i64 (strings, lists, etc.).
-fn lispval_to_tagged(val: &LispVal) -> Option<i64> {
-    match val {
-        LispVal::Num(n) => Some((*n << TAG_BITS) | TAG_NUM),
-        LispVal::Bool(b) => Some(((if *b { 1i64 } else { 0 }) << TAG_BITS) | TAG_BOOL),
-        LispVal::Nil => Some(TAG_NIL),
-        // These can't round-trip through i64 tagging
-        LispVal::Str(_)
-        | LispVal::List(_)
-        | LispVal::Lambda { .. }
-        | LispVal::Float(_)
-        | LispVal::Map(_)
-        | LispVal::BuiltinFn(_)
-        | LispVal::Macro { .. }
-        | LispVal::CaseLambda { .. }
-        | LispVal::Recur(_)
-        | LispVal::Memoized { .. }
-        | LispVal::Tagged { .. }
-        | LispVal::Sym(_)
-        | LispVal::Delay { .. }
-        | LispVal::Vec(_)
-        | LispVal::U64(_) => None,
-    }
-}
-
-/// Set up wasmtime with all NEAR host function stubs, run the WASM module,
-/// and return the tagged i64 stored at TEMP_MEM.
+/// Set up wasmtime with NEAR host function stubs, run the WASM module,
+/// and capture observable behavior: the tagged return word at TEMP_MEM,
+/// a post-run memory snapshot, host log_utf8 payloads, and fd_write stdout.
+///
+/// `log_utf8` and `fd_write` are implemented for real (capture); every other
+/// import is a returning-0 stub as before.
 #[cfg(not(target_arch = "wasm32"))]
 /// Shared wasmtime Engine — creation + JIT setup is expensive; reuse it
 /// across every fuzz case instead of paying per-case.
@@ -73,13 +138,34 @@ fn shared_engine() -> &'static wasmtime::Engine {
     SHARED_ENGINE.get_or_init(wasmtime::Engine::default)
 }
 
-fn run_wasm_fuzz(wasm: &[u8]) -> Result<i64, String> {
+/// What the wasm run produced (post-run memory included for deep decoding).
+struct WasmRunOutcome {
+    raw: i64,
+    mem: Vec<u8>,
+    /// Captured near/log_utf8 payloads — one entry per call, bytes as written.
+    host_logs: Vec<Vec<u8>>,
+    /// Captured fd_write bytes for fd 1/2 (WASI-style modules).
+    stdout: Vec<u8>,
+}
+
+enum WasmRunError {
+    /// Link/instantiate/module failure (harness or emitter bug class)
+    Setup(String),
+    /// Module executed and trapped
+    Trap(String),
+}
+
+fn run_wasm_fuzz_deep(wasm: &[u8]) -> Result<WasmRunOutcome, WasmRunError> {
     use wasmtime::*;
 
     let engine = shared_engine();
-    let module = Module::new(&engine, wasm).map_err(|e| format!("module: {}", e))?;
+    let module =
+        Module::new(&engine, wasm).map_err(|e| WasmRunError::Setup(format!("module: {}", e)))?;
     let mut store = Store::new(&engine, ());
     let mut linker = Linker::new(&engine);
+
+    let host_logs: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+    let stdout_cap: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
 
     // Check if module imports memory (NEAR mode) or declares it internally
     let needs_imported_memory = module
@@ -88,60 +174,153 @@ fn run_wasm_fuzz(wasm: &[u8]) -> Result<i64, String> {
 
     if needs_imported_memory {
         let memory = Memory::new(&mut store, MemoryType::new(4, None))
-            .map_err(|e| format!("memory: {}", e))?;
+            .map_err(|e| WasmRunError::Setup(format!("memory: {}", e)))?;
         linker
             .define(&store, "env", "memory", memory)
-            .map_err(|e| format!("link memory: {}", e))?;
+            .map_err(|e| WasmRunError::Setup(format!("link memory: {}", e)))?;
     }
 
-    // Define noop stubs for every non-memory import, matching exact signatures.
+    // Define stubs for every non-memory import, matching exact signatures.
+    // log_utf8 and fd_write are real: they capture output for comparison.
     for import in module.imports() {
-        if import.module() == "env" && import.name() != "memory" {
-            let ty = import.ty();
-            if let wasmtime::ExternType::Func(func_ty) = ty {
-                let params: Vec<ValType> = func_ty.params().collect();
-                let results: Vec<ValType> = func_ty.results().collect();
-                let result_count = results.len();
-                let ft = FuncType::new(&engine, params, results);
-                let stub = Func::new(&mut store, ft, move |_, _, ret| {
-                    for i in 0..result_count {
-                        ret[i] = Val::I64(0);
+        if import.module() == "env" && import.name() == "memory" {
+            continue;
+        }
+        let ty = import.ty();
+        if let wasmtime::ExternType::Func(func_ty) = ty {
+            let name = import.name().to_string();
+            let params: Vec<ValType> = func_ty.params().collect();
+            let results: Vec<ValType> = func_ty.results().collect();
+            let ft = FuncType::new(&engine, params.clone(), results.clone());
+
+            let stub = if name == "log_utf8" {
+                // near log_utf8(log_len: u64, log_ptr: u64) — note len comes first
+                let hl = Arc::clone(&host_logs);
+                Func::new(&mut store, ft, move |mut caller, params, _ret| {
+                    let len = params.first().and_then(|v| v.i64()).unwrap_or(0);
+                    let ptr = params.get(1).and_then(|v| v.i64()).unwrap_or(0);
+                    let mut captured = false;
+                    if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                        let data = mem.data(&caller);
+                        if len >= 0 && ptr >= 0 && (ptr as usize) + (len as usize) <= data.len() {
+                            hl.lock()
+                                .unwrap()
+                                .push(data[ptr as usize..(ptr + len) as usize].to_vec());
+                            captured = true;
+                        }
+                    }
+                    if !captured {
+                        hl.lock()
+                            .unwrap()
+                            .push(format!("<log_utf8 oob len={} ptr={}", len, ptr).into_bytes());
                     }
                     Ok(())
-                });
-                linker
-                    .define(&store, "env", import.name(), stub)
-                    .map_err(|e| format!("link {}: {}", import.name(), e))?;
-            }
+                })
+            } else if name == "fd_write" {
+                // WASI fd_write(fd, iovs, iovs_len, nwritten_ptr) -> errno
+                let so = Arc::clone(&stdout_cap);
+                Func::new(&mut store, ft, move |mut caller, params, ret| {
+                    let fd = params.first().and_then(|v| v.i32()).unwrap_or(-1);
+                    let iovs = params.get(1).and_then(|v| v.i32()).unwrap_or(0) as u32 as usize;
+                    let iovs_len = params.get(2).and_then(|v| v.i32()).unwrap_or(0) as u32 as usize;
+                    let nw_ptr = params.get(3).and_then(|v| v.i32()).unwrap_or(0) as u32 as usize;
+                    let mut total: u32 = 0;
+                    let mut buf: Vec<u8> = Vec::new();
+                    let mut err = 0i32;
+                    if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                        let data = mem.data(&caller).to_vec();
+                        for i in 0..iovs_len {
+                            let base = iovs.saturating_add(i.saturating_mul(8));
+                            if base.saturating_add(8) > data.len() {
+                                err = 8; // EINVAL-ish
+                                break;
+                            }
+                            let b = u32::from_le_bytes(data[base..base + 4].try_into().unwrap())
+                                as usize;
+                            let l = u32::from_le_bytes(data[base + 4..base + 8].try_into().unwrap())
+                                as usize;
+                            if b.saturating_add(l) <= data.len() {
+                                buf.extend_from_slice(&data[b..b + l]);
+                                total = total.saturating_add(l as u32);
+                            }
+                        }
+                        if err == 0 {
+                            let _ = mem.write(&mut caller, nw_ptr, &total.to_le_bytes());
+                            if fd == 1 || fd == 2 {
+                                so.lock().unwrap().extend_from_slice(&buf);
+                            }
+                        }
+                    }
+                    ret[0] = Val::I32(err);
+                    Ok(())
+                })
+            } else {
+                Func::new(&mut store, ft, move |_, _, ret| {
+                    for (i, r) in ret.iter_mut().enumerate() {
+                        *r = match results.get(i) {
+                            Some(ValType::I32) => Val::I32(0),
+                            _ => Val::I64(0),
+                        };
+                    }
+                    Ok(())
+                })
+            };
+
+            linker
+                .define(&store, import.module(), import.name(), stub)
+                .map_err(|e| WasmRunError::Setup(format!("link {}: {}", name, e)))?;
         }
     }
 
     let instance = linker
         .instantiate(&mut store, &module)
-        .map_err(|e| format!("instantiate: {}", e))?;
+        .map_err(|e| WasmRunError::Setup(format!("instantiate: {}", e)))?;
 
     // Get memory from instance export (works for both internal and imported memory)
     let memory = instance
         .get_memory(&mut store, "memory")
-        .ok_or_else(|| "no memory export".to_string())?;
+        .ok_or_else(|| WasmRunError::Setup("no memory export".to_string()))?;
 
     // Call "run" export
     let run = instance
         .get_typed_func::<(), ()>(&mut store, "run")
-        .map_err(|e| format!("no 'run' export: {}", e))?;
+        .map_err(|e| WasmRunError::Setup(format!("no 'run' export: {}", e)))?;
     run.call(&mut store, ())
-        .map_err(|e| format!("trap: {}", e))?;
+        .map_err(|e| WasmRunError::Trap(format!("{}", e)))?;
 
-    // Read tagged value from TEMP_MEM
-    let mem = memory.data(&store);
-    let raw = i64::from_le_bytes(mem[TEMP_MEM..TEMP_MEM + 8].try_into().unwrap());
-    Ok(raw)
+    // Snapshot memory + the tagged return word at TEMP_MEM
+    let mem = memory.data(&store).to_vec();
+    let raw = i64::from_le_bytes(mem[TEMP_MEM_OFF..TEMP_MEM_OFF + 8].try_into().unwrap());
+    let logs_snapshot = host_logs.lock().unwrap().clone();
+    let stdout_snapshot = stdout_cap.lock().unwrap().clone();
+    Ok(WasmRunOutcome {
+        raw,
+        mem,
+        host_logs: logs_snapshot,
+        stdout: stdout_snapshot,
+    })
 }
 
 /// Run a single fuzz test case: compare ClosureVM vs WASM.
 #[cfg(not(target_arch = "wasm32"))]
+/// Outcome of one fuzz case — makes skips VISIBLE. Without this, a probe can
+/// pass vacuously (e.g. emitter doesn't support an op → compile skip → Ok()).
+#[derive(Debug, PartialEq, Clone)]
+enum FuzzVerdict {
+    /// Deep value compare ran and matched; logs compared when wasm logged.
+    Matched { logs_checked: bool },
+    /// Pinned divergence accepted (documented, see is_pinned_print_return).
+    Pinned,
+    /// ClosureVM errored — comparison skipped (intentional divergence pin).
+    SkippedVmError(String),
+    /// wasm emitter can't compile this construct — comparison skipped.
+    SkippedCompile,
+    /// VM result not representable/comparable (float/vec/lambda/...) — skipped.
+    Uncomparable,
+}
+
 fn fuzz_one(source: &str) -> Result<(), String> {
-    let result = fuzz_one_inner(source);
+    let result = fuzz_one_verdict(source).map(|_| ());
     if let Err(ref e) = result {
         use std::io::Write;
         if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -155,11 +334,17 @@ fn fuzz_one(source: &str) -> Result<(), String> {
     result
 }
 
-fn fuzz_one_inner(source: &str) -> Result<(), String> {
+/// Probe-friendly: returns the verdict so tests can assert NON-VACUOUS
+/// comparison (Matched) instead of a silent skip.
+fn fuzz_one_checked(source: &str) -> Result<FuzzVerdict, String> {
+    fuzz_one_verdict(source)
+}
+
+fn fuzz_one_verdict(source: &str) -> Result<FuzzVerdict, String> {
     // 1. Parse
     let exprs = parse_all(source).map_err(|e| format!("parse error: {}", e))?;
     if exprs.is_empty() {
-        return Ok(());
+        return Ok(FuzzVerdict::Uncomparable);
     }
 
     // 2. ClosureVM evaluation — load stdlib
@@ -181,11 +366,11 @@ fn fuzz_one_inner(source: &str) -> Result<(), String> {
     for expr in &exprs {
         match lisp_rlm_wasm::lisp_eval(expr, &mut env, &mut state) {
             Ok(v) => cl_result = v,
-            Err(_) => {
+            Err(e) => {
                 // ClosureVM errored (e.g., div-by-zero, type error).
                 // WASM handles these gracefully (returns 0, coerces types).
                 // This is an intentional divergence — not a bug.
-                return Ok(());
+                return Ok(FuzzVerdict::SkippedVmError(e));
             }
         }
     }
@@ -196,9 +381,9 @@ fn fuzz_one_inner(source: &str) -> Result<(), String> {
         if let Some(expr) = run_call.first() {
             match lisp_rlm_wasm::lisp_eval(expr, &mut env, &mut state) {
                 Ok(v) => cl_result = v,
-                Err(_) => {
+                Err(e) => {
                     // Same as above: VM error is acceptable divergence.
-                    return Ok(());
+                    return Ok(FuzzVerdict::SkippedVmError(e));
                 }
             }
         }
@@ -232,43 +417,292 @@ fn fuzz_one_inner(source: &str) -> Result<(), String> {
             // WASM emitter supports a subset of the language (no first-class closures,
             // no higher-order functions, etc.). Compilation failure is intentional
             // divergence, not a bug — skip comparison.
-            return Ok(());
+            return Ok(FuzzVerdict::SkippedCompile);
         }
     };
 
-    // 4. Execute WASM
-    let wasm_raw = run_wasm_fuzz(&wasm)?;
+    // 4. Execute WASM (capturing logs + post-run memory)
+    let outcome = match run_wasm_fuzz_deep(&wasm) {
+        Ok(o) => o,
+        Err(WasmRunError::Setup(e)) => return Err(format!("wasm setup: {}", e)),
+        Err(WasmRunError::Trap(e)) => {
+            return Err(format!(
+                "WASM TRAP (ClosureVM succeeded): source={:?}\n  ClosureVM: {:?}\n  trap: {}",
+                source, cl_result, e
+            ));
+        }
+    };
 
-    // 5. Compare
-    let cl_tagged = lispval_to_tagged(&cl_result);
-    match cl_tagged {
-        Some(expected) => {
-            if wasm_raw != expected {
-                return Err(format!(
-                    "MISMATCH: source={:?}\n  ClosureVM: {:?} → tagged 0x{:016x}\n  WASM:      tagged 0x{:016x} → {:?}",
-                    source, cl_result, expected as u64, wasm_raw as u64, decode_tagged(wasm_raw)
-                ));
+    // 5. Deep comparison — content, not just tags.
+    //
+    // String and list returns are compared BY CONTENT now (the old harness
+    // only checked tag validity for those, hiding wrong-content bugs).
+    // Out-of-bounds ptr/len are reported as corruption — heap-corruption class.
+    let expected = comparable_lispval(&cl_result);
+    let decoded = decode_deep(&outcome.mem, outcome.raw, 0);
+
+    match (expected, decoded) {
+        (Some(exp), Ok(got)) => {
+            if comparable_eq(&got, &exp) {
+                check_logs(&state, &outcome)?;
+                Ok(FuzzVerdict::Matched {
+                    logs_checked: !outcome.host_logs.is_empty(),
+                })
+            } else if is_pinned_print_return(&cl_result, &got, &outcome.host_logs) {
+                // Documented divergence — see is_pinned_print_return.
+                Ok(FuzzVerdict::Pinned)
+            } else {
+                Err(format!(
+                    "MISMATCH: source={:?}\n  ClosureVM: {:?}\n  WASM:      {:?} (raw tagged 0x{:016x})\n  logs: {:?}",
+                    source,
+                    cl_result,
+                    got,
+                    outcome.raw as u64,
+                    log_strings(&outcome)
+                ))
             }
         }
-        None => {
-            // Can't compare (string, list, lambda, etc.)
-            // Just verify the tag is valid
-            let tag = wasm_raw as u64 & 0x7;
-            if tag > 5 {
-                return Err(format!(
-                    "INVALID TAG: source={:?}\n  ClosureVM: {:?} (non-comparable)\n  WASM:      tagged 0x{:016x} (tag={})",
-                    source, cl_result, wasm_raw as u64, tag
-                ));
-            }
-        }
+        (Some(_), Err(DecodeErr::Corrupt(c))) => Err(format!(
+            "CORRUPT WASM VALUE: source={:?}\n  ClosureVM: {:?}\n  wasm decode: {} (raw tagged 0x{:016x})",
+            source, cl_result, c, outcome.raw as u64
+        )),
+        (Some(_), Err(DecodeErr::NotComparable)) => Err(format!(
+            "TYPE DIVERGENCE: source={:?}\n  ClosureVM: {:?}\n  WASM:      function reference (raw tagged 0x{:016x})",
+            source, cl_result, outcome.raw as u64
+        )),
+        (None, Err(DecodeErr::Corrupt(c))) => Err(format!(
+            "CORRUPT WASM VALUE (VM value not comparable): source={:?}\n  wasm decode: {} (raw tagged 0x{:016x})",
+            source, c, outcome.raw as u64
+        )),
+        // VM value not comparable (float/vec/lambda/...) — nothing strict to
+        // check on the wasm side; deep-decode success subsumes the old tag check.
+        (None, _) => Ok(FuzzVerdict::Uncomparable),
     }
+}
 
+/// Pinned divergence (found 2026-09-10 during the deep-compare upgrade):
+/// `(print x)` returns `Str(rendered)` in the ClosureVM
+/// (src/dispatch/dispatch_state.rs, "print" arm) but `nil` in wasm
+/// (src/wasm_emit/call_near_io.rs print arm returns TAG_NIL).
+/// WASM is the semantic reference (GAPS.md 2026-08-26 anchor decision), so
+/// this is pinned until the interpreter is aligned. Recognized ONLY when the
+/// VM result is exactly the rendered text that was just logged and wasm
+/// returned nil — anything else still fails.
+fn is_pinned_print_return(cl: &LispVal, wasm: &LispVal, host_logs: &[Vec<u8>]) -> bool {
+    match (cl, wasm) {
+        (LispVal::Str(s), LispVal::Nil) => host_logs
+            .iter()
+            .any(|l| String::from_utf8_lossy(l).trim_end() == *s),
+        _ => false,
+    }
+}
+
+fn log_strings(outcome: &WasmRunOutcome) -> Vec<String> {
+    outcome
+        .host_logs
+        .iter()
+        .map(|l| String::from_utf8_lossy(l).to_string())
+        .collect()
+}
+
+/// Compare the print channel: every wasm log_utf8 payload must match the
+/// trailing entries of the VM's log (wasm executes only `run`, so its logs
+/// are a suffix of the VM's top-level + run logs). Newline-insensitive per
+/// entry (println's trailing newline differs between sides).
+fn check_logs(state: &EvalState, outcome: &WasmRunOutcome) -> Result<(), String> {
+    if outcome.host_logs.is_empty() {
+        return Ok(());
+    }
+    let wasm_logs: Vec<String> = outcome
+        .host_logs
+        .iter()
+        .map(|l| String::from_utf8_lossy(l).trim_end().to_string())
+        .collect();
+    let vm_logs: Vec<String> = state
+        .logs
+        .iter()
+        .map(|s| s.trim_end().to_string())
+        .collect();
+    if wasm_logs.len() > vm_logs.len() {
+        return Err(format!(
+            "LOG MISMATCH: wasm logged {} entries, VM only {}\n  WASM: {:?}\n  VM:   {:?}",
+            wasm_logs.len(),
+            vm_logs.len(),
+            wasm_logs,
+            vm_logs
+        ));
+    }
+    let tail = &vm_logs[vm_logs.len() - wasm_logs.len()..];
+    if tail != wasm_logs.as_slice() {
+        return Err(format!(
+            "LOG MISMATCH:\n  VM:   {:?}\n  WASM: {:?}",
+            tail, wasm_logs
+        ));
+    }
     Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
+
+    // === Deep-compare probes (2026-09-10 upgrade) ===
+    // These exercise channels the old tag-only comparison was blind to:
+    // string CONTENT, list CONTENT, and the print/log channel.
+    // All assert fuzz_one_checked == Matched — a NON-VACUOUS comparison
+    // (a compile-skip or VM-error-skip would fail the assert; this catches
+    // probe rot when an op silently leaves the emitter surface).
+
+    #[test]
+    fn deep_string_return_content() {
+        // Old harness: Str on both sides → tag check only. Now: byte-exact.
+        for src in [
+            r#"(define (run) (str-cat "foo" "bar"))"#,
+            r#"(define (run) "literal")"#,
+            r#"(define (run) (str-cat "" ""))"#,
+        ] {
+            let v = fuzz_one_checked(src).unwrap_or_else(|e| panic!("{}: {}", src, e));
+            assert_eq!(
+                v,
+                FuzzVerdict::Matched {
+                    logs_checked: false
+                },
+                "vacuous or divergent: {}",
+                src
+            );
+        }
+    }
+
+    #[test]
+    fn deep_list_return_content() {
+        for src in [
+            "(define (run) (list 1 2 3))",
+            "(define (run) (list))",
+            "(define (run) (list 1 (list 2 3) 4))",
+        ] {
+            let v = fuzz_one_checked(src).unwrap_or_else(|e| panic!("{}: {}", src, e));
+            assert_eq!(
+                v,
+                FuzzVerdict::Matched {
+                    logs_checked: false
+                },
+                "vacuous or divergent: {}",
+                src
+            );
+        }
+    }
+
+    #[test]
+    fn deep_list_of_strings() {
+        let v = fuzz_one_checked(r#"(define (run) (list "a" "b"))"#).unwrap();
+        assert_eq!(
+            v,
+            FuzzVerdict::Matched {
+                logs_checked: false
+            }
+        );
+    }
+
+    #[test]
+    fn deep_print_channel() {
+        // print renders per interpreter to_string() in NEAR mode — logs must match
+        let v = fuzz_one_checked(r#"(define (run) (begin (print "hello") 42))"#)
+            .unwrap_or_else(|e| panic!("{}", e));
+        assert_eq!(v, FuzzVerdict::Matched { logs_checked: true });
+        let v = fuzz_one_checked("(define (run) (begin (print 7) 8))").unwrap();
+        assert_eq!(v, FuzzVerdict::Matched { logs_checked: true });
+    }
+
+    #[test]
+    fn deep_string_arith_mixed() {
+        // number->string is INTERPRETER-ONLY (dispatch_arithmetic.rs) — the
+        // emitter can't compile it, so this is SkippedCompile, not Matched.
+        // The lesson: unchecked probes rot silently. Pinned here as documentation.
+        let v = fuzz_one_checked(r#"(define (run) (str-cat "x" (number->string 42)))"#).unwrap();
+        assert_eq!(v, FuzzVerdict::SkippedCompile);
+    }
+
+    // ── Edge probes: the corners where divergences hide ──
+
+    #[test]
+    fn edge_unicode_strings() {
+        // UTF-8: byte vs char semantics (str-length, str-cat content)
+        for src in [
+            r#"(define (run) (str-cat "café" "日本語"))"#,
+            r#"(define (run) (str-length "café"))"#,
+            r#"(define (run) (str-length "日本語"))"#,
+            r#"(define (run) (str-contains "héllo" "é"))"#,
+        ] {
+            let v = fuzz_one_checked(src).unwrap_or_else(|e| panic!("{}: {}", src, e));
+            assert_eq!(
+                v,
+                FuzzVerdict::Matched {
+                    logs_checked: false
+                },
+                "diverges: {}",
+                src
+            );
+        }
+    }
+
+    #[test]
+    fn edge_empty_needle() {
+        // (str-index-of "abc" "") and (str-contains "abc" "") — edge semantics
+        let v = fuzz_one_checked(r#"(define (run) (str-index-of "abc" ""))"#);
+        let v = v.unwrap_or_else(|e| panic!("index-of empty: {}", e));
+        assert_eq!(
+            v,
+            FuzzVerdict::Matched {
+                logs_checked: false
+            }
+        );
+        let v = fuzz_one_checked(r#"(define (run) (str-contains "abc" ""))"#).unwrap();
+        assert_eq!(
+            v,
+            FuzzVerdict::Matched {
+                logs_checked: false
+            }
+        );
+    }
+
+    #[test]
+    fn edge_str_cat_coercion() {
+        // PINNED (2026-09-10): str-cat does NOT coerce numbers — the VM errors
+        // ("expected string argument... convert explicitly with (to-string x)")
+        // → SkippedVmError. If this ever becomes Matched or a TRAP-fire, the
+        // coercion contract changed and callers must be re-audited.
+        let v = fuzz_one_checked(r#"(define (run) (str-cat "x" 42))"#).unwrap();
+        assert!(
+            matches!(v, FuzzVerdict::SkippedVmError(_)),
+            "str-cat coercion contract changed: {:?}",
+            v
+        );
+    }
+
+    #[test]
+    fn edge_to_string_types() {
+        // to-string is the sanctioned num→str op (both surfaces support it).
+        // Each type renders — content compared byte-exact.
+        for src in [
+            "(define (run) (to-string 42))",
+            "(define (run) (to-string -7))",
+            "(define (run) (to-string 0))",
+            r#"(define (run) (str-cat "n=" (to-string 123)))"#,
+            "(define (run) (to-string true))",
+            "(define (run) (to-string nil))",
+            r#"(define (run) (to-string "abc"))"#, // Display quotes strings — does wasm?
+        ] {
+            let v = fuzz_one_checked(src).unwrap_or_else(|e| panic!("{}: {}", src, e));
+            assert_eq!(
+                v,
+                FuzzVerdict::Matched {
+                    logs_checked: false
+                },
+                "diverges: {}",
+                src
+            );
+        }
+    }
 
     #[test]
     fn fuzz_basic_arithmetic() {
@@ -695,6 +1129,184 @@ mod prop {
             .prop_map(|(a, b)| format!("(define (f x) (+ x {}))\n(define (run) (f {}))", a, b))
     }
 
+    // ══════════════════════════════════════════════════════════════
+    // String & list strategies (2026-09-10) — make the deep value
+    // comparison actually BITE during fuzzing. Surface restricted to the
+    // all-3-surface ops (interp ∩ emit ∩ checker — corpus/COVERAGE.md §D,
+    // tests/equiv/e24 + e30): str-cat, str-concat, str-contains,
+    // str-index-of, str-length, str-substring; list, len, car, cdr, cons.
+    // ══════════════════════════════════════════════════════════════
+
+    /// Safe ASCII alphabet for generated string literals — no quote/backslash,
+    /// so embedding in source needs no escaping.
+    const STR_ALPHA: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -_.!?*()<>[]{}@#$%^&+=/:;|~`'";
+
+    fn safe_char() -> impl Strategy<Value = char> {
+        (0u8..STR_ALPHA.len() as u8).prop_map(|i| STR_ALPHA[i as usize] as char)
+    }
+
+    /// Random string literal source (quoted), 0..=14 chars, incl. empty.
+    fn str_lit() -> impl Strategy<Value = String> {
+        proptest::collection::vec(safe_char(), 0..14)
+            .prop_map(|cs| format!("\"{}\"", cs.into_iter().collect::<String>()))
+    }
+
+    /// String-valued expression (≤2 levels of nesting).
+    fn string_expr() -> impl Strategy<Value = String> {
+        prop_oneof![
+            4 => str_lit(),
+            2 => (str_lit(), str_lit())
+                .prop_map(|(a, b)| format!("(str-cat {} {})", a, b)),
+            1 => (str_lit(), str_lit(), str_lit())
+                .prop_map(|(a, b, c)| format!("(str-cat {} {} {})", a, b, c)),
+            1 => (str_lit(), str_lit())
+                .prop_map(|(a, b)| format!("(str-concat {} {})", a, b)),
+            2 => safe_int().prop_map(|n| format!("(to-string {})", n)),
+            2 => (safe_int(), str_lit())
+                .prop_map(|(n, s)| format!("(str-cat (to-string {}) {})", n, s)),
+            1 => (str_lit(), 0u16..16, 0u16..16).prop_map(|(s, i, j)| {
+                // in-range slice: start ≤ end ≤ len (char-count ≈ byte-count for ASCII)
+                let n = s.len() as u16 - 2; // s includes the two quotes
+                let start = i % (n + 1);
+                let end = start + (j % (n + 1 - start));
+                format!("(str-substring {} {} {})", s, start, end)
+            }),
+            1 => (str_lit(), str_lit()).prop_map(|(a, b)| {
+                // nested: substring of a concatenation
+                format!("(str-cat (str-substring {} 0 1) {})", a, b)
+            }),
+        ]
+    }
+
+    /// Value expression of any comparable type (num / bool / string / list).
+    fn value_expr() -> impl Strategy<Value = String> {
+        prop_oneof![
+            3 => num_leaf(),
+            1 => Just("true".into()),
+            1 => Just("false".into()),
+            1 => Just("nil".into()),
+            3 => string_expr(),
+            2 => proptest::collection::vec(value_leaf(), 0..4)
+                .prop_map(|xs| {
+                    let inner: Vec<String> = xs.into_iter().collect();
+                    format!("(list {})", inner.join(" "))
+                }),
+        ]
+    }
+
+    fn value_leaf() -> impl Strategy<Value = String> {
+        prop_oneof![
+            2 => num_leaf(),
+            1 => Just("true".into()),
+            1 => Just("false".into()),
+            1 => Just("nil".into()),
+            2 => str_lit(),
+        ]
+    }
+
+    /// ── string property programs ──
+
+    /// (str-cat a b ...) — content-compared Str result.
+    fn str_cat_prog() -> impl Strategy<Value = String> {
+        proptest::collection::vec(str_lit(), 1..4).prop_map(|xs| {
+            let inner: Vec<String> = xs.into_iter().collect();
+            program_inner(format!("(str-cat {})", inner.join(" ")))
+        })
+    }
+
+    /// (str-substring s start end) with in-range indices.
+    fn str_substring_prog() -> impl Strategy<Value = String> {
+        (str_lit(), 0u16..16, 0u16..16).prop_map(|(s, i, j)| {
+            let n = s.len() as u16 - 2;
+            let start = i % (n + 1);
+            let end = start + (j % (n + 1 - start));
+            program_inner(format!("(str-substring {} {} {})", s, start, end))
+        })
+    }
+
+    /// (str-length s) — Num result.
+    fn str_length_prog() -> impl Strategy<Value = String> {
+        string_expr().prop_map(|s| program_inner(format!("(str-length {})", s)))
+    }
+
+    /// (str-contains haystack needle) / (str-index-of haystack needle) —
+    /// Bool/Num results. Empty needles included on purpose: the edges are
+    /// where divergences hide.
+    fn str_search_prog() -> impl Strategy<Value = String> {
+        (str_lit(), str_lit(), proptest::bool::ANY).prop_map(|(h, n, idx)| {
+            let op = if idx { "str-index-of" } else { "str-contains" };
+            program_inner(format!("({} {} {})", op, h, n))
+        })
+    }
+
+    /// ── list property programs ──
+
+    /// (list v...) — mixed-type elements, deep-compared as arrays.
+    fn list_literal_prog() -> impl Strategy<Value = String> {
+        proptest::collection::vec(value_leaf(), 0..5).prop_map(|xs| {
+            let inner: Vec<String> = xs.into_iter().collect();
+            program_inner(format!("(list {})", inner.join(" ")))
+        })
+    }
+
+    /// len / car / cdr / cons / nth over a generated literal list.
+    fn list_ops_prog() -> impl Strategy<Value = String> {
+        (proptest::collection::vec(value_leaf(), 1..5), 0u8..255).prop_map(|(xs, op)| {
+            let inner: Vec<String> = xs.clone().into_iter().collect();
+            let lst = format!("(list {})", inner.join(" "));
+            let n = xs.len();
+            let body = match op % 5 {
+                0 => format!("(len {})", lst),
+                1 => format!("(car {})", lst),
+                2 => format!("(cdr {})", lst),
+                3 => format!("(cons {} {})", value_leaf_fixed(op), lst),
+                _ => format!("(nth {} {})", (op as usize) % n, lst),
+            };
+            program_inner(body)
+        })
+    }
+
+    /// Deterministic extra element for cons (keeps strategy monadic-free).
+    fn value_leaf_fixed(seed: u8) -> String {
+        match seed % 4 {
+            0 => "7".into(),
+            1 => "true".into(),
+            2 => "\"k\"".into(),
+            _ => "nil".into(),
+        }
+    }
+
+    /// Strings through control flow — feature-pair coverage (the historical
+    /// bug classes lived at op × control-flow intersections).
+    fn string_control_flow_prog() -> impl Strategy<Value = String> {
+        (str_lit(), str_lit(), 0i64..50, 0u8..255).prop_map(|(a, b, n, k)| {
+            let body = match k % 4 {
+                0 => format!("(let ((s {})) (str-cat s {}))", a, b),
+                1 => format!("(if (< {} {}) {} {})", n, n + k as i64 + 1, a, b),
+                2 => format!("(define (g s) (str-cat s \"!\"))\n(define (run) (g {}))", a),
+                _ => format!("(begin (str-cat {} {}) {})", a, b, n),
+            };
+            if k % 4 == 2 {
+                body
+            } else {
+                program_inner(body)
+            }
+        })
+    }
+
+    /// Print channel: (begin (println X) value) — log comparison bites.
+    /// print is deliberately NOT in tail position (pinned return-value
+    /// divergence is a separate concern).
+    fn print_channel_prog() -> impl Strategy<Value = String> {
+        (value_expr(), num_leaf())
+            .prop_map(|(x, n)| program_inner(format!("(begin (println {}) {})", x, n)))
+    }
+
+    /// Wrap an expression body in (define (run) ...).
+    fn program_inner(body: String) -> String {
+        format!("(define (run) {})", body)
+    }
+
     /// Wrap any expression in (define (run) ...).
     fn program(inner: impl Strategy<Value = String>) -> impl Strategy<Value = String> {
         inner.prop_map(|e| format!("(define (run) {})", e))
@@ -1023,6 +1635,67 @@ mod prop {
             );
             if let Err(e) = fuzz_one(&expr) {
                 panic!("value-define mismatch: {}\nsource: {}", e, expr);
+            }
+        }
+
+        // ═══ String & list differential fuzz (2026-09-10) ═══
+        // These drive the DEEP value comparison: Str content, list content,
+        // and the log channel — the channels the old tag-only harness never
+        // checked. Surface: all-3-surface ops only (see strategy docs).
+
+        #[test]
+        fn prop_str_cat(expr in str_cat_prog()) {
+            if let Err(e) = fuzz_one(&expr) {
+                panic!("str-cat content mismatch: {}\nsource: {}", e, expr);
+            }
+        }
+
+        #[test]
+        fn prop_str_substring(expr in str_substring_prog()) {
+            if let Err(e) = fuzz_one(&expr) {
+                panic!("str-substring content mismatch: {}\nsource: {}", e, expr);
+            }
+        }
+
+        #[test]
+        fn prop_str_length(expr in str_length_prog()) {
+            if let Err(e) = fuzz_one(&expr) {
+                panic!("str-length mismatch: {}\nsource: {}", e, expr);
+            }
+        }
+
+        #[test]
+        fn prop_str_search(expr in str_search_prog()) {
+            if let Err(e) = fuzz_one(&expr) {
+                panic!("str-contains/index-of mismatch: {}\nsource: {}", e, expr);
+            }
+        }
+
+        #[test]
+        fn prop_list_literal(expr in list_literal_prog()) {
+            if let Err(e) = fuzz_one(&expr) {
+                panic!("list content mismatch: {}\nsource: {}", e, expr);
+            }
+        }
+
+        #[test]
+        fn prop_list_ops(expr in list_ops_prog()) {
+            if let Err(e) = fuzz_one(&expr) {
+                panic!("list-ops mismatch: {}\nsource: {}", e, expr);
+            }
+        }
+
+        #[test]
+        fn prop_string_control_flow(expr in string_control_flow_prog()) {
+            if let Err(e) = fuzz_one(&expr) {
+                panic!("string×control-flow mismatch: {}\nsource: {}", e, expr);
+            }
+        }
+
+        #[test]
+        fn prop_print_channel(expr in print_channel_prog()) {
+            if let Err(e) = fuzz_one(&expr) {
+                panic!("print-channel mismatch: {}\nsource: {}", e, expr);
             }
         }
     }

@@ -238,8 +238,10 @@ mod tests {
             sum_in.extend_from_slice(&g_ser);
         }
         let sum_out = g1_sum(
-            crate::bn254::split_elements::<{ crate::bn254::G1_SUM_ELEMENT_SIZE }>(&sum_in)
-                .expect("65B-aligned sum input"),
+            crate::bn254::split_elements::<
+                { crate::bn254::G1_SUM_ELEMENT_SIZE },
+            >(&sum_in)
+            .expect("65B-aligned sum input"),
         )
         .expect("valid points sum");
 
@@ -248,8 +250,10 @@ mod tests {
         mx_in.extend_from_slice(&g_ser);
         mx_in.extend_from_slice(&encode_u256_pub(bn::arith::U256([2, 0])));
         let mx_out = g1_multiexp(
-            crate::bn254::split_elements::<{ crate::bn254::G1_MULTIEXP_ELEMENT_SIZE }>(&mx_in)
-                .expect("96B-aligned multiexp input"),
+            crate::bn254::split_elements::<
+                { crate::bn254::G1_MULTIEXP_ELEMENT_SIZE },
+            >(&mx_in)
+            .expect("96B-aligned multiexp input"),
         )
         .expect("valid multiexp");
 
@@ -262,6 +266,75 @@ mod tests {
         expected_ser[..32].copy_from_slice(&encode_u256_pub(expected.x().into_u256()));
         expected_ser[32..].copy_from_slice(&encode_u256_pub(expected.y().into_u256()));
         assert_eq!(sum_out, expected_ser, "sum matches native 2G");
+    }
+
+    /// alt_bn128 pairing_check: the stride is 192B (64B G1 ‖ 128B G2 —
+    /// nearcore's POINT_SIZE + POINT_SIZE*2), and the semantics are the
+    /// EVM-compatible ∏e(g1_i, g2_i) == identity check. Regression for
+    /// the mock bug where the stride was 128B: every real 192B gate
+    /// trapped with "Invalid input length 192 for 128-byte elements"
+    /// (the BN254-verify breakage, 2026-09-11).
+    #[test]
+    fn bn254_pairing_stride_and_semantics() {
+        use crate::bn254::{pairing_check, split_elements};
+        use bn::{AffineG1, AffineG2, Fq, Group, Gt, G1, G2};
+
+        fn fq_wire(v: &Fq) -> [u8; 32] {
+            let mut out = [0u8; 32];
+            let u = v.into_u256();
+            out[..16].copy_from_slice(&u.0[0].to_le_bytes());
+            out[16..].copy_from_slice(&u.0[1].to_le_bytes());
+            out
+        }
+        fn g1_wire(p: &G1) -> [u8; 64] {
+            let mut out = [0u8; 64];
+            if let Some(a) = AffineG1::from_jacobian(*p) {
+                out[..32].copy_from_slice(&fq_wire(&a.x()));
+                out[32..].copy_from_slice(&fq_wire(&a.y()));
+            }
+            out
+        }
+        fn g2_wire(p: &G2) -> [u8; 128] {
+            let mut out = [0u8; 128];
+            if let Some(a) = AffineG2::from_jacobian(*p) {
+                let (x, y) = (a.x(), a.y());
+                out[..32].copy_from_slice(&fq_wire(&x.real()));
+                out[32..64].copy_from_slice(&fq_wire(&x.imaginary()));
+                out[64..96].copy_from_slice(&fq_wire(&y.real()));
+                out[96..].copy_from_slice(&fq_wire(&y.imaginary()));
+            }
+            out
+        }
+
+        let g1 = G1::one();
+        let g2 = G2::one();
+        let neg_g2 = G2::zero() - g2;
+
+        // native ground truth (same crate the hosts use)
+        assert!(bn::pairing_batch(&[(g1, g2)]) != Gt::one());
+        assert!(bn::pairing_batch(&[(g1, g2), (g1, neg_g2)]) == Gt::one());
+
+        // single 192B pair on the wire: e(G1, G2) ≠ 1 → false
+        let mut gate = Vec::new();
+        gate.extend_from_slice(&g1_wire(&g1));
+        gate.extend_from_slice(&g2_wire(&g2));
+        let elems =
+            split_elements::<{ crate::bn254::PAIRING_CHECK_ELEMENT_SIZE }>(&gate)
+                .expect("192B-aligned gate");
+        assert!(!pairing_check(elems).expect("valid points"));
+
+        // two pairs: e(G1,G2)·e(G1,−G2) == 1 → true (the verify shape)
+        gate.extend_from_slice(&g1_wire(&g1));
+        gate.extend_from_slice(&g2_wire(&neg_g2));
+        let elems =
+            split_elements::<{ crate::bn254::PAIRING_CHECK_ELEMENT_SIZE }>(&gate)
+                .expect("384B-aligned gate");
+        assert!(pairing_check(elems).expect("valid points"));
+
+        // empty input is vacuously true (matches nearcore/EVM)
+        let elems = split_elements::<{ crate::bn254::PAIRING_CHECK_ELEMENT_SIZE }>(&[])
+            .expect("empty is aligned");
+        assert!(pairing_check(elems).expect("no points"));
     }
 
     fn encode_u256_pub(v: bn::arith::U256) -> [u8; 32] {

@@ -327,6 +327,24 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "near/promise_results_count",
     "near/promise_result",
     "near/promise_return",
+    // Raw promise BATCH forms (the emitter/corpus surface — production
+    // callers like outlayer-oracle/nostr-gov use these names). The
+    // interpreter's legacy aliases (near/batch_*) stay; these were missing
+    // from the COMPILE allowlist, so any define using them failed
+    // "compilation failed for define" — found by the promise differential
+    // harness 2026-09-10.
+    "near/promise_batch_create",
+    "near/promise_batch_then",
+    "near/promise_batch_action_create_account",
+    "near/promise_batch_action_deploy_contract",
+    "near/promise_batch_action_function_call",
+    "near/promise_batch_action_function_call_weight",
+    "near/promise_batch_action_transfer",
+    "near/promise_batch_action_stake",
+    "near/promise_batch_action_add_key_with_full_access",
+    "near/promise_batch_action_add_key_with_function_call",
+    "near/promise_batch_action_delete_key",
+    "near/promise_batch_action_delete_account",
     "near/call",
     "near/call-await",
     "near/transfer",

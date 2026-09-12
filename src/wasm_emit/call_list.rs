@@ -9,7 +9,15 @@ impl WasmEmitter {
         match op {
             "array" => {
                 // (array elem0 elem1 ...) → TAG_ARRAY
-                // Allocate on compile-time heap: [count, elem0, elem1, ...]
+                // [count, elem0, elem1, ...] allocated on the RUNTIME heap —
+                // a fresh block per execution. A compile-time static address
+                // made every execution of the same literal site share ONE
+                // buffer: two live arrays aliased and clobbered each other
+                // (fp254 mulTwice, 2026-09-11: ciosMul(a,b) returned r1, then
+                // ciosMul(a,r1) zero-initialized t at the same block and
+                // silently destroyed its own input → all-zero limbs on-chain).
+                // Arrays are MUTABLE (vec-set!/vec-push) — literal elements
+                // don't make sharing safe.
                 let count = a.len() as u32;
                 let slots_needed = 1 + count; // count + elements
                 let alloc_size = slots_needed * 8;
@@ -19,50 +27,31 @@ impl WasmEmitter {
                     memory_index: 0,
                 };
                 let mut v = Vec::new();
-                if self.p2_mode || self.wasi_mode {
-                    let alloc_local = self.local_idx("__arr_alloc");
-                    v.extend(self.heap_bump_runtime(alloc_size, "__arr_alloc"));
-                    // Store count at ptr[0]
-                    v.push(Instruction::LocalGet(alloc_local));
+                let ptr_local = self.local_idx("__arr_ptr");
+                v.extend(self.emit_runtime_alloc(alloc_size as i64));
+                v.push(Instruction::LocalSet(ptr_local));
+                // Store count at ptr[0]
+                v.push(Instruction::LocalGet(ptr_local));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(count as i64));
+                v.push(Instruction::I64Store(ma));
+                // Evaluate and store each element. Address materialized from
+                // the local BEFORE the element expr — nested arrays that
+                // bump the heap can't invalidate it.
+                for (i, elem) in a.iter().enumerate() {
+                    v.push(Instruction::LocalGet(ptr_local));
+                    v.push(Instruction::I64Const(((i as u32 + 1) * 8) as i64));
+                    v.push(Instruction::I64Add);
                     v.push(Instruction::I32WrapI64);
-                    v.push(Instruction::I64Const(count as i64));
+                    v.extend(self.expr(elem)?);
                     v.push(Instruction::I64Store(ma));
-                    // Evaluate and store each element
-                    for (i, elem) in a.iter().enumerate() {
-                        // I64Store expects [i32 addr, i64 val] — push address first
-                        v.push(Instruction::LocalGet(alloc_local));
-                        v.push(Instruction::I64Const(((i as u32 + 1) * 8) as i64));
-                        v.push(Instruction::I64Add);
-                        v.push(Instruction::I32WrapI64);
-                        v.extend(self.expr(elem)?);
-                        v.push(Instruction::I64Store(ma));
-                    }
-                    // Return tagged array ptr
-                    v.push(Instruction::LocalGet(alloc_local));
-                    v.push(Instruction::I64Const(TAG_BITS as i64));
-                    v.push(Instruction::I64Shl);
-                    v.push(Instruction::I64Const(TAG_ARRAY));
-                    v.push(Instruction::I64Or);
-                } else {
-                    let ptr = self.heap_bump(alloc_size);
-                    // Store count at ptr[0]
-                    v.push(Instruction::I64Const(ptr as i64));
-                    v.push(Instruction::I32WrapI64);
-                    v.push(Instruction::I64Const(count as i64));
-                    v.push(Instruction::I64Store(ma));
-                    // Evaluate and store each element
-                    for (i, elem) in a.iter().enumerate() {
-                        // I64Store expects [i32 addr, i64 val] — push address first
-                        v.push(Instruction::I64Const((ptr + ((i as u32 + 1) * 8)) as i64));
-                        v.push(Instruction::I32WrapI64);
-                        v.extend(self.expr(elem)?);
-                        v.push(Instruction::I64Store(ma));
-                    }
-                    // Return tagged array ptr
-                    v.push(Instruction::I64Const(
-                        ((ptr as i64) << TAG_BITS) | TAG_ARRAY,
-                    ));
                 }
+                // Return tagged array ptr
+                v.push(Instruction::LocalGet(ptr_local));
+                v.push(Instruction::I64Const(TAG_BITS as i64));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_ARRAY));
+                v.push(Instruction::I64Or);
                 Ok(v)
             }
             "vec-length" => {
@@ -714,43 +703,30 @@ impl WasmEmitter {
                 Ok(v)
             }
             "list" => {
-                // Two paths:
-                // 1) ALL-literal list (e.g. constants like (c-p _d) (list ...)):
-                //    a compile-time STATIC address is safe — the content never
-                //    changes, so sharing one buffer across calls is fine and
-                //    avoids heap churn (fe-mul calls (c-pp 0)/(c-p 0) ~186× per
-                //    invocation; runtime alloc there would burn ~15KB/call).
-                // 2) ANY dynamic element: must allocate at RUNTIME. A static
-                //    address would make every execution of the same list site
-                //    share ONE buffer — two live lists from the same call site
-                //    would alias and clobber each other.
+                // (list elem0 elem1 ...) → TAG_ARRAY on the RUNTIME heap.
+                // Always a fresh block per execution: arrays are mutable
+                // (vec-set!/vec-push), so a compile-time static address —
+                // even for all-literal lists — makes every execution of
+                // the same site share ONE buffer; two live lists alias and
+                // clobber each other (found via the fp254 CIOS chain probe,
+                // 2026-09-11).
                 let count = a.len() as u32;
                 let slots_needed = 1 + count;
-                let is_constant = a
-                    .iter()
-                    .all(|x| matches!(x, LispVal::Num(_) | LispVal::Bool(_) | LispVal::Nil));
                 let ma = wasm_encoder::MemArg {
                     offset: 0,
                     align: 3,
                     memory_index: 0,
                 };
                 let mut v = Vec::new();
-                if is_constant {
-                    let ptr = self.heap_bump(slots_needed * 8);
-                    v.push(Instruction::I64Const(ptr as i64));
-                    v.push(Instruction::I32WrapI64);
-                    v.push(Instruction::I64Const(count as i64));
-                    v.push(Instruction::I64Store(ma));
-                    for (i, elem) in a.iter().enumerate() {
-                        v.push(Instruction::I64Const((ptr + ((i as u32 + 1) * 8)) as i64));
-                        v.push(Instruction::I32WrapI64);
-                        v.extend(self.expr(elem)?);
-                        v.push(Instruction::I64Store(ma));
-                    }
-                    v.push(Instruction::I64Const(
-                        ((ptr as i64) << TAG_BITS) | TAG_ARRAY,
-                    ));
-                } else {
+                {
+                    // ALWAYS runtime-allocate (2026-09-11): the old
+                    // all-literal fast path used a compile-time static
+                    // address — every execution of the same site shared ONE
+                    // buffer, and since arrays are MUTABLE (vec-set!/vec-
+                    // push), two live lists aliased and clobbered each other.
+                    // Literal elements don't make sharing safe. Runtime alloc
+                    // is ~10 instructions — the heap-churn concern that
+                    // motivated the fast path is memory, not gas.
                     let list_ptr_id = self.list_ptr_counter;
                     self.list_ptr_counter += 1;
                     let ptr_local = self.local_idx(&format!("__lst_ptr_{}", list_ptr_id));

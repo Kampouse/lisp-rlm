@@ -2,19 +2,15 @@
 //! accounting, trie charging, stub warnings.
 
 use super::*;
-use lisp_rlm_wasm::bls_validate;
-use lisp_rlm_wasm::builtin_ed25519::ed25519_verify_impl;
-use lisp_rlm_wasm::builtin_schnorr::schnorr_verify_impl;
-use std::collections::HashMap;
-use std::rc::Rc;
-use std::sync::{Arc, Mutex};
 use wasmtime::*;
 
 // ============ Run configuration (CLI flags + env, 2026-09-05) ============
-/// Per-host gas schedule. Defaults = the legacy indicative constants that
-/// were previously hardcoded at each call site. Override per-run with
-/// `--gas-schedule file.json` (missing fields fall back to these defaults)
-/// after calibrating against a real sandbox / near-vm-run oracle.
+/// Per-host gas schedule. Defaults = MAINNET PV155 values (nearcore
+/// core/parameters snapshot, protocol 86, pulled 2026-09-10 during the
+/// wasmtime parity audit — the old defaults were "legacy indicative"
+/// fictions, e.g. sha256_base was ~100× low, log_base ~240× high, which made
+/// any used_gas()-branching contract diverge). Override per-run with
+/// `--gas-schedule file.json` (missing fields fall back to these defaults).
 #[derive(Clone, Debug)]
 pub(crate) struct GasSchedule {
     pub(crate) log_base: u64,
@@ -52,25 +48,30 @@ pub(crate) struct GasSchedule {
 impl Default for GasSchedule {
     fn default() -> Self {
         GasSchedule {
-            log_base: 13_181_732,
-            log_byte: 19_335_348,
-            value_return_base: 4_141_250,
-            value_return_byte: 3_574_166,
-            read_register_base: 24_108_449,
-            read_register_byte: 3_574_166,
-            storage_write_base: 64_000_000,
-            storage_write_key_byte: 90_563,
-            storage_write_value_byte: 3_548_576,
-            storage_read_base: 56_356_995,
-            storage_read_key_byte: 81_569,
-            storage_read_value_byte: 3_574_166,
-            storage_remove_base: 64_000_000,
-            storage_remove_key_byte: 90_563,
-            storage_has_key_base: 56_356_995,
-            storage_has_key_key_byte: 81_569,
+            // ── mainnet ext_costs (PV155 / protocol-86 snapshot) ──
+            log_base: 3_543_313_050,
+            log_byte: 13_198_791,
+            // value_return charges read_memory for the payload (PV155)
+            value_return_base: 2_609_863_200,
+            value_return_byte: 3_801_333,
+            read_register_base: 2_517_165_186,
+            read_register_byte: 98_562,
+            storage_write_base: 64_196_736_000,
+            storage_write_key_byte: 70_482_867,
+            storage_write_value_byte: 31_018_539,
+            storage_read_base: 56_356_845_749,
+            storage_read_key_byte: 30_952_533,
+            storage_read_value_byte: 5_611_004,
+            storage_remove_base: 53_473_030_500,
+            storage_remove_key_byte: 38_220_384,
+            storage_has_key_base: 54_039_896_625,
+            storage_has_key_key_byte: 30_790_845,
             trie_node: 2_280_000_000,
+            // mock-trie calibration (NOT protocol: the mock walks a flat map,
+            // 16 nodes ≈ a 32-byte key trie depth; keep for relative accuracy)
             trie_walk_nodes: 16,
-            ecrecover_base: 3_365_369_625_000,
+            // ── crypto/validator precompiles: unchanged, were already PV155 ──
+            ecrecover_base: 278_821_988_457,
             p256_verify_base: 1_300_000_000_000,
             alt_bn128_g1_multiexp_base: 713_000_000_000,
             alt_bn128_g1_multiexp_element: 320_000_000_000,
@@ -184,6 +185,16 @@ impl GasSchedule {
     }
 }
 
+/// Fork-mode config: lazily page contract code + storage from an archival
+/// RPC at a pinned block ("anvil --fork-url" for NEAR).
+#[derive(Clone, Debug)]
+pub(crate) struct ForkCfg {
+    pub(crate) rpc: String,
+    /// Pinned block for all fetches. `None` = `finality: "final"` on every
+    /// request (always-fresh, but state may drift mid-session — opt-in).
+    pub(crate) block: Option<u64>,
+}
+
 /// Real NEAR storage staking: 1e20 yoctoNEAR (0.1 NEAR) locked per byte.
 pub(crate) const STAKING_COST_PER_BYTE: u128 = 100_000_000_000_000_000_000;
 
@@ -204,6 +215,8 @@ pub(crate) struct RunCfg {
     /// --trace | NEAR_MOCK_TRACE=1: record every host call (name, gas, seq)
     /// into HOST_TRACE and print a per-host summary after the run.
     pub(crate) trace: bool,
+    /// Fork-mode: lazy state/code paging from archival RPC.
+    pub(crate) fork: Option<ForkCfg>,
 }
 
 /// SplitMix64 — cheap mixing for the per-call random_seed entropy.

@@ -22,7 +22,17 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
         "str-contains" => Ok(Some(LispVal::Bool(
             as_str(&args[0])?.contains(&as_str(&args[1])?),
         ))),
-        "to-string" => Ok(Some(LispVal::Str(args[0].to_string()))),
+        // to-string: value → string. Str is IDENTITY (raw content, no quotes)
+        // — matches wasm __int_to_str (TAG_STR passthrough, wasm_emit/helpers.rs
+        // "TAG_STR(5) -> pass through") and Clojure `str`. Found as a VM↔wasm
+        // divergence by the deep-compare fuzzer (2026-09-10): the old Display-
+        // based impl returned "\"abc\"" (quoted) while wasm returned "abc".
+        // Quoting is json-quote's job, not to-string's.
+        "to-string" => Ok(Some(match args.first() {
+            Some(LispVal::Str(s)) => LispVal::Str(s.clone()),
+            Some(other) => LispVal::Str(other.to_string()),
+            None => LispVal::Str(String::new()),
+        })),
         "str-length" => {
             let s = as_str(&args[0])?;
             Ok(Some(LispVal::Num(s.chars().count() as i64)))

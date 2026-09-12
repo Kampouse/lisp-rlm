@@ -739,3 +739,157 @@ Board after: battery 1587/0 · gauntlet 69/69 · twins 68/68 trace-equivalent
 (FT branch live in BOTH twins; phantom-token execute pinned to
 MOCK-CHAIN-FAILURE). The TS-twin live-vs-mock discrepancy from this morning is
 explained: same noop-host bug — mock swallowed what live NEAR executed.
+
+## 2026-09-10 — FUZZ HARNESS DEEP-COMPARE UPGRADE (step 1 of the bug-finding plan)
+
+`tests/test_wasm_fuzz.rs` compared only tagged i64 words for Num/Bool/Nil and
+checked ONLY TAG VALIDITY for Str/List returns (`tag > 5 → INVALID`) — string
+CONTENT, list CONTENT, and the print/log channel were invisible. Three blind
+spots, one latent harness bug, one real divergence found while upgrading:
+
+1. **HARNESS BUG (fixed)**: local tag constants predated TAG_ARRAY=6 — a valid
+   array return would have been reported as "INVALID TAG" (false positive).
+   Decoding now uses `src/tagged_value.rs` as single source of truth.
+2. **DEEP COMPARE (new)**: Str returns compare byte-exact (ptr/len read from
+   post-run memory); List returns deep-decode as TAG_ARRAY `[count, elems...]`
+   and compare element-wise. Out-of-bounds ptr/len/count report as CORRUPT —
+   heap-corruption-class signal, not a skip.
+3. **LOG CHANNEL (new)**: `log_utf8` (near host 28 — note ARG ORDER is
+   (len, ptr)) is now implemented for capture; wasm logs must match the
+   trailing VM log entries (wasm runs only `run`, so suffix match).
+   `EvalState` gained a `logs: Vec<String>` field; `print`/`println` record
+   there (stdout behavior unchanged).
+4. **TRAP CLASS (new)**: wasm trap while ClosureVM succeeded now reports as
+   "WASM TRAP" instead of a generic error string.
+5. **REAL DIVERGENCE FOUND — pinned**: `(print x)` returns `Str(rendered)` in
+   the ClosureVM (src/dispatch/dispatch_state.rs print arm) but `nil` in wasm
+   (src/wasm_emit/call_near_io.rs print arm ends with TAG_NIL). WASM is the
+   reference (2026-08-26 anchor) → the INTERPRETER is wrong here; pinned in
+   the harness as `is_pinned_print_return` until dispatch is aligned.
+   TODO: make interpreter print return Nil (one-line fix + tests).
+
+Status: all 66 tests green (61 existing + 5 new deep probes: string content,
+list content, nested lists, list-of-strings, print channel, mixed
+str-cat/number->string). No new VM↔wasm value divergences on the existing
+corpus — the generators don't emit string/list-returning programs yet, so the
+deep compare bites on hand probes and any future generator extension
+(strategies for str-cat/substring/list builds are the natural next grow).
+
+Next (step 2): host-effect diffing — run the wasm leg under near-mock
+MockChain and compare storage writes + promise schedule + input(); targets
+the G-14/promise_result/storage-string-safety/mem[56] bug class. The print
+channel captured here is the template.
+
+## 2026-09-10 (evening) — STRING/LIST GENERATORS + 2 REAL BUGS FIXED
+
+Extended the fuzz generators to the string/list surface (all-3-surface ops
+only: str-cat, str-concat, str-contains, str-index-of, str-length,
+str-substring, to-string; list, len, car, cdr, cons, nth) with 8 new props
++ edge probes (unicode, empty-needle, coercion, to-string of every type).
+Also added `FuzzVerdict` — skips are now VISIBLE (Matched / Pinned /
+SkippedVmError / SkippedCompile / Uncomparable), so probes assert
+NON-VACUOUS comparison (an earlier probe had passed vacuously through the
+compile-skip path — `number->string` is interpreter-only).
+
+**BUG 1 (FIXED): `to-string` quoted strings in the interpreter.**
+`(to-string "abc")` → `"\"abc\""` (Display-based) in BOTH VM dispatches
+(dispatch_strings.rs + bytecode/mod.rs) but `"abc"` (identity) in wasm —
+`__int_to_str` does TAG_STR passthrough (wasm_emit/helpers.rs:1430). Found
+by `edge_to_string_types` on day one of content comparison. Fixed both
+interpreter paths to Str-identity; `tests/core_language.rs
+::test_to_string_string` re-pinned (was pinning the wrong side). No
+corpus/runtime usage relied on quoting; `json-quote` is the designated
+quoting op. Clojure `str` semantics agree.
+
+**BUG 2 (FIXED): `print`/`println` failed the type checker outside near
+mode.** Checker only accepted compiler builtins via `near_wildcard`
+(checker.rs:227) — fuzz-mode programs with print died "undefined variable
+'print'", so EVERY print program was SkippedCompile and the log channel
+NEVER fired (my morning GAPS entry overstated this — the machinery existed
+but was unreachable). Fixed: print/println added to the pure builtin table
+as `'a → nil` (nil per the wasm reference; interpreter's Str return stays a
+pinned divergence). `prop_print_channel` now compares logs for real.
+
+**Pins added**: `(str-cat "x" 42)` errors (no coercion — to-string is the
+bridge) → SkippedVmError, pinned in `edge_str_cat_coercion`.
+
+Status: test_wasm_fuzz 78/0 (+2 ignored pre-existing); core_language 160/0;
+surface_parity, source_differential, fuzz_test, limb_arith, norvig all
+green. test_api_sweep failures are environmental (needs
+`target/release/near-mock` built — pre-existing, not related).
+
+No divergences found in: unicode str-length/contains (byte-vs-char
+semantics agree), empty-needle index-of/contains, substring ranges,
+nested/mixed lists, list print rendering, string×control-flow.
+
+Known follow-ups: (1) HOF×strings (map over string lists) unprobed —
+HofCompile coverage exists in F* but no VM-level probe; (2) the print
+surface is now compilable in fuzz mode — prop_print_channel should
+eventually print LISTS and structured values, not just leaves; (3)
+to-string of floats/vecs (uncomparable channels) still skip.
+
+## 2026-09-10 (night) — STEP 2: PROMISE DIFFERENTIAL HARNESS — 5 REAL BUGS
+
+New harness `tests/test_promise_differential.rs`: interpreter promise-log
+(EvalState.near_promises) vs REAL wasm host-call schedule. The wasm leg runs
+compile_near output under wasmtime with REAL host implementations (promise
+family hosts 30-35/39-43, storage, registers, input, log) that RECORD the
+schedule; the interp leg's mock log is normalized to the same canonical ops
+(sugar expanded: near/call → [create, return]; near/call-await → [batch_create,
+fn_call, batch_then(self), fn_call(cb), return]). Compares schedule + final
+storage. The fuzz harness stubs hosts as return-0 — promise programs were
+NEVER differentially testable before this.
+
+**BUG 1 (interp, fixed): promise ABI gas/deposit SWAPPED.** Interp read
+gas@3/deposit@4 for promise_create, promise_then,
+promise_batch_action_function_call; the emitter (and corpus — outlayer-oracle,
+nostr-gov) use DEPOSIT-before-GAS. The mock log recorded swapped values since
+forever; nothing caught it because nothing diffed the log against reality.
+Interp now matches the wasm ABI; deposits recorded as decimal strings
+(Num or Str accepted — matches emitter u128-str machinery).
+
+**BUG 2 (emitter, fixed, CRITICAL): near/promise_then gas sent to host
+STILL TAGGED — 8× the intended gas.** The arm pushed `gas` without
+emit_untag (create/batch arms untag). Every on-chain promise_then callback
+was attached with 8× the specified gas (wasting gas; corrupting gas-budget
+arithmetic). Fixed: untag added (call_near_promise.rs then-arm).
+
+**BUG 3 (interp, fixed): raw near/promise_batch_* forms UNCOMPILABLE.**
+BUILTIN_NAMES (compile allowlist) had the near/batch_* legacy aliases but
+NOT the near/promise_batch_* names the emitter/corpus/production use — any
+define using them failed "compilation failed for define". Dispatch arms
+existed; only compilation was blocked. All promise_batch forms added.
+
+**BUG 4 (interp, fixed): near/call-await missing from the dispatch ROUTING
+GATE.** eval_near_builtin_match omitted it → "unknown builtin" at runtime
+(arm existed inside eval_near_builtin). One-line gate fix.
+
+**BUG 5 (emitter, fixed, CRITICAL — DeFi-grade): near/call with a STRING
+deposit attached GARBAGE yocto.** The arm untagged the deposit value and
+stored it as the low-64 — for a decimal-string deposit (the ONLY way to
+express amounts > 2^61, and what production passes) that wrote the TAGGED
+STRING BITS as the amount. Repro showed deposit=107374182688 instead of
+10^24. Fixed: runtime tag branch — TAG_STR → u128 decimal parse helper
+(same machinery as batch forms), else → zero-extended Num low-64. Checker
+near/call deposit retyped int→any (str deposits were rejected); interp
+near/call records Str deposits.
+
+Also: explicit exports now suppress the auto _run wrapper export (harness
+worked around by exporting run explicitly — this is emitter behavior, not
+changed, but worth knowing: a program with ONLY (export "cb" ...) has NO
+entry export).
+
+Status: test_promise_differential 11/11 (create/then/and/return/batch ops,
+near/call + call-await sugar, storage roundtrip, str+num deposits, missing
+keys). Regression sweep green: core_language 160, test_wasm_fuzz 78,
+wallet_diff 16, money_safety 16, surface_parity, safe_corpus,
+source_differential, norvig, fuzz_test. test_regression: 27 failures are
+ENVIRONMENTAL (wasm-tools CLI not installed — spawn error at test line 40,
+unrelated to these changes).
+
+Next: (1) promise_result consumption diffing needs receipt EXECUTION —
+near-mock MockChain is the right venue (scenario-style, library mode);
+(2) prop-style generators for promise programs (random batch graphs) once
+the surface settles; (3) re-audit on-chain callers of promise_then for the
+8× gas budget impact (callback gas was over-attached — funds wasted, not
+lost, but gas accounting in callers may now under-attach after the fix).

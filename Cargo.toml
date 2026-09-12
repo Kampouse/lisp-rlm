@@ -16,7 +16,7 @@ lto = true
 
 [package]
 name = "lisp-rlm-wasm"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 description = "Lisp/TS/Solidity → NEAR smart-contract compiler core (parser, typechecker, wasm emitter, crypto stitcher, wit bindings)"
 license = "MIT"
@@ -62,7 +62,7 @@ k256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 wat = "1.0"
 wasm-encoder = "0.248.0"
-wasmparser = { version = "0.228.0", features = ["simd"] }
+wasmparser = { version = "0.248", features = ["simd"] }
 wasmprinter = "0.248.0"
 finite-wasm = "0.6"
 bincode = "1"

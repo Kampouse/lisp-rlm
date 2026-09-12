@@ -2,18 +2,17 @@
 //! context, crypto, promises, precompiles).
 
 use super::*;
-use lisp_rlm_wasm::bls_validate;
-use lisp_rlm_wasm::builtin_ed25519::ed25519_verify_impl;
-use lisp_rlm_wasm::builtin_schnorr::schnorr_verify_impl;
+use crate::bls_validate;
+use crate::ed25519::ed25519_verify_impl;
+use crate::schnorr::schnorr_verify_impl;
 use std::collections::HashMap;
-use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use wasmtime::*;
 
 /// Debug-escape a raw trie key for trace output: printable ASCII as-is,
 /// everything else as \xNN so borsh prefixes and account separators stay
 /// legible (e.g. "\x04\x0ftoken.chat.near").
-fn dbg_key(k: &[u8]) -> String {
+pub(crate) fn dbg_key(k: &[u8]) -> String {
     let mut s = String::with_capacity(k.len() + 2);
     for &b in k {
         if (0x20..0x7f).contains(&b) && b != b'"' && b != b'\\' {
@@ -30,12 +29,44 @@ fn dbg_key(k: &[u8]) -> String {
 /// invocation when tracing is on; a TLS read + branch otherwise.
 /// The fuel delta is EXACT: read before the body, after the body — captures
 /// whatever the host charged via set_fuel, regardless of schedule.
+
+/// Charge gas against the instrumented `remaining_gas` global (the single
+/// gas counter since the finite-wasm instrumentation landed — wasmtime fuel
+/// is disabled). Errors with mainnet's message when exhausted.
+pub(crate) fn charge_gas(
+    caller: &mut wasmtime::Caller<'_, crate::StoreData>,
+    amount: u64,
+) -> Result<(), wasmtime::Error> {
+    use wasmtime::AsContextMut;
+    let Some(g) = caller
+        .get_export(crate::REMAINING_GAS_EXPORT)
+        .and_then(|e| e.into_global())
+    else {
+        return Err(wasmtime::Error::msg(
+            "gas global missing (module not instrumented)",
+        ));
+    };
+    let cur = match g.get(caller.as_context_mut()) {
+        wasmtime::Val::I64(v) => u64::try_from(v).unwrap_or(0),
+        _ => return Err(wasmtime::Error::msg("gas global wrong type")),
+    };
+    if cur < amount {
+        return Err(wasmtime::Error::msg("Exceeded the prepaid gas"));
+    }
+    g.set(
+        caller.as_context_mut(),
+        wasmtime::Val::I64((cur - amount) as i64),
+    )
+    .map_err(wasmtime::Error::from)?;
+    Ok(())
+}
+
 pub(crate) fn host_fn(
     name: &'static str,
-    store: &mut wasmtime::Store<()>,
+    store: &mut wasmtime::Store<crate::StoreData>,
     ty: wasmtime::FuncType,
     f: impl Fn(
-            &mut wasmtime::Caller<'_, ()>,
+            &mut wasmtime::Caller<'_, crate::StoreData>,
             &[wasmtime::Val],
             &mut [wasmtime::Val],
         ) -> Result<(), wasmtime::Error>
@@ -44,29 +75,47 @@ pub(crate) fn host_fn(
         + 'static,
 ) -> wasmtime::Func {
     wasmtime::Func::new(store, ty, move |mut caller, args, results| {
+        // PV155 base cost of ANY host-function invocation (264,768,111 gas,
+        // protocol-86 snapshot) — charged here at the single chokepoint every
+        // host passes through; named per-host costs are charged inside `f`.
+        crate::hosts::charge_gas(&mut caller, crate::HOST_CALL_BASE_GAS)?;
         // mock_cfg() falls back to RunCfg::default() on worker threads, so
         // NEAR_MOCK_TRACE=1 reaches promise sub-execution without TLS setup.
         let on = mock_cfg().trace;
-        let before = if on {
-            caller.get_fuel().unwrap_or(0)
-        } else {
-            0
+        let gas_now = |c: &mut wasmtime::Caller<'_, crate::StoreData>| -> u64 {
+            c.get_export(crate::REMAINING_GAS_EXPORT)
+                .and_then(|e| e.into_global())
+                .map(|g| match g.get(c) {
+                    wasmtime::Val::I64(v) => u64::try_from(v).unwrap_or(0),
+                    _ => 0,
+                })
+                .unwrap_or(0)
         };
+        let before = if on { gas_now(&mut caller) } else { 0 };
         let r = f(&mut caller, args, results);
         if on {
-            let after = caller.get_fuel().unwrap_or(before);
+            let after = gas_now(&mut caller);
             trace_host(name, before.saturating_sub(after), r.is_err());
         }
         r
     })
 }
 
+/// Gated stderr trace: every host call prints by default (CLI UX), but
+/// long-running library consumers (stream replayers) set NEAR_MOCK_QUIET=1
+/// to silence the per-call firehose. Behavior identical otherwise.
+macro_rules! htrace {
+    ($($arg:tt)*) => {
+        if !crate::host_trace_quiet() { eprintln!($($arg)*); }
+    };
+}
+
 pub(crate) fn build_env_linker(
-    store: &mut wasmtime::Store<()>,
+    store: &mut wasmtime::Store<crate::StoreData>,
     engine: &wasmtime::Engine,
     state: std::sync::Arc<Mutex<MockState>>,
     single_input: Vec<u8>,
-) -> Result<wasmtime::Linker<()>, Box<dyn std::error::Error>> {
+) -> Result<wasmtime::Linker<crate::StoreData>, Box<dyn std::error::Error>> {
     let mut linker = wasmtime::Linker::new(engine);
     // === Host functions (all created before linking) ===
 
@@ -77,9 +126,11 @@ pub(crate) fn build_env_linker(
         FuncType::new(engine, vec![ValType::I64; 2], vec![]),
         move |mut caller, args, _| {
             let (len, ptr) = (args[0].unwrap_i64() as usize, args[1].unwrap_i64() as usize);
-            // Fee schedule (legacy indicative defaults, --gas-schedule to override)
-            let cost = mock_cfg().gas.log_base + mock_cfg().gas.log_byte * len as u64;
-            caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
+            // PV155 composite: read_memory + utf8_decoding + log
+            let cost = mock_cfg().gas.log_base + mock_cfg().gas.log_byte * len as u64
+                + crate::READ_MEMORY_BASE_GAS + crate::READ_MEMORY_BYTE_GAS * len as u64
+                + crate::UTF8_DECODING_BASE_GAS + crate::UTF8_DECODING_BYTE_GAS * len as u64;
+            charge_gas(&mut caller, cost)?;
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 let data = mem.data(&caller);
                 if ptr + len <= data.len() {
@@ -105,21 +156,26 @@ pub(crate) fn build_env_linker(
         FuncType::new(engine, vec![ValType::I64; 2], vec![]),
         move |mut caller, args, _| {
             let (len, ptr) = (args[0].unwrap_i64() as usize, args[1].unwrap_i64() as usize);
-            eprintln!("  → value_return(len={}, ptr={})", len, ptr);
+            htrace!("  → value_return(len={}, ptr={})", len, ptr);
             // Fee schedule: read_memory base + per byte
             let cost =
                 mock_cfg().gas.value_return_base + mock_cfg().gas.value_return_byte * len as u64;
-            caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
+            charge_gas(&mut caller, cost)?;
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 let data = mem.data(&caller);
                 if ptr + len <= data.len() {
                     let mut st = s2.lock().unwrap();
-                    // LAST-write-wins — nearcore semantics (synced from the
-                    // crate 2026-09-09; the first-write guard diverged from
-                    // the chain and masked a real contract bug — see the
-                    // registry-nostrgov.testnet deployment notes). Receipt
-                    // isolation is structural: sub_execute saves/clears/
-                    // restores return_data around sub-calls.
+                    // LAST-write-wins — nearcore semantics. The old
+                    // first-write guard diverged from the chain: a contract
+                    // calling value_return twice (e.g. jsonReturnStr("1")
+                    // followed by an export-level `return 0`, which the TS
+                    // frontend also lowers to value_return) returned the
+                    // FIRST value on the mock and the LAST on-chain
+                    // (dogfooded live via registry-nostrgov.testnet
+                    // 2026-09-09: chain said "0", mock said "1" — the
+                    // divergence masked a real contract bug). Receipt
+                    // isolation is unaffected: sub_execute saves/clears/
+                    // restores return_data around sub-calls structurally.
                     st.return_data = Some(data[ptr..ptr + len].to_vec());
                 }
             }
@@ -136,16 +192,18 @@ pub(crate) fn build_env_linker(
             let (rid, ptr) = (args[0].unwrap_i64() as u64, args[1].unwrap_i64() as usize);
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 if let Some(data) = s3.lock().unwrap().registers.get(&rid).cloned() {
-                    // Fee schedule: base + per byte
+                    // PV155 composite: read_register + write_memory (guest copy)
                     let cost = mock_cfg().gas.read_register_base
-                        + mock_cfg().gas.read_register_byte * data.len() as u64;
-                    caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
+                        + mock_cfg().gas.read_register_byte * data.len() as u64
+                        + crate::WRITE_MEMORY_BASE_GAS
+                        + crate::WRITE_MEMORY_BYTE_GAS * data.len() as u64;
+                    charge_gas(&mut caller, cost)?;
                     let md = mem.data_mut(&mut caller);
                     if ptr + data.len() <= md.len() {
                         md[ptr..ptr + data.len()].copy_from_slice(&data);
-                        eprintln!("  → read_register({}, ptr={}) ok {}b", rid, ptr, data.len());
+                        htrace!("  → read_register({}, ptr={}) ok {}b", rid, ptr, data.len());
                     } else {
-                        eprintln!(
+                        htrace!(
                             "  ⚠ read_register({}, ptr={}): {}b doesn't fit in mem({})",
                             rid,
                             ptr,
@@ -156,7 +214,7 @@ pub(crate) fn build_env_linker(
                 } else {
                     // near-core semantics: reading a missing register is a host
                     // error (InvalidRegisterId) — the contract traps.
-                    eprintln!("  ⚠ read_register({}): not found → trap", rid);
+                    htrace!("  ⚠ read_register({}): not found → trap", rid);
                     return Err(wasmtime::Error::msg(format!(
                         "InvalidRegisterId {{ register_id: {} }}",
                         rid
@@ -184,8 +242,8 @@ pub(crate) fn build_env_linker(
                 .map(|d| d.len() as i64)
                 .unwrap_or(-1);
             // Indicative legacy fee
-            caller.set_fuel(caller.get_fuel()?.saturating_sub(21_165_243))?;
-            eprintln!("  → register_len({}) = {}", rid, len);
+            charge_gas(&mut caller, crate::READ_MEMORY_BASE_GAS)?;
+            htrace!("  → register_len({}) = {}", rid, len);
             results[0] = Val::I64(len);
             Ok(())
         },
@@ -199,13 +257,14 @@ pub(crate) fn build_env_linker(
         move |mut caller, args, _| {
             let single_input = single_input.clone();
             let rid = args[0].unwrap_i64() as u64;
-            eprintln!("  → input(reg={})", rid);
+            htrace!("  → input(reg={})", rid);
             let bytes = EXEC_CTX
                 .with(|c| c.borrow().as_ref().map(|x| x.input.clone()))
                 .unwrap_or_else(|| single_input.clone());
             // Indicative legacy fee: write_register base + per byte
-            let cost = 21_165_243u64 + 3_574_166u64 * bytes.len() as u64;
-            caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
+            let cost = crate::WRITE_REGISTER_BASE_GAS
+                + crate::WRITE_REGISTER_BYTE_GAS * bytes.len() as u64;
+            charge_gas(&mut caller, cost)?;
             let mut st = s5.lock().unwrap();
             // Real NEAR semantics: input() ALWAYS writes the args into the
             // register, overwriting any prior value. The old contains_key
@@ -240,17 +299,21 @@ pub(crate) fn build_env_linker(
                     let acct = exec_ctx_or_default().contract;
                     let key = prefixed_key(&acct, &raw_key);
                     let val = md[vp..vp + vl].to_vec();
-                    eprintln!("  → storage_write(\"{}\") = {}b", dbg_key(&raw_key), vl);
-                    // Fee schedule (legacy indicative defaults, --gas-schedule to override)
+                    htrace!("  → storage_write(\"{}\") = {}b", dbg_key(&raw_key), vl);
+                    // PV155 composite: read_memory(key) + read_memory(value)
+                    // + storage_write (evicted write_register added post-insert)
                     let gas = &mock_cfg().gas;
                     let cost = gas.storage_write_base
                         + gas.storage_write_key_byte * kl as u64
-                        + gas.storage_write_value_byte * vl as u64;
-                    caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
+                        + gas.storage_write_value_byte * vl as u64
+                        + crate::READ_MEMORY_BASE_GAS + crate::READ_MEMORY_BYTE_GAS * kl as u64
+                        + crate::READ_MEMORY_BASE_GAS + crate::READ_MEMORY_BYTE_GAS * vl as u64;
+                    charge_gas(&mut caller, cost)?;
                     let mut st = s6.lock().unwrap();
                     let trie = trie_charge_write(&mut st, &key);
                     let (klen, vlen) = (key.len(), val.len());
-                    let old = st.storage.insert(key, val);
+                    let old = st.storage.insert(key.clone(), val);
+                    crate::fork_untombstone(&key);
                     evicted = old.is_some();
                     // Storage staking: lock for net new bytes (refund replaced).
                     // Prefixed key = acct + '\0' + raw key → raw key = klen - acct - 1.
@@ -260,10 +323,17 @@ pub(crate) fn build_env_linker(
                         .unwrap_or(0);
                     apply_staking_delta(&mut st, &acct, (klen + vlen) as i64 - old_raw_len as i64);
                     drop(st);
-                    caller.set_fuel(caller.get_fuel()?.saturating_sub(trie))?;
+                    charge_gas(&mut caller, trie)?;
                     let mut st = s6.lock().unwrap();
                     if rid != u64::MAX {
                         if let Some(old) = old {
+                            drop(st);
+                            charge_gas(
+                                &mut caller,
+                                crate::WRITE_REGISTER_BASE_GAS
+                                    + crate::WRITE_REGISTER_BYTE_GAS * old.len() as u64,
+                            )?;
+                            let mut st = s6.lock().unwrap();
                             write_reg_checked(&mut st, rid, old)
                                 .map_err(|e| wasmtime::Error::msg(e))?;
                         }
@@ -311,7 +381,7 @@ pub(crate) fn build_env_linker(
             let found = if let Some(key) = &key_from_mem {
                 let mut st = s7.lock().unwrap();
                 if let Some(val) = st.storage.get(key).cloned() {
-                    eprintln!("  → storage_read found {}b", val.len());
+                    htrace!("  → storage_read found {}b", val.len());
                     if std::env::var("NEAR_MOCK_KEYS").is_ok() {
                         let acct = exec_ctx_or_default().contract;
                         let raw = if key.len() > acct.len() {
@@ -319,31 +389,72 @@ pub(crate) fn build_env_linker(
                         } else {
                             &key[..]
                         };
-                        eprintln!("    🔑 key [{}]", dbg_key(raw));
+                        htrace!("    🔑 key [{}]", dbg_key(raw));
                     }
-                    // Fee schedule + production trie-node access
+                    // PV155 composite: read_memory(key) + storage_read +
+                    // trie + write_register(value → register)
                     let gas = &mock_cfg().gas;
                     let trie = trie_charge(&mut st, key);
                     let cost = gas.storage_read_base
                         + gas.storage_read_key_byte * kl as u64
                         + gas.storage_read_value_byte * val.len() as u64
-                        + trie;
+                        + trie
+                        + crate::READ_MEMORY_BASE_GAS + crate::READ_MEMORY_BYTE_GAS * kl as u64
+                        + crate::WRITE_REGISTER_BASE_GAS
+                        + crate::WRITE_REGISTER_BYTE_GAS * val.len() as u64;
                     drop(st);
-                    caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
+                    charge_gas(&mut caller, cost)?;
                     let mut st = s7.lock().unwrap();
                     write_reg_checked(&mut st, rid, val).map_err(|e| wasmtime::Error::msg(e))?;
                     true
+                } else if crate::fork_enabled() {
+                    // fork-mode: local miss → page the key in from the fork
+                    // block, then re-check (found path re-runs below by
+                    // re-locking; keep it simple: recursive-free re-lookup)
+                    drop(st);
+                    let contract = exec_ctx_or_default().contract;
+                    let raw = &key[contract.len() + 1..];
+                    let hit = crate::fork_page_in(&s7, &contract, raw, key);
+                    if hit {
+                        let val = {
+                            let mut st = s7.lock().unwrap();
+                            let v = st.storage.get(key).cloned();
+                            let trie = trie_charge(&mut st, key);
+                            let gas = &mock_cfg().gas;
+                            let cost = gas.storage_read_base
+                                + gas.storage_read_key_byte * kl as u64
+                                + gas.storage_read_value_byte * v.as_ref().map(|x| x.len()).unwrap_or(0) as u64
+                                + trie
+                                + crate::READ_MEMORY_BASE_GAS + crate::READ_MEMORY_BYTE_GAS * kl as u64
+                                + crate::WRITE_REGISTER_BASE_GAS
+                                + crate::WRITE_REGISTER_BYTE_GAS * v.as_ref().map(|x| x.len()).unwrap_or(0) as u64;
+                            drop(st);
+                            charge_gas(&mut caller, cost)?;
+                            v
+                        };
+                        if let Some(val) = val {
+                            let mut st = s7.lock().unwrap();
+                            write_reg_checked(&mut st, rid, val)
+                                .map_err(|e| wasmtime::Error::msg(e))?;
+                        }
+                        true
+                    } else {
+                        false
+                    }
                 } else {
-                    eprintln!(
+                    htrace!(
                         "  → storage_read not found [{}]",
                         String::from_utf8_lossy(key)
                     );
-                    // production charges the read base + trie walk even on miss
+                    // production charges the read base + trie walk even on
+                    // miss; guest key was still read → read_memory too
                     let gas = &mock_cfg().gas;
                     let trie = trie_charge(&mut st, key);
-                    let cost = gas.storage_read_base + gas.storage_read_key_byte * kl as u64 + trie;
+                    let cost = gas.storage_read_base + gas.storage_read_key_byte * kl as u64
+                        + trie + crate::READ_MEMORY_BASE_GAS
+                        + crate::READ_MEMORY_BYTE_GAS * kl as u64;
                     drop(st);
-                    caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
+                    charge_gas(&mut caller, cost)?;
                     false
                 }
             } else {
@@ -382,23 +493,28 @@ pub(crate) fn build_env_linker(
                         (st.storage.remove(&rkey), trie_charge_write(&mut st, &rkey))
                     };
                     if let Some(val) = val {
-                        // Fee schedule: base + key bytes + trie access
+                        // PV155 composite: read_memory(key) + storage_remove +
+                        // trie + write_register(removed value)
                         let gas = &mock_cfg().gas;
                         let cost = gas.storage_remove_base
                             + gas.storage_remove_key_byte * kl as u64
-                            + trie;
+                            + trie
+                            + crate::READ_MEMORY_BASE_GAS + crate::READ_MEMORY_BYTE_GAS * kl as u64
+                            + crate::WRITE_REGISTER_BASE_GAS
+                            + crate::WRITE_REGISTER_BYTE_GAS * val.len() as u64;
                         // Storage staking: refund the removed bytes
                         apply_staking_delta(
                             &mut s8.lock().unwrap(),
                             &exec_ctx_or_default().contract,
                             -((kl + val.len()) as i64),
                         );
-                        caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
+                        charge_gas(&mut caller, cost)?;
                         if rid != u64::MAX {
                             let mut st = s8.lock().unwrap();
                             write_reg_checked(&mut st, rid, val)
                                 .map_err(|e| wasmtime::Error::msg(e))?;
                         }
+                        crate::fork_tombstone(&rkey);
                         results[0] = Val::I64(1);
                         return Ok(());
                     }
@@ -424,15 +540,23 @@ pub(crate) fn build_env_linker(
                         let acct = exec_ctx_or_default().contract;
                         prefixed_key(&acct, &raw)
                     };
-                    let (has, trie) = {
+                    let (mut has, trie) = {
                         let mut st = s9.lock().unwrap();
                         (st.storage.contains_key(&hkey), trie_charge(&mut st, &hkey))
                     };
-                    // Fee schedule + trie-node access
+                    if !has && crate::fork_enabled() {
+                        let contract = exec_ctx_or_default().contract;
+                        let raw = &hkey[contract.len() + 1..];
+                        has = crate::fork_page_in(&s9, &contract, raw, &hkey);
+                    }
+                    // PV155 composite: read_memory(key) + storage_has_key + trie
                     let gas = &mock_cfg().gas;
-                    let cost =
-                        gas.storage_has_key_base + gas.storage_has_key_key_byte * kl as u64 + trie;
-                    caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
+                    let cost = gas.storage_has_key_base
+                        + gas.storage_has_key_key_byte * kl as u64
+                        + trie
+                        + crate::READ_MEMORY_BASE_GAS
+                        + crate::READ_MEMORY_BYTE_GAS * kl as u64;
+                    charge_gas(&mut caller, cost)?;
                     results[0] = Val::I64(if has { 1 } else { 0 });
                     return Ok(());
                 }
@@ -474,13 +598,18 @@ pub(crate) fn build_env_linker(
         "current_account_id",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64], vec![]),
-        move |_, args, _| {
+        move |mut caller, args, _| {
             let acct = exec_ctx_or_default().contract;
             let acct = if acct.is_empty() {
                 "escrow.test.near".to_string()
             } else {
                 acct
             };
+            charge_gas(
+                &mut caller,
+                crate::WRITE_REGISTER_BASE_GAS
+                    + crate::WRITE_REGISTER_BYTE_GAS * acct.len() as u64,
+            )?;
             s_ca.lock()
                 .unwrap()
                 .registers
@@ -494,7 +623,7 @@ pub(crate) fn build_env_linker(
         "signer_account_id",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64], vec![]),
-        move |_, args, _| {
+        move |mut caller, args, _| {
             // NEAR_MOCK_SIGNER overrides the tx signer — liquidation tests
             // need caller ≠ account owner (default stays owner.test.near).
             let signer = {
@@ -505,6 +634,11 @@ pub(crate) fn build_env_linker(
                     std::env::var("NEAR_MOCK_SIGNER").unwrap_or_else(|_| "owner.test.near".into())
                 }
             };
+            charge_gas(
+                &mut caller,
+                crate::WRITE_REGISTER_BASE_GAS
+                    + crate::WRITE_REGISTER_BYTE_GAS * signer.len() as u64,
+            )?;
             s_sa.lock()
                 .unwrap()
                 .registers
@@ -518,7 +652,7 @@ pub(crate) fn build_env_linker(
         "predecessor_account_id",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64], vec![]),
-        move |_, args, _| {
+        move |mut caller, args, _| {
             let pred = {
                 let ctx = exec_ctx_or_default();
                 if EXEC_CTX.with(|c| c.borrow().is_some()) {
@@ -527,6 +661,11 @@ pub(crate) fn build_env_linker(
                     "owner.test.near".to_string()
                 }
             };
+            charge_gas(
+                &mut caller,
+                crate::WRITE_REGISTER_BASE_GAS
+                    + crate::WRITE_REGISTER_BYTE_GAS * pred.len() as u64,
+            )?;
             s_pa.lock()
                 .unwrap()
                 .registers
@@ -540,7 +679,11 @@ pub(crate) fn build_env_linker(
         "signer_account_pk",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64], vec![]),
-        move |_, args, _| {
+        move |mut caller, args, _| {
+            charge_gas(
+                &mut caller,
+                crate::WRITE_REGISTER_BASE_GAS + crate::WRITE_REGISTER_BYTE_GAS * 51,
+            )?;
             s_pk.lock().unwrap().registers.insert(
                 args[0].unwrap_i64() as u64,
                 b"ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_vec(),
@@ -568,7 +711,7 @@ pub(crate) fn build_env_linker(
         },
     );
 
-    let s_ab = state.clone();
+    let _s_ab = state.clone();
     let account_balance_fn = host_fn(
         "account_balance",
         &mut *store,
@@ -615,9 +758,12 @@ pub(crate) fn build_env_linker(
         move |mut caller, args, _| {
             let ptr = args[0].unwrap_i64() as usize;
             // Real host shape: 16 LE bytes of THIS receipt's deposit.
-            // Reads NEAR_MOCK_ATTACH (same var the balance-credit path
-            // uses — was always 0: the auction protocol reads it, and
-            // value-receiving entries silently saw nothing. 2026-09-01.)
+            // CURRENT_DEPOSIT is set by execute_tx for the top-level entry
+            // (from --attach/--deposit/NEAR_MOCK_ATTACH, ≥0.1.7) and by
+            // sub_execute for promise children. The env var remains as the
+            // single-wasm runner's fallback. (Was always 0 for cross/call
+            // flag runs: the auction protocol reads it, and value-receiving
+            // entries silently saw nothing. 2026-09-01; entry wiring 0.1.7.)
             let amt: u128 = CURRENT_DEPOSIT
                 .with(|d| *d.borrow())
                 .or_else(|| {
@@ -644,8 +790,13 @@ pub(crate) fn build_env_linker(
         FuncType::new(engine, vec![], vec![ValType::I64]),
         move |mut caller, _, results| {
             let remaining = caller
-                .get_fuel()
-                .unwrap_or(PREPAID_FUEL.with(|f| *f.borrow()));
+                .get_export(crate::REMAINING_GAS_EXPORT)
+                .and_then(|e| e.into_global())
+                .map(|g| match g.get(&mut caller) {
+                    wasmtime::Val::I64(v) => u64::try_from(v).unwrap_or(0),
+                    _ => 0,
+                })
+                .unwrap_or(0u64);
             results[0] =
                 Val::I64(PREPAID_FUEL.with(|f| *f.borrow()).saturating_sub(remaining) as i64);
             Ok(())
@@ -675,8 +826,11 @@ pub(crate) fn build_env_linker(
                 args[2].unwrap_i64() as u64,
             );
             // Indicative legacy fees
-            let cost = 45_760_404u64 + 18_217u64 * len as u64;
-            caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
+            let cost = crate::SHA256_BASE_GAS
+                + crate::SHA256_BYTE_GAS * len as u64
+                + crate::READ_MEMORY_BASE_GAS + crate::READ_MEMORY_BYTE_GAS * len as u64
+                + crate::WRITE_REGISTER_BASE_GAS + crate::WRITE_REGISTER_BYTE_GAS * 32;
+            charge_gas(&mut caller, cost)?;
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 let md = mem.data(&caller);
                 if ptr + len <= md.len() {
@@ -701,9 +855,12 @@ pub(crate) fn build_env_linker(
                 args[1].unwrap_i64() as usize,
                 args[2].unwrap_i64() as u64,
             );
-            // Indicative legacy fees
-            let cost = 45_760_404u64 + 18_217u64 * len as u64;
-            caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
+            // PV155 (protocol-86)
+            let cost = crate::KECCAK256_BASE_GAS
+                + crate::KECCAK256_BYTE_GAS * len as u64
+                + crate::READ_MEMORY_BASE_GAS + crate::READ_MEMORY_BYTE_GAS * len as u64
+                + crate::WRITE_REGISTER_BASE_GAS + crate::WRITE_REGISTER_BYTE_GAS * 32;
+            charge_gas(&mut caller, cost)?;
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 let md = mem.data(&caller);
                 if ptr + len <= md.len() {
@@ -729,8 +886,11 @@ pub(crate) fn build_env_linker(
                 args[2].unwrap_i64() as u64,
             );
             // Indicative legacy fees
-            let cost = 21_165_243u64 + 3_574_166u64 * len as u64;
-            caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
+            let cost = crate::KECCAK512_BASE_GAS
+                + crate::KECCAK512_BYTE_GAS * len as u64
+                + crate::READ_MEMORY_BASE_GAS + crate::READ_MEMORY_BYTE_GAS * len as u64
+                + crate::WRITE_REGISTER_BASE_GAS + crate::WRITE_REGISTER_BYTE_GAS * 64;
+            charge_gas(&mut caller, cost)?;
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 let md = mem.data(&caller);
                 if ptr + len <= md.len() {
@@ -806,7 +966,7 @@ pub(crate) fn build_env_linker(
         FuncType::new(engine, vec![ValType::I64; 6], vec![ValType::I64]),
         move |mut caller, args, results| {
             let gas = &mock_cfg().gas;
-            caller.set_fuel(caller.get_fuel()?.saturating_sub(gas.p256_verify_base))?;
+            charge_gas(&mut caller, gas.p256_verify_base)?;
             let (sl, sp, ml, mp, kl, kp) = (
                 args[0].unwrap_i64() as usize,
                 args[1].unwrap_i64() as usize,
@@ -845,7 +1005,7 @@ pub(crate) fn build_env_linker(
         FuncType::new(engine, vec![ValType::I64; 7], vec![ValType::I64]),
         move |mut caller, args, results| {
             let gas = &mock_cfg().gas;
-            caller.set_fuel(caller.get_fuel()?.saturating_sub(gas.ecrecover_base))?;
+            charge_gas(&mut caller, gas.ecrecover_base)?;
             let (hl, hp, sl, sp, ml, mp, rid) = (
                 args[0].unwrap_i64() as usize,
                 args[1].unwrap_i64() as usize,
@@ -900,10 +1060,9 @@ pub(crate) fn build_env_linker(
             let data = read_guest_bytes(&mut caller, len, ptr)
                 .ok_or_else(|| wasmtime::Error::msg("MemoryAccessViolation: alt_bn128_g1_sum"))?;
             let n = (data.len() / bn254::G1_SUM_ELEMENT_SIZE) as u64;
-            caller.set_fuel(
-                caller
-                    .get_fuel()?
-                    .saturating_sub(gas.alt_bn128_g1_sum_base + gas.alt_bn128_g1_sum_element * n),
+            charge_gas(
+                &mut caller,
+                gas.alt_bn128_g1_sum_base + gas.alt_bn128_g1_sum_element * n,
             )?;
             let elems = bn254::split_elements::<{ bn254::G1_SUM_ELEMENT_SIZE }>(&data)
                 .map_err(|e| wasmtime::Error::msg(e.to_string()))?;
@@ -929,9 +1088,10 @@ pub(crate) fn build_env_linker(
                 wasmtime::Error::msg("MemoryAccessViolation: alt_bn128_g1_multiexp")
             })?;
             let n = (data.len() / bn254::G1_MULTIEXP_ELEMENT_SIZE) as u64;
-            caller.set_fuel(caller.get_fuel()?.saturating_sub(
+            charge_gas(
+                &mut caller,
                 gas.alt_bn128_g1_multiexp_base + gas.alt_bn128_g1_multiexp_element * n,
-            ))?;
+            )?;
             let elems = bn254::split_elements::<{ bn254::G1_MULTIEXP_ELEMENT_SIZE }>(&data)
                 .map_err(|e| wasmtime::Error::msg(e.to_string()))?;
             let out = bn254::g1_multiexp(elems).map_err(|e| wasmtime::Error::msg(e.to_string()))?;
@@ -1023,7 +1183,7 @@ pub(crate) fn build_env_linker(
         FuncType::new(engine, vec![ValType::I64], vec![]),
         |_, _, _| Ok(()),
     );
-    let noop0r = Func::new(
+    let _noop0r = Func::new(
         &mut *store,
         FuncType::new(engine, vec![], vec![ValType::I64]),
         |_, _, r| {
@@ -1031,7 +1191,7 @@ pub(crate) fn build_env_linker(
             Ok(())
         },
     );
-    let noop_2i_1o = Func::new(
+    let _noop_2i_1o = Func::new(
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 2], vec![ValType::I64]),
         |_, _, r| {
@@ -1039,7 +1199,7 @@ pub(crate) fn build_env_linker(
             Ok(())
         },
     );
-    let noop_3i_1o = Func::new(
+    let _noop_3i_1o = Func::new(
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 3], vec![ValType::I64]),
         |_, _, r| {
@@ -1052,17 +1212,17 @@ pub(crate) fn build_env_linker(
         FuncType::new(engine, vec![ValType::I64; 3], vec![]),
         |_, _, _| Ok(()),
     );
-    let noop_2i = Func::new(
+    let _noop_2i = Func::new(
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 2], vec![]),
         |_, _, _| Ok(()),
     );
-    let noop_4i = Func::new(
+    let _noop_4i = Func::new(
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 4], vec![]),
         |_, _, _| Ok(()),
     );
-    let noop_6i_1o = Func::new(
+    let _noop_6i_1o = Func::new(
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 6], vec![ValType::I64]),
         |_, _, r| {
@@ -1070,12 +1230,12 @@ pub(crate) fn build_env_linker(
             Ok(())
         },
     );
-    let noop_7i = Func::new(
+    let _noop_7i = Func::new(
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 7], vec![]),
         |_, _, _| Ok(()),
     );
-    let noop_7i_1o = Func::new(
+    let _noop_7i_1o = Func::new(
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 7], vec![ValType::I64]),
         |_, _, r| {
@@ -1083,12 +1243,12 @@ pub(crate) fn build_env_linker(
             Ok(())
         },
     );
-    let noop_8i = Func::new(
+    let _noop_8i = Func::new(
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 8], vec![]),
         |_, _, _| Ok(()),
     );
-    let noop_9i = Func::new(
+    let _noop_9i = Func::new(
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 9], vec![]),
         |_, _, _| Ok(()),
@@ -1101,7 +1261,7 @@ pub(crate) fn build_env_linker(
             Ok(())
         },
     );
-    let noop_4i_1o = Func::new(
+    let _noop_4i_1o = Func::new(
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 4], vec![ValType::I64]),
         |_, _, r| {
@@ -1109,7 +1269,7 @@ pub(crate) fn build_env_linker(
             Ok(())
         },
     );
-    let noop_8i_1o = Func::new(
+    let _noop_8i_1o = Func::new(
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 8], vec![ValType::I64]),
         |_, _, r| {
@@ -1117,7 +1277,7 @@ pub(crate) fn build_env_linker(
             Ok(())
         },
     );
-    let noop_9i_1o = Func::new(
+    let _noop_9i_1o = Func::new(
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 9], vec![ValType::I64]),
         |_, _, r| {
@@ -1127,7 +1287,12 @@ pub(crate) fn build_env_linker(
     );
 
     // === Link ===
-    let env_memory = wasmtime::Memory::new(&mut *store, wasmtime::MemoryType::new(1024, None))?;
+    // max = 2048 pages (128 MiB) — mainnet's memory ceiling (parity audit
+    // 2026-09-10); unbounded before.
+    let env_memory = wasmtime::Memory::new(
+        &mut *store,
+        wasmtime::MemoryType::new(1024, Some(crate::MAX_MEMORY_PAGES as u32)),
+    )?;
     linker.define(&*store, "env", "memory", env_memory)?;
     linker.define(&*store, "env", "log_utf8", log_fn)?;
     linker.define(&*store, "env", "value_return", value_return_fn)?;
@@ -1181,8 +1346,12 @@ pub(crate) fn build_env_linker(
         "random_seed",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64], vec![]),
-        move |_caller, args, _| {
+        move |mut caller, args, _| {
             let rid = args[0].unwrap_i64() as u64;
+            charge_gas(
+                &mut caller,
+                crate::WRITE_REGISTER_BASE_GAS + crate::WRITE_REGISTER_BYTE_GAS * 32,
+            )?;
             // Entropy source, in priority order:
             //   1. NEAR_MOCK_SEED pin (explicit reproducibility)
             //   2. --now / NEAR_MOCK_BLOCK_HEIGHT pin → seed = SplitMix64 of
@@ -1199,7 +1368,7 @@ pub(crate) fn build_env_linker(
                     let mut h = height;
                     splitmix64(&mut h)
                         ^ splitmix64(&mut {
-                            let mut t = ts;
+                            let t = ts;
                             t
                         })
                 }
@@ -1226,12 +1395,38 @@ pub(crate) fn build_env_linker(
     );
     linker.define(&*store, "env", "random_seed", random_seed_fn)?;
     linker.define(&*store, "env", "sha256", sha256_fn)?;
+    // ── finite-wasm instrumentation hooks (module "internal") ──
+    // The instrumented code traps by calling one of these on exhaustion.
+    // Gas-exhausted must error with mainnet's receipt-level message so the
+    // differ's same-class comparison matches "Exceeded the prepaid gas".
+    {
+        let exhausted_ty = FuncType::new(engine, vec![], vec![]);
+        let gas_fn = host_fn(
+            "finite_wasm_gas_exhausted",
+            &mut *store,
+            exhausted_ty.clone(),
+            |_, _, _| Err(wasmtime::Error::msg("Exceeded the prepaid gas")),
+        );
+        let stack_fn = host_fn(
+            "finite_wasm_stack_exhausted",
+            &mut *store,
+            exhausted_ty,
+            |_, _, _| Err(wasmtime::Error::msg("WasmTrap: StackOverflow")),
+        );
+        let report_ty = FuncType::new(engine, vec![ValType::I64], vec![]);
+        let report_fn = host_fn("finite_wasm_gas", &mut *store, report_ty, |_, _, _| {
+            Err(wasmtime::Error::msg("Exceeded the prepaid gas"))
+        });
+        linker.define(&*store, "internal", "finite_wasm_gas_exhausted", gas_fn)?;
+        linker.define(&*store, "internal", "finite_wasm_stack_exhausted", stack_fn)?;
+        linker.define(&*store, "internal", "finite_wasm_gas", report_fn)?;
+    }
     // schnorr_verify_bip340(pk_ptr: i32, sig_ptr: i32, msg_ptr: i32, msg_len: i32) -> i32
     let schnorr_fn = host_fn(
         "schnorr_verify_bip340",
         &mut *store,
         FuncType::new(engine, vec![ValType::I32; 4], vec![ValType::I32]),
-        |mut caller, params, results| {
+        |caller, params, results| {
             let pk_ptr = params[0].unwrap_i32() as usize;
             let sig_ptr = params[1].unwrap_i32() as usize;
             let msg_ptr = params[2].unwrap_i32() as usize;
@@ -1244,14 +1439,14 @@ pub(crate) fn build_env_linker(
             let data = mem.data(&caller);
 
             if mock_cfg().debug {
-                eprintln!("[schnorr-dbg] entry pk_ptr={pk_ptr} sig_ptr={sig_ptr} msg_ptr={msg_ptr} msg_len={msg_len} mem_len={}", data.len());
+                htrace!("[schnorr-dbg] entry pk_ptr={pk_ptr} sig_ptr={sig_ptr} msg_ptr={msg_ptr} msg_len={msg_len} mem_len={}", data.len());
             }
             if pk_ptr + 32 > data.len()
                 || sig_ptr + 64 > data.len()
                 || msg_ptr + msg_len > data.len()
             {
                 if mock_cfg().debug {
-                    eprintln!("[schnorr-dbg] BOUNDS REJECT");
+                    htrace!("[schnorr-dbg] BOUNDS REJECT");
                 }
                 results[0] = Val::I32(0);
                 return Ok(());
@@ -1261,17 +1456,17 @@ pub(crate) fn build_env_linker(
                 let sig: [u8; 64] = data[sig_ptr..sig_ptr+64].try_into().unwrap();
                 let msg = &data[msg_ptr..msg_ptr+msg_len];
                 if mock_cfg().debug {
-                    eprintln!("[schnorr-dbg] pk_ptr={pk_ptr} sig_ptr={sig_ptr} msg_ptr={msg_ptr} msg_len={msg_len}");
+                    htrace!("[schnorr-dbg] pk_ptr={pk_ptr} sig_ptr={sig_ptr} msg_ptr={msg_ptr} msg_len={msg_len}");
                 }
                 let r = schnorr_verify_impl(&pk, &sig, msg) as i32;
                 if mock_cfg().debug {
-                    eprintln!("[schnorr-dbg] result={r}");
+                    htrace!("[schnorr-dbg] result={r}");
                 }
                 r
             }))
             .unwrap_or_else(|_| {
                 if mock_cfg().debug {
-                    eprintln!("[schnorr-dbg] PANIC");
+                    htrace!("[schnorr-dbg] PANIC");
                 }
                 0
             });
@@ -1289,7 +1484,7 @@ pub(crate) fn build_env_linker(
         "ed25519_verify",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 6], vec![ValType::I64]),
-        |mut caller, params, results| {
+        |caller, params, results| {
             let sig_len = params[0].unwrap_i64() as usize;
             let sig_ptr = params[1].unwrap_i64() as usize;
             let msg_len = params[2].unwrap_i64() as usize;
@@ -1331,7 +1526,7 @@ pub(crate) fn build_env_linker(
         move |mut caller, args, _| {
             let (len, ptr) = (args[0].unwrap_i64() as usize, args[1].unwrap_i64() as usize);
             let cost = mock_cfg().gas.log_base + mock_cfg().gas.log_byte * len as u64;
-            caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
+            charge_gas(&mut caller, cost)?;
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 let data = mem.data(&caller);
                 if ptr + len <= data.len() {
@@ -1389,10 +1584,10 @@ pub(crate) fn build_env_linker(
     // === Real validator hosts (nearcore semantics): stake lookups come from
     // the validator map in state storage under "\x00validators" — JSON map
     // {account_id: yocto_stake_string}, plus "\x00validators:total" for the
-    // epoch total. Genesis state, seeded at chain install (G-15) — NOT here:
-    // a linker-build insert used to leak the key inside the tx snapshot
-    // window, letting it survive trap rollbacks as a phantom. Unseeded →
-    // account not a validator (u128 0) / total 0.
+    // epoch total. Seeded ONCE at chain genesis (install_sandbox), not here:
+    // a per-linker-build insert happens inside the tx window, so the key
+    // survived trap rollbacks as a phantom (chain_api test caught it
+    // 2026-09-08). Unseeded → account not a validator (u128 0) / total 0.
     let vs0 = state.clone();
     let vs_engine = engine.clone();
     let validator_stake_fn = host_fn(
@@ -1401,14 +1596,14 @@ pub(crate) fn build_env_linker(
         FuncType::new(engine, vec![ValType::I64; 3], vec![]),
         move |mut caller, args, _| {
             let gas = &mock_cfg().gas;
-            caller.set_fuel(caller.get_fuel()?.saturating_sub(gas.validator_stake_base))?;
+            charge_gas(&mut caller, gas.validator_stake_base)?;
             let (a_len, a_ptr, stake_ptr) = (
                 args[0].unwrap_i64() as usize,
                 args[1].unwrap_i64() as usize,
                 args[2].unwrap_i64() as usize,
             );
             let acct =
-                crate::mem_read_str(&mut caller, a_len as i64, a_ptr as i64).ok_or_else(|| {
+                super::mem_read_str(&mut caller, a_len as i64, a_ptr as i64).ok_or_else(|| {
                     wasmtime::Error::msg("MemoryAccessViolation: validator_stake account")
                 })?;
             let map: HashMap<String, String> = {
@@ -1429,7 +1624,7 @@ pub(crate) fn build_env_linker(
                     ));
                 }
             }
-            eprintln!("  → validator_stake({}) = {} yocto", acct, stake_yocto);
+            htrace!("  → validator_stake({}) = {} yocto", acct, stake_yocto);
             Ok(())
         },
     );
@@ -1442,11 +1637,7 @@ pub(crate) fn build_env_linker(
         FuncType::new(engine, vec![ValType::I64], vec![]),
         move |mut caller, args, _| {
             let gas = &mock_cfg().gas;
-            caller.set_fuel(
-                caller
-                    .get_fuel()?
-                    .saturating_sub(gas.validator_total_stake_base),
-            )?;
+            charge_gas(&mut caller, gas.validator_total_stake_base)?;
             let ptr = args[0].unwrap_i64() as usize;
             let total: u128 = {
                 let st = vts0.lock().unwrap();
@@ -1476,7 +1667,7 @@ pub(crate) fn build_env_linker(
                     ));
                 }
             }
-            eprintln!("  → validator_total_stake() = {} yocto", total);
+            htrace!("  → validator_total_stake() = {} yocto", total);
             Ok(())
         },
     );
@@ -1502,9 +1693,10 @@ pub(crate) fn build_env_linker(
                 wasmtime::Error::msg("MemoryAccessViolation: alt_bn128_pairing_check")
             })?;
             let n = (data.len() / bn254::PAIRING_CHECK_ELEMENT_SIZE) as u64;
-            caller.set_fuel(caller.get_fuel()?.saturating_sub(
+            charge_gas(
+                &mut caller,
                 gas.alt_bn128_pairing_check_base + gas.alt_bn128_pairing_check_element * n,
-            ))?;
+            )?;
             let elems = bn254::split_elements::<{ bn254::PAIRING_CHECK_ELEMENT_SIZE }>(&data)
                 .map_err(|e| wasmtime::Error::msg(e.to_string()))?;
             let holds =
@@ -1571,6 +1763,57 @@ pub(crate) fn build_env_linker(
         },
     );
     linker.define(&*store, "env", "storage_usage", storage_usage_fn)?;
+    // current_contract_code(register_id) — protocol 69 code introspection:
+    // near-contract-standard binaries import it unconditionally (link-time
+    // requirement even for views). The mock returns the CURRENT module's
+    // bytes from MODULES via EXEC_CTX.contract when available (faithful for
+    // hash checks), else an empty write — never a silent success: callers
+    // can read register 0 length to detect the mock's answer.
+    let ccc_st = state.clone();
+    let current_contract_code_fn = host_fn(
+        "current_contract_code",
+        &mut *store,
+        FuncType::new(engine, vec![ValType::I64], vec![ValType::I64]),
+        move |_, args, results| {
+            let rid = args[0].unwrap_i64() as u64;
+            let acct = exec_ctx_or_default().contract;
+            // MODULES holds Rc<Module>; as_binary() gives the compiled form,
+            // not original bytes — emitting an empty register is the honest
+            // mock answer for "the code bytes" (hash users see len=0).
+            let _ = acct;
+            let mut st = ccc_st.lock().unwrap();
+            write_reg_checked(&mut st, rid, Vec::new()).map_err(|e| wasmtime::Error::msg(e))?;
+            htrace!("  → current_contract_code(reg={rid}) → empty (mock: code bytes not modeled)");
+            results[0] = wasmtime::Val::I64(0);
+            Ok(())
+        },
+    );
+    linker.define(
+        &*store,
+        "env",
+        "current_contract_code",
+        current_contract_code_fn,
+    )?;
+    // chain_id(register_id) — protocol 69 chain identification: writes
+    // "testnet"/"mainnet" (or the genesis hash on other chains). The mock
+    // picks testnet by default — matches where these rehearsal snapshots
+    // come from — overridable via NEAR_MOCK_CHAIN_ID for mainnet fixtures.
+    let cid_st = state.clone();
+    let chain_id_fn = host_fn(
+        "chain_id",
+        &mut *store,
+        FuncType::new(engine, vec![ValType::I64], vec![]),
+        move |_, args, _| {
+            let rid = args[0].unwrap_i64() as u64;
+            let chain = std::env::var("NEAR_MOCK_CHAIN_ID").unwrap_or_else(|_| "testnet".into());
+            let mut st = cid_st.lock().unwrap();
+            write_reg_checked(&mut st, rid, chain.clone().into_bytes())
+                .map_err(|e| wasmtime::Error::msg(e))?;
+            htrace!("  → chain_id(reg={rid}) → \"{chain}\" (NEAR_MOCK_CHAIN_ID to override)");
+            Ok(())
+        },
+    );
+    linker.define(&*store, "env", "chain_id", chain_id_fn)?;
     // (log_s / validator_account_id are bound to Deprecated traps at ~1373 —
     // no second bind here, wasmtime rejects duplicate import definitions.)
     linker.define(&*store, "env", "promise_results", noop1.clone())?;
@@ -1686,9 +1929,12 @@ pub(crate) fn build_env_linker(
                 }
                 u128::from_le_bytes(buf)
             };
-            eprintln!(
+            htrace!(
                 "  → action_fn_call_weight(idx={}, {} args={} dep={})",
-                idx, method, args_json, dep
+                idx,
+                method,
+                args_json,
+                dep
             );
             PROMISE_DAG.with(|d| {
                 if let Some(b) = d.borrow_mut().get_mut(idx) {
@@ -1751,7 +1997,7 @@ pub(crate) fn build_env_linker(
                     panic!("InvalidPromiseIndex: stake");
                 }
             });
-            eprintln!("  ↗ stake {amt} yocto (pk ed25519 33B)");
+            htrace!("  ↗ stake {amt} yocto (pk ed25519 33B)");
             Ok(())
         },
     );
@@ -1787,7 +2033,7 @@ pub(crate) fn build_env_linker(
                     panic!("InvalidPromiseIndex: add_key");
                 }
             });
-            eprintln!("  🔑 add_key(full-access, ed25519 33B)");
+            htrace!("  🔑 add_key(full-access, ed25519 33B)");
             Ok(())
         },
     );
@@ -1828,7 +2074,7 @@ pub(crate) fn build_env_linker(
                     panic!("InvalidPromiseIndex: add_key_fc");
                 }
             });
-            eprintln!("  🔑 add_key(function-call, ed25519 33B; ACL recorded as full)");
+            htrace!("  🔑 add_key(function-call, ed25519 33B; ACL recorded as full)");
             Ok(())
         },
     );
@@ -1858,7 +2104,7 @@ pub(crate) fn build_env_linker(
                     panic!("InvalidPromiseIndex: delete_key");
                 }
             });
-            eprintln!("  🗑 delete_key(ed25519 33B)");
+            htrace!("  🗑 delete_key(ed25519 33B)");
             Ok(())
         },
     );
@@ -1892,7 +2138,7 @@ pub(crate) fn build_env_linker(
                     panic!("InvalidPromiseIndex: delete_account");
                 }
             });
-            eprintln!("  💥 delete_account → beneficiary {beneficiary}");
+            htrace!("  💥 delete_account → beneficiary {beneficiary}");
             Ok(())
         },
     );
@@ -1920,6 +2166,304 @@ pub(crate) fn build_env_linker(
         "env",
         "promise_batch_action_delete_account",
         delete_account_fn,
+    )?;
+
+    // ── Protocol 69/72-era hosts (near-sdk 5 binaries import these at link
+    // time even when never called — wasmtime requires every import bound, so
+    // views on such contracts CRASHED at instantiation before these existed;
+    // dogfooded against susuplus.susumi.testnet, 2026-09-08). They record
+    // into the promise DAG like the other batch actions; drain-time behavior
+    // is documented on the PAction variants.
+    let t2gk = host_fn(
+        "promise_batch_action_transfer_to_gas_key",
+        &mut *store,
+        FuncType::new(engine, vec![ValType::I64; 4], vec![]),
+        move |mut caller, args, _| {
+            let (idx, key_len, key_ptr, amt_ptr) = (
+                args[0].unwrap_i64() as usize,
+                args[1].unwrap_i64() as usize,
+                args[2].unwrap_i64() as usize,
+                args[3].unwrap_i64() as usize,
+            );
+            let mem = caller
+                .get_export("memory")
+                .and_then(|e| e.into_memory())
+                .ok_or_else(|| {
+                    wasmtime::Error::msg("MemoryAccessViolation: transfer_to_gas_key")
+                })?;
+            let md = mem.data(&caller);
+            if key_ptr + key_len > md.len() || amt_ptr + 16 > md.len() {
+                return Err(wasmtime::Error::msg(
+                    "MemoryAccessViolation: transfer_to_gas_key",
+                ));
+            }
+            let _key = &md[key_ptr..key_ptr + key_len]; // implicit account derivation not modeled
+            let amt = u128::from_le_bytes(md[amt_ptr..amt_ptr + 16].try_into().unwrap());
+            PROMISE_DAG.with(|d| {
+                if let Some(b) = d.borrow_mut().get_mut(idx) {
+                    b.actions.push(PAction::TransferToGasKey { amount: amt });
+                } else {
+                    panic!("InvalidPromiseIndex: transfer_to_gas_key");
+                }
+            });
+            htrace!("  ↗ transfer_to_gas_key {amt} yocto");
+            Ok(())
+        },
+    );
+    linker.define(
+        &*store,
+        "env",
+        "promise_batch_action_transfer_to_gas_key",
+        t2gk,
+    )?;
+
+    // add_gas_key_*: same shape as add_key_* (ED25519 33B pk), recorded as
+    // AddGasKey — the mock applies no gas-key rules.
+    let agk_full = host_fn(
+        "promise_batch_action_add_gas_key_with_full_access",
+        &mut *store,
+        FuncType::new(engine, vec![ValType::I64; 4], vec![]),
+        move |mut caller, args, _| {
+            let (idx, pk_len, pk_ptr, _nonce) = (
+                args[0].unwrap_i64() as usize,
+                args[1].unwrap_i64() as usize,
+                args[2].unwrap_i64() as usize,
+                args[3].unwrap_i64(),
+            );
+            let mem = caller
+                .get_export("memory")
+                .and_then(|e| e.into_memory())
+                .ok_or_else(|| wasmtime::Error::msg("MemoryAccessViolation: add_gas_key"))?;
+            let md = mem.data(&caller);
+            if pk_len != 33 || pk_ptr + pk_len > md.len() {
+                return Err(wasmtime::Error::msg("MemoryAccessViolation: add_gas_key"));
+            }
+            let pk = md[pk_ptr..pk_ptr + pk_len].to_vec();
+            if pk[0] != 0xED {
+                return Err(wasmtime::Error::msg(
+                    "AddKeyInvalidKey: only ED25519 (0xED-prefixed) keys supported",
+                ));
+            }
+            PROMISE_DAG.with(|d| {
+                if let Some(b) = d.borrow_mut().get_mut(idx) {
+                    b.actions.push(PAction::AddGasKey { pk });
+                } else {
+                    panic!("InvalidPromiseIndex: add_gas_key");
+                }
+            });
+            htrace!("  🔑 add_gas_key(full-access) — recorded, no enforcement");
+            Ok(())
+        },
+    );
+    let agk_fc = host_fn(
+        "promise_batch_action_add_gas_key_with_function_call",
+        &mut *store,
+        FuncType::new(engine, vec![ValType::I64; 9], vec![]),
+        move |mut caller, args, _| {
+            let idx = args[0].unwrap_i64() as usize;
+            let pk_len = args[1].unwrap_i64() as usize;
+            let pk_ptr = args[2].unwrap_i64() as usize;
+            let mem = caller
+                .get_export("memory")
+                .and_then(|e| e.into_memory())
+                .ok_or_else(|| wasmtime::Error::msg("MemoryAccessViolation: add_gas_key_fc"))?;
+            let md = mem.data(&caller);
+            if pk_len != 33 || pk_ptr + pk_len > md.len() {
+                return Err(wasmtime::Error::msg(
+                    "MemoryAccessViolation: add_gas_key_fc",
+                ));
+            }
+            let pk = md[pk_ptr..pk_ptr + pk_len].to_vec();
+            if pk[0] != 0xED {
+                return Err(wasmtime::Error::msg(
+                    "AddKeyInvalidKey: only ED25519 (0xED-prefixed) keys supported",
+                ));
+            }
+            PROMISE_DAG.with(|d| {
+                if let Some(b) = d.borrow_mut().get_mut(idx) {
+                    b.actions.push(PAction::AddGasKey { pk });
+                } else {
+                    panic!("InvalidPromiseIndex: add_gas_key_fc");
+                }
+            });
+            htrace!("  🔑 add_gas_key(function-call) — recorded, no enforcement");
+            Ok(())
+        },
+    );
+    linker.define(
+        &*store,
+        "env",
+        "promise_batch_action_add_gas_key_with_full_access",
+        agk_full,
+    )?;
+    linker.define(
+        &*store,
+        "env",
+        "promise_batch_action_add_gas_key_with_function_call",
+        agk_fc,
+    )?;
+
+    // global contracts (protocol 69): deploy/use record onto the DAG; no
+    // global-contract cache exists in the mock — drain-time loud no-ops.
+    let dgc = host_fn(
+        "promise_batch_action_deploy_global_contract",
+        &mut *store,
+        FuncType::new(engine, vec![ValType::I64; 3], vec![]),
+        move |mut caller, args, _| {
+            let (idx, len, ptr) = (
+                args[0].unwrap_i64() as usize,
+                args[1].unwrap_i64() as usize,
+                args[2].unwrap_i64() as usize,
+            );
+            let mem = caller
+                .get_export("memory")
+                .and_then(|e| e.into_memory())
+                .ok_or_else(|| wasmtime::Error::msg("MemoryAccessViolation: global_contract"))?;
+            let md = mem.data(&caller);
+            if ptr + len > md.len() {
+                return Err(wasmtime::Error::msg(
+                    "MemoryAccessViolation: global_contract",
+                ));
+            }
+            let code = md[ptr..ptr + len].to_vec();
+            PROMISE_DAG.with(|d| {
+                if let Some(b) = d.borrow_mut().get_mut(idx) {
+                    b.actions.push(PAction::DeployGlobalContract { code });
+                } else {
+                    panic!("InvalidPromiseIndex: deploy_global_contract");
+                }
+            });
+            htrace!("  ⚠ deploy_global_contract — recorded, no cache in mock");
+            Ok(())
+        },
+    );
+    linker.define(
+        &*store,
+        "env",
+        "promise_batch_action_deploy_global_contract",
+        dgc,
+    )?;
+    let dgc_by = host_fn(
+        "promise_batch_action_deploy_global_contract_by_account_id",
+        &mut *store,
+        FuncType::new(engine, vec![ValType::I64; 3], vec![]),
+        |caller, args, _| {
+            let (idx, len, ptr) = (
+                args[0].unwrap_i64() as usize,
+                args[1].unwrap_i64() as usize,
+                args[2].unwrap_i64() as usize,
+            );
+            let mem = caller
+                .get_export("memory")
+                .and_then(|e| e.into_memory())
+                .ok_or_else(|| wasmtime::Error::msg("MemoryAccessViolation: global_contract"))?;
+            let md = mem.data(&caller);
+            if ptr + len > md.len() {
+                return Err(wasmtime::Error::msg(
+                    "MemoryAccessViolation: global_contract",
+                ));
+            }
+            let code = md[ptr..ptr + len].to_vec();
+            PROMISE_DAG.with(|d| {
+                if let Some(b) = d.borrow_mut().get_mut(idx) {
+                    b.actions.push(PAction::DeployGlobalContract { code });
+                } else {
+                    panic!("InvalidPromiseIndex: deploy_global_contract");
+                }
+            });
+            htrace!("  ⚠ deploy_global_contract_by_account_id — recorded, no cache");
+            Ok(())
+        },
+    );
+    linker.define(
+        &*store,
+        "env",
+        "promise_batch_action_deploy_global_contract_by_account_id",
+        dgc_by,
+    )?;
+    let ugc = host_fn(
+        "promise_batch_action_use_global_contract",
+        &mut *store,
+        FuncType::new(engine, vec![ValType::I64; 3], vec![]),
+        move |mut caller, args, _| {
+            let (idx, len, ptr) = (
+                args[0].unwrap_i64() as usize,
+                args[1].unwrap_i64() as usize,
+                args[2].unwrap_i64() as usize,
+            );
+            let mem = caller
+                .get_export("memory")
+                .and_then(|e| e.into_memory())
+                .ok_or_else(|| {
+                    wasmtime::Error::msg("MemoryAccessViolation: use_global_contract")
+                })?;
+            let md = mem.data(&caller);
+            if ptr + len > md.len() {
+                return Err(wasmtime::Error::msg(
+                    "MemoryAccessViolation: use_global_contract",
+                ));
+            }
+            let account_id = String::from_utf8_lossy(&md[ptr..ptr + len]).to_string();
+            PROMISE_DAG.with(|d| {
+                if let Some(b) = d.borrow_mut().get_mut(idx) {
+                    b.actions.push(PAction::UseGlobalContract {
+                        account_id: account_id.clone(),
+                    });
+                } else {
+                    panic!("InvalidPromiseIndex: use_global_contract");
+                }
+            });
+            htrace!("  ⚠ use_global_contract({account_id}) — no-op in mock");
+            Ok(())
+        },
+    );
+    linker.define(
+        &*store,
+        "env",
+        "promise_batch_action_use_global_contract",
+        ugc,
+    )?;
+    let ugc_by = host_fn(
+        "promise_batch_action_use_global_contract_by_account_id",
+        &mut *store,
+        FuncType::new(engine, vec![ValType::I64; 3], vec![]),
+        |caller, args, _| {
+            let (idx, len, ptr) = (
+                args[0].unwrap_i64() as usize,
+                args[1].unwrap_i64() as usize,
+                args[2].unwrap_i64() as usize,
+            );
+            let mem = caller
+                .get_export("memory")
+                .and_then(|e| e.into_memory())
+                .ok_or_else(|| {
+                    wasmtime::Error::msg("MemoryAccessViolation: use_global_contract")
+                })?;
+            let md = mem.data(&caller);
+            if ptr + len > md.len() {
+                return Err(wasmtime::Error::msg(
+                    "MemoryAccessViolation: use_global_contract",
+                ));
+            }
+            let account_id = String::from_utf8_lossy(&md[ptr..ptr + len]).to_string();
+            PROMISE_DAG.with(|d| {
+                if let Some(b) = d.borrow_mut().get_mut(idx) {
+                    b.actions.push(PAction::UseGlobalContract {
+                        account_id: account_id.clone(),
+                    });
+                } else {
+                    panic!("InvalidPromiseIndex: use_global_contract");
+                }
+            });
+            htrace!("  ⚠ use_global_contract_by_account_id({account_id}) — no-op");
+            Ok(())
+        },
+    );
+    linker.define(
+        &*store,
+        "env",
+        "promise_batch_action_use_global_contract_by_account_id",
+        ugc_by,
     )?;
 
     // Real promise hosts (cross engine) — override the noops. STATE_ARC is

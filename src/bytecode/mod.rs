@@ -110,6 +110,17 @@ fn build_letrec_form(bindings: Vec<LispVal>, body: Vec<LispVal>) -> LispVal {
 }
 
 /// Expand a macro call at compile time.
+// Deposit extractor for promise ops: Num OR u128 decimal string (matches
+// the emitter's u128-str helper — real callers pass decimal strings, e.g.
+// projects/outlayer-oracle DEPOSIT).
+fn deposit_of(args: &[LispVal], i: usize) -> String {
+    match args.get(i) {
+        Some(LispVal::Str(s)) => s.clone(),
+        Some(LispVal::Num(n)) => n.to_string(),
+        _ => "0".to_string(),
+    }
+}
+
 pub fn expand_macro_call(
     macro_val: &LispVal,
     unevaluated_args: &[LispVal],
@@ -5022,7 +5033,7 @@ pub fn eval_near_builtin_match(name: &str) -> bool {
         // ── near/* u128 storage helpers (interp stubs return 0) ──
         | "near/store_u128" | "near/load_u128" | "near/attached_deposit_u128"
         // ── near/* promises ──
-        | "near/call" | "near/transfer" | "near/transfer_u128" | "near/deploy_contract"
+        | "near/call" | "near/call-await" | "near/transfer" | "near/transfer_u128" | "near/deploy_contract"
         | "near/promise_create" | "near/promise_then" | "near/promise_and"
         | "near/promise_results_count" | "near/promise_result" | "near/promise_return"
         | "near/promise_succeeded"
@@ -5431,7 +5442,9 @@ fn eval_near_builtin(
             let method = key_of(args, 1);
             let call_args = key_of(args, 2);
             let gas = extract_num(args, 3).unwrap_or(30_000_000_000_000);
-            let deposit = extract_num(args, 4).unwrap_or(0);
+            // deposit: Num OR u128 decimal str (matches the emitter's
+            // tag-branching deposit path, 2026-09-10 fix)
+            let deposit = deposit_of(args, 4);
             let idx = state.near_promise_idx;
             state.near_promise_idx += 1;
             let mut m = im::HashMap::new();
@@ -5441,17 +5454,21 @@ fn eval_near_builtin(
             m.insert("method".into(), LispVal::Str(method));
             m.insert("args".into(), LispVal::Str(call_args));
             m.insert("gas".into(), LispVal::Num(gas));
-            m.insert("deposit".into(), LispVal::Num(deposit));
+            m.insert("deposit".into(), LispVal::Str(deposit));
             state.near_promises.push(LispVal::Map(m));
             state.near_returned_promise = Some(idx);
             Some(Ok(LispVal::Num(idx)))
         }
         "near/promise_create" => {
+            // ABI (wasm reference, call_near_promise.rs:230): (target method
+            // args DEPOSIT GAS). The old interp read gas@3/deposit@4 —
+            // swapped vs the emitter; found by the promise differential
+            // harness 2026-09-10.
             let target = key_of(args, 0);
             let method = key_of(args, 1);
             let call_args = key_of(args, 2);
-            let gas = extract_num(args, 3).unwrap_or(30_000_000_000_000);
-            let deposit = extract_num(args, 4).unwrap_or(0);
+            let deposit = deposit_of(args, 3);
+            let gas = extract_num(args, 4).unwrap_or(30_000_000_000_000);
             let idx = state.near_promise_idx;
             state.near_promise_idx += 1;
             let mut m = im::HashMap::new();
@@ -5461,17 +5478,18 @@ fn eval_near_builtin(
             m.insert("method".into(), LispVal::Str(method));
             m.insert("args".into(), LispVal::Str(call_args));
             m.insert("gas".into(), LispVal::Num(gas));
-            m.insert("deposit".into(), LispVal::Num(deposit));
+            m.insert("deposit".into(), LispVal::Str(deposit));
             state.near_promises.push(LispVal::Map(m));
             Some(Ok(LispVal::Num(idx)))
         }
         "near/promise_then" => {
+            // ABI (wasm reference): (base target method args DEPOSIT GAS)
             let base_idx = extract_num(args, 0).unwrap_or(0);
             let target = key_of(args, 1);
             let method = key_of(args, 2);
             let call_args = key_of(args, 3);
-            let gas = extract_num(args, 4).unwrap_or(30_000_000_000_000);
-            let deposit = extract_num(args, 5).unwrap_or(0);
+            let deposit = deposit_of(args, 4);
+            let gas = extract_num(args, 5).unwrap_or(30_000_000_000_000);
             let idx = state.near_promise_idx;
             state.near_promise_idx += 1;
             let mut m = im::HashMap::new();
@@ -5482,7 +5500,7 @@ fn eval_near_builtin(
             m.insert("method".into(), LispVal::Str(method));
             m.insert("args".into(), LispVal::Str(call_args));
             m.insert("gas".into(), LispVal::Num(gas));
-            m.insert("deposit".into(), LispVal::Num(deposit));
+            m.insert("deposit".into(), LispVal::Str(deposit));
             state.near_promises.push(LispVal::Map(m));
 
             // If base promise has a result and target is registered, execute immediately
@@ -5691,20 +5709,24 @@ fn eval_near_builtin(
         "near/batch-call"
         | "near/promise_batch_action_function_call"
         | "near/promise_batch_action_function_call_weight" => {
+            // ABI (wasm reference + corpus usage, e.g. outlayer-oracle:
+            // (batch method args DEPOSIT GAS)): deposit BEFORE gas. Also
+            // record in near_promises so the global op ORDER survives (batch
+            // actions interleaved with promise creates/returns).
+            let batch = extract_num(args, 0).unwrap_or(0);
             let mut m = im::HashMap::new();
             m.insert("type".into(), LispVal::Str("batch_function_call".into()));
+            m.insert("batch".into(), LispVal::Num(batch));
             m.insert("target".into(), LispVal::Str(key_of(args, 0)));
             m.insert("method".into(), LispVal::Str(key_of(args, 1)));
             m.insert("args".into(), LispVal::Str(key_of(args, 2)));
+            m.insert("deposit".into(), LispVal::Str(deposit_of(args, 3)));
             m.insert(
                 "gas".into(),
-                LispVal::Num(extract_num(args, 3).unwrap_or(30_000_000_000_000)),
+                LispVal::Num(extract_num(args, 4).unwrap_or(30_000_000_000_000)),
             );
-            m.insert(
-                "deposit".into(),
-                LispVal::Num(extract_num(args, 4).unwrap_or(0)),
-            );
-            state.near_batch_actions.push(LispVal::Map(m));
+            state.near_batch_actions.push(LispVal::Map(m.clone()));
+            state.near_promises.push(LispVal::Map(m));
             Some(Ok(LispVal::Num(0)))
         }
         "near/batch-transfer" | "near/promise_batch_action_transfer" => {
@@ -7026,10 +7048,15 @@ pub fn eval_builtin(
                 _ => Err("json-set: json, key and encoded-value must all be strings".into()),
             }
         }
-        "to-string" => Ok(LispVal::Str(format!(
-            "{}",
-            args.get(0).unwrap_or(&LispVal::Nil)
-        ))),
+        // to-string: Str is IDENTITY (raw content, no quotes) — matches wasm
+        // __int_to_str TAG_STR passthrough + Clojure `str`. Old Display-based
+        // impl quoted strings ("abc" → "\"abc\"") — VM↔wasm divergence found
+        // by the deep-compare fuzzer 2026-09-10. Quoting is json-quote's job.
+        "to-string" => Ok(LispVal::Str(match args.get(0) {
+            Some(LispVal::Str(s)) => s.clone(),
+            Some(other) => format!("{}", other),
+            None => String::new(),
+        })),
         "str" => Ok(LispVal::Str(
             args.iter().map(|a| format!("{}", a)).collect(),
         )),

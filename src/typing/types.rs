@@ -947,6 +947,24 @@ impl TcEnv {
             },
         );
 
+        // print/println : 'a → nil — universal language builtins, both modes.
+        // Return type is NIL per the wasm reference (emitter print arm ends
+        // TAG_NIL); the interpreter's Str return is a pinned divergence
+        // (GAPS 2026-09-10). Before this, print only type-checked in near
+        // mode via near_wildcard — fuzz-mode programs with print failed the
+        // checker ("undefined variable 'print'"), so the fuzz harness's log
+        // channel could never fire.
+        for name in ["print", "println"] {
+            let a = TcType::Var(0);
+            env.insert(
+                name.to_string(),
+                Scheme {
+                    vars: vec![0],
+                    ty: TcType::Arrow(vec![a], Box::new(TcType::Con(TcCon::Nil))),
+                },
+            );
+        }
+
         // Conversions
         // assert : bool → nil
         env.insert_mono(
@@ -1138,13 +1156,18 @@ impl TcEnv {
         // (target, method, args_json, gas, deposit)
         env.insert_mono(
             "near/call".into(),
+            // deposit is int OR u128 decimal str — the emitter handles both
+            // (low-64 store for Num; u128-str helper for decimal strings).
+            // Typed `any` so checker doesn't reject str deposits (production
+            // callers pass decimal strings for amounts > 61 bits).
+            // Found by the promise differential harness 2026-09-10.
             TcType::Arrow(
                 vec![
                     str_ty.clone(),
                     str_ty.clone(),
                     str_ty.clone(),
                     int_ty.clone(),
-                    int_ty.clone(),
+                    any_ty.clone(),
                 ],
                 Box::new(nil_ty.clone()),
             ),

@@ -1,21 +1,14 @@
 //! MockState storage model: key/value map + registers, partition
 //! snapshot/restore for failed-receipt revert, register limits.
 
-use super::*;
-use lisp_rlm_wasm::bls_validate;
-use lisp_rlm_wasm::builtin_ed25519::ed25519_verify_impl;
-use lisp_rlm_wasm::builtin_schnorr::schnorr_verify_impl;
 use std::collections::HashMap;
-use std::rc::Rc;
-use std::sync::{Arc, Mutex};
 use wasmtime::*;
 
 // State file: /tmp/near-mock-state.bin by default, overridable via
-// NEAR_MOCK_STATE (single source of truth: lisp_rlm_wasm::near_mock_state_file)
+// NEAR_MOCK_STATE override supported
 // so parallel sessions / concurrent test runners never stomp each other.
 pub(crate) fn state_file() -> String {
-    // single source of truth lives in the library (tests use it too)
-    lisp_rlm_wasm::near_mock_state_file()
+    std::env::var("NEAR_MOCK_STATE").unwrap_or_else(|_| "/tmp/near-mock-state.bin".to_string())
 }
 
 pub(crate) fn prefixed_key(acct: &str, key: &[u8]) -> Vec<u8> {
@@ -67,8 +60,15 @@ pub(crate) struct MockState {
 }
 
 pub(crate) fn write_reg_checked(st: &mut MockState, rid: u64, data: Vec<u8>) -> Result<(), String> {
+    // Mainnet VM limits (protocol-86 parameters snapshot, parity audit
+    // 2026-09-10): max_register_size = 100 MiB, registers_memory_limit =
+    // 1 GiB across all registers, max_number_registers = 100 — including the
+    // nearcore quirk that at exactly 100 registers even REPLACING an existing
+    // one fails. The old 1 MiB cap rejected mainnet-legal inputs (aurora's
+    // multi-MiB submit args land in a register via input()).
     const MAX_REGS: usize = 100;
-    const MAX_REG_SIZE: usize = 1 << 20;
+    const MAX_REG_SIZE: usize = 104_857_600;
+    const REGISTERS_MEMORY_LIMIT: usize = 1_073_741_824;
     if data.len() > MAX_REG_SIZE {
         return Err(format!(
             "MemoryAccessViolation: register {} value {}b exceeds max {}b",
@@ -81,6 +81,21 @@ pub(crate) fn write_reg_checked(st: &mut MockState, rid: u64, data: Vec<u8>) -> 
         return Err(format!(
             "MemoryAccessViolation: register limit {} exceeded",
             MAX_REGS
+        ));
+    }
+    // total memory across registers (a replacement frees the old entry first)
+    let freed = st.registers.get(&rid).map_or(0, |v| v.len());
+    let new_total = st
+        .registers
+        .values()
+        .map(|v| v.len())
+        .sum::<usize>()
+        .saturating_sub(freed)
+        .saturating_add(data.len());
+    if new_total > REGISTERS_MEMORY_LIMIT {
+        return Err(format!(
+            "MemoryAccessViolation: registers memory limit {} exceeded",
+            REGISTERS_MEMORY_LIMIT
         ));
     }
     st.registers.insert(rid, data);

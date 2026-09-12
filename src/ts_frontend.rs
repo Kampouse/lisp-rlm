@@ -126,6 +126,14 @@ thread_local! {
     /// for operator selection (fold value lands in CONST_FOLDS as Str).
     static BIGINT_CONSTS: std::cell::RefCell<Vec<String>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    /// True while lowering a function body whose top level bound
+    /// __fn_done/__fn_res (the M2 early-return flag-guard). In-loop
+    /// `return` rewrites consult it: they must ALSO set the function-level
+    /// flags, or a return nested in an inner while only stops that while
+    /// and the value vanishes (nested-return bug, 2026-09-11). Nested
+    /// lower_block_tail calls see it true and skip their own binding —
+    /// a shadowing let would swallow nested returns.
+    static FN_FLAGS_BOUND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn note_ident(name: &str, offset: u32) {
@@ -789,24 +797,89 @@ fn stmts_have_bare_return(stmts: &[Statement<'_>]) -> bool {
     })
 }
 
+/// Any `return` reachable inside a loop (while/for/for-of), at any nesting
+/// depth of ifs/blocks/loops. Such returns can only escape via the
+/// function-level __fn_done/__fn_res flags — loop-local __wl_* bindings are
+/// shadowed per level, so without the function flags the value vanishes
+/// (nested-return bug, 2026-09-11: `while(..){ while(..){ return 77; } }`
+/// returned the accumulator instead).
+fn has_return_inside_loop(stmts: &[Statement<'_>]) -> bool {
+    fn in_loop(s: &Statement<'_>) -> bool {
+        match s {
+            Statement::WhileStatement(w) => stmts_have_deep_return(stmts_of(&w.body)),
+            Statement::DoWhileStatement(d) => stmts_have_deep_return(stmts_of(&d.body)),
+            Statement::ForStatement(f) => stmts_have_deep_return(stmts_of(&f.body)),
+            Statement::ForOfStatement(f) => stmts_have_deep_return(stmts_of(&f.body)),
+            Statement::ForInStatement(f) => stmts_have_deep_return(stmts_of(&f.body)),
+            Statement::BlockStatement(b) => b.body.iter().any(in_loop),
+            Statement::IfStatement(i) => {
+                in_loop(&i.consequent) || i.alternate.as_ref().is_some_and(|a| in_loop(a))
+            }
+            _ => false,
+        }
+    }
+    stmts.iter().any(in_loop)
+}
+
+/// Any `return` anywhere below these statements (loops, ifs, blocks).
+fn stmts_have_deep_return(stmts: &[Statement<'_>]) -> bool {
+    fn deep(s: &Statement<'_>) -> bool {
+        match s {
+            Statement::ReturnStatement(_) => true,
+            Statement::BlockStatement(b) => b.body.iter().any(deep),
+            Statement::IfStatement(i) => {
+                deep(&i.consequent) || i.alternate.as_ref().is_some_and(|a| deep(a))
+            }
+            Statement::WhileStatement(w) => stmts_have_deep_return(stmts_of(&w.body)),
+            Statement::DoWhileStatement(d) => stmts_have_deep_return(stmts_of(&d.body)),
+            Statement::ForStatement(f) => stmts_have_deep_return(stmts_of(&f.body)),
+            Statement::ForOfStatement(f) => stmts_have_deep_return(stmts_of(&f.body)),
+            Statement::ForInStatement(f) => stmts_have_deep_return(stmts_of(&f.body)),
+            _ => false,
+        }
+    }
+    stmts.iter().any(deep)
+}
+
 /// Lower a statement list whose value is the tail expression.
 fn lower_block_tail(stmts: &[Statement<'_>], view: bool) -> Result<LispVal, String> {
     if stmts.is_empty() {
         return Ok(Num(0));
     }
     let (init, last) = stmts.split_at(stmts.len() - 1);
-    if stmts_have_bare_return(init) {
-        // early-return function: flag-guard lowering (M2).
-        // __fn_res starts as nil (bottom type — accepts str/num set!s).
+    // Any `return` in a non-tail statement (directly, in an if branch, or
+    // inside a loop at any depth) can only escape through the function-
+    // level __fn_done/__fn_res flags — loop-local __wl_* are shadowed per
+    // nesting level and a nested return's value vanishes without them
+    // (2026-09-11). Tail-statement returns are plain value semantics.
+    if !stmts_have_deep_return(init) {
         let tail = lower_tail_stmt(&last[0], view)?;
-        let guarded_tail = list(vec![
+        return lower_prefix_around(init, tail, view);
+    }
+    let guarded_tail = |tail: LispVal| {
+        list(vec![
             Sym("if"),
             list(vec![Sym("="), Sym("__fn_done"), Num(0)]),
             tail,
-            Sym("__fn_res"),
-        ]);
-        let body = lower_prefix_around_with_return(init, guarded_tail, view)?;
-        return Ok(list(vec![
+            fn_exit_form(view),
+        ])
+    };
+    if FN_FLAGS_BOUND.with(|f| f.get()) {
+        // An enclosing context (function body, if-branch) already bound the
+        // flags — NEVER shadow them: set!s and guards must resolve outward,
+        // or a nested return sets the shadow and the value vanishes when
+        // this block ends.
+        let tail = lower_tail_stmt(&last[0], view)?;
+        let body = lower_prefix_around_with_return(init, guarded_tail(tail), view)?;
+        return Ok(body);
+    }
+    // early-return function: flag-guard lowering (M2).
+    // __fn_res starts as nil (bottom type — accepts str/num set!s).
+    let saved = FN_FLAGS_BOUND.with(|f| f.replace(true));
+    let result = (|| {
+        let tail = lower_tail_stmt(&last[0], view)?;
+        let body = lower_prefix_around_with_return(init, guarded_tail(tail), view)?;
+        Ok(list(vec![
             Sym("let"),
             list(vec![
                 list(vec![Sym("__fn_done"), Num(0)]),
@@ -816,10 +889,10 @@ fn lower_block_tail(stmts: &[Statement<'_>], view: bool) -> Result<LispVal, Stri
                 ]),
             ]),
             body,
-        ]));
-    }
-    let tail = lower_tail_stmt(&last[0], view)?;
-    lower_prefix_around(init, tail, view)
+        ]))
+    })();
+    FN_FLAGS_BOUND.with(|f| f.set(saved));
+    result
 }
 
 /// Like lower_prefix_around, but a bare `return e;` mid-function stores
@@ -926,17 +999,94 @@ fn lower_prefix_around_with_return(
         }
         Statement::WhileStatement(_) => {
             let (has_exits, core) = lower_while_parts(&last[0])?;
-            let mut v = vec![Sym("begin"), core];
+            let mut v = vec![Sym("begin")];
             if has_exits {
-                // loop exit feeds the function-level flag too
+                // bind the loop-local flags (the core references them) and
+                // guard the whole loop: an earlier bare return must not run it
                 v.push(list(vec![
                     Sym("if"),
-                    Sym("__wl_ret"),
+                    list(vec![Sym("="), Sym("__fn_done"), Num(0)]),
                     list(vec![
-                        Sym("begin"),
-                        list(vec![Sym("set!"), Sym("__fn_res"), Sym("__wl_res")]),
-                        list(vec![Sym("set!"), Sym("__fn_done"), Num(1)]),
+                        Sym("let"),
+                        list(vec![
+                            list(vec![Sym("__wl_done"), Num(0)]),
+                            list(vec![Sym("__wl_ret"), Num(0)]),
+                            list(vec![
+                                Sym("__wl_res"),
+                                list(vec![Sym("quote"), LispVal::Nil]),
+                            ]),
+                        ]),
+                        list(vec![
+                            Sym("begin"),
+                            core,
+                            // loop return feeds the function-level flag too
+                            list(vec![
+                                Sym("if"),
+                                Sym("__wl_ret"),
+                                list(vec![
+                                    Sym("begin"),
+                                    list(vec![Sym("set!"), Sym("__fn_res"), Sym("__wl_res")]),
+                                    list(vec![Sym("set!"), Sym("__fn_done"), Num(1)]),
+                                    Num(0),
+                                ]),
+                                Num(0),
+                            ]),
+                        ]),
                     ]),
+                    Num(0),
+                ]));
+            } else {
+                v.push(list(vec![
+                    Sym("if"),
+                    list(vec![Sym("="), Sym("__fn_done"), Num(0)]),
+                    core,
+                    Num(0),
+                ]));
+            }
+            v.push(tail);
+            list(v)
+        }
+        Statement::ForStatement(fr) => {
+            let (has_exits, core) = lower_for_parts(fr)?;
+            let mut v = vec![Sym("begin")];
+            if has_exits {
+                v.push(list(vec![
+                    Sym("if"),
+                    list(vec![Sym("="), Sym("__fn_done"), Num(0)]),
+                    list(vec![
+                        Sym("let"),
+                        list(vec![
+                            list(vec![Sym("__wl_done"), Num(0)]),
+                            list(vec![Sym("__wl_ret"), Num(0)]),
+                            list(vec![
+                                Sym("__wl_res"),
+                                list(vec![Sym("quote"), LispVal::Nil]),
+                            ]),
+                        ]),
+                        list(vec![
+                            Sym("begin"),
+                            core,
+                            list(vec![
+                                Sym("if"),
+                                Sym("__wl_ret"),
+                                list(vec![
+                                    Sym("begin"),
+                                    list(vec![Sym("set!"), Sym("__fn_res"), Sym("__wl_res")]),
+                                    list(vec![Sym("set!"), Sym("__fn_done"), Num(1)]),
+                                    Num(0),
+                                ]),
+                                Num(0),
+                            ]),
+                        ]),
+                    ]),
+                    Num(0),
+                ]));
+            } else {
+                v.push(list(vec![
+                    Sym("if"),
+                    list(vec![Sym("="), Sym("__fn_done"), Num(0)]),
+                    core,
+                    Num(0),
                 ]));
             }
             v.push(tail);
@@ -944,16 +1094,45 @@ fn lower_prefix_around_with_return(
         }
         Statement::ForOfStatement(fo) => {
             let (has_exits, core) = lower_for_of_parts(fo)?;
-            let mut v = vec![Sym("begin"), core];
+            let mut v = vec![Sym("begin")];
             if has_exits {
                 v.push(list(vec![
                     Sym("if"),
-                    Sym("__wl_ret"),
+                    list(vec![Sym("="), Sym("__fn_done"), Num(0)]),
                     list(vec![
-                        Sym("begin"),
-                        list(vec![Sym("set!"), Sym("__fn_res"), Sym("__wl_res")]),
-                        list(vec![Sym("set!"), Sym("__fn_done"), Num(1)]),
+                        Sym("let"),
+                        list(vec![
+                            list(vec![Sym("__wl_done"), Num(0)]),
+                            list(vec![Sym("__wl_ret"), Num(0)]),
+                            list(vec![
+                                Sym("__wl_res"),
+                                list(vec![Sym("quote"), LispVal::Nil]),
+                            ]),
+                        ]),
+                        list(vec![
+                            Sym("begin"),
+                            core,
+                            list(vec![
+                                Sym("if"),
+                                Sym("__wl_ret"),
+                                list(vec![
+                                    Sym("begin"),
+                                    list(vec![Sym("set!"), Sym("__fn_res"), Sym("__wl_res")]),
+                                    list(vec![Sym("set!"), Sym("__fn_done"), Num(1)]),
+                                    Num(0),
+                                ]),
+                                Num(0),
+                            ]),
+                        ]),
                     ]),
+                    Num(0),
+                ]));
+            } else {
+                v.push(list(vec![
+                    Sym("if"),
+                    list(vec![Sym("="), Sym("__fn_done"), Num(0)]),
+                    core,
+                    Num(0),
                 ]));
             }
             v.push(tail);
@@ -1259,7 +1438,12 @@ fn lower_tail_stmt(s: &Statement<'_>, view: bool) -> Result<LispVal, String> {
                 list(vec![
                     Sym("begin"),
                     core,
-                    list(vec![Sym("if"), Sym("__wl_ret"), exit_result_form(view), Num(0)]),
+                    list(vec![
+                        Sym("if"),
+                        Sym("__wl_ret"),
+                        exit_result_form(view),
+                        Num(0),
+                    ]),
                 ]),
             ]))
         }
@@ -1327,11 +1511,14 @@ fn lower_for_of_parts(fo: &oxc_ast::ast::ForOfStatement<'_>) -> Result<(bool, Li
     let name = binding_name(&decl.declarations[0].id)?;
     let arr_e = lower_expr(&fo.right)?;
     let body_stmts = stmts_of(&fo.body);
-    let has_exits = stmts_have_exit(body_stmts);
+    let fn_bound = FN_FLAGS_BOUND.with(|f| f.get());
+    let deep_ret = fn_bound && stmts_have_deep_return(body_stmts);
+    let has_exits = stmts_have_exit(body_stmts) || deep_ret;
 
     // body pieces (exit-aware, same shape as lower_for_parts)
     let mut body_items: Vec<LispVal> = vec![Sym("begin")];
     let mut seen_exit = false;
+    let mut seen_fn_exit = false;
     for st in body_stmts {
         let piece = if has_exits {
             match st {
@@ -1345,26 +1532,54 @@ fn lower_for_of_parts(fo: &oxc_ast::ast::ForOfStatement<'_>) -> Result<(bool, Li
                         Some(e) => lower_expr(e)?,
                         None => Num(0),
                     };
-                    list(vec![
-                        Sym("begin"),
-                        list(vec![Sym("set!"), Sym("__wl_res"), val]),
+                    let mut items = vec![
+                        list(vec![Sym("set!"), Sym("__wl_res"), val.clone()]),
                         list(vec![Sym("set!"), Sym("__wl_ret"), Num(1)]),
                         list(vec![Sym("set!"), Sym("__wl_done"), Num(1)]),
-                        Num(0),
-                    ])
+                    ];
+                    if fn_bound {
+                        items.push(list(vec![Sym("set!"), Sym("__fn_res"), val]));
+                        items.push(list(vec![Sym("set!"), Sym("__fn_done"), Num(1)]));
+                    }
+                    items.push(Num(0));
+                    let mut v = vec![Sym("begin")];
+                    v.extend(items);
+                    list(v)
                 }
                 other => {
                     let e = tail_stmt_as_expr(other)?;
-                    if seen_exit {
-                        // dead code after an exit — int-pad the branch
-                        // (e may be set!/while-typed nil; nil ≠ int breaks
-                        // the checker's branch unification)
-                        list(vec![
-                            Sym("if"),
-                            list(vec![Sym("="), Sym("__wl_done"), Num(0)]),
-                            list(vec![Sym("begin"), e, Num(0)]),
-                            Num(0),
-                        ])
+                    if seen_exit || seen_fn_exit {
+                        // dead code after an exit (this loop's or a nested
+                        // return) — int-pad the branch (e may be set!/while-
+                        // typed nil; nil ≠ int breaks the checker's unification)
+                        let guarded = if seen_exit && seen_fn_exit {
+                            list(vec![
+                                Sym("if"),
+                                list(vec![Sym("="), Sym("__wl_done"), Num(0)]),
+                                list(vec![
+                                    Sym("if"),
+                                    list(vec![Sym("="), Sym("__fn_done"), Num(0)]),
+                                    list(vec![Sym("begin"), e, Num(0)]),
+                                    Num(0),
+                                ]),
+                                Num(0),
+                            ])
+                        } else if seen_exit {
+                            list(vec![
+                                Sym("if"),
+                                list(vec![Sym("="), Sym("__wl_done"), Num(0)]),
+                                list(vec![Sym("begin"), e, Num(0)]),
+                                Num(0),
+                            ])
+                        } else {
+                            list(vec![
+                                Sym("if"),
+                                list(vec![Sym("="), Sym("__fn_done"), Num(0)]),
+                                list(vec![Sym("begin"), e, Num(0)]),
+                                Num(0),
+                            ])
+                        };
+                        guarded
                     } else {
                         e
                     }
@@ -1378,6 +1593,9 @@ fn lower_for_of_parts(fo: &oxc_ast::ast::ForOfStatement<'_>) -> Result<(bool, Li
         // run after a mid-branch break (for-of acc bug, 2026-09-08)
         if stmt_has_exit(st) {
             seen_exit = true;
+        }
+        if deep_ret_scan(st) {
+            seen_fn_exit = true;
         }
         body_items.push(piece);
     }
@@ -1403,15 +1621,25 @@ fn lower_for_of_parts(fo: &oxc_ast::ast::ForOfStatement<'_>) -> Result<(bool, Li
     ]);
 
     let test = list(vec![Sym("<"), Sym("__of_i"), Sym("__of_n")]);
-    let cond_e = if has_exits {
+    let inner_test = if deep_ret {
         list(vec![
             Sym("if"),
-            list(vec![Sym("="), Sym("__wl_done"), Num(0)]),
+            list(vec![Sym("="), Sym("__fn_done"), Num(0)]),
             test,
             list(vec![Sym("="), Num(1), Num(0)]),
         ])
     } else {
         test
+    };
+    let cond_e = if has_exits {
+        list(vec![
+            Sym("if"),
+            list(vec![Sym("="), Sym("__wl_done"), Num(0)]),
+            inner_test,
+            list(vec![Sym("="), Num(1), Num(0)]),
+        ])
+    } else {
+        inner_test
     };
     Ok((
         has_exits,
@@ -1441,6 +1669,12 @@ fn lower_while_parts(s: &Statement<'_>) -> Result<(bool, LispVal), String> {
 
 fn lower_while_parts_core(w: &oxc_ast::ast::WhileStatement<'_>) -> Result<(bool, LispVal), String> {
     let body_stmts = stmts_of(&w.body);
+    let fn_bound = FN_FLAGS_BOUND.with(|f| f.get());
+    // A return nested in an INNER loop of this body stops this loop only
+    // through the function-level flag — the cond must check it, and the
+    // body walk must route through the exit machinery (guards) even when
+    // this loop itself has no break/return.
+    let deep_ret = fn_bound && stmts_have_deep_return(body_stmts);
 
     // Hoist loop-body `let/const` declarations: TS consts are per-iteration
     // but write-before-read (TDZ), so rewrite `const x = e;` in place as
@@ -1459,16 +1693,29 @@ fn lower_while_parts_core(w: &oxc_ast::ast::WhileStatement<'_>) -> Result<(bool,
         }
     }
 
-    if !stmts_have_exit(body_stmts) {
+    if !stmts_have_exit(body_stmts) && !deep_ret {
         let mut body_items = vec![Sym("begin")];
         for s in body_stmts {
-            if let Statement::VariableDeclaration(_) = s {
-                continue; // already hoisted below via hoisted list
+            match s {
+                // Per-iteration re-init AT ITS SOURCE POSITION. Mid-body
+                // declarations read state mutated earlier in the SAME
+                // iteration (`const s16 = t[16] + C` after an inner loop) —
+                // evaluating their inits at body top produced stale/garbage
+                // values (fp254 CIOS: every limb wrong; the generalized
+                // "values vanish" bug, 2026-09-11).
+                Statement::VariableDeclaration(v) => {
+                    for d in &v.declarations {
+                        let name = binding_name(&d.id)?;
+                        let init = hoisted
+                            .iter()
+                            .find(|(n, _)| *n == name)
+                            .map(|(_, i)| i.clone())
+                            .ok_or("ts_frontend: internal: hoisted decl missing")?;
+                        body_items.push(list(vec![Sym("set!"), Sym(name), init]));
+                    }
+                }
+                other => body_items.push(tail_stmt_as_expr(other)?),
             }
-            body_items.push(tail_stmt_as_expr(s)?);
-        }
-        for (name, init) in &hoisted {
-            body_items.insert(1, list(vec![Sym("set!"), Sym(name.clone()), init.clone()]));
         }
         let body_e = if body_items.len() == 1 {
             Num(0)
@@ -1485,15 +1732,25 @@ fn lower_while_parts_core(w: &oxc_ast::ast::WhileStatement<'_>) -> Result<(bool,
             .collect();
         return Ok((false, list(vec![Sym("let"), list(binds), while_e])));
     }
-    // break/return rewrite
+    // break/return rewrite — declarations re-init AT THEIR SOURCE POSITION
+    // (same rule as the simple path: mid-body inits read same-iteration state)
     let mut body_items = vec![Sym("begin")];
-    for (name, init) in &hoisted {
-        body_items.push(list(vec![Sym("set!"), Sym(name.clone()), init.clone()]));
-    }
     let mut seen_exit = false;
+    let mut seen_fn_exit = false;
     for s in body_stmts {
-        if let Statement::VariableDeclaration(_) = s {
-            continue; // hoisted above
+        if let Statement::VariableDeclaration(v) = s {
+            if !seen_exit {
+                for d in &v.declarations {
+                    let name = binding_name(&d.id)?;
+                    let init = hoisted
+                        .iter()
+                        .find(|(n, _)| *n == name)
+                        .map(|(_, i)| i.clone())
+                        .ok_or("ts_frontend: internal: hoisted decl missing")?;
+                    body_items.push(list(vec![Sym("set!"), Sym(name), init]));
+                }
+            }
+            continue; // position handled above; dead after an exit
         }
         let piece = match s {
             Statement::BreakStatement(_) => list(vec![
@@ -1506,21 +1763,54 @@ fn lower_while_parts_core(w: &oxc_ast::ast::WhileStatement<'_>) -> Result<(bool,
                     Some(e) => lower_expr(e)?,
                     None => Num(0),
                 };
-                list(vec![
-                    Sym("begin"),
-                    list(vec![Sym("set!"), Sym("__wl_res"), val]),
+                // Stop THIS loop via __wl_done; when the function binds the
+                // M2 flags, also record the value at function level so a
+                // return nested in inner loops escapes (nested-return bug,
+                // 2026-09-11).
+                let mut items = vec![
+                    list(vec![Sym("set!"), Sym("__wl_res"), val.clone()]),
                     list(vec![Sym("set!"), Sym("__wl_ret"), Num(1)]),
                     list(vec![Sym("set!"), Sym("__wl_done"), Num(1)]),
-                    Num(0), // set! types nil — keep the begin int-typed
-                ])
+                ];
+                if fn_bound {
+                    items.push(list(vec![Sym("set!"), Sym("__fn_res"), val]));
+                    items.push(list(vec![Sym("set!"), Sym("__fn_done"), Num(1)]));
+                }
+                items.push(Num(0)); // set! types nil — keep the begin int-typed
+                let mut v = vec![Sym("begin")];
+                v.extend(items);
+                list(v)
             }
             other => {
                 let e = tail_stmt_as_expr(other)?;
-                if seen_exit {
+                if seen_exit && seen_fn_exit {
+                    // dead code after this loop's own exit OR a nested
+                    // return — guard on both flags
+                    list(vec![
+                        Sym("if"),
+                        list(vec![Sym("="), Sym("__wl_done"), Num(0)]),
+                        list(vec![
+                            Sym("if"),
+                            list(vec![Sym("="), Sym("__fn_done"), Num(0)]),
+                            e,
+                            Num(0),
+                        ]),
+                        Num(0),
+                    ])
+                } else if seen_exit {
                     // dead code after break/return in the same iteration — guard
                     list(vec![
                         Sym("if"),
                         list(vec![Sym("="), Sym("__wl_done"), Num(0)]),
+                        e,
+                        Num(0),
+                    ])
+                } else if seen_fn_exit {
+                    // a NESTED loop returned — the rest of this iteration
+                    // is dead (the function is returning)
+                    list(vec![
+                        Sym("if"),
+                        list(vec![Sym("="), Sym("__fn_done"), Num(0)]),
                         e,
                         Num(0),
                     ])
@@ -1535,6 +1825,9 @@ fn lower_while_parts_core(w: &oxc_ast::ast::WhileStatement<'_>) -> Result<(bool,
         if stmt_has_exit(s) {
             seen_exit = true;
         }
+        if deep_ret_scan(s) {
+            seen_fn_exit = true;
+        }
         body_items.push(piece);
     }
     let body_e = if body_items.len() == 1 {
@@ -1542,11 +1835,25 @@ fn lower_while_parts_core(w: &oxc_ast::ast::WhileStatement<'_>) -> Result<(bool,
     } else {
         list(body_items)
     };
+    // cond: stop on this loop's break flag, and on the function-level
+    // return flag when a nested return can fire inside this body
+    let plain_test = truthy(&w.test)?;
+    let false_e = list(vec![Sym("="), Num(1), Num(0)]); // bool false — keep branch types aligned
+    let inner_cond = if deep_ret {
+        list(vec![
+            Sym("if"),
+            list(vec![Sym("="), Sym("__fn_done"), Num(0)]),
+            plain_test,
+            false_e.clone(),
+        ])
+    } else {
+        plain_test
+    };
     let cond_e = list(vec![
         Sym("if"),
         list(vec![Sym("="), Sym("__wl_done"), Num(0)]),
-        truthy(&w.test)?,
-        list(vec![Sym("="), Num(1), Num(0)]), // bool false — keep branch types aligned
+        inner_cond,
+        false_e,
     ]);
     // CORE: hoisted bindings + flag-guarded while. Flags themselves are
     // bound by the SURROUNDING context (mid-function continuation guard
@@ -1565,6 +1872,13 @@ fn lower_while_parts_core(w: &oxc_ast::ast::WhileStatement<'_>) -> Result<(bool,
     } else {
         Ok((true, list(vec![Sym("let"), list(binds), while_e])))
     }
+}
+
+/// Does this statement contain a `return` at any depth (incl. nested
+/// loops)? Drives the function-level exit guard for statements following
+/// a may-return statement inside loop bodies.
+fn deep_ret_scan(s: &Statement<'_>) -> bool {
+    stmts_have_deep_return(std::slice::from_ref(s))
 }
 
 /// While as a VALUE: binds the exit flags itself and yields __wl_res.
@@ -1633,13 +1947,22 @@ fn tail_stmt_as_expr(s: &Statement<'_>) -> Result<LispVal, String> {
                 Some(e) => lower_expr(e)?,
                 None => Num(0),
             };
-            Ok(list(vec![
-                Sym("begin"),
-                list(vec![Sym("set!"), Sym("__wl_res"), val]),
+            // In-loop return: stop this loop AND, when the function binds
+            // the M2 flags, record the value at function level — a return
+            // nested in an inner while must not vanish when this loop's
+            // value is discarded by the enclosing body (2026-09-11).
+            let fn_bound = FN_FLAGS_BOUND.with(|f| f.get());
+            let mut items = vec![
+                list(vec![Sym("set!"), Sym("__wl_res"), val.clone()]),
                 list(vec![Sym("set!"), Sym("__wl_ret"), Num(1)]),
                 list(vec![Sym("set!"), Sym("__wl_done"), Num(1)]),
-                Num(0),
-            ]))
+            ];
+            if fn_bound {
+                items.push(list(vec![Sym("set!"), Sym("__fn_res"), val]));
+                items.push(list(vec![Sym("set!"), Sym("__fn_done"), Num(1)]));
+            }
+            items.push(Num(0));
+            Ok(list(vec![Sym("begin")].into_iter().chain(items).collect()))
         }
         Statement::BreakStatement(_) => Ok(list(vec![
             Sym("begin"),
@@ -1687,10 +2010,10 @@ fn tail_stmt_as_expr(s: &Statement<'_>) -> Result<LispVal, String> {
                     ]),
                 ]),
                 list(vec![
-            Sym("begin"),
-            core,
-            list(vec![Sym("if"), Sym("__wl_ret"), Sym("__wl_res"), Num(0)]),
-        ]),
+                    Sym("begin"),
+                    core,
+                    list(vec![Sym("if"), Sym("__wl_ret"), Sym("__wl_res"), Num(0)]),
+                ]),
             ]))
         }
         Statement::BlockStatement(b) => loop_body_expr(&b.body),
@@ -1808,10 +2131,13 @@ fn lower_for_parts(fr: &oxc_ast::ast::ForStatement<'_>) -> Result<(bool, LispVal
     // returned "fell-through" instead of "102" — found while building
     // for-of arrays).
     let body_stmts = stmts_of(&fr.body);
-    let has_exits = stmts_have_exit(body_stmts);
+    let fn_bound = FN_FLAGS_BOUND.with(|f| f.get());
+    let deep_ret = fn_bound && stmts_have_deep_return(body_stmts);
+    let has_exits = stmts_have_exit(body_stmts) || deep_ret;
 
     let mut body_items: Vec<LispVal> = vec![Sym("begin")];
     let mut seen_exit = false;
+    let mut seen_fn_exit = false;
     for s in body_stmts {
         let piece = if has_exits {
             match s {
@@ -1825,21 +2151,48 @@ fn lower_for_parts(fr: &oxc_ast::ast::ForStatement<'_>) -> Result<(bool, LispVal
                         Some(e) => lower_expr(e)?,
                         None => Num(0),
                     };
-                    list(vec![
-                        Sym("begin"),
-                        list(vec![Sym("set!"), Sym("__wl_res"), val]),
+                    let mut items = vec![
+                        list(vec![Sym("set!"), Sym("__wl_res"), val.clone()]),
                         list(vec![Sym("set!"), Sym("__wl_ret"), Num(1)]),
                         list(vec![Sym("set!"), Sym("__wl_done"), Num(1)]),
-                        Num(0),
-                    ])
+                    ];
+                    if fn_bound {
+                        items.push(list(vec![Sym("set!"), Sym("__fn_res"), val]));
+                        items.push(list(vec![Sym("set!"), Sym("__fn_done"), Num(1)]));
+                    }
+                    items.push(Num(0));
+                    let mut v = vec![Sym("begin")];
+                    v.extend(items);
+                    list(v)
                 }
                 other => {
                     let e = tail_stmt_as_expr(other)?;
-                    if seen_exit {
+                    if seen_exit && seen_fn_exit {
+                        list(vec![
+                            Sym("if"),
+                            list(vec![Sym("="), Sym("__wl_done"), Num(0)]),
+                            list(vec![
+                                Sym("if"),
+                                list(vec![Sym("="), Sym("__fn_done"), Num(0)]),
+                                e,
+                                Num(0),
+                            ]),
+                            Num(0),
+                        ])
+                    } else if seen_exit {
                         // dead code after break/return in the same iteration
                         list(vec![
                             Sym("if"),
                             list(vec![Sym("="), Sym("__wl_done"), Num(0)]),
+                            e,
+                            Num(0),
+                        ])
+                    } else if seen_fn_exit {
+                        // a NESTED loop returned — the rest of this iteration
+                        // is dead (the function is returning)
+                        list(vec![
+                            Sym("if"),
+                            list(vec![Sym("="), Sym("__fn_done"), Num(0)]),
                             e,
                             Num(0),
                         ])
@@ -1857,6 +2210,9 @@ fn lower_for_parts(fr: &oxc_ast::ast::ForStatement<'_>) -> Result<(bool, LispVal
         if stmt_has_exit(s) {
             seen_exit = true;
         }
+        if deep_ret_scan(s) {
+            seen_fn_exit = true;
+        }
         body_items.push(piece);
     }
     // update clause runs after the body; guard it in exit mode so a
@@ -1866,7 +2222,12 @@ fn lower_for_parts(fr: &oxc_ast::ast::ForStatement<'_>) -> Result<(bool, LispVal
             body_items.push(list(vec![
                 Sym("if"),
                 list(vec![Sym("="), Sym("__wl_done"), Num(0)]),
-                list(vec![Sym("begin"), u, Num(0)]),
+                list(vec![
+                    Sym("if"),
+                    list(vec![Sym("="), Sym("__fn_done"), Num(0)]),
+                    list(vec![Sym("begin"), u, Num(0)]),
+                    Num(0),
+                ]),
                 Num(0),
             ]));
         } else {
@@ -1896,11 +2257,23 @@ fn lower_for_parts(fr: &oxc_ast::ast::ForStatement<'_>) -> Result<(bool, LispVal
     }
     // exit mode: flag-guarded condition; flags + __wl_res extraction are
     // the CALLER's job (continuation guard or value wrapper)
+    let plain_test = truthy(test)?;
+    let false_e = list(vec![Sym("="), Num(1), Num(0)]);
+    let inner_test = if deep_ret {
+        list(vec![
+            Sym("if"),
+            list(vec![Sym("="), Sym("__fn_done"), Num(0)]),
+            plain_test,
+            false_e.clone(),
+        ])
+    } else {
+        plain_test
+    };
     let cond_e = list(vec![
         Sym("if"),
         list(vec![Sym("="), Sym("__wl_done"), Num(0)]),
-        truthy(test)?,
-        list(vec![Sym("="), Num(1), Num(0)]),
+        inner_test,
+        false_e,
     ]);
     Ok((
         true,
@@ -1919,6 +2292,18 @@ fn exit_result_form(view: bool) -> LispVal {
         list(vec![Sym("near/json_return_str"), Sym("__wl_res")])
     } else {
         Sym("__wl_res")
+    }
+}
+
+/// Function-level return value (set by in-loop return rewrites when the
+/// M2 flags are bound). json_return_str is idempotent, so wrapping at
+/// extraction is safe even when a bare-return site already wrapped at
+/// store time.
+fn fn_exit_form(view: bool) -> LispVal {
+    if view {
+        list(vec![Sym("near/json_return_str"), Sym("__fn_res")])
+    } else {
+        Sym("__fn_res")
     }
 }
 
@@ -2197,8 +2582,74 @@ fn expr_is_stringy(e: &Expression) -> bool {
 fn expr_is_str_method_call(e: &Expression) -> bool {
     match e {
         Expression::CallExpression(c) => {
+            if let Expression::StaticMemberExpression(m) = &c.callee {
+                // Methods whose return is NOT a string (numbers/bools/void
+                // per the d.ts) must not seed STRING locals: `let ok =
+                // near.altBn128PairingCheck(b)` used to mark `ok` stringy,
+                // so `${ok}` skipped the to-string wrap and str-cat rendered
+                // the raw TAG_NUM as EMPTY (bn254 pairing probe, 2026-09-11).
+                if let Expression::Identifier(obj) = &m.object {
+                    if member_fn_returns_non_string(obj.name.as_str(), m.property.name.as_str()) {
+                        return false;
+                    }
+                }
+            }
             matches!(&c.callee, Expression::StaticMemberExpression(_))
         }
+        _ => false,
+    }
+}
+
+/// near./u128./storage. member methods with non-string returns, per the
+/// d.ts surface (`: number`, `: boolean`, `: void`). Keep in sync with
+/// ts/lisp-rlm.d.ts.
+fn member_fn_returns_non_string(obj: &str, prop: &str) -> bool {
+    match obj {
+        "near" => matches!(
+            prop,
+            "iterPrefix"
+                | "jsonGetInt"
+                | "blockIndex"
+                | "attachedDepositHigh"
+                | "depositGte"
+                | "yieldCreate"
+                | "yieldResume"
+                | "ed25519Verify"
+                | "p256Verify"
+                | "altBn128PairingCheck"
+                | "bls12381PairingCheck"
+                | "prepaidGas"
+                | "usedGas"
+                | "promiseCreate"
+                | "promiseThen"
+                | "promiseAnd"
+                | "promiseBatchCreate"
+                | "promiseBatchThen"
+                | "promiseResultsCount"
+                | "promiseSucceeded"
+                | "storageUsage"
+                | "storageHas"
+                | "storageHasKey"
+                | "storageSet"
+                | "storageRemove"
+                | "jsonReturnStr"
+                | "jsonReturnInt"
+                | "transfer"
+                | "transferU128"
+                | "storeU128"
+                | "log"
+                | "logNum"
+                | "abort"
+                | "panic"
+                | "callAwait"
+                | "call"
+                | "promiseBatchActionTransfer"
+                | "promiseBatchActionFunctionCall"
+                | "promiseBatchActionCreateAccount"
+                | "promiseReturn"
+        ),
+        "u128" => matches!(prop, "lt" | "gt" | "eq" | "isZero" | "toI64"),
+        "storage" => matches!(prop, "has" | "hasKey" | "set" | "write" | "del" | "remove"),
         _ => false,
     }
 }

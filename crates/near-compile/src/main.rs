@@ -186,7 +186,7 @@ const SKILL_EXAMPLE: &str = include_str!("../skills/example-contract.ts");
 const TS_MAIN: &str = include_str!("../skills/ts-template-main.ts");
 const TS_BUILD_SH: &str = include_str!("../skills/ts-template-build.sh");
 const TS_E2E: &str = include_str!("../skills/ts-template-e2e-mock.py");
-const TS_DTS: &str = include_str!("../../../ts/lisp-rlm.d.ts");
+const TS_DTS: &str = include_str!("../skills/ts-template-lisp-rlm.d.ts");
 const TS_BIP340: &str = include_str!("../skills/ts-template-bip340.py");
 
 /// Write the skill files into <dir>/.agents/skills/near-compile/.

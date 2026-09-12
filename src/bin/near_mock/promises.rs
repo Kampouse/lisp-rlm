@@ -1,13 +1,92 @@
 //! Promise DAG: batches, sub-execution, transfer/fn-call settlement.
 
 use super::*;
-use lisp_rlm_wasm::bls_validate;
-use lisp_rlm_wasm::builtin_ed25519::ed25519_verify_impl;
-use lisp_rlm_wasm::builtin_schnorr::schnorr_verify_impl;
-use std::collections::HashMap;
-use std::rc::Rc;
-use std::sync::{Arc, Mutex};
 use wasmtime::*;
+
+thread_local! {
+    /// Normalized guest-panic messages from promise receipts executed during
+    /// the CURRENT tx ("Smart contract panicked: <msg>", execution order).
+    /// sub_execute's trap text used to go to stderr only — differs/replayers
+    /// need it in the outcome to compare against mainnet receipt failures.
+    pub(crate) static RECEIPT_TRAPS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Gated stderr trace (promise engine): NEAR_MOCK_QUIET=1 silences the
+/// per-receipt firehose (replayers); CLI default unchanged.
+macro_rules! ptrace {
+    ($($arg:tt)*) => {
+        if !crate::host_trace_quiet() { eprintln!($($arg)*); }
+    };
+}
+
+/// Clear per-tx receipt-trap capture (execute_tx hygiene).
+pub(crate) fn receipt_traps_reset() {
+    RECEIPT_TRAPS.with(|t| t.borrow_mut().clear());
+}
+
+/// Last captured trap reason (for final-callback status reporting).
+pub(crate) fn receipt_traps_peek_last() -> Option<String> {
+    RECEIPT_TRAPS.with(|t| t.borrow().last().cloned())
+}
+
+/// Take the captured receipt traps (called once per tx, after the DAG ran).
+pub(crate) fn receipt_traps_drain() -> Vec<String> {
+    RECEIPT_TRAPS.with(|t| std::mem::take(&mut *t.borrow_mut()))
+}
+
+#[cfg(test)]
+mod memo_tests {
+    //! Regression: the execute-once memo must never outlive its DAG
+    //! (2026-09-10 live-catch — cross-tx idx aliasing replayed stale results
+    //! and spun the orphan-drain loop at 55M stderr lines/min).
+    use super::*;
+
+    /// A memo hit must mark the node EXECUTED like the uncached path —
+    /// execute_tx's drain loop terminates only on that invariant.
+    #[test]
+    fn memo_hit_marks_executed() {
+        // fresh thread ⇒ fresh TLS; build a trivial empty batch
+        let idx = dag_push(vec![], "b.test.near".into(), vec![]);
+        let first = execute_promise(idx).expect("first execution");
+        assert!(first.is_empty(), "empty batch has no results");
+        assert!(EXECUTED_PROMISES.with(|e| e.borrow().contains(&idx)));
+
+        // simulate the stale-memo situation: new tx clears DAG/executed but
+        // the memo survived (the old bug) — the hit must re-mark executed.
+        PROMISE_DAG.with(|d| d.borrow_mut().clear());
+        EXECUTED_PROMISES.with(|e| e.borrow_mut().clear());
+        PROMISE_DAG.with(|d| {
+            d.borrow_mut().push(crate::PromiseBatch {
+                deps: vec![],
+                account: "b.test.near".into(),
+                creator: "a.test.near".into(),
+                actions: vec![],
+                is_yield: false,
+            })
+        });
+        let replayed = execute_promise(0).expect("memo-hit replay");
+        assert!(replayed.is_empty());
+        assert!(
+            EXECUTED_PROMISES.with(|e| e.borrow().contains(&0)),
+            "memo hit MUST mark the node executed — drain-loop termination"
+        );
+    }
+
+    /// fresh_tx_state() (execute_tx hygiene) must clear the memo so idx 0 of
+    /// tx N+1 can never alias tx N's memoized receipt 0.
+    #[test]
+    fn fresh_tx_state_clears_memo() {
+        let idx = dag_push(vec![], "b.test.near".into(), vec![]);
+        execute_promise(idx).expect("execute");
+        assert!(!PROMISE_OUTCOMES.with(|o| o.borrow().is_empty()));
+        crate::fresh_tx_state();
+        assert!(
+            PROMISE_OUTCOMES.with(|o| o.borrow().is_empty()),
+            "per-tx hygiene must reset the execute-once memo"
+        );
+    }
+}
 
 #[derive(Clone)]
 pub(crate) enum PAction {
@@ -37,6 +116,30 @@ pub(crate) enum PAction {
     /// its remaining liquid balance to the beneficiary.
     DeleteAccount {
         beneficiary: String,
+    },
+    /// promise_batch_action_transfer_to_gas_key (protocol 72+ / near-sdk 5):
+    /// transfer to the gas-key holder's implicit account. The mock treats it
+    /// as a Transfer (no staking-gas-key account model) — semantics are
+    /// receipt-level identical for balance purposes.
+    TransferToGasKey {
+        amount: u128,
+    },
+    /// add_gas_key_with_full_access / add_gas_key_with_function_call
+    /// (protocol 72+): restricted access keys for gas payments. Recorded;
+    /// the mock's key model is ED25519-existence-only, so no enforcement.
+    AddGasKey {
+        pk: Vec<u8>,
+    },
+    /// deploy/use global contract (protocol 69): contract-code sharing across
+    /// accounts. The mock has no global-contract cache — deploying records
+    /// DeployGlobal (treated as DeployContract of the same bytes would need a
+    /// code copy the driver doesn't model); use_* records UseGlobal. Contracts
+    /// depending on global-contract EXECUTION semantics will not behave.
+    DeployGlobalContract {
+        code: Vec<u8>,
+    },
+    UseGlobalContract {
+        account_id: String,
     },
 }
 
@@ -97,7 +200,7 @@ pub(crate) fn print_dag_map() {
             &b.account
         };
         let forced = FAIL_RECEIPTS.with(|f| f.borrow().contains(&i));
-        eprintln!(
+        ptrace!(
             "  [map] receipt {}: {} actions={} deps={:?}{}",
             i,
             acct,
@@ -119,21 +222,36 @@ pub(crate) fn sub_execute(
     predecessor: &str,
     deposit: u128,
 ) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error>> {
-    let module = MODULES.with(|m| {
-        m.borrow()
-            .as_ref()
-            .and_then(|map| map.get(account).cloned())
-    });
+    let module = MODULES
+        .with(|m| {
+            m.borrow()
+                .as_ref()
+                .and_then(|map| map.get(account).cloned())
+        })
+        // fork-mode: unknown account → page code in from the fork RPC
+        .or_else(|| {
+            let engine = ENGINE_TLS
+                .with(|e| e.borrow().clone())
+                .expect("ENGINE_TLS set");
+            crate::fork_get_module(&engine, account)
+        });
     let Some(module) = module else {
-        // 2026-09-02 live-caught (nostr-gov tk="nil"): unknown-account FnCall
-        // receipts FAIL on-chain (AccountDoesNotExist). The old silent
-        // Ok(None) let gauntlets pass while every payout routed to a
-        // phantom contract. Hard-error so the step shows the failure.
-        return Err(format!(
-            "MOCK-CHAIN-FAILURE: promise FnCall to unknown account '{}' (on-chain: AccountDoesNotExist)",
+        // Unknown-account FnCall receipts FAIL on-chain (AccountDoesNotExist)
+        // — but ONLY the receipt fails: the parent tx COMMITS and any
+        // callback receives a Failed promise_result (2026-09-10 receipt-
+        // semantics fix; the 2026-09-02 hard-error overcorrected silent
+        // Ok(None) into whole-tx rollback, which made on-chain recovery
+        // paths — e.g. "MPC down → refund bets" — untestable).
+        // Record the reason for outcome.receipt_failures, then Failed.
+        ptrace!(
+            "  ⚠ cross: FnCall to unknown account '{}' → receipt FAILED (parent commits)",
             account
-        )
-        .into());
+        );
+        RECEIPT_TRAPS.with(|t| {
+            t.borrow_mut()
+                .push(format!("AccountDoesNotExist: {account}"))
+        });
+        return Ok(None);
     };
     let state = STATE_ARC
         .with(|s| s.borrow().clone())
@@ -190,14 +308,16 @@ pub(crate) fn sub_execute(
             debit_key,
             (sbal.saturating_sub(deposit)).to_string().into_bytes(),
         );
-        eprintln!(
+        ptrace!(
             "  💰 fn-call deposit {} yocto: {} → {}",
-            deposit, predecessor, account
+            deposit,
+            predecessor,
+            account
         );
     }
     let saved_dep = CURRENT_DEPOSIT.with(|d| d.borrow_mut().replace(deposit));
 
-    eprintln!(
+    ptrace!(
         "  ↳ cross: {}.{}({})",
         account,
         method,
@@ -205,17 +325,36 @@ pub(crate) fn sub_execute(
     );
     let part_snap = { snapshot_partition(&state.lock().unwrap(), account) };
 
-    let mut sub_store = wasmtime::Store::new(&*engine, ());
-    sub_store.set_fuel(PREPAID_FUEL.with(|r| *r.borrow()))?;
+    let mut sub_store = crate::new_store(&*engine);
     // sub_execute runs on the promise worker thread, where the scenario's
     // epoch ticker never ticks — but wasmtime's DEFAULT epoch deadline is 0,
     // so under epoch_interruption the first epoch check (current >= deadline)
     // fires as soon as the main thread's ticker has advanced once → instant
-    // Interrupt. Give receipt stores an unbounded epoch deadline; fuel still
-    // bounds runaway child compute.
+    // Interrupt. Give receipt stores an unbounded epoch deadline; the
+    // instrumented gas global bounds runaway child compute.
     sub_store.set_epoch_deadline(u64::MAX);
     let linker = build_env_linker(&mut sub_store, &*engine, state.clone(), Vec::new())?;
     let instance = linker.instantiate(&mut sub_store, &module)?;
+    // Receipt gas budget into the instrumented global (entry-budget for the
+    // sub-receipt; mainnet gives each promise receipt its own prepaid gas).
+    {
+        let prepaid = PREPAID_FUEL.with(|r| *r.borrow());
+        if let Some(g) = instance.get_global(&mut sub_store, crate::REMAINING_GAS_EXPORT)
+        {
+            g.set(&mut sub_store, wasmtime::Val::I64(prepaid as i64))
+                .ok();
+        }
+        if let Some(start) = instance.get_func(&mut sub_store, "start") {
+            let _ = start.call(&mut sub_store, &[], &mut []);
+        }
+        // Promise FnCall receipts burn the same execution-side action fee.
+        crate::burn_gas_global(
+            &mut sub_store,
+            &instance,
+            crate::FUNCTION_CALL_BASE_GAS
+                + crate::FUNCTION_CALL_BYTE_GAS * args.len() as u64,
+        );
+    }
     let ok = instance
         .get_func(&mut sub_store, method)
         .map(|f| f.call(&mut sub_store, &[], &mut []));
@@ -238,6 +377,21 @@ pub(crate) fn sub_execute(
                 for c in e.chain().skip(1) {
                     why.push_str(&format!("\n| caused: {}", c));
                 }
+                // Publish the guest panic in mainnet ExecutionError format so
+                // library differs can compare failure classes per receipt.
+                if let Some(i) = why.find("PANIC: ") {
+                    let line = why[i + "PANIC: ".len()..]
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                        .trim_end();
+                    if !line.is_empty() {
+                        RECEIPT_TRAPS.with(|t| {
+                            t.borrow_mut()
+                                .push(format!("Smart contract panicked: {line}"))
+                        });
+                    }
+                }
                 (true, None, format!("{} [trap-code: {}]", why, code))
             }
         },
@@ -254,9 +408,11 @@ pub(crate) fn sub_execute(
         } else {
             pan.join(" | ")
         };
-        eprintln!(
+        ptrace!(
             "  ⚠ cross: {}.{} TRAPPED — reverting partition ({})",
-            account, method, why
+            account,
+            method,
+            why
         );
         restore_partition(&mut state.lock().unwrap(), part_snap, account);
         if deposit > 0 {
@@ -271,9 +427,10 @@ pub(crate) fn sub_execute(
                 .unwrap_or(0);
             st.storage
                 .insert(rk, (b + deposit).to_string().into_bytes());
-            eprintln!(
+            ptrace!(
                 "  💰 deposit {} refunded to {} (failed receipt)",
-                deposit, predecessor
+                deposit,
+                predecessor
             );
         }
     }
@@ -310,10 +467,18 @@ pub(crate) fn execute_promise(
     idx: usize,
 ) -> Result<Vec<Option<Vec<u8>>>, Box<dyn std::error::Error>> {
     if let Some(hit) = PROMISE_OUTCOMES.with(|o| o.borrow().get(&idx).cloned()) {
-        eprintln!(
+        ptrace!(
             "  ⛓ receipt {} — replaying memoized result (execute-once)",
             idx
         );
+        // Termination guarantee (2026-09-10): a memo hit must mark the node
+        // executed like the uncached path does, or execute_tx's orphan-drain
+        // loop (find next unexecuted → execute_promise) rediscovers this idx
+        // forever. The per-tx PROMISE_OUTCOMES clear makes hits rare (diamond
+        // revisits only), but the drain loop must never depend on that.
+        EXECUTED_PROMISES.with(|e| {
+            e.borrow_mut().insert(idx);
+        });
         return Ok(hit);
     }
     let out = execute_promise_uncached(idx)?;
@@ -329,7 +494,7 @@ fn execute_promise_uncached(
     let forced = FAIL_RECEIPTS.with(|f| f.borrow().contains(&idx));
     let mut dep_results: Vec<Option<Vec<u8>>> = Vec::new();
     if forced {
-        eprintln!("  [boom] receipt {} FORCED to fail (--fail-receipt)", idx);
+        ptrace!("  [boom] receipt {} FORCED to fail (--fail-receipt)", idx);
         // Deps still execute: they are temporally earlier receipts and
         // commit on-chain even when this one fails. The actions of this
         // batch never run, so the result is FAILED.
@@ -399,9 +564,7 @@ fn execute_promise_uncached(
                     let child_ret =
                         PENDING_RETURN.with(|p| std::mem::replace(&mut *p.borrow_mut(), outer_ret));
                     if let Some(ridx) = child_ret {
-                        eprintln!(
-                            "  ⛓ child returned promise {ridx} — resolving before dependents"
-                        );
+                        ptrace!("  ⛓ child returned promise {ridx} — resolving before dependents");
                         let cres = execute_promise(ridx)?;
                         // NOTE (2026-09-08): the child's results APPEND after the
                         // local result — do NOT replace slot 0. Tried strict
@@ -435,7 +598,7 @@ fn execute_promise_uncached(
                         .and_then(|s| s.parse().ok())
                         .unwrap_or(0u128);
                     if bal < *amt {
-                        eprintln!(
+                        ptrace!(
                             "  ⚠ transfer {} yocto → {}: creator {} has {} — INSUFFICIENT (this receipt reverts)",
                             amt, batch.account, batch.creator, bal
                         );
@@ -466,13 +629,82 @@ fn execute_promise_uncached(
                         .unwrap_or(0u128);
                     let rbal = rbal + *amt;
                     st.storage.insert(credit_key, rbal.to_string().into_bytes());
-                    eprintln!(
+                    ptrace!(
                         "  ↗ transfer {} yocto → {} (bal now {})",
-                        amt, batch.account, rbal
+                        amt,
+                        batch.account,
+                        rbal
                     );
                     // TRUE NEAR: successful transfer = Successful(empty).
                     // Contracts distinguish it from Failed via
                     // near/promise_succeeded (status probe). No more marker.
+                    out.push(Some(vec![]));
+                }
+                PAction::TransferToGasKey { amount } => {
+                    // protocol 72+ transfer_to_gas_key: the mock has no
+                    // gas-key account model — apply it as a plain transfer
+                    // (balance moves; the gas-key bookkeeping is out of
+                    // scope). Loud note so nobody mistakes it for the real
+                    // staking-gas mechanics.
+                    ptrace!(
+                        "  ⚠ transfer_to_gas_key {amount} yocto → {} (mock: applied as plain transfer; gas-key accounting not modeled)",
+                        batch.account
+                    );
+                    let state = STATE_ARC.with(|s| s.borrow().clone()).ok_or("no state")?;
+                    let mut st = state.lock().unwrap();
+                    let debit_key = prefixed_key(&batch.creator, b"\x00near-bal");
+                    let bal: u128 = st
+                        .storage
+                        .get(&debit_key)
+                        .and_then(|v| std::str::from_utf8(v).ok())
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0u128);
+                    if bal < *amount {
+                        ptrace!("  ⚠ transfer_to_gas_key INSUFFICIENT (receipt reverts)");
+                        for (k, v) in batch_touched.iter() {
+                            match v {
+                                Some(val) => {
+                                    st.storage.insert(k.clone(), val.clone());
+                                }
+                                None => {
+                                    st.storage.remove(k);
+                                }
+                            }
+                        }
+                        out.push(None);
+                        break;
+                    }
+                    batch_touched.push((debit_key.clone(), st.storage.get(&debit_key).cloned()));
+                    st.storage
+                        .insert(debit_key, (bal - *amount).to_string().into_bytes());
+                    let credit_key = prefixed_key(&batch.account, b"\x00near-bal");
+                    batch_touched.push((credit_key.clone(), st.storage.get(&credit_key).cloned()));
+                    let rbal: u128 = st
+                        .storage
+                        .get(&credit_key)
+                        .and_then(|v| std::str::from_utf8(v).ok())
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0u128);
+                    let rbal = rbal + *amount;
+                    st.storage.insert(credit_key, rbal.to_string().into_bytes());
+                    out.push(Some(vec![]));
+                }
+                PAction::AddGasKey { pk: _ } => {
+                    // recorded for the promise trace; the mock's key model
+                    // (ED25519 existence-only) applies — no enforcement.
+                    ptrace!("  🔑 add_gas_key (recorded; mock applies no gas-key rules)");
+                    out.push(Some(vec![]));
+                }
+                PAction::DeployGlobalContract { code: _ } => {
+                    ptrace!(
+                        "  ⚠ deploy_global_contract (recorded ONLY — the mock has no global-contract cache; use_* receipts will not execute code)"
+                    );
+                    out.push(Some(vec![]));
+                }
+                PAction::UseGlobalContract { account_id } => {
+                    ptrace!(
+                        "  ⚠ use_global_contract({account_id}) (no-op in mock — no global-contract cache)"
+                    );
                     out.push(Some(vec![]));
                 }
                 PAction::Stake { amount } => {
@@ -490,9 +722,11 @@ fn execute_promise_uncached(
                         .and_then(|s| s.parse().ok())
                         .unwrap_or(0u128);
                     if amount > bal {
-                        eprintln!(
+                        ptrace!(
                             "  ⚠ stake {} yocto: {} has only {} liquid — receipt reverts",
-                            amount, batch.account, bal
+                            amount,
+                            batch.account,
+                            bal
                         );
                         for (k, v) in batch_touched.iter() {
                             match v {
@@ -518,7 +752,7 @@ fn execute_promise_uncached(
                         .unwrap_or(0u128);
                     st.storage
                         .insert(locked_key, (cur_locked + amount).to_string().into_bytes());
-                    eprintln!(
+                    ptrace!(
                         "  ↗ staked {} yocto ({} total locked, {} liquid)",
                         amount,
                         cur_locked + amount,
@@ -530,7 +764,7 @@ fn execute_promise_uncached(
                     let state = STATE_ARC.with(|s| s.borrow().clone()).ok_or("no state")?;
                     let mut st = state.lock().unwrap();
                     // 0x02-prefixed access-key namespace: key = pk, value = kind
-                    let key = prefixed_key(&batch.account, &[0x02]);
+                    let _key = prefixed_key(&batch.account, &[0x02]);
                     let mut full = vec![0x02];
                     full.extend_from_slice(&pk);
                     let before = st.storage.insert(full.clone(), b"full".to_vec());
@@ -538,7 +772,7 @@ fn execute_promise_uncached(
                     if before.is_none() {
                         batch_touched.push((full, None));
                     }
-                    eprintln!("  🔑 key added (full access)");
+                    ptrace!("  🔑 key added (full access)");
                     out.push(Some(vec![]));
                 }
                 PAction::DeleteKey { pk } => {
@@ -549,9 +783,9 @@ fn execute_promise_uncached(
                     let key = prefixed_key(&batch.account, &full);
                     if st.storage.remove(&key).is_some() {
                         batch_touched.push((key, None)); // removal reverts on failure
-                        eprintln!("  🗑 key deleted");
+                        ptrace!("  🗑 key deleted");
                     } else {
-                        eprintln!("  ⚠ delete_key: unknown key — receipt reverts");
+                        ptrace!("  ⚠ delete_key: unknown key — receipt reverts");
                         for (k, v) in batch_touched.iter() {
                             match v {
                                 Some(val) => {
@@ -597,9 +831,10 @@ fn execute_promise_uncached(
                     for k in removed {
                         st.storage.remove(&k);
                     }
-                    eprintln!(
+                    ptrace!(
                         "  💥 account {} deleted; {} yocto → {beneficiary}",
-                        batch.account, bal
+                        batch.account,
+                        bal
                     );
                     out.push(Some(vec![]));
                 }
