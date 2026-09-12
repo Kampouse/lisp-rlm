@@ -16,7 +16,7 @@ lto = true
 
 [package]
 name = "lisp-rlm-wasm"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 description = "Lisp/TS/Solidity → NEAR smart-contract compiler core (parser, typechecker, wasm emitter, crypto stitcher, wit bindings)"
 license = "MIT"
