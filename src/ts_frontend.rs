@@ -3786,7 +3786,16 @@ fn to_bool(e: &Expression<'_>) -> Result<LispVal, String> {
     if already_bool {
         lower_expr(e)
     } else {
-        Ok(list(vec![Sym("!="), lower_expr(e)?, Num(0)]))
+        // Pass the value RAW to the (if …) — the lisp `if`/`while` emitters
+        // use tag-aware truthiness (emit_cond_branch: falsy = {Bool false,
+        // Nil, Num 0}), so any tagged value branches correctly.
+        //
+        // The old `(!= x 0)` wrapper did a NUMERIC compare: an identifier
+        // holding a BOOL was compared as bool≠num → always true, so
+        // `const take = r < 2; if (take)` in a loop took the then-arm every
+        // iteration (probeB: 60 instead of 24 — Poseidon's partial rounds
+        // hashed wrong from exactly this, 2026-09-11).
+        lower_expr(e)
     }
 }
 
