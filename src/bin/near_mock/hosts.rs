@@ -1858,7 +1858,7 @@ pub(crate) fn build_env_linker(
         FuncType::new(engine, vec![ValType::I64; 2], vec![ValType::I64]),
         |_, _, _| {
             Err(wasmtime::Error::msg(
-                "Deprecated: storage_iter_prefix is deprecated.",
+                "Attempted to call deprecated host function storage_iter_prefix",
             ))
         },
     );
@@ -1868,7 +1868,7 @@ pub(crate) fn build_env_linker(
         FuncType::new(engine, vec![ValType::I64; 4], vec![ValType::I64]),
         |_, _, _| {
             Err(wasmtime::Error::msg(
-                "Deprecated: storage_iter_range is deprecated.",
+                "Attempted to call deprecated host function storage_iter_range",
             ))
         },
     );
@@ -1878,7 +1878,7 @@ pub(crate) fn build_env_linker(
         FuncType::new(engine, vec![ValType::I64; 3], vec![ValType::I64]),
         |_, _, _| {
             Err(wasmtime::Error::msg(
-                "Deprecated: storage_iter_next is deprecated.",
+                "Attempted to call deprecated host function storage_iter_next",
             ))
         },
     );

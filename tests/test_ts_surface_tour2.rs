@@ -166,14 +166,33 @@ fn input_echo() {
 }
 
 #[test]
-fn iter_round_trip_via_mock_storage() {
-    // The mock's storage_iter_* are host noops (real iteration is a bytecode-
-    // VM feature), but the string-arg surface must instantiate and run
-    // without trapping — that's the surface guarantee this battery pins.
-    let out = run(TOUR_SRC, "tour", "iterProbe", "{}");
+fn iter_deprecated_traps_like_mainnet() {
+    // storage_iter_* were deprecated at the protocol level; verified on
+    // testnet 2026-09-11 (iprobe.registry-nostrgov.testnet): the call traps
+    // with "Attempted to call deprecated host function storage_iter_prefix".
+    // The mock must produce mainnet's EXACT wording — the differ compares
+    // failure classes verbatim. (Run() gates on exit 0; a trap exits 1, so
+    // invoke the binary directly here.)
+    let _l = lock();
+    let wasm = compile(TOUR_SRC, "tour");
+    let tmp = std::env::temp_dir().join(format!("nm_tour2_{}.wasm", std::process::id()));
+    std::fs::write(&tmp, &wasm).unwrap();
+    let out = std::process::Command::new("./target/release/near-mock")
+        .arg(&tmp)
+        .arg("iterProbe")
+        .arg("{}")
+        .env("NEAR_MOCK_SIGNER", "alice.test.near")
+        .env("NEAR_MOCK_ATTACH", "0")
+        .output()
+        .expect("near-mock binary");
+    let s = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert!(
-        out.contains("iter:"),
-        "iterPrefix/iterNext ran clean: {out}"
+        s.contains("Attempted to call deprecated host function storage_iter_prefix"),
+        "deprecated iterator must trap with mainnet wording: {s}"
     );
 }
 
