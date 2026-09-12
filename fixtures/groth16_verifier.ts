@@ -65,11 +65,11 @@ export function verify(): string {
 
   // pub = multiexp(IC[0]|1, IC[1]|x1, ..., IC[n]|xn) — scalar 1 folds
   // the constant term into the same host call (no g1_sum needed).
-  let mx = strCat(near.storageGet("vk:ic:0") ?? "", ONE_HEX);
+  let mx = (near.storageGet("vk:ic:0") ?? "") + ONE_HEX;
   let i = 1;
   while (i <= n) {
     if (strLength(ins[i - 1]) != 64) { near.abort("BAD:inputs"); }
-    mx = strCat(mx, near.storageGet("vk:ic:" + `${i}`) ?? "", ins[i - 1]);
+    mx = mx + (near.storageGet("vk:ic:" + `${i}`) ?? "") + ins[i - 1];
     i = i + 1;
   }
   const pub = near.altBn128G1Multiexp(mx);
@@ -79,7 +79,7 @@ export function verify(): string {
   const beta = near.storageGet("vk:beta2") ?? "";
   const gamma = near.storageGet("vk:gamma2") ?? "";
   const delta = near.storageGet("vk:delta2") ?? "";
-  const gate = strCat(negA, B, alpha, beta, pub, gamma, C, delta);
+  const gate = negA + B + alpha + beta + pub + gamma + C + delta;
   const ok = near.altBn128PairingCheck(gate);
   if (ok != 1) { return "BAD"; }
   near.log("verified");
