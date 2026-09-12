@@ -910,8 +910,8 @@ fn lower_prefix_around_with_return(
     let (init, last) = stmts.split_at(stmts.len() - 1);
     let inner = match &last[0] {
         Statement::VariableDeclaration(v) => {
-            // pure binding — no guard needed (no side effects to skip)
             let mut bindings = Vec::new();
+            let mut guarded_inits = Vec::new();
             for d in &v.declarations {
                 let name = binding_name(&d.id)?;
                 let init_e = d
@@ -924,9 +924,39 @@ fn lower_prefix_around_with_return(
                 if expr_is_stringy(init_e) || expr_is_str_method_call(init_e) {
                     mark_string_local(&name);
                 }
-                bindings.push(list(vec![Sym(name), lower_expr(init_e)?]));
+                if expr_has_call(init_e) {
+                    // Impure initializer — hoist the binding with a nil dummy
+                    // (unifies with any type per the checker), then guard the
+                    // real init behind __fn_done. The set! establishes the
+                    // real type at runtime.
+                    // (Bug 2: `const b = writeAndReturn(a)` wrote storage
+                    // even after an early return set __fn_done = 1)
+                    bindings.push(list(vec![
+                        Sym(name.clone()),
+                        list(vec![Sym("quote"), LispVal::Nil]),
+                    ]));
+                    guarded_inits.push(list(vec![
+                        Sym("if"),
+                        list(vec![Sym("="), Sym("__fn_done"), Num(0)]),
+                        list(vec![Sym("set!"), Sym(name), lower_expr(init_e)?]),
+                        Num(0),
+                    ]));
+                } else {
+                    // pure binding — no guard needed
+                    bindings.push(list(vec![Sym(name), lower_expr(init_e)?]));
+                }
             }
-            list(vec![Sym("let"), list(bindings), tail])
+            if guarded_inits.is_empty() {
+                // all pure — same as before
+                list(vec![Sym("let"), list(bindings), tail])
+            } else {
+                // has impure inits — bind nil dummies, then guarded set!s,
+                // then the tail
+                let mut begin_items = vec![Sym("begin")];
+                begin_items.extend(guarded_inits);
+                begin_items.push(tail);
+                list(vec![Sym("let"), list(bindings), list(begin_items)])
+            }
         }
         Statement::ExpressionStatement(e) => {
             // side-effect statement: skip entirely once the function has
@@ -2484,6 +2514,56 @@ fn expr_is_numberish(e: &Expression<'_>) -> bool {
     }
 }
 
+/// Does the expression contain any call? Used by lower_prefix_around_with_return
+/// to detect impure variable initializers that must be guarded after an early
+/// return (Bug 2: `const b = writeAndReturn(a)` wrote storage even when
+/// __fn_done was already 1).
+fn expr_has_call(e: &Expression<'_>) -> bool {
+    match e {
+        Expression::CallExpression(_) => true,
+        // leaf expressions — no sub-expressions to recurse into
+        Expression::NumericLiteral(_)
+        | Expression::StringLiteral(_)
+        | Expression::BooleanLiteral(_)
+        | Expression::NullLiteral(_)
+        | Expression::BigIntLiteral(_)
+        | Expression::Identifier(_) => false,
+        // compound expressions — recurse into children
+        Expression::TemplateLiteral(t) => t.expressions.iter().any(expr_has_call),
+        Expression::ArrayExpression(a) => a
+            .elements
+            .iter()
+            .any(|el| el.as_expression().is_some_and(expr_has_call)),
+        Expression::ObjectExpression(o) => o.properties.iter().any(|p| match p {
+            oxc_ast::ast::ObjectPropertyKind::ObjectProperty(prop) => expr_has_call(&prop.value),
+            _ => false,
+        }),
+        Expression::BinaryExpression(b) => expr_has_call(&b.left) || expr_has_call(&b.right),
+        Expression::LogicalExpression(l) => expr_has_call(&l.left) || expr_has_call(&l.right),
+        Expression::UnaryExpression(u) => expr_has_call(&u.argument),
+        Expression::UpdateExpression(u) => match &u.argument {
+            oxc_ast::ast::SimpleAssignmentTarget::AssignmentTargetIdentifier(_) => false,
+            _ => true, // member-access update targets (xs[i]++) may have call effects
+        },
+        Expression::AssignmentExpression(a) => expr_has_call(&a.right),
+        Expression::ConditionalExpression(c) => {
+            expr_has_call(&c.test) || expr_has_call(&c.consequent) || expr_has_call(&c.alternate)
+        }
+        Expression::ParenthesizedExpression(p) => expr_has_call(&p.expression),
+        Expression::StaticMemberExpression(sm) => expr_has_call(&sm.object),
+        Expression::ComputedMemberExpression(m) => {
+            expr_has_call(&m.object) || expr_has_call(&m.expression)
+        }
+        Expression::ArrowFunctionExpression(_) => {
+            // arrow bodies are lambda-lifted; the closure itself is pure
+            // (no side effect at the allocation site)
+            false
+        }
+        Expression::AwaitExpression(a) => expr_has_call(&a.argument),
+        _ => true, // unknown expression kind → conservatively assume impure
+    }
+}
+
 /// `x = e` / `x += e` / `x -= e` → (var, expr). Only plain identifiers.
 fn lower_assignment(
     asg: &oxc_ast::ast::AssignmentExpression<'_>,
@@ -2554,6 +2634,15 @@ fn update_target_simple(t: &oxc_ast::ast::SimpleAssignmentTarget<'_>) -> Result<
 fn expr_is_stringy(e: &Expression) -> bool {
     match e {
         Expression::StringLiteral(_) | Expression::TemplateLiteral(_) => true,
+        // Parenthesized: look through (interp_arg_is_string does the same)
+        Expression::ParenthesizedExpression(pe) => expr_is_stringy(&pe.expression),
+        // Nullish with a STRING fallback is string-valued — the ubiquitous
+        // `near.storageGet(k) ?? ""` shape (g16v verifier, 2026-09-12: a local
+        // seeded with it was NOT marked stringy, so `local + STR_CONST`
+        // dispatched to numeric + and produced decimal garbage).
+        Expression::LogicalExpression(l) if l.operator == LogicalOperator::Coalesce => {
+            expr_is_stringy(&l.right)
+        }
         Expression::BinaryExpression(b) => {
             b.operator == BinaryOperator::Addition
                 && (expr_is_stringy(&b.left) || expr_is_stringy(&b.right))
@@ -3245,8 +3334,25 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
             // hard-errors on str operands and the wasm emitter's tagged add
             // silently corrupts them, so this MUST lower to str-cat (surface
             // tour 2 for-of accumulator, 2026-09-01).
+            //
+            // 2026-09-12: top-level `const K = "…"` identifiers count too —
+            // CONST_FOLDS substitutes them at LOWER time, but this dispatch
+            // runs BEFORE the substitution and only saw a bare Identifier
+            // (→ false → numeric +). The g16v verifier built a 198B multiexp
+            // buffer instead of 288B from exactly this: `(storageGet() ??
+            // "") + ONE_HEX` evaluated as num + num → decimal garbage.
             if b.operator == BinaryOperator::Addition {
-                let side_is_string_local = |e: &Expression| matches!(e, Expression::Identifier(id) if is_string_local(id.name.as_str()));
+                let side_is_string_local = |e: &Expression| match e {
+                    Expression::Identifier(id) => {
+                        is_string_local(id.name.as_str())
+                            || CONST_FOLDS.with(|m| {
+                                m.borrow().iter().any(|(k, v)| {
+                                    k == id.name.as_str() && matches!(v, LispVal::Str(_))
+                                })
+                            })
+                    }
+                    _ => false,
+                };
                 if side_is_string_local(&b.left) || side_is_string_local(&b.right) {
                     let l = lower_strcat_operand(&b.left)?;
                     let r = lower_strcat_operand(&b.right)?;

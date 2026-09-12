@@ -137,3 +137,7 @@ path = "src/bin/wrun.rs"
 [[bin]]
 name = "lisp-rlm"
 path = "src/bin/lisp_rl.rs"
+
+[[bin]]
+name = "dump-verify"
+path = "src/bin/dump_verify.rs"
