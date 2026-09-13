@@ -1,13 +1,13 @@
 # zk-NEAR Stack — Session Continuity Plan
 
 > Living document. Update at end of each session. Read at start of each session.
-> Last updated: 2026-09-12
+> Last updated: 2026-09-13 (end of session 3)
 
 ---
 
 ## Where We Are (one paragraph)
 
-We have a working zero-knowledge stack on NEAR: a TS→wasm compiler (lisp-rlm, published 0.1.6), a calibrated local runner (near-mock, published 0.7.1, gas within 0.2% of mainnet), a circomlib-exact Poseidon hash on-chain (146 Tgas), and a live Groth16 verifier contract on testnet verifying real snarkjs proofs at 33.6 Tgas. The x>y private-data milestone (user proves statement about private data locally, chain verifies) is DONE end-to-end. The compiler survived a major shakedown: 8 silent-corruption bugs found and fixed. The key strategic insight from the last session: the schnorr stitched-wasm module is the TEMPLATE for cheap on-chain Grumpkin arithmetic (~0.4 Tgas/point op), which makes the Honk verifier port (the Noir path) plausibly viable at ~150-250 Tgas. Next decision: anatomy study of bb's verifier to confirm the gas number, then either port Honk (Noir native) or build the Merkle mixer (circom path, delivers now).
+We have a working zero-knowledge application layer on NEAR: three zk apps live on testnet (anonymous identity credentials, anonymous voting v3 with choice sealed in circuit, anonymous voting v4 with homomorphic tally where nobody sees individual choices), all built on a Groth16 verifier (34 Tgas), circomlib-exact Poseidon (146 Tgas), and the alt_bn128 hosts. The compiler (lisp-rlm 0.1.6) survived 8 silent-corruption bugs and is stable. near-mock (0.7.1) predicts gas within 0.2% of mainnet. The PLONK verifier (universal setup — eliminates per-circuit trusted setup) has been analyzed, validated as feasible on existing hosts, skeleton implemented and init deployed — transcript implementation is the remaining ~2-3 hours. Key architectural discoveries: (1) Noir is a frontend, not a proof system — the arkworks backend that would slot into our verifier is dead; (2) PLONK works on our hosts and eliminates the trusted setup ceremony; (3) NEAR's MPC network doesn't support BN254 threshold decryption (wrong curve, wrong purpose); (4) homomorphic tally via additive ElGamal over BN254 gives the strongest voting privacy achievable with existing hosts.
 
 ---
 
@@ -17,10 +17,13 @@ We have a working zero-knowledge stack on NEAR: a TS→wasm compiler (lisp-rlm, 
 
 | contract | what | gas | account |
 |---|---|---|---|
-| Groth16 verifier | verify any snarkjs/circom Groth16 proof | 33.6 Tgas | g16v.poseidon.registry-nostrgov.testnet |
+| Groth16 verifier | verify any snarkjs/circom Groth16 proof | 34 Tgas | g16v2.poseidon.registry-nostrgov.testnet (identity circuit VK) |
+| Groth16 verifier (orig) | x>y circuit VK | 34 Tgas | g16v.poseidon.registry-nostrgov.testnet |
 | Poseidon t=3 | circomlib-exact hash over Fr | 146 Tgas | poseidon.registry-nostrgov.testnet |
 | BN254 CIOS mul | field mul over base field (p) | 0.16 Tgas/mul | fp254.registry-nostrgov.testnet |
-| alt_bn128 hosts | pairing/multiexp/g1sum (in near-mock) | host-priced | (mock) |
+| zk-Identity | anonymous credential state (root + nullifier) | ~1 Tgas | zkid.poseidon.registry-nostrgov.testnet |
+| zk-Vote v3 | anonymous voting, choice sealed in circuit | ~1 Tgas/vote | zkvote.poseidon.registry-nostrgov.testnet |
+| zk-Vote v4 | homomorphic tally (additive ElGamal) | ~2 Tgas/vote | zkvote.poseidon.registry-nostrgov.testnet |
 
 ### Published crates
 
@@ -32,120 +35,139 @@ We have a working zero-knowledge stack on NEAR: a TS→wasm compiler (lisp-rlm, 
 
 ### Test infrastructure
 
-- **95 tests green** across 26 suites (lisp-rlm) + 46 tests (near-mock)
+- **95+ tests green** across 26+ suites (lisp-rlm) + 46 tests (near-mock)
 - Gas calibration: mock matches testnet within 0.2% (fp254 receipts)
 - Regression tests pin every bug we've fixed
 
-### zk pipeline (in repo, `zk/` directory)
+### zk apps (all in `zk/` directory, all e2e verified on testnet)
 
 ```
-zk/circuit/circuit.circom    — private x>y with Poseidon commitments
-zk/circuit/bridge.py         — snarkjs hex → nearcore LE-halves wire format
-zk/circuit/mock_flow.py      — pre-flight in near-mock
-zk/circuit/tamper_test.py    — soundness check (valid→OK, tampered→BAD)
+zk/identity/           — anonymous credential (Merkle membership + nullifier)
+  circuit.circom       — Poseidon commitment + Merkle path + nullifier
+  prove.js             — client-side proving (snarkjs CLI: 1.4s per proof)
+  plonk_verifier.ts    — PLONK verifier skeleton (init works, transcript pending)
+
+zk/vote/               — anonymous voting (3 iterations)
+  circuit_v3.circom    — choice sealed inside circuit (Poseidon(choice, blinding))
+  contract_v3.ts       — sealed ballots, reveal at close, aggregate tally
+  contract_v4.ts       — homomorphic tally (additive ElGamal, nobody sees choices)
+  bn254.js             — correct BN254 G1 arithmetic in JS (generator (1,2))
+  prove_v4.js          — encrypted ballot generation + homomorphic sum verify
+
+zk/circuit/            — x>y private data proof (first e2e milestone)
+zk/bridge.py           — SHARED format bridge (snarkjs → NEAR LE-halves)
 ```
 
 ### Key accounts (testnet, keys in ~/.near-credentials/testnet/)
 
-| account | purpose | funded by |
+| account | purpose | status |
 |---|---|---|
-| g16v.poseidon.registry-nostrgov.testnet | Groth16 verifier | poseidon.* |
-| poseidon.registry-nostrgov.testnet | Poseidon hash | (has ~4 NEAR) |
-| fp254.registry-nostrgov.testnet | CIOS probe | (empty) |
-| registry-nostrgov.testnet | funder (top-level) | (empty) |
+| poseidon.registry-nostrgov.testnet | funder + Poseidon contract | ~4 NEAR |
+| g16v2.poseidon.registry-nostrgov.testnet | Groth16 verifier (identity VK) | funded |
+| g16v.poseidon.registry-nostrgov.testnet | Groth16 verifier (x>y VK) | funded |
+| zkid.poseidon.registry-nostrgov.testnet | zk-Identity + PLONK verifier | ~1 NEAR |
+| zkvote.poseidon.registry-nostrgov.testnet | zk-Vote v3 + v4 | funded |
+| registry-nostrgov.testnet | top-level funder | ~0.5 NEAR |
 
-⚠️ Funder accounts are low/empty. `poseidon.registry-nostrgov.testnet` has the most (~4 NEAR) and a working key. Its key file uses `secret_key` field (not `private_key`) — fixed once already, may need re-fixing if regenerated.
+⚠️ Key file quirk: poseidon's key uses `secret_key` field (not `private_key`) — fixed once, check if regenerated.
 
 ---
 
 ## What We Fixed (the bug graveyard — don't re-fix, don't regress)
 
-### Compiler bugs (lisp-rlm)
+### Compiler bugs (lisp-rlm) — 8 total, all fixed and tested
 
 | bug | symptom | fix | date |
 |---|---|---|---|
 | Hoist-order reversal | loop-body `let` re-inits ran in REVERSE — "values vanish" | in-source-order emission | 09-11 |
-| In-place declarations | mid-body `const s16 = t[16]+C` evaluated at body top with stale values | set! at source position | 09-11 |
-| Array-literal aliasing | two live arrays from same literal site shared one buffer (mulTwice all-zero) | runtime-heap alloc for array/list ops | 09-11 |
-| alt_bn128 hex bridge | raw hex ASCII passed to hosts instead of decoded binary | hex⇄binary bridge in emitter | 09-11 |
-| Bool-in-if always-true | `const take = r < 2; if (take)` → numeric compare, always true | pass raw to tag-aware if emitter | 09-12 |
-| + concat dispatch (2 shapes) | top-level const strings + nullish-seeded locals → numeric + | CONST_FOLDS stringy + paren/nullish look-through | 09-12 |
-| M2 impure declarations | `const b = host_call()` after early return still executed (state corruption) | hoist to nil + guarded set! | 09-12 |
-| Nested returns vanish | return in inner while only stopped inner loop | function-level __fn_done/__fn_res flags | 09-11 |
+| In-place declarations | mid-body `const s16 = t[16]+C` evaluated at body top | set! at source position | 09-11 |
+| Array-literal aliasing | two live arrays from same literal site shared one buffer | runtime-heap alloc | 09-11 |
+| alt_bn128 hex bridge | raw hex ASCII passed to hosts instead of decoded binary | hex⇄binary bridge | 09-11 |
+| Bool-in-if always-true | `const take = r < 2; if (take)` → numeric compare | pass raw to tag-aware if | 09-12 |
+| + concat (const strings) | top-level const string in concat → numeric + | CONST_FOLDS stringy | 09-12 |
+| + concat (nullish locals) | `(storageGet() ?? "") + var` → numeric + | paren/nullish look-through | 09-12 |
+| M2 impure declarations | `const b = host_call()` after early return still executed | hoist to nil + guard | 09-12 |
+| Nested returns vanish | return in inner while only stopped inner loop | function-level flags | 09-11 |
 
-### near-mock bugs
+### near-mock bugs — 4 total
 
 | bug | fix | date |
 |---|---|---|
-| BN254 pairing stride 128B→192B | real gates trapped "Invalid input length" | POINT_SIZE + POINT_SIZE*2 | 09-11 |
-| Error chains hidden | cross-mode traps printed messageless | TxOutcome.error carries full chain | 09-11 |
-| Deprecated host wording | didn't match mainnet exactly | "Attempted to call deprecated..." | 09-11 |
-| Embedded copy stale | lisp-rlm's embedded near-mock was 6 months behind | full re-sync | 09-11 |
+| BN254 pairing stride 128B→192B | POINT_SIZE + POINT_SIZE*2 | 09-11 |
+| Error chains hidden | TxOutcome.error carries full chain | 09-11 |
+| Deprecated host wording | "Attempted to call deprecated..." | 09-11 |
+| Embedded copy stale | full re-sync | 09-11 |
 
-### Operational gotchas (learned the hard way)
+### Voting app bugs (found by user, fixed same session)
 
-- Top-level `const` arrays re-execute their literal per access — **always use function-local constants**
-- `cargo build` can timeout in foreground on lisp-rlm — use `nohup ... &` and poll
-- Disk fills: clean `target/debug/` (~16GB), check `df -h` before long builds
-- `near-compile` binary can be stale — rebuild after any frontend change (`cargo build --release -p near-compile`)
-- Account creation: `near-compile create <name> <funder>` appends funder as suffix parent — keep names short
+| bug | in version | fix |
+|---|---|---|
+| Choice visible in plaintext | v2 | encrypted_choice field |
+| Choice visible at reveal | v3 | choice inside circuit (v3) / homomorphic (v4) |
+| Contract reveal() didn't verify commitment | v3 | known bug, superseded by v4 |
+| Tally authority trusted (single party) | v4 | documented as known limitation |
+
+### Operational gotchas
+
+- Top-level `const` arrays re-execute per access — **always use function-local constants**
+- `near.jsonGetStr()` requires compile-time string literals — unroll loops
+- `for...of` has scoping issues — use `while` loops
+- `string + string` in helper functions can dispatch to numeric — use `strCat()`
+- Function definitions must come BEFORE callers in the file (no forward refs)
+- BN254 G1 generator is **(1, 2)** — NOT (1, P-1). Cost hours to debug.
+- `cargo build` can timeout in foreground — use `nohup ... &` and poll
+- Disk fills: clean `target/debug/` (~16GB), check `df -h`
+- `near-compile` can be stale — rebuild after frontend changes
+- Account creation: keep names short (funder appended as suffix)
 - snarkjs vkey key is `IC` not `VK`
-- circomlib `LessThan` max is 252 bits, not 254
+- circomlib `LessThan` max is 252 bits
+- `snarkjs.groth16.fullProve` in JS API is slow (60s+) — use CLI (`snarkjs groth16 prove`) instead (1.4s)
 
 ---
 
 ## Open Fronts (ranked by leverage)
 
-### 1. 🟡 Honk verifier anatomy study → port (THE NOIR PATH — priority when Noir matters)
+### 1. 🟡 PLONK verifier completion (eliminates trusted setup — 2-3 hours remaining)
 
-**What**: port Barretenberg's Honk/Shplemini verifier to our TS, with Grumpkin as stitched wasm
-**Why**: native on-chain Noir proof verification — the full Noir language on NEAR, no wraps, no extra provers, best architectural outcome
-**Breakthrough (this session)**: the schnorr module proved the pattern — stitched raw-wasm Grumpkin point ops at ~0.4 Tgas each (vs 2+ TS-level), plausibly fitting in ~150-250 Tgas total. This flipped Route B from "probably dead" to "plausibly fits."
-**How Noir flows through it**: `foo.nr → nargo prove (bb, seconds) → Honk proof → OUR contract verifies it natively` — same UX as the Groth16 path, full Noir language + stdlib + unconstrained fns
-**Missing**: 
-  - Phase 1: anatomy study (1-2 days) — fetch bb's current Ethereum verifier Solidity, count actual Grumpkin ops, multiply by stitched-wasm cost model, get a REAL Tgas number
-  - Phase 2: if number fits (< ~250 Tgas): build the Grumpkin stitched-wasm module (Rust, 4×u64 limbs, Jacobian/projective, same pattern as `schnorr/`)
-  - Phase 3: port the verifier TS glue (transcript, sumcheck, pairing call) — 2-4 weeks total
-**Decision gate**: if the study says >300 Tgas → park, fall back to the zkVM wrap path (#3)
-**Key files**: `schnorr/src/lib.rs` (the pattern to replicate), `wasm_link.rs` (the stitcher), `near-mock/src/bn254.rs` (host formats)
-**⭐ THE INSIGHT**: the schnorr stitch wasn't just a crypto feature — it built the generic "stitch any Rust crypto as cheap wasm" mechanism. Grumpkin field ops = same 4×u64 limb pattern, different constants. The jacobian-no-inversion trick is already proven in that code.
+**What**: complete the PLONK verifier TS port — transcript + Lagrange + pairing
+**Why**: universal setup (one ceremony, all circuits, reuse Ethereum's public powers-of-tau) vs Groth16's per-circuit ceremony. Solves the "not good enough" trust concern.
+**Breakthrough**: analyzed the Solidity — ALL operations map to existing alt_bn128 hosts. The G2 scalar mul I initially feared doesn't exist in the implementation (xi multiplication happens on G1 side). Both G2 points are static VK values.
+**Done**: skeleton, init (deployed), bridge, transcript spec, field arithmetic helpers
+**Remaining**: transcript implementation (5 keccak calls), Lagrange basis (field inversions), G1 multiexp assembly, pairing check, e2e test
+**Estimated verify cost**: ~35-41 Tgas (optimized) or ~160 Tgas (simple version)
+**Files**: `zk/identity/plonk_verifier.ts`, `zk/identity/plonk_transcript.md`, `zk/identity/plonk_on_near.md`
 
-### 2. 🟢 Merkle tree + nullifiers (the mixer — deliverable now)
+### 2. 🟡 zk-Vote v4 hardening (production trust fixes)
 
-**What**: incremental Merkle tree with Poseidon, nullifier set, membership proof circuit
-**Why**: unlocks privacy pools, mixers, anonymous signaling — the first real zk app, and it works with what's already live (Groth16 path)
-**Missing**: the tree contract (~2 days), the membership circuit (~1 day), Poseidon gas cut
-**Blocker**: Poseidon at 146 Tgas → 30-level insert = 15 calls. Needs optimization (see #4)
-**Files**: none yet — would go in `zk/merkle/`
-**Note**: this uses the circom/snarkjs/Groth16 path (already live), NOT Noir — Noir circuits for the same thing come free once #1 lands
+**What**: the homomorphic tally works but has 4 trust assumptions
+**Current state**: live on testnet, e2e verified, choices never visible
+**Trust gaps**:
+  - Tally authority is single party → fix: 2-of-3 threshold (~2 days)
+  - No proof of correct tally → fix: DLEQ proof or second circuit
+  - Registry admin controls voter set → fix: multisig/DAO governance
+  - Tx signer visible → fix: relayer (or accept for now)
+**Priority**: 2-of-3 threshold is the most impactful and simplest
 
-### 3. 🟡 zkVM receipt verifier (general-purpose + Noir fallback)
+### 3. ⚪ Honk verifier port (Noir path — parked pending PLONK completion)
 
-**What**: port SP1 or RISC Zero's receipt verifier (~600-1500 lines Solidity → TS)
-**Why**: "prove arbitrary Rust programs on NEAR" — rollups, coprocessors, cross-chain
-**Missing**: the port (1-2 weeks), has a reference implementation to diff against
-**Note**: same pairing hosts + keccak underneath, no new primitives needed
-**Also**: this is the Noir FALLBACK if #1's gas study fails (prove bb verification inside the zkVM — works but ~$0.50/proof, tens of seconds)
+**Status**: stitched-wasm Grumpkin insight validated but anatomy study not done. PLONK is higher leverage (solves trust setup for ALL circuits). Revisit after PLONK.
+**Pre-requisite**: PLONK verifier done, Noir still relevant to your use case
 
-### 4. 🟡 Poseidon optimization (the gas multiplier — feeds #2)
+### 4. ⚪ Poseidon optimization (gas multiplier)
 
-**What**: 29-bit limbs (9 limbs vs 16) + sparse partial rounds (circomlibjs poseidon_opt)
-**Why**: 146 → ~35-50 Tgas per hash → Merkle insert 15 calls → 3-5 calls
-**Missing**: mechanical port of both optimizations (~2-3 days combined)
-**Impact**: makes #2 (mixer) ergonomic, not just possible
-**Files**: `fixtures/poseidon_bn254.ts` (current), would become `poseidon_opt.ts`
+**What**: 29-bit limbs + sparse partial rounds → 146 → ~35-50 Tgas
+**Why**: makes Merkle tree (if we build one) ergonomic
+**Effort**: ~2-3 days mechanical port
 
-### 5. ⚪ Noir watch-item (zero effort — just monitor)
+### 5. ⚪ Noir / MPC / Nova (all parked)
 
-**What**: if Aztec ships a maintained Groth16/EVM-class wrapper for their proofs, our door opens with a ~50-line bridge (same as the snarkjs one)
-**Why watch**: they iterate fast (UltraPlonk → Honk → Shplemini in 18 months); a Groth16 wrapper has existed before for their recursion
-**NOT doing**: reviving the dead arkworks backend (weeks, restricted language — arithmetic-only, no Brillig, no stdlib)
-
-### 6. ⚪ Additional precompiles / hosts
-
-- BLS12-381 msig (tests pass, not deployed)
-- ML-DSA-65 (post-quantum, host exists in protocol)
-- Grumpkin host (would need protocol-level ask — not ours to add)
+| item | status | why parked |
+|---|---|---|
+| Noir via arkworks backend | dead | 2yr stale, arithmetic-only |
+| Noir via Honk port | viable but expensive | 2-4 weeks, PLONK is better ROI |
+| Noir via Nova | bridge doesn't exist | would need ACIR→R1CS lowering (new compiler) |
+| NEAR MPC for threshold | doesn't support BN254 | wrong curve, wrong purpose |
+| Quantus MPC fork | adds Dilithium not BN254 | still no threshold decryption |
 
 ---
 
@@ -154,23 +176,28 @@ zk/circuit/tamper_test.py    — soundness check (valid→OK, tampered→BAD)
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │ USER (browser/CLI)                                          │
-│   private data → witness → proof (snarkjs, seconds)        │
-│   proof + commitments → tx to NEAR                          │
+│   private data → witness → proof (snarkjs, 1.4s)          │
+│   proof + commitments/nullifier → tx to NEAR               │
 └─────────────────────────┬───────────────────────────────────┘
                           │
 ┌─────────────────────────▼───────────────────────────────────┐
-│ NEAR CONTRACT (lisp-rlm TS → wasm)                          │
-│                                                             │
-│  Groth16 verifier:                                          │
+│ NEAR CONTRACTS (lisp-rlm TS → wasm)                         │
+│                                                              │
+│  Groth16 verifier (LIVE, 34 Tgas):                          │
 │    multiexp(IC, inputs) + pairing_check(4 pairs) → OK/BAD  │
-│    → alt_bn128 hosts (in-protocol, gas-priced)             │
-│                                                             │
-│  Poseidon (for Merkle/state commitments):                   │
-│    CIOS 16-limb → 146 Tgas (or 35-50 after optimization)  │
-│                                                             │
-│  [future] Honk verifier:                                    │
-│    stitched Grumpkin wasm (~0.4 Tgas/point op)             │
-│    + BN254 pairing host + keccak transcript                │
+│                                                              │
+│  [IN PROGRESS] PLONK verifier (~35-160 Tgas):               │
+│    keccak transcript + G1 multiexp + pairing → OK/BAD       │
+│    universal setup — no per-circuit ceremony                │
+│                                                              │
+│  Poseidon hash (LIVE, 146 Tgas):                            │
+│    CIOS 16-limb (or 9-limb optimized)                       │
+│                                                              │
+│  zk-Identity (LIVE): anonymous credentials                  │
+│  zk-Vote v3 (LIVE): sealed ballots, reveal at close         │
+│  zk-Vote v4 (LIVE): homomorphic tally — nobody sees choices │
+│                                                              │
+│  [all use alt_bn128 hosts: multiexp(56), sum, pairing(58)] │
 └─────────────────────────┬───────────────────────────────────┘
                           │
 ┌─────────────────────────▼───────────────────────────────────┐
@@ -179,6 +206,27 @@ zk/circuit/tamper_test.py    — soundness check (valid→OK, tampered→BAD)
 │   fork mainnet state / replay any tx / calibrated fees     │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+### Voting system evolution (what each version taught us)
+
+```
+v1: plaintext choice           → too obvious
+v2: "encrypted" choice        → was actually plaintext (user caught it)
+v3: choice in circuit         → visible at reveal (user caught it again)
+v4: homomorphic tally         → nobody sees individual choices ✓
+    trust gap: tally authority is single party
+    fix: 2-of-3 threshold (2 days) or MPC (not available on NEAR)
+```
+
+### Proof system comparison (our stack)
+
+| | Groth16 (live) | PLONK (building) | Honk (parked) |
+|---|---|---|---|
+| trusted setup | per-circuit ceremony | universal (one, reusable) | none |
+| proof size | 200 B | ~2.1 KB | ~1-2 KB |
+| verify gas | 34 Tgas | ~35-160 Tgas | ~150-250 Tgas (est) |
+| circuit authoring | circom | circom (same) | Noir |
+| maturity | very mature | production (Aztec v1) | evolving |
 
 ---
 
@@ -227,14 +275,36 @@ CARGO_INCREMENTAL=0 cargo build --release
 
 ### The zk pipeline (circom → on-chain)
 ```bash
-cd zk/circuit
-/tmp/circom2 circuit.circom --r1cs --wasm --sym -o .          # compile circuit
-node make_input.js                                              # compute commitments
+cd zk/identity  # or zk/vote, or any circuit dir
+
+# 1. Compile circuit
+/tmp/circom2 circuit.circom --r1cs --wasm --sym -o .
+
+# 2. Setup (Groth16 or PLONK)
+snarkjs powersoftau new bn128 12 pot12_0000.ptau
+snarkjs powersoftau contribute pot12_0000.ptau pot12_0001.ptau --entropy="..."
+snarkjs powersoftau prepare phase2 pot12_0001.ptau pot12_final.ptau
+snarkjs groth16 setup circuit.r1cs pot12_final.ptau circuit_final.zkey
+snarkjs zkey export verificationkey circuit_final.zkey vkey.json
+
+# 3. Generate witness + prove (fast: CLI not JS API)
+node make_input.js  # or prove_fast.js pattern
 node circuit_js/generate_witness.js circuit_js/circuit.wasm input.json witness.wtns
-snarkjs groth16 prove circuit_final.zkey witness.wtns proof.json  # prove
-python3 bridge.py .                                             # convert formats
-# → init_args.json (VK), verify_args.json (proof)
-# → deploy verifier, call init(vk), call verify(proof)
+snarkjs groth16 prove circuit_final.zkey witness.wtns proof.json public.json
+
+# 4. Bridge to NEAR format
+python3 ../bridge.py .   # or plonk_bridge.js for PLONK
+
+# 5. Deploy verifier + verify
+# (deploy contract, call init(vk), call verify(proof))
+```
+
+### PLONK pipeline (same circuits, different setup)
+```bash
+snarkjs plonk setup circuit.r1cs pot12_final.ptau circuit_plonk.zkey
+snarkjs zkey export verificationkey circuit_plonk.zkey vkey_plonk.json
+snarkjs plonk prove circuit_plonk.zkey witness.wtns proof_plonk.json public_plonk.json
+node plonk_bridge.js
 ```
 
 ### Publishing
@@ -248,9 +318,10 @@ cd ../near-mock && git add -A && git commit -m "..." && git push && cargo publis
 ### Important paths
 ```
 /Users/j-p/dev/stuff/lisp-rlm/          — compiler + tools + tests
-/Users/j-p/dev/stuff/lisp-rlm/zk/       — circuit + bridge + pipeline
-/Users/j-p/dev/stuff/lisp-rlm/schnorr/  — the stitched-wasm pattern (KEY for Honk)
-/Users/j-p/dev/stuff/near-mock/         — the local runner
+/Users/j-p/dev/stuff/lisp-rlm/zk/       — all zk apps + circuits + bridges
+/Users/j-p/dev/stuff/lisp-rlm/schnorr/  — stitched-wasm pattern (for Honk)
 /Users/j-p/dev/stuff/lisp-rlm/fixtures/ — verified contract sources
 /Users/j-p/dev/stuff/lisp-rlm/tests/    — regression suite
+/Users/j-p/dev/stuff/near-mock/         — the local runner
+/tmp/circom2                            — circom compiler 2.2.3 binary
 ```
