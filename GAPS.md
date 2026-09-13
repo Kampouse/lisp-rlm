@@ -893,3 +893,130 @@ near-mock MockChain is the right venue (scenario-style, library mode);
 the surface settles; (3) re-audit on-chain callers of promise_then for the
 8× gas budget impact (callback gas was over-attached — funds wasted, not
 lost, but gas accounting in callers may now under-attach after the fix).
+
+## 2026-09-11 → 09-13 — THE zk STACK SESSIONS (8 compiler bugs, 4 zk apps, gas engine)
+
+### CRITICAL: the embedded near-mock was 6 months stale — full re-sync
+
+`src/bin/near_mock/` (the near-mock binary the test suite runs against)
+was a 6-month-old copy that predated the entire finite-wasm gas engine,
+error-chain surfacing, and receipt-semantics fixes. Every gas number
+from the embedded mock was ~65× LOW on compute-heavy code. Full re-sync
+from the standalone crate (`../near-mock/src/near_mock/`). Files changed:
+all 13. Integration fixes: crate::→crate:: path rewrites, wasmparser
+0.228→0.248, skills/ include path adjustment.
+
+Post-sync calibration (verified against testnet receipts):
+- mock compute deltas match mainnet within 0.2%
+- fn receipts: mock 33.0 Tgas vs chain 33.6 Tgas (1.8% delta)
+- full Poseidon: mock 145.2 vs chain 146.1 Tgas
+
+### Compiler bugs found by REAL CONTRACTS (8 fixed + 2 near-mock)
+
+All found by the fp254 CIOS probe or the Groth16 verifier contract —
+no fuzz harness caught any of these:
+
+1. **Hoist-order reversal** — while-body `let` re-inits inserted at
+   begin-position REVERSED source order. `const ai = e1; let C =
+   e2(reads ai)` ran C first (saw nil→0/stale). The fp254 “values
+   vanish” repro. Fix: in-source-order emission.
+
+2. **In-place declarations** — mid-body declarations (const s16 =
+   t[16]+C after an inner loop) evaluated at body TOP with stale
+   pre-loop state. Every CIOS limb wrong. Fix: set! at source position.
+
+3. **Array-literal aliasing** — array/list literals allocated at fixed
+   compile-time addresses: ciosMul(a, ciosMul(a,b)) silently zeroed its
+   own input (mulTwice all-zero limbs on-chain). Fix: runtime-heap
+   allocation for array/list ops.
+
+4. **alt_bn128 hex bridge** — raw hex ASCII passed to hosts instead of
+   decoded binary. A 384B pairing gate arrived as 768 ASCII bytes that
+   PASSED len%192==0 and decoded as garbage. Fix: hex⇄binary bridge.
+
+5. **Bool-in-if always-true** — `const take = r < 2; if (take)` →
+   numeric (!= x 0) compare: bool-vs-num tag mismatch → always true.
+   Poseidon partial rounds hashed wrong. Fix: tag-aware if emitter.
+
+6. **+ concat (const strings)** — top-level `const ONE_HEX = "..."` in a
+   + expression dispatched to numeric addition (multiexp buffer came out
+   198B instead of 288B — decimal garbage). Fix: CONST_FOLDS Str values
+   recognized in concat dispatch.
+
+7. **+ concat (nullish locals)** — `(storageGet() ?? "") + var` failed
+   because expr_is_stringy didn't look through parens or recognize
+   nullish-with-string-fallback. Fix: ParenthesizedExpression pass-through
+   + LogicalOperator::Coalesce arm.
+
+8. **M2 impure declarations** — `const b = host_call()` after an early
+   return still executed (state corruption: post-return storage writes).
+   Fix: hoist to nil + guarded set! when initializer contains calls.
+
+9. **Nested returns vanish** — `return` in an inner while only stopped
+   the inner loop; the value was discarded. Fix: function-level
+   __fn_done/__fn_res flags, conds stop on them.
+
+10. **near-mock error chains hidden** — cross-mode traps printed the
+    backtrace but hid the root host error (BLS12381InvalidInput,
+    ProhibitedInView) in the chain. Fix: TxOutcome.error carries full chain.
+
+### zk applications built and deployed (all on testnet)
+
+1. **Groth16 verifier** (34 Tgas) — verifies any snarkjs/circom proof
+2. **zk-Identity** — anonymous credentials (Merkle membership + nullifier)
+3. **zk-Vote v3** — choice sealed inside circuit (Poseidon(choice,blinding))
+4. **zk-Vote v4** — homomorphic tally via additive ElGamal on BN254:
+   encrypted_i = choice·G + r·T, chain adds points, only sum decrypted.
+   Nobody (not even tally authority) sees individual choices.
+
+### near-mock gas engine (the calibration breakthrough)
+
+Finite-wasm instrumentation ported from nearcore prepare_v3 with PV155
+costs. Key discovery: the embedded mock's compute gas was ~65× LOW
+because it was missing the engine entirely. Post-sync: within 0.2% of
+mainnet on compute-heavy contracts.
+
+### BN254 fix in near-mock
+PAIRING_CHECK_ELEMENT_SIZE was POINT_SIZE+POINT_SIZE (128B) instead
+of nearcore's POINT_SIZE + POINT_SIZE*2 (192B = 64B G1 ‖ 128B G2).
+Every real 192B pairing gate trapped. Fix: POINT_SIZE + POINT_SIZE*2.
+
+### Operational gotchas discovered (add to your checklist)
+- Top-level const arrays re-execute their literal PER ACCESS — always use
+  function-local constants
+- near.jsonGetStr() requires compile-time string literals — unroll loops
+- for...of has scoping issues with captured vars — use while loops
+- Function definitions must come BEFORE callers in the file (no forward refs)
+- string + string can dispatch to numeric — use strCat() explicitly
+- BN254 G1 generator is **(1, 2)** — NOT (1, P-1)
+- snarkjs JS API (fullProve) is 60s+; use CLI (snarkjs groth16 prove) = 1.4s
+- NEAR accounts: state persists through contract redeploy — "already
+  initialized" traps. Use a FRESH account for a new VK.
+- Storage via near-mock single-wasm mode: state file at /tmp/near-mock-state.bin
+
+### PLONK verifier analysis (in progress, skeleton deployed)
+
+Key finding: ALL PLONK verification operations map to existing alt_bn128
+hosts. The G2 scalar mul I initially feared doesn't exist — both G2 points
+in the final pairing are static VK values. Estimated ~35-160 Tgas.
+Transcript fully documented (5 challenges, exact byte ordering).
+See: zk/identity/plonk_transcript.md, zk/identity/plonk_on_near.md,
+zk/identity/plonk_verifier.ts (skeleton + init deployed).
+
+### Voting system evolution (what each version taught)
+
+v1: plaintext choice → too obvious
+v2: “encrypted” choice → was actually plaintext (user caught it)
+v3: choice in circuit → visible at reveal (user caught it again)
+v4: homomorphic tally → nobody sees individual choices ✓
+    trust gap: tally authority is single party
+    fix: 2-of-3 threshold (2 days) or MPC (not available on NEAR)
+
+### Known limitation: Noir on NEAR
+
+Noir is a frontend, not a proof system. The arkworks backend that would
+emit Groth16 over BN254 (our hosts) died 2 years ago. bb's default
+(Honk/Shplemini) needs Grumpkin MSMs we can't cheaply verify on-chain.
+NEAR's MPC network doesn't support BN254 threshold decryption. The path
+is PLONK (universal setup) + Honk port (stitched wasm Grumpkin) — but
+both are multi-day projects, not weekend spikes.
