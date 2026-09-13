@@ -1,263 +1,250 @@
-# Lisp-RLM Browser Playground — Plan
+# zk-NEAR Stack — Session Continuity Plan
 
-A browser-based IDE where users write Lisp, compile to WASM client-side, and deploy/run on NEAR — supporting both on-chain smart contracts (P1) and off-chain wasi:http programs (P2), including hybrid programs that bridge both environments.
-
----
-
-## Vision
-
-**Write Lisp → Compile in Browser → Deploy to NEAR**
-
-- **P1 (On-Chain):** Compile Lisp → NEAR smart contract WASM → deploy as a contract. Uses NEAR host functions (storage_read/write, context, crypto). Gas-metered, stateful on-chain.
-- **P2 (Off-Chain):** Compile Lisp → wasi:http WASM → execute via OutLayer daemon. Can make HTTP requests, access NEAR storage through OutLayer API. Runs off-chain with on-chain settlement.
-- **Hybrid Programs:** P2 fetches external data (APIs, prices, feeds) and feeds results into P1 contract storage. Oracle/bridge pattern — best of both worlds.
-
-### Why Both Targets Matter
-
-A real dApp needs both:
-- On-chain contracts for trust-minimized state transitions and value transfers
-- Off-chain workers for HTTP access, heavy computation, and cross-chain data
-
-With hybrid programs, you write one Lisp program that declares which parts run where — the compiler handles the rest.
+> Living document. Update at end of each session. Read at start of each session.
+> Last updated: 2026-09-12
 
 ---
 
-## Architecture
+## Where We Are (one paragraph)
+
+We have a working zero-knowledge stack on NEAR: a TS→wasm compiler (lisp-rlm, published 0.1.6), a calibrated local runner (near-mock, published 0.7.1, gas within 0.2% of mainnet), a circomlib-exact Poseidon hash on-chain (146 Tgas), and a live Groth16 verifier contract on testnet verifying real snarkjs proofs at 33.6 Tgas. The x>y private-data milestone (user proves statement about private data locally, chain verifies) is DONE end-to-end. The compiler survived a major shakedown: 8 silent-corruption bugs found and fixed. Next: decide between Merkle tree (mixer path), zkVM receipt verifier (general-purpose path), or the Honk verifier port (Noir path — now plausible thanks to the stitched-wasm Grumpkin insight).
+
+---
+
+## What We Have (verified, with receipts)
+
+### On-chain contracts (testnet, all live)
+
+| contract | what | gas | account |
+|---|---|---|---|
+| Groth16 verifier | verify any snarkjs/circom Groth16 proof | 33.6 Tgas | g16v.poseidon.registry-nostrgov.testnet |
+| Poseidon t=3 | circomlib-exact hash over Fr | 146 Tgas | poseidon.registry-nostrgov.testnet |
+| BN254 CIOS mul | field mul over base field (p) | 0.16 Tgas/mul | fp254.registry-nostrgov.testnet |
+| alt_bn128 hosts | pairing/multiexp/g1sum (in near-mock) | host-priced | (mock) |
+
+### Published crates
+
+| crate | version | what |
+|---|---|---|
+| lisp-rlm-wasm | 0.1.6 | TS→NEAR wasm compiler (the frontend) |
+| near-compile | 0.1.7 | CLI: build/deploy/call/create |
+| near-mock | 0.7.1 | local runner, calibrated gas, real crypto hosts |
+
+### Test infrastructure
+
+- **95 tests green** across 26 suites (lisp-rlm) + 46 tests (near-mock)
+- Gas calibration: mock matches testnet within 0.2% (fp254 receipts)
+- Regression tests pin every bug we've fixed
+
+### zk pipeline (in repo, `zk/` directory)
 
 ```
-┌─────────────────────────────────────────────────┐
-│                  Browser App                     │
-│                                                  │
-│  ┌──────────┐   ┌────────────────────────────┐  │
-│  │  Monaco   │   │  Lisp Compiler (WASM)      │  │
-│  │  Editor   │──▶│  ┌──────────┐ ┌─────────┐  │  │
-│  │          │   │  │ P1 Emit  │ │ P2 Emit │  │  │
-│  │  .lisp   │   │  │ (NEAR)   │ │ (WASI)  │  │  │
-│  │  files   │   │  └──────────┘ └─────────┘  │  │
-│  └──────────┘   └────────────────────────────┘  │
-│        │                   │                     │
-│        │         ┌─────────┴─────────┐          │
-│        │         ▼                   ▼          │
-│        │   .wasm (P1)         .wasm (P2)        │
-│        │         │                   │          │
-└────────┼─────────┼───────────────────┼──────────┘
-         │         │                   │
-         │    ┌────▼────┐        ┌─────▼─────┐
-         │    │  NEAR   │        │  OutLayer  │
-         │    │  RPC    │        │  Daemon    │
-         │    │         │        │  (wasi:http)│
-         │    └─────────┘        └───────────┘
-         │                            │
-         │                       ┌────▼────┐
-         │                       │  NEAR   │
-         │                       │  RPC    │
-         │                       │(settle) │
-         │                       └─────────┘
-         │
-    ┌────▼──────────────────────────────┐
-    │          NEAR Wallet              │
-    │   (MyNearWallet / Meteor)         │
-    └───────────────────────────────────┘
+zk/circuit/circuit.circom    — private x>y with Poseidon commitments
+zk/circuit/bridge.py         — snarkjs hex → nearcore LE-halves wire format
+zk/circuit/mock_flow.py      — pre-flight in near-mock
+zk/circuit/tamper_test.py    — soundness check (valid→OK, tampered→BAD)
 ```
 
----
+### Key accounts (testnet, keys in ~/.near-credentials/testnet/)
 
-## Existing Code We Build On
+| account | purpose | funded by |
+|---|---|---|
+| g16v.poseidon.registry-nostrgov.testnet | Groth16 verifier | poseidon.* |
+| poseidon.registry-nostrgov.testnet | Poseidon hash | (has ~4 NEAR) |
+| fp254.registry-nostrgov.testnet | CIOS probe | (empty) |
+| registry-nostrgov.testnet | funder (top-level) | (empty) |
 
-### Already Working
-
-| Component | Status | Location |
-|-----------|--------|----------|
-| Lisp parser & evaluator | ✅ 783 tests | `lisp-rlm/src/` |
-| P1 WASM emitter (NEAR) | ✅ Working | `lisp-rlm/src/wasm_emit.rs` |
-| P2 WASM emitter (WASI) | ✅ Working | `lisp-rlm/src/wasi_emit.rs` |
-| P2 wasi:http emitter | ✅ 752 instr verified | `lisp-rlm/src/p2_direct.rs` |
-| OutLayer adapter WIT | ✅ Working | `lisp-rlm/src/outlayer_adapter.rs` |
-| P1 on-chain contract | ✅ Deployed | `near-lisp/` |
-| InLayer CLI + daemon | ✅ Mainnet live | `near-inlayer/` |
-| Multi-URL http-get | ✅ On-chain | N requests from Lisp source |
-
-### Needs Building
-
-| Component | Effort | Description |
-|-----------|--------|-------------|
-| Browser compiler (wasm-bindgen) | 2-3 days | Port `WasmEmitter` to compile in browser via WASM |
-| Web frontend (IDE) | 3-4 days | Monaco editor, file tabs, output panel, deploy buttons |
-| NEAR wallet integration | 1 day | MyNearWallet/Meteor for signing deployments |
-| P1 contract factory | 2-3 days | Factory contract to deploy user-compiled WASM as new contracts |
-| P2→P1 bridge (hybrid) | 1-2 days | P2 worker calls P1 contract after fetching data |
-| Template gallery | 1 day | Pre-built examples: counter, oracle, cross-chain fetch |
-| Hosting & CI | 1 day | Cloudflare Pages, auto-deploy |
+⚠️ Funder accounts are low/empty. `poseidon.registry-nostrgov.testnet` has the most (~4 NEAR) and a working key. Its key file uses `secret_key` field (not `private_key`) — fixed once already, may need re-fixing if regenerated.
 
 ---
 
-## Build Plan (~10-12 Days)
+## What We Fixed (the bug graveyard — don't re-fix, don't regress)
 
-### Phase 1: Browser Compiler (Days 1-3)
+### Compiler bugs (lisp-rlm)
 
-**Goal:** Lisp source → WASM binary, entirely in the browser.
+| bug | symptom | fix | date |
+|---|---|---|---|
+| Hoist-order reversal | loop-body `let` re-inits ran in REVERSE — "values vanish" | in-source-order emission | 09-11 |
+| In-place declarations | mid-body `const s16 = t[16]+C` evaluated at body top with stale values | set! at source position | 09-11 |
+| Array-literal aliasing | two live arrays from same literal site shared one buffer (mulTwice all-zero) | runtime-heap alloc for array/list ops | 09-11 |
+| alt_bn128 hex bridge | raw hex ASCII passed to hosts instead of decoded binary | hex⇄binary bridge in emitter | 09-11 |
+| Bool-in-if always-true | `const take = r < 2; if (take)` → numeric compare, always true | pass raw to tag-aware if emitter | 09-12 |
+| + concat dispatch (2 shapes) | top-level const strings + nullish-seeded locals → numeric + | CONST_FOLDS stringy + paren/nullish look-through | 09-12 |
+| M2 impure declarations | `const b = host_call()` after early return still executed (state corruption) | hoist to nil + guarded set! | 09-12 |
+| Nested returns vanish | return in inner while only stopped inner loop | function-level __fn_done/__fn_res flags | 09-11 |
 
-**Why it works:** The `WasmEmitter` is pure Rust — no filesystem, no network, no OS deps. It takes a string and returns `Vec<u8>`. Perfect for `wasm-bindgen`.
+### near-mock bugs
 
-**Tasks:**
-1. Create `crates/browser-compiler/` with `wasm-bindgen` + `wasm-pack` setup
-2. Expose two functions:
-   - `compile_p1(source: &str) -> Result<Vec<u8>, String>` — NEAR contract WASM
-   - `compile_p2(source: &str) -> Result<Vec<u8>, String>` — wasi:http WASM
-3. Strip `wasmtime`, `tokio`, `reqwest`, `rustyline` deps from browser build (already behind `cfg(not(target_arch = "wasm32"))`)
-4. Add `wasm-pack build --target web` to build pipeline
-5. Test: compile a `(define (hello) "world")` program in browser, verify output WASM
+| bug | fix | date |
+|---|---|---|
+| BN254 pairing stride 128B→192B | real gates trapped "Invalid input length" | POINT_SIZE + POINT_SIZE*2 | 09-11 |
+| Error chains hidden | cross-mode traps printed messageless | TxOutcome.error carries full chain | 09-11 |
+| Deprecated host wording | didn't match mainnet exactly | "Attempted to call deprecated..." | 09-11 |
+| Embedded copy stale | lisp-rlm's embedded near-mock was 6 months behind | full re-sync | 09-11 |
 
-**Pitfalls:**
-- `wasm-encoder` and `wit-component` compile fine to `wasm32-unknown-unknown` — already verified
-- `im::HashMap` (persistent data structures) works in WASM — already used in interpreter
-- Must avoid `std::fs`, `std::net`, `std::time::Instant` in browser path — these are already gated behind native-only deps
+### Operational gotchas (learned the hard way)
 
-### Phase 2: Web IDE (Days 3-6)
-
-**Goal:** Functional editor with compile + output display.
-
-**Tasks:**
-1. Svelte/Vite app (lightweight, fast)
-2. Monaco editor with Lisp syntax highlighting
-3. File tabs (multi-file support)
-4. Compile button → loads browser compiler WASM → runs `compile_p1` or `compile_p2`
-5. Output panel: show WASM size, disassembly preview, any compiler errors
-6. Download `.wasm` button
-7. Template selector with 5-6 starter programs:
-   - Counter (P1): storage-based increment
-   - Greeter (P1): read/write greeting
-   - HTTP Fetch (P2): single URL fetch
-   - Price Oracle (P2): multi-source price comparison
-   - Hybrid Oracle (P2→P1): fetch price → store on-chain
-   - Cross-chain Reader (P2): fetch from multiple APIs, aggregate
-
-### Phase 3: NEAR Integration (Days 6-8)
-
-**Goal:** Deploy compiled WASM to NEAR from the browser.
-
-**P1 Deploy Flow:**
-1. Factory contract (`lisp-factory.testnet`) — pre-deployed, holds creation code
-2. User compiles Lisp → gets WASM binary
-3. `near-api-js` sends `deploy_contract` transaction with user's WASM
-4. New contract lives at user's subaccount or a generated account
-
-**P2 Execute Flow:**
-1. User compiles Lisp → gets wasi:http WASM
-2. Upload to IPFS or pass as base64 to OutLayer
-3. OutLayer daemon executes, settles result on-chain
-4. Frontend polls for result
-
-**Tasks:**
-1. Factory contract: stores WASM template, deploys user variants
-2. `near-api-js` integration in frontend
-3. NEAR wallet connection (MyNearWallet / Meteor)
-4. P2 submit flow: upload WASM → execute → display result
-5. Transaction history: show recent P1/P2 executions
-
-### Phase 4: Hybrid Programs (Days 8-10)
-
-**Goal:** P2 fetches data → writes to P1 contract, orchestrated from browser.
-
-**Pattern:**
-```lisp
-;; hybrid-oracle.lisp
-;; Runs as P2 (off-chain, can do HTTP)
-(define (main)
-  (let ((btc-price (http-get "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"))
-        (eth-price (http-get "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd")))
-    ;; P2 can also call NEAR contracts through OutLayer API
-    (storage-set "btc-usd" btc-price)
-    (storage-set "eth-usd" eth-price)
-    (string-append "Updated: BTC=" btc-price " ETH=" eth-price)))
-```
-
-**Tasks:**
-1. Extend compiler to recognize `storage-*` calls in P2 mode → emit OutLayer adapter calls
-2. Frontend: "Run Hybrid" button → compile as P2 → submit → show result
-3. After P2 execution, read P1 contract state to verify storage was updated
-4. Display both off-chain result and on-chain state change
-
-### Phase 5: Polish & Deploy (Days 10-12)
-
-**Tasks:**
-1. Cloudflare Pages deployment
-2. Custom domain (e.g., `lisp.near.dev` or `rlm.sh`)
-3. CI: build compiler WASM + frontend on push
-4. Mobile-responsive layout
-5. Share button: encode Lisp source in URL hash for shareable links
-6. Error UX: clear compiler errors with source location highlighting
-7. Docs: README with architecture, how to add templates, API reference
+- Top-level `const` arrays re-execute their literal per access — **always use function-local constants**
+- `cargo build` can timeout in foreground on lisp-rlm — use `nohup ... &` and poll
+- Disk fills: clean `target/debug/` (~16GB), check `df -h` before long builds
+- `near-compile` binary can be stale — rebuild after any frontend change (`cargo build --release -p near-compile`)
+- Account creation: `near-compile create <name> <funder>` appends funder as suffix parent — keep names short
+- snarkjs vkey key is `IC` not `VK`
+- circomlib `LessThan` max is 252 bits, not 254
 
 ---
 
-## Technical Decisions
+## Open Fronts (ranked by leverage)
 
-### Compiler in Browser (not server)
+### 1. 🟢 Merkle tree + nullifiers (the mixer — closest to done)
 
-- **Zero infrastructure cost** — no backend needed
-- **Privacy** — user code never leaves their browser
-- **Offline capable** — works without network (compile only, not deploy)
-- **Instant** — no round-trip to server for compilation
-- **Possible because** the `WasmEmitter` is pure computation — no I/O
+**What**: incremental Merkle tree with Poseidon, nullifier set, membership proof circuit
+**Why**: unlocks privacy pools, mixers, anonymous signaling — the classic zk app
+**Missing**: the tree contract (~2 days), the membership circuit (~1 day), Poseidon gas cut
+**Blocker**: Poseidon at 146 Tgas → 30-level insert = 15 calls. Needs optimization (see #4)
+**Files**: none yet — would go in `zk/merkle/`
 
-### Svelte over React
+### 2. 🟡 Honk verifier port (the Noir unlock — now plausible)
 
-- Smaller bundle (~10KB vs ~40KB for React)
-- Simpler state management for this scope
-- Better DX for a focused tool (not a full platform)
+**What**: port Barretenberg's Honk/Shplemini verifier to our TS, with Grumpkin as stitched wasm
+**Why**: native on-chain Noir proof verification — best architectural outcome
+**Breakthrough**: the schnorr module proved the pattern — stitched raw-wasm Grumpkin point ops at ~0.4 Tgas each (vs 2+ TS-level), plausibly fitting in ~150-250 Tgas total
+**Missing**: anatomy study (1-2 days), then the port (2-4 weeks)
+**Next step**: fetch bb's current Ethereum verifier Solidity, count actual Grumpkin ops, multiply by stitched-wasm cost model
+**Key files**: `schnorr/src/lib.rs` (the pattern), `wasm_link.rs` (the stitcher), `near-mock/src/bn254.rs` (host formats)
 
-### Factory Contract Pattern
+### 3. 🟡 zkVM receipt verifier (general-purpose — RISC Zero/SP1)
 
-Instead of deploying raw user WASM (which requires account creation), use a factory:
-- Factory holds the account/subaccount logic
-- Users get `username.lisp-factory.testnet` subaccounts
-- Factory manages access control (only owner can update their contract)
+**What**: port SP1 or RISC Zero's receipt verifier (~600-1500 lines Solidity → TS)
+**Why**: "prove arbitrary Rust programs on NEAR" — rollups, coprocessors, cross-chain
+**Missing**: the port (1-2 weeks), has a reference implementation to diff against
+**Note**: same pairing hosts + keccak underneath, no new primitives needed
+**Also**: this is the fallback Noir path (prove bb verification inside the zkVM)
 
-### OutLayer for P2
+### 4. 🟡 Poseidon optimization (the gas multiplier)
 
-Already working — `inlayer submit ./program.wasm` → daemon executes → settles on mainnet. Browser just needs to upload the compiled WASM (via API call to daemon or IPFS pin).
+**What**: 29-bit limbs (9 limbs vs 16) + sparse partial rounds (circomlibjs poseidon_opt)
+**Why**: 146 → ~35-50 Tgas per hash → Merkle insert 15 calls → 3-5 calls
+**Missing**: mechanical port of both optimizations (~2-3 days combined)
+**Impact**: makes #1 (mixer) ergonomic, not just possible
+**Files**: `fixtures/poseidon_bn254.ts` (current), would become `poseidon_opt.ts`
+
+### 5. ⚪ Noir language support (watch, don't build)
+
+**What**: author circuits in Noir, prove with bb, verify on NEAR
+**Status**: arkworks backend dead (2 years stale, arithmetic-only). Path B (#2 above) is the real route. Watch for Aztec shipping a maintained Groth16 wrapper — that would be a ~50-line bridge for us.
+**NOT doing**: reviving the arkworks backend (weeks, restricted language)
+
+### 6. ⚪ Additional precompiles / hosts
+
+- BLS12-381 msig (tests pass, not deployed)
+- ML-DSA-65 (post-quantum, host exists in protocol)
+- Grumpkin host (would need protocol-level ask — not ours to add)
 
 ---
 
-## File Structure (New)
+## Architecture (the pieces and how they connect)
 
 ```
-lisp-rlm/
-├── crates/
-│   └── browser-compiler/        # NEW: wasm-pack compatible crate
-│       ├── Cargo.toml
-│       └── src/
-│           └── lib.rs           # expose compile_p1(), compile_p2()
-├── web/                         # NEW: Svelte frontend
-│   ├── package.json
-│   ├── vite.config.ts
-│   ├── src/
-│   │   ├── App.svelte
-│   │   ├── lib/
-│   │   │   ├── compiler.ts      # wasm-pack glue
-│   │   │   ├── near.ts          # near-api-js integration
-│   │   │   └── templates.ts     # starter programs
-│   │   └── components/
-│   │       ├── Editor.svelte
-│   │       ├── Output.svelte
-│   │       └── Deploy.svelte
-│   └── public/
-├── contracts/
-│   └── lisp-factory/            # NEW: factory contract
-│       ├── Cargo.toml
-│       └── src/
-│           └── lib.rs
-└── plan.md                      # This file
+┌─────────────────────────────────────────────────────────────┐
+│ USER (browser/CLI)                                          │
+│   private data → witness → proof (snarkjs, seconds)        │
+│   proof + commitments → tx to NEAR                          │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+┌─────────────────────────▼───────────────────────────────────┐
+│ NEAR CONTRACT (lisp-rlm TS → wasm)                          │
+│                                                             │
+│  Groth16 verifier:                                          │
+│    multiexp(IC, inputs) + pairing_check(4 pairs) → OK/BAD  │
+│    → alt_bn128 hosts (in-protocol, gas-priced)             │
+│                                                             │
+│  Poseidon (for Merkle/state commitments):                   │
+│    CIOS 16-limb → 146 Tgas (or 35-50 after optimization)  │
+│                                                             │
+│  [future] Honk verifier:                                    │
+│    stitched Grumpkin wasm (~0.4 Tgas/point op)             │
+│    + BN254 pairing host + keccak transcript                │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+┌─────────────────────────▼───────────────────────────────────┐
+│ LOCAL DEV LOOP (near-mock)                                  │
+│   compile → run → gas (0.2% of mainnet) → deploy → verify  │
+│   fork mainnet state / replay any tx / calibrated fees     │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Success Metrics
+## Session Protocol
 
-1. **Compile in browser:** Type Lisp → get WASM in <500ms
-2. **Deploy P1:** One click → contract live on testnet in <10s
-3. **Execute P2:** Submit → result displayed in <15s
-4. **Hybrid:** Run oracle → see on-chain state update in <20s
-5. **Shareable:** URL with encoded source opens exact same program
-6. **Zero backend:** Only NEAR RPC + OutLayer daemon (already running)
+### At session start:
+1. Read this file
+2. Check testnet contract health (see accounts table)
+3. Run `cargo test --release` on both repos to confirm green
+
+### At session end:
+1. Update "Where We Are" paragraph
+2. Update any changed tables
+3. Add new bugs to the graveyard
+4. Add new accounts/contracts
+5. Re-rank the open fronts if priorities shifted
+6. Commit + push this file
+
+### When context gets compacted:
+This file IS the recovery point. It should contain everything needed to resume without re-deriving.
+
+---
+
+## Quick Reference
+
+### Build commands
+```bash
+# lisp-rlm (compiler + tools)
+cd /Users/j-p/dev/stuff/lisp-rlm
+CARGO_INCREMENTAL=0 cargo build --release --bin compile --bin near-mock
+CARGO_INCREMENTAL=0 cargo build --release -p near-compile
+
+# near-mock (standalone)
+cd /Users/j-p/dev/stuff/near-mock
+CARGO_INCREMENTAL=0 cargo build --release
+
+# test a TS contract locally
+./target/release/compile input.ts output.wasm
+./target/release/near-mock output.wasm method '{}' --prepaid 300
+
+# deploy + call
+./target/release/near-compile build /tmp/project
+./target/release/near-compile deploy /tmp/project
+./target/release/near-compile call <account> <method> '<json>' /tmp/project
+```
+
+### The zk pipeline (circom → on-chain)
+```bash
+cd zk/circuit
+/tmp/circom2 circuit.circom --r1cs --wasm --sym -o .          # compile circuit
+node make_input.js                                              # compute commitments
+node circuit_js/generate_witness.js circuit_js/circuit.wasm input.json witness.wtns
+snarkjs groth16 prove circuit_final.zkey witness.wtns proof.json  # prove
+python3 bridge.py .                                             # convert formats
+# → init_args.json (VK), verify_args.json (proof)
+# → deploy verifier, call init(vk), call verify(proof)
+```
+
+### Publishing
+```bash
+cd lisp-rlm && git add -A && git commit -m "..." && git push
+cargo publish -p lisp-rlm-wasm
+sleep 15 && cargo publish -p near-compile
+cd ../near-mock && git add -A && git commit -m "..." && git push && cargo publish
+```
+
+### Important paths
+```
+/Users/j-p/dev/stuff/lisp-rlm/          — compiler + tools + tests
+/Users/j-p/dev/stuff/lisp-rlm/zk/       — circuit + bridge + pipeline
+/Users/j-p/dev/stuff/lisp-rlm/schnorr/  — the stitched-wasm pattern (KEY for Honk)
+/Users/j-p/dev/stuff/near-mock/         — the local runner
+/Users/j-p/dev/stuff/lisp-rlm/fixtures/ — verified contract sources
+/Users/j-p/dev/stuff/lisp-rlm/tests/    — regression suite
+```
