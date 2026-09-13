@@ -7,7 +7,7 @@
 
 ## Where We Are (one paragraph)
 
-We have a working zero-knowledge stack on NEAR: a TS→wasm compiler (lisp-rlm, published 0.1.6), a calibrated local runner (near-mock, published 0.7.1, gas within 0.2% of mainnet), a circomlib-exact Poseidon hash on-chain (146 Tgas), and a live Groth16 verifier contract on testnet verifying real snarkjs proofs at 33.6 Tgas. The x>y private-data milestone (user proves statement about private data locally, chain verifies) is DONE end-to-end. The compiler survived a major shakedown: 8 silent-corruption bugs found and fixed. Next: decide between Merkle tree (mixer path), zkVM receipt verifier (general-purpose path), or the Honk verifier port (Noir path — now plausible thanks to the stitched-wasm Grumpkin insight).
+We have a working zero-knowledge stack on NEAR: a TS→wasm compiler (lisp-rlm, published 0.1.6), a calibrated local runner (near-mock, published 0.7.1, gas within 0.2% of mainnet), a circomlib-exact Poseidon hash on-chain (146 Tgas), and a live Groth16 verifier contract on testnet verifying real snarkjs proofs at 33.6 Tgas. The x>y private-data milestone (user proves statement about private data locally, chain verifies) is DONE end-to-end. The compiler survived a major shakedown: 8 silent-corruption bugs found and fixed. The key strategic insight from the last session: the schnorr stitched-wasm module is the TEMPLATE for cheap on-chain Grumpkin arithmetic (~0.4 Tgas/point op), which makes the Honk verifier port (the Noir path) plausibly viable at ~150-250 Tgas. Next decision: anatomy study of bb's verifier to confirm the gas number, then either port Honk (Noir native) or build the Merkle mixer (circom path, delivers now).
 
 ---
 
@@ -96,44 +96,50 @@ zk/circuit/tamper_test.py    — soundness check (valid→OK, tampered→BAD)
 
 ## Open Fronts (ranked by leverage)
 
-### 1. 🟢 Merkle tree + nullifiers (the mixer — closest to done)
+### 1. 🟡 Honk verifier anatomy study → port (THE NOIR PATH — priority when Noir matters)
+
+**What**: port Barretenberg's Honk/Shplemini verifier to our TS, with Grumpkin as stitched wasm
+**Why**: native on-chain Noir proof verification — the full Noir language on NEAR, no wraps, no extra provers, best architectural outcome
+**Breakthrough (this session)**: the schnorr module proved the pattern — stitched raw-wasm Grumpkin point ops at ~0.4 Tgas each (vs 2+ TS-level), plausibly fitting in ~150-250 Tgas total. This flipped Route B from "probably dead" to "plausibly fits."
+**How Noir flows through it**: `foo.nr → nargo prove (bb, seconds) → Honk proof → OUR contract verifies it natively` — same UX as the Groth16 path, full Noir language + stdlib + unconstrained fns
+**Missing**: 
+  - Phase 1: anatomy study (1-2 days) — fetch bb's current Ethereum verifier Solidity, count actual Grumpkin ops, multiply by stitched-wasm cost model, get a REAL Tgas number
+  - Phase 2: if number fits (< ~250 Tgas): build the Grumpkin stitched-wasm module (Rust, 4×u64 limbs, Jacobian/projective, same pattern as `schnorr/`)
+  - Phase 3: port the verifier TS glue (transcript, sumcheck, pairing call) — 2-4 weeks total
+**Decision gate**: if the study says >300 Tgas → park, fall back to the zkVM wrap path (#3)
+**Key files**: `schnorr/src/lib.rs` (the pattern to replicate), `wasm_link.rs` (the stitcher), `near-mock/src/bn254.rs` (host formats)
+**⭐ THE INSIGHT**: the schnorr stitch wasn't just a crypto feature — it built the generic "stitch any Rust crypto as cheap wasm" mechanism. Grumpkin field ops = same 4×u64 limb pattern, different constants. The jacobian-no-inversion trick is already proven in that code.
+
+### 2. 🟢 Merkle tree + nullifiers (the mixer — deliverable now)
 
 **What**: incremental Merkle tree with Poseidon, nullifier set, membership proof circuit
-**Why**: unlocks privacy pools, mixers, anonymous signaling — the classic zk app
+**Why**: unlocks privacy pools, mixers, anonymous signaling — the first real zk app, and it works with what's already live (Groth16 path)
 **Missing**: the tree contract (~2 days), the membership circuit (~1 day), Poseidon gas cut
 **Blocker**: Poseidon at 146 Tgas → 30-level insert = 15 calls. Needs optimization (see #4)
 **Files**: none yet — would go in `zk/merkle/`
+**Note**: this uses the circom/snarkjs/Groth16 path (already live), NOT Noir — Noir circuits for the same thing come free once #1 lands
 
-### 2. 🟡 Honk verifier port (the Noir unlock — now plausible)
-
-**What**: port Barretenberg's Honk/Shplemini verifier to our TS, with Grumpkin as stitched wasm
-**Why**: native on-chain Noir proof verification — best architectural outcome
-**Breakthrough**: the schnorr module proved the pattern — stitched raw-wasm Grumpkin point ops at ~0.4 Tgas each (vs 2+ TS-level), plausibly fitting in ~150-250 Tgas total
-**Missing**: anatomy study (1-2 days), then the port (2-4 weeks)
-**Next step**: fetch bb's current Ethereum verifier Solidity, count actual Grumpkin ops, multiply by stitched-wasm cost model
-**Key files**: `schnorr/src/lib.rs` (the pattern), `wasm_link.rs` (the stitcher), `near-mock/src/bn254.rs` (host formats)
-
-### 3. 🟡 zkVM receipt verifier (general-purpose — RISC Zero/SP1)
+### 3. 🟡 zkVM receipt verifier (general-purpose + Noir fallback)
 
 **What**: port SP1 or RISC Zero's receipt verifier (~600-1500 lines Solidity → TS)
 **Why**: "prove arbitrary Rust programs on NEAR" — rollups, coprocessors, cross-chain
 **Missing**: the port (1-2 weeks), has a reference implementation to diff against
 **Note**: same pairing hosts + keccak underneath, no new primitives needed
-**Also**: this is the fallback Noir path (prove bb verification inside the zkVM)
+**Also**: this is the Noir FALLBACK if #1's gas study fails (prove bb verification inside the zkVM — works but ~$0.50/proof, tens of seconds)
 
-### 4. 🟡 Poseidon optimization (the gas multiplier)
+### 4. 🟡 Poseidon optimization (the gas multiplier — feeds #2)
 
 **What**: 29-bit limbs (9 limbs vs 16) + sparse partial rounds (circomlibjs poseidon_opt)
 **Why**: 146 → ~35-50 Tgas per hash → Merkle insert 15 calls → 3-5 calls
 **Missing**: mechanical port of both optimizations (~2-3 days combined)
-**Impact**: makes #1 (mixer) ergonomic, not just possible
+**Impact**: makes #2 (mixer) ergonomic, not just possible
 **Files**: `fixtures/poseidon_bn254.ts` (current), would become `poseidon_opt.ts`
 
-### 5. ⚪ Noir language support (watch, don't build)
+### 5. ⚪ Noir watch-item (zero effort — just monitor)
 
-**What**: author circuits in Noir, prove with bb, verify on NEAR
-**Status**: arkworks backend dead (2 years stale, arithmetic-only). Path B (#2 above) is the real route. Watch for Aztec shipping a maintained Groth16 wrapper — that would be a ~50-line bridge for us.
-**NOT doing**: reviving the arkworks backend (weeks, restricted language)
+**What**: if Aztec ships a maintained Groth16/EVM-class wrapper for their proofs, our door opens with a ~50-line bridge (same as the snarkjs one)
+**Why watch**: they iterate fast (UltraPlonk → Honk → Shplemini in 18 months); a Groth16 wrapper has existed before for their recursion
+**NOT doing**: reviving the dead arkworks backend (weeks, restricted language — arithmetic-only, no Brillig, no stdlib)
 
 ### 6. ⚪ Additional precompiles / hosts
 
