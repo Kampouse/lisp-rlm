@@ -689,6 +689,9 @@ pub struct WasmEmitter {
     // reference must CALL the fn (yield the value), not yield a TAG_FNREF
     // (which println renders as nil — the silent-nil gap, GAPS.md)
     pub(crate) value_defines: std::collections::HashSet<String>,
+    /// Next emit_define call is a top-level value define → wrap the body
+    /// with a memoization guard (evaluate-once per tx; see emit_define).
+    pub(crate) memoize_next: bool,
     // Index of the synthesized __h_arr_to_str helper (array → "(e0 e1)" str)
     pub(crate) arr_str_helper: Option<u32>,
     // Index of the synthesized __h_val_eq helper (structural equality)
@@ -746,6 +749,7 @@ impl WasmEmitter {
             wasm_imports: Vec::new(),
             list_ptr_counter: 0,
             value_defines: std::collections::HashSet::new(),
+            memoize_next: false,
             arr_str_helper: None,
             val_eq_helper: None,
         }
@@ -1246,6 +1250,55 @@ impl WasmEmitter {
         let mut instrs = prologue;
         instrs.append(&mut body_instrs);
         instrs.append(&mut epilogue);
+
+        // Memoization guard for top-level value defines (2026-09-14):
+        // `(define K <expr>)` references CALL this 0-param fn, so without a
+        // guard the initializer re-runs on every reference (each array
+        // access re-allocated — the 09-12 Poseidon RP-literal heap trap).
+        // The interpreter desugars the same form to a letrec VALUE binding
+        // (evaluated once) and JS module consts are once-only — the wasm
+        // path diverged from both. Guard: a zeroed data-section slot;
+        // 0 → evaluate + cache, non-zero → cached tagged value. Memory is
+        // re-initialized per NEAR transaction, so the cache lives exactly
+        // one tx (same freshness as the interpreter's per-run binding).
+        // Degenerate: tagged Num(0) == 0 never caches — re-evaluates, cheap
+        // and correct. Arrays/strings cache via their heap pointer.
+        // Structure: the guard is PREFIXED before the prologue (early
+        // return happens while FP is still pristine — no restore needed);
+        // the tail runs after the epilogue (post FP-restore). Note the
+        // wasm store operand order: address pushed FIRST, then value.
+        if self.memoize_next {
+            let slot = self.alloc_memo_slot();
+            let ma8 = wasm_encoder::MemArg {
+                offset: 0,
+                align: 3,
+                memory_index: 0,
+            };
+            let mut guarded: Vec<Instruction<'static>> = Vec::new();
+            // if mem[slot] != 0 → return the cached tagged value
+            guarded.push(Instruction::I32Const(slot));
+            guarded.push(Instruction::I64Load(ma8.clone()));
+            guarded.push(Instruction::I64Const(0));
+            guarded.push(Instruction::I64Ne);
+            guarded.push(Instruction::If(wasm_encoder::BlockType::Empty));
+            guarded.push(Instruction::I32Const(slot));
+            guarded.push(Instruction::I64Load(ma8.clone()));
+            guarded.push(Instruction::Return);
+            guarded.push(Instruction::End);
+            // original prologue + body + epilogue (untouched — branch
+            // depths inside are preserved)
+            guarded.append(&mut instrs);
+            // tail: [v] → save, store (addr first, then value), reload
+            let scr = self.local_idx("__memo_v");
+            guarded.push(Instruction::LocalSet(scr));
+            guarded.push(Instruction::I32Const(slot));
+            guarded.push(Instruction::LocalGet(scr));
+            guarded.push(Instruction::I64Store(ma8.clone()));
+            guarded.push(Instruction::I32Const(slot));
+            guarded.push(Instruction::I64Load(ma8));
+            instrs = guarded;
+            self.memoize_next = false;
+        }
 
         // Inject gas checks before every Br(0) back-edge and host_call (skip in P2 mode)
         // NEAR protocol meters gas natively — skip injected gas checks

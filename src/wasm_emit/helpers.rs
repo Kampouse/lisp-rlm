@@ -1083,6 +1083,18 @@ impl WasmEmitter {
         off
     }
 
+    /// Allocate a UNIQUE zeroed 8-byte slot (no content dedupe). For
+    /// mutable runtime caches — memoized value-define slots. alloc_data
+    /// dedupes by content, so three zeroed slots would alias one address
+    /// (found the hard way: every const cached into offset 256).
+    pub(crate) fn alloc_memo_slot(&mut self) -> i32 {
+        let off = self.next_data_offset;
+        self.data_segments.push((off, vec![0u8; 8]));
+        self.next_data_offset += 8;
+        self.next_data_offset = (self.next_data_offset + 7) & !7;
+        off as i32
+    }
+
     pub(crate) fn emit_runtime_alloc(&mut self, n_bytes: i64) -> Vec<Instruction<'static>> {
         let tmp = self.local_idx("__rha_tmp");
         let new_ptr = self.local_idx("__rha_new");

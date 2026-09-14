@@ -75,7 +75,7 @@ zk/bridge.py           — SHARED format bridge (snarkjs → NEAR LE-halves)
 
 ## What We Fixed (the bug graveyard — don't re-fix, don't regress)
 
-### Compiler bugs (lisp-rlm) — 21 total, all fixed and tested
+### Compiler bugs (lisp-rlm) — 22 total, all fixed and tested
 
 **2026-09-14 sweep note:** probed every "open" GAPS entry live before fixing — ~half were STALE (arity fixed 08-26, lisp-run surface gaps all work, kv asymmetry documented backwards). Probe before fixing claimed bugs.
 
@@ -102,6 +102,7 @@ zk/bridge.py           — SHARED format bridge (snarkjs → NEAR LE-halves)
 | Negative Num returns | both export-wrapper untag sites used ShrU — `return -5` crossed host boundary as 2^61 garbage | I64ShrS at both sites | 09-14 |
 | JSON space-before-colon | `"k" : v` silently missed on dynamic keys, dot-paths, json-extract, u128 (only literal scanners were lenient — fix I1 08-27) | bare quoted key + ws-skip + colon-required in __json_get, __json_extract_N, from_buf, dyn, u128 | 09-14 |
 | Dispatch table divergence (t13) | str-length chars-vs-bytes, str-split empties, to-int error-vs-0 — same expression, different answer per lookup path | dispatch aligned to wasm anchor (bytes, keep, 0) | 09-14 |
+| Value-define re-evaluation | top-level `const K = <expr>` re-ran its initializer on EVERY reference — array consts re-allocated per access (Poseidon RP heap trap) and diverged from interp (letrec: once) + JS (once) | memoize guard: unique zeroed slot, eval-once per tx (alloc_data content-dedupe aliased slots — alloc_memo_slot added) | 09-14 |
 
 ### near-mock bugs — 4 total
 
@@ -123,7 +124,7 @@ zk/bridge.py           — SHARED format bridge (snarkjs → NEAR LE-halves)
 
 ### Operational gotchas
 
-- Top-level `const` **arrays** re-execute their initializer per access (defines are 0-param fns) — **prefer function-local constants**
+- Top-level `const` **arrays**: memoized since 09-14 — allocate once per tx, safe in hot loops (JS module-const semantics)
 - `near.jsonGetStr/Int` dynamic keys: WORKS since 09-14; known edge — whitespace BEFORE the colon (`"k" : v`) doesn't match the dynamic path
 - `string + string`: common shapes (const, `storageGet ?? ""`, literals) are typed correctly since 09-12 — `strCat()` remains the safe fallback for exotic receivers
 - BN254 G1 generator is **(1, 2)** — NOT (1, P-1). Cost hours to debug.

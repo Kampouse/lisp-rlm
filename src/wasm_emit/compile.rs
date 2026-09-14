@@ -907,6 +907,10 @@ fn parse_and_compile_opts(
                             if let (LispVal::Sym(s2), LispVal::Sym(name)) = (&items[0], &items[1]) {
                                 if s2 == "define" {
                                     let value = &items[2];
+                                    // Evaluate-once per tx (interp desugars to a
+                                    // letrec value binding; wasm re-evaluated per
+                                    // reference until 2026-09-14)
+                                    em.memoize_next = true;
                                     em.emit_define(name, &[], value)?;
                                     em.value_defines.insert(name.clone());
                                 }
@@ -1405,6 +1409,8 @@ pub fn compile_near_from_exprs_with_map(
                 if let (LispVal::Sym(s2), LispVal::Sym(name)) = (&items[0], &items[1]) {
                     if s2 == "define" {
                         let value = &items[2];
+                        // Evaluate-once (see the twin arm above)
+                        em.memoize_next = true;
                         em.emit_define(name, &[], value)?;
                         em.value_defines.insert(name.clone());
                     }

@@ -989,9 +989,18 @@ Every real 192B pairing gate trapped. Fix: POINT_SIZE + POINT_SIZE*2.
 ### Operational gotchas discovered (add to your checklist)
 - ~~Top-level const arrays don't work~~ → FIXED 2026-09-13: non-literal
   top-level consts emit value-defines properly (from_exprs path skipped
-  them silently). Note: each REFERENCE re-evaluates the initializer
+  them silently). ~~Note: each REFERENCE re-evaluates the initializer
   (matches interpreter semantics) — fine for correctness, hoist to a
-  local if hot-loop perf matters
+  local if hot-loop perf matters~~ → FIXED 2026-09-14: value defines
+  are MEMOIZED (unique zeroed data slot per define; 0 → eval + cache,
+  non-zero → cached tagged value; memory re-inits per tx so the cache
+  is per-transaction — same freshness as the interp's letrec binding,
+  same once-only semantics as JS module consts). Array consts now
+  allocate ONCE per tx (the Poseidon RP-literal heap trap class is
+  dead). Two traps found on the way: wasm store operand order is
+  ADDR-FIRST (value-first fails validation), and alloc_data DEDUPES by
+  content — three zeroed slots aliased one address (every const cached
+  into offset 256). 6 regression tests in test_const_memoize.
 - ~~near.jsonGetStr() requires compile-time string literals~~ → FIXED
   2026-09-13: dynamic keys work (runtime pattern → __json_get scanner,
   results heap-copied so consecutive reads don't clobber). jsonGetInt
