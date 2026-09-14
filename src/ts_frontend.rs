@@ -3656,6 +3656,9 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                         | "toLowerCase"
                         | "concat"
                         | "split"
+                        | "repeat"
+                        | "padStart"
+                        | "padEnd"
                 );
                 if is_str_method {
                     let recv = lower_expr(&sm.object)?;
@@ -3704,6 +3707,82 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                             Ok(list(vec![Sym("str-cat"), recv, arg(0)?]))
                         }
                         "split" => Ok(list(vec![Sym("str-split"), recv, arg(0)?])),
+                        // repeat/pad (2026-09-13): expr_returns_str_method already
+                        // listed them for + typing, but no lowering existed —
+                        // "0".repeat(5) died in callee_name ("nested member
+                        // chains not in M1"). str-repeat is a native wasm
+                        // builtin; pads lower to repeat+slice in let-position.
+                        "repeat" => Ok(list(vec![Sym("str-repeat"), recv, arg(0)?])),
+                        "padStart" => {
+                            let len = arg(0)?;
+                            let pad = if argc >= 2 {
+                                arg(1)?
+                            } else {
+                                Str(String::from(" "))
+                            };
+                            // (let ((need (- len (str-length s))))
+                            //   (if (<= need 0) s (str-cat (str-slice (str-repeat pad len) 0 need) s)))
+                            Ok(list(vec![
+                                Sym("let"),
+                                list(vec![list(vec![
+                                    Sym("__pad_need"),
+                                    list(vec![
+                                        Sym("-"),
+                                        len.clone(),
+                                        list(vec![Sym("str-length"), recv.clone()]),
+                                    ]),
+                                ])]),
+                                list(vec![
+                                    Sym("if"),
+                                    list(vec![Sym("<="), Sym("__pad_need"), Num(0)]),
+                                    recv.clone(),
+                                    list(vec![
+                                        Sym("str-cat"),
+                                        list(vec![
+                                            Sym("str-slice"),
+                                            list(vec![Sym("str-repeat"), pad, len]),
+                                            Num(0),
+                                            Sym("__pad_need"),
+                                        ]),
+                                        recv,
+                                    ]),
+                                ]),
+                            ]))
+                        }
+                        "padEnd" => {
+                            let len = arg(0)?;
+                            let pad = if argc >= 2 {
+                                arg(1)?
+                            } else {
+                                Str(String::from(" "))
+                            };
+                            Ok(list(vec![
+                                Sym("let"),
+                                list(vec![list(vec![
+                                    Sym("__pad_need"),
+                                    list(vec![
+                                        Sym("-"),
+                                        len.clone(),
+                                        list(vec![Sym("str-length"), recv.clone()]),
+                                    ]),
+                                ])]),
+                                list(vec![
+                                    Sym("if"),
+                                    list(vec![Sym("<="), Sym("__pad_need"), Num(0)]),
+                                    recv.clone(),
+                                    list(vec![
+                                        Sym("str-cat"),
+                                        recv,
+                                        list(vec![
+                                            Sym("str-slice"),
+                                            list(vec![Sym("str-repeat"), pad, len]),
+                                            Num(0),
+                                            Sym("__pad_need"),
+                                        ]),
+                                    ]),
+                                ]),
+                            ]))
+                        }
                         _ => unreachable!(),
                     };
                 }

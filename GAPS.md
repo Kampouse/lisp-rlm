@@ -982,17 +982,31 @@ of nearcore's POINT_SIZE + POINT_SIZE*2 (192B = 64B G1 ‖ 128B G2).
 Every real 192B pairing gate trapped. Fix: POINT_SIZE + POINT_SIZE*2.
 
 ### Operational gotchas discovered (add to your checklist)
-- Top-level const arrays re-execute their literal PER ACCESS — always use
-  function-local constants
-- near.jsonGetStr() requires compile-time string literals — unroll loops
+- ~~Top-level const arrays don't work~~ → FIXED 2026-09-13: non-literal
+  top-level consts emit value-defines properly (from_exprs path skipped
+  them silently). Note: each REFERENCE re-evaluates the initializer
+  (matches interpreter semantics) — fine for correctness, hoist to a
+  local if hot-loop perf matters
+- ~~near.jsonGetStr() requires compile-time string literals~~ → FIXED
+  2026-09-13: dynamic keys work (runtime pattern → __json_get scanner,
+  results heap-copied so consecutive reads don't clobber). Known edge:
+  space BEFORE the colon (`"k" : v`) doesn't match — same as from_buf
 - for...of has scoping issues with captured vars — use while loops
-- Function definitions must come BEFORE callers in the file (no forward refs)
+- ~~Function definitions must come BEFORE callers~~ → FIXED (hoisting in
+  lower_program; verified 2026-09-13)
+- ~~continue not supported~~ → FIXED 2026-09-13: while/for/for-of. Also
+  fixed two latent loop bugs: `while(true)` + exits (int≠bool cond) and
+  return-as-last-statement (unbound __fn_done guard)
+- ~~"0".repeat(n) not supported~~ → FIXED 2026-09-13: repeat/padStart/
+  padEnd lower to str-repeat / repeat+slice expressions
 - string + string can dispatch to numeric — use strCat() explicitly
 - BN254 G1 generator is **(1, 2)** — NOT (1, P-1)
 - snarkjs JS API (fullProve) is 60s+; use CLI (snarkjs groth16 prove) = 1.4s
 - NEAR accounts: state persists through contract redeploy — "already
   initialized" traps. Use a FRESH account for a new VK.
 - Storage via near-mock single-wasm mode: state file at /tmp/near-mock-state.bin
+- near-mock cross mode prints number returns as raw tagged bytes (📄 shows
+  garbage) — return strings from test exports, or use single-wasm mode
 
 ### PLONK verifier analysis (in progress, skeleton deployed)
 
