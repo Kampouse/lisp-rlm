@@ -1574,8 +1574,11 @@ fn lower_for_of_parts(fo: &oxc_ast::ast::ForOfStatement<'_>) -> Result<(bool, Li
 
     // body pieces (exit-aware, same shape as lower_for_parts)
     let mut body_items: Vec<LispVal> = vec![Sym("begin")];
-    // continue support: re-arm __wl_done each iteration (see while core)
-    body_items.push(list(vec![Sym("set!"), Sym("__wl_done"), Num(0)]));
+    // continue support: re-arm __wl_done each iteration (see while core).
+    // EXIT-MODE ONLY (2026-09-14, gas): dead LocalSet per iteration otherwise
+    if has_exits {
+        body_items.push(list(vec![Sym("set!"), Sym("__wl_done"), Num(0)]));
+    }
     let mut seen_exit = false;
     let mut seen_fn_exit = false;
     for st in body_stmts {
@@ -2346,8 +2349,12 @@ fn lower_for_parts(fr: &oxc_ast::ast::ForStatement<'_>) -> Result<(bool, LispVal
     }
 
     let mut body_items: Vec<LispVal> = vec![Sym("begin")];
-    // continue support: re-arm __wl_done each iteration (see while core)
-    body_items.push(list(vec![Sym("set!"), Sym("__wl_done"), Num(0)]));
+    // continue support: re-arm __wl_done each iteration (see while core).
+    // EXIT-MODE ONLY (2026-09-14, gas): nothing writes __wl_done in a
+    // no-exit body, so the re-arm was a dead LocalSet per iteration.
+    if has_exits {
+        body_items.push(list(vec![Sym("set!"), Sym("__wl_done"), Num(0)]));
+    }
     let mut seen_exit = false;
     let mut seen_fn_exit = false;
     for s in body_stmts {

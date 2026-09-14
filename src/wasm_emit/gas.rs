@@ -71,6 +71,14 @@ impl WasmEmitter {
             }
             if i + 1 < instrs.len() {
                 match (&instrs[i], &instrs[i + 1]) {
+                    // any constant followed by Drop = dead pair (2026-09-14,
+                    // gas): set! in statement position emits a trailing
+                    // TAG_NIL that the begin machinery immediately drops —
+                    // ~2 dead instrs per statement everywhere
+                    (Instruction::I64Const(_), Instruction::Drop) => {
+                        i += 2;
+                        continue;
+                    }
                     (Instruction::LocalSet(n), Instruction::LocalGet(m)) if n == m => {
                         // Replace LocalSet+LocalGet with LocalTee (stores without popping)
                         out.push(Instruction::LocalTee(*n));
