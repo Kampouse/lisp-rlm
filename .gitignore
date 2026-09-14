@@ -25,3 +25,6 @@ __pycache__/
 '{}'
 *.fst.checked
 verification/**/*.checked
+
+# build artifacts of the zk apps (npm install to restore)
+node_modules/
