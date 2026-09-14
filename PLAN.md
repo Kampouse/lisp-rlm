@@ -1,13 +1,13 @@
 # zk-NEAR Stack — Session Continuity Plan
 
 > Living document. Update at end of each session. Read at start of each session.
-> Last updated: 2026-09-13 (end of session 3)
+> Last updated: 2026-09-14 (end of session 4)
 
 ---
 
 ## Where We Are (one paragraph)
 
-We have a working zero-knowledge application layer on NEAR: three zk apps live on testnet (anonymous identity credentials, anonymous voting v3 with choice sealed in circuit, anonymous voting v4 with homomorphic tally where nobody sees individual choices), all built on a Groth16 verifier (34 Tgas), circomlib-exact Poseidon (146 Tgas), and the alt_bn128 hosts. The compiler (lisp-rlm 0.1.6) survived 8 silent-corruption bugs and is stable. near-mock (0.7.1) predicts gas within 0.2% of mainnet. The PLONK verifier (universal setup — eliminates per-circuit trusted setup) has been analyzed, validated as feasible on existing hosts, skeleton implemented and init deployed — transcript implementation is the remaining ~2-3 hours. Key architectural discoveries: (1) Noir is a frontend, not a proof system — the arkworks backend that would slot into our verifier is dead; (2) PLONK works on our hosts and eliminates the trusted setup ceremony; (3) NEAR's MPC network doesn't support BN254 threshold decryption (wrong curve, wrong purpose); (4) homomorphic tally via additive ElGamal over BN254 gives the strongest voting privacy achievable with existing hosts.
+We have a working zero-knowledge application layer on NEAR: three zk apps live on testnet (anonymous identity credentials, anonymous voting v3 with choice sealed in circuit, anonymous voting v4 with homomorphic tally where nobody sees individual choices), all built on a Groth16 verifier (34 Tgas), circomlib-exact Poseidon (146 Tgas), and the alt_bn128 hosts. The compiler survived 8 silent-corruption bugs (session 3) plus a session-4 bug-fix marathon that cleared the entire known-bug list: 10 more issues fixed across 5 commits (dynamic JSON keys, `continue`, top-level const exprs, loop/if-branch scoping, invalid-wasm local-slot reuse, negative returns at the host boundary, string repeat/pad) with 36 new regression tests — the language bug backlog is now EMPTY (remaining items in GAPS.md are minor/cosmetic). lisp-rlm 0.1.7 / near-compile 0.1.8 / near-mock 0.7.1 are published; near-mock predicts gas within 0.2% of mainnet. The PLONK verifier (universal setup — eliminates per-circuit trusted setup) has been analyzed, validated as feasible on existing hosts, skeleton implemented and init deployed — transcript implementation is the remaining ~2-3 hours. Key architectural discoveries: (1) Noir is a frontend, not a proof system — the arkworks backend that would slot into our verifier is dead; (2) PLONK works on our hosts and eliminates the trusted setup ceremony; (3) NEAR's MPC network doesn't support BN254 threshold decryption (wrong curve, wrong purpose); (4) homomorphic tally via additive ElGamal over BN254 gives the strongest voting privacy achievable with existing hosts.
 
 ---
 
@@ -29,13 +29,13 @@ We have a working zero-knowledge application layer on NEAR: three zk apps live o
 
 | crate | version | what |
 |---|---|---|
-| lisp-rlm-wasm | 0.1.6 | TS→NEAR wasm compiler (the frontend) |
-| near-compile | 0.1.7 | CLI: build/deploy/call/create |
+| lisp-rlm-wasm | 0.1.7 | TS→NEAR wasm compiler (the frontend) |
+| near-compile | 0.1.8 | CLI: build/deploy/call/create |
 | near-mock | 0.7.1 | local runner, calibrated gas, real crypto hosts |
 
 ### Test infrastructure
 
-- **95+ tests green** across 26+ suites (lisp-rlm) + 46 tests (near-mock)
+- **130+ tests green** across 31+ suites (lisp-rlm) + 46 tests (near-mock)
 - Gas calibration: mock matches testnet within 0.2% (fp254 receipts)
 - Regression tests pin every bug we've fixed
 
@@ -75,7 +75,7 @@ zk/bridge.py           — SHARED format bridge (snarkjs → NEAR LE-halves)
 
 ## What We Fixed (the bug graveyard — don't re-fix, don't regress)
 
-### Compiler bugs (lisp-rlm) — 8 total, all fixed and tested
+### Compiler bugs (lisp-rlm) — 19 total, all fixed and tested
 
 | bug | symptom | fix | date |
 |---|---|---|---|
@@ -88,6 +88,16 @@ zk/bridge.py           — SHARED format bridge (snarkjs → NEAR LE-halves)
 | + concat (nullish locals) | `(storageGet() ?? "") + var` → numeric + | paren/nullish look-through | 09-12 |
 | M2 impure declarations | `const b = host_call()` after early return still executed | hoist to nil + guard | 09-12 |
 | Nested returns vanish | return in inner while only stopped inner loop | function-level flags | 09-11 |
+| jsonGetStr literal-only | runtime-built keys (concat, storage read) = hard compile error | json_dyn_lookup_str: key → heap "key": pattern → shared __json_get | 09-13 |
+| jsonGetStr clobber | consecutive dynamic reads overwrote each other (stdout_buf scratch) | heap-copy before tagging | 09-13 |
+| `continue` unsupported | keyword didn't exist | __wl_done set, __wl_brk kept clear; update guard on __wl_brk | 09-13 |
+| Top-level const exprs | `const K = <expr>` → "undefined variable K" (value defines skipped in from_exprs path) | emit 0-param fn + register in value_defines | 09-13 |
+| while(true)+exit forms | never compiled: bool/int cond-arm type mismatch; trailing if-return without fn flags | statically_bool false_e; guards gate on fn_bound | 09-13 |
+| String repeat/pad missing | `.repeat()/.padStart()/.padEnd()` typed but never lowered | (str-repeat s n) builtin + let-bound pad expr | 09-13 |
+| Loop/if-branch decl scoping | `let j` in for/for-of bodies + if-branches → dead binding, "undefined variable" | hoist bind-nil + set! like while bodies | 09-13 |
+| Local-slot cross-type reuse | freed i64 slot reused as i32 → type map rewritten → INVALID wasm (whole module fails validation) | type fixed at first alloc; same-type reuse only | 09-13 |
+| jsonGetInt literal-only | same as jsonGetStr | shares json_dyn_lookup_str + __str_to_num; miss → TAG_NIL | 09-14 |
+| Negative Num returns | both export-wrapper untag sites used ShrU — `return -5` crossed host boundary as 2^61 garbage | I64ShrS at both sites | 09-14 |
 
 ### near-mock bugs — 4 total
 
@@ -109,11 +119,9 @@ zk/bridge.py           — SHARED format bridge (snarkjs → NEAR LE-halves)
 
 ### Operational gotchas
 
-- Top-level `const` arrays re-execute per access — **always use function-local constants**
-- `near.jsonGetStr()` requires compile-time string literals — unroll loops
-- `for...of` has scoping issues — use `while` loops
-- `string + string` in helper functions can dispatch to numeric — use `strCat()`
-- Function definitions must come BEFORE callers in the file (no forward refs)
+- Top-level `const` **arrays** re-execute their initializer per access (defines are 0-param fns) — **prefer function-local constants**
+- `near.jsonGetStr/Int` dynamic keys: WORKS since 09-14; known edge — whitespace BEFORE the colon (`"k" : v`) doesn't match the dynamic path
+- `string + string`: common shapes (const, `storageGet ?? ""`, literals) are typed correctly since 09-12 — `strCat()` remains the safe fallback for exotic receivers
 - BN254 G1 generator is **(1, 2)** — NOT (1, P-1). Cost hours to debug.
 - `cargo build` can timeout in foreground — use `nohup ... &` and poll
 - Disk fills: clean `target/debug/` (~16GB), check `df -h`
@@ -314,6 +322,8 @@ cargo publish -p lisp-rlm-wasm
 sleep 15 && cargo publish -p near-compile
 cd ../near-mock && git add -A && git commit -m "..." && git push && cargo publish
 ```
+
+⚠️ Packaging (learned 09-14, the hard way): the crate ships a **whitelist** (`include` in Cargo.toml — src/, wit/deps/, skills/, README). The repo tree is ~11k files (zk node_modules was tracked once — now untracked+ignored) and a 2.1MB/11k-file tarball reliably dies on the crates.io upload (HTTP/2 stream resets → WAF 503s). Compile-time includes outside src/ are exactly: `wit/deps/**` (wit_embed.rs, wasi/mod.rs), `skills/SKILL.md` + `skills/example-scenario.json` (near-mock bin). If you add an `include_str!` outside src/, add its target to the whitelist or the verify build breaks. cargo always force-includes README* at any depth — harmless.
 
 ### Important paths
 ```
