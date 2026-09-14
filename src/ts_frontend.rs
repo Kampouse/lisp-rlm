@@ -1554,6 +1554,24 @@ fn lower_for_of_parts(fo: &oxc_ast::ast::ForOfStatement<'_>) -> Result<(bool, Li
     let deep_ret = fn_bound && stmts_have_deep_return(body_stmts);
     let has_exits = stmts_have_exit(body_stmts) || deep_ret;
 
+    // Hoist body declarations (while-core style): bound nil alongside the
+    // per-iteration element binding, re-initialized via set! at their source
+    // position. A `let j = 0;` in the body used to lower to a dead let —
+    // nested whiles referencing j failed with "undefined variable" (2026-09-13).
+    let mut hoisted: Vec<(String, LispVal)> = Vec::new();
+    for st in body_stmts {
+        if let Statement::VariableDeclaration(v) = st {
+            for d in &v.declarations {
+                let hname = binding_name(&d.id)?;
+                let init_e = d
+                    .init
+                    .as_ref()
+                    .ok_or("ts_frontend: local declaration needs initializer")?;
+                hoisted.push((hname, lower_expr(init_e)?));
+            }
+        }
+    }
+
     // body pieces (exit-aware, same shape as lower_for_parts)
     let mut body_items: Vec<LispVal> = vec![Sym("begin")];
     // continue support: re-arm __wl_done each iteration (see while core)
@@ -1574,6 +1592,26 @@ fn lower_for_of_parts(fo: &oxc_ast::ast::ForOfStatement<'_>) -> Result<(bool, Li
                     list(vec![Sym("set!"), Sym("__wl_done"), Num(1)]),
                     Num(0),
                 ]),
+                // hoisted declaration: re-init at source position; dead after
+                // an exit (matching the while core's skip rule)
+                Statement::VariableDeclaration(v) => {
+                    let mut re = Vec::new();
+                    if !seen_exit && !seen_fn_exit {
+                        for d in &v.declarations {
+                            let dname = binding_name(&d.id)?;
+                            let init = hoisted
+                                .iter()
+                                .find(|(n, _)| *n == dname)
+                                .map(|(_, i)| i.clone())
+                                .ok_or("ts_frontend: internal: hoisted decl missing")?;
+                            re.push(list(vec![Sym("set!"), Sym(dname), init]));
+                        }
+                    }
+                    re.push(Num(0));
+                    let mut items = vec![Sym("begin")];
+                    items.extend(re);
+                    list(items)
+                }
                 Statement::ReturnStatement(r) => {
                     let val = match &r.argument {
                         Some(e) => lower_expr(e)?,
@@ -1634,7 +1672,26 @@ fn lower_for_of_parts(fo: &oxc_ast::ast::ForOfStatement<'_>) -> Result<(bool, Li
                 }
             }
         } else {
-            tail_stmt_as_expr(st)?
+            // simple path: hoisted declarations still re-init in place
+            match st {
+                Statement::VariableDeclaration(v) => {
+                    let mut re = Vec::new();
+                    for d in &v.declarations {
+                        let dname = binding_name(&d.id)?;
+                        let init = hoisted
+                            .iter()
+                            .find(|(n, _)| *n == dname)
+                            .map(|(_, i)| i.clone())
+                            .ok_or("ts_frontend: internal: hoisted decl missing")?;
+                        re.push(list(vec![Sym("set!"), Sym(dname), init]));
+                    }
+                    re.push(Num(0));
+                    let mut items = vec![Sym("begin")];
+                    items.extend(re);
+                    list(items)
+                }
+                other => tail_stmt_as_expr(other)?,
+            }
         };
         // recursive: a break/return nested in an if ALSO kills the rest of
         // the iteration — top-level-only detection let sibling statements
@@ -1658,15 +1715,19 @@ fn lower_for_of_parts(fo: &oxc_ast::ast::ForOfStatement<'_>) -> Result<(bool, Li
         list(body_items)
     };
 
-    // per-iteration element binding wraps the body
-    let body_bound = list(vec![
-        Sym("let"),
-        list(vec![list(vec![
-            Sym(name),
-            list(vec![Sym("vec-nth"), Sym("__of_a"), Sym("__of_i")]),
-        ])]),
-        body_e,
-    ]);
+    // per-iteration element binding wraps the body; hoisted declarations
+    // bind nil alongside the element (re-armed by set! at source position)
+    let mut elem_binds = vec![list(vec![
+        Sym(name),
+        list(vec![Sym("vec-nth"), Sym("__of_a"), Sym("__of_i")]),
+    ])];
+    for (hn, _) in &hoisted {
+        elem_binds.push(list(vec![
+            Sym(hn.clone()),
+            list(vec![Sym("quote"), LispVal::Nil]),
+        ]));
+    }
+    let body_bound = list(vec![Sym("let"), list(elem_binds), body_e]);
 
     let test = list(vec![Sym("<"), Sym("__of_i"), Sym("__of_n")]);
     let inner_test = if deep_ret {
@@ -1985,12 +2046,43 @@ fn lower_while_value(w: &Statement<'_>) -> Result<LispVal, String> {
 }
 
 /// Body of a while/for: statements → single begin-expression (side effects).
+/// Declarations are HOISTED (while-core style): bound nil in a wrapping let,
+/// re-initialized via set! at their source position — a `let j = 0;` inside
+/// an if-branch used to lower to a dead `(let ((j 0)) 0)` whose binding
+/// vanished, so later statements in the branch (nested whiles etc.) saw
+/// "undefined variable j" (2026-09-13).
 fn loop_body_expr(stmts: &[Statement<'_>]) -> Result<LispVal, String> {
     if stmts.is_empty() {
         return Ok(Num(0));
     }
+    // collect top-level declarations for the wrapper let
+    let mut hoisted: Vec<String> = Vec::new();
+    for s in stmts {
+        if let Statement::VariableDeclaration(v) = s {
+            for d in &v.declarations {
+                hoisted.push(binding_name(&d.id)?);
+            }
+        }
+    }
     let mut exprs = Vec::new();
     for s in stmts {
+        if let Statement::VariableDeclaration(v) = s {
+            // re-init at source position (init already validated by hoisting)
+            let mut re = Vec::new();
+            for d in &v.declarations {
+                let name = binding_name(&d.id)?;
+                let init_e = d
+                    .init
+                    .as_ref()
+                    .ok_or("ts_frontend: local declaration needs initializer")?;
+                re.push(list(vec![Sym("set!"), Sym(name), lower_expr(init_e)?]));
+            }
+            re.push(Num(0));
+            let mut items = vec![Sym("begin")];
+            items.extend(re);
+            exprs.push(list(items));
+            continue;
+        }
         exprs.push(tail_stmt_as_expr(s)?);
     }
     // set! (and break/return rewrites ending in set!) type nil — if the last
@@ -2001,12 +2093,21 @@ fn loop_body_expr(stmts: &[Statement<'_>]) -> Result<LispVal, String> {
     if last_is_setbang {
         exprs.push(Num(0));
     }
-    if exprs.len() == 1 {
-        Ok(exprs.into_iter().next().unwrap())
+    let body = if exprs.len() == 1 {
+        exprs.into_iter().next().unwrap()
     } else {
         let mut items = vec![Sym("begin")];
         items.extend(exprs);
-        Ok(list(items))
+        list(items)
+    };
+    if hoisted.is_empty() {
+        Ok(body)
+    } else {
+        let binds: Vec<LispVal> = hoisted
+            .into_iter()
+            .map(|n| list(vec![Sym(n), list(vec![Sym("quote"), LispVal::Nil])]))
+            .collect();
+        Ok(list(vec![Sym("let"), list(binds), body]))
     }
 }
 
@@ -2220,6 +2321,30 @@ fn lower_for_parts(fr: &oxc_ast::ast::ForStatement<'_>) -> Result<(bool, LispVal
     let deep_ret = fn_bound && stmts_have_deep_return(body_stmts);
     let has_exits = stmts_have_exit(body_stmts) || deep_ret;
 
+    // Hoist body declarations (while-core style): bound nil in the outer
+    // loop-var let, re-initialized via set! at their source position — a
+    // `let j = 0;` in the body used to lower to a dead let whose binding
+    // vanished (nested whiles referencing j: "undefined variable", 2026-09-13).
+    let mut hoisted: Vec<(String, LispVal)> = Vec::new();
+    for s in body_stmts {
+        if let Statement::VariableDeclaration(v) = s {
+            for d in &v.declarations {
+                let hname = binding_name(&d.id)?;
+                let init_e = d
+                    .init
+                    .as_ref()
+                    .ok_or("ts_frontend: local declaration needs initializer")?;
+                hoisted.push((hname, lower_expr(init_e)?));
+            }
+        }
+    }
+    for (hn, _) in &hoisted {
+        bindings.push(list(vec![
+            Sym(hn.clone()),
+            list(vec![Sym("quote"), LispVal::Nil]),
+        ]));
+    }
+
     let mut body_items: Vec<LispVal> = vec![Sym("begin")];
     // continue support: re-arm __wl_done each iteration (see while core)
     body_items.push(list(vec![Sym("set!"), Sym("__wl_done"), Num(0)]));
@@ -2239,6 +2364,26 @@ fn lower_for_parts(fr: &oxc_ast::ast::ForStatement<'_>) -> Result<(bool, LispVal
                     list(vec![Sym("set!"), Sym("__wl_done"), Num(1)]),
                     Num(0),
                 ]),
+                // hoisted declaration: re-init at source position; dead after
+                // an exit (matching the while core's skip rule)
+                Statement::VariableDeclaration(v) => {
+                    let mut re = Vec::new();
+                    if !seen_exit && !seen_fn_exit {
+                        for d in &v.declarations {
+                            let dname = binding_name(&d.id)?;
+                            let init = hoisted
+                                .iter()
+                                .find(|(n, _)| *n == dname)
+                                .map(|(_, i)| i.clone())
+                                .ok_or("ts_frontend: internal: hoisted decl missing")?;
+                            re.push(list(vec![Sym("set!"), Sym(dname), init]));
+                        }
+                    }
+                    re.push(Num(0));
+                    let mut items = vec![Sym("begin")];
+                    items.extend(re);
+                    list(items)
+                }
                 Statement::ReturnStatement(r) => {
                     let val = match &r.argument {
                         Some(e) => lower_expr(e)?,
@@ -2296,7 +2441,26 @@ fn lower_for_parts(fr: &oxc_ast::ast::ForStatement<'_>) -> Result<(bool, LispVal
                 }
             }
         } else {
-            tail_stmt_as_expr(s)?
+            // simple path: hoisted declarations still re-init in place
+            match s {
+                Statement::VariableDeclaration(v) => {
+                    let mut re = Vec::new();
+                    for d in &v.declarations {
+                        let dname = binding_name(&d.id)?;
+                        let init = hoisted
+                            .iter()
+                            .find(|(n, _)| *n == dname)
+                            .map(|(_, i)| i.clone())
+                            .ok_or("ts_frontend: internal: hoisted decl missing")?;
+                        re.push(list(vec![Sym("set!"), Sym(dname), init]));
+                    }
+                    re.push(Num(0));
+                    let mut items = vec![Sym("begin")];
+                    items.extend(re);
+                    list(items)
+                }
+                other => tail_stmt_as_expr(other)?,
+            }
         };
         // recursive: a break/return nested in an if ALSO kills the rest of
         // the iteration — top-level-only detection let sibling statements

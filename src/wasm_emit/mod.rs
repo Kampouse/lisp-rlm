@@ -929,17 +929,33 @@ impl WasmEmitter {
         if let Some(&i) = self.locals.get(name) {
             return i;
         }
-        // Take from the free list, but NEVER reuse an index that is still
+        // Take from the free list, but NEVER reuse a slot that is still
         // live in the locals map or outside the allocated range. Guards
         // against free-list bookkeeping bugs (double-push / stale entries),
         // which previously aliased e.g. __sst_v with __str_a and corrupted
         // storage_set operands (host IntegerOverflow).
+        //
+        // (2026-09-13) Also never reuse a slot whose DECLARED type isn't i64.
+        // The function's local declarations come from the FINAL type map —
+        // already-emitted i64 code on a slot that later flips to i32 is a
+        // wasm validation error (vec-push inside a for-loop: the let-bound
+        // loop var's freed i64 slot was reused as an i32 vec-nth pointer,
+        // breaking the whole module). A slot's type is fixed at first
+        // allocation; cross-type reuse leaks the slot instead.
+        let mut skipped: Vec<u32> = Vec::new();
         let mut taken: Option<u32> = None;
         while let Some(i) = self.free_locals.pop() {
-            if i < self.next_local && !self.locals.values().any(|&v| v == i) {
+            if i < self.next_local
+                && !self.locals.values().any(|&v| v == i)
+                && self.local_type_map.get(i as usize) == Some(&ValType::I64)
+            {
                 taken = Some(i);
                 break;
             }
+            skipped.push(i);
+        }
+        for s in skipped {
+            self.free_locals.push(s);
         }
         let i = taken.unwrap_or(self.next_local);
         if i == self.next_local {
@@ -950,21 +966,33 @@ impl WasmEmitter {
         i
     }
 
-    /// Allocate an i32 local (for pointers, lengths, offsets)
+    /// Allocate an i32 local (for pointers, lengths, offsets).
+    /// Only reuses freed slots ALREADY typed i32 — the type map feeds the
+    /// function's local declarations, so flipping a freed i64 slot to i32
+    /// invalidates already-emitted i64 code on it (2026-09-13).
     fn local_idx_i32(&mut self, name: &str) -> u32 {
         if let Some(&i) = self.locals.get(name) {
             return i;
         }
-        let i = self.free_locals.pop().unwrap_or(self.next_local);
+        let mut skipped: Vec<u32> = Vec::new();
+        let mut taken: Option<u32> = None;
+        while let Some(i) = self.free_locals.pop() {
+            if i < self.next_local
+                && !self.locals.values().any(|&v| v == i)
+                && self.local_type_map.get(i as usize) == Some(&ValType::I32)
+            {
+                taken = Some(i);
+                break;
+            }
+            skipped.push(i);
+        }
+        for s in skipped {
+            self.free_locals.push(s);
+        }
+        let i = taken.unwrap_or(self.next_local);
         if i == self.next_local {
             self.next_local += 1;
             self.local_type_map.push(ValType::I32);
-        } else {
-            // Reused slot — pad map to length, then overwrite type
-            while self.local_type_map.len() <= i as usize {
-                self.local_type_map.push(ValType::I64);
-            }
-            self.local_type_map[i as usize] = ValType::I32;
         }
         self.locals.insert(name.to_string(), i);
         i
