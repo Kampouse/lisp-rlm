@@ -1040,6 +1040,7 @@ fn lower_prefix_around_with_return(
                         Sym("let"),
                         list(vec![
                             list(vec![Sym("__wl_done"), Num(0)]),
+                            list(vec![Sym("__wl_brk"), Num(0)]),
                             list(vec![Sym("__wl_ret"), Num(0)]),
                             list(vec![
                                 Sym("__wl_res"),
@@ -1087,6 +1088,7 @@ fn lower_prefix_around_with_return(
                         Sym("let"),
                         list(vec![
                             list(vec![Sym("__wl_done"), Num(0)]),
+                            list(vec![Sym("__wl_brk"), Num(0)]),
                             list(vec![Sym("__wl_ret"), Num(0)]),
                             list(vec![
                                 Sym("__wl_res"),
@@ -1133,6 +1135,7 @@ fn lower_prefix_around_with_return(
                         Sym("let"),
                         list(vec![
                             list(vec![Sym("__wl_done"), Num(0)]),
+                            list(vec![Sym("__wl_brk"), Num(0)]),
                             list(vec![Sym("__wl_ret"), Num(0)]),
                             list(vec![
                                 Sym("__wl_res"),
@@ -1275,6 +1278,7 @@ fn lower_prefix_around(
                     Sym("let"),
                     list(vec![
                         list(vec![Sym("__wl_done"), Num(0)]),
+                        list(vec![Sym("__wl_brk"), Num(0)]),
                         list(vec![Sym("__wl_ret"), Num(0)]),
                         list(vec![
                             Sym("__wl_res"),
@@ -1305,6 +1309,7 @@ fn lower_prefix_around(
                     Sym("let"),
                     list(vec![
                         list(vec![Sym("__wl_done"), Num(0)]),
+                        list(vec![Sym("__wl_brk"), Num(0)]),
                         list(vec![Sym("__wl_ret"), Num(0)]),
                         list(vec![
                             Sym("__wl_res"),
@@ -1334,6 +1339,7 @@ fn lower_prefix_around(
                     Sym("let"),
                     list(vec![
                         list(vec![Sym("__wl_done"), Num(0)]),
+                        list(vec![Sym("__wl_brk"), Num(0)]),
                         list(vec![Sym("__wl_ret"), Num(0)]),
                         list(vec![
                             Sym("__wl_res"),
@@ -1459,6 +1465,7 @@ fn lower_tail_stmt(s: &Statement<'_>, view: bool) -> Result<LispVal, String> {
                 Sym("let"),
                 list(vec![
                     list(vec![Sym("__wl_done"), Num(0)]),
+                    list(vec![Sym("__wl_brk"), Num(0)]),
                     list(vec![Sym("__wl_ret"), Num(0)]),
                     list(vec![
                         Sym("__wl_res"),
@@ -1507,7 +1514,9 @@ fn stmts_have_exit(stmts: &[Statement<'_>]) -> bool {
 
 fn stmt_has_exit(s: &Statement<'_>) -> bool {
     match s {
-        Statement::BreakStatement(_) | Statement::ReturnStatement(_) => true,
+        Statement::BreakStatement(_)
+        | Statement::ContinueStatement(_)
+        | Statement::ReturnStatement(_) => true,
         Statement::BlockStatement(b) => stmts_have_exit(&b.body),
         Statement::IfStatement(i) => {
             stmt_has_exit(&i.consequent) || i.alternate.as_ref().is_some_and(|a| stmt_has_exit(a))
@@ -1547,12 +1556,20 @@ fn lower_for_of_parts(fo: &oxc_ast::ast::ForOfStatement<'_>) -> Result<(bool, Li
 
     // body pieces (exit-aware, same shape as lower_for_parts)
     let mut body_items: Vec<LispVal> = vec![Sym("begin")];
+    // continue support: re-arm __wl_done each iteration (see while core)
+    body_items.push(list(vec![Sym("set!"), Sym("__wl_done"), Num(0)]));
     let mut seen_exit = false;
     let mut seen_fn_exit = false;
     for st in body_stmts {
         let piece = if has_exits {
             match st {
                 Statement::BreakStatement(_) => list(vec![
+                    Sym("begin"),
+                    list(vec![Sym("set!"), Sym("__wl_done"), Num(1)]),
+                    list(vec![Sym("set!"), Sym("__wl_brk"), Num(1)]),
+                    Num(0),
+                ]),
+                Statement::ContinueStatement(_) => list(vec![
                     Sym("begin"),
                     list(vec![Sym("set!"), Sym("__wl_done"), Num(1)]),
                     Num(0),
@@ -1566,6 +1583,7 @@ fn lower_for_of_parts(fo: &oxc_ast::ast::ForOfStatement<'_>) -> Result<(bool, Li
                         list(vec![Sym("set!"), Sym("__wl_res"), val.clone()]),
                         list(vec![Sym("set!"), Sym("__wl_ret"), Num(1)]),
                         list(vec![Sym("set!"), Sym("__wl_done"), Num(1)]),
+                        list(vec![Sym("set!"), Sym("__wl_brk"), Num(1)]),
                     ];
                     if fn_bound {
                         items.push(list(vec![Sym("set!"), Sym("__fn_res"), val]));
@@ -1624,7 +1642,7 @@ fn lower_for_of_parts(fo: &oxc_ast::ast::ForOfStatement<'_>) -> Result<(bool, Li
         if stmt_has_exit(st) {
             seen_exit = true;
         }
-        if deep_ret_scan(st) {
+        if fn_bound && deep_ret_scan(st) {
             seen_fn_exit = true;
         }
         body_items.push(piece);
@@ -1664,7 +1682,8 @@ fn lower_for_of_parts(fo: &oxc_ast::ast::ForOfStatement<'_>) -> Result<(bool, Li
     let cond_e = if has_exits {
         list(vec![
             Sym("if"),
-            list(vec![Sym("="), Sym("__wl_done"), Num(0)]),
+            // __wl_brk (break/return, not continue) gates the loop exit
+            list(vec![Sym("="), Sym("__wl_brk"), Num(0)]),
             inner_test,
             list(vec![Sym("="), Num(1), Num(0)]),
         ])
@@ -1765,6 +1784,11 @@ fn lower_while_parts_core(w: &oxc_ast::ast::WhileStatement<'_>) -> Result<(bool,
     // break/return rewrite — declarations re-init AT THEIR SOURCE POSITION
     // (same rule as the simple path: mid-body inits read same-iteration state)
     let mut body_items = vec![Sym("begin")];
+    // continue support (2026-09-13): __wl_done doubles as the skip-rest-of-
+    // iteration guard; a continue sets it WITHOUT setting __wl_brk, so the
+    // cond keeps looping but the guards skip the tail. Re-arm at iteration
+    // start — else a conditional continue would trip the guards forever.
+    body_items.push(list(vec![Sym("set!"), Sym("__wl_done"), Num(0)]));
     let mut seen_exit = false;
     let mut seen_fn_exit = false;
     for s in body_stmts {
@@ -1786,6 +1810,12 @@ fn lower_while_parts_core(w: &oxc_ast::ast::WhileStatement<'_>) -> Result<(bool,
             Statement::BreakStatement(_) => list(vec![
                 Sym("begin"),
                 list(vec![Sym("set!"), Sym("__wl_done"), Num(1)]),
+                list(vec![Sym("set!"), Sym("__wl_brk"), Num(1)]),
+                Num(0),
+            ]),
+            Statement::ContinueStatement(_) => list(vec![
+                Sym("begin"),
+                list(vec![Sym("set!"), Sym("__wl_done"), Num(1)]),
                 Num(0),
             ]),
             Statement::ReturnStatement(r) => {
@@ -1801,6 +1831,7 @@ fn lower_while_parts_core(w: &oxc_ast::ast::WhileStatement<'_>) -> Result<(bool,
                     list(vec![Sym("set!"), Sym("__wl_res"), val.clone()]),
                     list(vec![Sym("set!"), Sym("__wl_ret"), Num(1)]),
                     list(vec![Sym("set!"), Sym("__wl_done"), Num(1)]),
+                    list(vec![Sym("set!"), Sym("__wl_brk"), Num(1)]),
                 ];
                 if fn_bound {
                     items.push(list(vec![Sym("set!"), Sym("__fn_res"), val]));
@@ -1855,7 +1886,10 @@ fn lower_while_parts_core(w: &oxc_ast::ast::WhileStatement<'_>) -> Result<(bool,
         if stmt_has_exit(s) {
             seen_exit = true;
         }
-        if deep_ret_scan(s) {
+        // fn-done guards only when the fn flags are actually bound — a
+        // return in an unbound context sets __wl_done, which the plain
+        // exit guard already honors (unbound __fn_done reject, 2026-09-13)
+        if fn_bound && deep_ret_scan(s) {
             seen_fn_exit = true;
         }
         body_items.push(piece);
@@ -1868,7 +1902,15 @@ fn lower_while_parts_core(w: &oxc_ast::ast::WhileStatement<'_>) -> Result<(bool,
     // cond: stop on this loop's break flag, and on the function-level
     // return flag when a nested return can fire inside this body
     let plain_test = truthy(&w.test)?;
-    let false_e = list(vec![Sym("="), Num(1), Num(0)]); // bool false — keep branch types aligned
+    // false must type-match the test: comparisons lower to bool, but a bare
+    // literal (`while (true)` → Num 1) is int — int≠bool if-branches were a
+    // checker reject before (2026-09-13). The while emitter's truthiness is
+    // tag-aware, so int 0 is a valid false for numeric tests.
+    let false_e = if statically_bool(&w.test) {
+        list(vec![Sym("="), Num(1), Num(0)]) // bool false
+    } else {
+        Num(0) // int false — tag-aware truthiness treats 0 as false
+    };
     let inner_cond = if deep_ret {
         list(vec![
             Sym("if"),
@@ -1881,7 +1923,9 @@ fn lower_while_parts_core(w: &oxc_ast::ast::WhileStatement<'_>) -> Result<(bool,
     };
     let cond_e = list(vec![
         Sym("if"),
-        list(vec![Sym("="), Sym("__wl_done"), Num(0)]),
+        // __wl_brk (break/return only — NOT continue) gates the loop exit;
+        // __wl_done is re-armed at each body start for continue support.
+        list(vec![Sym("="), Sym("__wl_brk"), Num(0)]),
         inner_cond,
         false_e,
     ]);
@@ -1925,6 +1969,7 @@ fn lower_while_value(w: &Statement<'_>) -> Result<LispVal, String> {
         Sym("let"),
         list(vec![
             list(vec![Sym("__wl_done"), Num(0)]),
+            list(vec![Sym("__wl_brk"), Num(0)]),
             list(vec![Sym("__wl_ret"), Num(0)]),
             list(vec![
                 Sym("__wl_res"),
@@ -1986,6 +2031,7 @@ fn tail_stmt_as_expr(s: &Statement<'_>) -> Result<LispVal, String> {
                 list(vec![Sym("set!"), Sym("__wl_res"), val.clone()]),
                 list(vec![Sym("set!"), Sym("__wl_ret"), Num(1)]),
                 list(vec![Sym("set!"), Sym("__wl_done"), Num(1)]),
+                list(vec![Sym("set!"), Sym("__wl_brk"), Num(1)]),
             ];
             if fn_bound {
                 items.push(list(vec![Sym("set!"), Sym("__fn_res"), val]));
@@ -1997,11 +2043,18 @@ fn tail_stmt_as_expr(s: &Statement<'_>) -> Result<LispVal, String> {
         Statement::BreakStatement(_) => Ok(list(vec![
             Sym("begin"),
             list(vec![Sym("set!"), Sym("__wl_done"), Num(1)]),
+            list(vec![Sym("set!"), Sym("__wl_brk"), Num(1)]),
             Num(0),
         ])),
-        Statement::ContinueStatement(_) => {
-            Err("ts_frontend: continue not supported (use the loop condition)".into())
-        }
+        // continue (2026-09-13): kills the REST OF THE ITERATION only — set
+        // __wl_done (the iteration guard the following statements check) but
+        // NOT __wl_brk (the loop-exit flag the cond checks). The body-start
+        // `(set! __wl_done 0)` reset re-arms the guards next iteration.
+        Statement::ContinueStatement(_) => Ok(list(vec![
+            Sym("begin"),
+            list(vec![Sym("set!"), Sym("__wl_done"), Num(1)]),
+            Num(0),
+        ])),
         Statement::IfStatement(i) => {
             let then_e = loop_body_expr(stmts_of(&i.consequent))?;
             let else_e = match &i.alternate {
@@ -2033,6 +2086,7 @@ fn tail_stmt_as_expr(s: &Statement<'_>) -> Result<LispVal, String> {
                 Sym("let"),
                 list(vec![
                     list(vec![Sym("__wl_done"), Num(0)]),
+                    list(vec![Sym("__wl_brk"), Num(0)]),
                     list(vec![Sym("__wl_ret"), Num(0)]),
                     list(vec![
                         Sym("__wl_res"),
@@ -2072,6 +2126,7 @@ fn lower_for(fr: &oxc_ast::ast::ForStatement<'_>) -> Result<LispVal, String> {
         Sym("let"),
         list(vec![
             list(vec![Sym("__wl_done"), Num(0)]),
+            list(vec![Sym("__wl_brk"), Num(0)]),
             list(vec![Sym("__wl_ret"), Num(0)]),
             list(vec![
                 Sym("__wl_res"),
@@ -2166,12 +2221,20 @@ fn lower_for_parts(fr: &oxc_ast::ast::ForStatement<'_>) -> Result<(bool, LispVal
     let has_exits = stmts_have_exit(body_stmts) || deep_ret;
 
     let mut body_items: Vec<LispVal> = vec![Sym("begin")];
+    // continue support: re-arm __wl_done each iteration (see while core)
+    body_items.push(list(vec![Sym("set!"), Sym("__wl_done"), Num(0)]));
     let mut seen_exit = false;
     let mut seen_fn_exit = false;
     for s in body_stmts {
         let piece = if has_exits {
             match s {
                 Statement::BreakStatement(_) => list(vec![
+                    Sym("begin"),
+                    list(vec![Sym("set!"), Sym("__wl_done"), Num(1)]),
+                    list(vec![Sym("set!"), Sym("__wl_brk"), Num(1)]),
+                    Num(0),
+                ]),
+                Statement::ContinueStatement(_) => list(vec![
                     Sym("begin"),
                     list(vec![Sym("set!"), Sym("__wl_done"), Num(1)]),
                     Num(0),
@@ -2185,6 +2248,7 @@ fn lower_for_parts(fr: &oxc_ast::ast::ForStatement<'_>) -> Result<(bool, LispVal
                         list(vec![Sym("set!"), Sym("__wl_res"), val.clone()]),
                         list(vec![Sym("set!"), Sym("__wl_ret"), Num(1)]),
                         list(vec![Sym("set!"), Sym("__wl_done"), Num(1)]),
+                        list(vec![Sym("set!"), Sym("__wl_brk"), Num(1)]),
                     ];
                     if fn_bound {
                         items.push(list(vec![Sym("set!"), Sym("__fn_res"), val]));
@@ -2240,24 +2304,37 @@ fn lower_for_parts(fr: &oxc_ast::ast::ForStatement<'_>) -> Result<(bool, LispVal
         if stmt_has_exit(s) {
             seen_exit = true;
         }
-        if deep_ret_scan(s) {
+        // fn-done guards only when the fn flags are actually bound — a
+        // return in an unbound context sets __wl_done, which the plain
+        // exit guard already honors (unbound __fn_done reject, 2026-09-13)
+        if fn_bound && deep_ret_scan(s) {
             seen_fn_exit = true;
         }
         body_items.push(piece);
     }
     // update clause runs after the body; guard it in exit mode so a
-    // returned iteration doesn't keep mutating loop vars
+    // returned/broken iteration doesn't keep mutating loop vars. __wl_brk
+    // (not __wl_done) — a `continue` must still run the update (i++)
+    // (2026-09-13), while break/return skip it as before.
     if let Some(u) = update_form {
         if has_exits {
-            body_items.push(list(vec![
-                Sym("if"),
-                list(vec![Sym("="), Sym("__wl_done"), Num(0)]),
+            // inner fn-done guard only when fn flags are in scope — continue-
+            // only bodies have has_exits WITHOUT any return, so the guard
+            // would reference an unbound __fn_done (checker reject, 2026-09-13)
+            let inner = if fn_bound {
                 list(vec![
                     Sym("if"),
                     list(vec![Sym("="), Sym("__fn_done"), Num(0)]),
                     list(vec![Sym("begin"), u, Num(0)]),
                     Num(0),
-                ]),
+                ])
+            } else {
+                list(vec![Sym("begin"), u, Num(0)])
+            };
+            body_items.push(list(vec![
+                Sym("if"),
+                list(vec![Sym("="), Sym("__wl_brk"), Num(0)]),
+                inner,
                 Num(0),
             ]));
         } else {
@@ -2288,7 +2365,12 @@ fn lower_for_parts(fr: &oxc_ast::ast::ForStatement<'_>) -> Result<(bool, LispVal
     // exit mode: flag-guarded condition; flags + __wl_res extraction are
     // the CALLER's job (continuation guard or value wrapper)
     let plain_test = truthy(test)?;
-    let false_e = list(vec![Sym("="), Num(1), Num(0)]);
+    // type-align false with the test (see while core, 2026-09-13)
+    let false_e = if statically_bool(test) {
+        list(vec![Sym("="), Num(1), Num(0)])
+    } else {
+        Num(0)
+    };
     let inner_test = if deep_ret {
         list(vec![
             Sym("if"),
@@ -2301,7 +2383,8 @@ fn lower_for_parts(fr: &oxc_ast::ast::ForStatement<'_>) -> Result<(bool, LispVal
     };
     let cond_e = list(vec![
         Sym("if"),
-        list(vec![Sym("="), Sym("__wl_done"), Num(0)]),
+        // __wl_brk (break/return, not continue) gates the loop exit
+        list(vec![Sym("="), Sym("__wl_brk"), Num(0)]),
         inner_test,
         false_e,
     ]);

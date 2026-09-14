@@ -1389,6 +1389,19 @@ pub fn compile_near_from_exprs_with_map(
                         }
                     }
                 }
+                // Value define: (define name value) — top-level const with a
+                // non-literal initializer (array, str-cat, …). The TS frontend
+                // emits these for `const K = <expr>;` that can't fold inline.
+                // Without this arm the form was SILENTLY SKIPPED in the
+                // from_exprs path (only parse_and_compile_opts had it), so any
+                // use of K failed with "undefined variable" (2026-09-13).
+                if let (LispVal::Sym(s2), LispVal::Sym(name)) = (&items[0], &items[1]) {
+                    if s2 == "define" {
+                        let value = &items[2];
+                        em.emit_define(name, &[], value)?;
+                        em.value_defines.insert(name.clone());
+                    }
+                }
                 // Handle (export "name" fn_name is_view)
                 if let LispVal::Sym(s) = &items[0] {
                     if s == "export" {
