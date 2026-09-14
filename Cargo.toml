@@ -28,8 +28,10 @@ autobins = false
 # ship only what builds the crate — the repo carries ~11k files of test/zk/corpus
 # data that bloated the package to 2.1MB and reliably killed the crates.io upload
 # (HTTP/2 stream resets / WAF 503s on large PUTs). Build needs src/ only:
-# no build.rs, no include_str!/include_bytes! outside src.
-include = ["src/**", "README.md"]
+# no build.rs. Compile-time includes outside src/: wit/deps/** (wit_embed.rs,
+# wasi/mod.rs), skills/SKILL.md + example-scenario.json (near-mock bin),
+# src/wasm_emit/schnorr.wasm (inside src/).
+include = ["src/**", "README.md", "wit/deps/**", "skills/SKILL.md", "skills/example-scenario.json"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
