@@ -695,6 +695,14 @@ pub struct WasmEmitter {
     /// the dispatch is ~9 dead instrs per `+` in numeric hot loops. Cleared
     /// per function; maintained at let/set! sites with shadow save/restore.
     pub(crate) numeric_locals: std::collections::HashSet<String>,
+    /// RAW-slot locals (2026-09-14, gas): numeric locals stored UNTAGGED in
+    /// their slot. Reads append a tag, writes prepend an untag — peephole
+    /// cancels the pairs, so binops over raw locals collapse to
+    /// get/get/add/set. STRICTER than numeric_locals: excludes nilable
+    /// sources (bare near/json_get_int can produce TAG_NIL — storing nil raw
+    /// would silently turn it into 0 on read-retag). Captured (closure)
+    /// vars stay tagged.
+    pub(crate) raw_locals: std::collections::HashSet<String>,
     /// Next emit_define call is a top-level value define → wrap the body
     /// with a memoization guard (evaluate-once per tx; see emit_define).
     pub(crate) memoize_next: bool,
@@ -756,6 +764,7 @@ impl WasmEmitter {
             list_ptr_counter: 0,
             value_defines: std::collections::HashSet::new(),
             numeric_locals: std::collections::HashSet::new(),
+            raw_locals: std::collections::HashSet::new(),
             memoize_next: false,
             arr_str_helper: None,
             val_eq_helper: None,
@@ -1136,6 +1145,7 @@ impl WasmEmitter {
         self.free_locals.clear();
         self.local_type_map.clear();
         self.numeric_locals.clear();
+        self.raw_locals.clear();
         self.needs_frame = false;
         for p in params {
             self.local_idx(p);

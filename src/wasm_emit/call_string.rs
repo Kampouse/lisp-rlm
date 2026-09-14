@@ -6217,6 +6217,51 @@ impl WasmEmitter {
         }
     }
 
+    /// STRICT numeric provenance for RAW slots (2026-09-14): the value is
+    /// guaranteed TAG_NUM — never Nil, never a host string, never unknown.
+    /// Bare near/json_get_int is EXCLUDED (nil-on-miss/garbage, 2026-09-14
+    /// semantics) — it keeps numeric_locals provenance (dispatch-skip is
+    /// nil-safe: nil isn't TAG_STR) but NOT a raw slot (nil stored raw would
+    /// read back as Num 0).
+    pub(crate) fn expr_is_raw_safe(&self, e: &LispVal) -> bool {
+        match e {
+            LispVal::Num(_) => true,
+            LispVal::Sym(s) => self.raw_locals.contains(s),
+            LispVal::List(items) if !items.is_empty() => {
+                let LispVal::Sym(head) = &items[0] else {
+                    return false;
+                };
+                match head.as_str() {
+                    "+" | "-" | "*" | "/" | "mod" => {
+                        items.len() >= 3 && items[1..].iter().all(|x| self.expr_is_raw_safe(x))
+                    }
+                    "str->num"
+                    | "str-to-num"
+                    | "u128/to-i64"
+                    | "vec-length"
+                    | "length"
+                    | "len"
+                    | "str-length"
+                    | "str-index-of"
+                    | "abs"
+                    | "max"
+                    | "min"
+                    | "u128/lt"
+                    | "u128/gt"
+                    | "u128/eq"
+                    | "near/block_index"
+                    | "near/block_timestamp"
+                    | "near/epoch_height"
+                    | "near/storage_usage"
+                    | "near/prepaid_gas"
+                    | "near/used_gas" => true,
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
     pub(crate) fn emit_poly_add(
         &mut self,
         a: &[LispVal],

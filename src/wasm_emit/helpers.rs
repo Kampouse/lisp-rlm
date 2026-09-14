@@ -93,7 +93,10 @@ impl WasmEmitter {
     }
 
     pub(crate) fn emit_tag_num(&self) -> Vec<Instruction<'static>> {
-        self.emit_tag(TAG_NUM)
+        // TAG_NUM = 0: x << 3 | 0 == x << 3 — skip the const-0 Or. The
+        // shorter form is what lets peephole cancel tag/untag pairs around
+        // raw-local reads/writes ((3,Shl) directly followed by (3,ShrS)).
+        vec![Instruction::I64Const(TAG_BITS), Instruction::I64Shl]
     }
 
     /// Checked twin of emit_tag_num: tags the payload on the stack but TRAPS

@@ -66,6 +66,28 @@ impl WasmEmitter {
                         i += 4;
                         continue;
                     }
+                    // ShrS flavors (2026-09-14, raw locals): emit_untag is
+                    // I64ShrS (negative-safe) — without these patterns a
+                    // raw-local read-tag + consumer-untag (and producer-tag
+                    // + store-untag) pair never cancelled
+                    (
+                        Instruction::I64Const(3),
+                        Instruction::I64ShrS,
+                        Instruction::I64Const(3),
+                        Instruction::I64Shl,
+                    ) => {
+                        i += 4;
+                        continue;
+                    }
+                    (
+                        Instruction::I64Const(3),
+                        Instruction::I64Shl,
+                        Instruction::I64Const(3),
+                        Instruction::I64ShrS,
+                    ) => {
+                        i += 4;
+                        continue;
+                    }
                     _ => {}
                 }
             }
