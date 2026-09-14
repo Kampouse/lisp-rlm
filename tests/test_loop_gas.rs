@@ -48,6 +48,23 @@ export function demote(): string {
   s = near.storageGet("nope") ?? "str";
   return s + "!";
 }
+export function eqNil(): string {
+  const v = near.jsonGetInt("nope");
+  if (v == near.jsonGetInt("nope2")) { return "eq"; }
+  return "ne";
+}
+export function eqNum(n: number): string {
+  if (n == 42) { return "forty-two"; }
+  return "other";
+}
+export function neNum(n: number): string {
+  if (n != 0) { return "nonzero"; }
+  return "zero";
+}
+export function bareTruthy(n: number): string {
+  if (n) { return "truthy"; }
+  return "falsy";
+}
 "#;
 
 fn lock() -> std::sync::MutexGuard<'static, ()> {
@@ -160,4 +177,80 @@ fn numeric_local_demoted_by_host_result() {
     // must dispatch (concat), not tagged-add the string descriptor
     let r = run("demote", "{}");
     assert!(r.value.contains("str!"), "demote: {}", r.value);
+}
+
+#[test]
+fn eq_num_fast_path() {
+    let r = run("eqNum", r#"{"n":42}"#);
+    assert!(r.value.contains("forty-two"), "eqNum: {}", r.value);
+    let r = run("eqNum", r#"{"n":7}"#);
+    assert!(r.value.contains("other"), "eqNum: {}", r.value);
+}
+
+#[test]
+fn ne_num_fast_path() {
+    let r = run("neNum", r#"{"n":5}"#);
+    assert!(r.value.contains("nonzero"), "neNum: {}", r.value);
+    let r = run("neNum", r#"{"n":0}"#);
+    assert!(r.value.contains("zero"), "neNum: {}", r.value);
+}
+
+#[test]
+fn bare_truthy_fast_path() {
+    let r = run("bareTruthy", r#"{"n":5}"#);
+    assert!(r.value.contains("truthy"), "bareTruthy: {}", r.value);
+    let r = run("bareTruthy", r#"{"n":0}"#);
+    assert!(r.value.contains("falsy"), "bareTruthy: {}", r.value);
+}
+
+// ── equality/truthiness fast-path traps (2026-09-14) ──────────────────
+// The eq fast path (tagged-direct i64.eq) and bare-truthiness fast path
+// (i64.eqz) each had a correctness trap, both caught by suites:
+// 1. i64.eq yields i32 — emit_tag_bool shifts an i64 payload (missing
+//    extend broke validation in exit-mode conds)
+// 2. u128Lt/u128Gt/u128Eq produce TAGGED BOOLS (falsy == 1, not 0) —
+//    eqz-truthiness read bool-false as truthy (multisig threshold guard)
+
+#[test]
+fn eq_nil_nil_is_true() {
+    // both sides nilable (bare jsonGetInt) — tagged 4 == 4
+    let r = run("eqNil", "{}");
+    assert!(r.value.contains("eq"), "eqNil: {}", r.value);
+}
+
+#[test]
+fn u128_bool_false_is_falsy() {
+    // u128Lt("1","2") is TRUE (abort taken); u128Lt("2","2") is FALSE
+    // (abort skipped) — a bool-false read as truthy inverts both
+    let src = r#"
+export function thr(v: string): string {
+  if (u128Lt(v, "2")) { return "below"; }
+  return "at-or-above";
+}"#;
+    let ir = lisp_rlm_wasm::ts_frontend::ts_to_lisp_source(src).unwrap();
+    let exprs = parse_all(&ir).unwrap();
+    lisp_rlm_wasm::typing::type_check_program(&exprs, true).unwrap();
+    let wasm = compile_near_from_exprs(&exprs).unwrap();
+    let p = std::env::temp_dir().join(format!("lgas2_{}.wasm", std::process::id()));
+    std::fs::write(&p, &wasm).unwrap();
+    let st = std::env::temp_dir().join(format!("lgas2_{}.bin", std::process::id()));
+    for (v, want) in [("1", "below"), ("2", "at-or-above"), ("5", "at-or-above")] {
+        let _ = std::fs::remove_file(&st);
+        let out = std::process::Command::new("./target/release/near-mock")
+            .arg("cross")
+            .arg(st.to_str().unwrap())
+            .arg(format!("lgas2.t.near={}", p.display()))
+            .arg("lgas2.t.near")
+            .arg("thr")
+            .arg(format!("{{\"v\":\"{v}\"}}"))
+            .output()
+            .unwrap();
+        let all = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let val = all.lines().rev().find(|l| l.contains('📄')).unwrap_or(&all);
+        assert!(val.contains(want), "thr({v}): {val}");
+    }
 }

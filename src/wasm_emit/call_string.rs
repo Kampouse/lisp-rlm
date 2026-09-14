@@ -6246,15 +6246,19 @@ impl WasmEmitter {
                     | "abs"
                     | "max"
                     | "min"
-                    | "u128/lt"
-                    | "u128/gt"
-                    | "u128/eq"
                     | "near/block_index"
                     | "near/block_timestamp"
                     | "near/epoch_height"
                     | "near/storage_usage"
                     | "near/prepaid_gas"
-                    | "near/used_gas" => true,
+                    | "near/used_gas" => {
+                        // TAG_NUM results only. u128/lt|gt|eq are TAGGED
+                        // BOOL (payload 0/1, tag 1 — falsy Bool == 1, NOT
+                        // 0): the i64.eqz bare-truthiness fast path reads a
+                        // bool-false as always-truthy (multisig's u128Lt
+                        // threshold guard caught it). EXCLUDED.
+                        true
+                    }
                     _ => false,
                 }
             }

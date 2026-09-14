@@ -308,6 +308,24 @@ impl WasmEmitter {
     }
 
     pub(crate) fn eq(&mut self, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
+        // Numeric fast path (2026-09-14, gas): tagged nums/nils/bools carry
+        // their identity in the tagged word — raw i64.eq is EXACT for any
+        // mix of {Num, Nil, Bool} operands (nil=4, bool=false=1/true=9,
+        // num=n<<3; cross-type compares are all "not equal" in both
+        // schemes). Strings/arrays would be pointer compares — those keep
+        // the structural helper. Two numeric-provenance operands → 3 instrs,
+        // no call. (Equality guards are the hottest `=` shape in loops.)
+        if a.len() == 2 && self.expr_is_numeric(&a[0]) && self.expr_is_numeric(&a[1]) {
+            let mut v = self.expr(&a[0])?;
+            v.extend(self.expr(&a[1])?);
+            v.push(Instruction::I64Eq);
+            // I64Eq yields i32; emit_tag_bool shifts an i64 payload (the
+            // helper path returned i64) — extend first (missed initially:
+            // "expected i64, found i32" in the exit-mode cond else-arm)
+            v.push(Instruction::I64ExtendI32U);
+            v.extend(self.emit_tag_bool());
+            return Ok(v);
+        }
         let mut v = self.expr(&a[0])?;
         v.extend(self.expr(&a[1])?);
         let h = self.ensure_val_eq_helper();
@@ -317,6 +335,15 @@ impl WasmEmitter {
     }
 
     pub(crate) fn neq(&mut self, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
+        if a.len() == 2 && self.expr_is_numeric(&a[0]) && self.expr_is_numeric(&a[1]) {
+            // see eq() — raw compare is exact for {Num, Nil, Bool} mixes
+            let mut v = self.expr(&a[0])?;
+            v.extend(self.expr(&a[1])?);
+            v.push(Instruction::I64Ne);
+            v.push(Instruction::I64ExtendI32U);
+            v.extend(self.emit_tag_bool());
+            return Ok(v);
+        }
         let mut v = self.expr(&a[0])?;
         v.extend(self.expr(&a[1])?);
         let h = self.ensure_val_eq_helper();

@@ -400,8 +400,46 @@ impl WasmEmitter {
                     v.extend(self.emit_untag());
                     v.push(op);
                 } else {
-                    v.extend(self.expr(&a[0])?);
-                    v.extend(self.emit_cond_branch());
+                    // (= a b)/(!= a b) numeric: TAGGED-direct compare (see
+                    // while arm) — no untags, no __h_val_eq call
+                    let eq_direct = match &a[0] {
+                        LispVal::List(items) if items.len() == 3 => match &items[0] {
+                            LispVal::Sym(s) if s == "=" || s == "!=" => {
+                                if self.expr_is_numeric(&items[1])
+                                    && self.expr_is_numeric(&items[2])
+                                {
+                                    Some(if s == "=" {
+                                        Instruction::I64Eq
+                                    } else {
+                                        Instruction::I64Ne
+                                    })
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if let Some(op) = eq_direct {
+                        let LispVal::List(items) = &a[0] else {
+                            unreachable!()
+                        };
+                        v.extend(self.expr(&items[1])?);
+                        v.extend(self.expr(&items[2])?);
+                        v.push(op);
+                    } else {
+                        // bare strict-numeric cond: falsy == {tagged 0} —
+                        // i64.eqz + i32.eqz replaces the truthiness dispatch
+                        let cond_raw_safe = self.expr_is_raw_safe(&a[0]);
+                        v.extend(self.expr(&a[0])?);
+                        if cond_raw_safe {
+                            v.push(Instruction::I64Eqz);
+                            v.push(Instruction::I32Eqz);
+                        } else {
+                            v.extend(self.emit_cond_branch());
+                        }
+                    }
                 }
                 v.push(Instruction::If(BlockType::Result(ValType::I64)));
                 v.extend(self.expr(&a[1])?);
@@ -779,34 +817,33 @@ impl WasmEmitter {
                 v.push(Instruction::Block(BlockType::Result(ValType::I64)));
                 // loop $loop
                 v.push(Instruction::Loop(BlockType::Empty));
-                // cond — fast path (2026-09-14, gas): a numeric comparison
-                // form ((< a b) etc.) branches DIRECTLY on the raw i32
-                // compare — the generic path re-tags the result as Bool
-                // and then runs the triple-tag truthiness dispatch on it
-                // (~16 extra instrs PER ITERATION of every hot loop).
-                // (< a b) is numeric-only semantics anyway (cmp untags both
-                // operands), so skipping the Bool round-trip is exact.
-                let cmp_op = match &a[0] {
+                // (= a b) / (!= a b) fast path (2026-09-14, gas): TAGGED-direct
+                // compare — no untags (tagged equality == numeric equality for
+                // the {Num, Nil} mixes numeric provenance permits). Was a CALL
+                // to the structural __h_val_eq helper + truthiness dispatch.
+                let eq_op_direct = match &a[0] {
                     LispVal::List(items) if items.len() == 3 => match &items[0] {
-                        LispVal::Sym(s) => match s.as_str() {
-                            "<" => Some(Instruction::I64LtS),
-                            "<=" => Some(Instruction::I64LeS),
-                            ">" => Some(Instruction::I64GtS),
-                            ">=" => Some(Instruction::I64GeS),
-                            _ => None,
-                        },
+                        LispVal::Sym(s) if s == "=" || s == "!=" => {
+                            if self.expr_is_numeric(&items[1]) && self.expr_is_numeric(&items[2]) {
+                                Some(if s == "=" {
+                                    Instruction::I64Eq
+                                } else {
+                                    Instruction::I64Ne
+                                })
+                            } else {
+                                None
+                            }
+                        }
                         _ => None,
                     },
                     _ => None,
                 };
-                if let Some(op) = cmp_op {
+                if let Some(op) = eq_op_direct {
                     let LispVal::List(items) = &a[0] else {
                         unreachable!()
                     };
                     v.extend(self.expr(&items[1])?);
-                    v.extend(self.emit_untag());
                     v.extend(self.expr(&items[2])?);
-                    v.extend(self.emit_untag());
                     v.push(op);
                     // exit when the comparison is FALSE
                     v.push(Instruction::I32Eqz);
@@ -815,18 +852,56 @@ impl WasmEmitter {
                     v.push(Instruction::Br(2)); // br $exit with i64
                     v.push(Instruction::End);
                 } else {
-                    // cond — generic tagged truthiness
-                    v.extend(self.expr(&a[0])?);
-                    v.extend(self.emit_is_truthy());
-                    v.push(Instruction::I32WrapI64);
-                    v.push(Instruction::I32Eqz);
-                    // if !cond → exit with tagged nil
-                    v.push(Instruction::If(BlockType::Empty));
-                    v.push(Instruction::I64Const(TAG_NIL));
-                    v.push(Instruction::Br(2)); // br $exit with i64
-                    v.push(Instruction::End); // if — no else needed
-                }
-                // body
+                    let cmp_op = match &a[0] {
+                        LispVal::List(items) if items.len() == 3 => match &items[0] {
+                            LispVal::Sym(s) => match s.as_str() {
+                                "<" => Some(Instruction::I64LtS),
+                                "<=" => Some(Instruction::I64LeS),
+                                ">" => Some(Instruction::I64GtS),
+                                ">=" => Some(Instruction::I64GeS),
+                                _ => None,
+                            },
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if let Some(op) = cmp_op {
+                        let LispVal::List(items) = &a[0] else {
+                            unreachable!()
+                        };
+                        v.extend(self.expr(&items[1])?);
+                        v.extend(self.emit_untag());
+                        v.extend(self.expr(&items[2])?);
+                        v.extend(self.emit_untag());
+                        v.push(op);
+                        // exit when the comparison is FALSE
+                        v.push(Instruction::I32Eqz);
+                        v.push(Instruction::If(BlockType::Empty));
+                        v.push(Instruction::I64Const(TAG_NIL));
+                        v.push(Instruction::Br(2)); // br $exit with i64
+                        v.push(Instruction::End);
+                    } else {
+                        // cond — generic tagged truthiness. Bare-numeric fast
+                        // path (2026-09-14, gas): a strict-numeric cond's falsy
+                        // set is exactly {tagged 0} — i64.eqz replaces the
+                        // triple-tag dispatch (~11 instrs saved per iteration).
+                        let cond_raw_safe = self.expr_is_raw_safe(&a[0]);
+                        v.extend(self.expr(&a[0])?);
+                        if cond_raw_safe {
+                            v.push(Instruction::I64Eqz);
+                        } else {
+                            v.extend(self.emit_is_truthy());
+                            v.push(Instruction::I32WrapI64);
+                        }
+                        v.push(Instruction::I32Eqz);
+                        // if !cond → exit with tagged nil
+                        v.push(Instruction::If(BlockType::Empty));
+                        v.push(Instruction::I64Const(TAG_NIL));
+                        v.push(Instruction::Br(2)); // br $exit with i64
+                        v.push(Instruction::End); // if — no else needed
+                    }
+                } // end eq-direct / cmp / generic cond dispatch
+                  // body
                 for x in &a[1..] {
                     v.extend(self.expr(x)?);
                     v.push(Instruction::Drop);
