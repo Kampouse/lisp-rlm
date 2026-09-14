@@ -480,9 +480,12 @@ impl WasmEmitter {
                     match key_arg {
                         LispVal::Str(key) => {
                             let pat = {
+                                // I1-parity (2026-09-14): bare quoted key —
+                                // __json_extract_N skips ws after the key
+                                // and requires ':' at match time
                                 let mut p = vec![b'"'];
                                 p.extend(key.as_bytes());
-                                p.extend_from_slice(b"\":");
+                                p.push(b'"');
                                 p
                             };
                             let pat_off = self.alloc_data(&pat) as i64;
@@ -798,14 +801,14 @@ impl WasmEmitter {
         v.push(Instruction::I64Const(ib));
         v.push(Self::host_call(0));
 
-        // Alloc scratch for pattern: quote + key + quote + colon ("key":)
-        // __json_get's pattern convention (see json_get_from_buf): glued colon,
-        // then it skips ws before the value. Scratch comes from the
+        // Alloc scratch for pattern: quote + key + quote — the BARE
+        // quoted key (I1-parity 2026-09-14): __json_get skips ws after
+        // the key and requires ':' at match time. Scratch comes from the
         // monotonic runtime heap (mem[56]) via emit_rtheap_alloc.
         let pat_len_l = self.local_idx("__jgd_pl");
         v.push(Instruction::LocalGet(key_len_l));
         v.push(Instruction::I64ExtendI32U);
-        v.push(Instruction::I64Const(3));
+        v.push(Instruction::I64Const(2));
         v.push(Instruction::I64Add);
         v.push(Instruction::LocalSet(pat_len_l));
 
@@ -857,7 +860,8 @@ impl WasmEmitter {
         v.push(Instruction::End);
         v.push(Instruction::End);
 
-        // scr[1+len] = '"', scr[2+len] = ':'
+        // scr[1+len] = '"' — bare quoted key, no glued colon (I1-parity:
+        // __json_get skips ws and requires ':' at match time)
         v.push(Instruction::LocalGet(scr_l));
         v.push(Instruction::I32WrapI64);
         v.push(Instruction::LocalGet(key_len_l));
@@ -865,14 +869,6 @@ impl WasmEmitter {
         v.push(Instruction::I32Add);
         v.push(Instruction::I32Add);
         v.push(Instruction::I32Const(0x22));
-        v.push(Instruction::I32Store8(ma8.clone()));
-        v.push(Instruction::LocalGet(scr_l));
-        v.push(Instruction::I32WrapI64);
-        v.push(Instruction::LocalGet(key_len_l));
-        v.push(Instruction::I32Const(2));
-        v.push(Instruction::I32Add);
-        v.push(Instruction::I32Add);
-        v.push(Instruction::I32Const(0x3A));
         v.push(Instruction::I32Store8(ma8.clone()));
 
         // Call __json_get(json=ib|ilen<<32, pat=scr|pat_len<<32)

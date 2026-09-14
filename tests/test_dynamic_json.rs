@@ -2,7 +2,10 @@
 //! Before: only string-literal keys compiled; dynamic keys were a hard
 //! compile error ("key must be a string literal").
 //! After: the key is evaluated, copied to a runtime-heap scratch as a
-//! `"key":` pattern, and looked up via the shared __json_get scanner.
+//! bare `"key"` pattern, and looked up via the shared __json_get
+//! scanner, which skips whitespace after the key and requires ':' at
+//! match time (I1-parity 2026-09-14 — `"k" : v` matches on every
+//! lookup path, not just the literal inline scanners).
 //! Results are heap-copied out of the shared stdout_buf so consecutive
 //! dynamic reads can't clobber each other. Miss → nil → `??` fallback
 //! (same miss-gate semantics as the literal path, 2026-08-31).
@@ -60,6 +63,27 @@ export function dynIntTwo(): string {
   const b = near.jsonGetInt("b" + "2") ?? 0;
   return toStr(a * 10 + b); // 12
 }
+// Space-before-colon (I1-parity, 2026-09-14): `"k" : v` must match on
+// ALL lookup paths — dynamic keys, literal keys, and dot-path jsonGet.
+// Before: __json_get patterns glued the colon onto the key, so any
+// pretty-printed JSON silently missed on dynamic + dot-path lookups
+// (the literal inline scanners already skipped ws; 2026-08-27 I1).
+export function spacedDyn(): string {
+  const key = "sp" + "key";
+  return near.jsonGetStr(key) ?? "MISS"; // SPACED
+}
+export function spacedLit(): string {
+  return near.jsonGetStr("spkey2") ?? "MISS"; // SPACED2
+}
+export function spacedDot(): string {
+  return jsonGet("o.i", "{\"o\" : {\"i\" : 7}}"); // 7
+}
+export function spacedSuffixKey(): string {
+  // "sub" must not match at the "subject" key site (and vice versa);
+  // guards full-pattern compare + the colon gate
+  const key = "su" + "b";
+  return near.jsonGetStr(key) ?? "MISS"; // FOUND
+}
 "#;
 
 fn lock() -> std::sync::MutexGuard<'static, ()> {
@@ -108,6 +132,9 @@ fn run(c: Call) -> String {
 }
 
 const ARGS: &str = r#"{"name":"JP","k":"name","k1":"AAA","k2":"BBB","pretty":"spaced","count":42,"a1":1,"b2":2,"delta":-5}"#;
+
+const SPACED_ARGS: &str =
+    r#"{ "spkey" : "SPACED", "spkey2" : "SPACED2", "subject" : "SUBJ", "sub" : "FOUND" }"#;
 
 #[test]
 fn dynamic_key_hit() {
@@ -210,4 +237,40 @@ fn dynamic_int_two_reads_no_clobber() {
         args: ARGS,
     });
     assert!(r.contains("12"), "dynIntTwo: {r}");
+}
+
+#[test]
+fn space_before_colon_dynamic_key() {
+    let r = run(Call {
+        method: "spacedDyn",
+        args: SPACED_ARGS,
+    });
+    assert!(r.contains("SPACED"), "spacedDyn: {r}");
+}
+
+#[test]
+fn space_before_colon_literal_key() {
+    let r = run(Call {
+        method: "spacedLit",
+        args: SPACED_ARGS,
+    });
+    assert!(r.contains("SPACED2"), "spacedLit: {r}");
+}
+
+#[test]
+fn space_before_colon_dot_path() {
+    let r = run(Call {
+        method: "spacedDot",
+        args: SPACED_ARGS,
+    });
+    assert!(r.contains("7"), "spacedDot: {r}");
+}
+
+#[test]
+fn suffix_key_does_not_match_longer_key() {
+    let r = run(Call {
+        method: "spacedSuffixKey",
+        args: SPACED_ARGS,
+    });
+    assert!(r.contains("FOUND"), "spacedSuffixKey: {r}");
 }

@@ -49,11 +49,11 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
         "to-int" => match &args[0] {
             LispVal::Num(n) => Ok(Some(LispVal::Num(*n))),
             LispVal::Float(f) => Ok(Some(LispVal::Num(*f as i64))),
-            LispVal::Str(s) => s
-                .parse::<i64>()
-                .map(LispVal::Num)
-                .map(Some)
-                .map_err(|_| format!("to-int: cannot parse '{}'", s)),
+            // Unparseable → 0, not an error (2026-09-14, t13 alignment):
+            // wasm's __str_to_num and the inline table return 0 (probed:
+            // strToNum("abc") → 0 on-chain semantics); erroring here made
+            // the same expression behave differently per lookup path.
+            LispVal::Str(s) => Ok(Some(LispVal::Num(s.parse::<i64>().unwrap_or(0)))),
             other => Err(format!("to-int: expected number, got {}", other)),
         },
         "to-num" => match &args[0] {

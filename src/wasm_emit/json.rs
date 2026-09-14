@@ -352,6 +352,82 @@ impl WasmEmitter {
         close!();
         close!();
         close!();
+        // I1-parity fix (2026-09-14): patterns are now the BARE quoted key
+        // (callers no longer glue the colon). After a key match, skip
+        // whitespace and REQUIRE ':' — `{"k" : v}` must match like the
+        // inline scanners (json_get_str/json_get_int I1, 2026-08-27).
+        // cmp_j is dead after the compare loop — reuse as scan cursor.
+        ins.push(Instruction::LocalGet(temp));
+        open_if!();
+        ins.push(Instruction::LocalGet(scan_i));
+        ins.push(Instruction::LocalGet(pat_len));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(cmp_j));
+        open_block!();
+        let colon_ws_block = ls.len() - 1;
+        open_loop!();
+        let colon_ws_loop = ls.len() - 1;
+        ins.push(Instruction::LocalGet(cmp_j));
+        ins.push(Instruction::LocalGet(json_len));
+        ins.push(Instruction::I32GeS);
+        open_if!();
+        br_to!(colon_ws_block);
+        close!();
+        ins.push(Instruction::LocalGet(json_ptr));
+        ins.push(Instruction::LocalGet(cmp_j));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::I32Load8U(ma8.clone()));
+        ins.push(Instruction::LocalSet(ch));
+        ins.push(Instruction::LocalGet(ch));
+        ins.push(Instruction::I32Const(0x20));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::LocalGet(ch));
+        ins.push(Instruction::I32Const(0x09));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::I32Or);
+        ins.push(Instruction::LocalGet(ch));
+        ins.push(Instruction::I32Const(0x0A));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::I32Or);
+        ins.push(Instruction::LocalGet(ch));
+        ins.push(Instruction::I32Const(0x0D));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::I32Or);
+        open_if!();
+        ins.push(Instruction::LocalGet(cmp_j));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(cmp_j));
+        br_to!(colon_ws_loop);
+        close!();
+        close!();
+        close!();
+        // non-ws byte at cmp_j (or cmp_j == json_len): require ':'
+        ins.push(Instruction::LocalGet(cmp_j));
+        ins.push(Instruction::LocalGet(json_len));
+        ins.push(Instruction::I32LtS);
+        open_if!();
+        ins.push(Instruction::LocalGet(json_ptr));
+        ins.push(Instruction::LocalGet(cmp_j));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::I32Load8U(ma8.clone()));
+        ins.push(Instruction::I32Const(0x3A));
+        ins.push(Instruction::I32Eq);
+        open_if!();
+        // colon found — scan_i past it; temp stays 1, the break below exits
+        ins.push(Instruction::LocalGet(cmp_j));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(scan_i));
+        open_else!();
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::LocalSet(temp));
+        close!();
+        open_else!();
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::LocalSet(temp));
+        close!();
+        close!();
         ins.push(Instruction::LocalGet(temp));
         open_if!();
         br_to!(scan_block);
@@ -364,24 +440,18 @@ impl WasmEmitter {
         close!();
         close!();
 
-        // Not found: the scan loop exits when scan_i + pat_len > json_len
-        // (or scan_i >= json_len) — either way, if the remaining bytes
-        // cannot hold the pattern, there is no match → return 0. The old
-        // `scan_i >= json_len` guard missed the mid-range exit and fell
-        // through to value extraction, producing garbage (len-0 spans).
-        ins.push(Instruction::LocalGet(scan_i));
-        ins.push(Instruction::LocalGet(pat_len));
-        ins.push(Instruction::I32Add);
-        ins.push(Instruction::LocalGet(json_len));
-        ins.push(Instruction::I32GtS);
+        // Not found gate (I1-parity, 2026-09-14): temp==0 means no key +
+        // colon match survived (bounds exit or colon check failure) →
+        // miss. temp==1 means scan_i already points PAST the colon — the
+        // ws loop below lands on the value. (The old bounds re-check
+        // `scan_i + pat_len > json_len` could false-positive after a
+        // bare-key match near the buffer end: {"a":1} → 5+3 > 7.)
+        ins.push(Instruction::LocalGet(temp));
+        ins.push(Instruction::I32Eqz);
         open_if!();
         ins.push(Instruction::I64Const(0));
         ins.push(Instruction::Return);
         close!();
-        ins.push(Instruction::LocalGet(scan_i));
-        ins.push(Instruction::LocalGet(pat_len));
-        ins.push(Instruction::I32Add);
-        ins.push(Instruction::LocalSet(scan_i));
         open_block!();
         let ws_block = ls.len() - 1;
         open_loop!();
@@ -1699,15 +1769,80 @@ impl WasmEmitter {
             // If still matching after validation
             ins.push(Instruction::LocalGet(temp));
             open_if!();
-            // Set cur_key = k
-            ins.push(Instruction::I32Const(k as i32));
-            ins.push(Instruction::LocalSet(cur_key));
-            // Advance scan_i past pattern
+            // I1-parity (2026-09-14): patterns are bare quoted keys — skip
+            // ws after the key and REQUIRE ':' before extracting. cmp_j is
+            // dead after the compare loop — reuse as the scan cursor.
             ins.push(Instruction::LocalGet(scan_i));
             ins.push(Instruction::LocalGet(key_lens[k]));
             ins.push(Instruction::I32Add);
+            ins.push(Instruction::LocalSet(cmp_j));
+            open_block!();
+            let colon_ws_block_k = ls.len() - 1;
+            open_loop!();
+            let colon_ws_loop_k = ls.len() - 1;
+            ins.push(Instruction::LocalGet(cmp_j));
+            ins.push(Instruction::LocalGet(json_len));
+            ins.push(Instruction::I32GeS);
+            open_if!();
+            br_to!(colon_ws_block_k);
+            close!();
+            ins.push(Instruction::LocalGet(json_ptr));
+            ins.push(Instruction::LocalGet(cmp_j));
+            ins.push(Instruction::I32Add);
+            ins.push(Instruction::I32Load8U(ma8.clone()));
+            ins.push(Instruction::LocalSet(ch));
+            ins.push(Instruction::LocalGet(ch));
+            ins.push(Instruction::I32Const(0x20));
+            ins.push(Instruction::I32Eq);
+            ins.push(Instruction::LocalGet(ch));
+            ins.push(Instruction::I32Const(0x09));
+            ins.push(Instruction::I32Eq);
+            ins.push(Instruction::I32Or);
+            ins.push(Instruction::LocalGet(ch));
+            ins.push(Instruction::I32Const(0x0A));
+            ins.push(Instruction::I32Eq);
+            ins.push(Instruction::I32Or);
+            ins.push(Instruction::LocalGet(ch));
+            ins.push(Instruction::I32Const(0x0D));
+            ins.push(Instruction::I32Eq);
+            ins.push(Instruction::I32Or);
+            open_if!();
+            ins.push(Instruction::LocalGet(cmp_j));
+            ins.push(Instruction::I32Const(1));
+            ins.push(Instruction::I32Add);
+            ins.push(Instruction::LocalSet(cmp_j));
+            br_to!(colon_ws_loop_k);
+            close!();
+            close!();
+            close!();
+            // non-ws byte at cmp_j (or past end): require ':'
+            ins.push(Instruction::LocalGet(cmp_j));
+            ins.push(Instruction::LocalGet(json_len));
+            ins.push(Instruction::I32LtS);
+            open_if!();
+            ins.push(Instruction::LocalGet(json_ptr));
+            ins.push(Instruction::LocalGet(cmp_j));
+            ins.push(Instruction::I32Add);
+            ins.push(Instruction::I32Load8U(ma8.clone()));
+            ins.push(Instruction::I32Const(0x3A));
+            ins.push(Instruction::I32Eq);
+            open_if!();
+            // colon found — cur_key = k, scan_i past the colon
+            ins.push(Instruction::I32Const(k as i32));
+            ins.push(Instruction::LocalSet(cur_key));
+            ins.push(Instruction::LocalGet(cmp_j));
+            ins.push(Instruction::I32Const(1));
+            ins.push(Instruction::I32Add);
             ins.push(Instruction::LocalSet(scan_i));
             br_to!(try_block); // break out of try-all-keys block → go to value extraction
+            open_else!();
+            ins.push(Instruction::I32Const(0));
+            ins.push(Instruction::LocalSet(temp));
+            close!();
+            open_else!();
+            ins.push(Instruction::I32Const(0));
+            ins.push(Instruction::LocalSet(temp));
+            close!();
             close!(); // match valid
             close!(); // match
         }
@@ -2292,10 +2427,11 @@ impl WasmEmitter {
                     crate::wasm_emit::USER_BASE | arr_func_idx,
                 ));
             } else {
-                // Key segment - use __json_get
+                // Key segment - use __json_get (bare quoted key — it skips
+                // ws and requires ':' at match time; I1-parity 2026-09-14)
                 let mut pattern = vec![b'"'];
                 pattern.extend(seg_name.as_bytes());
-                pattern.extend_from_slice(b"\":");
+                pattern.push(b'"');
                 let pat_off = self.alloc_data(&pattern) as i64;
                 let pat_len = pattern.len() as i64;
                 let pat_packed = (pat_off as u64) | ((pat_len as u64) << 32);
@@ -3625,9 +3761,11 @@ impl WasmEmitter {
         self.need_host(7);
         self.need_host(0);
         self.need_host(1);
+        // I1-parity (2026-09-14): bare quoted key — the scanner below
+        // skips ws after the key and requires ':' at match time.
         let mut pattern = vec![b'"'];
         pattern.extend(key.as_bytes());
-        pattern.extend_from_slice(b"\":");
+        pattern.push(b'"');
         let pat_off = self.alloc_data(&pattern);
         let pat_len = pattern.len() as i64;
         let pos = self.local_idx("__ju_pos");
@@ -3809,6 +3947,79 @@ impl WasmEmitter {
         v.push(Instruction::End);
         v.push(Instruction::End);
         v.push(Instruction::End);
+        // I1-parity (2026-09-14): bare quoted key — skip ws after the key
+        // and REQUIRE ':' (jj is dead after the compare loop — reuse as
+        // cursor; on success jj rests ON the colon, consumed below).
+        v.push(Instruction::LocalGet(mi));
+        v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(pos));
+        v.push(Instruction::I64Const(pat_len));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::LocalSet(jj));
+        v.push(Instruction::Block(BlockType::Empty));
+        v.push(Instruction::Loop(BlockType::Empty));
+        v.push(Instruction::LocalGet(jj));
+        v.push(Instruction::LocalGet(ilen));
+        v.push(Instruction::I64GeS);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Br(2));
+        v.push(Instruction::End);
+        v.push(Instruction::I64Const(ib));
+        v.push(Instruction::LocalGet(jj));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone()));
+        v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::LocalSet(scan_byte));
+        v.push(Instruction::LocalGet(scan_byte));
+        v.push(Instruction::I64Const(0x20));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::LocalGet(scan_byte));
+        v.push(Instruction::I64Const(0x09));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalGet(scan_byte));
+        v.push(Instruction::I64Const(0x0A));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalGet(scan_byte));
+        v.push(Instruction::I64Const(0x0D));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(jj));
+        v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::LocalSet(jj));
+        v.push(Instruction::Br(0));
+        v.push(Instruction::End);
+        v.push(Instruction::End);
+        v.push(Instruction::End);
+        // require ':' at jj (or mi = 0)
+        v.push(Instruction::LocalGet(jj));
+        v.push(Instruction::LocalGet(ilen));
+        v.push(Instruction::I64LtS);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::I64Const(ib));
+        v.push(Instruction::LocalGet(jj));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone()));
+        v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::I64Const(0x3A));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Else);
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::LocalSet(mi));
+        v.push(Instruction::End);
+        v.push(Instruction::Else);
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::LocalSet(mi));
+        v.push(Instruction::End);
+        v.push(Instruction::End); // end mi==1 colon gate
         v.push(Instruction::LocalGet(mi));
         v.push(Instruction::I64Const(1));
         v.push(Instruction::I64Eq);
@@ -3829,8 +4040,9 @@ impl WasmEmitter {
         v.push(Instruction::I64LtS);
         v.push(Instruction::If(BlockType::Empty));
 
-        v.push(Instruction::LocalGet(pos));
-        v.push(Instruction::I64Const(pat_len));
+        // past the colon (jj rests ON ':' from the colon check above)
+        v.push(Instruction::LocalGet(jj));
+        v.push(Instruction::I64Const(1));
         v.push(Instruction::I64Add);
         v.push(Instruction::LocalSet(pos));
 

@@ -245,10 +245,13 @@ Tagged value scheme (3-bit tag in bottom bits):
   instead of "indices out of range". Errors now propagate (f79d26c).
 
 ### KNOWN — pinned, not fixed (see t-file markers)
-- **User-fn arity: no validation (ARITY-PIN, t20).** `(f2 1)` with
-  (define (f2 a b) ...) runs with b = nil (arith-coerced to 0); `(f2 1 2 3)`
-  silently drops the extra arg. Should be a hard error. Fix needs agreement
-  between the inlining compiler path and vm_call_lambda — not a one-liner.
+- ~~**User-fn arity: no validation (ARITY-PIN, t20).**~~ → RESOLVED
+  2026-09-14 (stale entry — it was fixed 2026-08-26, round-3 fix 3, and
+  this bullet just never got struck). Verified live: direct calls, apply,
+  anonymous lambdas, variadic minimums all hard-error "arity mismatch:
+  <fn> expects N args, got M"; the wasm emitter has a static call-site
+  check (call.rs) and the typechecker checks too (checker.rs). Choke
+  point: run_compiled_lambda.
 - **Compiled arithmetic coerces non-numbers to 0** — ✅ FIXED (round-3
   fix 4, 2026-08-26): bare arith/comparisons now hard-error on non-numeric
   operands; see round-3 section below. String numerics via u128/*.
@@ -261,23 +264,25 @@ Tagged value scheme (3-bit tag in bottom bits):
   via I64DivU, so interp-Err ≡ wasm-trap holds). (b) tree-walker `mod` used
   `i64::rem_euclid` via do_arith — zero divisor panicked; now guarded (every
   divisor in the fold). Stale pin updated: core_language test_mod_zero_divisor.
-- **Inline builtin table shadows the dispatch modules with weaker
-  semantics** (t13): str-length counts BYTES ("héllo" → 6; dispatch impl
-  counts chars), str-split does NOT filter empty parts ("" → (""); dispatch
-  filters), to-int of an unparseable string → 0 (dispatch errors). The
-  dispatch versions are dead code for these names. Whichever semantics is
-  canonical, the two tables should agree.
+- ~~**Inline builtin table shadows the dispatch modules with weaker
+  semantics** (t13):~~ → RESOLVED 2026-09-14 — the tables now AGREE, on
+  the wasm-anchored semantics: str-length counts BYTES ("héllo" → 6;
+  matches wasm + inline + str-substring's byte-index decision), str-split
+  KEEPS empty parts ("a,,b" → 3; "" → 1), to-int of an unparseable
+  string returns 0 (matches wasm __str_to_num + inline). The dispatch
+  arms were divergent dead code; lisp-run behavior is unchanged (inline
+  table always shadowed). Pinned by t13-string-edges.lisp + probes.
 - **Recursion depth semantics** (t11, pinned as actual): direct
   self-recursion compiles to iterative CallSelf frames — NO depth limit;
   the 1M-op execution budget is the only ceiling (sum-to 10000 = 50005000
   runs clean). Mutual recursion and value-dispatched calls DO cross
   run_compiled_lambda each hop and are capped at max_call_depth=256 total
   crossings (254-deep chain + body = 256 OK; 255 fails).
-- **lisp-run surface gaps vs this tracker** (t18/t19): near/has_key,
-  near/kv-get (write near/kv exists, read does not — asymmetric),
-  isqrt, wrap-add: all compile-error "unknown function or special form"
-  in the CLI despite being listed as implemented above (they exist only on
-  other paths).
+- ~~**lisp-run surface gaps vs this tracker** (t18/t19):~~ → STALE, all
+  work now (verified 2026-09-14): near/has_key, isqrt, wrap-add,
+  near/kv-get AND near/kv (the write — this entry had the asymmetry
+  BACKWARDS: the write is `near/kv` not `kv-set`; kv round-trip
+  probe passes: `(near/kv 99 "k")` → `(near/kv-get "k")` → 99).
 
 ### Semantics pinned as ACTUAL (not bugs)
 - Floats print via Rust `{}`: 5.0 → "5" (no trailing .0); 2.5 → "2.5".
@@ -990,8 +995,18 @@ Every real 192B pairing gate trapped. Fix: POINT_SIZE + POINT_SIZE*2.
 - ~~near.jsonGetStr() requires compile-time string literals~~ → FIXED
   2026-09-13: dynamic keys work (runtime pattern → __json_get scanner,
   results heap-copied so consecutive reads don't clobber). jsonGetInt
-  too (lookup + shared __str_to_num parse). Known edge: space BEFORE the
-  colon (`"k" : v`) doesn't match — same as from_buf
+  too (lookup + shared __str_to_num parse). ~~Known edge: space BEFORE the
+  colon (`"k" : v`) doesn't match — same as from_buf~~ → FIXED 2026-09-14
+  (I1-parity): __json_get + __json_extract_N + json_get_from_buf +
+  json_dyn_lookup_str + json_get_u128 all take the BARE quoted key and
+  skip ws + require ':' at match time — `"k" : v` matches on every
+  lookup path now, matching the literal inline scanners (I1, 08-27).
+  4 regression tests in test_dynamic_json (spaced dyn/lit/dot/suffix-key).
+  Remaining edges (documented, lisp-only): json/get (json_get_auto) still
+  has its own glued-colon scanner — lisp surface, rarely used; and
+  jsonGetStr on an OBJECT value returns just `{` (never spans objects —
+  use dot-path jsonGet("a.b") for nested access; pre-existing, not
+  colon-related).
 - ~~for...of has scoping issues with captured vars~~ → FIXED 2026-09-13:
   declarations in for/for-of bodies and if-branches now hoist (while-style
   bind-nil + set! at source position). Also fixed the emitter bug found on

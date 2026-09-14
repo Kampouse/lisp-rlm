@@ -34,8 +34,12 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             None => LispVal::Str(String::new()),
         })),
         "str-length" => {
+            // Byte length (2026-09-14, t13 alignment): the wasm surface and
+            // the inline interp table both count BYTES ("héllo" → 6); the
+            // dispatch chars() count was a divergent outlier — same class as
+            // str-substring's byte-index decision (2026-08-27).
             let s = as_str(&args[0])?;
-            Ok(Some(LispVal::Num(s.chars().count() as i64)))
+            Ok(Some(LispVal::Num(s.len() as i64)))
         }
         "str-substring" => {
             // Byte-indexed (UTF-8 decision, 2026-08-27): indices are BYTE
@@ -62,8 +66,10 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             let parts: Vec<LispVal> = if delim.is_empty() {
                 s.chars().map(|c| LispVal::Str(c.to_string())).collect()
             } else {
+                // Keep empty parts (2026-09-14, t13 alignment): wasm and
+                // the inline table keep them ("a,,b" → 3 parts; "" → 1);
+                // filtering here diverged from both.
                 s.split(&delim)
-                    .filter(|p| !p.is_empty())
                     .map(|p| LispVal::Str(p.to_string()))
                     .collect()
             };
