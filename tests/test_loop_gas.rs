@@ -53,6 +53,25 @@ export function eqNil(): string {
   if (v == near.jsonGetInt("nope2")) { return "eq"; }
   return "ne";
 }
+// input-cache (2026-09-14): getters share ONE input read per tx; the
+// 2-arg jsonGetStr scans JSON_SCAN_BUF and must NOT clobber the cache
+export function cacheMix(): string {
+  const o = near.jsonGetStr("outer") ?? "{}";
+  const inner = near.jsonGetStr("inner", o);
+  const after = near.jsonGetStr("k") ?? "MISS";
+  const n1 = near.jsonGetInt("n") ?? -1;
+  return after + ":" + toStr(n1) + ":" + inner;
+}
+export function manyArgs(): string {
+  let s = 0;
+  s = s + (near.jsonGetInt("a1") ?? 0);
+  s = s + (near.jsonGetInt("a2") ?? 0);
+  s = s + (near.jsonGetInt("a3") ?? 0);
+  s = s + (near.jsonGetInt("a4") ?? 0);
+  s = s + (near.jsonGetInt("a5") ?? 0);
+  s = s + (near.jsonGetInt("a6") ?? 0);
+  return toStr(s);
+}
 export function eqNum(n: number): string {
   if (n == 42) { return "forty-two"; }
   return "other";
@@ -201,6 +220,31 @@ fn bare_truthy_fast_path() {
     assert!(r.value.contains("truthy"), "bareTruthy: {}", r.value);
     let r = run("bareTruthy", r#"{"n":0}"#);
     assert!(r.value.contains("falsy"), "bareTruthy: {}", r.value);
+}
+
+#[test]
+fn input_cache_survives_string_arg_scan() {
+    // jsonGetStr(key, json) scans into JSON_SCAN_BUF — the cached input in
+    // INPUT_CACHE_BUF must survive it (k and n read correctly AFTER)
+    let r = run(
+        "cacheMix",
+        r#"{"outer" : { "inner" : "deep" }, "k": "v", "n" : 1}"#,
+    );
+    assert!(r.value.contains("v:1:deep"), "cacheMix: {}", r.value);
+}
+
+#[test]
+fn many_getters_gas_under_budget() {
+    // 6 int getters: 0.083 Tgas before input caching, 0.024 after. The
+    // budget has margin — a regression means the cache stopped hitting
+    // (flag/buffer mismatch, clobbering, etc).
+    let r = run("manyArgs", r#"{"a1":1,"a2":2,"a3":3,"a4":4,"a5":5,"a6":6}"#);
+    assert!(r.value.contains("21"), "manyArgs: {}", r.value);
+    assert!(
+        r.gas < 0.045,
+        "manyArgs gas regressed past 0.045 Tgas: {} (pre-cache 0.083, post 0.024)",
+        r.gas
+    );
 }
 
 // ── equality/truthiness fast-path traps (2026-09-14) ──────────────────

@@ -221,7 +221,7 @@ impl WasmEmitter {
                             // Copy string to INPUT_BUF (NEAR) or JSON_FIXED_BUF (WASI), then scan
                             // JSON_FIXED_BUF must NOT overlap STDIN_BUF (32768) — json-get overwrites
                             // this buffer, which would corrupt any str-slice pointers into stdin.
-                            let target_buf = if self.wasi_mode { 65536i64 } else { INPUT_BUF };
+                            let target_buf = if self.wasi_mode { 65536i64 } else { JSON_SCAN_BUF }; // 2026-09-14: was INPUT_BUF — clobbered the input cache
                             let src_ptr_l = self.local_idx("__jgs_sp");
                             let copy_i = self.local_idx("__jgs_ci");
                             let ma8 = wasm_encoder::MemArg {
@@ -365,7 +365,7 @@ impl WasmEmitter {
                         setup.push(Instruction::I64ShrU);
                         setup.push(Instruction::LocalSet(tmp));
                         // Copy string to fixed buffer at 65536 (JSON_FIXED_BUF, not STDIN_BUF 32768)
-                        let target_buf = if self.wasi_mode { 65536i64 } else { INPUT_BUF };
+                        let target_buf = if self.wasi_mode { 65536i64 } else { JSON_SCAN_BUF }; // 2026-09-14: was INPUT_BUF — clobbered the input cache
                         let src_ptr_l = self.local_idx("__jgs_sp");
                         let copy_i = self.local_idx("__jgs_ci");
                         let ma8 = wasm_encoder::MemArg {
@@ -572,22 +572,14 @@ impl WasmEmitter {
                 self.need_host(0);
                 self.need_host(1);
                 let mut v = Vec::new();
-                // read input → INPUT_BUF; pack (ilen << 32) | INPUT_BUF
+                // cached input read → INPUT_CACHE_BUF; pack (ilen << 32) | buf
                 let ilen_l = self.local_idx_i32("__jei_len");
-                v.push(Instruction::I64Const(0));
-                v.push(Self::host_call(7));
-                v.push(Instruction::I64Const(0));
-                v.push(Self::host_call(1));
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::LocalSet(ilen_l));
-                v.push(Instruction::I64Const(0));
-                v.push(Instruction::I64Const(INPUT_BUF as i64));
-                v.push(Self::host_call(0));
+                self.emit_input_read_cached(ilen_l, &mut v);
                 v.push(Instruction::LocalGet(ilen_l));
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(INPUT_BUF as i64));
+                v.push(Instruction::I64Const(INPUT_CACHE_BUF));
                 v.push(Instruction::I64Or);
                 // key patterns (bare quoted keys — extract_N requires ':'
                 // after ws at match time)
@@ -876,7 +868,7 @@ impl WasmEmitter {
         self.need_host(1);
         let key_expr = self.expr(key_ast)?;
         let mut v = Vec::new();
-        let ib = crate::wasm_emit::INPUT_BUF as i64;
+        let ib = crate::wasm_emit::INPUT_CACHE_BUF as i64; // cached input (2026-09-14)
 
         // Store key in local, then extract ptr/len
         let key_l = self.local_idx("__jgd_key");
@@ -899,17 +891,9 @@ impl WasmEmitter {
         v.push(Instruction::I32WrapI64);
         v.push(Instruction::LocalSet(key_len_l));
 
-        // Read input to INPUT_BUF
+        // Cached input read; the packed buffer constant below matches
         let ilen_l = self.local_idx_i32("__jgd_il");
-        v.push(Instruction::I64Const(0));
-        v.push(Self::host_call(7));
-        v.push(Instruction::I64Const(0));
-        v.push(Self::host_call(1));
-        v.push(Instruction::I32WrapI64);
-        v.push(Instruction::LocalSet(ilen_l));
-        v.push(Instruction::I64Const(0));
-        v.push(Instruction::I64Const(ib));
-        v.push(Self::host_call(0));
+        self.emit_input_read_cached(ilen_l, &mut v);
 
         // Alloc scratch for pattern: quote + key + quote — the BARE
         // quoted key (I1-parity 2026-09-14): __json_get skips ws after

@@ -507,6 +507,16 @@ pub(crate) const KEY_BUF: i64 = 8224; // 256 bytes for composite key building (n
 const KEY_BUF_MAX: usize = 256; // max composite key length
 pub(crate) const HEAP_START: i64 = 200_000; // heap starts above all data segments and buffers (STDOUT=65536, INPUT=16384, etc.)
 const BORSH_BUF: i64 = 36864; // 4KB scratch buffer for Borsh serialize (after RETURN_BUF)
+/// 16KB — CACHED copy of the tx input (2026-09-14). emit_input_read_cached
+/// loads the input here ONCE per transaction (flag+len slots in the data
+/// section; memory resets per tx). All json getters read from this buffer;
+/// jsonGet/json-get-str string-arg scans use JSON_SCAN_BUF instead — they
+/// used to write INPUT_BUF, which would clobber the cache.
+const INPUT_CACHE_BUF: i64 = 40960;
+/// 16KB — scan destination for jsonGet(key, json)-style string-arg lookups
+/// (was INPUT_BUF — fine when every getter re-read the input, fatal with
+/// caching: one jsonGet destroyed the cached input for all later getters)
+const JSON_SCAN_BUF: i64 = 57344;
 
 // ── Borsh schema types (compile-time only) ──
 #[derive(Clone, Debug)]
@@ -703,6 +713,11 @@ pub struct WasmEmitter {
     /// would silently turn it into 0 on read-retag). Captured (closure)
     /// vars stay tagged.
     pub(crate) raw_locals: std::collections::HashSet<String>,
+    /// Input-cache slot addresses (2026-09-14): flag (0=unloaded) + length.
+    /// Lazily allocated per module via alloc_memo_slot (no content dedupe —
+    /// the memoize lesson: three zeroed slots aliased one address).
+    pub(crate) input_flag_slot: Option<i32>,
+    pub(crate) input_len_slot: Option<i32>,
     /// Next emit_define call is a top-level value define → wrap the body
     /// with a memoization guard (evaluate-once per tx; see emit_define).
     pub(crate) memoize_next: bool,
@@ -765,6 +780,8 @@ impl WasmEmitter {
             value_defines: std::collections::HashSet::new(),
             numeric_locals: std::collections::HashSet::new(),
             raw_locals: std::collections::HashSet::new(),
+            input_flag_slot: None,
+            input_len_slot: None,
             memoize_next: false,
             arr_str_helper: None,
             val_eq_helper: None,

@@ -1098,6 +1098,67 @@ impl WasmEmitter {
         off as i32
     }
 
+    /// Cached tx-input read (2026-09-14, gas): the input lands in
+    /// INPUT_CACHE_BUF once per transaction (flag + len slots, zeroed per
+    /// tx with memory). Every json getter previously issued 3 host calls
+    /// (input, register_len, read_register) PER CALL — arg-heavy
+    /// entrypoints burned them on every getter. Emits:
+    ///   if flag == 0: input(0); len-slot = register_len(0);
+    ///                 read_register(0, INPUT_CACHE_BUF); flag = 1
+    ///   ilen_local = len-slot
+    /// Ends with the length in `ilen` (i32 local supplied by the caller).
+    pub(crate) fn emit_input_read_cached(&mut self, ilen: u32, v: &mut Vec<Instruction<'static>>) {
+        self.need_host(7);
+        self.need_host(0);
+        self.need_host(1);
+        if self.input_flag_slot.is_none() {
+            self.input_flag_slot = Some(self.alloc_memo_slot());
+            self.input_len_slot = Some(self.alloc_memo_slot());
+        }
+        let flag = self.input_flag_slot.unwrap();
+        let len_slot = self.input_len_slot.unwrap();
+        let ma8 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 0,
+        };
+        // if flag == 0 → load
+        v.push(Instruction::I32Const(flag));
+        v.push(Instruction::I64Load(ma8.clone()));
+        v.push(Instruction::I64Eqz);
+        v.push(Instruction::If(wasm_encoder::BlockType::Empty));
+        {
+            // input(0) — void
+            v.push(Instruction::I64Const(0));
+            v.push(Self::host_call(7));
+            // len-slot = register_len(0)   (addr first, then value)
+            v.push(Instruction::I32Const(len_slot));
+            v.push(Instruction::I64Const(0));
+            v.push(Self::host_call(1));
+            v.push(Instruction::I64Store(ma8.clone()));
+            // read_register(0, INPUT_CACHE_BUF) — void
+            v.push(Instruction::I64Const(0));
+            v.push(Instruction::I64Const(INPUT_CACHE_BUF));
+            v.push(Self::host_call(0));
+            // flag = 1
+            v.push(Instruction::I32Const(flag));
+            v.push(Instruction::I64Const(1));
+            v.push(Instruction::I64Store(ma8.clone()));
+        }
+        v.push(Instruction::End);
+        // ilen = len-slot (i32 load — the sites' ilen locals are i32; the
+        // few i64-ilen scanners wrap up themselves). align 2: natural for
+        // i32.load (align 3 would exceed it — invalid).
+        let ma4 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 2,
+            memory_index: 0,
+        };
+        v.push(Instruction::I32Const(len_slot));
+        v.push(Instruction::I32Load(ma4));
+        v.push(Instruction::LocalSet(ilen));
+    }
+
     pub(crate) fn emit_runtime_alloc(&mut self, n_bytes: i64) -> Vec<Instruction<'static>> {
         let tmp = self.local_idx("__rha_tmp");
         let new_ptr = self.local_idx("__rha_new");

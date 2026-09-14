@@ -10,14 +10,14 @@ impl WasmEmitter {
         self.need_host(0);
         self.need_host(1);
         let mut setup = Vec::new();
-        setup.push(Instruction::I64Const(0));
-        setup.push(Self::host_call(7));
-        setup.push(Instruction::I64Const(0));
-        setup.push(Self::host_call(1));
-        setup.push(Instruction::I64Const(0));
-        setup.push(Instruction::I64Const(INPUT_BUF));
-        setup.push(Self::host_call(0));
-        self.json_get_from_buf(key, value_type, INPUT_BUF, &mut setup)
+        // cached input read (3 host calls once per tx); the setup must END
+        // with the length ON THE STACK (json_get_from_buf's buf_len_setup
+        // contract — the old uncached sequence left register_len's result)
+        let ilen32 = self.local_idx_i32("__jgi32_len");
+        self.emit_input_read_cached(ilen32, &mut setup);
+        setup.push(Instruction::LocalGet(ilen32));
+        setup.push(Instruction::I64ExtendI32U);
+        self.json_get_from_buf(key, value_type, INPUT_CACHE_BUF, &mut setup)
     }
 
     pub fn json_get_wasi(
@@ -2719,7 +2719,7 @@ impl WasmEmitter {
             align: 3,
             memory_index: 0,
         };
-        let ib = INPUT_BUF as i32;
+        let ib = INPUT_CACHE_BUF as i32; // cached input (2026-09-14)
         let scratch = self.heap_bump((8 * MAXELEM) as u32) as i32;
 
         let mut v = Vec::new();
@@ -2768,16 +2768,8 @@ impl WasmEmitter {
         // Block $fail
         v.push(Instruction::Block(BlockType::Empty));
 
-        // input → INPUT_BUF
-        v.push(Instruction::I64Const(0));
-        v.push(Self::host_call(7));
-        v.push(Instruction::I64Const(0));
-        v.push(Self::host_call(1));
-        v.push(Instruction::I32WrapI64);
-        v.push(Instruction::LocalSet(ilen));
-        v.push(Instruction::I64Const(0));
-        v.push(Instruction::I64Const(ib as i64));
-        v.push(Self::host_call(0));
+        // cached input read (ilen is i32 here — direct)
+        self.emit_input_read_cached(ilen, &mut v);
         v.push(Instruction::I32Const(0));
         v.push(Instruction::LocalSet(pos));
         v.push(Instruction::I32Const(0));
@@ -3418,18 +3410,18 @@ impl WasmEmitter {
             align: 0,
             memory_index: 0,
         };
-        let ib = INPUT_BUF;
+        let ib = INPUT_CACHE_BUF; // cached input (2026-09-14)
         let mut v = Vec::new();
 
-        // Read input to INPUT_BUF
-        v.push(Instruction::I64Const(0));
-        v.push(Self::host_call(7)); // input(0)
-        v.push(Instruction::I64Const(0));
-        v.push(Self::host_call(1)); // register_len(0)
-        v.push(Instruction::LocalSet(ilen));
-        v.push(Instruction::I64Const(0));
-        v.push(Instruction::I64Const(ib));
-        v.push(Self::host_call(0)); // read_register(0, ib)
+        // Cached input read (3 host calls once per tx); ilen is i64 here —
+        // the helper's i32 local is wrapped up
+        {
+            let ilen32 = self.local_idx_i32("__js_ilen32");
+            self.emit_input_read_cached(ilen32, &mut v);
+            v.push(Instruction::LocalGet(ilen32));
+            v.push(Instruction::I64ExtendI32U);
+            v.push(Instruction::LocalSet(ilen));
+        }
 
         // pos = 0, depth = 0
         v.push(Instruction::I64Const(0));
@@ -3899,22 +3891,21 @@ impl WasmEmitter {
             align: 0,
             memory_index: 0,
         };
-        let ib = INPUT_BUF;
+        let ib = INPUT_CACHE_BUF; // cached input (2026-09-14)
         let mut v = offset_expr;
 
         // Store offset to a temp local
         let off_local = self.local_idx("__ju_offset");
         v.push(Instruction::LocalSet(off_local));
 
-        // Read input to INPUT_BUF
-        v.push(Instruction::I64Const(0));
-        v.push(Self::host_call(7));
-        v.push(Instruction::I64Const(0));
-        v.push(Self::host_call(1));
-        v.push(Instruction::LocalSet(ilen));
-        v.push(Instruction::I64Const(0));
-        v.push(Instruction::I64Const(ib));
-        v.push(Self::host_call(0));
+        // Cached input read; ilen is i64 here — wrap up from the i32 local
+        {
+            let ilen32 = self.local_idx_i32("__ju_ilen32");
+            self.emit_input_read_cached(ilen32, &mut v);
+            v.push(Instruction::LocalGet(ilen32));
+            v.push(Instruction::I64ExtendI32U);
+            v.push(Instruction::LocalSet(ilen));
+        }
 
         // pos = 0, depth = 0
         v.push(Instruction::I64Const(0));
@@ -4398,19 +4389,11 @@ impl WasmEmitter {
             align: 0,
             memory_index: 0,
         };
-        let ib = INPUT_BUF as i32;
+        let ib = INPUT_CACHE_BUF as i32; // cached input (2026-09-14)
         let mut v = Vec::new();
 
-        // Read input to INPUT_BUF
-        v.push(Instruction::I64Const(0));
-        v.push(Self::host_call(7));
-        v.push(Instruction::I64Const(0));
-        v.push(Self::host_call(1));
-        v.push(Instruction::I32WrapI64);
-        v.push(Instruction::LocalSet(ilen));
-        v.push(Instruction::I64Const(0));
-        v.push(Instruction::I64Const(ib as i64));
-        v.push(Self::host_call(0));
+        // Cached input read → INPUT_CACHE_BUF (3 host calls once per tx)
+        self.emit_input_read_cached(ilen, &mut v);
 
         v.push(Instruction::I32Const(0));
         v.push(Instruction::LocalSet(pos));
@@ -5658,18 +5641,17 @@ impl WasmEmitter {
             align: 0,
             memory_index: 0,
         };
-        let ib = INPUT_BUF;
+        let ib = INPUT_CACHE_BUF; // cached input (2026-09-14)
         let mut v = Vec::new();
 
-        // Read input to INPUT_BUF
-        v.push(Instruction::I64Const(0));
-        v.push(Self::host_call(7));
-        v.push(Instruction::I64Const(0));
-        v.push(Self::host_call(1));
-        v.push(Instruction::LocalSet(ilen));
-        v.push(Instruction::I64Const(0));
-        v.push(Instruction::I64Const(ib));
-        v.push(Self::host_call(0));
+        // Cached input read; ilen is i64 here — wrap up from the i32 local
+        {
+            let ilen32 = self.local_idx_i32("__ja_ilen32");
+            self.emit_input_read_cached(ilen32, &mut v);
+            v.push(Instruction::LocalGet(ilen32));
+            v.push(Instruction::I64ExtendI32U);
+            v.push(Instruction::LocalSet(ilen));
+        }
 
         v.push(Instruction::I64Const(0));
         v.push(Instruction::LocalSet(pos));
