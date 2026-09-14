@@ -482,12 +482,17 @@ stitched module region at 1MiB. Split literals or shrink allocations",
                             fb.instruction(&Instruction::I64ExtendI32U); // ptr as i64
                             fb.instruction(&Instruction::Call(host_idx[&25])); // value_return(len, ptr)
                             fb.instruction(&Instruction::Else);
-                            // TAG_NUM/TAG_BOOL: untag, store, value_return
+                            // TAG_NUM/TAG_BOOL: untag, store, value_return.
+                            // ShrS, not ShrU (2026-09-13): TAG_NUM=0 means negative
+                            // Nums keep their sign bits through the tag shift
+                            // (-5 → -40); the old LOGICAL shift turned every
+                            // negative return into ~2^61 garbage at the host
+                            // boundary (displayed 2305843009213693947 for -5).
                             fb.instruction(&Instruction::I64Const(TEMP_MEM));
                             fb.instruction(&Instruction::I32WrapI64);
                             fb.instruction(&Instruction::LocalGet(0)); // full tagged value
                             fb.instruction(&Instruction::I64Const(TAG_BITS));
-                            fb.instruction(&Instruction::I64ShrU); // un-tag
+                            fb.instruction(&Instruction::I64ShrS); // un-tag (arithmetic — negatives!)
                             fb.instruction(&Instruction::I64Store(ma));
                             fb.instruction(&Instruction::I64Const(8));
                             fb.instruction(&Instruction::I64Const(TEMP_MEM));
@@ -537,9 +542,11 @@ stitched module region at 1MiB. Split literals or shrink allocations",
                         fb.instruction(&Instruction::I32WrapI64); // addr as i32
                         fb.instruction(&Instruction::LocalGet(0)); // restore result
                         if !self.fuzz_mode {
-                            // Untag the return value before storing for host
+                            // Untag the return value before storing for host —
+                            // ShrS: negative Num payloads keep sign bits (see
+                            // the zero-param wrapper's NUM arm, 2026-09-13)
                             fb.instruction(&Instruction::I64Const(TAG_BITS));
-                            fb.instruction(&Instruction::I64ShrU);
+                            fb.instruction(&Instruction::I64ShrS);
                         }
                         fb.instruction(&Instruction::I64Store(ma));
                         if !self.fuzz_mode {

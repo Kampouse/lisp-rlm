@@ -989,9 +989,14 @@ Every real 192B pairing gate trapped. Fix: POINT_SIZE + POINT_SIZE*2.
   local if hot-loop perf matters
 - ~~near.jsonGetStr() requires compile-time string literals~~ → FIXED
   2026-09-13: dynamic keys work (runtime pattern → __json_get scanner,
-  results heap-copied so consecutive reads don't clobber). Known edge:
-  space BEFORE the colon (`"k" : v`) doesn't match — same as from_buf
-- for...of has scoping issues with captured vars — use while loops
+  results heap-copied so consecutive reads don't clobber). jsonGetInt
+  too (lookup + shared __str_to_num parse). Known edge: space BEFORE the
+  colon (`"k" : v`) doesn't match — same as from_buf
+- ~~for...of has scoping issues with captured vars~~ → FIXED 2026-09-13:
+  declarations in for/for-of bodies and if-branches now hoist (while-style
+  bind-nil + set! at source position). Also fixed the emitter bug found on
+  the way: local slot cross-type reuse (i64 slot flipped to i32) produced
+  wasm that failed validation — vec-push in a for-loop was the trigger
 - ~~Function definitions must come BEFORE callers~~ → FIXED (hoisting in
   lower_program; verified 2026-09-13)
 - ~~continue not supported~~ → FIXED 2026-09-13: while/for/for-of. Also

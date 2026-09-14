@@ -41,6 +41,25 @@ export function dynWs(): string {
 export function dynLong(): string {
   return near.jsonGetStr("lo" + "ng") ?? "MISS";
 }
+// Dynamic-key jsonGetInt (2026-09-13, second pass): __json_get lookup +
+// shared __str_to_num parse; miss → nil → ?? fallback.
+export function dynIntHit(): string {
+  const key = "co" + "unt";
+  return toStr((near.jsonGetInt(key) ?? 0) + 1); // 43
+}
+export function dynIntMiss(): string {
+  return toStr(near.jsonGetInt("zz" + "z") ?? 7); // 7
+}
+export function dynIntNeg(): string {
+  // ALSO regression for the export-wrapper ShrU bug: negative Num returns
+  // were logical-shifted into ~2^61 garbage at the host boundary.
+  return toStr(near.jsonGetInt("d" + "elta") ?? 0); // -5
+}
+export function dynIntTwo(): string {
+  const a = near.jsonGetInt("a" + "1") ?? 0;
+  const b = near.jsonGetInt("b" + "2") ?? 0;
+  return toStr(a * 10 + b); // 12
+}
 "#;
 
 fn lock() -> std::sync::MutexGuard<'static, ()> {
@@ -87,6 +106,8 @@ fn run(c: Call) -> String {
         .unwrap_or(&all)
         .to_string()
 }
+
+const ARGS: &str = r#"{"name":"JP","k":"name","k1":"AAA","k2":"BBB","pretty":"spaced","count":42,"a1":1,"b2":2,"delta":-5}"#;
 
 #[test]
 fn dynamic_key_hit() {
@@ -151,4 +172,42 @@ fn long_value_round_trips() {
         args: &args,
     });
     assert!(r.contains(&long_v), "dynLong: {r}");
+}
+
+#[test]
+fn dynamic_int_key_hit() {
+    let r = run(Call {
+        method: "dynIntHit",
+        args: ARGS,
+    });
+    assert!(r.contains("43"), "dynIntHit: {r}");
+}
+
+#[test]
+fn dynamic_int_key_miss_fires_fallback() {
+    let r = run(Call {
+        method: "dynIntMiss",
+        args: ARGS,
+    });
+    assert!(r.contains("7"), "dynIntMiss: {r}");
+}
+
+#[test]
+fn dynamic_int_negative_value() {
+    // also regression for the export-wrapper ShrU bug: negative Num
+    // returns were logical-shifted into ~2^61 garbage at the host boundary
+    let r = run(Call {
+        method: "dynIntNeg",
+        args: ARGS,
+    });
+    assert!(r.contains("-5"), "dynIntNeg: {r}");
+}
+
+#[test]
+fn dynamic_int_two_reads_no_clobber() {
+    let r = run(Call {
+        method: "dynIntTwo",
+        args: ARGS,
+    });
+    assert!(r.contains("12"), "dynIntTwo: {r}");
 }
