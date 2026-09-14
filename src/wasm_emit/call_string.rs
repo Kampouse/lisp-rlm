@@ -6170,6 +6170,53 @@ impl WasmEmitter {
     /// path's semantics. Pure-literal / all-constant shapes still delegate
     /// to fold_binop so compile-time folding and the try-body
     /// non-numeric-literal catch semantics are unchanged.
+    /// Syntactic numeric-provenance check: is this expression's runtime
+    /// value guaranteed NOT a string (TAG_STR)? Conservative — unknown
+    /// shapes return false and take the safe polymorphic dispatch.
+    pub(crate) fn expr_is_numeric(&self, e: &LispVal) -> bool {
+        match e {
+            LispVal::Num(_) => true,
+            LispVal::Sym(s) => self.numeric_locals.contains(s),
+            LispVal::List(items) if !items.is_empty() => {
+                let LispVal::Sym(head) = &items[0] else {
+                    return false;
+                };
+                match head.as_str() {
+                    // numeric binops: numeric iff all operands are (the
+                    // emitter's -*/mod are numeric-only; + dispatches to
+                    // poly_add which will take the fast path itself when
+                    // its operands are numeric — the RESULT is then a
+                    // tagged num)
+                    "+" | "-" | "*" | "/" | "mod" => {
+                        items.len() >= 3 && items[1..].iter().all(|x| self.expr_is_numeric(x))
+                    }
+                    // numeric-result builtins (TAG_NUM results)
+                    "str->num"
+                    | "str-to-num"
+                    | "u128/to-i64"
+                    | "u128/from-i64"
+                    | "vec-length"
+                    | "length"
+                    | "len"
+                    | "str-length"
+                    | "str-index-of"
+                    | "abs"
+                    | "max"
+                    | "min"
+                    | "near/json_get_int"
+                    | "near/block_index"
+                    | "near/block_timestamp"
+                    | "near/epoch_height"
+                    | "near/storage_usage"
+                    | "near/prepaid_gas"
+                    | "near/used_gas" => true,
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
     pub(crate) fn emit_poly_add(
         &mut self,
         a: &[LispVal],
@@ -6186,6 +6233,14 @@ impl WasmEmitter {
             )
         });
         if a.is_empty() || self.wasi_mode || self.p2_mode || all_num || any_nonnum_literal {
+            return self.fold_binop(a, Instruction::I64Add, 0);
+        }
+        // Numeric provenance (2026-09-14, gas): all operands syntactically
+        // guaranteed TAG_NUM (literals/numeric locals/numeric-binop results)
+        // → direct tagged add, skip the runtime string dispatch entirely.
+        // (~9 dead instrs per `+` in numeric hot loops — measured 14% on the
+        // loop cond alone; this is the body's share.)
+        if a.iter().all(|x| self.expr_is_numeric(x)) {
             return self.fold_binop(a, Instruction::I64Add, 0);
         }
         // Depth-keyed locals (reuses the str-cat nesting counter so a real

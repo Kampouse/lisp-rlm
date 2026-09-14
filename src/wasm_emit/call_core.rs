@@ -373,8 +373,36 @@ impl WasmEmitter {
                 Ok(v)
             }
             "if" => {
-                let mut v = self.expr(&a[0])?;
-                v.extend(self.emit_cond_branch());
+                let mut v = Vec::new();
+                // cond fast path (2026-09-14, gas): numeric comparison conds
+                // branch directly on the raw i32 — skip the Bool re-tag +
+                // truthiness dispatch (same rationale as the while fast path)
+                let cmp_op = match &a[0] {
+                    LispVal::List(items) if items.len() == 3 => match &items[0] {
+                        LispVal::Sym(s) => match s.as_str() {
+                            "<" => Some(Instruction::I64LtS),
+                            "<=" => Some(Instruction::I64LeS),
+                            ">" => Some(Instruction::I64GtS),
+                            ">=" => Some(Instruction::I64GeS),
+                            _ => None,
+                        },
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if let Some(op) = cmp_op {
+                    let LispVal::List(items) = &a[0] else {
+                        unreachable!()
+                    };
+                    v.extend(self.expr(&items[1])?);
+                    v.extend(self.emit_untag());
+                    v.extend(self.expr(&items[2])?);
+                    v.extend(self.emit_untag());
+                    v.push(op);
+                } else {
+                    v.extend(self.expr(&a[0])?);
+                    v.extend(self.emit_cond_branch());
+                }
                 v.push(Instruction::If(BlockType::Result(ValType::I64)));
                 v.extend(self.expr(&a[1])?);
                 v.push(Instruction::Else);
@@ -551,6 +579,8 @@ impl WasmEmitter {
                 // the outer binding permanently — interp has proper lexical
                 // scope (e26 differential).
                 let mut saved: Vec<(String, Option<u32>)> = Vec::new();
+                // numeric-provenance shadow tracking (see numeric_locals)
+                let mut saved_num: Vec<(String, bool)> = Vec::new();
                 if let LispVal::List(bs) = &a[0] {
                     for b in bs {
                         if let LispVal::List(p) = b {
@@ -561,6 +591,13 @@ impl WasmEmitter {
                                     // compiling the init made (let* ((x (+ x 1))))
                                     // read its own fresh zero-initialized slot
                                     // (returned 1, not 2). Fix 2026-09-05.
+                                    let init_is_num = self.expr_is_numeric(&p[1]);
+                                    saved_num.push((n.clone(), self.numeric_locals.contains(n)));
+                                    if init_is_num {
+                                        self.numeric_locals.insert(n.clone());
+                                    } else {
+                                        self.numeric_locals.remove(n);
+                                    }
                                     let init = self.expr(&p[1])?;
                                     let old = self.locals.get(n).copied();
                                     let i = self.free_locals.pop().unwrap_or(self.next_local);
@@ -590,17 +627,25 @@ impl WasmEmitter {
                         }
                     }
                 }
-                // restore outer scope mappings; release shadow slots
-                for (n, old) in saved.into_iter().rev() {
+                // restore outer scope mappings; release shadow slots; restore
+                // numeric-provenance flags for shadowed names
+                for ((n, old), (_, was_num)) in
+                    saved.into_iter().rev().zip(saved_num.into_iter().rev())
+                {
                     match old {
                         Some(prev) => {
-                            self.locals.insert(n, prev);
+                            self.locals.insert(n.clone(), prev);
                         }
                         None => {
                             if let Some(slot) = self.locals.remove(&n) {
                                 self.free_locals.push(slot);
                             }
                         }
+                    }
+                    if was_num {
+                        self.numeric_locals.insert(n);
+                    } else {
+                        self.numeric_locals.remove(&n);
                     }
                 }
                 Ok(v)
@@ -734,17 +779,54 @@ impl WasmEmitter {
                 v.push(Instruction::Block(BlockType::Result(ValType::I64)));
                 // loop $loop
                 v.push(Instruction::Loop(BlockType::Empty));
-                // cond — use tagged truthiness
-                v.extend(self.expr(&a[0])?);
-                v.extend(self.emit_is_truthy());
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Eqz);
-                // if !cond → exit with tagged nil
-                v.push(Instruction::If(BlockType::Empty));
-                v.push(Instruction::I64Const(TAG_NIL));
-                v.push(Instruction::Br(2)); // br $exit with i64
-                v.push(Instruction::End); // if — no else needed
-                                          // body
+                // cond — fast path (2026-09-14, gas): a numeric comparison
+                // form ((< a b) etc.) branches DIRECTLY on the raw i32
+                // compare — the generic path re-tags the result as Bool
+                // and then runs the triple-tag truthiness dispatch on it
+                // (~16 extra instrs PER ITERATION of every hot loop).
+                // (< a b) is numeric-only semantics anyway (cmp untags both
+                // operands), so skipping the Bool round-trip is exact.
+                let cmp_op = match &a[0] {
+                    LispVal::List(items) if items.len() == 3 => match &items[0] {
+                        LispVal::Sym(s) => match s.as_str() {
+                            "<" => Some(Instruction::I64LtS),
+                            "<=" => Some(Instruction::I64LeS),
+                            ">" => Some(Instruction::I64GtS),
+                            ">=" => Some(Instruction::I64GeS),
+                            _ => None,
+                        },
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if let Some(op) = cmp_op {
+                    let LispVal::List(items) = &a[0] else {
+                        unreachable!()
+                    };
+                    v.extend(self.expr(&items[1])?);
+                    v.extend(self.emit_untag());
+                    v.extend(self.expr(&items[2])?);
+                    v.extend(self.emit_untag());
+                    v.push(op);
+                    // exit when the comparison is FALSE
+                    v.push(Instruction::I32Eqz);
+                    v.push(Instruction::If(BlockType::Empty));
+                    v.push(Instruction::I64Const(TAG_NIL));
+                    v.push(Instruction::Br(2)); // br $exit with i64
+                    v.push(Instruction::End);
+                } else {
+                    // cond — generic tagged truthiness
+                    v.extend(self.expr(&a[0])?);
+                    v.extend(self.emit_is_truthy());
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::I32Eqz);
+                    // if !cond → exit with tagged nil
+                    v.push(Instruction::If(BlockType::Empty));
+                    v.push(Instruction::I64Const(TAG_NIL));
+                    v.push(Instruction::Br(2)); // br $exit with i64
+                    v.push(Instruction::End); // if — no else needed
+                }
+                // body
                 for x in &a[1..] {
                     v.extend(self.expr(x)?);
                     v.push(Instruction::Drop);
@@ -761,6 +843,10 @@ impl WasmEmitter {
                 let LispVal::Sym(n) = &a[0] else {
                     return Err("set!: expected symbol".into());
                 };
+                // numeric-provenance maintenance: the union of a local's
+                // assignments must be all-numeric for the fast path to be
+                // sound — a non-numeric assignment demotes it
+                let val_is_num = self.expr_is_numeric(&a[1]);
                 let mut v = self.expr(&a[1])?;
                 if let Some(&offset) = self.captured_map.get(n) {
                     // Captured variable — write back to closure heap slot
@@ -783,6 +869,11 @@ impl WasmEmitter {
                 } else {
                     let idx = self.local_idx(n);
                     v.push(Instruction::LocalSet(idx));
+                    if val_is_num {
+                        self.numeric_locals.insert(n.clone());
+                    } else {
+                        self.numeric_locals.remove(n);
+                    }
                 }
                 v.push(Instruction::I64Const(TAG_NIL));
                 Ok(v)

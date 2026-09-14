@@ -689,6 +689,12 @@ pub struct WasmEmitter {
     // reference must CALL the fn (yield the value), not yield a TAG_FNREF
     // (which println renders as nil — the silent-nil gap, GAPS.md)
     pub(crate) value_defines: std::collections::HashSet<String>,
+    /// Numeric-provenance tracking (2026-09-14, gas): locals whose current
+    /// binding is known TAG_NUM-typed (never STR). emit_poly_add skips the
+    /// runtime string-dispatch when all operands are numeric-provenance —
+    /// the dispatch is ~9 dead instrs per `+` in numeric hot loops. Cleared
+    /// per function; maintained at let/set! sites with shadow save/restore.
+    pub(crate) numeric_locals: std::collections::HashSet<String>,
     /// Next emit_define call is a top-level value define → wrap the body
     /// with a memoization guard (evaluate-once per tx; see emit_define).
     pub(crate) memoize_next: bool,
@@ -749,6 +755,7 @@ impl WasmEmitter {
             wasm_imports: Vec::new(),
             list_ptr_counter: 0,
             value_defines: std::collections::HashSet::new(),
+            numeric_locals: std::collections::HashSet::new(),
             memoize_next: false,
             arr_str_helper: None,
             val_eq_helper: None,
@@ -1128,6 +1135,7 @@ impl WasmEmitter {
         self.next_local = 0;
         self.free_locals.clear();
         self.local_type_map.clear();
+        self.numeric_locals.clear();
         self.needs_frame = false;
         for p in params {
             self.local_idx(p);
