@@ -35,7 +35,7 @@ We have a working zero-knowledge application layer on NEAR: three zk apps live o
 
 ### Test infrastructure
 
-- **135+ tests green** across 31+ suites (lisp-rlm) + 46 tests (near-mock)
+- **145+ tests green** across 33+ suites (lisp-rlm) + 46 tests (near-mock)
 - Gas calibration: mock matches testnet within 0.2% (fp254 receipts)
 - Regression tests pin every bug we've fixed
 
@@ -75,7 +75,7 @@ zk/bridge.py           — SHARED format bridge (snarkjs → NEAR LE-halves)
 
 ## What We Fixed (the bug graveyard — don't re-fix, don't regress)
 
-### Compiler bugs (lisp-rlm) — 22 total, all fixed and tested
+### Compiler bugs (lisp-rlm) — 26 total, all fixed and tested
 
 **2026-09-14 sweep note:** probed every "open" GAPS entry live before fixing — ~half were STALE (arity fixed 08-26, lisp-run surface gaps all work, kv asymmetry documented backwards). Probe before fixing claimed bugs.
 
@@ -103,6 +103,10 @@ zk/bridge.py           — SHARED format bridge (snarkjs → NEAR LE-halves)
 | JSON space-before-colon | `"k" : v` silently missed on dynamic keys, dot-paths, json-extract, u128 (only literal scanners were lenient — fix I1 08-27) | bare quoted key + ws-skip + colon-required in __json_get, __json_extract_N, from_buf, dyn, u128 | 09-14 |
 | Dispatch table divergence (t13) | str-length chars-vs-bytes, str-split empties, to-int error-vs-0 — same expression, different answer per lookup path | dispatch aligned to wasm anchor (bytes, keep, 0) | 09-14 |
 | Value-define re-evaluation | top-level `const K = <expr>` re-ran its initializer on EVERY reference — array consts re-allocated per access (Poseidon RP heap trap) and diverged from interp (letrec: once) + JS (once) | memoize guard: unique zeroed slot, eval-once per tx (alloc_data content-dedupe aliased slots — alloc_memo_slot added) | 09-14 |
+| jsonGetStr 2-arg footgun | `jsonGetStr(key, json)` compiled but silently scanned tx input, ignored the buffer arg | routes to the buffer scanner (json-get-str), dot-paths work | 09-14 |
+| Object-span truncation | jsonGetStr on `{"o": {...}}` returned `{` — quote-close check ungated by the string flag | ook branch: depth-tracked balanced span, raw copy (no unescape) | 09-14 |
+| jsonGetInt silent-0 | found-but-non-numeric (`"n": "abc"`) returned 0 — indistinguishable from real zero | no-digit → TAG_NIL (`??` fires); prefix digits still parse; literal + dynamic | 09-14 |
+| extract depth-clobber (latent) | an extracted OBJECT value left depth=0 + scan_i on the closer — all LATER keys silently dropped (lisp json-extract affected too) | depth=1 restore + scan_i past closer at all 3 extraction exits | 09-14 |
 
 ### near-mock bugs — 4 total
 

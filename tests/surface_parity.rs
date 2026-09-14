@@ -27,6 +27,12 @@ const SPECIAL_FORMS: &[&str] = &[
 /// wasm-harness-only. Keep this table honest: new drift goes here ONLY with
 /// a real reason, otherwise port the builtin.
 const WASM_ONLY_DOCUMENTED: &[(&str, &str)] = &[
+    // ── input-reading ops: the interp has no tx input JSON ──
+    (
+        "json-extract-input",
+        "reads NEAR tx input (jsonExtract) — interp has no tx input; the
+         buffer-arg twin json-extract IS ported",
+    ),
     // ── raw linear-memory / C-ABI internals: interp has no linear memory ──
     ("mem-get", "raw linear-memory read (wasm layout)"),
     ("mem-get8", "raw linear-memory read (wasm layout)"),

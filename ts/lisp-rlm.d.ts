@@ -60,6 +60,12 @@ declare function strIndexOf(haystack: string, needle: string): number;
 declare function strToNum(s: string): number;
 declare function toStr(n: any): string;
 declare function jsonGet(key: string, json: string): string;
+/** Single-pass multi-key extraction from the TX INPUT (2026-09-14):
+ *  jsonExtract("a", "b", "n") → ["val", "", "7"] — raw span strings
+ *  (strings unquoted, numbers as text, objects/arrays as full JSON text,
+ *  missing keys → ""). One scan of the input for ALL keys — cheaper gas
+ *  than N jsonGetStr/Int calls on arg-heavy entrypoints. Max 8 keys. */
+declare function jsonExtract(...keys: string[]): LispArr<string>;
 declare function hexDecode(hex: string): string;
 declare function sha256Hash(msg: string): string;
 // NOTE: predicate builtins return 0/1 ints (dialect semantics), not
@@ -131,15 +137,26 @@ declare const near: {
    * with `??`:
    *   let g = near.jsonGetStr("g") ?? "default";
    * Bare use on a miss yields nil: strLength sees 0, but str-concat
-   * renders "nil" — guard explicitly.
+   * renders it "nil" — guard explicitly.
+   * Object/array values return the FULL balanced span as raw JSON text
+   * (2026-09-14): `{"o": {"i": 1}}` → `{"i": 1}` (was just "{").
+   * Chain with the 2-arg form or dot-path jsonGet for nested reads.
    */
   jsonGetStr(key: string): string | null;
-  /** {"k": ["a","b"]} → LispArr<string>; max 64 elements, nil if missing */
+  /** 2-arg form (2026-09-14): scan the GIVEN JSON string (not the tx
+   *  input) — same behavior as jsonGet(key, json), dot-paths supported.
+   *  (Previously compiled but silently ignored the second arg.) */
+  jsonGetStr(key: string, json: string): string | null;
+  /** {"k": ["a", 12, {"n":1}]} → LispArr of raw span strings — strings
+   * unquoted, numbers as text, nested objects/arrays as full JSON text
+   * (2026-09-14: nested elements + max raised 64 → 512). nil if missing */
   jsonArr(key: string): LispArr<string>;
   /**
    * Read a numeric arg from the transaction input JSON.
    * Missing key → null — pair with `??`:
    *   let n = near.jsonGetInt("n") ?? 0;
+   * Found-but-non-numeric ("n": "abc", true, {…}) → null too (2026-09-14):
+   * a silent 0 was indistinguishable from a real zero. "12x" → 12 (prefix).
    */
   jsonGetInt(key: string): number | null;
   jsonReturnStr(v: string): void;

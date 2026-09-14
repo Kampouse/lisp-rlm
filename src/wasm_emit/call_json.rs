@@ -21,11 +21,21 @@ impl WasmEmitter {
                     // Dynamic key (2026-09-13): same __json_get lookup as the
                     // str path, then parse the raw value bytes with the shared
                     // __str_to_num. Miss → TAG_NIL (?? fallback fires, same
-                    // semantics as the literal path).
+                    // semantics as the literal path). Found-but-non-numeric
+                    // ("n": "abc", true, {…}) → TAG_NIL too — first-byte
+                    // digit/minus gate, same rule as the literal scanner
+                    // (2026-09-14): a silent 0 is indistinguishable from a
+                    // real zero; nil makes `??` fire.
                     _ => {
                         let lookup = self.json_dyn_lookup_str(&a[0])?;
                         let s2n = self.ensure_str_to_num_func();
                         let t = self.local_idx("__jgi_miss");
+                        let fb = self.local_idx_i32("__jgi_fb");
+                        let ma8 = wasm_encoder::MemArg {
+                            offset: 0,
+                            align: 0,
+                            memory_index: 0,
+                        };
                         let mut v = lookup;
                         v.push(Instruction::LocalSet(t));
                         v.push(Instruction::LocalGet(t));
@@ -34,8 +44,36 @@ impl WasmEmitter {
                         v.push(Instruction::If(BlockType::Result(ValType::I64)));
                         v.push(Instruction::I64Const(TAG_NIL));
                         v.push(Instruction::Else);
-                        v.push(Instruction::LocalGet(t));
-                        v.push(Instruction::Call(crate::wasm_emit::USER_BASE | s2n));
+                        {
+                            // first byte of the span (untag: payload = t>>3,
+                            // ptr = payload & 0xFFFFFFFF)
+                            v.push(Instruction::LocalGet(t));
+                            v.push(Instruction::I64Const(3));
+                            v.push(Instruction::I64ShrU);
+                            v.push(Instruction::I64Const(0xFFFFFFFF));
+                            v.push(Instruction::I64And);
+                            v.push(Instruction::I32WrapI64);
+                            v.push(Instruction::I32Load8U(ma8));
+                            v.push(Instruction::LocalSet(fb));
+                            // fb in [0x30..=0x39] or == 0x2D ?
+                            v.push(Instruction::LocalGet(fb));
+                            v.push(Instruction::I32Const(0x30));
+                            v.push(Instruction::I32GeS);
+                            v.push(Instruction::LocalGet(fb));
+                            v.push(Instruction::I32Const(0x39));
+                            v.push(Instruction::I32LeS);
+                            v.push(Instruction::I32And);
+                            v.push(Instruction::LocalGet(fb));
+                            v.push(Instruction::I32Const(0x2D));
+                            v.push(Instruction::I32Eq);
+                            v.push(Instruction::I32Or);
+                            v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                            v.push(Instruction::LocalGet(t));
+                            v.push(Instruction::Call(crate::wasm_emit::USER_BASE | s2n));
+                            v.push(Instruction::Else);
+                            v.push(Instruction::I64Const(TAG_NIL));
+                            v.push(Instruction::End);
+                        }
                         v.push(Instruction::End);
                         Ok(v)
                     }
@@ -67,6 +105,19 @@ impl WasmEmitter {
             "near/json_get_str" => {
                 if a.is_empty() {
                     return Err("near/json_get_str requires a string key argument".into());
+                }
+                // 2-arg form (2026-09-14): jsonGetStr(key, json) scans the
+                // GIVEN JSON string, not the tx input. It used to compile
+                // fine and silently ignore the second arg — a silent-
+                // wrong-answer footgun (probe dot-path chain returned MISS
+                // on valid input). Dot-paths work in this form: the buffer
+                // scanner supports "a.b" keys.
+                if a.len() >= 2 {
+                    if !matches!(&a[0], LispVal::Str(_)) {
+                        return Err("jsonGetStr(key, json): key must be a string literal".into());
+                    }
+                    let args2: Vec<LispVal> = a[..2].to_vec();
+                    return self.call_json("json-get-str", &args2);
                 }
                 match &a[0] {
                     LispVal::Str(key) => {
@@ -500,6 +551,65 @@ impl WasmEmitter {
                 let idx = self.ensure_json_extract_func(n_keys);
                 v.push(Instruction::Call(crate::wasm_emit::USER_BASE | idx));
                 // Result is already tagged as array (TAG_ARRAY)
+                Ok(v)
+            }
+            "json-extract-input" => {
+                // (json-extract-input "key0" "key1" ...) → single-pass
+                // multi-key extraction from the TX INPUT (2026-09-14).
+                // The lisp json-extract takes the json as arg 0; this
+                // variant is what TS jsonExtract lowers to — reads input
+                // once, one __json_extract_N pass over the buffer for all
+                // keys (N full scans → 1). Returns a TAG_ARRAY of raw
+                // span strings ("" for missing keys).
+                if a.is_empty() {
+                    return Err("json-extract-input requires at least 1 key".into());
+                }
+                let n_keys = a.len();
+                if n_keys > 8 {
+                    return Err("json-extract-input supports at most 8 keys".into());
+                }
+                self.need_host(7);
+                self.need_host(0);
+                self.need_host(1);
+                let mut v = Vec::new();
+                // read input → INPUT_BUF; pack (ilen << 32) | INPUT_BUF
+                let ilen_l = self.local_idx_i32("__jei_len");
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(7));
+                v.push(Instruction::I64Const(0));
+                v.push(Self::host_call(1));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalSet(ilen_l));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Const(INPUT_BUF as i64));
+                v.push(Self::host_call(0));
+                v.push(Instruction::LocalGet(ilen_l));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(INPUT_BUF as i64));
+                v.push(Instruction::I64Or);
+                // key patterns (bare quoted keys — extract_N requires ':'
+                // after ws at match time)
+                for key_arg in a {
+                    match key_arg {
+                        LispVal::Str(key) => {
+                            let pat = {
+                                let mut p = vec![b'"'];
+                                p.extend(key.as_bytes());
+                                p.push(b'"');
+                                p
+                            };
+                            let pat_off = self.alloc_data(&pat) as i64;
+                            let pat_len = pat.len() as i64;
+                            let pat_packed = (pat_off as u64) | ((pat_len as u64) << 32);
+                            v.push(Instruction::I64Const(pat_packed as i64));
+                        }
+                        _ => return Err("json-extract-input keys must be string literals".into()),
+                    }
+                }
+                let idx = self.ensure_json_extract_func(n_keys);
+                v.push(Instruction::Call(crate::wasm_emit::USER_BASE | idx));
                 Ok(v)
             }
             "json-bytes-to-str" | "json-decode-bytes" => {

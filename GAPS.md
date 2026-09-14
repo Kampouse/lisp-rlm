@@ -1037,6 +1037,40 @@ Every real 192B pairing gate trapped. Fix: POINT_SIZE + POINT_SIZE*2.
 - near-mock cross mode prints number returns as raw tagged bytes (📄 shows
   garbage) — return strings from test exports, or use single-wasm mode
 
+### JSON v2 (2026-09-14, Tier 1+2) — all verified on near-mock
+
+1. **jsonGetStr(key, json) 2-arg form**: now scans the GIVEN JSON string
+   (dot-paths work). Was a silent footgun — compiled fine, scanned the tx
+   input, ignored arg 2.
+2. **Object/array spanning**: jsonGetStr on {"o": {...}} returns the FULL
+   balanced span as raw JSON text (was just "{" — the measure loop's
+   quote-branch didn't check the string flag). Dynamic/dot-path already
+   spanned (__json_get). Known limitation (all spanning paths): braces
+   inside quoted strings within the span miscount depth.
+3. **jsonGetInt found-but-non-numeric → nil**: "n": "abc"/true/{…} now
+   fires ?? fallback (was silent 0, indistinguishable from a real zero).
+   Prefix rule: "12x" → 12. Literal + dynamic paths.
+4. **jsonExtract(...keys)** (TS): single-pass multi-key extraction from
+   tx input via __json_extract_N — LispArr of raw span strings ("" on
+   miss), max 8 keys. Measured 2.3× cheaper than N individual getters
+   (0.019 vs 0.042 Tgas for 4 keys). Also fixed a LATENT extract bug on
+   the way: an extracted OBJECT value left the scan's depth local at 0
+   and scan_i ON the closer — every key AFTER it was silently dropped
+   (extract "outer" first killed the rest; affected lisp json-extract
+   too). depth=1 restore + scan_i++ past the closer at all three
+   extraction exits.
+5. **jsonArr**: nested elements (objects/arrays as full JSON text spans)
+   + element cap 64 → 512. Strings unquoted, numbers as text (raw spans).
+6. DEFERRED — dynamic keys for jsonArr: needs buffer-parameterization of
+   the whole json_get_arr scanner (ib constant in ~40 sites). Low payoff;
+   use literal keys or jsonExtract.
+
+12 regression tests in test_json_v2. Suites green: json_v2(12),
+dynamic_json(15), api_sweep, json_set, json_wasm, ts_json_sizes,
+toplevel_const, const_memoize, loop_decl_scope, continue, repeat_pad
+(95) + core_language(160), groth16, poseidon, multisig, cross, yield,
+annotations, options, interp, norvig, surface_parity (178).
+
 ### PLONK verifier analysis (in progress, skeleton deployed)
 
 Key finding: ALL PLONK verification operations map to existing alt_bn128

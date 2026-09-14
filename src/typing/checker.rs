@@ -1476,6 +1476,20 @@ fn infer_application(
             }
             return Ok(TcType::Con(TcCon::Str));
         }
+        // json-extract-input / json-extract: variadic (1..=8 str keys →
+        // array of raw span strings; the emitter enforces the 8-key cap)
+        if name == "json-extract-input" || name == "json-extract" {
+            if args.is_empty() {
+                return Err(format!("in call ({name} ...): needs at least 1 key"));
+            }
+            for arg in args.iter().skip(if name == "json-extract" { 1 } else { 0 }) {
+                let t = infer(arg, env, supply, subst)?;
+                if unify(&t, &TcType::Con(TcCon::Str)).is_err() {
+                    return Err(format!("in call ({name} ...): keys must be str"));
+                }
+            }
+            return Ok(TcType::Con(TcCon::List(Box::new(TcType::Con(TcCon::Any)))));
+        }
         // len: POLYMORPHIC — interp accepts BOTH str and list (and any
         // array-ish value); the env carried two conflicting registrations
         // (list→int generic at types.rs:800, str-narrow at 1512) so

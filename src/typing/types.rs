@@ -777,6 +777,15 @@ impl TcEnv {
                     TcType::Con(TcCon::Str),
                     TcType::Con(TcCon::Str),
                 ],
+                Box::new(arr_ty.clone()),
+            ),
+        );
+        // json-extract-input: (str, str, ...) → array — single-pass
+        // multi-key extraction from tx input (TS jsonExtract)
+        env.insert_mono(
+            "json-extract-input".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Str), TcType::Con(TcCon::Str)],
                 Box::new(arr_ty),
             ),
         );
