@@ -1,13 +1,13 @@
 # zk-NEAR Stack — Session Continuity Plan
 
 > Living document. Update at end of each session. Read at start of each session.
-> Last updated: 2026-09-14 (end of session 4)
+> Last updated: 2026-09-14 (session 4 + bug-list sweep — colon fix landed)
 
 ---
 
 ## Where We Are (one paragraph)
 
-We have a working zero-knowledge application layer on NEAR: three zk apps live on testnet (anonymous identity credentials, anonymous voting v3 with choice sealed in circuit, anonymous voting v4 with homomorphic tally where nobody sees individual choices), all built on a Groth16 verifier (34 Tgas), circomlib-exact Poseidon (146 Tgas), and the alt_bn128 hosts. The compiler survived 8 silent-corruption bugs (session 3) plus a session-4 bug-fix marathon that cleared the entire known-bug list: 10 more issues fixed across 5 commits (dynamic JSON keys, `continue`, top-level const exprs, loop/if-branch scoping, invalid-wasm local-slot reuse, negative returns at the host boundary, string repeat/pad) with 36 new regression tests — the language bug backlog is now EMPTY (remaining items in GAPS.md are minor/cosmetic). lisp-rlm 0.1.7 / near-compile 0.1.8 / near-mock 0.7.1 are published; near-mock predicts gas within 0.2% of mainnet. The PLONK verifier (universal setup — eliminates per-circuit trusted setup) has been analyzed, validated as feasible on existing hosts, skeleton implemented and init deployed — transcript implementation is the remaining ~2-3 hours. Key architectural discoveries: (1) Noir is a frontend, not a proof system — the arkworks backend that would slot into our verifier is dead; (2) PLONK works on our hosts and eliminates the trusted setup ceremony; (3) NEAR's MPC network doesn't support BN254 threshold decryption (wrong curve, wrong purpose); (4) homomorphic tally via additive ElGamal over BN254 gives the strongest voting privacy achievable with existing hosts.
+We have a working zero-knowledge application layer on NEAR: three zk apps live on testnet (anonymous identity credentials, anonymous voting v3 with choice sealed in circuit, anonymous voting v4 with homomorphic tally where nobody sees individual choices), all built on a Groth16 verifier (34 Tgas), circomlib-exact Poseidon (146 Tgas), and the alt_bn128 hosts. The compiler survived 8 silent-corruption bugs (session 3) plus a session-4 bug-fix marathon that cleared the entire known-bug list: 12 more issues fixed across 6 commits (dynamic JSON keys, `continue`, top-level const exprs, loop/if-branch scoping, invalid-wasm local-slot reuse, negative returns at the host boundary, string repeat/pad, JSON space-before-colon on all lookup paths, dispatch-table alignment) with 40 new regression tests. Remaining known language edges (all documented in GAPS.md, all minor): storage-family mixing has no wasm-side guard, top-level const arrays re-execute per access, boxed Float(0.0) truthiness divergence, lisp `json/get` still glued-colon, jsonGetStr doesn't span object values (use dot-path jsonGet). lisp-rlm 0.1.7 / near-compile 0.1.8 / near-mock 0.7.1 are published; near-mock predicts gas within 0.2% of mainnet. The PLONK verifier (universal setup — eliminates per-circuit trusted setup) has been analyzed, validated as feasible on existing hosts, skeleton implemented and init deployed — transcript implementation is the remaining ~2-3 hours. Key architectural discoveries: (1) Noir is a frontend, not a proof system — the arkworks backend that would slot into our verifier is dead; (2) PLONK works on our hosts and eliminates the trusted setup ceremony; (3) NEAR's MPC network doesn't support BN254 threshold decryption (wrong curve, wrong purpose); (4) homomorphic tally via additive ElGamal over BN254 gives the strongest voting privacy achievable with existing hosts.
 
 ---
 
@@ -35,7 +35,7 @@ We have a working zero-knowledge application layer on NEAR: three zk apps live o
 
 ### Test infrastructure
 
-- **130+ tests green** across 31+ suites (lisp-rlm) + 46 tests (near-mock)
+- **135+ tests green** across 31+ suites (lisp-rlm) + 46 tests (near-mock)
 - Gas calibration: mock matches testnet within 0.2% (fp254 receipts)
 - Regression tests pin every bug we've fixed
 
@@ -75,7 +75,9 @@ zk/bridge.py           — SHARED format bridge (snarkjs → NEAR LE-halves)
 
 ## What We Fixed (the bug graveyard — don't re-fix, don't regress)
 
-### Compiler bugs (lisp-rlm) — 19 total, all fixed and tested
+### Compiler bugs (lisp-rlm) — 21 total, all fixed and tested
+
+**2026-09-14 sweep note:** probed every "open" GAPS entry live before fixing — ~half were STALE (arity fixed 08-26, lisp-run surface gaps all work, kv asymmetry documented backwards). Probe before fixing claimed bugs.
 
 | bug | symptom | fix | date |
 |---|---|---|---|
@@ -98,6 +100,8 @@ zk/bridge.py           — SHARED format bridge (snarkjs → NEAR LE-halves)
 | Local-slot cross-type reuse | freed i64 slot reused as i32 → type map rewritten → INVALID wasm (whole module fails validation) | type fixed at first alloc; same-type reuse only | 09-13 |
 | jsonGetInt literal-only | same as jsonGetStr | shares json_dyn_lookup_str + __str_to_num; miss → TAG_NIL | 09-14 |
 | Negative Num returns | both export-wrapper untag sites used ShrU — `return -5` crossed host boundary as 2^61 garbage | I64ShrS at both sites | 09-14 |
+| JSON space-before-colon | `"k" : v` silently missed on dynamic keys, dot-paths, json-extract, u128 (only literal scanners were lenient — fix I1 08-27) | bare quoted key + ws-skip + colon-required in __json_get, __json_extract_N, from_buf, dyn, u128 | 09-14 |
+| Dispatch table divergence (t13) | str-length chars-vs-bytes, str-split empties, to-int error-vs-0 — same expression, different answer per lookup path | dispatch aligned to wasm anchor (bytes, keep, 0) | 09-14 |
 
 ### near-mock bugs — 4 total
 
