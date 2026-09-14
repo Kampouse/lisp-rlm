@@ -69,7 +69,193 @@ impl WasmEmitter {
                         v.push(Instruction::End);
                         Ok(v)
                     }
-                    _ => Err("near/json_get_str key must be a string literal".into()),
+                    _ => {
+                        // Dynamic key (2026-09-13): evaluate the key expression,
+                        // copy to runtime heap with quote delimiters, call __json_get.
+                        self.need_host(7);
+                        self.need_host(0);
+                        self.need_host(1);
+                        let key_expr = self.expr(&a[0])?;
+                        let mut v = Vec::new();
+                        let ib = crate::wasm_emit::INPUT_BUF as i64;
+
+                        // Store key in local, then extract ptr/len
+                        let key_l = self.local_idx("__jgd_key");
+                        v.extend(key_expr);
+                        v.push(Instruction::LocalSet(key_l));
+
+                        let key_ptr_l = self.local_idx_i32("__jgd_kp");
+                        v.push(Instruction::LocalGet(key_l));
+                        v.extend(self.emit_untag());
+                        v.push(Instruction::I64Const(0xFFFFFFFF));
+                        v.push(Instruction::I64And);
+                        v.push(Instruction::I32WrapI64);
+                        v.push(Instruction::LocalSet(key_ptr_l));
+
+                        let key_len_l = self.local_idx_i32("__jgd_kl");
+                        v.push(Instruction::LocalGet(key_l));
+                        v.extend(self.emit_untag());
+                        v.push(Instruction::I64Const(32));
+                        v.push(Instruction::I64ShrU);
+                        v.push(Instruction::I32WrapI64);
+                        v.push(Instruction::LocalSet(key_len_l));
+
+                        // Read input to INPUT_BUF
+                        let ilen_l = self.local_idx_i32("__jgd_il");
+                        v.push(Instruction::I64Const(0));
+                        v.push(Self::host_call(7));
+                        v.push(Instruction::I64Const(0));
+                        v.push(Self::host_call(1));
+                        v.push(Instruction::I32WrapI64);
+                        v.push(Instruction::LocalSet(ilen_l));
+                        v.push(Instruction::I64Const(0));
+                        v.push(Instruction::I64Const(ib));
+                        v.push(Self::host_call(0));
+
+                        // Alloc scratch for pattern: quote + key + quote + colon ("key":)
+                        // __json_get's pattern convention (see json_get_from_buf): glued colon,
+                        // then it skips ws before the value. Scratch comes from the
+                        // monotonic runtime heap (mem[56]) via emit_rtheap_alloc.
+                        let pat_len_l = self.local_idx("__jgd_pl");
+                        v.push(Instruction::LocalGet(key_len_l));
+                        v.push(Instruction::I64ExtendI32U);
+                        v.push(Instruction::I64Const(3));
+                        v.push(Instruction::I64Add);
+                        v.push(Instruction::LocalSet(pat_len_l));
+
+                        let scr_l = self.local_idx("__jgd_sc");
+                        v.extend(self.emit_rtheap_alloc(scr_l, pat_len_l));
+
+                        let ma8 = wasm_encoder::MemArg {
+                            offset: 0,
+                            align: 0,
+                            memory_index: 0,
+                        };
+
+                        // scr[0] = '"'
+                        v.push(Instruction::LocalGet(scr_l));
+                        v.push(Instruction::I32WrapI64);
+                        v.push(Instruction::I32Const(0x22));
+                        v.push(Instruction::I32Store8(ma8.clone()));
+
+                        // copy key bytes to scr[1..1+len]
+                        let ci_l = self.local_idx_i32("__jgd_ci");
+                        v.push(Instruction::I32Const(0));
+                        v.push(Instruction::LocalSet(ci_l));
+                        v.push(Instruction::Block(BlockType::Empty));
+                        v.push(Instruction::Loop(BlockType::Empty));
+                        v.push(Instruction::LocalGet(ci_l));
+                        v.push(Instruction::LocalGet(key_len_l));
+                        v.push(Instruction::I32GeS);
+                        v.push(Instruction::If(BlockType::Empty));
+                        // depth from inside this If: 0=If, 1=Loop, 2=Block —
+                        // Br(2) EXITS the block (Br(1) would restart the loop)
+                        v.push(Instruction::Br(2));
+                        v.push(Instruction::End);
+                        v.push(Instruction::LocalGet(scr_l));
+                        v.push(Instruction::I32WrapI64);
+                        v.push(Instruction::LocalGet(ci_l));
+                        v.push(Instruction::I32Const(1));
+                        v.push(Instruction::I32Add);
+                        v.push(Instruction::I32Add);
+                        v.push(Instruction::LocalGet(key_ptr_l));
+                        v.push(Instruction::LocalGet(ci_l));
+                        v.push(Instruction::I32Add);
+                        v.push(Instruction::I32Load8U(ma8.clone()));
+                        v.push(Instruction::I32Store8(ma8.clone()));
+                        v.push(Instruction::LocalGet(ci_l));
+                        v.push(Instruction::I32Const(1));
+                        v.push(Instruction::I32Add);
+                        v.push(Instruction::LocalSet(ci_l));
+                        v.push(Instruction::Br(0));
+                        v.push(Instruction::End);
+                        v.push(Instruction::End);
+
+                        // scr[1+len] = '"', scr[2+len] = ':'
+                        v.push(Instruction::LocalGet(scr_l));
+                        v.push(Instruction::I32WrapI64);
+                        v.push(Instruction::LocalGet(key_len_l));
+                        v.push(Instruction::I32Const(1));
+                        v.push(Instruction::I32Add);
+                        v.push(Instruction::I32Add);
+                        v.push(Instruction::I32Const(0x22));
+                        v.push(Instruction::I32Store8(ma8.clone()));
+                        v.push(Instruction::LocalGet(scr_l));
+                        v.push(Instruction::I32WrapI64);
+                        v.push(Instruction::LocalGet(key_len_l));
+                        v.push(Instruction::I32Const(2));
+                        v.push(Instruction::I32Add);
+                        v.push(Instruction::I32Add);
+                        v.push(Instruction::I32Const(0x3A));
+                        v.push(Instruction::I32Store8(ma8.clone()));
+
+                        // Call __json_get(json=ib|ilen<<32, pat=scr|pat_len<<32)
+                        // (2 packed i64 params — matches ensure_json_get_func's ABI)
+                        let get_fn = self.ensure_json_get_func();
+                        v.push(Instruction::LocalGet(ilen_l));
+                        v.push(Instruction::I64ExtendI32U);
+                        v.push(Instruction::I64Const(32));
+                        v.push(Instruction::I64Shl);
+                        v.push(Instruction::I64Const(ib));
+                        v.push(Instruction::I64Or);
+                        v.push(Instruction::LocalGet(pat_len_l));
+                        v.push(Instruction::I64Const(32));
+                        v.push(Instruction::I64Shl);
+                        v.push(Instruction::LocalGet(scr_l));
+                        v.push(Instruction::I64Or);
+                        v.push(Instruction::Call(crate::wasm_emit::USER_BASE | get_fn));
+
+                        // __json_get returns UNtagged (ptr|len<<32) pointing at
+                        // stdout_buf — a SHARED scratch that the next __json_get
+                        // call overwrites (see json_get_wasi's heap-copy). Heap-
+                        // copy the result before tagging, so multiple dynamic
+                        // reads in one function don't clobber each other.
+                        // Miss (0) → TAG_NIL so `?? fallback` fires (2026-08-31
+                        // miss-gate semantics, same as the literal path).
+                        let res_l = self.local_idx("__jgd_res");
+                        v.push(Instruction::LocalSet(res_l));
+                        v.push(Instruction::LocalGet(res_l));
+                        v.push(Instruction::I64Eqz);
+                        v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                        v.push(Instruction::I64Const(TAG_NIL));
+                        v.push(Instruction::Else);
+                        {
+                            let res_len_l = self.local_idx_i32("__jgd_rl");
+                            let res_ptr_l = self.local_idx_i32("__jgd_rp");
+                            v.push(Instruction::LocalGet(res_l));
+                            v.push(Instruction::I64Const(32));
+                            v.push(Instruction::I64ShrU);
+                            v.push(Instruction::I32WrapI64);
+                            v.push(Instruction::LocalSet(res_len_l));
+                            v.push(Instruction::LocalGet(res_l));
+                            v.push(Instruction::I32WrapI64);
+                            v.push(Instruction::LocalSet(res_ptr_l));
+                            let dst_l = self.local_idx("__jgd_dst");
+                            let alen_l = self.local_idx("__jgd_al");
+                            v.push(Instruction::LocalGet(res_len_l));
+                            v.push(Instruction::I64ExtendI32U);
+                            v.push(Instruction::LocalSet(alen_l));
+                            v.extend(self.emit_rtheap_alloc(dst_l, alen_l));
+                            v.push(Instruction::LocalGet(dst_l));
+                            v.push(Instruction::I32WrapI64);
+                            v.push(Instruction::LocalGet(res_ptr_l));
+                            v.push(Instruction::LocalGet(res_len_l));
+                            v.push(Instruction::MemoryCopy {
+                                src_mem: 0,
+                                dst_mem: 0,
+                            });
+                            // repack (res_len << 32 | dst) and tag as Str
+                            v.push(Instruction::LocalGet(res_len_l));
+                            v.push(Instruction::I64ExtendI32U);
+                            v.push(Instruction::I64Const(32));
+                            v.push(Instruction::I64Shl);
+                            v.push(Instruction::LocalGet(dst_l));
+                            v.push(Instruction::I64Or);
+                            v.extend(self.emit_tag_str());
+                        }
+                        v.push(Instruction::End);
+                        Ok(v)
+                    }
                 }
             }
             "json/get" => {
