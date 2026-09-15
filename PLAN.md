@@ -1,13 +1,13 @@
 # zk-NEAR Stack — Session Continuity Plan
 
 > Living document. Update at end of each session. Read at start of each session.
-> Last updated: 2026-09-14 (session 4 + bug-list sweep — colon fix landed)
+> Last updated: 2026-09-15 (session 5 — u128 Level 1 limb locals LANDED, fib −62%; chunked-to_str zero-NUL bug found in published 0.1.12 and fixed; 0.1.13/0.1.14 published)
 
 ---
 
 ## Where We Are (one paragraph)
 
-We have a working zero-knowledge application layer on NEAR: three zk apps live on testnet (anonymous identity credentials, anonymous voting v3 with choice sealed in circuit, anonymous voting v4 with homomorphic tally where nobody sees individual choices), all built on a Groth16 verifier (34 Tgas), circomlib-exact Poseidon (146 Tgas), and the alt_bn128 hosts. The compiler survived 8 silent-corruption bugs (session 3) + a session-4 bug-fix marathon (26 fixed total, bug backlog empty) + a 2026-09-14/15 gas marathon: hot loops -47%, getter entrypoints -86% (input caching + scanner dedup + eq fast paths), Poseidon 146→124.9 Tgas, JSON API v3 (near.input handles, typed ??, near.args<T>), and u128 ~9× (chunked to_str — the serialize was 95% of every u128 op). The next big lever is designed and parked: u128 limb locals (math without the serialization tax, ~5× more on numeric contracts). The PLONK verifier (universal setup) has skeleton + init deployed; transcript implementation is the remaining ~2-3 hours. Key architectural discoveries: (1) Noir is a frontend, not a proof system — the arkworks backend that would slot into our verifier is dead; (2) PLONK works on our hosts and eliminates the trusted setup ceremony; (3) NEAR's MPC network doesn't support BN254 threshold decryption (wrong curve, wrong purpose); (4) homomorphic tally via additive ElGamal over BN254 gives the strongest voting privacy achievable with existing hosts.
+We have a working zero-knowledge application layer on NEAR: three zk apps live on testnet (anonymous identity credentials, anonymous voting v3 with choice sealed in circuit, anonymous voting v4 with homomorphic tally where nobody sees individual choices), all built on a Groth16 verifier (34 Tgas), circomlib-exact Poseidon (146 Tgas), and the alt_bn128 hosts. The compiler survived 8 silent-corruption bugs (session 3) + a session-4 bug-fix marathon (26 fixed total, bug backlog empty) + a 2026-09-14/15 gas marathon: hot loops -47%, getter entrypoints -86% (input caching + scanner dedup + eq fast paths), Poseidon 146→124.9 Tgas, JSON API v3 (near.input handles, typed ??, near.args<T>), u128 ~9× (chunked to_str), and **u128 Level 1 limb locals** (session 5: fib(185) 2.452→0.925 Tgas, −62% — u128-pure locals never stringify; the nil-dummy poisoning fix in the loop hoisting was the key unlock). Session 5 also caught a live bug in published 0.1.12: the chunked to_str zero fast-path returned a NUL string for zero values (broke AMM/auction fixtures via downstream parse traps) — fixed + pinned, 0.1.13/0.1.14 published. The PLONK verifier (universal setup) has skeleton + init deployed; transcript implementation is the remaining ~2-3 hours. Key architectural discoveries: (1) Noir is a frontend, not a proof system — the arkworks backend that would slot into our verifier is dead; (2) PLONK works on our hosts and eliminates the trusted setup ceremony; (3) NEAR's MPC network doesn't support BN254 threshold decryption (wrong curve, wrong purpose); (4) homomorphic tally via additive ElGamal over BN254 gives the strongest voting privacy achievable with existing hosts. Open wound: test_ts_flashloan fails on main (balance after honest repay reads 1000 not 1005 — cross-contract/promise path; pre-dates 74900a4, bisect interrupted; next session should finish it).
 
 ---
 
@@ -29,8 +29,8 @@ We have a working zero-knowledge application layer on NEAR: three zk apps live o
 
 | crate | version | what |
 |---|---|---|
-| lisp-rlm-wasm | 0.1.12 | TS→NEAR wasm compiler (the frontend) — u128 chunked to_str (~9×/op) |
-| near-compile | 0.1.13 | CLI: build/deploy/call/create |
+| lisp-rlm-wasm | 0.1.13 | TS→NEAR wasm compiler — u128 limb locals (fib −62%) + chunked-to_str zero-NUL fix |
+| near-compile | 0.1.14 | CLI: build/deploy/call/create |
 | near-mock | 0.7.1 | local runner, calibrated gas, real crypto hosts |
 
 ### Test infrastructure
@@ -144,17 +144,20 @@ zk/bridge.py           — SHARED format bridge (snarkjs → NEAR LE-halves)
 
 ## Open Fronts (ranked by leverage)
 
-### 1. 🟢 u128 without the serialization tax (the DeFi gas story — designed, ready to build)
+### 1. 🟢 u128 without the serialization tax (the DeFi gas story — Levels 0+1 LANDED)
 
 **The insight (2026-09-15)**: u128 values live as decimal STRINGS in the value model, so every op pays parse → limbs → compute → limbs → serialize. After the chunked to_str (9× win, landed: per-op ~80 Ggas → ~9), format conversion is still **~80% of every u128 op**. The tax is structural — kill the round-trips and it's gone. Three levels:
 
-- **Level 0 ✅ (done, `74900a4`)**: chunked `__h_u128_to_str` — divide by 10^18 per chunk (NOT 10^19 — overflows i64::MAX, corrupts the digit formatter), ≤3 chunks, one 128-step division each. fib(185) 8→1.6 Tgas; acc(100) 8.04→1.02. Padding rule (interior chunks zero-pad to 18) pinned in `test_u128_chunked`.
-- **Level 1 — function-scoped limb locals** (the 80/20, medium effort): bigint-typed locals compile to a **limb pair (two i64 locals)** instead of a tagged string. The TYPE SYSTEM already knows — `bigint` annotations exist (`BIGINT_NAMES`/`BIGINT_LOCALS`, `a + b` already routes to `u128/add`). Parse ONCE at param binding, math in limbs (`~1-2 Ggas/op`), serialize ONCE at true edges (storageSet/return/log). Loop accumulators stay in limbs across iterations — the fib/interest-accrual/batch-payout shape. fib(185): ~1.6 → **~0.3 Tgas**. Static (annotation-driven, no inference), reuses `__u128_*` helpers, no new tags, no ABI change. **Known limit**: bigint args to helper fns still serialize at the call boundary (calling convention is one tagged i64).
+- **Level 0 ✅ (done, `74900a4` + zero-fix `1058dae`)**: chunked `__h_u128_to_str` — divide by 10^18 per chunk (NOT 10^19 — overflows i64::MAX, corrupts the digit formatter), ≤3 chunks, one 128-step division each. fib(185) 8→1.6 Tgas; acc(100) 8.04→1.02. Padding rule (interior chunks zero-pad to 18) pinned in `test_u128_chunked`. ⚠️ the zero fast-path shipped a NUL-string bug in 0.1.12 (tagged ptr = buffer BASE instead of the written '0' — `u128Add("0","0")` read back `"\u0000"`, trapped downstream parsers; broke the AMM/auction fixtures). Fixed in 0.1.13 + pinned (`zero_renders_zero`, all four zero-producing ops). Lesson: every op needs a ZERO case pinned, not just the big-value edges.
+- **Level 1 ✅ (done, `e1658ab`)**: limb locals — a local whose every store is u128-pure (u128 arith result, ≤u128::MAX digit literal, copy of another limb local) compiles to a (lo, hi) i64 pair. Emitter-side per-function eligibility pre-scan (conservative — any impure store demotes the name function-wide); limb-aware operand paths (limb locals + nested u128 arith never stringify — full fusion of nested arithmetic trees); comparisons run on the locals; lazy materialization at true edges (Sym reads, storage writes, strcat, closure capture); lambdas materialize captured limb locals at closure creation. CRITICAL frontend piece: hoisted loop-body bindings with u128-pure inits bind `"0"` dummies instead of nil — nil poisoned eligibility and silently killed the whole optimization for the fib/accrual shape (all 6 hoist sites fixed: while ×2, for, for-of, loop_body_expr, function-level impure-init).
+  - **Measured: fib(185) 2.452 → 0.925 Tgas (−62%), wasm 1441 → 1192 bytes.** Per-iter ~13.3 → ~5.0 Mgas. The predicted ~0.3 Tgas was optimistic — the floor is now loop machinery (~0.35 Tgas numeric counter/cond/guards) + the add-helper call (scratch-store → call → load ≈ 20 instr/iter).
+  - **Next cut (Level 1.5, small)**: inline limb add/sub when both operands and target are limb locals (~10 instr vs ~30) — projected fib ≈ 0.7 Tgas. Only worth it if a real contract needs it.
+  - **Known limits**: bigint args to helper fns still serialize at the call boundary (calling convention is one tagged i64) — Level 2 (TAG_U128 heap cells) when a real contract hits that ceiling. Params stay tagged. Cosmetic: a stored "007" materializes canonical "7".
 - **Level 2 — native TAG_U128** (full elimination, days + invasive): u128 = tagged pointer to a 16-byte heap cell — flows through calls, arrays, storage with ZERO serialization anywhere; ops deref cells (~0.5-1 Ggas). Serialization only at JSON return/log/display. Touches every polymorphic consumer + interp parity + checker. Language-version-sized — do it only when a real contract hits Level 1's call-boundary tax.
 
-**Measured floor for context**: loop machinery ~27 Mgas/iter (counter = checked tagged add ~17 + cmp/br ~10); i64 checked add body op ~17 Mgas. The loop tax is noise next to the u128 format tax (9 Ggas = ~500× an add).
+**Measured floor for context (corrected 2026-09-15)**: fib-loop machinery ≈ 1.9 Mgas/iter real (the old 27 Mgas/iter figure was wrong — measured on a heavier loop shape); u128 limb-op path ≈ 3 Mgas/iter; i64 checked add ~17 Mgas was also overestimated per-instruction-wise. Re-measure before optimizing further — instruction counts ≠ gas 1:1.
 
-**First benchmark**: fib(185) loop + an accrual loop (rps × balance ÷ scale per user) — Level 1 should show ~5×.
+**First benchmark**: fib(185) loop + an accrual loop — ✅ done (fib above; accrual covered by `mixed_generic_operand_accrues_exactly` + acc(100) budget in test_u128_chunked).
 
 ### 2. 🟡 PLONK verifier completion (eliminates trusted setup — 2-3 hours remaining)
 
