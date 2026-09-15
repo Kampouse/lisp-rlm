@@ -91,6 +91,39 @@ impl WasmEmitter {
                     _ => {}
                 }
             }
+            // const-const arithmetic fold (2026-09-14): I64Const(a),
+            // I64Const(b), {Add,Sub,Mul} → I64Const(a op b) when the op is
+            // exact (checked; overflow keeps the runtime sequence — it must
+            // trap, not fold)
+            if i + 2 < instrs.len() {
+                if let (Instruction::I64Const(a), Instruction::I64Const(b), Instruction::I64Add) =
+                    (&instrs[i], &instrs[i + 1], &instrs[i + 2])
+                {
+                    if let Some(s) = a.checked_add(*b) {
+                        out.push(Instruction::I64Const(s));
+                        i += 3;
+                        continue;
+                    }
+                }
+                if let (Instruction::I64Const(a), Instruction::I64Const(b), Instruction::I64Sub) =
+                    (&instrs[i], &instrs[i + 1], &instrs[i + 2])
+                {
+                    if let Some(s) = a.checked_sub(*b) {
+                        out.push(Instruction::I64Const(s));
+                        i += 3;
+                        continue;
+                    }
+                }
+                if let (Instruction::I64Const(a), Instruction::I64Const(b), Instruction::I64Mul) =
+                    (&instrs[i], &instrs[i + 1], &instrs[i + 2])
+                {
+                    if let Some(s) = a.checked_mul(*b) {
+                        out.push(Instruction::I64Const(s));
+                        i += 3;
+                        continue;
+                    }
+                }
+            }
             if i + 1 < instrs.len() {
                 match (&instrs[i], &instrs[i + 1]) {
                     // any constant followed by Drop = dead pair (2026-09-14,
@@ -98,6 +131,32 @@ impl WasmEmitter {
                     // TAG_NIL that the begin machinery immediately drops —
                     // ~2 dead instrs per statement everywhere
                     (Instruction::I64Const(_), Instruction::Drop) => {
+                        i += 2;
+                        continue;
+                    }
+                    // (2026-09-14, micro-rules) LocalTee(n) then Drop → LocalSet(n):
+                    // the tee's stack copy is dead — plain store. Common after
+                    // the (Set,Get)→Tee rule fires on statement-position lets.
+                    (Instruction::LocalTee(n), Instruction::Drop) => {
+                        out.push(Instruction::LocalSet(*n));
+                        i += 2;
+                        continue;
+                    }
+                    // i64.extend_i32_u then i32.wrap_i64 → identity (the extend
+                    // zero-fills the high half; wrapping back is a no-op).
+                    // The reverse pair is NOT safe (wrap discards high bits).
+                    (Instruction::I64ExtendI32U, Instruction::I32WrapI64) => {
+                        i += 2;
+                        continue;
+                    }
+                    // self-assign load-store: (LocalGet n, LocalSet n) — pure
+                    // dead pair (the expression IS the load)
+                    (Instruction::LocalGet(n), Instruction::LocalSet(m)) if n == m => {
+                        i += 2;
+                        continue;
+                    }
+                    // ×1 identity
+                    (Instruction::I64Const(1), Instruction::I64Mul) => {
                         i += 2;
                         continue;
                     }
