@@ -4,8 +4,14 @@ fn main() {
     }));
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("usage: compile <input.lisp> [output.wasm] [--target near|outlayer]");
+        eprintln!("usage: compile <input.lisp|.ts> [output.wasm] [--output|-o path] [--target near|outlayer]");
         std::process::exit(1);
+    }
+    if args[1] == "--help" || args[1] == "-h" || args[1] == "help" {
+        eprintln!("usage: compile <input.lisp|.ts> [output.wasm] [--output|-o path] [--target near|outlayer]");
+        eprintln!("  .ts/.mts inputs lower through the TypeScript frontend;");
+        eprintln!("  output defaults to the input path with the extension swapped to .wasm");
+        return;
     }
     eprintln!("START");
     eprintln!("Reading {}...", args[1]);
@@ -64,9 +70,16 @@ fn main() {
 
     match result {
         Ok(Ok(wasm)) => {
+            // Output resolution: --output/-o <path> > 2nd positional ending
+            // in .wasm > the input path with its extension swapped to .wasm.
+            // (2026-09-15 data-loss fix: the old default was
+            // `args[1].replace(".lisp", "..wasm")` — a NO-OP for .ts inputs,
+            // so out == the SOURCE path: the wasm and then the map sidecar
+            // were written straight over the user's source file. `-o` was
+            // silently ignored in the same block.)
             let out = args
                 .iter()
-                .position(|a| a == "--output")
+                .position(|a| a == "--output" || a == "-o")
                 .and_then(|i| args.get(i + 1).cloned())
                 .or_else(|| {
                     args.get(2).and_then(|a| {
@@ -77,7 +90,22 @@ fn main() {
                         }
                     })
                 })
-                .unwrap_or_else(|| args[1].replace(".lisp", ".wasm"));
+                .unwrap_or_else(|| {
+                    let input = &args[1];
+                    match input.rfind('.') {
+                        // strip the LAST extension (foo.ts → foo.wasm,
+                        // foo.mts → foo.wasm, bar.lisp → bar.wasm)
+                        Some(dot) if dot > 0 => format!("{}.wasm", &input[..dot]),
+                        _ => format!("{}.wasm", input),
+                    }
+                });
+            // DATA-LOSS GUARD: never write any output onto the input source
+            // (explicit `--output victim.ts` must refuse, not clobber)
+            let same = std::path::Path::new(&out) == std::path::Path::new(&args[1]);
+            if same {
+                eprintln!("❌ refusing to write output onto the input source: {}", out);
+                std::process::exit(1);
+            }
             std::fs::write(&out, &wasm).unwrap();
             eprintln!("✅ {} ({} bytes)", out, wasm.len());
             // Symbolication sidecar: fn name → source form (NEAR targets only;
