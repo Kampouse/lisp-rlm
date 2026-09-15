@@ -29,8 +29,8 @@ We have a working zero-knowledge application layer on NEAR: three zk apps live o
 
 | crate | version | what |
 |---|---|---|
-| lisp-rlm-wasm | 0.1.11 | TS→NEAR wasm compiler (the frontend) |
-| near-compile | 0.1.12 | CLI: build/deploy/call/create |
+| lisp-rlm-wasm | 0.1.12 | TS→NEAR wasm compiler (the frontend) — u128 chunked to_str (~9×/op) |
+| near-compile | 0.1.13 | CLI: build/deploy/call/create |
 | near-mock | 0.7.1 | local runner, calibrated gas, real crypto hosts |
 
 ### Test infrastructure
