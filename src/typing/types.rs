@@ -733,6 +733,12 @@ impl TcEnv {
                 Box::new(TcType::Con(TcCon::Str)),
             ),
         );
+        // json-get-str? (2026-09-15, JSON v3): NIL-on-miss variant for
+        // `o.a.b ?? fb` on input handles. NOT explicitly typed — the
+        // `json` prefix wildcard types it Any, which is what lets
+        // (default ...) accept it as maybe-nil (an explicit (str,str)→str
+        // Arrow would REJECT the nil-unification — learned live).
+        // Checker acceptance via is_builtin_wildcard("json...").
         // json-decode-bytes: (str) → str  — decodes "[123,34,...]" byte array to string
         env.insert_mono(
             "json-decode-bytes".to_string(),

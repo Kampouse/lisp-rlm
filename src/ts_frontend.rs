@@ -3828,10 +3828,40 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                                 let dotted: Vec<&str> =
                                     path.iter().rev().map(|s| s.as_str()).collect();
                                 if dotted.len() > 1 {
-                                    return Err(
-                                        "ts_frontend: `handle.a.b ?? fb` — nested paths don't support ?? yet; read `handle.a` into a local first"
-                                            .into(),
-                                    );
+                                    // nested handle path + ?? (2026-09-15):
+                                    // top key via the input getter, rest via
+                                    // the NIL-ON-MISS buffer op (json-get-str?)
+                                    // so the fallback fires on a miss. Number
+                                    // fallbacks parse the span (str->num over
+                                    // the default).
+                                    let top = dotted[0].to_string();
+                                    let rest = dotted[1..].join(".");
+                                    let read = list(vec![
+                                        Sym("json-get-str?"),
+                                        Str(rest),
+                                        list(vec![Sym("near/json_get_str"), Str(top)]),
+                                    ]);
+                                    return Ok(match &l.right {
+                                        Expression::NumericLiteral(n) => list(vec![
+                                            Sym("str->num"),
+                                            list(vec![
+                                                Sym("default"),
+                                                read,
+                                                Str(format!("{}", n.value)),
+                                            ]),
+                                        ]),
+                                        Expression::StringLiteral(s) => list(vec![
+                                            Sym("default"),
+                                            read,
+                                            Str(s.value.to_string()),
+                                        ]),
+                                        _ => {
+                                            return Err(
+                                                "ts_frontend: `handle.a.b ?? fb` — fallback must be a string or number literal"
+                                                    .into(),
+                                            )
+                                        }
+                                    });
                                 }
                                 let dotted = dotted.join(".");
                                 match &l.right {

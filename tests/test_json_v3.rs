@@ -132,3 +132,59 @@ fn bare_handle_read_miss_is_nil_not_empty_string() {
     let r = run("bareMiss", r#"{"x" : 1}"#);
     assert!(r.contains("0"), "strLength of nil-miss: {r}");
 }
+
+#[test]
+fn nested_handle_nullish_fallback_fires() {
+    // json-get-str? (str-nil buffer op): o.a.b ?? fb — the raw packed
+    // result gates the miss (packed 0), so a LEGIT empty-string value
+    // ("name": "") is a HIT and must NOT fire the fallback.
+    let src = r#"
+export function nestedFb(): string {
+  const o = near.input();
+  return o.user.name ?? "nobody";
+}
+export function nestedNum(): string {
+  const o = near.input();
+  return toStr((o.cfg.limit ?? 10) + 1);
+}"#;
+    let ir = lisp_rlm_wasm::ts_frontend::ts_to_lisp_source(src).unwrap();
+    let exprs = parse_all(&ir).unwrap();
+    lisp_rlm_wasm::typing::type_check_program(&exprs, true).unwrap();
+    let wasm = compile_near_from_exprs(&exprs).unwrap();
+    let p = std::env::temp_dir().join(format!("jv3n_{}.wasm", std::process::id()));
+    std::fs::write(&p, &wasm).unwrap();
+    let st = std::env::temp_dir().join(format!("jv3n_{}.bin", std::process::id()));
+    let cases = [
+        ("nestedFb", r#"{"user" : { "name" : "bob" }}"#, "bob"),
+        ("nestedFb", "{}", "nobody"),
+        // legit empty string is a HIT — fallback must NOT fire
+        ("nestedFb", r#"{"user" : { "name" : "" }}"#, "📄 len=0"),
+        ("nestedNum", r#"{"cfg" : { "limit" : 5 }}"#, "6"),
+        ("nestedNum", "{}", "11"),
+    ];
+    for (m, args, want) in cases {
+        let _ = std::fs::remove_file(&st);
+        let out = std::process::Command::new("./target/release/near-mock")
+            .arg("cross")
+            .arg(st.to_str().unwrap())
+            .arg(format!("jv3n.t.near={}", p.display()))
+            .arg("jv3n.t.near")
+            .arg(m)
+            .arg(args)
+            .output()
+            .unwrap();
+        let all = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        if want == "📄 len=0" {
+            // empty-string hit: value_return len=0, no fallback
+            assert!(all.contains("len=0"), "empty-string hit: {all}");
+            assert!(!all.contains("nobody"), "fallback must NOT fire: {all}");
+        } else {
+            let val = all.lines().rev().find(|l| l.contains('📄')).unwrap_or(&all);
+            assert!(val.contains(want), "{m} {args}: {val}");
+        }
+    }
+}

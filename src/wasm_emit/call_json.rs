@@ -306,7 +306,13 @@ impl WasmEmitter {
                     _ => Err("json-get key must be a string literal".into()),
                 }
             }
-            "json-get-str" => {
+            "json-get-str" | "json-get-str?" => {
+                // `json-get-str?` (2026-09-15, JSON v3): NIL-on-miss variant —
+                // `o.a.b ?? fb` on input handles needs the fallback to fire;
+                // the base op returns "" (legacy contract, conflates with a
+                // legit empty-string value). Same emission + a raw-result
+                // gate (packed 0 == miss, unambiguous BEFORE tagging).
+                let nil_on_miss = op.contains("?");
                 if a.len() < 2 {
                     return Err(
                         "json-get-str requires two arguments: (json-get-str \"key\" input-buffer)"
@@ -385,6 +391,16 @@ impl WasmEmitter {
                         let jgs_len = self.local_idx_i32("jgs_len2");
                         let jgs_ptr = self.local_idx_i32("jgs_ptr2");
                         v.push(Instruction::LocalSet(jgs_tmp2));
+                        if nil_on_miss {
+                            // packed == 0 is an UNAMBIGUOUS miss (real spans
+                            // have nonzero ptrs) — gate BEFORE processing,
+                            // which would conflate it with ""
+                            v.push(Instruction::LocalGet(jgs_tmp2));
+                            v.push(Instruction::I64Eqz);
+                            v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                            v.push(Instruction::I64Const(TAG_NIL));
+                            v.push(Instruction::Else);
+                        }
                         v.push(Instruction::LocalGet(jgs_tmp2));
                         v.push(Instruction::I64Const(32));
                         v.push(Instruction::I64ShrU);
@@ -433,6 +449,9 @@ impl WasmEmitter {
                         v.push(Instruction::LocalGet(jgs_heap2)); // already i64
                         v.push(Instruction::I64Or);
                         v.extend(self.emit_tag_str());
+                        if nil_on_miss {
+                            v.push(Instruction::End); // close the miss gate
+                        }
                         v.splice(0..0, setup.iter().cloned());
                         Ok(v)
                     }
