@@ -7,7 +7,7 @@
 
 ## Where We Are (one paragraph)
 
-We have a working zero-knowledge application layer on NEAR: three zk apps live on testnet (anonymous identity credentials, anonymous voting v3 with choice sealed in circuit, anonymous voting v4 with homomorphic tally where nobody sees individual choices), all built on a Groth16 verifier (34 Tgas), circomlib-exact Poseidon (146 Tgas), and the alt_bn128 hosts. The compiler survived 8 silent-corruption bugs (session 3) plus a session-4 bug-fix marathon that cleared the entire known-bug list: 12 more issues fixed across 6 commits (dynamic JSON keys, `continue`, top-level const exprs, loop/if-branch scoping, invalid-wasm local-slot reuse, negative returns at the host boundary, string repeat/pad, JSON space-before-colon on all lookup paths, dispatch-table alignment) with 40 new regression tests. Remaining known language edges (all documented in GAPS.md, all minor): storage-family mixing has no wasm-side guard, top-level const arrays re-execute per access, boxed Float(0.0) truthiness divergence, lisp `json/get` still glued-colon, jsonGetStr doesn't span object values (use dot-path jsonGet). lisp-rlm 0.1.7 / near-compile 0.1.8 / near-mock 0.7.1 are published; near-mock predicts gas within 0.2% of mainnet. The PLONK verifier (universal setup — eliminates per-circuit trusted setup) has been analyzed, validated as feasible on existing hosts, skeleton implemented and init deployed — transcript implementation is the remaining ~2-3 hours. Key architectural discoveries: (1) Noir is a frontend, not a proof system — the arkworks backend that would slot into our verifier is dead; (2) PLONK works on our hosts and eliminates the trusted setup ceremony; (3) NEAR's MPC network doesn't support BN254 threshold decryption (wrong curve, wrong purpose); (4) homomorphic tally via additive ElGamal over BN254 gives the strongest voting privacy achievable with existing hosts.
+We have a working zero-knowledge application layer on NEAR: three zk apps live on testnet (anonymous identity credentials, anonymous voting v3 with choice sealed in circuit, anonymous voting v4 with homomorphic tally where nobody sees individual choices), all built on a Groth16 verifier (34 Tgas), circomlib-exact Poseidon (146 Tgas), and the alt_bn128 hosts. The compiler survived 8 silent-corruption bugs (session 3) + a session-4 bug-fix marathon (26 fixed total, bug backlog empty) + a 2026-09-14/15 gas marathon: hot loops -47%, getter entrypoints -86% (input caching + scanner dedup + eq fast paths), Poseidon 146→124.9 Tgas, JSON API v3 (near.input handles, typed ??, near.args<T>), and u128 ~9× (chunked to_str — the serialize was 95% of every u128 op). The next big lever is designed and parked: u128 limb locals (math without the serialization tax, ~5× more on numeric contracts). The PLONK verifier (universal setup) has skeleton + init deployed; transcript implementation is the remaining ~2-3 hours. Key architectural discoveries: (1) Noir is a frontend, not a proof system — the arkworks backend that would slot into our verifier is dead; (2) PLONK works on our hosts and eliminates the trusted setup ceremony; (3) NEAR's MPC network doesn't support BN254 threshold decryption (wrong curve, wrong purpose); (4) homomorphic tally via additive ElGamal over BN254 gives the strongest voting privacy achievable with existing hosts.
 
 ---
 
@@ -144,7 +144,19 @@ zk/bridge.py           — SHARED format bridge (snarkjs → NEAR LE-halves)
 
 ## Open Fronts (ranked by leverage)
 
-### 1. 🟡 PLONK verifier completion (eliminates trusted setup — 2-3 hours remaining)
+### 1. 🟢 u128 without the serialization tax (the DeFi gas story — designed, ready to build)
+
+**The insight (2026-09-15)**: u128 values live as decimal STRINGS in the value model, so every op pays parse → limbs → compute → limbs → serialize. After the chunked to_str (9× win, landed: per-op ~80 Ggas → ~9), format conversion is still **~80% of every u128 op**. The tax is structural — kill the round-trips and it's gone. Three levels:
+
+- **Level 0 ✅ (done, `74900a4`)**: chunked `__h_u128_to_str` — divide by 10^18 per chunk (NOT 10^19 — overflows i64::MAX, corrupts the digit formatter), ≤3 chunks, one 128-step division each. fib(185) 8→1.6 Tgas; acc(100) 8.04→1.02. Padding rule (interior chunks zero-pad to 18) pinned in `test_u128_chunked`.
+- **Level 1 — function-scoped limb locals** (the 80/20, medium effort): bigint-typed locals compile to a **limb pair (two i64 locals)** instead of a tagged string. The TYPE SYSTEM already knows — `bigint` annotations exist (`BIGINT_NAMES`/`BIGINT_LOCALS`, `a + b` already routes to `u128/add`). Parse ONCE at param binding, math in limbs (`~1-2 Ggas/op`), serialize ONCE at true edges (storageSet/return/log). Loop accumulators stay in limbs across iterations — the fib/interest-accrual/batch-payout shape. fib(185): ~1.6 → **~0.3 Tgas**. Static (annotation-driven, no inference), reuses `__u128_*` helpers, no new tags, no ABI change. **Known limit**: bigint args to helper fns still serialize at the call boundary (calling convention is one tagged i64).
+- **Level 2 — native TAG_U128** (full elimination, days + invasive): u128 = tagged pointer to a 16-byte heap cell — flows through calls, arrays, storage with ZERO serialization anywhere; ops deref cells (~0.5-1 Ggas). Serialization only at JSON return/log/display. Touches every polymorphic consumer + interp parity + checker. Language-version-sized — do it only when a real contract hits Level 1's call-boundary tax.
+
+**Measured floor for context**: loop machinery ~27 Mgas/iter (counter = checked tagged add ~17 + cmp/br ~10); i64 checked add body op ~17 Mgas. The loop tax is noise next to the u128 format tax (9 Ggas = ~500× an add).
+
+**First benchmark**: fib(185) loop + an accrual loop (rps × balance ÷ scale per user) — Level 1 should show ~5×.
+
+### 2. 🟡 PLONK verifier completion (eliminates trusted setup — 2-3 hours remaining)
 
 **What**: complete the PLONK verifier TS port — transcript + Lagrange + pairing
 **Why**: universal setup (one ceremony, all circuits, reuse Ethereum's public powers-of-tau) vs Groth16's per-circuit ceremony. Solves the "not good enough" trust concern.
@@ -154,7 +166,17 @@ zk/bridge.py           — SHARED format bridge (snarkjs → NEAR LE-halves)
 **Estimated verify cost**: ~35-41 Tgas (optimized) or ~160 Tgas (simple version)
 **Files**: `zk/identity/plonk_verifier.ts`, `zk/identity/plonk_transcript.md`, `zk/identity/plonk_on_near.md`
 
-### 2. 🟡 zk-Vote v4 hardening (production trust fixes)
+### 2. 🟡 PLONK verifier completion (eliminates trusted setup — 2-3 hours remaining)
+
+**What**: complete the PLONK verifier TS port — transcript + Lagrange + pairing
+**Why**: universal setup (one ceremony, all circuits, reuse Ethereum's public powers-of-tau) vs Groth16's per-circuit ceremony. Solves the "not good enough" trust concern.
+**Breakthrough**: analyzed the Solidity — ALL operations map to existing alt_bn128 hosts. The G2 scalar mul I initially feared doesn't exist in the implementation (xi multiplication happens on G1 side). Both G2 points are static VK values.
+**Done**: skeleton, init (deployed), bridge, transcript spec, field arithmetic helpers
+**Remaining**: transcript implementation (5 keccak calls), Lagrange basis (field inversions), G1 multiexp assembly, pairing check, e2e test
+**Estimated verify cost**: ~35-41 Tgas (optimized) or ~160 Tgas (simple version)
+**Files**: `zk/identity/plonk_verifier.ts`, `zk/identity/plonk_transcript.md`, `zk/identity/plonk_on_near.md`
+
+### 3. 🟡 zk-Vote v4 hardening (production trust fixes)
 
 **What**: the homomorphic tally works but has 4 trust assumptions
 **Current state**: live on testnet, e2e verified, choices never visible
@@ -165,18 +187,18 @@ zk/bridge.py           — SHARED format bridge (snarkjs → NEAR LE-halves)
   - Tx signer visible → fix: relayer (or accept for now)
 **Priority**: 2-of-3 threshold is the most impactful and simplest
 
-### 3. ⚪ Honk verifier port (Noir path — parked pending PLONK completion)
+### 4. ⚪ Honk verifier port (Noir path — parked pending PLONK completion)
 
 **Status**: stitched-wasm Grumpkin insight validated but anatomy study not done. PLONK is higher leverage (solves trust setup for ALL circuits). Revisit after PLONK.
 **Pre-requisite**: PLONK verifier done, Noir still relevant to your use case
 
-### 4. ⚪ Poseidon optimization (gas multiplier)
+### 5. ⚪ Poseidon optimization (gas multiplier)
 
 **What**: 29-bit limbs + sparse partial rounds → 146 → ~35-50 Tgas
 **Why**: makes Merkle tree (if we build one) ergonomic
 **Effort**: ~2-3 days mechanical port
 
-### 5. ⚪ Noir / MPC / Nova (all parked)
+### 6. ⚪ Noir / MPC / Nova (all parked)
 
 | item | status | why parked |
 |---|---|---|
