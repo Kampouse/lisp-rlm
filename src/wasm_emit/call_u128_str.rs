@@ -82,7 +82,7 @@ impl WasmEmitter {
         self.funcs.push(FuncDef {
             name: "__h_u128_to_str".into(),
             param_count: 1,
-            local_count: 12,
+            local_count: 14,
             instrs: Self::h_to_str(mem_limit),
             local_entries: None,
             custom_type: None,
@@ -351,9 +351,29 @@ impl WasmEmitter {
 
     // __u128_to_str(addr) -> tagged string (decimal render of limbs at addr)
     // Locals: 0=addr 1=lo 2=hi 3=dst(heap) 4=pos 5=qlo 6=qhi 7=rem 8=bit 9=t 10=len 11=tmp
+    /// __u128_to_str(addr) -> tagged str — CHUNKED conversion (2026-09-15).
+    ///
+    /// The old implementation divided by 10 via 128-step binary long
+    /// division PER DECIMAL DIGIT — up to 39 x 128 x ~15 ≈ 75k instructions
+    /// (~75 Ggas, ~95% of every u128 op's cost; measured acc(100) at 8.04
+    /// Tgas ≈ 80 Ggas/iteration). This one divides by D = 10^18 per chunk
+    /// (10^18 fits SIGNED i64 — 10^19 overflows i64::MAX and breaks i64
+    /// div/rem on the chunk): at most 3 chunks for a 39-digit u128, one
+    /// 128-step division each, then cheap i64 digit formatting (~19 i64
+    /// divmods per chunk). ~700 instructions total — ~100x cheaper.
+    ///
+    /// Digit emission: least-significant chunk first, written right-to-left
+    /// into a 48-byte runtime-heap buffer (same layout as before). A chunk
+    /// is ZERO-PADDED to 18 digits iff the quotient after its division is
+    /// nonzero (interior chunks); the most-significant chunk prints bare.
+    ///
+    /// Locals: 0=addr(param) 1=lo 2=hi 3=dst 4=pos 5=qlo 6=qhi 7=rem
+    /// 8=bitctr 9=chunk 10=scratch 11=new-heap-top 12=ndig 13=scratch2
     fn h_to_str(mem_limit: i64) -> Vec<Instruction<'static>> {
+        const D: i64 = 1_000_000_000_000_000_000; // 10^18
         let mut v = vec![];
         let mut e = |i: &Instruction<'static>| v.push(i.clone());
+        // lo = *(addr), hi = *(addr+8)
         e(&Instruction::LocalGet(0));
         e(&Instruction::I32WrapI64);
         e(&Instruction::I64Load(ma8()));
@@ -364,7 +384,7 @@ impl WasmEmitter {
         e(&Instruction::I32WrapI64);
         e(&Instruction::I64Load(ma8()));
         e(&Instruction::LocalSet(2));
-        // allocate 48 bytes from the runtime bump heap at addr 56
+        // dst = bump heap 48 bytes (same as before)
         e(&Instruction::I64Const(56));
         e(&Instruction::I32WrapI64);
         e(&Instruction::I64Load(ma8()));
@@ -384,17 +404,25 @@ impl WasmEmitter {
         e(&Instruction::Else);
         e(&Instruction::Unreachable);
         e(&Instruction::End);
-        // zero fast-path
+        // pos = dst + 48 (write cursor, moves down)
+        e(&Instruction::LocalGet(3));
+        e(&Instruction::I64Const(48));
+        e(&Instruction::I64Add);
+        e(&Instruction::LocalSet(4));
+        // zero fast-path: "0"
         e(&Instruction::LocalGet(1));
         e(&Instruction::LocalGet(2));
         e(&Instruction::I64Or);
         e(&Instruction::I64Eqz);
         e(&Instruction::If(BlockType::Result(ValType::I64)));
-        e(&Instruction::LocalGet(3));
+        e(&Instruction::LocalGet(4));
+        e(&Instruction::I64Const(1));
+        e(&Instruction::I64Sub);
+        e(&Instruction::LocalSet(4));
+        e(&Instruction::LocalGet(4));
         e(&Instruction::I32WrapI64);
         e(&Instruction::I32Const(48));
         e(&Instruction::I32Store8(ma()));
-        // tagged str = ((1<<32)|dst)<<TAG_BITS | TAG_STR  (payload layout: len<<32|ptr)
         e(&Instruction::LocalGet(3));
         e(&Instruction::I64Const(1));
         e(&Instruction::I64Const(32));
@@ -405,29 +433,27 @@ impl WasmEmitter {
         e(&Instruction::I64Const(TAG_STR));
         e(&Instruction::I64Or);
         e(&Instruction::Else);
-        e(&Instruction::LocalGet(3));
-        e(&Instruction::I64Const(48));
-        e(&Instruction::I64Add);
-        e(&Instruction::LocalSet(4));
-        // outer loop: while (lo|hi) != 0
+        // ── outer loop: while (lo|hi) != 0 ──
         e(&Instruction::Block(BlockType::Empty));
         e(&Instruction::Loop(BlockType::Empty));
+        // if (lo|hi) == 0 → exit outer
         e(&Instruction::LocalGet(1));
         e(&Instruction::LocalGet(2));
         e(&Instruction::I64Or);
         e(&Instruction::I64Eqz);
         e(&Instruction::BrIf(1));
-        // ── divide (hi,lo) by 10 via 128-bit binary long division ──
+        // ── ONE 128-step division of (lo,hi) by D → (qlo,qhi,rem) ──
         e(&Instruction::I64Const(0));
-        e(&Instruction::LocalSet(7));
+        e(&Instruction::LocalSet(5)); // qlo
         e(&Instruction::I64Const(0));
-        e(&Instruction::LocalSet(5));
+        e(&Instruction::LocalSet(6)); // qhi
         e(&Instruction::I64Const(0));
-        e(&Instruction::LocalSet(6));
+        e(&Instruction::LocalSet(7)); // rem
         e(&Instruction::I64Const(128));
-        e(&Instruction::LocalSet(8));
+        e(&Instruction::LocalSet(8)); // bitctr
         e(&Instruction::Block(BlockType::Empty));
         e(&Instruction::Loop(BlockType::Empty));
+        // if bitctr == 0 → division done
         e(&Instruction::LocalGet(8));
         e(&Instruction::I64Eqz);
         e(&Instruction::BrIf(1));
@@ -435,11 +461,11 @@ impl WasmEmitter {
         e(&Instruction::I64Const(1));
         e(&Instruction::I64Sub);
         e(&Instruction::LocalSet(8));
-        // rem <<= 1 | dividend bit
+        // rem = rem<<1 | dividend bit(bitctr)
         e(&Instruction::LocalGet(7));
         e(&Instruction::I64Const(1));
         e(&Instruction::I64Shl);
-        e(&Instruction::LocalSet(7));
+        // dividend still in (1,2): bit from lo if bitctr<64 else hi
         e(&Instruction::LocalGet(8));
         e(&Instruction::I64Const(64));
         e(&Instruction::I64LtU);
@@ -458,16 +484,15 @@ impl WasmEmitter {
         e(&Instruction::I64Const(1));
         e(&Instruction::I64And);
         e(&Instruction::End);
-        e(&Instruction::LocalGet(7));
         e(&Instruction::I64Or);
         e(&Instruction::LocalSet(7));
-        // if rem >= 10: rem -= 10; set quotient bit
+        // if rem >=u D: rem -= D; set quotient bit
         e(&Instruction::LocalGet(7));
-        e(&Instruction::I64Const(10));
+        e(&Instruction::I64Const(D));
         e(&Instruction::I64GeU);
         e(&Instruction::If(BlockType::Empty));
         e(&Instruction::LocalGet(7));
-        e(&Instruction::I64Const(10));
+        e(&Instruction::I64Const(D));
         e(&Instruction::I64Sub);
         e(&Instruction::LocalSet(7));
         e(&Instruction::LocalGet(8));
@@ -494,7 +519,60 @@ impl WasmEmitter {
         e(&Instruction::Br(0));
         e(&Instruction::End);
         e(&Instruction::End);
-        // write digit: pos--; *pos = '0' + rem
+        // chunk = rem; (lo,hi) = (qlo,qhi); scratch10 = pad? (q != 0)
+        e(&Instruction::LocalGet(7));
+        e(&Instruction::LocalSet(9)); // chunk
+        e(&Instruction::LocalGet(5));
+        e(&Instruction::LocalGet(6));
+        e(&Instruction::I64Or);
+        e(&Instruction::LocalSet(10)); // 10 = "quotient nonzero" (pad flag)
+        e(&Instruction::LocalGet(5));
+        e(&Instruction::LocalSet(1));
+        e(&Instruction::LocalGet(6));
+        e(&Instruction::LocalSet(2));
+        // ── write chunk digits right-to-left: do { pos--; *pos='0'+chunk%10; chunk/=10; ndig++ } while chunk != 0 ──
+        e(&Instruction::I64Const(0));
+        e(&Instruction::LocalSet(12)); // ndig
+        e(&Instruction::Block(BlockType::Empty));
+        e(&Instruction::Loop(BlockType::Empty));
+        e(&Instruction::LocalGet(4));
+        e(&Instruction::I64Const(1));
+        e(&Instruction::I64Sub);
+        e(&Instruction::LocalSet(4));
+        e(&Instruction::LocalGet(4));
+        e(&Instruction::I32WrapI64);
+        e(&Instruction::LocalGet(9));
+        e(&Instruction::I64Const(10));
+        // chunk is always >= 0 and < 10^18 < i64::MAX — RemS/RemU identical
+        e(&Instruction::I64RemU);
+        e(&Instruction::I32WrapI64);
+        e(&Instruction::I32Const(48));
+        e(&Instruction::I32Add);
+        e(&Instruction::I32Store8(ma()));
+        e(&Instruction::LocalGet(9));
+        e(&Instruction::I64Const(10));
+        e(&Instruction::I64DivS); // chunk/10 — chunk >= 0, signed div correct
+        e(&Instruction::LocalSet(9));
+        e(&Instruction::LocalGet(12));
+        e(&Instruction::I64Const(1));
+        e(&Instruction::I64Add);
+        e(&Instruction::LocalSet(12));
+        e(&Instruction::LocalGet(9));
+        e(&Instruction::I64Const(0));
+        e(&Instruction::I64Ne);
+        e(&Instruction::BrIf(0));
+        e(&Instruction::End);
+        e(&Instruction::End);
+        // ── pad to 18 when interior (pad flag local 10 != 0): while ndig < 18 { pos--; *pos='0'; ndig++ } ──
+        e(&Instruction::Block(BlockType::Empty));
+        e(&Instruction::Loop(BlockType::Empty));
+        e(&Instruction::LocalGet(10));
+        e(&Instruction::I64Eqz);
+        e(&Instruction::BrIf(1)); // no pad → exit
+        e(&Instruction::LocalGet(12));
+        e(&Instruction::I64Const(18));
+        e(&Instruction::I64GeS);
+        e(&Instruction::BrIf(1)); // padded enough → exit
         e(&Instruction::LocalGet(4));
         e(&Instruction::I64Const(1));
         e(&Instruction::I64Sub);
@@ -502,26 +580,24 @@ impl WasmEmitter {
         e(&Instruction::LocalGet(4));
         e(&Instruction::I32WrapI64);
         e(&Instruction::I32Const(48));
-        e(&Instruction::LocalGet(7));
-        e(&Instruction::I32WrapI64);
-        e(&Instruction::I32Add);
         e(&Instruction::I32Store8(ma()));
-        // (lo,hi) = (qlo,qhi)
-        e(&Instruction::LocalGet(5));
-        e(&Instruction::LocalSet(1));
-        e(&Instruction::LocalGet(6));
-        e(&Instruction::LocalSet(2));
+        e(&Instruction::LocalGet(12));
+        e(&Instruction::I64Const(1));
+        e(&Instruction::I64Add);
+        e(&Instruction::LocalSet(12));
         e(&Instruction::Br(0));
         e(&Instruction::End);
         e(&Instruction::End);
-        // tagged str: ((dst+48-pos) << 32) | pos
+        e(&Instruction::Br(0)); // loop outer
+        e(&Instruction::End);
+        e(&Instruction::End);
+        // ── finalize: len = dst+48-pos; tagged str ──
         e(&Instruction::LocalGet(3));
         e(&Instruction::I64Const(48));
         e(&Instruction::I64Add);
         e(&Instruction::LocalGet(4));
         e(&Instruction::I64Sub);
         e(&Instruction::LocalSet(10));
-        // tagged str = ((len<<32)|pos)<<TAG_BITS | TAG_STR
         e(&Instruction::LocalGet(10));
         e(&Instruction::I64Const(32));
         e(&Instruction::I64Shl);
